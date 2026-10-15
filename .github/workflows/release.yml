@@ -226,7 +226,7 @@ jobs:
       - name: 发布构件至 Maven Central
         run: |
           mvn versions:set -DnewVersion=${{ needs.build-artifacts.outputs.raw_version }} -DgenerateBackupPoms=false
-          mvn clean deploy -P release -DskipTests -B
+          mvn clean deploy -P release -DskipTests -B -Dgpg.passphrase="${{ secrets.MAVEN_GPG_PASSPHRASE }}"
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
