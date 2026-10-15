@@ -25,7 +25,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 permissions:
@@ -190,7 +190,7 @@ jobs:
     name: 发布至 Maven Central
     runs-on: ubuntu-latest
     needs: [build-artifacts]
-    if: vars.ENABLE_MAVEN_PUBLISH == 'true' || secrets.ENABLE_MAVEN_PUBLISH == 'true'
+    if: vars.ENABLE_MAVEN_PUBLISH == 'true'
     timeout-minutes: 20
     steps:
       - name: 检出源码
@@ -244,12 +244,32 @@ jobs:
       - name: 生成富文本发版报告
         run: |
           TAG="${{ needs.build-artifacts.outputs.tag_name }}"
+          if [ "${{ needs.build-artifacts.outputs.is_prerelease }}" = "true" ]; then
+            TYPE_DESC="🧪 Pre-release (预发版)"
+          else
+            TYPE_DESC="🎉 稳定正式版"
+          fi
+
+          if [ "${{ needs.publish-release.result }}" = "success" ]; then
+            REL_DESC="✅ 成功"
+          else
+            REL_DESC="❌ 失败"
+          fi
+
+          if [ "${{ needs.publish-maven.result }}" = "success" ]; then
+            MAVEN_DESC="✅ 成功"
+          elif [ "${{ needs.publish-maven.result }}" = "skipped" ]; then
+            MAVEN_DESC="⚡ 已跳过 (未启用)"
+          else
+            MAVEN_DESC="❌ 失败"
+          fi
+
           {
             echo "## 🚀 ateng-boot 统合发版全景看板"
             echo ""
             echo "| 发版维度 | 状态 | 详细信息 |"
             echo "| :--- | :---: | :--- |"
-            echo "| **发版版本** | \`$TAG\` | ${{ needs.build-artifacts.outputs.is_prerelease == 'true' && '🧪 Pre-release' || '🎉 稳定正式版' }} |"
-            echo "| **GitHub Release** | ${{ needs.publish-release.result == 'success' && '✅ 成功' || '❌ 失败' }} | Jar 包与校验和附件已挂载 |"
-            echo "| **Maven 官方分发** | ${{ needs.publish-maven.result == 'success' && '✅ 成功' || (needs.publish-maven.result == 'skipped' && '⚡ 已跳过 (未启用)' || '❌ 失败') }} | Central 仓库发布 |"
+            echo "| **发版版本** | \`$TAG\` | $TYPE_DESC |"
+            echo "| **GitHub Release** | $REL_DESC | Jar 包与校验和附件已挂载 |"
+            echo "| **Maven 官方分发** | $MAVEN_DESC | Central 仓库发布 |"
           } >> "$GITHUB_STEP_SUMMARY"
