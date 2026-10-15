@@ -17,6 +17,7 @@
 | **0007** | Maven Central 官方发布解耦与轻量极速 CI | `Accepted` | 非分发模块 `<maven.deploy.skip>true</maven.deploy.skip>`，异步校验 `<waitUntil>validated</waitUntil>` 极速解耦 | 全工程 | [查看](./0007-maven-publishing-and-clean-ci-pipeline.md) |
 | **0008** | 自动化发版、单一版本流与常青文档决策 | `Accepted` | 彻底告别传统 SNAPSHOT 快照流，主干停留在最新稳定版；CI 智能短路放行；全链路防呆强熔断 | 全工程 / Scripts | [查看](./0008-automated-release-changelog-and-evergreen-docs.md) |
 | **0009** | main 稳定发布与 dev 活跃开发双分支架构 | `Accepted` | 解耦生产发布与日常编码，日常活跃开发收口于 `dev`，正式发版严格收口于只读受保护的 `main` | 全工程 / Git 协作 | [查看](./0009-dual-branch-workflow-main-release-and-dev-active.md) |
+| **0010** | 传输契约与持久层解耦与流式转换工具 | `Accepted` | 传输层解耦持久层 ORM，提供纯净 `PageResult<T>`、`PageQuery` 与 `PageUtil` 流式转换门面 | `core` / `mybatis-plus` | [查看](./0010-transport-pagination-contract-decoupling.md) |
 
 ---
 

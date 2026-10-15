@@ -3,11 +3,15 @@ package io.github.atengk.boot.sample.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.PageQuery;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.sample.dto.UserCreateDTO;
 import io.github.atengk.boot.sample.entity.UserEntity;
 import io.github.atengk.boot.sample.mapper.UserMapper;
+import io.github.atengk.boot.sample.vo.UserVO;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -87,17 +91,17 @@ public class UserController {
     }
 
     /**
-     * 分页查询用户列表，受 MyBatis-Plus 单页 maxLimit 500 门禁防护
+     * 分页查询用户列表，接收标准 PageQuery 入参，返回彻底与持久层解耦的 PageResult<UserVO>
+     * 在服务边界通过 PageUtil 一行完成 Entity 到 VO 的流式转换，消除 ORM 属性泄露
      *
-     * @param current 当前页码
-     * @param size    单页大小
+     * @param query 分页查询入参
      * @return 分页结果
      */
     @GetMapping("/page")
-    public Result<Page<UserEntity>> page(@RequestParam(value = "current", defaultValue = "1") long current,
-                                         @RequestParam(value = "size", defaultValue = "10") long size) {
-        Page<UserEntity> page = new Page<>(current, size);
-        Page<UserEntity> result = userMapper.selectPage(page, null);
+    public Result<PageResult<UserVO>> page(PageQuery query) {
+        Page<UserEntity> page = PageUtil.toPage(query);
+        Page<UserEntity> entityPage = userMapper.selectPage(page, null);
+        PageResult<UserVO> result = PageUtil.toPageResult(entityPage).map(UserVO::from);
         return Result.success(result);
     }
 

@@ -47,3 +47,7 @@ _Avoid_: SecretField, CryptoField, EncryptField
 **FieldSensitive**:
 声明在实体或 VO 属性上的出库数据脱敏注解，按指定策略（手机号、身份证、邮箱等）自动掩码序列化输出。
 _Avoid_: MaskField, Desensitize, SensitiveData
+
+**PageUtil**:
+用于将持久层 IPage 转换为标准 PageResult，以及将 PageQuery 转换为 MyBatis-Plus Page 的双向映射工具类。
+_Avoid_: PageHelper, PaginationUtil, MpPageUtil

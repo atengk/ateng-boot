@@ -275,6 +275,56 @@ public class UserRoleEntity extends BaseIdEntity {
 ```
 - **开箱特性**：仅保留雪花 `id`，底层执行真正的物理增删改查，绝不向数据库抛出冗余列缺失的 SQL 语法异常。
 
+### 5.3 传输层分页契约解耦与流式转换 (PageResult & PageUtil)
+
+**场景痛点**：Controller 传输层若直接返回 MyBatis-Plus 的 `Page<T>`，会导致 `optimizeCountSql`、`searchCount`、`orders`、`maxLimit` 等持久层内部状态严重向前端泄露，产生大量 ORM 噪音；同时导致数据库物理实体与对外视图模型强耦合。`ateng-boot` 提供与 ORM 彻底解耦的标准契约：
+
+**核心代码范式**：
+```java
+@GetMapping("/page")
+public Result<PageResult<UserVO>> page(PageQuery query) {
+    // 1. 入参安全转换（PageQuery -> MP Page）
+    Page<UserEntity> page = PageUtil.toPage(query);
+    // 2. ORM 分页查询
+    Page<UserEntity> entityPage = userMapper.selectPage(page, null);
+    // 3. 流式转换为业务 VO（彻底消除 ORM 属性泄露）
+    PageResult<UserVO> result = PageUtil.toPageResult(entityPage, user -> {
+        UserVO vo = new UserVO();
+        vo.setId(user.getId());
+        vo.setName(user.getName());
+        vo.setAge(user.getAge());
+        vo.setEmail(user.getEmail());
+        return vo;
+    });
+    return Result.success(result);
+}
+```
+
+**前端收到的纯净 JSON 契约（仅含标准 5 要素，彻底杜绝 ORM 内部属性泄露）：**
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "records": [
+      {
+        "id": "1846182948192841920",
+        "name": "李四",
+        "age": 30,
+        "email": "lisi@example.com"
+      }
+    ],
+    "total": "1",
+    "size": "10",
+    "current": "1",
+    "pages": "1"
+  },
+  "timestamp": 1729000000000,
+  "success": true,
+  "traceId": "c563ed5e6d70430b9c0a9ab836985582"
+}
+```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -316,6 +366,8 @@ ateng:
   - [ADR-0006: 依赖版本基线锁定与升级治理策略](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)
   - [ADR-0007: Maven 中央仓库发布解耦与 CI 纯净化治理决策](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)
   - [ADR-0008: 自动化发版闭环、多维变更日志与常青文档架构决策](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)
+  - [ADR-0009: main 稳定发布与 dev 活跃开发双分支架构](./docs/adr/0009-dual-branch-workflow-main-release-and-dev-active.md)
+  - [ADR-0010: 传输契约与持久层解耦与流式转换工具](./docs/adr/0010-transport-pagination-contract-decoupling.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)

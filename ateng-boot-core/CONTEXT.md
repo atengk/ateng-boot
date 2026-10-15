@@ -31,3 +31,11 @@ _Avoid_: SessionContext, LocalUser, UserThreadLocal
 **AsyncContext**:
 抓取当前线程链路追踪标识与用户身份快照并在异步线程中恢复的上下文装饰器。
 _Avoid_: ThreadLocalCopier, ContextPropagator
+
+**PageResult**:
+统一与底层持久层解耦的分页响应结果载体，仅包含分页核心要素与数据集，杜绝 ORM 内部属性泄露。
+_Avoid_: PageVO, PageDTO, PageData, TableDataInfo, PageResponse
+
+**PageQuery**:
+标准化分页查询参数基类，封装当前页码、单页容量与基础查询排序要素。
+_Avoid_: PageParam, PageReq, PageRequest

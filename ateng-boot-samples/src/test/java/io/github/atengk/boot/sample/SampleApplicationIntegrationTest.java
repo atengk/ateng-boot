@@ -358,4 +358,55 @@ class SampleApplicationIntegrationTest {
         // 普通 selectById 自动附加 WHERE deleted=0，查询结果为 null
         assertThat(userMapper.selectById(userId)).isNull();
     }
+
+    @Test
+    @DisplayName("16. 分页契约解耦与流式转换：/api/users/page 接收 PageQuery 并返回标准 PageResult<UserVO>，彻底消除 ORM 噪音与内部属性泄露")
+    void shouldReturnDecoupledPageResultWithoutOrmNoise() throws Exception {
+        UserEntity u1 = new UserEntity();
+        u1.setName("测试分页A");
+        u1.setAge(18);
+        u1.setEmail("page_a@example.com");
+        userMapper.insert(u1);
+
+        UserEntity u2 = new UserEntity();
+        u2.setName("测试分页B");
+        u2.setAge(19);
+        u2.setEmail("page_b@example.com");
+        userMapper.insert(u2);
+
+        MvcResult mvcResult = mockMvc.perform(get("/api/users/page")
+                        .param("current", "1")
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.records").isArray())
+                .andReturn();
+
+        String json = mvcResult.getResponse().getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode rootNode = objectMapper.readTree(json);
+        com.fasterxml.jackson.databind.JsonNode dataNode = rootNode.get("data");
+
+        // 核心契约断言：标准 5 要素存在且严格仅含 5 字段（Long 字段受全局 ToStringSerializer 守护防前端精度丢失）
+        assertThat(dataNode.size()).isEqualTo(5);
+        assertThat(dataNode.fieldNames()).toIterable().containsExactlyInAnyOrder("records", "total", "size", "current", "pages");
+        assertThat(dataNode.get("current").asLong()).isEqualTo(1L);
+        assertThat(dataNode.get("size").asLong()).isEqualTo(2L);
+        assertThat(dataNode.get("total").asLong()).isGreaterThanOrEqualTo(2L);
+        assertThat(dataNode.get("pages").asLong()).isGreaterThanOrEqualTo(1L);
+        assertThat(dataNode.get("records").isArray()).isTrue();
+        assertThat(dataNode.get("records").size()).isLessThanOrEqualTo(2);
+
+        // 核心断言：绝对杜绝 MyBatis-Plus ORM 内部属性泄露
+        assertThat(json).doesNotContain("optimizeCountSql");
+        assertThat(json).doesNotContain("searchCount");
+        assertThat(json).doesNotContain("orders");
+        assertThat(json).doesNotContain("countId");
+        assertThat(json).doesNotContain("maxLimit");
+
+        // 核心断言：输出为 UserVO，实体内部的审计与逻辑删除字段不向外暴露
+        assertThat(json).doesNotContain("createBy");
+        assertThat(json).doesNotContain("updateBy");
+        assertThat(json).doesNotContain("deleted");
+        assertThat(json).doesNotContain("version");
+    }
 }
