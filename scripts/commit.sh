@@ -47,23 +47,28 @@ log_error() {
   printf "%b[ERROR]%b %s\n" "${COLOR_RED}" "${COLOR_RESET}" "$1"
 }
 
-# 格式化 Issue 编号为标准 #N 格式（支持逗号或空格分割）
-format_issue_ids() {
-  local raw="$1"
-  local formatted=""
-  local clean_raw
-  clean_raw=$(echo "$raw" | tr ',' ' ')
-  for id in $clean_raw; do
-    id=$(echo "$id" | tr -d ' #\r\t')
-    if [ -n "$id" ]; then
-      if [ -z "$formatted" ]; then
-        formatted="#${id}"
-      else
-        formatted="${formatted}, #${id}"
+# 辅助函数：将 Issue 输入清单规范化解构为独立的 Git Trailer 行 (如 Closes #12 \n Closes #13)
+# 遵循 Conventional Commits / RFC 5147 规范，且 100% 触发 GitHub 自动闭环多工单机制
+append_issue_footers() {
+  local prefix="$1"
+  shift
+  local raw_items=("$@")
+  for raw in "${raw_items[@]}"; do
+    local clean_raw
+    clean_raw=$(echo "$raw" | tr ',' ' ')
+    for id in $clean_raw; do
+      id=$(echo "$id" | tr -d ' #\r\t')
+      if [ -n "$id" ]; then
+        local line="${prefix} #${id}"
+        # 避免重复组装相同的 Trailer 行
+        if [ -z "$COMMIT_FOOTER" ]; then
+          COMMIT_FOOTER="$line"
+        elif ! echo "$COMMIT_FOOTER" | grep -Fqx "$line" >/dev/null 2>&1; then
+          COMMIT_FOOTER="${COMMIT_FOOTER}"$'\n'"$line"
+        fi
       fi
-    fi
+    done
   done
-  echo "$formatted"
 }
 
 # ==============================================================================
@@ -78,6 +83,7 @@ CLI_CLOSES=()
 CLI_REFS=()
 CLI_BREAKING=false
 CLI_STAGE_ALL=false
+CLI_DRY_RUN=false
 CLI_PUSH=false
 AUTO_CONFIRM=false
 IS_NON_INTERACTIVE=false
@@ -87,14 +93,15 @@ show_help() {
   printf "%b\n" ""
   printf "%b\n" "选项说明 (支持交互向导与非交互式/AI自动化调用):"
   printf "%b\n" "  -t, --type <type>       提交类型 (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
-  printf "%b\n" "  -s, --scope <scope>     可选影响范围 (如 core, cli, api)"
+  printf "%b\n" "  -s, --scope <scope>     可选影响范围 (推荐: core, web, mybatis-plus, redis, samples, deps, release)"
   printf "%b\n" "  -m, --message <msg>     提交主标题描述 (必填，简明扼要)"
   printf "%b\n" "  -d, --detail, --body    提交正文详细说明 (可选，支持多行文本)"
   printf "%b\n" "  -l, --item <text>       提交详细条目列表 (可选，可多次传入，自动组装为列表)"
-  printf "%b\n" "  -c, --close, --closes   指定关闭的 Issue (可选，如 12 或 '#12'，自动生成 Closes #12)"
-  printf "%b\n" "  -i, --issue, --ref      指定关联引用的 Issue (可选，如 12 或 '#12'，自动生成 Refs #12)"
+  printf "%b\n" "  -c, --close, --closes   指定关闭的 Issue (可选，支持单个如 -c 12，多个如 -c 12 -c 13 或 -c \"12, 13\")"
+  printf "%b\n" "  -i, --issue, --ref      指定关联引用的 Issue (可选，支持单个如 -i 12，多个如 -i 12 -i 13 或 -i \"12, 13\")"
   printf "%b\n" "  -b, --breaking          标记为破坏性更新 (Breaking Changes，自动追加 !)"
   printf "%b\n" "  -a, --all               自动暂存全部变动 (⚠️ [高危/不推荐] 相当于 git add -A，严禁日常或 Agent 自动化使用)"
+  printf "%b\n" "  -n, --dry-run           演练空跑模式 (仅预览拟生成的提交信息与暂存区，不实际执行提交与推送)"
   printf "%b\n" "  -p, --push              提交成功后自动推送到当前分支远程仓库"
   printf "%b\n" "  -y, --yes               跳过确认提示，直接执行提交"
   printf "%b\n" "  -h, --help              显示帮助信息"
@@ -104,8 +111,19 @@ show_help() {
   printf "%b\n" "  bash scripts/commit.sh"
   printf "%b\n" ""
   printf "%b\n" "非交互式调用示例 (必须先精准 git add，严禁使用 git add .):"
+  printf "%b\n" "  # 1. 基础提交与推送"
   printf "%b\n" "  git add pom.xml scripts/commit.sh"
-  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -l \"新增服务\" -c 12 -p -y"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -l \"新增服务\" -p -y"
+  printf "%b\n" ""
+  printf "%b\n" "  # 2. 单 Issue 闭环示例"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"传输层分页契约解耦\" -c 10 -p -y"
+  printf "%b\n" ""
+  printf "%b\n" "  # 3. 多 Issue 关联与闭环示例 (支持逗号分隔或多次传参)"
+  printf "%b\n" "  bash scripts/commit.sh -t fix -s web -m \"修复链路追踪异常\" -c \"12, 13\" -i 14 -y"
+  printf "%b\n" "  bash scripts/commit.sh -t fix -s web -m \"修复链路追踪异常\" -c 12 -c 13 -i 14 -y"
+  printf "%b\n" ""
+  printf "%b\n" "  # 4. 空跑演练示例 (验证提交信息组装，不真正执行提交)"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"验证提交信息\" -c 10 -n"
 }
 
 while [ $# -gt 0 ]; do
@@ -146,6 +164,10 @@ while [ $# -gt 0 ]; do
       ;;
     -a|--all)
       CLI_STAGE_ALL=true
+      shift
+      ;;
+    -n|--dry-run)
+      CLI_DRY_RUN=true
       shift
       ;;
     -p|--push)
@@ -202,8 +224,12 @@ fi
 
 STATUS_OUTPUT=$(git status --porcelain)
 if [ -z "$STATUS_OUTPUT" ]; then
-  log_warn "当前工作区没有任何修改或未跟踪的文件，无需提交。"
-  exit 0
+  if [ "$CLI_DRY_RUN" = true ]; then
+    log_warn "【Dry Run 演练模式】当前工作区无任何修改，继续执行提交信息组装与预览演练。"
+  else
+    log_warn "当前工作区没有任何修改或未跟踪的文件，无需提交。"
+    exit 0
+  fi
 fi
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -278,8 +304,12 @@ fi
 
 # 二次确认暂存区是否有内容
 if git diff --cached --quiet; then
-  log_error "暂存区无任何可提交的内容，请先使用 'git add' 暂存改动或传入 '-a' 参数。"
-  exit 1
+  if [ "$CLI_DRY_RUN" = true ]; then
+    log_warn "【Dry Run 演练模式】检测到暂存区当前无内容，继续执行提交信息组装与预览演练。"
+  else
+    log_error "暂存区无任何可提交的内容，请先使用 'git add' 暂存改动或传入 '-a' 参数。"
+    exit 1
+  fi
 fi
 
 # ==============================================================================
@@ -402,11 +432,11 @@ else
   done
 
   # 收集待关联或闭环的 Issue 编号 (可选)
-  printf "\n%b请输入待关联或关闭的 GitHub Issue 编号 (可选，如 12 或 #12，直接回车跳过): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+  printf "\n%b请输入待关联或关闭的 GitHub Issue 编号 (可选，支持单个如 12 或多个如 '12, 13'，直接回车跳过): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
   read -r INTERACTIVE_ISSUE
   INTERACTIVE_ISSUE=$(echo "$INTERACTIVE_ISSUE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   if [ -n "$INTERACTIVE_ISSUE" ]; then
-    printf "%b该提交是否旨在解决并自动闭环该 Issue (Closes #%s)? [Y/n]: %b" "${COLOR_BOLD}" "$INTERACTIVE_ISSUE" "${COLOR_RESET}"
+    printf "%b该提交是否旨在解决并自动闭环所选 Issue? [Y/n]: %b" "${COLOR_BOLD}" "${COLOR_RESET}"
     read -r IS_CLOSE_CHOICE
     IS_CLOSE_CHOICE=$(echo "$IS_CLOSE_CHOICE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     case "$IS_CLOSE_CHOICE" in
@@ -457,29 +487,10 @@ for item in "${INTERACTIVE_ITEMS[@]}"; do
   fi
 done
 
-# 拼装提交消息 Footer (规范化组装 Closes #N 与 Refs #N)
+# 拼装提交消息 Footer (规范化解构组装逐行 Closes #N 与 Refs #N，严格保障 GitHub 自动闭环)
 COMMIT_FOOTER=""
-for item in "${CLI_CLOSES[@]}" "${INTERACTIVE_CLOSES[@]}"; do
-  f_item=$(format_issue_ids "$item")
-  if [ -n "$f_item" ]; then
-    if [ -z "$COMMIT_FOOTER" ]; then
-      COMMIT_FOOTER="Closes ${f_item}"
-    else
-      COMMIT_FOOTER="${COMMIT_FOOTER}"$'\n'"Closes ${f_item}"
-    fi
-  fi
-done
-
-for item in "${CLI_REFS[@]}" "${INTERACTIVE_REFS[@]}"; do
-  f_item=$(format_issue_ids "$item")
-  if [ -n "$f_item" ]; then
-    if [ -z "$COMMIT_FOOTER" ]; then
-      COMMIT_FOOTER="Refs ${f_item}"
-    else
-      COMMIT_FOOTER="${COMMIT_FOOTER}"$'\n'"Refs ${f_item}"
-    fi
-  fi
-done
+append_issue_footers "Closes" "${CLI_CLOSES[@]}" "${INTERACTIVE_CLOSES[@]}"
+append_issue_footers "Refs" "${CLI_REFS[@]}" "${INTERACTIVE_REFS[@]}"
 
 # ==============================================================================
 # 5. 预览与确认
@@ -493,6 +504,12 @@ if [ -n "$COMMIT_FOOTER" ]; then
   printf "\n%b\n" "${COLOR_YELLOW}${COMMIT_FOOTER}${COLOR_RESET}"
 fi
 printf "%b\n\n" "${COLOR_BOLD}${COLOR_CYAN}------------------------------------------------------------${COLOR_RESET}"
+
+# 若处于 Dry Run 模式，直接安全退出，不执行真实提交与推送
+if [ "$CLI_DRY_RUN" = true ]; then
+  log_info "【Dry Run 演练模式】提交信息组装与格式校验完成，已安全跳过实际提交与远程推送。"
+  exit 0
+fi
 
 if [ "$AUTO_CONFIRM" = true ] || [ ! -t 0 ]; then
   log_info "已指定 -y 或处于非交互环境，跳过人工确认，直接执行提交。"
