@@ -26,7 +26,10 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import io.github.atengk.boot.sample.service.AsyncSampleService;
+import io.github.atengk.boot.sample.service.AsyncSampleService.AsyncExecutionResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -56,6 +59,9 @@ class SampleApplicationIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private AsyncSampleService asyncSampleService;
 
     @BeforeEach
     @AfterEach
@@ -408,5 +414,35 @@ class SampleApplicationIntegrationTest {
         assertThat(json).doesNotContain("updateBy");
         assertThat(json).doesNotContain("deleted");
         assertThat(json).doesNotContain("version");
+    }
+
+    @Test
+    @DisplayName("17. @Async 受管线程池上下文传播：异步执行无缝继承 MDC traceId 与 UserContext，数据库插入自动填充登录人而非 SYSTEM")
+    void shouldPropagateContextInAsyncMethodAndAuditCurrentUser() throws Exception {
+        String testUser = "async-login-admin";
+        String testTrace = "trace-async-99999";
+        UserContextHolder.set(testUser);
+        MDC.put("traceId", testTrace);
+
+        UserEntity user = new UserEntity();
+        user.setName("异步测试用户");
+        user.setAge(30);
+        user.setEmail("async_user@example.com");
+
+        CompletableFuture<AsyncExecutionResult> future = asyncSampleService.saveUserAsync(user);
+        AsyncExecutionResult executionResult = future.get(5, TimeUnit.SECONDS);
+
+        // 验证异步线程池命名符合默认前缀 ateng-async-
+        assertThat(executionResult.threadName()).startsWith("ateng-async-");
+
+        // 验证异步线程内部成功获取到父线程的 traceId 与 UserContext
+        assertThat(executionResult.traceId()).isEqualTo(testTrace);
+        assertThat(executionResult.userId()).isEqualTo(testUser);
+
+        // 验证持久层审计：在异步线程内插入的数据，createBy 与 updateBy 为当前登录人，而非 SYSTEM
+        UserEntity stored = userMapper.selectById(executionResult.entityId());
+        assertThat(stored).isNotNull();
+        assertThat(stored.getCreateBy()).isEqualTo(testUser);
+        assertThat(stored.getUpdateBy()).isEqualTo(testUser);
     }
 }

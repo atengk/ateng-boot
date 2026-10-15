@@ -32,6 +32,10 @@ _Avoid_: SessionContext, LocalUser, UserThreadLocal
 抓取当前线程链路追踪标识与用户身份快照并在异步线程中恢复的上下文装饰器。
 _Avoid_: ThreadLocalCopier, ContextPropagator
 
+**ContextCopyingTaskDecorator**:
+基于 Spring TaskDecorator 契约实现的上下文感知任务装饰器，内部直接委托 AsyncContext.wrap(runnable) 在异步任务执行前后抓取、还原并清理 MDC 链路追踪标识与用户身份上下文。
+_Avoid_: AsyncTaskDecorator, ThreadPoolDecorator, MDCDecorator
+
 **PageResult**:
 统一与底层持久层解耦的分页响应结果载体，仅包含分页核心要素与数据集，杜绝 ORM 内部属性泄露。
 _Avoid_: PageVO, PageDTO, PageData, TableDataInfo, PageResponse

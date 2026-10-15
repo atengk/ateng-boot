@@ -19,3 +19,11 @@ _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 **CorsConfiguration**:
 基于属性开关动态启闭与配置允许跨域源、HTTP 方法及请求头的 Web 安全规则。
 _Avoid_: CrossFilter, WebCorsConfig
+
+**AtengAsyncAutoConfiguration**:
+上下文感知受管异步线程池自动装配类，抢先于 Spring Boot 默认任务执行配置导出预装配 ContextCopyingTaskDecorator 的 ThreadPoolTaskExecutor（支持 CallerRunsPolicy 与优雅停机），并实现 AsyncConfigurer 为 Spring 异步体系统一提供调度与未捕获异常处理。
+_Avoid_: AsyncConfig, ThreadPoolConfiguration, AsyncThreadPoolAutoConfiguration
+
+**AsyncProperties**:
+异步线程池运行时增强配置属性，以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
+_Avoid_: ThreadPoolProperties, AsyncConfigProperties

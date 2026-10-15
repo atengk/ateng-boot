@@ -36,6 +36,13 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Spring Core (用于 TaskDecorator 接口契约，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

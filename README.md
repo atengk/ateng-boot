@@ -325,6 +325,39 @@ public Result<PageResult<UserVO>> page(PageQuery query) {
 }
 ```
 
+### 5.4 上下文感知受管异步线程池 (@Async & TaskDecorator)
+
+**场景痛点**：标准 `@Async` 异步方法脱离了当前请求的 Servlet 线程，导致 MDC 中的 `traceId` 链路丢失，且 `UserContextHolder` 中存储的当前登录用户信息无法传递至子线程，造成异步任务日志断链以及持久层自动审计回退为 `SYSTEM`。`ateng-boot-web` 自动导出装配了 `ContextCopyingTaskDecorator` 的受管线程池（`taskExecutor` / `applicationTaskExecutor`），配合 `@EnableAsync` 零感知流转上下文。
+
+**核心代码范式**：
+```java
+// 1. 在主配置类开启 Spring 异步支持
+@EnableAsync
+@SpringBootApplication
+public class Application { ... }
+
+// 2. 编写异步业务逻辑（入库实体自动获取调用方登录人标识）
+@Service
+@RequiredArgsConstructor
+public class AuditLogService {
+
+    private final UserMapper userMapper;
+
+    @Async
+    public CompletableFuture<Void> recordAuditAsync(UserEntity logEntity) {
+        // 自动继承调用方线程的 MDC traceId 与 UserContextHolder 登录人身份
+        userMapper.insert(logEntity);
+        return CompletableFuture.completedFuture(null);
+    }
+}
+```
+
+**控制台与数据库审计呈现**：
+```text
+2026-10-16 08:00:00.123 INFO  [ateng-async-1] [c563ed5e6d70430b9c0a9ab836985582] c.e.s.AuditLogService : 异步操作执行完成
+```
+- **数据库落地呈现**：入库实体的 `create_by` 与 `update_by` 字段自动落盘为父线程登录用户 `admin-user`（而非系统回退值 `SYSTEM`）。
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -340,6 +373,15 @@ ateng:
         header-name: "X-Trace-Id" # 链路追踪头名称（默认 X-Trace-Id）
       cors:
         enabled: false            # 是否开启通用跨域支持（默认 false）
+    async:
+      enabled: true               # 是否启用受管异步线程池（默认 true）
+      core-pool-size: 8           # 核心线程数（默认可用 CPU 核心数）
+      max-pool-size: 16           # 最大线程数（默认可用 CPU 核心数 * 2）
+      queue-capacity: 1000        # 阻塞队列容量（默认 1000）
+      keep-alive-seconds: 60      # 空闲线程存活时间（秒，默认 60）
+      thread-name-prefix: "ateng-async-" # 异步工作线程名前缀（默认 ateng-async-）
+      wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时等待任务执行完成（优雅停机，默认 true）
+      await-termination-seconds: 60 # 优雅停机等待超时时间（秒，默认 60）
     mybatis-plus:
       enabled: true               # 是否启用 MyBatis-Plus 增强配置（默认 true）
       audit:
