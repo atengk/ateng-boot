@@ -6,7 +6,7 @@
 
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot</artifactId>
-    <version>0.0.3-SNAPSHOT</version>
+    <version>0.0.3</version>
     <packaging>pom</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
