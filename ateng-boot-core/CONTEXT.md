@@ -43,3 +43,15 @@ _Avoid_: PageVO, PageDTO, PageData, TableDataInfo, PageResponse
 **PageQuery**:
 标准化分页查询参数基类，封装当前页码、单页容量与基础查询排序要素。
 _Avoid_: PageParam, PageReq, PageRequest
+
+**DesensitizeUtil**:
+全场景敏感数据动态掩码工具类，提供中文姓名、手机号、固话、身份证、邮箱、银行卡与密码等标准规则及底层通用 mask 算法。
+_Avoid_: MaskUtil, DataMaskUtil, MaskingUtil
+
+**CryptoUtil**:
+纯 JDK 原生对称加解密工具类，默认支持 AES/CBC/PKCS5Padding 与 AES/GCM/NoPadding，无 Bouncy Castle 重型依赖。
+_Avoid_: AesUtil, EncryptionUtil, EncryptUtil
+
+**TreeUtil**:
+通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
+_Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil

@@ -358,6 +358,43 @@ public class AuditLogService {
 ```
 - **数据库落地呈现**：入库实体的 `create_by` 与 `update_by` 字段自动落盘为父线程登录用户 `admin-user`（而非系统回退值 `SYSTEM`）。
 
+### 5.5 零依赖高内聚通用工具集 (Zero-Bloat Utilities)
+
+**场景痛点**：传统企业级项目往往盲目引入 `hutool-all`、`guava` 等几十兆外部巨型依赖，导致类路径膨胀、版本冲突以及“通用垃圾桶 (Junk Drawer)”模块乱象。`ateng-boot` 遵循 Zero-Bloat 原则与高内聚架构，100% 依托 JDK 17 与 Spring 基础组件能力，按运行时上下文就近收敛：
+
+#### 1. 核心底座工具 (`ateng-boot-core`)
+- **数据脱敏 (`DesensitizeUtil`)**：全场景极速动态掩码（手机号、身份证、银行卡、中文姓名、邮箱、固话、密码）：
+  ```java
+  DesensitizeUtil.mobilePhone("13812345678");   // "138****5678"
+  DesensitizeUtil.idCard("110101199003072345"); // "110101********2345"
+  DesensitizeUtil.chineseName("诸葛孔明");      // "诸**明"
+  DesensitizeUtil.password("secret123");        // "******"
+  ```
+- **纯 JDK 原生加解密 (`CryptoUtil`)**：支持 `AES/CBC/PKCS5Padding` 与带防篡改认证标签的 `AES/GCM/NoPadding`，内置安全随机 IV 与 Base64 编解码，彻底无 Bouncy Castle 外部依赖：
+  ```java
+  byte[] key = CryptoUtil.generateKey(256);
+  byte[] iv = CryptoUtil.generateGcmIv();
+  String cipherText = CryptoUtil.encryptGcm("敏感数据", key, iv);
+  String plainText = CryptoUtil.decryptGcm(cipherText, key, iv);
+  ```
+- **通用线性树装配 (`TreeUtil`)**：纯函数式抽象，依托哈希表两遍扫描以 $O(N)$ 线性时间复杂度组装任意嵌套父子树形结构，空安全且避免 NPE：
+  ```java
+  List<MenuNode> tree = TreeUtil.build(
+      list, 0L, MenuNode::getId, MenuNode::getParentId, MenuNode::setChildren
+  );
+  ```
+
+#### 2. Web 运行时工具 (`ateng-boot-web`)
+- **真实客户端 IP 提取 (`IpUtil`)**：精准穿透多级反向代理（`X-Forwarded-For`、`X-Real-IP` 等）提取首个有效公网 IP，自动规整 IPv6 本地环回（`0:0:0:0:0:0:0:1` / `::1` -> `127.0.0.1`）：
+  ```java
+  String clientIp = IpUtil.getClientIp(); // 自动从当前 Request 上下文提取
+  ```
+- **Servlet 上下文门面 (`ServletUtil`)**：基于 `RequestContextHolder` 静态提取当前 Request/Response，便捷读取 Header、Cookie，智能识别 JSON 与 AJAX 请求：
+  ```java
+  String token = ServletUtil.getHeader("Authorization");
+  boolean isJson = ServletUtil.isJsonRequest(ServletUtil.getRequest());
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -410,6 +447,7 @@ ateng:
   - [ADR-0008: 自动化发版闭环、多维变更日志与常青文档架构决策](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)
   - [ADR-0009: main 稳定发布与 dev 活跃开发双分支架构](./docs/adr/0009-dual-branch-workflow-main-release-and-dev-active.md)
   - [ADR-0010: 传输契约与持久层解耦与流式转换工具](./docs/adr/0010-transport-pagination-contract-decoupling.md)
+  - [ADR-0011: 零重型外部依赖与上下文就近内聚工具集](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)

@@ -27,3 +27,11 @@ _Avoid_: AsyncConfig, ThreadPoolConfiguration, AsyncThreadPoolAutoConfiguration
 **AsyncProperties**:
 异步线程池运行时增强配置属性，以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
 _Avoid_: ThreadPoolProperties, AsyncConfigProperties
+
+**IpUtil**:
+多级反向代理客户端真实 IP 提取工具，按序解析 X-Forwarded-For 首个有效 IP，并安全兼容本地环回与 IPv6 规整。
+_Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
+
+**ServletUtil**:
+Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别与文本写入。
+_Avoid_: WebUtil, HttpUtil, RequestUtil
