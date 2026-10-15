@@ -32,9 +32,11 @@ custom_bump_version() {
     if sed --version >/dev/null 2>&1; then
       # GNU sed (Linux / Windows Git Bash)
       sed -i -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
+      sed -i -E "s|(io\.github\.atengk:ateng-boot-(all|bom)):[^\"')]+|\1:${RAW_VERSION}|g" README.md
     else
       # BSD sed (macOS)
       sed -i '' -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
+      sed -i '' -E "s|(io\.github\.atengk:ateng-boot-(all|bom)):[^\"')]+|\1:${RAW_VERSION}|g" README.md
     fi
   fi
 

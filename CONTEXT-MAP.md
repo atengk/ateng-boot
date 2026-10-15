@@ -18,3 +18,7 @@
 - **MyBatis-Plus → Core**：MyBatis-Plus 模块依赖 Core 模块的 `CurrentUserProvider` SPI 与 `UserContextHolder`，在数据持久化自动填充时动态获取当前操作人。
 - **All → Core / Web / MyBatis-Plus**：All 模块为纯依赖聚合工程，向下游调用端透传三大核心 Starter。
 - **Samples → All**：Samples 工程作为下游消费端样例，验证所有模块组合后的开箱即用自动装配与端到端运行表现。
+
+## Architectural Decisions
+
+全生命周期系统级架构演进与关键权衡详见 [架构决策记录看板 (ADR)](./docs/adr/README.md)。

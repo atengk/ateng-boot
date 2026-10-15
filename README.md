@@ -69,6 +69,7 @@ flowchart TD
 
 适用于绝大多数单体应用或快速开发场景：
 
+**Maven (`pom.xml`)**:
 ```xml
 <dependencies>
     <!-- 一键引入全部核心底座与中间件增强 -->
@@ -87,10 +88,33 @@ flowchart TD
 </dependencies>
 ```
 
+**Gradle (Kotlin DSL - `build.gradle.kts`)**:
+```kotlin
+dependencies {
+    // 一键引入全部核心底座与中间件增强
+    implementation("io.github.atengk:ateng-boot-all:0.0.3")
+
+    // 按需引入实际业务使用的数据库驱动，例如 MySQL
+    runtimeOnly("com.mysql:mysql-connector-j")
+}
+```
+
+**Gradle (Groovy DSL - `build.gradle`)**:
+```groovy
+dependencies {
+    // 一键引入全部核心底座与中间件增强
+    implementation 'io.github.atengk:ateng-boot-all:0.0.3'
+
+    // 按需引入实际业务使用的数据库驱动，例如 MySQL
+    runtimeOnly 'com.mysql:mysql-connector-j'
+}
+```
+
 ### 方式二：BOM 按需精细化引入（推荐企业级最佳实践）
 
 适用于微服务节点或需要严格控制依赖传递的工程：
 
+**Maven (`pom.xml`)**:
 ```xml
 <dependencyManagement>
     <dependencies>
@@ -119,6 +143,41 @@ flowchart TD
     </dependency>
 </dependencies>
 ```
+
+**Gradle (Kotlin DSL - `build.gradle.kts`)**:
+```kotlin
+dependencies {
+    // 引入 ateng-boot 统一依赖物料清单
+    implementation(platform("io.github.atengk:ateng-boot-bom:0.0.3"))
+
+    // 仅按需引入 Web 与持久层（免配版本号）
+    implementation("io.github.atengk:ateng-boot-web")
+    implementation("io.github.atengk:ateng-boot-mybatis-plus")
+}
+```
+
+**Gradle (Groovy DSL - `build.gradle`)**:
+```groovy
+dependencies {
+    // 引入 ateng-boot 统一依赖物料清单
+    implementation platform('io.github.atengk:ateng-boot-bom:0.0.3')
+
+    // 仅按需引入 Web 与持久层（免配版本号）
+    implementation 'io.github.atengk:ateng-boot-web'
+    implementation 'io.github.atengk:ateng-boot-mybatis-plus'
+}
+```
+
+### 本地样例一键运行 (Demo Samples)
+
+想要在本地快速上手体验所有特性？可直接启动工程内置的自验 Demo 应用（自带 H2 内存库）：
+
+```bash
+# 快速启动样例工程服务
+mvn -pl ateng-boot-samples spring-boot:run
+```
+
+启动后即可访问演示 API，例如通过 `curl http://localhost:8080/users/1` 验证标准 `Result<T>` 响应契约与 `X-Trace-Id` 链路追踪表现。
 
 ---
 
