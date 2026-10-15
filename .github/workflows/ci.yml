@@ -81,9 +81,10 @@ jobs:
 
       - name: 综合决策是否需要执行耗时测试 (发版提交智能短路直通)
         id: decide
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || github.event.pull_request.title || '' }}
         run: |
-          MSG="${{ github.event.head_commit.message }}"
-          if [[ "$MSG" =~ ^chore\(release\): ]]; then
+          if [[ "$COMMIT_MSG" =~ ^chore\(release\): ]]; then
             echo "检测到当前提交为发版提交 (chore(release):)，自动短路跳过常规测试，由 Release 工作流全权闭环。"
             echo "code=false" >> "$GITHUB_OUTPUT"
           else

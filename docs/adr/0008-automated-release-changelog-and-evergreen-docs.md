@@ -43,9 +43,10 @@
 - **告别 SNAPSHOT 快照流困扰**：
   - 传统双态流（先设正式版打 Tag，再自增 `x.x.x-SNAPSHOT`）在现代开源托管（如 GitHub/Sonatype Central Portal）中带来了严重的认知困扰（主干代码与最新发版号不一致）与 CI 资源浪费（主干 push 连续触发两次冗余构建）；
   - 现代主流开源库（如 Spring Boot、MyBatis-Plus、Vite 等）普遍采用**单一正式版本流（Single Concrete Version Flow）**：主干始终停留在当前最新发布的正式版本（如 `0.0.3`），只有在下一次真正发版时才递增为新版本，全流程只产生 1 个干净的发版提交；
-- **发版提交注入 `[skip ci]` 彻底降噪**：
-  - 发版脚本创建的版本变更提交（`pom.xml` 与 `README.md`）自动附带 `[skip ci]` 标记（例如 `chore(release): bump version to v0.0.3 [skip ci]`）；
-  - GitHub Actions 识别到 `[skip ci]` 后，直接忽略常规 `Java CI` 流水线，发版全过程仅由标签推送（Tag Push）触发的 `Release` 独立发版工作流全权接管，杜绝双 CI 并发冲突与运行排队；
+- **发版提交智能短路直通 (CI Smart Short-Circuiting)**：
+  - **平台机制防御**：实测发现 GitHub Actions 全局规则规定，若某次推送包含 `[skip ci]` 标记，其底层会无差别跳过该次推送所触发的所有 Workflow Run（包括基于 `on: push: tags` 触发的 `Release` 独立发版工作流），导致标签推送后远端流水线被误杀；
+  - **内置网关解耦**：发版提交恢复为干净纯粹的规范格式（`chore(release): bump version to vX.Y.Z`，不挂载 `[skip ci]` 标记）；在常规 `ci.yml` 的变更探测网关中内置智能判定：一旦识别到 `chore(release):` 提交，自动将代码构建状态标记为短路直通（秒级盖戳放行并直出结构化报告），跳过耗时的矩阵测试；
+  - **收益**：彻底消除双 CI 冗余排队运行，同时 100% 保障 Tag 推送无缝唤醒 `Release` 流水线完成 Central 分发；
 - **预发布需求对齐 SemVer 标准**：
   - 若需要发布公开尝鲜或测试构件，统一发布符合语义化规范的预发布版本（如 `0.0.4-rc.1` 或 `0.0.4-beta.1`），Central Portal 官方 100% 允许此类不可变构件，GitHub Releases 会自动标注 `🧪 Pre-release`，杜绝快照版本在公共仓库中的不可控覆盖与安全隐患；
 - **全链路 SNAPSHOT 防呆强熔断**：

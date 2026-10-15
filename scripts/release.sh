@@ -29,15 +29,12 @@ custom_bump_version() {
   # 2. 自动同步更新 README.md 中的接入依赖版本 (基于 sed -i 直接原地修改，零临时文件，零注释污染)
   if [ -f "README.md" ]; then
     log_info "正在直接原地同步更新 README.md 接入依赖版本至 $RAW_VERSION..."
-    if sed --version >/dev/null 2>&1; then
-      # GNU sed (Linux / Windows Git Bash)
-      sed -i -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
-      sed -i -E "s#(io\.github\.atengk:ateng-boot-(all|bom)):[0-9A-Za-z.-]+#\1:${RAW_VERSION}#g" README.md
-    else
-      # BSD sed (macOS)
-      sed -i '' -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
-      sed -i '' -E "s#(io\.github\.atengk:ateng-boot-(all|bom)):[0-9A-Za-z.-]+#\1:${RAW_VERSION}#g" README.md
-    fi
+    local SED_OPTS=(-i -E)
+    sed --version >/dev/null 2>&1 || SED_OPTS=(-i '' -E)
+
+    # 统一使用 '#' 作为分隔符，彻底规避 XML 斜杠与正则管道符 '|' 的解析冲突
+    sed "${SED_OPTS[@]}" "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s#<version>[^<]+</version>#<version>${RAW_VERSION}</version>#}" README.md
+    sed "${SED_OPTS[@]}" "s#(io\.github\.atengk:ateng-boot-(all|bom)):[0-9A-Za-z.-]+#\1:${RAW_VERSION}#g" README.md
   fi
 
   return 0
