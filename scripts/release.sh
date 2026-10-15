@@ -364,7 +364,7 @@ if [ -n "$HOOK_CHANGES" ]; then
   log_info "检测到扩展钩子更新了工程 POM 与接入文档，正在精准暂存并创建版本提交..."
   git add pom.xml */pom.xml
   [ -f "README.md" ] && git add README.md
-  git commit -m "chore(release): bump version to $TARGET_VERSION [skip ci]"
+  git commit -m "chore(release): bump version to $TARGET_VERSION"
   NEED_PUSH_BRANCH=true
 elif [ "$AHEAD_COUNT" -gt 0 ]; then
   log_info "检测到本地有 $AHEAD_COUNT 个超前提交，将随发版标签一同推送到远端..."

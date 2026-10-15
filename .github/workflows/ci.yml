@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code_changed: ${{ steps.filter.outputs.code }}
+      code_changed: ${{ steps.decide.outputs.code }}
     steps:
       - name: 检出源码
         uses: actions/checkout@v7
@@ -78,6 +78,17 @@ jobs:
           filters: |
             code:
               - '!(*.md|docs/**|.gitignore|.editorconfig|LICENSE)'
+
+      - name: 综合决策是否需要执行耗时测试 (发版提交智能短路直通)
+        id: decide
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          if [[ "$MSG" =~ ^chore\(release\): ]]; then
+            echo "检测到当前提交为发版提交 (chore(release):)，自动短路跳过常规测试，由 Release 工作流全权闭环。"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=${{ steps.filter.outputs.code }}" >> "$GITHUB_OUTPUT"
+          fi
 
   # ----------------------------------------------------------------------------
   # Job 3: 跨 LTS 版本自动化单元测试矩阵 (Maven)
@@ -155,7 +166,7 @@ jobs:
             fi
             echo "| **变更路径探测** | ${{ needs.detect-changes.result == 'success' && '✅ 通过' || '❌ 异常' }} | 区分文档短路与核心代码构建 |"
             if [ "${{ needs.detect-changes.outputs.code_changed }}" = "false" ]; then
-              echo "| **单元测试矩阵** | ⚡ 短路直通 | 仅涉及文档改动，自动跳过耗时测试并放行 |"
+              echo "| **单元测试矩阵** | ⚡ 短路直通 | 纯文档改动或发版提交 (chore(release):)，自动跳过耗时测试并放行 |"
             else
               echo "| **Maven 单元测试** | ${{ needs.test.result == 'success' && '✅ 通过' || '❌ 失败' }} | 跨 LTS 版本回归验证 (JDK 17 & 21) |"
             fi
