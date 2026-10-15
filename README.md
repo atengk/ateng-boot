@@ -241,7 +241,7 @@ ateng:
   ```bash
   bash scripts/release.sh
   ```
-  内置多模块编译快速自检、SemVer 版本推导与单主干（`main`）强防呆校验；自动全量设置工程 POM 正式版，通过原生 `sed -i` 原地直接流式同步更新 `README.md` 接入版本；创建附注 Git Tag 并原子推送以触发 GitHub Actions 流水线；发版成功后自动询问将主干平滑推进至下一代开发快照（`SNAPSHOT`）。
+  内置多模块编译快速自检、SemVer 版本推导与单主干（`main`）强防呆校验；自动全量设置工程 POM 正式版，通过原生 `sed -i` 原地直接流式同步更新 `README.md` 接入版本；创建附注 Git Tag 并原子推送，注入 `[skip ci]` 彻底消除重复构建与快照冗余。
 - **激活本地提交守门钩子**：
   ```bash
   git config core.hooksPath .githooks

@@ -38,15 +38,16 @@
   相比传统 POSIX `awk` 必须经由 `> README.md.tmp && mv README.md.tmp README.md` 临时文件中转，`sed -i` 通过 `n;`（读取并前进至下一行）在底层实现直接原地原子修改，**零临时文件、零外部依赖、零残留风险**；
 - **发版原子性保证**：发版时由脚本将更新后的 POM 与 `README.md` 一并精准安全暂存，随发版 Tag 一次性原子推送，保证发布的 Git 标签与文档说明绝对同步。
 
-### 3. 主干双态流与后置快照自动推进 (Trunk-Based Release with Post-Snapshot Bump)
+### 3. 主干单一版本流与发版提交 `[skip ci]` 降噪 (Single Concrete Version & `[skip ci]` De-noising)
 
-- **前置正式版设值**：发版时 `scripts/release.sh` 仅需调度 Maven 原生命令设置所有 POM 为目标发版版本：
-  ```bash
-  mvn versions:set -DnewVersion="$RAW_VERSION" -DgenerateBackupPoms=false
-  ```
-  并以精准路径安全暂存 `git add pom.xml */pom.xml`，创建发版提交并创建附注标签；
-- **后置快照自动推进**：标签原子推送成功后，脚本自动计算下一个 Patch 的开发快照版本（如 `0.0.3` 对应下一快照为 `0.0.4-SNAPSHOT`），交互式（或在 `-y` 下自动）将主干版本推进至下一开发快照并推送到远程主干；
-- **收益**：发布标签永远是不可变的正式版本（如 `0.0.3`），而主干主分支永远处于健康的开发快照态（`SNAPSHOT`），彻底杜绝本地构建与正式发布制品的命名冲突。
+- **告别 SNAPSHOT 快照流困扰**：
+  - 传统双态流（先设正式版打 Tag，再自增 `x.x.x-SNAPSHOT`）在现代开源托管（如 GitHub/Sonatype Central Portal）中带来了严重的认知困扰（主干代码与最新发版号不一致）与 CI 资源浪费（主干 push 连续触发两次冗余构建）；
+  - 现代主流开源库（如 Spring Boot、MyBatis-Plus、Vite 等）普遍采用**单一正式版本流（Single Concrete Version Flow）**：主干始终停留在当前最新发布的正式版本（如 `0.0.3`），只有在下一次真正发版时才递增为新版本，全流程只产生 1 个干净的发版提交；
+- **发版提交注入 `[skip ci]` 彻底降噪**：
+  - 发版脚本创建的版本变更提交（`pom.xml` 与 `README.md`）自动附带 `[skip ci]` 标记（例如 `chore(release): bump version to v0.0.3 [skip ci]`）；
+  - GitHub Actions 识别到 `[skip ci]` 后，直接忽略常规 `Java CI` 流水线，发版全过程仅由标签推送（Tag Push）触发的 `Release` 独立发版工作流全权接管，杜绝双 CI 并发冲突与运行排队；
+- **预发布需求对齐 SemVer 标准**：
+  - 若需要发布公开尝鲜或测试构件，统一发布符合语义化规范的预发布版本（如 `0.0.4-rc.1` 或 `0.0.4-beta.1`），Central Portal 官方 100% 允许此类不可变构件，GitHub Releases 会自动标注 `🧪 Pre-release`，杜绝快照版本在公共仓库中的不可控覆盖与安全隐患。
 
 ### 4. 主干发布铁律与双端分支防呆治理 (Trunk-Based Release & Two-Ended Branch Guards)
 

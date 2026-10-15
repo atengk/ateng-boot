@@ -354,7 +354,7 @@ if [ -n "$HOOK_CHANGES" ]; then
   log_info "检测到扩展钩子更新了工程 POM 与接入文档，正在精准暂存并创建版本提交..."
   git add pom.xml */pom.xml
   [ -f "README.md" ] && git add README.md
-  git commit -m "chore(release): bump version to $TARGET_VERSION"
+  git commit -m "chore(release): bump version to $TARGET_VERSION [skip ci]"
   NEED_PUSH_BRANCH=true
 elif [ "$AHEAD_COUNT" -gt 0 ]; then
   log_info "检测到本地有 $AHEAD_COUNT 个超前提交，将随发版标签一同推送到远端..."
@@ -389,51 +389,6 @@ else
     exit 1
   fi
   log_success "版本标签推送成功！"
-fi
-
-# ==============================================================================
-# 6. 后置主干快照版本推进 (Post-release Trunk Snapshot Bump)
-# ==============================================================================
-if [[ "$RAW_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-  MAJOR="${BASH_REMATCH[1]}"
-  MINOR="${BASH_REMATCH[2]}"
-  PATCH="${BASH_REMATCH[3]}"
-  NEXT_PATCH_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
-  NEXT_SNAPSHOT_VERSION="${NEXT_PATCH_VERSION}-SNAPSHOT"
-
-  printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}------------------- 主干开发迭代推进 -------------------${COLOR_RESET}"
-  printf "  刚刚发布的正式版本: %s\n" "$TARGET_VERSION"
-  printf "  拟推进的开发快照  : %b%s%b\n" "${COLOR_BOLD}${COLOR_GREEN}" "$NEXT_SNAPSHOT_VERSION" "${COLOR_RESET}"
-  printf "%b\n" "${COLOR_BOLD}${COLOR_CYAN}--------------------------------------------------------${COLOR_RESET}"
-
-  DO_SNAPSHOT=false
-  if [ "$AUTO_CONFIRM" = true ] || [ ! -t 0 ]; then
-    DO_SNAPSHOT=true
-  else
-    printf "%b是否立即将主干分支版本推进至下一开发快照 [%s]? [Y/n]: %b" "${COLOR_BOLD}" "$NEXT_SNAPSHOT_VERSION" "${COLOR_RESET}"
-    read -r CONFIRM_SNAPSHOT
-    CONFIRM_SNAPSHOT=$(echo "$CONFIRM_SNAPSHOT" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    case "$CONFIRM_SNAPSHOT" in
-      [nN][oO]|[nN])
-        DO_SNAPSHOT=false
-        ;;
-      *)
-        DO_SNAPSHOT=true
-        ;;
-    esac
-  fi
-
-  if [ "$DO_SNAPSHOT" = true ]; then
-    log_info "正在将工程版本推进至下一开发快照 ($NEXT_SNAPSHOT_VERSION)..."
-    mvn versions:set -DnewVersion="$NEXT_SNAPSHOT_VERSION" -DgenerateBackupPoms=false
-    git add pom.xml */pom.xml
-    git commit -m "chore(build): prepare for next development iteration $NEXT_SNAPSHOT_VERSION"
-    log_info "正在推送主干快照提交至 origin/$CURRENT_BRANCH..."
-    git push origin "$CURRENT_BRANCH"
-    log_success "主干已平滑切换至下一开发态: $NEXT_SNAPSHOT_VERSION"
-  else
-    log_info "跳过主干版本推进，主干保持在当前版本。"
-  fi
 fi
 
 # 获取远端仓库地址生成 GitHub Release 网页直达链接

@@ -121,7 +121,7 @@ bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 链路追踪能力"
 3. **空安全与防御断言**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过 `BusinessAssert.notNull` 前置拦截；`BaseEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
 4. **日志与脱敏**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志，严禁在正式代码中使用 `System.out.println` 或裸 `e.printStackTrace()`；全局异常处理对未知根异常强制生产脱敏（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 5. **部署隔离与 Central 解耦**：非分发模块标配声明 `<maven.deploy.skip>true</maven.deploy.skip>`，且根发布插件协同配置 `<excludeArtifacts>` 排除；发布插件使用 `<waitUntil>validated</waitUntil>` 极速异步解耦（参见 [ADR-0007](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)）。
-6. **文档自驱与主干双态**：文档接入依赖坚持展示纯净具体版本（如 `0.0.2`）供开发者一键复制即用；发版由 `scripts/release.sh` 内置原生 `sed -i` 原地直接流式修改同步更新文档与 POM，并在 Tag 推送后自动将主干平滑推进至下一开发快照（`SNAPSHOT`）（参见 [ADR-0008](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)）。
+6. **文档自驱与单一版本流**：文档接入依赖坚持展示纯净具体版本（如 `0.0.3`）供开发者一键复制即用；发版由 `scripts/release.sh` 内置原生 `sed -i` 原地直接流式修改同步更新文档与 POM，采用单一正式版本流并注入 `[skip ci]` 杜绝冗余构建（参见 [ADR-0008](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)）。
 7. **统一注释规范**：新建源码头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`，首段直接陈述业务或技术职责。
 
 ---
