@@ -47,7 +47,9 @@
   - 发版脚本创建的版本变更提交（`pom.xml` 与 `README.md`）自动附带 `[skip ci]` 标记（例如 `chore(release): bump version to v0.0.3 [skip ci]`）；
   - GitHub Actions 识别到 `[skip ci]` 后，直接忽略常规 `Java CI` 流水线，发版全过程仅由标签推送（Tag Push）触发的 `Release` 独立发版工作流全权接管，杜绝双 CI 并发冲突与运行排队；
 - **预发布需求对齐 SemVer 标准**：
-  - 若需要发布公开尝鲜或测试构件，统一发布符合语义化规范的预发布版本（如 `0.0.4-rc.1` 或 `0.0.4-beta.1`），Central Portal 官方 100% 允许此类不可变构件，GitHub Releases 会自动标注 `🧪 Pre-release`，杜绝快照版本在公共仓库中的不可控覆盖与安全隐患。
+  - 若需要发布公开尝鲜或测试构件，统一发布符合语义化规范的预发布版本（如 `0.0.4-rc.1` 或 `0.0.4-beta.1`），Central Portal 官方 100% 允许此类不可变构件，GitHub Releases 会自动标注 `🧪 Pre-release`，杜绝快照版本在公共仓库中的不可控覆盖与安全隐患；
+- **全链路 SNAPSHOT 防呆强熔断**：
+  - 在本地 `scripts/release.sh` 与 GitHub Actions `.github/workflows/release.yml` 的前置校验中，部署针对包含 `SNAPSHOT` 字符的强规则拦截；一旦触发立即安全熔断退出，阻断误操作并将反馈压缩在 0 秒内。
 
 ### 4. 主干发布铁律与双端分支防呆治理 (Trunk-Based Release & Two-Ended Branch Guards)
 

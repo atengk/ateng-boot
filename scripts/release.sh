@@ -284,6 +284,14 @@ if ! echo "$TARGET_VERSION" | grep -Eq "$SEMVER_REGEX"; then
   log_error "目标版本号 [$TARGET_VERSION] 不符合语义化版本规范！必须形如 v1.0.0 或 v1.0.0-rc.1"
   exit 1
 fi
+
+# 拦截非法 SNAPSHOT 版本 (Sonatype Central Portal 官方铁律：严禁发布快照版本)
+if echo "$TARGET_VERSION" | grep -Eiq "snapshot"; then
+  log_error "目标版本号 [$TARGET_VERSION] 包含非法 SNAPSHOT 标识！"
+  log_error "Maven Central (Sonatype Central Portal) 官方禁止发布任何快照版本。"
+  log_info "提示: 若需对外发布尝鲜/测试构件，请使用 SemVer 语义化预发版本，例如: v${V_MAJOR}.${V_MINOR}.$((V_PATCH + 1))-rc.1 或 -beta.1"
+  exit 1
+fi
 log_success "目标发版版本号校验合规: $TARGET_VERSION"
 
 # 校验本地及远端是否已存在同名 Tag

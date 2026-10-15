@@ -62,6 +62,11 @@ jobs:
             exit 1
           fi
 
+          if [[ "$INPUT_VERSION" =~ [sS][nN][aA][pP][sS][hH][oO][tT] ]]; then
+            echo "::error::非法版本！Sonatype Central Portal 禁止发布 SNAPSHOT 快照版本。若需预发布请使用语义化版本（如 -rc.1 或 -beta.1）。"
+            exit 1
+          fi
+
           if git rev-parse "$INPUT_VERSION" >/dev/null 2>&1; then
             echo "::error::标签 $INPUT_VERSION 在远端仓库已存在，禁止重复覆盖！"
             exit 1
@@ -114,6 +119,11 @@ jobs:
             TAG_NAME="${{ needs.prepare-tag.outputs.tag_name }}"
           else
             TAG_NAME="${GITHUB_REF#refs/tags/}"
+          fi
+
+          if [[ "$TAG_NAME" =~ [sS][nN][aA][pP][sS][hH][oO][tT] ]]; then
+            echo "::error::安全熔断！Sonatype Central Portal 禁止发布带有 SNAPSHOT 的快照构件。请使用正式版或语义化预发布版本（如 -rc.1）。"
+            exit 1
           fi
 
           RAW_VERSION="${TAG_NAME#v}"

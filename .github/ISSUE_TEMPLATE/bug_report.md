@@ -28,4 +28,4 @@ assignees: ""
 - **JDK 版本**: [例如 JDK 17, JDK 21]
 - **Spring Boot 版本**: [例如 3.3.13]
 - **MyBatis-Plus 版本**: [例如 3.5.17]
-- **ateng-boot 版本**: [例如 0.0.1-SNAPSHOT]
+- **ateng-boot 版本**: [例如 0.0.3 或 0.0.4-rc.1]
