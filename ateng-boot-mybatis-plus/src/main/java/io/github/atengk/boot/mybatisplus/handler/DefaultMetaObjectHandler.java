@@ -55,8 +55,13 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
         LocalDateTime now = LocalDateTime.now();
         String operator = resolveCurrentUser();
 
-        fillPropertyIfNull(FIELD_UPDATE_TIME, now, metaObject);
-        fillPropertyIfNull(FIELD_UPDATE_BY, operator, metaObject);
+        // 更新时始终刷新修改时间与修改人，不受实体原有旧时间阻碍
+        if (metaObject != null && metaObject.hasSetter(FIELD_UPDATE_TIME)) {
+            setFieldValByName(FIELD_UPDATE_TIME, now, metaObject);
+        }
+        if (metaObject != null && metaObject.hasSetter(FIELD_UPDATE_BY)) {
+            setFieldValByName(FIELD_UPDATE_BY, operator, metaObject);
+        }
     }
 
     /**

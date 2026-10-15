@@ -123,4 +123,22 @@ class DefaultMetaObjectHandlerTest {
         assertNull(order.getCreateTime());
         assertNull(order.getCreateBy());
     }
+
+    @Test
+    @DisplayName("更新填充：即使实体已包含旧的 updateTime 与 updateBy，更新时依然强制刷新为当前值")
+    void shouldOverwriteExistingUpdateTimeOnUpdate() {
+        UserContextHolder.set("new-modifier");
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        OrderEntity order = new OrderEntity();
+        LocalDateTime oldTime = LocalDateTime.of(2019, 1, 1, 0, 0, 0);
+        order.setUpdateTime(oldTime);
+        order.setUpdateBy("old-modifier");
+        MetaObject metaObject = SystemMetaObject.forObject(order);
+
+        handler.updateFill(metaObject);
+
+        assertNotEquals(oldTime, order.getUpdateTime());
+        assertEquals("new-modifier", order.getUpdateBy());
+    }
 }
