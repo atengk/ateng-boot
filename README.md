@@ -216,23 +216,64 @@ public class UserController {
 }
 ```
 
-### 5.2 通用持久化实体
+### 5.2 持久层阶梯式实体体系 (Tiered Entity Hierarchy)
 
-```java
-@Data
-@EqualsAndHashCode(callSuper = true)
-@TableName("sys_user")
-public class User extends BaseEntity {
+**场景痛点**：传统单一 `BaseEntity` 强行绑定乐观锁版本号与逻辑删除，导致关联映射表（如 `user_role`）、流水日志表等物理表在缺失 `deleted` 或 `version` 列时频繁触发 SQL 列缺失异常。`ateng-boot` 提供解耦的五级阶梯体系，按需继承：
 
-    private String username;
-    private String email;
+```mermaid
+classDiagram
+    direction TB
+    class BaseGenericEntity["BaseGenericEntity&lt;ID&gt;<br/>(泛型主键，支持异构主键)"]
+    class BaseIdEntity["BaseIdEntity<br/>(雪花 Long id，适用于关联/流水轻量表)"]
+    class BaseTimeEntity["BaseTimeEntity<br/>(追加 createTime / updateTime 审计)"]
+    class BaseEntity["BaseEntity<br/>(追加 createBy / updateBy 审计，覆盖 80% 常规表)"]
+    class BaseFullEntity["BaseFullEntity<br/>(追加 version 乐观锁与 @JsonIgnore deleted 软删除)"]
 
-    @Version
-    private Integer version; // 自动参与乐观锁 CAS 防护
-}
+    BaseGenericEntity <|-- BaseIdEntity
+    BaseIdEntity <|-- BaseTimeEntity
+    BaseTimeEntity <|-- BaseEntity
+    BaseEntity <|-- BaseFullEntity
 ```
 
-继承 `BaseEntity` 自动获得雪花 ID、`createTime`、`updateTime`、`createBy`、`updateBy` 与 `@JsonIgnore` 逻辑删除。
+#### 范式一：核心业务流转实体（全要素受管，继承 `BaseFullEntity`）
+```java
+@Getter
+@Setter
+@ToString(callSuper = true)
+@TableName("sys_user")
+public class UserEntity extends BaseFullEntity {
+    private String name;
+    private Integer age;
+    private String email;
+}
+```
+- **开箱特性**：拥有雪花 `id`、时间与操作人自动填充、`version` CAS 乐观锁防并发覆盖，以及 `@TableLogic @JsonIgnore` 逻辑删除（对外 JSON 自动忽略脱敏，Mapper 查询自动附加 `WHERE deleted = 0`）。
+
+#### 范式二：常规物理删除业务实体（推荐默认，继承 `BaseEntity`）
+```java
+@Getter
+@Setter
+@ToString(callSuper = true)
+@TableName("biz_article")
+public class ArticleEntity extends BaseEntity {
+    private String title;
+    private String content;
+}
+```
+- **开箱特性**：拥有雪花 `id`、创建/修改时间与操作人自动填充，执行真实物理删除，无乐观锁或软删除开销。
+
+#### 范式三：轻量关联或流水日志实体（极简零冗余，继承 `BaseIdEntity`）
+```java
+@Getter
+@Setter
+@ToString(callSuper = true)
+@TableName("sys_user_role")
+public class UserRoleEntity extends BaseIdEntity {
+    private Long userId;
+    private Long roleId;
+}
+```
+- **开箱特性**：仅保留雪花 `id`，底层执行真正的物理增删改查，绝不向数据库抛出冗余列缺失的 SQL 语法异常。
 
 ---
 
