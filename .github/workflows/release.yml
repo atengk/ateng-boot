@@ -223,6 +223,11 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
+      - name: 锁定 Maven 3.9.9 标准环境 (规避 3.10+ 本地元数据缺陷)
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: '3.9.9'
+
       - name: 发布构件至 Maven Central
         run: |
           mvn versions:set -DnewVersion=${{ needs.build-artifacts.outputs.raw_version }} -DgenerateBackupPoms=false
