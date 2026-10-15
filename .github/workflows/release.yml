@@ -144,6 +144,7 @@ jobs:
     name: 发布 GitHub Release
     runs-on: ubuntu-latest
     needs: [build-artifacts]
+    if: always() && needs.build-artifacts.result == 'success'
     timeout-minutes: 10
     permissions:
       contents: write
@@ -190,7 +191,7 @@ jobs:
     name: 发布至 Maven Central
     runs-on: ubuntu-latest
     needs: [build-artifacts]
-    if: vars.ENABLE_MAVEN_PUBLISH == 'true'
+    if: always() && needs.build-artifacts.result == 'success' && vars.ENABLE_MAVEN_PUBLISH == 'true'
     timeout-minutes: 20
     steps:
       - name: 检出源码
