@@ -126,9 +126,11 @@ bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 链路追踪能力"
 
 ---
 
-## 6. Pull Request 流程
+## 6. 分支模型与贡献流程 (Branching & Workflow)
 
-1. **关联 Issue**：提交 PR 前请确保存在对应追踪的 GitHub Issue，并在 PR 正文中标注（如 `Closes #10`）。
-2. **测试全覆盖**：所有新增特性或 Bug 修复均需在对应子模块编写单元测试，并在 `ateng-boot-samples` 落地集成验证；以 `mvn clean test` 100% 绿色通过为准入准出标准。
-3. **CI 终审绿灯**：提交 PR 后，GitHub Actions 会自动触发跨 Java 17 & 21 LTS 矩阵的自动化编译与测试。确保所有检查项通过。
-4. **审查合并**：维护团队完成 Code Review 后，通常采用 **Squash and merge** 合入主干。
+本项目采用经典的 **`main` + `dev` 双分支演进模型**（参见 [ADR-0009](./docs/adr/0009-dual-branch-workflow-main-release-and-dev-active.md)）：
+
+1. **开发主场**：日常功能扩展、新 Starter 引入与 Bug 修复统一在 `dev` 分支开展，严禁直接向 `main` 提交业务代码；
+2. **测试全覆盖**：所有新增特性或修复均需在对应子模块编写单元测试，并在 `ateng-boot-samples` 落地集成验证；以 `mvn clean test` 100% 绿色通过为准入准出标准；
+3. **CI 持续守护**：推送至 `origin/dev` 后，GitHub Actions 会自动触发跨 Java 17 & 21 LTS 矩阵的自动化编译与测试，实时把关代码质量；
+4. **阶段合并与发版**：阶段性功能积累完备后，将 `dev` 合并至 `main` 主干，并严格在 `main` 执行 `bash scripts/release.sh` 完成全自动发版与 Central 分发。

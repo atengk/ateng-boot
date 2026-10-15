@@ -15,7 +15,8 @@
 | **0005** | 基于 Jackson Customizer 注入全局序列化 | `Accepted` | 统一通过 `Jackson2ObjectMapperBuilderCustomizer` 注入雪花 Long 转 String 与时间格式化，严禁覆盖 `ObjectMapper` | `ateng-boot-web` | [查看](./0005-jackson-customizer-over-objectmapper-override.md) |
 | **0006** | 技术依赖基线锁定与安全升级策略 | `Accepted` | 字节码锁定 JDK 17，Spring Boot 锁定 3.3.13，MyBatis-Plus 锁定 3.5.17，全局屏蔽破坏性大版本 | 全工程 | [查看](./0006-dependency-baseline-and-upgrade-strategy.md) |
 | **0007** | Maven Central 官方发布解耦与轻量极速 CI | `Accepted` | 非分发模块 `<maven.deploy.skip>true</maven.deploy.skip>`，异步校验 `<waitUntil>validated</waitUntil>` 极速解耦 | 全工程 | [查看](./0007-maven-publishing-and-clean-ci-pipeline.md) |
-| **0008** | 自动化发版、单一版本流与常青文档决策 | `Accepted` | 彻底告别传统 SNAPSHOT 快照流，主干停留在最新稳定版；发版注入 `[skip ci]` 杜绝重复构建；全链路防呆强熔断 | 全工程 / Scripts | [查看](./0008-automated-release-changelog-and-evergreen-docs.md) |
+| **0008** | 自动化发版、单一版本流与常青文档决策 | `Accepted` | 彻底告别传统 SNAPSHOT 快照流，主干停留在最新稳定版；CI 智能短路放行；全链路防呆强熔断 | 全工程 / Scripts | [查看](./0008-automated-release-changelog-and-evergreen-docs.md) |
+| **0009** | main 稳定发布与 dev 活跃开发双分支架构 | `Accepted` | 解耦生产发布与日常编码，日常活跃开发收口于 `dev`，正式发版严格收口于只读受保护的 `main` | 全工程 / Git 协作 | [查看](./0009-dual-branch-workflow-main-release-and-dev-active.md) |
 
 ---
 
