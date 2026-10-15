@@ -24,8 +24,7 @@ body = """
 {% for contributor in github.contributors | filter(attribute="is_first_time", value=true) %}
 - 感谢 @{{ contributor.username }} 提交的首次贡献！
 {% endfor %}
-{% endif %}
-\n
+{% endif %}\n
 """
 trim = true
 
@@ -49,7 +48,7 @@ commit_parsers = [
   { message = "^ci", group = "👷 持续集成 (CI)" },
   { message = "^chore", group = "🧹 杂项维护 (Chore)" },
   { message = "^revert", group = "⏪ 代码回滚 (Revert)" },
-  { body = ".*", group = "💬 其他变更 (Other)" },
+  { body = ".*", group = "💼 其他变更 (Other)" },
 ]
 
 # 过滤与标签匹配规则

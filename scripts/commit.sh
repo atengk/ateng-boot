@@ -2,7 +2,8 @@
 # ==============================================================================
 # Conventional Commits 规范化提交助手 (支持交互式与非交互式/AI自动化调用)
 #
-# 引导开发者或自动化脚本按规范组装提交信息，提供变更预览、类型校验与一键推送。
+# 引导开发者或自动化脚本按规范组装提交信息，支持标题与多行列表详情 (Body)，
+# 提供变更预览、类型校验、列表组装与一键推送。
 #
 # @author Ateng
 # @since 2026-10-08
@@ -51,6 +52,8 @@ log_error() {
 CLI_TYPE=""
 CLI_SCOPE=""
 CLI_MSG=""
+CLI_BODY=""
+CLI_ITEMS=()
 CLI_BREAKING=false
 CLI_STAGE_ALL=false
 CLI_PUSH=false
@@ -63,19 +66,22 @@ show_help() {
   printf "%b\n" "选项说明 (支持交互向导与非交互式/AI自动化调用):"
   printf "%b\n" "  -t, --type <type>       提交类型 (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
   printf "%b\n" "  -s, --scope <scope>     可选影响范围 (如 core, cli, api)"
-  printf "%b\n" "  -m, --message <msg>     提交描述 (必填，简明扼要)"
+  printf "%b\n" "  -m, --message <msg>     提交主标题描述 (必填，简明扼要)"
+  printf "%b\n" "  -d, --detail, --body    提交正文详细说明 (可选，支持多行文本)"
+  printf "%b\n" "  -l, --item <text>       提交详细条目列表 (可选，可多次传入，自动组装为列表)"
   printf "%b\n" "  -b, --breaking          标记为破坏性更新 (Breaking Changes，自动追加 !)"
-  printf "%b\n" "  -a, --all               自动暂存全部变动 (注意: 相当于 git add -A，请谨慎使用)"
+  printf "%b\n" "  -a, --all               自动暂存全部变动 (⚠️ [高危/不推荐] 相当于 git add -A，严禁日常或 Agent 自动化使用)"
   printf "%b\n" "  -p, --push              提交成功后自动推送到当前分支远程仓库"
   printf "%b\n" "  -y, --yes               跳过确认提示，直接执行提交"
   printf "%b\n" "  -h, --help              显示帮助信息"
   printf "%b\n" ""
   printf "%b\n" "无参数运行示例 (交互向导模式):"
+  printf "%b\n" "  git add <file-path>"
   printf "%b\n" "  bash scripts/commit.sh"
   printf "%b\n" ""
-  printf "%b\n" "非交互式调用示例 (推荐先精准 git add，再调用提交助手):"
-  printf "%b\n" "  git add <file-path>"
-  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -p -y"
+  printf "%b\n" "非交互式调用示例 (必须先精准 git add，严禁使用 git add .):"
+  printf "%b\n" "  git add pom.xml scripts/commit.sh"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -l \"新增用户服务\" -l \"完善鉴权测试\" -p -y"
 }
 
 while [ $# -gt 0 ]; do
@@ -92,6 +98,14 @@ while [ $# -gt 0 ]; do
     -m|--message)
       CLI_MSG="$2"
       IS_NON_INTERACTIVE=true
+      shift 2
+      ;;
+    -d|--detail|--body)
+      CLI_BODY="$2"
+      shift 2
+      ;;
+    -l|--item)
+      CLI_ITEMS+=("$2")
       shift 2
       ;;
     -b|--breaking)
@@ -166,7 +180,7 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 # 3. 暂存区检查与智能暂存 (先确认变动再撰写信息)
 # ==============================================================================
 if [ "$CLI_STAGE_ALL" = true ]; then
-  log_info "正在自动暂存当前所有改动 (git add -A)..."
+  log_warn "正在自动暂存当前所有改动 (git add -A)... 警告: 本项目遵循精准暂存原则，严禁日常盲目全量暂存！"
   git add -A
 elif [ "$IS_NON_INTERACTIVE" = false ]; then
   printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}================================================================${COLOR_RESET}"
@@ -180,17 +194,20 @@ elif [ "$IS_NON_INTERACTIVE" = false ]; then
 
   if git diff --cached --quiet; then
     # 暂存区无内容，但工作区有改动
-    printf "%b当前暂存区 (Staged) 无内容。是否暂存当前所有改动 (git add -A)? [Y/n]: %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+    log_warn "当前暂存区 (Staged) 暂无已暂存文件！"
+    printf "%b⚠️  工程红线提示: 本项目遵循【精准路径暂存】原则，严禁盲目执行全量暂存。%b\n" "${COLOR_YELLOW}" "${COLOR_RESET}"
+    printf "   推荐做法：在终端先行执行 %bgit add <具体文件路径>%b 后再启动本向导。\n\n" "${COLOR_CYAN}" "${COLOR_RESET}"
+    printf "%b是否破例全量暂存当前所有改动 (git add -A)? [y/N]: %b" "${COLOR_BOLD}" "${COLOR_RESET}"
     read -r STAGE_ALL_CHOICE
     STAGE_ALL_CHOICE=$(echo "$STAGE_ALL_CHOICE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     case "$STAGE_ALL_CHOICE" in
-      [nN][oO]|[nN])
-        log_warn "暂存区为空且未暂存改动，终止提交。"
-        exit 0
+      [yY][eE][sS]|[yY])
+        log_warn "已执行全量暂存 (git add -A)。请在提交预览阶段仔细核实文件清单！"
+        git add -A
         ;;
       *)
-        log_info "正在暂存全部变动 (git add -A)..."
-        git add -A
+        log_info "已安全终止提交。请先使用 'git add <file>' 精准暂存目标文件。"
+        exit 0
         ;;
     esac
   else
@@ -218,9 +235,10 @@ if git diff --cached --quiet; then
 fi
 
 # ==============================================================================
-# 4. 收集与校验提交信息 (Type, Scope, Breaking, Subject)
+# 4. 收集与校验提交信息 (Type, Scope, Breaking, Subject, Body)
 # ==============================================================================
 VALID_TYPES="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)$"
+INTERACTIVE_ITEMS=()
 
 if [ "$IS_NON_INTERACTIVE" = true ]; then
   # 非交互式模式：校验传入参数
@@ -307,12 +325,30 @@ else
   # 收集提交描述
   SUBJECT=""
   while [ -z "$SUBJECT" ]; do
-    printf "%b请输入提交描述 Subject (必填，简要概括本次变动): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+    printf "%b请输入提交主标题 Subject (必填，简要概括本次变动): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
     read -r SUBJECT
     SUBJECT=$(echo "$SUBJECT" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -z "$SUBJECT" ]; then
-      log_warn "提交描述不能为空，请重新输入。"
+      log_warn "提交主标题不能为空，请重新输入。"
     fi
+  done
+
+  # 收集详细条目列表 (可选，按空行结束)
+  printf "\n%b请输入详细变更列表 Body (可选，按回车逐条输入，直接回车跳过/空行结束):%b\n" "${COLOR_BOLD}" "${COLOR_RESET}"
+  ITEM_INDEX=1
+  while true; do
+    printf "  %b[%d]%b 条目说明: " "${COLOR_CYAN}" "$ITEM_INDEX" "${COLOR_RESET}"
+    read -r ITEM_INPUT
+    ITEM_INPUT=$(echo "$ITEM_INPUT" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [ -z "$ITEM_INPUT" ]; then
+      break
+    fi
+    # 自动规整列表前缀
+    if ! echo "$ITEM_INPUT" | grep -Eq '^([-*+]|[0-9]+\.)'; then
+      ITEM_INPUT="- $ITEM_INPUT"
+    fi
+    INTERACTIVE_ITEMS+=("$ITEM_INPUT")
+    ITEM_INDEX=$((ITEM_INDEX + 1))
   done
 fi
 
@@ -323,11 +359,44 @@ else
   COMMIT_HEADER="${TYPE}${BREAKING_FLAG}: ${SUBJECT}"
 fi
 
+# 拼装提交消息 Body (支持正文与列表条目合并)
+COMMIT_BODY=""
+if [ -n "$CLI_BODY" ]; then
+  COMMIT_BODY="$CLI_BODY"
+fi
+
+# 合并命令行传入的 -l 条目
+for item in "${CLI_ITEMS[@]}"; do
+  item=$(echo "$item" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$item" ]; then
+    if ! echo "$item" | grep -Eq '^([-*+]|[0-9]+\.)'; then
+      item="- $item"
+    fi
+    if [ -z "$COMMIT_BODY" ]; then
+      COMMIT_BODY="$item"
+    else
+      COMMIT_BODY="${COMMIT_BODY}"$'\n'"$item"
+    fi
+  fi
+done
+
+# 合并交互式输入的条目
+for item in "${INTERACTIVE_ITEMS[@]}"; do
+  if [ -z "$COMMIT_BODY" ]; then
+    COMMIT_BODY="$item"
+  else
+    COMMIT_BODY="${COMMIT_BODY}"$'\n'"$item"
+  fi
+done
+
 # ==============================================================================
 # 5. 预览与确认
 # ==============================================================================
 printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}------------------- 拟生成的提交信息预览 -------------------${COLOR_RESET}"
 printf "%b\n" "${COLOR_BOLD}${COLOR_GREEN}${COMMIT_HEADER}${COLOR_RESET}"
+if [ -n "$COMMIT_BODY" ]; then
+  printf "\n%b\n" "${COLOR_CYAN}${COMMIT_BODY}${COLOR_RESET}"
+fi
 printf "%b\n\n" "${COLOR_BOLD}${COLOR_CYAN}------------------------------------------------------------${COLOR_RESET}"
 
 if [ "$AUTO_CONFIRM" = true ] || [ ! -t 0 ]; then
@@ -349,7 +418,11 @@ fi
 # ==============================================================================
 # 6. 执行 Git Commit
 # ==============================================================================
-git commit -m "$COMMIT_HEADER"
+if [ -n "$COMMIT_BODY" ]; then
+  git commit -m "$COMMIT_HEADER" -m "$COMMIT_BODY"
+else
+  git commit -m "$COMMIT_HEADER"
+fi
 log_success "代码提交成功！"
 
 # ==============================================================================

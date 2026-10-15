@@ -59,14 +59,17 @@ git checkout -b feat/your-feature-name
 
 ### 推荐首选：使用交互式提交助手 (`scripts/commit.sh`)
 
-为避免人工拼写类型错误或格式遗漏，**强烈推荐使用项目内置的提交助手脚本**：
+为避免人工拼写类型错误或格式遗漏，**强烈推荐使用项目内置的提交助手脚本**。当单次提交包含多个细化功能或模块改动时，须在提交信息正文中逐项罗列说明：
 
 ```bash
-# 交互向导模式 (纯中文提示选择类型、输入 scope 与描述，并可自动暂存与推送)
+# 交互向导模式 (纯中文提示选择类型、输入 scope、描述与多行列表详情，并可自动暂存与推送)
 bash scripts/commit.sh
 
-# 非交互式参数模式 (适合熟练开发者或自动化工具链)
-bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 支持可配置排除静态资源路径" -p -y
+# 非交互式参数模式 (支持 -l / --item 多项改动清晰罗列)
+bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 链路追踪能力" \
+  -l "支持通过配置排除静态资源路径过滤" \
+  -l "规范响应头 X-Trace-Id 自动回写" \
+  -p -y
 ```
 
 ### 常用类型 (`type`)
@@ -83,7 +86,27 @@ bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 支持可配置排�
 - `revert`: 代码回滚
 
 ### 影响范围 (`scope`)
-建议标注具体的子模块名，例如：`core`、`web`、`mybatis-plus`、`all`、`samples`、`bom`。
+建议优先标注具体的子模块名（如 `core`、`web`、`mybatis-plus`、`all`、`samples`、`bom`），或特定工程维度的功能领域。
+
+### 常用研发场景推荐搭配速查表
+
+为避免提交类型选择模糊，针对日常高频研发场景，推荐遵循以下搭配范式：
+
+| 研发业务场景 | 推荐 Type 与 Scope 组合 | 典型提交说明示例 |
+| :--- | :--- | :--- |
+| **新增功能特性** | `feat(<模块名>)` | `feat(core): 支持函数式 CurrentUserProvider 扩展` |
+| **缺陷与 Bug 修复** | `fix(<模块名>)` | `fix(web): 修复未知异常脱敏时堆栈丢失问题` |
+| **安全漏洞应急修复** | `fix(security)` | `fix(security): 升级高危 CVE 传输协议依赖` |
+| **依赖与插件版本升级** | `build(deps)` | `build(deps): 升级 Spring Boot 补丁版至 3.3.13` |
+| **工程构建与脚手架调整** | `build(pom)` / `build(mvn)` | `build(pom): 优化中央仓库发布插件配置` |
+| **CI/CD 流水线修改** | `ci(workflow)` / `ci(release)` | `ci(release): 完善 GPG 签名与多架构构建流水线` |
+| **架构演进与代码重构** | `refactor(<模块名>)` | `refactor(mp): 重构自动填充处理器提升执行效率` |
+| **性能调优与瓶颈突破** | `perf(<模块名>)` | `perf(web): 优化 TraceFilter 链路头提取吞吐量` |
+| **文档与架构决策变更** | `docs` / `docs(adr)` | `docs(adr): 沉淀 ADR-0007 发布解耦架构决策` |
+| **单测与自验套件增强** | `test(<模块名>)` | `test(samples): 补充乐观锁 CAS 并发冲突测试用例` |
+| **发版准备与版本管理** | `chore(release)` | `chore(release): 准备发布 v0.0.1 正式版本` |
+| **代码格式与排版微调** | `style` | `style: 优化 JavaDoc 排版与无用导入清理` |
+| **异常变更回滚** | `revert(<模块名>)` | `revert(web): 回滚破坏向后兼容性的响应包装逻辑` |
 
 ---
 

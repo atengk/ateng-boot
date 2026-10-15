@@ -212,9 +212,12 @@ ateng:
   - [ADR-0003: 依赖管理采用 BOM Import 模式而非继承 parent](./docs/adr/0003-dependency-management-via-bom-import.md)
   - [ADR-0004: 全局统一 HTTP 200 响应与生产级未知异常脱敏](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)
   - [ADR-0005: 采用 Jackson2ObjectMapperBuilderCustomizer 挂载定制而非覆盖 ObjectMapper](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)
+  - [ADR-0006: 依赖版本基线锁定与升级治理策略](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)
+  - [ADR-0007: Maven 中央仓库发布解耦与 CI 纯净化治理决策](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)
 - **贡献指南与规范**：[CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Maven 发布实战指南**：[docs/guides/maven-central-publishing.md](./docs/guides/maven-central-publishing.md)
 
 ---
 
@@ -222,12 +225,16 @@ ateng:
 
 本项目内置纯中文交互式工程管理脚本（位于 `scripts/` 目录），全面提升协作与交付效率：
 
-- **规范化提交助手**：
+- **规范化提交助手 (`scripts/commit.sh`)**：
   ```bash
+  # 交互向导模式 (支持多行/列表式 Body 录入与自动推送)
   bash scripts/commit.sh
+
+  # 自动化/参数模式 (支持 -l 多项改动清晰罗列)
+  bash scripts/commit.sh -t feat -s web -m "增强响应契约" -l "新增语义化异常解包" -l "完善脱敏拦截" -p -y
   ```
-  纯中文交互向导，引导选择 Conventional Commits 提交类型、输入影响范围与描述，自动提供预览并可选一键推送。
-- **语义化发版助手**：
+  引导选择 Conventional Commits 提交类型、输入影响范围与描述，支持在正文中清晰罗列多项变动列表，自动提供高亮预览并可选一键推送。
+- **语义化发版助手 (`scripts/release.sh`)**：
   ```bash
   bash scripts/release.sh
   ```

@@ -223,14 +223,6 @@ jobs:
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
-      - name: 锁定 Maven 3.9.9 版本 (规避 Maven 3.10+ 在 Central Staging 中生成未清理 local metadata 的 Bug)
-        run: |
-          curl -sSL https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.tar.gz | tar -xz -C /tmp
-          echo "/tmp/apache-maven-3.9.9/bin" >> "$GITHUB_PATH"
-
-      - name: 验证 Maven 版本
-        run: mvn -v
-
       - name: 发布构件至 Maven Central
         run: |
           mvn versions:set -DnewVersion=${{ needs.build-artifacts.outputs.raw_version }} -DgenerateBackupPoms=false

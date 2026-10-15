@@ -14,8 +14,8 @@ flowchart TD
     B --> E{"是否开启 Maven 发布?<br/>vars.ENABLE_MAVEN_PUBLISH == 'true'"}
     E -- 否 / 未配置 --> F["⚡ 安全跳过 Maven 发布<br/>(保留 GitHub Release 产物)"]
     E -- 是 --> G["从 Secrets 提取 GPG 私钥与 Central Token"]
-    G --> H["调用 central-publishing-maven-plugin<br/>自动签名并推送到 Sonatype Central Portal"]
-    H --> I["🎉 Maven Central 全球镜像同步<br/>(可在 search.maven.org 检索并依赖)"]
+    G --> H["调用 central-publishing-maven-plugin<br/>GPG 签名、上传并以 validated 异步解耦准出"]
+    H --> I["🎉 Sonatype 后台自动完成全球镜像同步<br/>(可在 search.maven.org 检索并依赖)"]
 ```
 
 ---
@@ -182,3 +182,38 @@ git push origin v0.0.1
     <version>1.0.0</version>
 </dependency>
 ```
+
+---
+
+## 第六步：关键架构配置与避坑最佳实践
+
+在多模块工程与无交互 CI/CD 发布实践中，以下三项配置为确保发布顺畅、高效与合规的黄金法则（详见 [ADR-0007: Maven 中央仓库发布解耦与 CI 纯净化治理决策](../adr/0007-maven-publishing-and-clean-ci-pipeline.md)）：
+
+### 1. 发布提速与异步解耦 (`<waitUntil>validated</waitUntil>`)
+Sonatype Central Portal 的生命周期为：`PENDING` $\to$ `VALIDATING` $\to$ `PUBLISHING` $\to$ `PUBLISHED`。
+- **默认陷阱**：若配置 `<waitUntil>published</waitUntil>`，插件必须在 CI Runner 中持续轮询死等直到全球所有 CDN 镜像与索引同步完成，通常耗费 10 ~ 20 分钟；
+- **最佳解法**：在根 `pom.xml` 中将发布插件配置为 `<waitUntil>validated</waitUntil>`。一旦通过服务端 GPG 验签、Javadoc、POM 契约与 Checksums 校验（约 1 ~ 2 分钟），流水线即刻亮绿准出，后续全球镜像同步由 Sonatype 异步托管。
+
+### 2. GPG 无 TTY 环境签名 (`--pinentry-mode loopback`)
+GitHub Actions Runner 等 CI 环境属于无图形界面与无控制台终端（Non-interactive / No-TTY）环境：
+- **默认陷阱**：自 GPG 2.1 起，密码输入收口至 `gpg-agent` 并强制拉起交互式 `pinentry` 弹窗。在 CI 环境中将直接抛出致命异常：`gpg: signing failed: No pinentry`；
+- **最佳解法**：在 `pom.xml` 的 `maven-gpg-plugin` 中显式注入 `--pinentry-mode loopback` 参数，允许直接消费命令行传入的 Passphrase：
+  ```xml
+  <configuration>
+      <gpgArguments>
+          <arg>--pinentry-mode</arg>
+          <arg>loopback</arg>
+      </gpgArguments>
+  </configuration>
+  ```
+
+### 3. 多模块非发布子模块的排除规约 (`maven.deploy.skip`)
+若工程包含演示 Demo、自验测试套件（如 `ateng-boot-samples`）：
+- **默认陷阱**：子模块若随根工程执行 `mvn clean deploy`，会试图将未完善 POM 规范或可执行胖 Jar（Fat Jar）推送到 staging，引发 Central Portal 拒收；
+- **最佳解法**：严禁在全局插件中硬编码黑名单排除。应在目标子模块自身的 `pom.xml` 中标准声明：
+  ```xml
+  <properties>
+      <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
+  ```
+  Maven 生命周期将原生跳过该模块的部署阶段，纯净可靠。

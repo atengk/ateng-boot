@@ -14,7 +14,8 @@
 - **全链路追踪与脱敏 (Tracing & Sanitization)**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志；全局异常处理对未知根异常强制生产脱敏，内部堆栈与敏感 SQL 仅记录于后台日志（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 - **统一注释规范 (Doc Standards)**：新建源码与核心 API 标配清晰业务注释，类头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`。
 - **完成判据与单测门禁 (Completion Criterion)**：所有代码改动与特性落地，均以 `ateng-boot-samples` 模块执行 `mvn clean test` 100% 绿色通过作为准出标准。
-- **受控提交与脚本门面 (Explicit Git & Script Facade)**：仅当收到用户明确的“提交/commit/保存”指令时方可操作 Git，修改默认停留在工作区供审阅；执行提交时优先使用项目统一门面 `bash scripts/commit.sh -t <type> -s <scope> -m "<说明>" [-p] -y` 确保提交完全符合 Conventional Commits 规约并受本地钩子守护；发版统一通过 `bash scripts/release.sh` 调度。
+- **精准路径暂存 (Safe Path Staging)**：暂存必须显式、精准指定具体的变更文件相对路径（如 `git add pom.xml scripts/commit.sh`），严禁使用 `.` 或 `-A` 全量通配，严禁在任何会话答复或建议命令中推介 `git add .`；从源头杜绝未跟踪的临时文件、本地私密配置（如 `.env`）或未经审阅的变更误入暂存区。
+- **受控提交与脚本门面 (Explicit Git & Script Facade)**：仅当收到用户明确的“提交/commit/保存”指令时方可操作 Git，修改默认停留在工作区供审阅；执行提交时优先使用项目统一门面 `bash scripts/commit.sh -t <type> -s <scope> -m "<主说明>" [-l "<细项1>" -l "<细项2>"] [-p] -y` 确保提交完全符合 Conventional Commits 规约并受本地钩子守护（单次包含多项改动时须在正文中以 `-l` 逐项罗列）；发版统一通过 `bash scripts/release.sh` 调度。
 
 ## 3. Agent 技能与上下文指引 (Agent Skills)
 

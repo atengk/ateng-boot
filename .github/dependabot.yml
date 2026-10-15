@@ -3,7 +3,8 @@
 #
 # 💡 机制说明：
 # 1. 本配置负责常规月度依赖升级（Version Updates），采用语义化双轨模型聚合 PR；
-# 2. 针对高危 CVE 漏洞的即时修复（Dependabot Security Updates）由 GitHub 平台原生实时守护。
+# 2. 针对高危 CVE 漏洞的即时修复（Dependabot Security Updates）由 GitHub 平台原生实时守护；
+# 3. 严格遵循 ADR-0006 依赖基线锁定策略，全局阻断 Major 破坏性版本，锁定 Spring Boot 3.3.x。
 # 详见: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates
 # ==============================================================================
 
@@ -20,6 +21,10 @@ updates:
       include: "scope"
     labels:
       - "dependencies"
+    ignore:
+      # 全局屏蔽 GitHub Actions 的破坏性 Major 大版本更新
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       actions:
         patterns:
@@ -39,6 +44,13 @@ updates:
       include: "scope"
     labels:
       - "dependencies"
+    ignore:
+      # 1. 全局屏蔽所有 Maven 依赖与插件的 Major 破坏性大版本升级
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # 2. 严格锁定 Spring Boot 在 3.3.x LTS 基线，禁止次版本与大版本升级 (对齐 ADR-0006)
+      - dependency-name: "org.springframework.boot:*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       dependencies:
         patterns:

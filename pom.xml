@@ -215,10 +215,7 @@
                         <configuration>
                             <publishingServerId>central</publishingServerId>
                             <autoPublish>true</autoPublish>
-                            <waitUntil>published</waitUntil>
-                            <excludeArtifacts>
-                                <excludeArtifact>ateng-boot-samples</excludeArtifact>
-                            </excludeArtifacts>
+                            <waitUntil>validated</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>
