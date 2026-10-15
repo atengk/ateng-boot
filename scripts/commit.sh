@@ -2,7 +2,8 @@
 # ==============================================================================
 # Conventional Commits 规范化提交助手 (支持交互式与非交互式/AI自动化调用)
 #
-# 引导开发者或自动化脚本按规范组装提交信息，支持标题与多行列表详情 (Body)，
+# 引导开发者或自动化脚本按规范组装提交信息，支持标题、多行列表详情 (Body)、
+# GitHub Issue 关联/闭环 (Footer: Closes #N / Refs #N)、双分支安全守卫、
 # 提供变更预览、类型校验、列表组装与一键推送。
 #
 # @author Ateng
@@ -46,6 +47,25 @@ log_error() {
   printf "%b[ERROR]%b %s\n" "${COLOR_RED}" "${COLOR_RESET}" "$1"
 }
 
+# 格式化 Issue 编号为标准 #N 格式（支持逗号或空格分割）
+format_issue_ids() {
+  local raw="$1"
+  local formatted=""
+  local clean_raw
+  clean_raw=$(echo "$raw" | tr ',' ' ')
+  for id in $clean_raw; do
+    id=$(echo "$id" | tr -d ' #\r\t')
+    if [ -n "$id" ]; then
+      if [ -z "$formatted" ]; then
+        formatted="#${id}"
+      else
+        formatted="${formatted}, #${id}"
+      fi
+    fi
+  done
+  echo "$formatted"
+}
+
 # ==============================================================================
 # 1. 命令行参数解析 (支持非交互式调用)
 # ==============================================================================
@@ -54,6 +74,8 @@ CLI_SCOPE=""
 CLI_MSG=""
 CLI_BODY=""
 CLI_ITEMS=()
+CLI_CLOSES=()
+CLI_REFS=()
 CLI_BREAKING=false
 CLI_STAGE_ALL=false
 CLI_PUSH=false
@@ -69,6 +91,8 @@ show_help() {
   printf "%b\n" "  -m, --message <msg>     提交主标题描述 (必填，简明扼要)"
   printf "%b\n" "  -d, --detail, --body    提交正文详细说明 (可选，支持多行文本)"
   printf "%b\n" "  -l, --item <text>       提交详细条目列表 (可选，可多次传入，自动组装为列表)"
+  printf "%b\n" "  -c, --close, --closes   指定关闭的 Issue (可选，如 12 或 '#12'，自动生成 Closes #12)"
+  printf "%b\n" "  -i, --issue, --ref      指定关联引用的 Issue (可选，如 12 或 '#12'，自动生成 Refs #12)"
   printf "%b\n" "  -b, --breaking          标记为破坏性更新 (Breaking Changes，自动追加 !)"
   printf "%b\n" "  -a, --all               自动暂存全部变动 (⚠️ [高危/不推荐] 相当于 git add -A，严禁日常或 Agent 自动化使用)"
   printf "%b\n" "  -p, --push              提交成功后自动推送到当前分支远程仓库"
@@ -81,7 +105,7 @@ show_help() {
   printf "%b\n" ""
   printf "%b\n" "非交互式调用示例 (必须先精准 git add，严禁使用 git add .):"
   printf "%b\n" "  git add pom.xml scripts/commit.sh"
-  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -l \"新增用户服务\" -l \"完善鉴权测试\" -p -y"
+  printf "%b\n" "  bash scripts/commit.sh -t feat -s core -m \"实现新功能\" -l \"新增服务\" -c 12 -p -y"
 }
 
 while [ $# -gt 0 ]; do
@@ -106,6 +130,14 @@ while [ $# -gt 0 ]; do
       ;;
     -l|--item)
       CLI_ITEMS+=("$2")
+      shift 2
+      ;;
+    -c|--close|--closes)
+      CLI_CLOSES+=("$2")
+      shift 2
+      ;;
+    -i|--issue|--ref|--refs)
+      CLI_REFS+=("$2")
       shift 2
       ;;
     -b|--breaking)
@@ -177,6 +209,22 @@ fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # ==============================================================================
+# 双分支铁律安全熔断 (Branch Guard)
+# main 分支仅用于只读发布，所有特性编码与日常开发必须在 dev 分支展开
+# ==============================================================================
+if [ "$CURRENT_BRANCH" = "main" ]; then
+  # 仅豁免自动化发版提交 (如 chore(release):)
+  if [ "$CLI_TYPE" = "chore" ] && echo "$CLI_MSG" | grep -Eq '^[[:space:]]*\(?release'; then
+    log_info "检测到生产版本发布提交，放行 main 分支操作。"
+  else
+    log_error "【双分支铁律拦截】当前位于 [main] 主干分支！"
+    log_error "main 分支为只读发布主干，严禁直接在其上提交业务特性代码或缺陷修复。"
+    log_error "请执行 'git checkout dev' 切换至开发分支，或通过 'bash scripts/release.sh' 进行版本发布。"
+    exit 1
+  fi
+fi
+
+# ==============================================================================
 # 3. 暂存区检查与智能暂存 (先确认变动再撰写信息)
 # ==============================================================================
 if [ "$CLI_STAGE_ALL" = true ]; then
@@ -235,10 +283,12 @@ if git diff --cached --quiet; then
 fi
 
 # ==============================================================================
-# 4. 收集与校验提交信息 (Type, Scope, Breaking, Subject, Body)
+# 4. 收集与校验提交信息 (Type, Scope, Breaking, Subject, Body, Footer)
 # ==============================================================================
 VALID_TYPES="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)$"
 INTERACTIVE_ITEMS=()
+INTERACTIVE_CLOSES=()
+INTERACTIVE_REFS=()
 
 if [ "$IS_NON_INTERACTIVE" = true ]; then
   # 非交互式模式：校验传入参数
@@ -305,7 +355,7 @@ else
   done
 
   # 收集可选影响范围
-  printf "\n%b请输入影响范围 Scope (可选，如 core / cli / api，留空按回车): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+  printf "\n%b请输入影响范围 Scope (可选，如 core / mp / web，留空按回车): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
   read -r SCOPE
   SCOPE=$(echo "$SCOPE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
@@ -350,6 +400,24 @@ else
     INTERACTIVE_ITEMS+=("$ITEM_INPUT")
     ITEM_INDEX=$((ITEM_INDEX + 1))
   done
+
+  # 收集待关联或闭环的 Issue 编号 (可选)
+  printf "\n%b请输入待关联或关闭的 GitHub Issue 编号 (可选，如 12 或 #12，直接回车跳过): %b" "${COLOR_BOLD}" "${COLOR_RESET}"
+  read -r INTERACTIVE_ISSUE
+  INTERACTIVE_ISSUE=$(echo "$INTERACTIVE_ISSUE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$INTERACTIVE_ISSUE" ]; then
+    printf "%b该提交是否旨在解决并自动闭环该 Issue (Closes #%s)? [Y/n]: %b" "${COLOR_BOLD}" "$INTERACTIVE_ISSUE" "${COLOR_RESET}"
+    read -r IS_CLOSE_CHOICE
+    IS_CLOSE_CHOICE=$(echo "$IS_CLOSE_CHOICE" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$IS_CLOSE_CHOICE" in
+      [nN][oO]|[nN])
+        INTERACTIVE_REFS+=("$INTERACTIVE_ISSUE")
+        ;;
+      *)
+        INTERACTIVE_CLOSES+=("$INTERACTIVE_ISSUE")
+        ;;
+    esac
+  fi
 fi
 
 # 拼装提交消息 Header
@@ -389,6 +457,30 @@ for item in "${INTERACTIVE_ITEMS[@]}"; do
   fi
 done
 
+# 拼装提交消息 Footer (规范化组装 Closes #N 与 Refs #N)
+COMMIT_FOOTER=""
+for item in "${CLI_CLOSES[@]}" "${INTERACTIVE_CLOSES[@]}"; do
+  f_item=$(format_issue_ids "$item")
+  if [ -n "$f_item" ]; then
+    if [ -z "$COMMIT_FOOTER" ]; then
+      COMMIT_FOOTER="Closes ${f_item}"
+    else
+      COMMIT_FOOTER="${COMMIT_FOOTER}"$'\n'"Closes ${f_item}"
+    fi
+  fi
+done
+
+for item in "${CLI_REFS[@]}" "${INTERACTIVE_REFS[@]}"; do
+  f_item=$(format_issue_ids "$item")
+  if [ -n "$f_item" ]; then
+    if [ -z "$COMMIT_FOOTER" ]; then
+      COMMIT_FOOTER="Refs ${f_item}"
+    else
+      COMMIT_FOOTER="${COMMIT_FOOTER}"$'\n'"Refs ${f_item}"
+    fi
+  fi
+done
+
 # ==============================================================================
 # 5. 预览与确认
 # ==============================================================================
@@ -396,6 +488,9 @@ printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}------------------- 拟生成的提�
 printf "%b\n" "${COLOR_BOLD}${COLOR_GREEN}${COMMIT_HEADER}${COLOR_RESET}"
 if [ -n "$COMMIT_BODY" ]; then
   printf "\n%b\n" "${COLOR_CYAN}${COMMIT_BODY}${COLOR_RESET}"
+fi
+if [ -n "$COMMIT_FOOTER" ]; then
+  printf "\n%b\n" "${COLOR_YELLOW}${COMMIT_FOOTER}${COLOR_RESET}"
 fi
 printf "%b\n\n" "${COLOR_BOLD}${COLOR_CYAN}------------------------------------------------------------${COLOR_RESET}"
 
@@ -416,10 +511,14 @@ else
 fi
 
 # ==============================================================================
-# 6. 执行 Git Commit
+# 6. 执行 Git Commit (严格遵循 Conventional Commits 段落分离)
 # ==============================================================================
-if [ -n "$COMMIT_BODY" ]; then
+if [ -n "$COMMIT_BODY" ] && [ -n "$COMMIT_FOOTER" ]; then
+  git commit -m "$COMMIT_HEADER" -m "$COMMIT_BODY" -m "$COMMIT_FOOTER"
+elif [ -n "$COMMIT_BODY" ]; then
   git commit -m "$COMMIT_HEADER" -m "$COMMIT_BODY"
+elif [ -n "$COMMIT_FOOTER" ]; then
+  git commit -m "$COMMIT_HEADER" -m "$COMMIT_FOOTER"
 else
   git commit -m "$COMMIT_HEADER"
 fi
