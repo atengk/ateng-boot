@@ -8,7 +8,9 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.entity.UserEntity;
+import io.github.atengk.boot.sample.entity.UserRoleEntity;
 import io.github.atengk.boot.sample.mapper.UserMapper;
+import io.github.atengk.boot.sample.mapper.UserRoleMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +50,9 @@ class SampleApplicationIntegrationTest {
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private UserRoleMapper userRoleMapper;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -299,5 +304,58 @@ class SampleApplicationIntegrationTest {
         // 主线程清理
         UserContextHolder.clear();
         MDC.clear();
+    }
+
+    @Test
+    @DisplayName("14. 轻量实体兼容：仅继承 BaseIdEntity 的实体执行插入、查询、更新与物理删除，无 SQL 列缺失异常")
+    void shouldSupportCrudOnBaseIdEntityWithoutExtraColumns() {
+        UserRoleEntity mapping = new UserRoleEntity();
+        mapping.setUserId(10086L);
+        mapping.setRoleId(2001L);
+
+        // 1. 验证插入：自动发号雪花 ID，且 DefaultMetaObjectHandler 安全跳过不存在的时间与操作人字段
+        int inserted = userRoleMapper.insert(mapping);
+        assertThat(inserted).isEqualTo(1);
+        assertThat(mapping.getId()).isNotNull();
+
+        // 2. 验证单记录查询：底层不附加额外 deleted 条件
+        UserRoleEntity stored = userRoleMapper.selectById(mapping.getId());
+        assertThat(stored).isNotNull();
+        assertThat(stored.getUserId()).isEqualTo(10086L);
+        assertThat(stored.getRoleId()).isEqualTo(2001L);
+
+        // 3. 验证更新：底层不附加 version 乐观锁与 update_time 字段
+        stored.setRoleId(2002L);
+        int updated = userRoleMapper.updateById(stored);
+        assertThat(updated).isEqualTo(1);
+
+        UserRoleEntity reloaded = userRoleMapper.selectById(mapping.getId());
+        assertThat(reloaded).isNotNull();
+        assertThat(reloaded.getRoleId()).isEqualTo(2002L);
+
+        // 4. 验证物理删除：执行真正的 DELETE FROM 物理移除，而非 UPDATE 软删除
+        int deleted = userRoleMapper.deleteById(mapping.getId());
+        assertThat(deleted).isEqualTo(1);
+        assertThat(userRoleMapper.selectById(mapping.getId())).isNull();
+    }
+
+    @Test
+    @DisplayName("15. 软删除生命周期：继承 BaseFullEntity 的实体执行 deleteById 变为逻辑删除，普通查询自动过滤且数据物理保留")
+    void shouldSupportSoftDeleteFilterOnBaseFullEntity() {
+        UserEntity user = new UserEntity();
+        user.setName("软删除测试");
+        user.setAge(18);
+        user.setEmail("softdelete@example.com");
+        userMapper.insert(user);
+
+        Long userId = user.getId();
+        assertThat(userMapper.selectById(userId)).isNotNull();
+
+        // 执行 deleteById，由 @TableLogic 拦截执行 UPDATE sys_user SET deleted=1 WHERE id=? AND deleted=0
+        int deleteRows = userMapper.deleteById(userId);
+        assertThat(deleteRows).isEqualTo(1);
+
+        // 普通 selectById 自动附加 WHERE deleted=0，查询结果为 null
+        assertThat(userMapper.selectById(userId)).isNull();
     }
 }

@@ -30,6 +30,20 @@ class DefaultMetaObjectHandlerTest {
         public void setOrderNo(String orderNo) { this.orderNo = orderNo; }
     }
 
+    static class IdOnlyEntity extends io.github.atengk.boot.mybatisplus.entity.BaseIdEntity {
+        private String content;
+
+        public String getContent() { return content; }
+        public void setContent(String content) { this.content = content; }
+    }
+
+    static class TimeAuditEntity extends io.github.atengk.boot.mybatisplus.entity.BaseTimeEntity {
+        private String tag;
+
+        public String getTag() { return tag; }
+        public void setTag(String tag) { this.tag = tag; }
+    }
+
     @BeforeEach
     @AfterEach
     void cleanUp() {
@@ -140,5 +154,39 @@ class DefaultMetaObjectHandlerTest {
 
         assertNotEquals(oldTime, order.getUpdateTime());
         assertEquals("new-modifier", order.getUpdateBy());
+    }
+
+    @Test
+    @DisplayName("防御性兼容：对仅继承 BaseIdEntity 的实体执行插入与更新填充，静默安全跳过且不报错")
+    void shouldSafelyHandleBaseIdEntityWithoutAuditFields() {
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+        IdOnlyEntity entity = new IdOnlyEntity();
+        entity.setId(100L);
+        entity.setContent("test");
+
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+        assertDoesNotThrow(() -> handler.insertFill(metaObject));
+        assertDoesNotThrow(() -> handler.updateFill(metaObject));
+        assertEquals(100L, entity.getId());
+        assertEquals("test", entity.getContent());
+    }
+
+    @Test
+    @DisplayName("防御性兼容：对继承 BaseTimeEntity 的实体仅自动填充创建与修改时间，不填充缺失的操作人字段")
+    void shouldSafelyHandleBaseTimeEntityWithOnlyTimeFields() {
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler(() -> "ignored-user", "system");
+        TimeAuditEntity entity = new TimeAuditEntity();
+        entity.setId(200L);
+        entity.setTag("alpha");
+
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+        assertDoesNotThrow(() -> handler.insertFill(metaObject));
+
+        assertNotNull(entity.getCreateTime());
+        assertNotNull(entity.getUpdateTime());
+
+        LocalDateTime createdTime = entity.getCreateTime();
+        assertDoesNotThrow(() -> handler.updateFill(metaObject));
+        assertEquals(createdTime, entity.getCreateTime());
     }
 }

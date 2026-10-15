@@ -10,3 +10,9 @@ CREATE TABLE IF NOT EXISTS sys_user (
     version INT DEFAULT 0,
     deleted INT DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS sys_user_role (
+    id BIGINT NOT NULL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    role_id BIGINT NOT NULL
+);

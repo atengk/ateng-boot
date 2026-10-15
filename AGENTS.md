@@ -10,7 +10,7 @@
 ## 2. 核心工程准则 (Core Principles)
 - **显式契约 (Explicit Contract)**：Controller 统一显式声明返回 `Result<T>`；禁止引入 `@ResponseBodyAdvice` 自动拦截包装（参见 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）。
 - **防御性装配 (Defensive Autoconfiguration)**：自动装配标配 `@ConditionalOnClass` / `@ConditionalOnProperty` 守卫；Jackson 定制统一通过 `Jackson2ObjectMapperBuilderCustomizer` 注入，严禁覆盖 `ObjectMapper` Bean（参见 [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)）。
-- **空安全与前置拦截 (Null Safety)**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过前置卫语句拦截；`BaseEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
+- **空安全与前置拦截 (Null Safety)**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过前置卫语句拦截；`BaseFullEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
 - **全链路追踪与脱敏 (Tracing & Sanitization)**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志；全局异常处理对未知根异常强制生产脱敏，内部堆栈与敏感 SQL 仅记录于后台日志（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 - **统一注释规范 (Doc Standards)**：新建源码与核心 API 标配清晰业务注释，类头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`。
 - **完成判据与单测门禁 (Completion Criterion)**：所有代码改动与特性落地，均以 `ateng-boot-samples` 模块执行 `mvn clean test` 100% 绿色通过作为准出标准。

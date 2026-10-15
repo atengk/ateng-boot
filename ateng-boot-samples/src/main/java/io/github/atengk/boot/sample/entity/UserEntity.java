@@ -1,14 +1,14 @@
 package io.github.atengk.boot.sample.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
-import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
+import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
 
 /**
  * 示例用户实体对象
- * 继承通用实体基类，映射 H2 数据库 sys_user 用户表
+ * 继承全要素受管业务实体基类，映射 H2 数据库 sys_user 用户表
  *
  * @author Ateng
  * @since 2026-10-15
@@ -17,7 +17,7 @@ import lombok.ToString;
 @Setter
 @ToString(callSuper = true)
 @TableName("sys_user")
-public class UserEntity extends BaseEntity {
+public class UserEntity extends BaseFullEntity {
 
     private static final long serialVersionUID = 1L;
 
