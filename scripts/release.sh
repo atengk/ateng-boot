@@ -22,19 +22,22 @@ custom_bump_version() {
   local FULL_VERSION="v$1" # 带 v 前缀的完整标签，如 "v1.2.0"
   : "${RAW_VERSION}" "${FULL_VERSION}"
 
-  # --- [选项 1] Java (Maven) ---
-  # mvn versions:set -DnewVersion="$RAW_VERSION" -DgenerateBackupPoms=false
+  # 1. Java (Maven) POM 版本全量更新
+  log_info "正在执行 Maven versions:set 更新全部 POM 版本至 $RAW_VERSION..."
+  mvn versions:set -DnewVersion="$RAW_VERSION" -DgenerateBackupPoms=false
 
-  # --- [选项 2] Node.js (npm / pnpm) ---
-  # npm version "$RAW_VERSION" --no-git-tag-version
+  # 2. 自动同步更新 README.md 中的接入依赖版本 (基于 sed -i 直接原地修改，零临时文件，零注释污染)
+  if [ -f "README.md" ]; then
+    log_info "正在直接原地同步更新 README.md 接入依赖版本至 $RAW_VERSION..."
+    if sed --version >/dev/null 2>&1; then
+      # GNU sed (Linux / Windows Git Bash)
+      sed -i -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
+    else
+      # BSD sed (macOS)
+      sed -i '' -E "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s|<version>[^<]+</version>|<version>${RAW_VERSION}</version>|}" README.md
+    fi
+  fi
 
-  # --- [选项 3] Rust (Cargo) ---
-  # cargo set-version "$RAW_VERSION"
-
-  # --- [选项 4] Python (Poetry) ---
-  # poetry version "$RAW_VERSION"
-
-  # 若本项目无需更新任何文件（如 Go 项目或纯通用底座），保持此处为空即可。
   return 0
 }
 
@@ -183,6 +186,15 @@ if git fetch origin >/dev/null 2>&1; then
 else
   log_warn "无法连接远程仓库进行同步校验（可能处于离线环境），跳过远端拉取校验。"
 fi
+
+# 1.6 多模块代码可编译性预检 (防带编译错误代码发版打脏标签)
+log_info "正在执行工程多模块编译快速自检 (mvn test-compile -q)..."
+if ! mvn test-compile -q; then
+  log_error "本地代码编译失败！严禁将存在编译错误的脏代码推向远程发版！"
+  log_error "请先排查修复本地编译错误后重试。"
+  exit 1
+fi
+log_success "多模块编译自检通过: 代码可正常编译"
 
 # ==============================================================================
 # 2. 版本号解析与语义化推导
@@ -339,8 +351,9 @@ custom_bump_version "$RAW_VERSION"
 HOOK_CHANGES=$(git status --porcelain)
 NEED_PUSH_BRANCH=false
 if [ -n "$HOOK_CHANGES" ]; then
-  log_info "检测到扩展钩子更新了工程文件，正在全量暂存并创建版本提交..."
-  git add -A
+  log_info "检测到扩展钩子更新了工程 POM 与接入文档，正在精准暂存并创建版本提交..."
+  git add pom.xml */pom.xml
+  [ -f "README.md" ] && git add README.md
   git commit -m "chore(release): bump version to $TARGET_VERSION"
   NEED_PUSH_BRANCH=true
 elif [ "$AHEAD_COUNT" -gt 0 ]; then
@@ -376,6 +389,51 @@ else
     exit 1
   fi
   log_success "版本标签推送成功！"
+fi
+
+# ==============================================================================
+# 6. 后置主干快照版本推进 (Post-release Trunk Snapshot Bump)
+# ==============================================================================
+if [[ "$RAW_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  MAJOR="${BASH_REMATCH[1]}"
+  MINOR="${BASH_REMATCH[2]}"
+  PATCH="${BASH_REMATCH[3]}"
+  NEXT_PATCH_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+  NEXT_SNAPSHOT_VERSION="${NEXT_PATCH_VERSION}-SNAPSHOT"
+
+  printf "\n%b\n" "${COLOR_BOLD}${COLOR_CYAN}------------------- 主干开发迭代推进 -------------------${COLOR_RESET}"
+  printf "  刚刚发布的正式版本: %s\n" "$TARGET_VERSION"
+  printf "  拟推进的开发快照  : %b%s%b\n" "${COLOR_BOLD}${COLOR_GREEN}" "$NEXT_SNAPSHOT_VERSION" "${COLOR_RESET}"
+  printf "%b\n" "${COLOR_BOLD}${COLOR_CYAN}--------------------------------------------------------${COLOR_RESET}"
+
+  DO_SNAPSHOT=false
+  if [ "$AUTO_CONFIRM" = true ] || [ ! -t 0 ]; then
+    DO_SNAPSHOT=true
+  else
+    printf "%b是否立即将主干分支版本推进至下一开发快照 [%s]? [Y/n]: %b" "${COLOR_BOLD}" "$NEXT_SNAPSHOT_VERSION" "${COLOR_RESET}"
+    read -r CONFIRM_SNAPSHOT
+    CONFIRM_SNAPSHOT=$(echo "$CONFIRM_SNAPSHOT" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$CONFIRM_SNAPSHOT" in
+      [nN][oO]|[nN])
+        DO_SNAPSHOT=false
+        ;;
+      *)
+        DO_SNAPSHOT=true
+        ;;
+    esac
+  fi
+
+  if [ "$DO_SNAPSHOT" = true ]; then
+    log_info "正在将工程版本推进至下一开发快照 ($NEXT_SNAPSHOT_VERSION)..."
+    mvn versions:set -DnewVersion="$NEXT_SNAPSHOT_VERSION" -DgenerateBackupPoms=false
+    git add pom.xml */pom.xml
+    git commit -m "chore(build): prepare for next development iteration $NEXT_SNAPSHOT_VERSION"
+    log_info "正在推送主干快照提交至 origin/$CURRENT_BRANCH..."
+    git push origin "$CURRENT_BRANCH"
+    log_success "主干已平滑切换至下一开发态: $NEXT_SNAPSHOT_VERSION"
+  else
+    log_info "跳过主干版本推进，主干保持在当前版本。"
+  fi
 fi
 
 # 获取远端仓库地址生成 GitHub Release 网页直达链接

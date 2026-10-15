@@ -36,6 +36,10 @@ filter_unconventional = false
 split_commits = false
 
 commit_parsers = [
+  # 过滤发版自增、开发快照推进与 PR/分支合并等无实质代码变更的视觉噪点
+  { message = "^chore\\(release\\):", skip = true },
+  { message = "^chore\\(build\\):.*next development iteration", skip = true },
+  { message = "^Merge pull request|^Merge branch", skip = true },
   { message = "^.*!:|BREAKING CHANGE", group = "💥 破坏性更新 (Breaking Changes)" },
   { message = "^feat", group = "🚀 新特性 (Features)" },
   { message = "^fix", group = "🐛 缺陷修复 (Bug Fixes)" },

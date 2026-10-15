@@ -3,6 +3,7 @@
 > 高内聚、低侵入、对标 Hutool 组织心智的 Spring Boot 3 基础框架与中间件 Starter 套件。
 
 [![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.atengk/ateng-boot.svg?style=flat-square&color=blue)](https://central.sonatype.com/artifact/io.github.atengk/ateng-boot)
 [![JDK](https://img.shields.io/badge/JDK-17%20LTS-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![MyBatis-Plus](https://img.shields.io/badge/MyBatis--Plus-3.5.17-blue.svg)](https://baomidou.com/)
@@ -74,7 +75,7 @@ flowchart TD
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
-        <version>0.0.1</version>
+        <version>0.0.2</version>
     </dependency>
 
     <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
@@ -97,7 +98,7 @@ flowchart TD
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>0.0.1</version>
+            <version>0.0.2</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
@@ -214,7 +215,9 @@ ateng:
   - [ADR-0005: 采用 Jackson2ObjectMapperBuilderCustomizer 挂载定制而非覆盖 ObjectMapper](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)
   - [ADR-0006: 依赖版本基线锁定与升级治理策略](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)
   - [ADR-0007: Maven 中央仓库发布解耦与 CI 纯净化治理决策](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)
+  - [ADR-0008: 自动化发版闭环、多维变更日志与常青文档架构决策](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
+- **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)
 - **贡献指南与规范**：[CONTRIBUTING.md](./CONTRIBUTING.md)
 - **Maven 发布实战指南**：[docs/guides/maven-central-publishing.md](./docs/guides/maven-central-publishing.md)
@@ -238,7 +241,7 @@ ateng:
   ```bash
   bash scripts/release.sh
   ```
-  自动化版本探测与 SemVer 防呆校验，创建附注 Git Tag 并原子推送，直接唤起 GitHub Actions 统合发版流水线。
+  内置多模块编译快速自检、SemVer 版本推导与单主干（`main`）强防呆校验；自动全量设置工程 POM 正式版，通过原生 `sed -i` 原地直接流式同步更新 `README.md` 接入版本；创建附注 Git Tag 并原子推送以触发 GitHub Actions 流水线；发版成功后自动询问将主干平滑推进至下一代开发快照（`SNAPSHOT`）。
 - **激活本地提交守门钩子**：
   ```bash
   git config core.hooksPath .githooks

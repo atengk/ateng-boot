@@ -128,17 +128,24 @@ lQdGBG...（此处为多行密文）...==
 
 ## 第四步：触发全自动发版与验证
 
+> [!IMPORTANT]
+> **主干发版铁律与分支防呆 (Trunk-Only Policy)**：
+> 本项目严禁在任何特性分支或未合入主干的分支发版！发版必须且只能在 `main` 主干分支发起。
+> 本地脚本与 CI 流水线均已部署强门禁：
+> - 本地门禁：`scripts/release.sh` 自动拦截非 `main` 分支与脏代码；
+> - 远端门禁：`.github/workflows/release.yml` 严格校验网页调度分支（仅允许 `main`）及 Tag 祖先谱系（`git merge-base --is-ancestor` 确保必须合入主干），彻底阻断非合规发版。
+
 配置完成后，即可享受全自动流水线发版：
 
 ### 方式一：网页端一键调度发版 (推荐首选)
 1. 进入 GitHub 仓库 -> 点击顶部 **Actions** 标签页；
 2. 在左侧选择 **Release** 流水线；
-3. 点击右侧 **Run workflow** 下拉框；
+3. 点击右侧 **Run workflow** 下拉框（**触发分支必须选择 `main`**）；
 4. 输入拟发布的版本号（例如 `v1.0.0`）；
 5. 点击绿色 **Run workflow** 按钮。
 
 流水线将自动执行：
-- 校验版本格式与防重名自检；
+- 校验触发分支为 `main`、校验版本格式与防重名自检；
 - 创建并推送 Git Tag；
 - 构建不可变 Jar 包并生成校验清单挂载至 GitHub Release；
 - 自动化调用 GPG 签名，并将构件推送到 Sonatype Central Portal。
@@ -153,16 +160,18 @@ bash scripts/release.sh
 ```
 
 脚本将自动执行：
-- 自动检测历史最新标签并推算下一个语义化版本（或支持交互式输入自定义版本如 `v0.0.1`）；
+- 自动检测历史最新标签并推算下一个语义化版本（或支持交互式输入自定义版本如 `v0.0.3`）；
+- 自动同步将全工程 POM 版本设为发版版本并安全暂存提交；
 - 本地与远程同名 Tag 防重名检测，防止误覆盖已有发布；
-- 自动创建附注标签（Annotated Tag）并原子推送到远程仓库，无缝唤起 GitHub Actions 发版。
+- 自动创建附注标签（Annotated Tag）并原子推送到远程仓库，无缝唤起 GitHub Actions 发版；
+- **后置主干快照推进**：标签推送成功后，自动询问将主干切换至下一开发快照（如 `0.0.4-SNAPSHOT`），保障主干开发态纯净。
 
 ### 方式三：手动 Git Tag 命令触发
 ```bash
 git checkout main
 git pull origin main
-git tag -a v0.0.1 -m "Release v0.0.1"
-git push origin v0.0.1
+git tag -a v0.0.3 -m "Release v0.0.3"
+git push origin v0.0.3
 ```
 
 ---
@@ -173,13 +182,13 @@ git push origin v0.0.1
 2. 在 **Deployments** 列表项中可以看到一条属于 `ateng-boot` 的发布记录；
 3. Portal 会自动执行签名与规范检验，状态转为 `PUBLISHED`；
 4. 大约 **10 ~ 30 分钟** 内，全球 Maven Central 镜像同步完成；
-5. 下游开发者即可直接在 `pom.xml` 中引入正式依赖：
+5. 下游开发者即可直接在 `pom.xml` 中引入正式依赖（最新稳定版实时参见顶部 Central 徽章）：
 
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-all</artifactId>
-    <version>1.0.0</version>
+    <version>0.0.2</version>
 </dependency>
 ```
 
@@ -207,13 +216,16 @@ GitHub Actions Runner 等 CI 环境属于无图形界面与无控制台终端（
   </configuration>
   ```
 
-### 3. 多模块非发布子模块的排除规约 (`maven.deploy.skip`)
+### 3. 多模块非发布子模块的双重排除规约 (`maven.deploy.skip` + `excludeArtifacts`)
 若工程包含演示 Demo、自验测试套件（如 `ateng-boot-samples`）：
-- **默认陷阱**：子模块若随根工程执行 `mvn clean deploy`，会试图将未完善 POM 规范或可执行胖 Jar（Fat Jar）推送到 staging，引发 Central Portal 拒收；
-- **最佳解法**：严禁在全局插件中硬编码黑名单排除。应在目标子模块自身的 `pom.xml` 中标准声明：
-  ```xml
-  <properties>
-      <maven.deploy.skip>true</maven.deploy.skip>
-  </properties>
-  ```
-  Maven 生命周期将原生跳过该模块的部署阶段，纯净可靠。
+- **生命周期拦截**：在目标子模块自身的 `pom.xml` 中声明 `<maven.deploy.skip>true</maven.deploy.skip>`，Maven 构建生命周期将原生跳过该模块的部署阶段；
+- **Central Bundle 反应堆排除**：由于 Sonatype 官方 `central-publishing-maven-plugin` 以 Reactor 反应堆维度扫描打包并上传 Staging Bundle，缺少 POM 封包会导致服务端报校验拒绝（`Bundle has content that does NOT have a .pom file`），因此必须在根插件中协同声明 `<excludeArtifacts><excludeArtifact>ateng-boot-samples</excludeArtifact></excludeArtifacts>`，形成生命周期与 Central 封包双重隔离闭环（详见 [ADR-0007](../adr/0007-maven-publishing-and-clean-ci-pipeline.md)）。
+
+### 4. 发布日志规范化与接入文档自驱更新
+- **日志双语规范**：CI 工作流中 `git-cliff-action` 必须显式声明 `config: ${{ hashFiles('.cliff.toml') != '' && '.cliff.toml' || '' }}`，并关闭 `generate_release_notes`，确保 GitHub Releases 页面呈现地道中英双语分类与作者直达链接；
+- **复制即用与自驱改版**：`README.md` 接入示例坚持展示具体的真实版本号（如 `<version>0.0.2</version>`），方便开发者一键复制即用；发版时由 `scripts/release.sh` 内置的原生 `sed -i` 原地流式自驱更新文档版本并随 Tag 原子提交（详见 [ADR-0008: 自动化发版闭环、多维变更日志与常青文档架构决策](../adr/0008-automated-release-changelog-and-evergreen-docs.md)）。
+
+### 5. 主干发布铁律与双端分支防呆治理
+- **不可变性防线**：Maven Central 构件不可撤销，随意在未合入主干的特性分支发版将造成灾难性的脏版本污染；
+- **双端防御落地**：本地执行 `scripts/release.sh` 强校验当前必须处于 `main` 分支且工作区 100% 干净；GitHub Actions 在网页调度时校验 `github.ref_name == 'main'`，在 Tag 推送时校验 `git merge-base --is-ancestor` 确保提交必须合入主干，形成严密闭环。
+

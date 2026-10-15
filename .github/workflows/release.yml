@@ -48,9 +48,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 校验版本号格式与冲突自检
+      - name: 校验版本号格式与触发分支自检
         id: check
         run: |
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "::error::安全熔断！当前触发分支为 [${{ github.ref_name }}]，发版必须且只能在 main 主干分支调度！"
+            exit 1
+          fi
+
           INPUT_VERSION="${{ inputs.version }}"
           if [[ ! "$INPUT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "::error::版本号格式不合规！必须符合 vX.Y.Z 语义化版本规范。"
@@ -87,6 +92,20 @@ jobs:
     steps:
       - name: 检出源码
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 校验发版 Tag 谱系合法性 (必须源自主干 main)
+        if: github.event_name == 'push'
+        run: |
+          git fetch origin main
+          TAG_COMMIT=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "::error::安全熔断！发版标签 $GITHUB_REF 指向的提交 [$TAG_COMMIT] 未合入 main 主干！"
+            echo "::error::ateng-boot 遵循严格的主干发版铁律，严禁从任何未经合入的特性分支或孤立提交发版。"
+            exit 1
+          fi
+          echo "发版 Tag 谱系校验通过: 确认源自 main 主干。"
 
       - name: 解析版本元数据
         id: meta
@@ -153,6 +172,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ needs.build-artifacts.outputs.tag_name }}
 
       - name: 下载构建制品
         uses: actions/download-artifact@v8
@@ -165,6 +185,7 @@ jobs:
         id: git-cliff
         continue-on-error: true
         with:
+          config: ${{ hashFiles('.cliff.toml') != '' && '.cliff.toml' || '' }}
           args: --tag ${{ needs.build-artifacts.outputs.tag_name }} --latest --strip header --github-repo ${{ github.repository }}
         env:
           OUTPUT: CHANGELOG_RELEASE.md
@@ -176,7 +197,7 @@ jobs:
           tag_name: ${{ needs.build-artifacts.outputs.tag_name }}
           name: ${{ needs.build-artifacts.outputs.tag_name }}
           body: ${{ steps.git-cliff.outputs.content }}
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: ${{ needs.build-artifacts.outputs.is_prerelease == 'true' }}
           files: |
@@ -196,6 +217,8 @@ jobs:
     steps:
       - name: 检出源码
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build-artifacts.outputs.tag_name }}
 
       - name: 前置发布凭据完整性自检
         run: |

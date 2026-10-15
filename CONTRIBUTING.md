@@ -36,9 +36,11 @@ mvn clean test
 
 ## 3. 分支与工作流管理
 
-- **主干分支 (`main`)**：受保护分支，所有生产发布均源自主干，仅接受通过 CI 门禁检查的 Pull Request 合并；
+- **主干分支 (`main`)**：受保护分支，**唯一合规发版来源**，仅接受通过 CI 门禁检查的 Pull Request 合并；
 - **特性分支 (`feat/*`)**：基于 `main` 拉出，用于新功能研发；
-- **修复分支 (`fix/*`)**：基于 `main` 拉出，用于 Bug 修复。
+- **修复分支 (`fix/*`)**：基于 `main` 拉出，用于 Bug 修复；
+- **主干发布铁律 (Trunk-Based Release)**：严格禁止在任何特性分支或临时分支发版！CI 流水线针对网页调度与 Tag 推送实施双重祖先谱系校验（`git merge-base --is-ancestor`）确保发布产物 100% 源自主干；
+- **精准路径暂存 (Safe Path Staging)**：暂存时必须显式指定具体修改文件的相对路径（如 `git add pom.xml scripts/commit.sh`），严禁使用 `git add .` 或 `git add -A` 通配，从源头杜绝未跟踪的临时文件或敏感配置误入暂存区。
 
 ```bash
 # 从最新 main 创建特性分支
@@ -117,8 +119,10 @@ bash scripts/commit.sh -t feat -s web -m "增强 TraceFilter 链路追踪能力"
 1. **显式契约 (Explicit Contract)**：Controller 统一显式声明返回 `Result<T>`；禁止引入 `@ResponseBodyAdvice` 自动拦截包装（参见 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）。
 2. **防御性装配 (Defensive Autoconfiguration)**：自动装配标配 `@ConditionalOnClass` / `@ConditionalOnProperty` 守卫；Jackson 定制统一通过 `Jackson2ObjectMapperBuilderCustomizer` 注入，严禁覆盖 `ObjectMapper` Bean（参见 [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)）。
 3. **空安全与防御断言**：列表/集合查询无匹配时统一返回空集合，严禁返回 `null`；单实体查询无结果时通过 `BusinessAssert.notNull` 前置拦截；`BaseEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
-4. **日志与脱敏**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志，严禁在正式代码中使用 `System.out.println` 或裸 `e.printStackTrace()`；全局异常处理对未知根异常强制生产脱敏。
-5. **统一注释规范**：新建源码头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`，首段直接陈述业务或技术职责。
+4. **日志与脱敏**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志，严禁在正式代码中使用 `System.out.println` 或裸 `e.printStackTrace()`；全局异常处理对未知根异常强制生产脱敏（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
+5. **部署隔离与 Central 解耦**：非分发模块标配声明 `<maven.deploy.skip>true</maven.deploy.skip>`，且根发布插件协同配置 `<excludeArtifacts>` 排除；发布插件使用 `<waitUntil>validated</waitUntil>` 极速异步解耦（参见 [ADR-0007](./docs/adr/0007-maven-publishing-and-clean-ci-pipeline.md)）。
+6. **文档自驱与主干双态**：文档接入依赖坚持展示纯净具体版本（如 `0.0.2`）供开发者一键复制即用；发版由 `scripts/release.sh` 内置原生 `sed -i` 原地直接流式修改同步更新文档与 POM，并在 Tag 推送后自动将主干平滑推进至下一开发快照（`SNAPSHOT`）（参见 [ADR-0008](./docs/adr/0008-automated-release-changelog-and-evergreen-docs.md)）。
+7. **统一注释规范**：新建源码头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`，首段直接陈述业务或技术职责。
 
 ---
 
