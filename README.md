@@ -2,9 +2,10 @@
 
 > 高内聚、低侵入、对标 Hutool 组织心智的 Spring Boot 3 基础框架与中间件 Starter 套件。
 
+[![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
 [![JDK](https://img.shields.io/badge/JDK-17%20LTS-orange.svg)](https://www.oracle.com/java/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.4-brightgreen.svg)](https://spring.io/projects/spring-boot)
-[![MyBatis-Plus](https://img.shields.io/badge/MyBatis--Plus-3.5.9-blue.svg)](https://baomidou.com/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![MyBatis-Plus](https://img.shields.io/badge/MyBatis--Plus-3.5.17-blue.svg)](https://baomidou.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/atengk/ateng-boot/pulls)
 
@@ -73,7 +74,7 @@ flowchart TD
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>0.0.1</version>
     </dependency>
 
     <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
@@ -96,7 +97,7 @@ flowchart TD
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>1.0.0-SNAPSHOT</version>
+            <version>0.0.1</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
@@ -213,9 +214,32 @@ ateng:
   - [ADR-0005: 采用 Jackson2ObjectMapperBuilderCustomizer 挂载定制而非覆盖 ObjectMapper](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)
+- **贡献指南与规范**：[CONTRIBUTING.md](./CONTRIBUTING.md)
 
 ---
 
-## 8. 开源许可证
+## 8. 开发者工具链与脚本助手
+
+本项目内置纯中文交互式工程管理脚本（位于 `scripts/` 目录），全面提升协作与交付效率：
+
+- **规范化提交助手**：
+  ```bash
+  bash scripts/commit.sh
+  ```
+  纯中文交互向导，引导选择 Conventional Commits 提交类型、输入影响范围与描述，自动提供预览并可选一键推送。
+- **语义化发版助手**：
+  ```bash
+  bash scripts/release.sh
+  ```
+  自动化版本探测与 SemVer 防呆校验，创建附注 Git Tag 并原子推送，直接唤起 GitHub Actions 统合发版流水线。
+- **激活本地提交守门钩子**：
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+  在本地提交时进行毫秒级格式拦截校验，彻底杜绝非标提交。
+
+---
+
+## 9. 开源许可证
 
 本项目基于 [Apache 2.0 开源协议](LICENSE) 授权。

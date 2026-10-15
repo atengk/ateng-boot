@@ -4,7 +4,7 @@
 `ateng-boot` 是基于 Spring Boot 3 与 JDK 17 的基础框架与中间件 Starter 套件，对标 Hutool 的精炼、高内聚心智，兼顾单体应用开箱即用与未来微服务生态（`ateng-cloud`）底座支撑。
 
 - **运行与编译**：JDK 17 LTS（字节码 17，兼容 21+ 运行）
-- **核心基线**：Spring Boot `3.3.4`，MyBatis-Plus `3.5.9`
+- **核心基线**：Spring Boot `3.3.13`，MyBatis-Plus `3.5.17`（参见 [ADR-0006](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)）
 - **命名坐标**：GroupId `io.github.atengk`，基础包名 `io.github.atengk.boot.*`，配置前缀 `ateng.boot.*`
 
 ## 2. 核心工程准则 (Core Principles)
@@ -14,7 +14,7 @@
 - **全链路追踪与脱敏 (Tracing & Sanitization)**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；统一使用受管 SLF4J 日志；全局异常处理对未知根异常强制生产脱敏，内部堆栈与敏感 SQL 仅记录于后台日志（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 - **统一注释规范 (Doc Standards)**：新建源码与核心 API 标配清晰业务注释，类头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`。
 - **完成判据与单测门禁 (Completion Criterion)**：所有代码改动与特性落地，均以 `ateng-boot-samples` 模块执行 `mvn clean test` 100% 绿色通过作为准出标准。
-- **受控提交模式 (Explicit Git)**：仅当收到用户明确的“提交/commit/保存”指令时方可操作 Git，修改默认停留在工作区供审阅。
+- **受控提交与脚本门面 (Explicit Git & Script Facade)**：仅当收到用户明确的“提交/commit/保存”指令时方可操作 Git，修改默认停留在工作区供审阅；执行提交时优先使用项目统一门面 `bash scripts/commit.sh -t <type> -s <scope> -m "<说明>" [-p] -y` 确保提交完全符合 Conventional Commits 规约并受本地钩子守护；发版统一通过 `bash scripts/release.sh` 调度。
 
 ## 3. Agent 技能与上下文指引 (Agent Skills)
 
