@@ -76,7 +76,7 @@ flowchart TD
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
-        <version>0.0.4</version>
+        <version>0.0.5</version>
     </dependency>
 
     <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
@@ -92,7 +92,7 @@ flowchart TD
 ```kotlin
 dependencies {
     // 一键引入全部核心底座与中间件增强
-    implementation("io.github.atengk:ateng-boot-all:0.0.4")
+    implementation("io.github.atengk:ateng-boot-all:0.0.5")
 
     // 按需引入实际业务使用的数据库驱动，例如 MySQL
     runtimeOnly("com.mysql:mysql-connector-j")
@@ -103,7 +103,7 @@ dependencies {
 ```groovy
 dependencies {
     // 一键引入全部核心底座与中间件增强
-    implementation 'io.github.atengk:ateng-boot-all:0.0.4'
+    implementation 'io.github.atengk:ateng-boot-all:0.0.5'
 
     // 按需引入实际业务使用的数据库驱动，例如 MySQL
     runtimeOnly 'com.mysql:mysql-connector-j'
@@ -122,7 +122,7 @@ dependencies {
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>0.0.4</version>
+            <version>0.0.5</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
@@ -148,7 +148,7 @@ dependencies {
 ```kotlin
 dependencies {
     // 引入 ateng-boot 统一依赖物料清单
-    implementation(platform("io.github.atengk:ateng-boot-bom:0.0.4"))
+    implementation(platform("io.github.atengk:ateng-boot-bom:0.0.5"))
 
     // 仅按需引入 Web 与持久层（免配版本号）
     implementation("io.github.atengk:ateng-boot-web")
@@ -160,7 +160,7 @@ dependencies {
 ```groovy
 dependencies {
     // 引入 ateng-boot 统一依赖物料清单
-    implementation platform('io.github.atengk:ateng-boot-bom:0.0.4')
+    implementation platform('io.github.atengk:ateng-boot-bom:0.0.5')
 
     // 仅按需引入 Web 与持久层（免配版本号）
     implementation 'io.github.atengk:ateng-boot-web'
