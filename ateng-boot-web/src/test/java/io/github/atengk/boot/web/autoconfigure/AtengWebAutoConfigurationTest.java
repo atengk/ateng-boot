@@ -49,10 +49,25 @@ class AtengWebAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("当配置 ateng.boot.web.cors.enabled=true 时自动装配 CorsFilter")
+    @DisplayName("当配置 ateng.boot.web.cors.enabled=true 时自动装配 CorsOriginProvider, CorsConfigurationSource 与 CorsFilter")
     void shouldEnableCorsFilterWhenConfigured() {
         contextRunner.withPropertyValues("ateng.boot.web.cors.enabled=true")
                 .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.web.cors.CorsOriginProvider.class);
+                    assertThat(context).hasSingleBean(org.springframework.web.cors.CorsConfigurationSource.class);
+                    assertThat(context).hasSingleBean(CorsFilter.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器提供自定义 CorsOriginProvider 时，默认提供者自动退让")
+    void shouldAllowCustomCorsOriginProviderOverride() {
+        io.github.atengk.boot.web.cors.CorsOriginProvider customProvider = origin -> "https://custom.com".equals(origin);
+        contextRunner.withPropertyValues("ateng.boot.web.cors.enabled=true")
+                .withBean(io.github.atengk.boot.web.cors.CorsOriginProvider.class, () -> customProvider)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.web.cors.CorsOriginProvider.class);
+                    assertThat(context.getBean(io.github.atengk.boot.web.cors.CorsOriginProvider.class)).isSameAs(customProvider);
                     assertThat(context).hasSingleBean(CorsFilter.class);
                 });
     }

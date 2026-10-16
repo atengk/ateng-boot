@@ -602,6 +602,67 @@ public class ResourceController {
   }
   ```
 
+### 5.10 动态 CORS 跨域安全与凭证反射 (Dynamic CORS & Origin Provider)
+
+**场景痛点**：传统 CORS 配置通配符 `*` 与 `allow-credentials: true` 存在 W3C 浏览器的根本性安全规约冲突，导致携带 Cookie 认证的预检直接被浏览器拒绝；而在多租户域名、子域名扩展或动态合作方接入场景下，硬编码配置缺乏弹性。`ateng-boot-web` 采用原生 `CorsConfigurationSource` 与 `CorsOriginProvider` SPI 架构，支持请求到达时毫秒级动态判定合法来源并安全反射具体 Origin，兼顾 Cookie 凭据认证与灵活通配符匹配。
+- **开箱匹配规则**：默认实现 `DefaultCorsOriginProvider` 完整支持精确域名匹配、`*.domain.com` 泛域名模式匹配以及本地开发环回地址（`localhost` 与 `127.0.0.1` 任意端口）自动放行；
+- **凭据安全反射**：校验合法后，将请求来源的真实 Origin 动态反射回写至 `Access-Control-Allow-Origin` 响应头，完全满足 `Access-Control-Allow-Credentials: true` 的规范约束；
+- **业务 SPI 平滑扩展**：提供 `CorsOriginProvider` 接口，业务系统可自定义注入（如从 Redis/数据库动态读取白名单），框架内置默认实现自动优雅退让。
+
+**最小可用代码与配置范式**：
+
+1. **开箱即用 YAML 配置**：
+```yaml
+ateng:
+  boot:
+    web:
+      cors:
+        enabled: true
+        allowed-origins:
+          - "https://*.ateng.com"
+          - "https://partner.com"
+        allow-credentials: true
+        allow-localhost: true
+```
+
+2. **高级业务 SPI 扩展（可选：基于 Redis/DB 动态白名单）**：
+```java
+@Component
+public class DatabaseCorsOriginProvider implements CorsOriginProvider {
+
+    @Override
+    public boolean isAllowed(String origin) {
+        // 从缓存或数据库动态比对商户/租户授权域名
+        return tenantDomainService.isValidOrigin(origin);
+    }
+}
+```
+
+**预期 HTTP 响应契约呈现**：
+- **合法子域名预检请求（动态反射 Origin 并支持凭据）**：
+  ```http
+  OPTIONS /api/users/page HTTP/1.1
+  Origin: https://app.ateng.com
+  Access-Control-Request-Method: GET
+
+  HTTP/1.1 200 OK
+  Access-Control-Allow-Origin: https://app.ateng.com
+  Access-Control-Allow-Credentials: true
+  Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS,PATCH
+  Access-Control-Expose-Headers: X-Trace-Id, Retry-After, X-Signature
+  Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers
+  ```
+- **未授权非法来源（预检安全熔断阻断）**：
+  ```http
+  OPTIONS /api/users/page HTTP/1.1
+  Origin: https://malicious-site.com
+  Access-Control-Request-Method: GET
+
+  HTTP/1.1 403 Forbidden
+  Content-Type: text/plain
+  Body: Invalid CORS request
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -619,6 +680,24 @@ ateng:
         enabled: true             # 是否装配 @WebLog 接口审计切面（默认 false，按需开启）
       cors:
         enabled: false            # 是否开启通用跨域支持（默认 false）
+        allowed-origins:          # 允许跨域请求的源域名模式列表（支持精确、通配符 *.domain.com 与 *）
+          - "*"
+        allow-credentials: false  # 是否允许携带 Cookie 凭证（开启时自动安全反射请求源 Origin）
+        allow-localhost: true     # 是否自动放行本地 localhost 与 127.0.0.1 跨域调试（默认 true）
+        allowed-methods:          # 允许跨域的 HTTP 方法列表（默认 GET,POST,PUT,DELETE,OPTIONS,PATCH）
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "DELETE"
+          - "OPTIONS"
+          - "PATCH"
+        allowed-headers:          # 允许携带的请求头（默认 *）
+          - "*"
+        exposed-headers:          # 允许向前端暴露的自定义响应头（默认 X-Trace-Id, Retry-After, X-Signature）
+          - "X-Trace-Id"
+          - "Retry-After"
+          - "X-Signature"
+        max-age: 3600             # 预检 OPTIONS 缓存有效期（秒，默认 3600）
       idempotent:
         enabled: true             # 是否启用接口防重幂等切面与存储引擎（默认 true）
         key-prefix: "idempotent:" # 存储全局 Key 前缀（默认 idempotent:）

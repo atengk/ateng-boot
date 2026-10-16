@@ -17,8 +17,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import io.github.atengk.boot.web.cors.CorsOriginProvider;
+import io.github.atengk.boot.web.cors.DefaultCorsOriginProvider;
+import io.github.atengk.boot.web.cors.DynamicCorsConfigurationSource;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.filter.CorsFilter;
 
 /**
@@ -75,37 +80,60 @@ public class AtengWebAutoConfiguration {
     }
 
     /**
-     * 条件装配全局 CORS 跨域过滤器
+     * 注册默认动态 CORS 来源提供者
      *
      * @param webProperties 配置属性
+     * @return CorsOriginProvider 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.cors", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(CorsOriginProvider.class)
+    public CorsOriginProvider corsOriginProvider(WebProperties webProperties) {
+        return new DefaultCorsOriginProvider(webProperties.getCors());
+    }
+
+    /**
+     * 注册动态 CORS 配置源
+     *
+     * @param originProvider 跨域来源提供者 SPI
+     * @param webProperties  配置属性
+     * @return CorsConfigurationSource 实例
+     */
+    @Bean
+    @Primary
+    @ConditionalOnProperty(prefix = "ateng.boot.web.cors", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "corsConfigurationSource")
+    public CorsConfigurationSource corsConfigurationSource(CorsOriginProvider originProvider,
+                                                           WebProperties webProperties) {
+        return new DynamicCorsConfigurationSource(originProvider, webProperties.getCors());
+    }
+
+    /**
+     * 条件装配全局 CORS 跨域过滤器
+     *
+     * @param corsConfigurationSource 跨域配置源
      * @return CorsFilter 实例
      */
     @Bean
     @ConditionalOnProperty(prefix = "ateng.boot.web.cors", name = "enabled", havingValue = "true")
     @ConditionalOnMissingBean(CorsFilter.class)
-    public CorsFilter corsFilter(WebProperties webProperties) {
-        WebProperties.CorsProperties cors = webProperties.getCors();
-        CorsConfiguration config = new CorsConfiguration();
+    public CorsFilter corsFilter(@Qualifier("corsConfigurationSource") CorsConfigurationSource corsConfigurationSource) {
+        return new CorsFilter(corsConfigurationSource);
+    }
 
-        if (cors.getAllowedOrigins() != null && !cors.getAllowedOrigins().isEmpty()) {
-            config.setAllowedOriginPatterns(cors.getAllowedOrigins());
-        }
-        if (cors.getAllowedMethods() != null && !cors.getAllowedMethods().isEmpty()) {
-            config.setAllowedMethods(cors.getAllowedMethods());
-        }
-        if (cors.getAllowedHeaders() != null && !cors.getAllowedHeaders().isEmpty()) {
-            config.setAllowedHeaders(cors.getAllowedHeaders());
-        }
-        if (cors.getAllowCredentials() != null) {
-            config.setAllowCredentials(cors.getAllowCredentials());
-        }
-        if (cors.getMaxAge() != null) {
-            config.setMaxAge(cors.getMaxAge());
-        }
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", config);
-        return new CorsFilter(source);
+    /**
+     * 注册 CORS 跨域过滤器 FilterRegistrationBean，显式指定高优先级保证在安全与业务过滤器前执行
+     *
+     * @param corsFilter CorsFilter 实例
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.cors", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "corsFilterRegistration")
+    public FilterRegistrationBean<CorsFilter> corsFilterRegistration(CorsFilter corsFilter) {
+        FilterRegistrationBean<CorsFilter> registration = new FilterRegistrationBean<>(corsFilter);
+        registration.setOrder(TraceFilter.ORDER + 10);
+        return registration;
     }
 
     /**

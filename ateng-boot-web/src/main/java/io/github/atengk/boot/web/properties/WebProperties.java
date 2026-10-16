@@ -85,6 +85,16 @@ public class WebProperties {
         private Boolean allowCredentials = false;
 
         /**
+         * 是否自动放行本地 localhost 与 127.0.0.1 跨域调试
+         */
+        private boolean allowLocalhost = true;
+
+        /**
+         * 允许向浏览器端暴露的自定义响应头列表
+         */
+        private List<String> exposedHeaders = new ArrayList<>(Arrays.asList("X-Trace-Id", "Retry-After", "X-Signature"));
+
+        /**
          * 跨域预检请求缓存有效时间（秒）
          */
         private Long maxAge = 3600L;
