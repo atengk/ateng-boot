@@ -3,10 +3,12 @@ package io.github.atengk.boot.excel.util;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
+import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
+import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
@@ -14,6 +16,7 @@ import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import jakarta.servlet.http.HttpServletResponse;
+import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.enums.CellDataTypeEnum;
@@ -21,6 +24,8 @@ import org.apache.fesod.sheet.metadata.AbstractParameterBuilder;
 import org.apache.fesod.sheet.read.builder.ExcelReaderBuilder;
 import org.apache.fesod.sheet.read.listener.ReadListener;
 import org.apache.fesod.sheet.write.builder.ExcelWriterBuilder;
+import org.apache.fesod.sheet.write.metadata.WriteSheet;
+import org.apache.fesod.sheet.write.metadata.fill.FillConfig;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.util.Assert;
@@ -30,8 +35,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -116,6 +124,9 @@ public final class ExcelUtil {
 
         var writerBuilder = FesodSheet.write(outputStream, clazz)
                 .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
+        if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
+            writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
+        }
         registerEnumConverters(writerBuilder, clazz);
 
         writerBuilder.sheet(targetSheetName)
@@ -441,6 +452,400 @@ public final class ExcelUtil {
         }
     }
 
+    // ==================== 复杂报表模板填充 (fill) ====================
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream（支持单对象占位符与列表循环）
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据（支持 Collection 列表、Map 混合结构或单对象 JavaBean）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, Object data) {
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, null);
+    }
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream（支持自定义填充配置）
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据
+     * @param fillConfig 填充配置（如 forceNewRow）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, Object data, FillConfig fillConfig) {
+        fill(out, templateIn, DEFAULT_SHEET_NAME, data, fillConfig);
+    }
+
+    /**
+     * 填充数据至预设 Excel 模板并输出至 OutputStream，指定目标工作表名称
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param sheetName  工作表名称（为空时默认 Sheet1）
+     * @param data       待填充数据
+     * @param fillConfig 填充配置（可为 null）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object data, FillConfig fillConfig) {
+        if (data instanceof Collection<?> list) {
+            fill(out, templateIn, sheetName, null, list, fillConfig);
+        } else if (data instanceof Map<?, ?> map) {
+            Collection<?> extractedList = null;
+            Map<Object, Object> simpleMap = new HashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getValue() instanceof Collection<?> col && extractedList == null) {
+                    extractedList = col;
+                } else {
+                    simpleMap.put(entry.getKey(), entry.getValue());
+                }
+            }
+            fill(out, templateIn, sheetName, simpleMap.isEmpty() ? null : simpleMap, extractedList, fillConfig);
+        } else {
+            fill(out, templateIn, sheetName, data, null, fillConfig);
+        }
+    }
+
+    /**
+     * 复合填充：同时支持单对象占位符与列表集合循环填充
+     *
+     * @param out        目标输出流（不可为空）
+     * @param templateIn 模板输入流（不可为空）
+     * @param sheetName  工作表名称（为空时默认 Sheet1）
+     * @param objectData 单对象/Map 占位符数据（可为 null）
+     * @param listData   循环列表数据（可为 null）
+     * @param fillConfig 填充配置（如 forceNewRow；为 null 时默认 forceNewRow(true)）
+     */
+    public static void fill(OutputStream out, InputStream templateIn, String sheetName, Object objectData, Collection<?> listData, FillConfig fillConfig) {
+        Assert.notNull(out, "OutputStream 目标输出流不可为空");
+        Assert.notNull(templateIn, "templateIn 模板输入流不可为空");
+
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+
+        try (ExcelWriter excelWriter = FesodSheet.write(out).withTemplate(templateIn).build()) {
+            WriteSheet writeSheet = FesodSheet.writerSheet(targetSheetName).build();
+
+            // 1. 优先填充列表数据
+            if (listData != null && !listData.isEmpty()) {
+                FillConfig config = (fillConfig != null) ? fillConfig : FillConfig.builder().forceNewRow(Boolean.TRUE).build();
+                excelWriter.fill(listData, config, writeSheet);
+            }
+
+            // 2. 填充单对象/Map 占位符
+            if (objectData != null) {
+                excelWriter.fill(objectData, writeSheet);
+            }
+
+            excelWriter.finish();
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板填充导出失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板填充数据并直接写入 HttpServletResponse
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param templateIn 模板输入流（不可为空）
+     * @param data       待填充数据
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data) {
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, null);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板填充数据并直接写入 HttpServletResponse（支持自定义填充配置）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param templateIn 模板输入流
+     * @param data       待填充数据
+     * @param fillConfig 填充配置
+     */
+    public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig) {
+        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig);
+    }
+
+    /**
+     * Web 环境下基于 Excel 模板填充数据并直接写入 HttpServletResponse（指定工作表名称）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param data       待填充数据
+     * @param fillConfig 填充配置
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig) {
+        prepareWebResponse(response, fileName);
+        try {
+            fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 模板填充导出失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Web 环境下复合填充（同时支持单对象占位符与列表循环填充）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名
+     * @param sheetName  工作表名称
+     * @param templateIn 模板输入流
+     * @param objectData 单对象/Map 占位符数据
+     * @param listData   列表集合数据
+     * @param fillConfig 填充配置
+     */
+    public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig) {
+        prepareWebResponse(response, fileName);
+        try {
+            fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 复合模板填充导出失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    // ==================== 无实体动态导出 (exportDynamic) ====================
+
+    /**
+     * 无实体动态流式导出至 OutputStream
+     *
+     * @param out      目标输出流（不可为空）
+     * @param headList 动态表头（支持 {@code List<String>} 或 {@code List<List<String>>}）
+     * @param dataList 动态行数据集合（支持 {@code List<List<?>>} 或 {@code List<Map<String, ?>>}）
+     */
+    public static void exportDynamic(OutputStream out, List<?> headList, List<?> dataList) {
+        exportDynamic(out, DEFAULT_SHEET_NAME, headList, dataList);
+    }
+
+    /**
+     * 无实体动态流式导出至 OutputStream，指定工作表名称
+     *
+     * @param out       目标输出流（不可为空）
+     * @param sheetName 工作表名称
+     * @param headList  动态表头
+     * @param dataList  动态行数据集合
+     */
+    public static void exportDynamic(OutputStream out, String sheetName, List<?> headList, List<?> dataList) {
+        Assert.notNull(out, "OutputStream 目标输出流不可为空");
+        Assert.notNull(headList, "headList 动态表头定义不可为空");
+
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+        List<List<String>> fesodHead = normalizeHead(headList);
+        List<?> normalizedData = normalizeData(dataList, headList);
+
+        FesodSheet.write(out)
+                .head(fesodHead)
+                .sheet(targetSheetName)
+                .doWrite(normalizedData);
+    }
+
+    /**
+     * 无实体基于 Map 列表与显式列键映射导出至 OutputStream
+     *
+     * @param out       目标输出流
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 中对应的键列表（与表头一一对应）
+     * @param dataList  Map 数据集合
+     */
+    public static void exportDynamic(OutputStream out, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
+        Assert.notNull(out, "OutputStream 目标输出流不可为空");
+        Assert.notNull(headList, "headList 动态表头不可为空");
+
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+        List<List<String>> fesodHead = normalizeHead(headList);
+        List<String> keys = (dataKeys != null && !dataKeys.isEmpty()) ? dataKeys : headList;
+
+        List<List<Object>> rows = new ArrayList<>();
+        if (dataList != null) {
+            for (Map<String, Object> map : dataList) {
+                List<Object> row = new ArrayList<>(keys.size());
+                for (String key : keys) {
+                    row.add(map != null ? map.get(key) : null);
+                }
+                rows.add(row);
+            }
+        }
+
+        FesodSheet.write(out)
+                .head(fesodHead)
+                .sheet(targetSheetName)
+                .doWrite(rows);
+    }
+
+    /**
+     * Web 环境下无实体动态流式导出并直接写入 HttpServletResponse
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名
+     * @param headList 动态表头
+     * @param dataList 动态行数据集合
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList) {
+        exportDynamic(response, fileName, DEFAULT_SHEET_NAME, headList, dataList);
+    }
+
+    /**
+     * Web 环境下无实体动态流式导出并直接写入 HttpServletResponse（指定工作表名称）
+     *
+     * @param response  响应对象（不可为空）
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头
+     * @param dataList  动态行数据集合
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList) {
+        prepareWebResponse(response, fileName);
+        try {
+            exportDynamic(response.getOutputStream(), sheetName, headList, dataList);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Web 环境下基于 Map 列表与显式列键映射动态导出至 HttpServletResponse
+     *
+     * @param response  响应对象
+     * @param fileName  导出的文件名
+     * @param sheetName 工作表名称
+     * @param headList  动态表头列表
+     * @param dataKeys  Map 对应的键列表
+     * @param dataList  Map 数据集合
+     */
+    public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
+        prepareWebResponse(response, fileName);
+        try {
+            exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    // ==================== 多 Sheet Fluent 构建器 (builder) ====================
+
+    /**
+     * 创建基于 OutputStream 的多 Sheet 链式 Fluent 构建器
+     *
+     * @param out 目标输出流（不可为空）
+     * @return 链式构建器实例
+     */
+    public static ExcelBuilder builder(OutputStream out) {
+        return new ExcelBuilder(out, ExcelUtil::configureSheet);
+    }
+
+    /**
+     * Web 环境下创建基于 HttpServletResponse 的多 Sheet 链式 Fluent 构建器
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
+     * @return 链式构建器实例
+     */
+    public static ExcelBuilder builder(HttpServletResponse response, String fileName) {
+        prepareWebResponse(response, fileName);
+        try {
+            return new ExcelBuilder(response.getOutputStream(), ExcelUtil::configureSheet);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建 ExcelBuilder 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    // ==================== 动态数据规范化工具方法 ====================
+
+    /**
+     * 将动态表头入参规范化为 Apache Fesod 原生支持的 {@code List<List<String>>} 结构
+     *
+     * @param headList 动态表头（支持 {@code List<String>} 或嵌套 {@code List<List<String>>}）
+     * @return 规范化的嵌套表头集合
+     */
+    public static List<List<String>> normalizeHead(List<?> headList) {
+        if (headList == null || headList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<List<String>> result = new ArrayList<>(headList.size());
+        for (Object item : headList) {
+            if (item instanceof Collection<?> col) {
+                List<String> inner = new ArrayList<>(col.size());
+                for (Object sub : col) {
+                    inner.add(sub != null ? String.valueOf(sub) : "");
+                }
+                result.add(inner);
+            } else {
+                result.add(Collections.singletonList(item != null ? String.valueOf(item) : ""));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 将动态数据集合规范化为可供流式导出的行值列表
+     *
+     * @param dataList 动态原始数据集合
+     * @param headList 对应表头定义
+     * @return 规范化后的二维行列表
+     */
+    public static List<?> normalizeData(List<?> dataList, List<?> headList) {
+        if (dataList == null || dataList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Object first = dataList.get(0);
+        if (first instanceof Collection<?> || first instanceof Object[]) {
+            List<List<Object>> rows = new ArrayList<>(dataList.size());
+            for (Object row : dataList) {
+                if (row instanceof Collection<?> col) {
+                    rows.add(new ArrayList<>(col));
+                } else if (row instanceof Object[] arr) {
+                    List<Object> list = new ArrayList<>(arr.length);
+                    Collections.addAll(list, arr);
+                    rows.add(list);
+                }
+            }
+            return rows;
+        }
+        if (first instanceof Map<?, ?>) {
+            List<String> flatHeaders = extractFlatHeaders(headList);
+            List<List<Object>> rows = new ArrayList<>(dataList.size());
+            for (Object row : dataList) {
+                if (row instanceof Map<?, ?> map) {
+                    List<Object> rowValues = new ArrayList<>();
+                    boolean matchedAnyHeader = false;
+                    for (String header : flatHeaders) {
+                        if (map.containsKey(header)) {
+                            matchedAnyHeader = true;
+                            break;
+                        }
+                    }
+                    if (matchedAnyHeader) {
+                        for (String header : flatHeaders) {
+                            rowValues.add(map.get(header));
+                        }
+                    } else {
+                        rowValues.addAll(map.values());
+                    }
+                    rows.add(rowValues);
+                }
+            }
+            return rows;
+        }
+        return dataList;
+    }
+
+    private static List<String> extractFlatHeaders(List<?> headList) {
+        if (headList == null || headList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> flat = new ArrayList<>(headList.size());
+        for (Object item : headList) {
+            if (item instanceof List<?> list && !list.isEmpty()) {
+                flat.add(String.valueOf(list.get(list.size() - 1)));
+            } else {
+                flat.add(item != null ? String.valueOf(item) : "");
+            }
+        }
+        return flat;
+    }
+
     /**
      * 统一配置遵循 RFC 5987 / RFC 6266 标准的 Web 下载响应头与 MIME 类型
      *
@@ -476,6 +881,17 @@ public final class ExcelUtil {
             builder.registerConverter(new ExcelEnumConverter(enumClass, null, null));
             builder.registerConverter(new ExcelEnumConverter(enumClass, null, CellDataTypeEnum.STRING));
         }
+    }
+
+    /**
+     * 配置实体模型 Sheet 级拦截器与枚举转换器
+     */
+    private static void configureSheet(org.apache.fesod.sheet.write.builder.ExcelWriterSheetBuilder sheetBuilder, Class<?> headClass) {
+        if (sheetBuilder == null || headClass == null) {
+            return;
+        }
+        sheetBuilder.registerWriteHandler(new DropdownSheetWriteHandler(headClass));
+        registerEnumConverters(sheetBuilder, headClass);
     }
 }
 

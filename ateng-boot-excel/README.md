@@ -375,7 +375,90 @@ List<UserBusinessVO> importedList = ExcelUtil.read(file.getInputStream(), UserBu
 
 ---
 
-## 9. 配置属性参考
+## 9. 复杂报表填充、单元格合并与多 Sheet 链式构建器
+
+### 场景痛点
+在企业级经营分析与财务报表场景中，开发者往往面临四大棘手诉求：
+1. **模板格式复杂**：带有公司 Logo、公式计算、复杂合并表头的发票与预算表，手写代码排版极其耗时；
+2. **相同数据折叠合并**：同部门或同类别的相邻行数据零散罗列，需要根据层级关系纵向合并单元格；
+3. **无实体与动态 SQL 导出**：BI 自定义报表或聚合统计场景无法预先定义固定 Java VO 类；
+4. **多工作表编排繁琐**：单文件包含“明细”、“汇总”、“参数说明”等多个 Sheet 时，传统代码需要繁复的 Writer 与 Sheet 对象管理。
+
+### 核心代码范式
+`ateng-boot-excel` 提供声明式合并注解、模板填充门面、动态流式导出以及 Fluent 链式构建器：
+
+```java
+import io.github.atengk.boot.excel.annotation.ExcelMerge;
+import io.github.atengk.boot.excel.builder.ExcelBuilder;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import org.apache.fesod.sheet.write.metadata.fill.FillConfig;
+import lombok.Data;
+import lombok.AllArgsConstructor;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.List;
+import java.util.Map;
+
+// 1. 声明式单元格合并模型：通过 @ExcelMerge 启用相邻行合并，dependParent=true 绑定父级防串列
+@Data
+@AllArgsConstructor
+public class DepartmentStaffVO {
+    @ExcelMerge
+    @ExcelProperty("部门")
+    private String department;
+
+    @ExcelMerge(dependParent = true)
+    @ExcelProperty("岗位")
+    private String role;
+
+    @ExcelProperty("员工姓名")
+    private String name;
+
+    @ExcelProperty("薪资")
+    private Double salary;
+}
+
+// 2. 导出带自动纵向合并的报表（在 ExcelUtil.export 中全自动识别生效）
+ExcelUtil.export(response, "部门花名册", staffList, DepartmentStaffVO.class);
+
+// 3. 模板填充：同时支持单变量占位符 {title} 与列表循环占位符 {.name}
+Map<String, Object> variables = Map.of("title", "2026年度预算", "date", "2026-10-16", "author", "Ateng");
+List<BudgetItemVO> items = List.of(new BudgetItemVO("云服务器", 50000.0), new BudgetItemVO("光纤专线", 12000.0));
+ExcelUtil.fill(response, "年度预算表", templateInputStream, variables, items, FillConfig.builder().forceNewRow(true).build());
+
+// 4. 无实体动态导出：基于表头列表与 List<List<Object>> 或 List<Map<String, Object>> 直接导出
+List<String> headers = List.of("工号", "商品名称", "销售金额");
+List<List<Object>> dynamicData = List.of(
+    List.of(101, "机械键盘", 499.0),
+    List.of(102, "人体工学椅", 1299.0)
+);
+ExcelUtil.exportDynamic(response, "实时销售报表", headers, dynamicData);
+
+// 5. 多 Sheet 链式构建器：连续配置多个 Sheet 并借助 try-with-resources 自动冲刷关闭
+try (ExcelBuilder builder = ExcelUtil.builder(response, "企业综合运营报表")) {
+    builder.sheet("员工信息", DepartmentStaffVO.class, staffList)
+           .sheetDynamic("销售动态", headers, dynamicData);
+}
+```
+
+### 预期呈现契约
+1. **单元格纵向合并呈现**：
+   | 部门 | 岗位 | 员工姓名 | 薪资 |
+   | :--- | :--- | :--- | :--- |
+   | 技术部 (合并 3 行) | 后端研发 (合并 2 行) | 张三 | 10000.0 |
+   | | | 李四 | 12000.0 |
+   | | 前端研发 | 王五 | 11000.0 |
+   | 市场部 (合并 2 行) | 商务经理 (合并 2 行) | 赵六 | 8500.0 |
+   | | | 钱七 | 9000.0 |
+
+2. **多 Sheet 导出呈现**：
+   生成的 `.xlsx` 文件底部同时呈现多个标签页（`员工信息`、`销售动态`），各 Sheet 分别持有独立的格式、表头与脱敏/合并策略。
+
+---
+
+## 10. 配置属性参考
 
 在 `application.yml` 中按需定制：
 
