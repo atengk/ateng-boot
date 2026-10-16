@@ -482,9 +482,12 @@ public class UserEntity extends BaseFullEntity {
   ```
 - **调用 `userMapper.updateById(user)`**：持久层基于内存真明文重新计算随机 IV 加密落盘，**绝不会把 `*` 号脏数据写回数据库**！
 
-### 5.5 接口防重幂等与请求防抖 (@Idempotent)
+### 5.8 接口防重幂等与请求防抖 (@Idempotent)
 
-**场景痛点**：网络抖动重发、前端按钮连击或并发重放攻击极易导致重复下单、重复扣款等高危事故。传统方案要么强行绑定 Redis 中间件破坏单体零依赖，要么采用固定死锁导致业务异常后无法立即重试。`ateng-boot-web` 内置 SPI 混合防重引擎，默认零配置单机内存防爆运行，检测到 Redis 时自动平滑升级为分布式锁。
+**场景痛点**：网络抖动重发、前端按钮连击或并发重放攻击极易导致重复下单、重复扣款等高危事故。传统方案要么强行绑定 Redis 中间件破坏单体零依赖，要么采用固定死锁导致业务异常后无法立即重试。`ateng-boot-web` 内置三级自适应存储抢占体系：
+- **Tier 1 (RedissonClient)**：最高优先级分布式抢占，使用 Redisson 原生原子操作；
+- **Tier 2 (StringRedisTemplate)**：次级分布式抢占，使用 Spring Data Redis 原生 `setIfAbsent`；
+- **Tier 3 (InMemoryIdempotentKeyStore)**：纯 JDK 单机内存零配置防爆运行兜底，检测到分布式中间件时自动平滑升级，支持用户显式注入自定义 `IdempotentKeyStore` 时全量自动退让。
 
 **最小可用代码范式**：
 ```java

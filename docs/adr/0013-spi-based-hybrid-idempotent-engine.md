@@ -35,8 +35,9 @@ flowchart TD
 
     subgraph StoreLayer["存储 SPI 契约与实现 (IdempotentKeyStore)"]
         direction TB
-        MemStore["InMemoryIdempotentKeyStore\n(纯 JDK ConcurrentHashMap + 惰性检测 + 容量软上限)"]
-        RedisStore["RedisIdempotentKeyStore\n(基于 Spring Data Redis setIfAbsent / 原子加锁)"]
+        RedissonStore["RedissonIdempotentKeyStore\n(Tier 1: RedissonClient RBucket 原子抢占)"]
+        RedisStore["RedisIdempotentKeyStore\n(Tier 2: Spring Data Redis setIfAbsent 原子加锁)"]
+        MemStore["InMemoryIdempotentKeyStore\n(Tier 3: 纯 JDK ConcurrentHashMap + 软容量上限)"]
     end
 
     subgraph Execution["Controller 业务方法执行"]
@@ -48,8 +49,9 @@ flowchart TD
     Req --> CheckAnn
     CheckAnn -->|是| ResolveKey
     ResolveKey --> TryLock
-    TryLock -->|未命中存储 / 单机环境| MemStore
-    TryLock -->|存在 Redis 环境| RedisStore
+    TryLock -->|存在 RedissonClient| RedissonStore
+    TryLock -->|未命中 Redisson 但存在 Redis| RedisStore
+    TryLock -->|未命中分布式环境 / 单机环境| MemStore
     TryLock -->|加锁失败 / 键已存在| Conflict
     TryLock -->|加锁成功 / 首个请求| BizRun
     BizRun -->|正常返回| BizSucc
@@ -61,7 +63,7 @@ flowchart TD
 - **杜绝形式主义微模块**：不为单一微切面独立开辟 Maven 构件，下游引入 `ateng-boot-web` 或 `ateng-boot-all` 即可一键获得防重能力；
 - **解耦设计**：未来若引入独立消息中间件套件且消费端需脱离 Web 使用纯防重锁时，仅需将通用的 `IdempotentKeyStore` 抽象下沉即可。
 
-### 2. 存储 SPI 与两级优雅自适应装配 (Two-Tier Hybrid KeyStore)
+### 2. 存储 SPI 与三级自适应条件装配 (Three-Tier Hybrid KeyStore)
 定义纯净的幂等状态操作 SPI：
 ```java
 public interface IdempotentKeyStore {
@@ -69,14 +71,17 @@ public interface IdempotentKeyStore {
     void unlock(String key);
 }
 ```
-- **Tier 1 默认单机保底（InMemoryIdempotentKeyStore）**：
+- **Tier 1 生产分布式最优选（RedissonIdempotentKeyStore）**：
+  - 基于 Redisson 官方客户端 `redissonClient.getBucket(key).setIfAbsent("1", Duration)`；
+  - 提供生产级高可用集群环境下的最优排他原子抢占与原生存活周期治理；
+- **Tier 2 轻量级分布式扩展（RedisIdempotentKeyStore）**：
+  - 在未命中 Redisson 但存在 `StringRedisTemplate` 时自动激活；
+  - 基于 `stringRedisTemplate.opsForValue().setIfAbsent(key, "1", timeout, unit)` 执行分布式原子加锁；
+- **Tier 3 默认单机保底兜底（InMemoryIdempotentKeyStore）**：
   - 基于纯 JDK 原生 `ConcurrentHashMap`，绝不引入 Guava 或 Caffeine；
   - 采用 **“惰性过期检测 + 软容量上限淘汰（Soft LRU Guard）+ 低频后台定时清理”** 三重防护，加锁路径无全局锁争用，当达到最大容量阈值时安全淘汰过期数据，彻底杜绝单机内存泄漏与 OOM 隐患；
-  - 配置 `@ConditionalOnMissingBean(IdempotentKeyStore.class)`，无任何外部配置即开箱可用；
-- **Tier 2 分布式无缝升级（RedisIdempotentKeyStore）**：
-  - 在存在 `StringRedisTemplate` 时自动激活；
-  - 基于 `stringRedisTemplate.opsForValue().setIfAbsent(key, "1", timeout, unit)` 执行分布式原子加锁；
-  - 宿主工程引入 Redis 依赖即可秒级无缝平滑升级为多实例集群防重，**上层业务代码与 Controller 无需任何修改**。
+  - 仅在未命中 Tier 1/2 且未自定义时自动兜底装配，无任何外部配置即开箱可用；
+- **用户自定义全量退让**：宿主工程显式注入任何自定义 `IdempotentKeyStore` Bean 时，三级自动装配全量自动退让。
 
 ### 3. SpEL 优先与请求特征自动哈希兜底 (Key Generation Strategy)
 - **精准业务防重**：声明 `@Idempotent(key = "#dto.orderNo")` 时，基于 Spring 原生 SpEL 解析器精准绑定业务主键；

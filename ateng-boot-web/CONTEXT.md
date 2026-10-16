@@ -61,5 +61,21 @@ _Avoid_: LockStore, IdempotentManager, KeyStorage, DistributedLockStore
 _Avoid_: LocalKeyStore, MemoryLockStore, SimpleKeyStore
 
 **RedisIdempotentKeyStore**:
-基于 Spring Data Redis 的分布式原子加锁与过期释放实现，由条件注解在宿主环境包含 Redis 依赖时自动按需装配。
+基于 Spring Data Redis 的分布式原子加锁与过期释放实现，作为 Tier 2 次级分布式存储提供者。
 _Avoid_: DistributedRedisStore, RedisLockStore
+
+**RedissonIdempotentKeyStore**:
+基于 RedissonClient RBucket 原生原子抢占与存活周期的分布式幂等存储实现，作为 Tier 1 最高优先级分布式存储提供者。
+_Avoid_: RedissonLockStore, RedissonStore
+
+**RedissonIdempotentAutoConfiguration**:
+Tier 1 幂等存储自动装配类，当容器中存在 RedissonClient Bean 时自动装配 RedissonIdempotentKeyStore。
+_Avoid_: RedissonAutoConfig, RedissonStoreConfiguration
+
+**RedisIdempotentAutoConfiguration**:
+Tier 2 幂等存储自动装配类，当容器中存在 StringRedisTemplate Bean 且未命中 Redisson 时自动装配 RedisIdempotentKeyStore。
+_Avoid_: RedisAutoConfig, RedisStoreConfiguration
+
+**AtengIdempotentAutoConfiguration**:
+Tier 3 核心自动装配类，在分布式中间件之后执行，负责单机内存存储兜底（InMemoryIdempotentKeyStore）与 AOP 切面（IdempotentAspect）装配。
+_Avoid_: IdempotentConfig, IdempotentAspectAutoConfiguration
