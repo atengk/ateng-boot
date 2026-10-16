@@ -105,4 +105,86 @@ class DesensitizeUtilTest {
         assertEquals("########", DesensitizeUtil.password("mySecret123", "########"));
         assertEquals("******", DesensitizeUtil.password("mySecret123", null));
     }
+
+    @Test
+    @DisplayName("国内地址脱敏验证")
+    void shouldDesensitizeAddress() {
+        assertNull(DesensitizeUtil.address(null));
+        assertEquals("", DesensitizeUtil.address(""));
+        assertEquals("北京", DesensitizeUtil.address("北京"));
+        assertEquals("北京****", DesensitizeUtil.address("北京市朝阳区"));
+        assertEquals("北京市海淀区*********", DesensitizeUtil.address("北京市海淀区中关村南大街1号院"));
+        assertEquals("广东省深圳市*************", DesensitizeUtil.address("广东省深圳市南山区高新南一道科技园大厦"));
+    }
+
+    @Test
+    @DisplayName("车牌号码脱敏验证（保留前2后2，兼容新能源与间隔符）")
+    void shouldDesensitizeCarLicense() {
+        assertNull(DesensitizeUtil.carLicense(null));
+        assertEquals("", DesensitizeUtil.carLicense(""));
+        assertEquals("京A", DesensitizeUtil.carLicense("京A"));
+        // 7位传统燃油车
+        assertEquals("京A***88", DesensitizeUtil.carLicense("京A12388"));
+        // 8位新能源车牌
+        assertEquals("粤B****45", DesensitizeUtil.carLicense("粤BD12345"));
+        // 带点号或间隔符场景
+        assertEquals("京A·***88", DesensitizeUtil.carLicense("京A·12388"));
+        assertEquals("苏E-***99", DesensitizeUtil.carLicense("苏E-88899"));
+    }
+
+    @Test
+    @DisplayName("IPv4 地址脱敏验证（支持末位段与末两段掩码）")
+    void shouldDesensitizeIpv4() {
+        assertNull(DesensitizeUtil.ipv4(null));
+        assertEquals("", DesensitizeUtil.ipv4(""));
+        // 默认掩码末位段
+        assertEquals("192.168.1.*", DesensitizeUtil.ipv4("192.168.1.100"));
+        assertEquals("10.0.0.*", DesensitizeUtil.ipv4("10.0.0.1"));
+        // 掩码末两段
+        assertEquals("192.168.*.*", DesensitizeUtil.ipv4("192.168.1.100", true));
+        assertEquals("10.0.*.*", DesensitizeUtil.ipv4("10.0.0.1", true));
+        // 非标 IP 防御
+        assertEquals("invalid-ip", DesensitizeUtil.ipv4("invalid-ip"));
+        assertEquals("192.168", DesensitizeUtil.ipv4("192.168"));
+    }
+
+    @Test
+    @DisplayName("IPv6 地址脱敏验证（压缩保留首尾段，中间 ****）")
+    void shouldDesensitizeIpv6() {
+        assertNull(DesensitizeUtil.ipv6(null));
+        assertEquals("", DesensitizeUtil.ipv6(""));
+        assertEquals("2001:****:7334", DesensitizeUtil.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"));
+        assertEquals("fe80:****:1", DesensitizeUtil.ipv6("fe80::1"));
+        assertEquals("::1", DesensitizeUtil.ipv6("::1"));
+        assertEquals("no-colon-ip", DesensitizeUtil.ipv6("no-colon-ip"));
+    }
+
+    @Test
+    @DisplayName("统一社会信用代码脱敏验证（18位保留前2后4）")
+    void shouldDesensitizeSocialCreditCode() {
+        assertNull(DesensitizeUtil.socialCreditCode(null));
+        assertEquals("", DesensitizeUtil.socialCreditCode(""));
+        assertEquals("91************BC12", DesensitizeUtil.socialCreditCode("91110000MA001ABC12"));
+        // 短代码/非18位防御
+        assertEquals("12345", DesensitizeUtil.socialCreditCode("12345"));
+        assertEquals("91*********1234", DesensitizeUtil.socialCreditCode("910000000001234"));
+    }
+
+    @Test
+    @DisplayName("首尾保留掩码验证（maskKeepHeadTail / maskKeepHead / maskKeepTail）")
+    void shouldDesensitizeKeepHeadTail() {
+        assertNull(DesensitizeUtil.maskKeepHeadTail(null, 2, 2));
+        assertEquals("", DesensitizeUtil.maskKeepHeadTail("", 2, 2));
+        assertEquals("12******90", DesensitizeUtil.maskKeepHeadTail("1234567890", 2, 2));
+        assertEquals("12######90", DesensitizeUtil.maskKeepHeadTail("1234567890", 2, 2, '#'));
+        assertEquals("123*******", DesensitizeUtil.maskKeepHead("1234567890", 3));
+        assertEquals("*******890", DesensitizeUtil.maskKeepTail("1234567890", 3));
+        // keepHead + keepTail >= length 超长防御：原样安全返回，严禁越界或异常
+        assertEquals("12345", DesensitizeUtil.maskKeepHeadTail("12345", 3, 3));
+        assertEquals("12345", DesensitizeUtil.maskKeepHeadTail("12345", 2, 3));
+        assertEquals("12345", DesensitizeUtil.maskKeepHead("12345", 6));
+        assertEquals("12345", DesensitizeUtil.maskKeepTail("12345", 5));
+        // 负数保留防御
+        assertEquals("*****", DesensitizeUtil.maskKeepHeadTail("12345", -1, -2));
+    }
 }

@@ -46,7 +46,37 @@ public enum SensitiveType {
     /**
      * 密码（如：******）
      */
-    PASSWORD(DesensitizeUtil::password),
+     PASSWORD(DesensitizeUtil::password),
+
+    /**
+     * 国内地址（如：北京市海淀区*********）
+     */
+    ADDRESS(DesensitizeUtil::address),
+
+    /**
+     * 车牌号码（如：京A***88、粤B****45）
+     */
+    CAR_LICENSE(DesensitizeUtil::carLicense),
+
+    /**
+     * IPv4 地址（如：192.168.1.*）
+     */
+    IPV4(DesensitizeUtil::ipv4),
+
+    /**
+     * IPv6 地址（如：2001:****:7334）
+     */
+    IPV6(DesensitizeUtil::ipv6),
+
+    /**
+     * 统一社会信用代码（如：91************BC12）
+     */
+    SOCIAL_CREDIT_CODE(DesensitizeUtil::socialCreditCode),
+
+    /**
+     * 首尾保留掩码（由 keepHead、keepTail 与 maskChar 决定，超长防御原样返回）
+     */
+    KEEP_HEAD_TAIL(null),
 
     /**
      * 自定义区间掩码（由 startInclude、endExclude 与 maskChar 决定）
@@ -65,7 +95,7 @@ public enum SensitiveType {
     }
 
     /**
-     * 执行脱敏掩码转换
+     * 执行脱敏掩码转换（兼容旧版入参）
      *
      * @param value        原始待脱敏字符串
      * @param startInclude 自定义起始包含索引（仅 CUSTOM 生效）
@@ -74,11 +104,29 @@ public enum SensitiveType {
      * @return 掩码后的字符串
      */
     public String mask(String value, int startInclude, int endExclude, char maskChar) {
+        return mask(value, startInclude, endExclude, 0, 0, maskChar);
+    }
+
+    /**
+     * 执行脱敏掩码转换（支持首尾保留参数）
+     *
+     * @param value        原始待脱敏字符串
+     * @param startInclude 自定义起始包含索引（仅 CUSTOM 生效）
+     * @param endExclude   自定义结束排除索引（仅 CUSTOM 生效）
+     * @param keepHead     头部保留字符数（仅 KEEP_HEAD_TAIL 生效）
+     * @param keepTail     尾部保留字符数（仅 KEEP_HEAD_TAIL 生效）
+     * @param maskChar     自定义掩码字符（CUSTOM 与 KEEP_HEAD_TAIL 生效）
+     * @return 掩码后的字符串
+     */
+    public String mask(String value, int startInclude, int endExclude, int keepHead, int keepTail, char maskChar) {
         if (value == null || value.isEmpty()) {
             return value;
         }
         if (this == CUSTOM) {
             return DesensitizeUtil.mask(value, startInclude, endExclude, maskChar);
+        }
+        if (this == KEEP_HEAD_TAIL) {
+            return DesensitizeUtil.maskKeepHeadTail(value, keepHead, keepTail, maskChar);
         }
         return maskFunction != null ? maskFunction.apply(value) : value;
     }

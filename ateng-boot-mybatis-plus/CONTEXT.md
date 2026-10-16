@@ -57,7 +57,7 @@ _Avoid_: MaskField, Desensitize, SensitiveData
 _Avoid_: MaskSerializer, DesensitizeSerializer
 
 **SensitiveType**:
-脱敏策略枚举类，包含 `CHINESE_NAME`、`MOBILE_PHONE`、`FIXED_PHONE`、`ID_CARD`、`EMAIL`、`BANK_CARD`、`PASSWORD`、`CUSTOM` 与 `NONE`。
+脱敏策略枚举类，包含 `CHINESE_NAME`、`MOBILE_PHONE`、`FIXED_PHONE`、`ID_CARD`、`EMAIL`、`BANK_CARD`、`PASSWORD`、`ADDRESS`、`CAR_LICENSE`、`IPV4`、`IPV6`、`SOCIAL_CREDIT_CODE`、`KEEP_HEAD_TAIL`、`CUSTOM` 与 `NONE`。
 _Avoid_: MaskType, DesensitizeType
 
 **PageUtil**:

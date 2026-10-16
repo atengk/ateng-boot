@@ -48,6 +48,20 @@ public @interface FieldSensitive {
     int endExclude() default 0;
 
     /**
+     * 自定义头部保留字符数（仅在 value 为 KEEP_HEAD_TAIL 时生效）
+     *
+     * @return 头部保留字符数
+     */
+    int keepHead() default 0;
+
+    /**
+     * 自定义尾部保留字符数（仅在 value 为 KEEP_HEAD_TAIL 时生效）
+     *
+     * @return 尾部保留字符数
+     */
+    int keepTail() default 0;
+
+    /**
      * 自定义替换掩码字符，默认为 '*'
      *
      * @return 掩码字符

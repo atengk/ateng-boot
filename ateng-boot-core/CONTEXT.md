@@ -45,8 +45,16 @@ _Avoid_: PageVO, PageDTO, PageData, TableDataInfo, PageResponse
 _Avoid_: PageParam, PageReq, PageRequest
 
 **DesensitizeUtil**:
-全场景敏感数据动态掩码工具类，提供中文姓名、手机号、固话、身份证、邮箱、银行卡与密码等标准规则及底层通用 mask 算法。
+全场景敏感数据动态掩码工具类，提供中文姓名、手机号、固话、身份证、邮箱、银行卡、密码、国内地址、车牌号、IPv4/IPv6、统一社会信用代码及便捷首尾保留掩码算法。
 _Avoid_: MaskUtil, DataMaskUtil, MaskingUtil
+
+**Snowflake**:
+纯 JDK 原生 Twitter 雪花算法发号引擎，集成时钟回拨自旋容错、自适应网卡/IP 节点推导与 41-bit 自定义纪元时间戳。
+_Avoid_: SnowflakeIdWorker, SequenceGenerator, SnowflakeGenerator
+
+**IdUtil**:
+全局分布式与高性能唯一 ID 生成门面工具类，提供开箱即用的单例雪花 ID、极速无横线 UUID 与轻量安全 NanoId。
+_Avoid_: IdHelper, UuidUtil, IdentifierUtil, KeyUtil
 
 **CryptoUtil**:
 纯 JDK 原生对称加解密工具类，默认支持 AES/CBC/PKCS5Padding 与 AES/GCM/NoPadding，无 Bouncy Castle 重型依赖。
@@ -55,3 +63,4 @@ _Avoid_: AesUtil, EncryptionUtil, EncryptUtil
 **TreeUtil**:
 通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
 _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
+

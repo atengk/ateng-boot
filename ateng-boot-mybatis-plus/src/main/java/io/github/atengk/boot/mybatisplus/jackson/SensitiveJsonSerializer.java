@@ -24,16 +24,24 @@ public class SensitiveJsonSerializer extends JsonSerializer<String> implements C
     private final SensitiveType type;
     private final int startInclude;
     private final int endExclude;
+    private final int keepHead;
+    private final int keepTail;
     private final char maskChar;
 
     public SensitiveJsonSerializer() {
-        this(SensitiveType.CUSTOM, 0, 0, '*');
+        this(SensitiveType.CUSTOM, 0, 0, 0, 0, '*');
     }
 
     public SensitiveJsonSerializer(SensitiveType type, int startInclude, int endExclude, char maskChar) {
+        this(type, startInclude, endExclude, 0, 0, maskChar);
+    }
+
+    public SensitiveJsonSerializer(SensitiveType type, int startInclude, int endExclude, int keepHead, int keepTail, char maskChar) {
         this.type = type != null ? type : SensitiveType.CUSTOM;
         this.startInclude = startInclude;
         this.endExclude = endExclude;
+        this.keepHead = keepHead;
+        this.keepTail = keepTail;
         this.maskChar = maskChar;
     }
 
@@ -60,6 +68,8 @@ public class SensitiveJsonSerializer extends JsonSerializer<String> implements C
                     sensitive.value(),
                     sensitive.startInclude(),
                     sensitive.endExclude(),
+                    sensitive.keepHead(),
+                    sensitive.keepTail(),
                     sensitive.maskChar()
             );
         }
@@ -73,6 +83,6 @@ public class SensitiveJsonSerializer extends JsonSerializer<String> implements C
      * @return 掩码后的字符串
      */
     public String mask(String value) {
-        return type.mask(value, startInclude, endExclude, maskChar);
+        return type.mask(value, startInclude, endExclude, keepHead, keepTail, maskChar);
     }
 }

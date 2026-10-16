@@ -199,4 +199,198 @@ public final class DesensitizeUtil {
         }
         return mask != null ? mask : DEFAULT_PASSWORD_MASK;
     }
+
+    /**
+     * 国内地址脱敏
+     * 规则：保留前 6 位省市区信息，后续详细门牌号等长替换为 '*'；对于 <= 6 且 > 2 字符的短地址保留前 2 位；<= 2 字符则原样防御返回
+     *
+     * @param address 原始地址字符串
+     * @return 脱敏后的地址字符串
+     */
+    public static String address(String address) {
+        if (address == null || address.isEmpty()) {
+            return address;
+        }
+        int len = address.length();
+        if (len <= 2) {
+            return address;
+        }
+        if (len <= 6) {
+            return mask(address, 2, len);
+        }
+        return mask(address, 6, len);
+    }
+
+    /**
+     * 车牌号码脱敏
+     * 规则：保留前 2 位（省份与代号，如“京A”）与后 2 位，中间字符等长替换为 '*'；穿透保留点号或短横线等间隔符；兼容 7 位传统车牌与 8 位新能源车牌
+     *
+     * @param carLicense 车牌号码
+     * @return 脱敏后的车牌号码
+     */
+    public static String carLicense(String carLicense) {
+        if (carLicense == null || carLicense.isEmpty()) {
+            return carLicense;
+        }
+        int len = carLicense.length();
+        if (len <= 4) {
+            return carLicense;
+        }
+        char[] chars = carLicense.toCharArray();
+        int start = 2;
+        int end = len - 2;
+        for (int i = start; i < end; i++) {
+            char c = chars[i];
+            if (c != '·' && c != '-' && c != ' ' && c != '.') {
+                chars[i] = DEFAULT_MASK_CHAR;
+            }
+        }
+        return new String(chars);
+    }
+
+    /**
+     * IPv4 地址脱敏（默认掩码末位段）
+     * 例如："192.168.1.100" -> "192.168.1.*"
+     *
+     * @param ip IPv4 地址字符串
+     * @return 脱敏后的 IPv4 地址
+     */
+    public static String ipv4(String ip) {
+        return ipv4(ip, false);
+    }
+
+    /**
+     * IPv4 地址脱敏
+     *
+     * @param ip              IPv4 地址字符串
+     * @param maskTwoSegments 是否掩码最后两段（true 为 192.168.*.*，false 为 192.168.1.*）
+     * @return 脱敏后的 IPv4 地址
+     */
+    public static String ipv4(String ip, boolean maskTwoSegments) {
+        if (ip == null || ip.isEmpty()) {
+            return ip;
+        }
+        int dotCount = 0;
+        int firstDot = -1;
+        int secondDot = -1;
+        int thirdDot = -1;
+        int len = ip.length();
+        for (int i = 0; i < len; i++) {
+            if (ip.charAt(i) == '.') {
+                dotCount++;
+                if (firstDot < 0) {
+                    firstDot = i;
+                } else if (secondDot < 0) {
+                    secondDot = i;
+                } else if (thirdDot < 0) {
+                    thirdDot = i;
+                }
+            }
+        }
+        if (dotCount != 3 || firstDot == 0 || thirdDot == len - 1) {
+            return ip;
+        }
+        if (!maskTwoSegments) {
+            return ip.substring(0, thirdDot + 1) + "*";
+        }
+        return ip.substring(0, secondDot + 1) + "*.*";
+    }
+
+    /**
+     * IPv6 地址脱敏
+     * 规则：保留首段与尾段，中间所有段压缩替换为 '****'
+     * 例如："2001:0db8:85a3:0000:0000:8a2e:0370:7334" -> "2001:****:7334"，"fe80::1" -> "fe80:****:1"
+     *
+     * @param ip IPv6 地址字符串
+     * @return 脱敏后的 IPv6 地址
+     */
+    public static String ipv6(String ip) {
+        if (ip == null || ip.isEmpty()) {
+            return ip;
+        }
+        int firstColon = ip.indexOf(':');
+        int lastColon = ip.lastIndexOf(':');
+        if (firstColon <= 0 || lastColon <= firstColon) {
+            return ip;
+        }
+        String first = ip.substring(0, firstColon);
+        String last = ip.substring(lastColon + 1);
+        return first + ":****:" + last;
+    }
+
+    /**
+     * 统一社会信用代码脱敏
+     * 规则：标准 18 位代码保留前 2 位登记管理部门与机构类别代码、后 4 位校验码，中间 12 位等长替换为 '*'；非 18 位代码做防御性首尾掩码
+     * 例如："91110000MA001ABC12" -> "91************BC12"
+     *
+     * @param code 统一社会信用代码
+     * @return 脱敏后的信用代码
+     */
+    public static String socialCreditCode(String code) {
+        if (code == null || code.isEmpty()) {
+            return code;
+        }
+        int len = code.length();
+        if (len <= 6) {
+            return code;
+        }
+        return mask(code, 2, len - 4);
+    }
+
+    /**
+     * 字符串保留首尾指定位数，中间等长掩码
+     * 契约：当保留字符数之和超过或等于原字符串长度（keepHead + keepTail >= length）时，原样防御返回
+     *
+     * @param str      原始字符串
+     * @param keepHead 头部保留字符数（小于 0 按 0 处理）
+     * @param keepTail 尾部保留字符数（小于 0 按 0 处理）
+     * @param maskChar 用于替换的掩码字符
+     * @return 脱敏后的字符串
+     */
+    public static String maskKeepHeadTail(String str, int keepHead, int keepTail, char maskChar) {
+        if (str == null || str.isEmpty()) {
+            return str;
+        }
+        int head = Math.max(0, keepHead);
+        int tail = Math.max(0, keepTail);
+        int len = str.length();
+        if (head + tail >= len) {
+            return str;
+        }
+        return mask(str, head, len - tail, maskChar);
+    }
+
+    /**
+     * 字符串保留首尾指定位数，中间使用默认 '*' 掩码
+     *
+     * @param str      原始字符串
+     * @param keepHead 头部保留字符数
+     * @param keepTail 尾部保留字符数
+     * @return 脱敏后的字符串
+     */
+    public static String maskKeepHeadTail(String str, int keepHead, int keepTail) {
+        return maskKeepHeadTail(str, keepHead, keepTail, DEFAULT_MASK_CHAR);
+    }
+
+    /**
+     * 字符串保留头部指定位数，后部全部掩码
+     *
+     * @param str      原始字符串
+     * @param keepHead 头部保留字符数
+     * @return 脱敏后的字符串
+     */
+    public static String maskKeepHead(String str, int keepHead) {
+        return maskKeepHeadTail(str, keepHead, 0);
+    }
+
+    /**
+     * 字符串保留尾部指定位数，前部全部掩码
+     *
+     * @param str      原始字符串
+     * @param keepTail 尾部保留字符数
+     * @return 脱敏后的字符串
+     */
+    public static String maskKeepTail(String str, int keepTail) {
+        return maskKeepHeadTail(str, 0, keepTail);
+    }
 }
