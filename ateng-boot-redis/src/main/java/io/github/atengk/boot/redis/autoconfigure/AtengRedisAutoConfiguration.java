@@ -2,6 +2,7 @@ package io.github.atengk.boot.redis.autoconfigure;
 
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.codec.JsonJacksonCodec;
@@ -81,6 +82,18 @@ public class AtengRedisAutoConfiguration {
 
         template.afterPropertiesSet();
         return template;
+    }
+
+    /**
+     * 装配全能 Redis 操作门面工具 RedisUtil
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @return RedisUtil 门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisUtil.class)
+    public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate) {
+        return new RedisUtil(redisTemplate);
     }
 
     /**

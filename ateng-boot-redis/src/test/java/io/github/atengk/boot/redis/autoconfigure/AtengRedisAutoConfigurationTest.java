@@ -60,6 +60,7 @@ class AtengRedisAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisValueSerializer");
+                    assertThat(context).doesNotHaveBean("redisUtil");
                 });
     }
 
@@ -70,16 +71,18 @@ class AtengRedisAutoConfigurationTest {
                 .withClassLoader(new FilteredClassLoader(RedisOperations.class))
                 .run(context -> {
                     assertThat(context).doesNotHaveBean("redisTemplate");
+                    assertThat(context).doesNotHaveBean("redisUtil");
                 });
     }
 
     @Test
-    @DisplayName("默认启用时装配 RedisTemplate 且各序列化器契约正确")
+    @DisplayName("默认启用时装配 RedisTemplate 与 RedisUtil 且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasBean("redisValueSerializer");
                     assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
