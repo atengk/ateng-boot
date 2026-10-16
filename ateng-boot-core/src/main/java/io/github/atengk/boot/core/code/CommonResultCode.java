@@ -46,7 +46,12 @@ public enum CommonResultCode implements IResultCode {
     /**
      * 重复提交或操作过于频繁
      */
-    REPEAT_SUBMIT(40003, "操作过于频繁，请稍后再试");
+    REPEAT_SUBMIT(40003, "操作过于频繁，请稍后再试"),
+
+    /**
+     * 访问过于频繁，请稍后再试（限流拦截）
+     */
+    TOO_MANY_REQUESTS(429, "访问过于频繁，请稍后再试");
 
     /**
      * 状态码数值

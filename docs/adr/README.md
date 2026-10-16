@@ -21,6 +21,10 @@
 | **0011** | 零重型外部依赖与上下文就近内聚工具集 | `Accepted` | 彻底杜绝全量外部工具包，100% 依托 JDK 17 与 Spring 6，依运行时就近内聚 | `core` / `web` / `mybatis-plus` | [查看](./0011-zero-bloat-and-co-located-utilities.md) |
 | **0012** | 数据安全生命周期分离：存储加密与视图脱敏 | `Accepted` | 确立“内存真明文”不变量，存储加密收敛于 TypeHandler，展示脱敏收敛于 Jackson | `core` / `mybatis-plus` | [查看](./0012-lifecycle-separated-data-security.md) |
 | **0013** | 基于 SPI 抽象的混合式接口幂等防重引擎 | `Accepted` | 确立两级存储 SPI 自适应装配，内聚内存防爆与 Redis 无缝升级，全生命周期锁语义与 SpEL 支持 | `ateng-boot-web` | [查看](./0013-spi-based-hybrid-idempotent-engine.md) |
+| **0014** | 基于三级自适应 SPI 架构的接口限流防刷引擎 | `Accepted` | 统一令牌桶模型，纯 JDK 原子无锁单机兜底与 Redis/Redisson 集群自适应，复合维度与 HTTP 429/Retry-After | `ateng-boot-web` | [查看](./0014-three-tier-adaptive-rate-limiter-engine.md) |
+| **0015** | 基于 SPI 扩展与凭证安全反射的动态 CORS 架构 | `Accepted` | 深度集成 Spring 原生 CorsConfigurationSource，支持动态来源 SPI 与带凭据安全反射 Vary 响应头 | `ateng-boot-web` | [查看](./0015-dynamic-cors-and-credentials-safe-origin-reflection.md) |
+| **0016** | 双向 API 数据加签验签与防重放引擎 | `Accepted` | 纯 JDK 17 原生零膨胀签名 SPI，标准化待签串，复用 IdempotentKeyStore 防重放，AOP 切面遵守 ADR-0002 | `ateng-boot-web` | [查看](./0016-dual-direction-api-signature-and-anti-replay-engine.md) |
+
 
 ---
 

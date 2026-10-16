@@ -79,3 +79,28 @@ _Avoid_: RedisAutoConfig, RedisStoreConfiguration
 **AtengIdempotentAutoConfiguration**:
 Tier 3 核心自动装配类，在分布式中间件之后执行，负责单机内存存储兜底（InMemoryIdempotentKeyStore）与 AOP 切面（IdempotentAspect）装配。
 _Avoid_: IdempotentConfig, IdempotentAspectAutoConfiguration
+
+**RateLimiter**:
+Web 接口防刷限流注解，声明于 Controller 方法上，定义时间窗口、请求次数阈值、限流维度与 SpEL 业务键。
+_Avoid_: Limit, RateLimit, TrafficControl, FlowControl
+
+**RateLimiterAspect**:
+基于 AOP 环绕拦截的接口限流切面，解析 `@RateLimiter` 契约，调用 `RateLimiterStore` 执行原子令牌判定并管理超限熔断。
+_Avoid_: LimitAspect, RateLimitInterceptor, FlowAspect
+
+**RateLimiterStore**:
+限流状态统计与许可扣减的通用 SPI 接口，定义原子尝试获取许可（tryAcquire）与状态清理契约。
+_Avoid_: LimitStore, RateLimiterManager, RateLimitStorage
+
+**CorsOriginProvider**:
+动态跨域来源校验与提供者 SPI 接口，定义根据传入 Origin 动态判定是否允许跨域访问的契约。
+_Avoid_: OriginValidator, CorsProvider, AllowedOriginProvider
+
+**ApiSign**:
+Web 接口数据签名与防篡改注解，声明于 Controller 方法或类上，提供双向或单向验签与加签控制及防重放时效配置。
+_Avoid_: Sign, DataSign, Signature, SecureApi
+
+**ApiSigner**:
+数字签名生成与验证的通用 SPI 接口，定义明文摘要哈希计算与数字验签契约。
+_Avoid_: SignManager, SignatureEngine, CryptoSigner
+

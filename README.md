@@ -537,6 +537,71 @@ public class OrderController {
   }
   ```
 
+### 5.9 接口限流防刷与平滑突发防护 (@RateLimiter)
+
+**场景痛点**：高频无节制调用、恶意爬取与暴力重试极易造成服务器负载过载、数据库连接池耗尽甚至雪崩。传统方案强绑 Guava/Sentinel 依赖过重，或仅支持粗粒度全局限流。`ateng-boot-web` 内置三级自适应令牌桶体系：
+- **Tier 1 (RedissonClient)**：基于 Redisson 官方集群令牌桶 `RRateLimiter`；
+- **Tier 2 (StringRedisTemplate)**：基于轻量原子令牌桶 Lua 脚本单次往返（RTT）原子更新，内存占用极低；
+- **Tier 3 (InMemoryRateLimiterStore)**：纯 JDK 17 原生无锁原子数学计算，零 Guava/Caffeine 依赖开箱即用，具备软容量防爆淘汰；
+- 支持 `DEFAULT`（方法/URI）、`IP`（基于 `IpUtil` 提取客户端真实 IP）、`USER`（基于 `UserContextHolder`）多维度与 SpEL 表达式复合防刷；
+- 超限拦截时向响应头回写标准 `Retry-After: <seconds>` 标头，并抛出受控业务异常 `BusinessException(CommonResultCode.TOO_MANY_REQUESTS)`，转译为 HTTP 200 + code: 429 的规范显式契约。
+
+**最小可用代码范式**：
+```java
+@RestController
+@RequestMapping("/api/resource")
+public class ResourceController {
+
+    /**
+     * 1. 默认方法级全局限流（60 秒内最多允许 100 次请求）
+     */
+    @GetMapping("/public")
+    @RateLimiter(count = 100, time = 60, message = "访问过于频繁，请稍后再试")
+    public Result<String> getPublicData() {
+        return Result.success("ok");
+    }
+
+    /**
+     * 2. 客户端 IP 维度防刷限流（10 秒内同 IP 最多允许 5 次）
+     */
+    @PostMapping("/send-sms")
+    @RateLimiter(limitType = LimitType.IP, count = 5, time = 10, message = "短信验证码发送过于频繁")
+    public Result<Void> sendSms(@RequestParam String phone) {
+        return Result.success();
+    }
+
+    /**
+     * 3. 多租户 SpEL 与 IP 复合限流（精准租户级防刷）
+     */
+    @PostMapping("/order")
+    @RateLimiter(limitType = LimitType.IP, key = "#dto.tenantId", count = 20, time = 60)
+    public Result<String> createOrder(@RequestBody OrderDTO dto) {
+        return Result.success(dto.getId());
+    }
+}
+```
+
+**预期 HTTP 响应契约呈现**：
+- **正常放行**：
+  ```json
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": "ok",
+    "success": true
+  }
+  ```
+- **触发限流拦截（响应头回写 `Retry-After: 60`）**：
+  ```json
+  {
+    "code": 429,
+    "msg": "访问过于频繁，请稍后再试",
+    "data": null,
+    "success": false,
+    "traceId": "9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d"
+  }
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -560,6 +625,12 @@ ateng:
         in-memory:
           max-capacity: 10000     # 单机内存存储软上限（默认 10000，防爆防 OOM）
           clean-interval: 60s     # 定时扫描过期淘汰周期（默认 60s）
+      ratelimit:
+        enabled: true             # 是否启用接口限流防刷切面与存储引擎（默认 true）
+        in-memory:
+          max-capacity: 10000     # 单机内存令牌桶最大容量软上限（默认 10000）
+          clean-interval: 60s     # 后台定期过期淘汰扫描周期（默认 60s）
+
     async:
       enabled: true               # 是否启用受管异步线程池（默认 true）
       core-pool-size: 8           # 核心线程数（默认可用 CPU 核心数）
