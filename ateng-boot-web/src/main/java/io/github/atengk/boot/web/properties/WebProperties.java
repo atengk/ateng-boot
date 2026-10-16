@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.properties;
 
+import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -116,5 +117,53 @@ public class WebProperties {
          * 是否启用 Web 接口审计日志切面
          */
         private boolean enabled = false;
+    }
+
+    /**
+     * API 数据加签验签与防重放配置
+     */
+    private SignProperties sign = new SignProperties();
+
+    /**
+     * API 加签验签属性配置
+     */
+    @Getter
+    @Setter
+    public static class SignProperties {
+
+        /**
+         * 是否启用 API 双向加签验签切面与自动装配
+         */
+        private boolean enabled = false;
+
+        /**
+         * 默认签名算法（默认 HMAC_SHA256 对称哈希，可选 RSA 非对称算法）
+         */
+        private SignAlgorithm algorithm = SignAlgorithm.HMAC_SHA256;
+
+        /**
+         * 默认应用 ID（单应用缺省配置）
+         */
+        private String appId = "default";
+
+        /**
+         * 对称算法密钥（HMAC-SHA256 SecretKey）
+         */
+        private String secretKey;
+
+        /**
+         * 非对称算法公钥（RSA X.509 Base64 格式，用于入站验签）
+         */
+        private String publicKey;
+
+        /**
+         * 非对称算法私钥（RSA PKCS#8 Base64 格式，用于出站加签）
+         */
+        private String privateKey;
+
+        /**
+         * 请求时效防重放时间窗口（秒，默认 60 秒）
+         */
+        private long expireSeconds = 60L;
     }
 }

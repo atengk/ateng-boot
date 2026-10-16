@@ -663,6 +663,105 @@ public class DatabaseCorsOriginProvider implements CorsOriginProvider {
   Body: Invalid CORS request
   ```
 
+### 5.11 双向 API 数据加签验签与防重放 (@ApiSign)
+
+**场景痛点**：在开放平台（OpenAPI）、金融级核心交易、App 移动端接口以及 Webhook 回调场景中，明文或未受保护的数据传输极易面临请求被中间人恶意篡改（Tampering）与报文被截获后反复重放（Replay Attacks）的高危风险。传统加签组件常强行引入 Bouncy Castle 等重型外部依赖（违背零依赖基线），或强行使用全局 `ResponseBodyAdvice` 破坏显式响应契约（违背 ADR-0002）。`ateng-boot-web` 推出基于纯 JDK 17 原生算法与 AOP 切面的双向加签验签引擎：
+- **纯 JDK 17 原生零外部依赖**：原生支持 `HMAC_SHA256` 对称签名与 `RSA`（`SHA256withRSA`）非对称数字签名，零引入 Bouncy Castle 等任何第三方密码学重包；
+- **金融级标准化待签串 (`SignCanonicalUtil`)**：请求入站规范化拼装 `HTTPMethod\nURI\nTimestamp\nNonce\nSortedQueryString\nBodySha256`，严格防御参数乱序与篡改；出站规范化拼装 `Timestamp\nNonce\nResponseBodySha256`；
+- **复合防重放与状态复用**：`Timestamp` 毫秒时钟漂移窗口校验 + `Nonce` 原子排重防重放（复用 `IdempotentKeyStore`，单机内存/Redis/Redisson 三级自适应，杜绝重复造轮子）；
+- **恪守显式契约与非侵入出站加签**：仅针对标注了 `@ApiSign(signResponse = true)` 且返回值确为 `Result<?>` 的接口在 AOP 后置通知中精准加签，通过响应头（`X-Signature`、`X-Timestamp`、`X-Nonce`）回传签名，绝不触碰全局 `ResponseBodyAdvice`；
+- **流式可重复读防爆安全**：内置 `RequestBodyCachingFilter`，针对标注接口将入站原始 Body 字节流安全缓存为 `CachedBodyHttpServletRequest`，支持验签与 Controller 参数绑定多次读取，智能跳过 Multipart 文件上传防爆。
+
+**最小可用代码与配置范式**：
+
+1. **Controller 接口声明**：
+```java
+@RestController
+@RequestMapping("/api/sign")
+@ApiSign // 可标注在类级别或方法级别，默认 verifyRequest = true, signResponse = true
+public class ApiSignSampleController {
+
+    /**
+     * 1. 双向防篡改与防重放：验证入站签名，并为返回的 Result 响应数据加签回写响应头
+     */
+    @PostMapping("/transfer")
+    public Result<TransferVO> transfer(@Valid @RequestBody TransferDTO dto) {
+        TransferVO vo = transferService.execute(dto);
+        return Result.success(vo);
+    }
+
+    /**
+     * 2. 单向验签：只验证客户端请求完整性与防重放，响应无需加签
+     */
+    @PostMapping("/notify")
+    @ApiSign(signResponse = false)
+    public Result<Void> receiveNotify(@RequestBody Map<String, Object> payload) {
+        notifyService.process(payload);
+        return Result.success();
+    }
+}
+```
+
+2. **开箱即用 YAML 配置**：
+```yaml
+ateng:
+  boot:
+    web:
+      sign:
+        enabled: true                     # 开启加签验签增强
+        algorithm: HMAC_SHA256            # 签名算法（HMAC_SHA256 或 RSA）
+        secret-key: "YourDefaultSecretKey"# 对称加密密钥（HMAC 模式使用）
+        expire-seconds: 300               # 签名时效窗口（秒，默认 300）
+```
+
+**预期 HTTP 契约呈现**：
+- **客户端入站请求（携带标准化防重放与签名头）**：
+  ```http
+  POST /api/sign/transfer HTTP/1.1
+  Host: api.ateng.com
+  Content-Type: application/json
+  X-App-Id: default
+  X-Timestamp: 1776312520000
+  X-Nonce: 4b29c9527f12461eb63c19642e12e34a
+  X-Signature: c81a2f643e9...（Hex 字符串）
+
+  {
+    "toAccount": "622202020011223344",
+    "amount": "100.00"
+  }
+  ```
+- **服务端校验通过并返回加签响应（签名写入响应头，保持 JSON 真实明文）**：
+  ```http
+  HTTP/1.1 200 OK
+  Content-Type: application/json
+  X-Timestamp: 1776312520120
+  X-Nonce: 8f02ba402a7848f29ea15d18d4e963bc
+  X-Signature: 7e26da78bc1...（Hex 字符串）
+
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": {
+      "transferId": "TX10001",
+      "status": "SUCCESS"
+    },
+    "timestamp": "1776312520120",
+    "traceId": "9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d",
+    "success": true
+  }
+  ```
+- **签名被篡改或 Nonce 遭遇重放（切面直接拦截，遵循统一响应契约）**：
+  ```json
+  {
+    "code": 400,
+    "msg": "API 签名验证失败或请求已被重放",
+    "data": null,
+    "timestamp": "1776312520050",
+    "traceId": "9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d",
+    "success": false
+  }
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -709,6 +808,17 @@ ateng:
         in-memory:
           max-capacity: 10000     # 单机内存令牌桶最大容量软上限（默认 10000）
           clean-interval: 60s     # 后台定期过期淘汰扫描周期（默认 60s）
+      sign:
+        enabled: true             # 是否启用 API 接口双向加签验签与防重放引擎（默认 true）
+        algorithm: HMAC_SHA256    # 签名算法（支持 HMAC_SHA256、RSA，默认 HMAC_SHA256）
+        secret-key: "YourDefaultSecretKey" # 对称密钥（HMAC_SHA256 算法下使用）
+        private-key: ""           # RSA 私钥（Base64 或 PKCS#8 PEM 格式，服务端加签使用）
+        public-key: ""            # RSA 公钥（Base64 或 X.509 PEM 格式，服务端验签使用）
+        expire-seconds: 300       # 签名时效窗口（秒，默认 300 秒 / 5 分钟）
+        header-app-id: "X-App-Id" # 应用标识请求头名称（默认 X-App-Id）
+        header-timestamp: "X-Timestamp" # 时间戳请求头/响应头名称（默认 X-Timestamp）
+        header-nonce: "X-Nonce"   # 随机防重放串请求头/响应头名称（默认 X-Nonce）
+        header-signature: "X-Signature" # 签名串请求头/响应头名称（默认 X-Signature）
 
     async:
       enabled: true               # 是否启用受管异步线程池（默认 true）
@@ -752,6 +862,9 @@ ateng:
   - [ADR-0011: 零重型外部依赖与上下文就近内聚工具集](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)
   - [ADR-0012: 数据安全生命周期分离：存储加密与视图脱敏](./docs/adr/0012-lifecycle-separated-data-security.md)
   - [ADR-0013: 基于 SPI 抽象的混合式接口幂等防重引擎](./docs/adr/0013-spi-based-hybrid-idempotent-engine.md)
+  - [ADR-0014: 三级自适应架构的高性能接口限流防刷引擎](./docs/adr/0014-three-tier-adaptive-rate-limiter-engine.md)
+  - [ADR-0015: 动态 CORS 跨域安全与凭据安全反射架构](./docs/adr/0015-dynamic-cors-and-credentials-safe-origin-reflection.md)
+  - [ADR-0016: 纯 JDK 原生双向 API 数据加签验签与防重放引擎](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)

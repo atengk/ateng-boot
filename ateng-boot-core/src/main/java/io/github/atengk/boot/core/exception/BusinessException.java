@@ -60,6 +60,20 @@ public class BusinessException extends RuntimeException {
     }
 
     /**
+     * 基于状态码契约与自定义提示信息构造
+     *
+     * @param resultCode 状态码对象
+     * @param msg        自定义提示信息
+     */
+    public BusinessException(IResultCode resultCode, String msg) {
+        super(msg != null ? msg : (resultCode != null ? resultCode.getMsg() : CommonResultCode.INTERNAL_SERVER_ERROR.getMsg()));
+        this.resultCode = resultCode;
+        this.code = resultCode != null ? resultCode.getCode() : CommonResultCode.INTERNAL_SERVER_ERROR.getCode();
+        this.msg = msg != null ? msg : (resultCode != null ? resultCode.getMsg() : CommonResultCode.INTERNAL_SERVER_ERROR.getMsg());
+        setStackTrace(EMPTY_STACK_TRACE);
+    }
+
+    /**
      * 基于自定义错误码与描述文案构造
      *
      * @param code 业务状态码
