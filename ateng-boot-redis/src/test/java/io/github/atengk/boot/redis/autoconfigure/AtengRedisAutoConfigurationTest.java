@@ -1,0 +1,158 @@
+package io.github.atengk.boot.redis.autoconfigure;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.redisson.api.RedissonClient;
+import org.redisson.config.Config;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.RedisOperations;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.RedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
+
+import java.time.Duration;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+
+/**
+ * AtengRedisAutoConfiguration 自动装配单元测试
+ *
+ * @author Ateng
+ * @since 2026-10-16
+ */
+@DisplayName("AtengRedisAutoConfiguration 自动装配单元测试")
+class AtengRedisAutoConfigurationTest {
+
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(AtengRedisAutoConfiguration.class));
+
+    @Configuration
+    static class TestMockConfiguration {
+        @Bean
+        public RedisConnectionFactory redisConnectionFactory() {
+            return mock(RedisConnectionFactory.class);
+        }
+
+        @Bean
+        public RedissonClient redissonClient() {
+            return mock(RedissonClient.class);
+        }
+
+        @Bean
+        public org.springframework.boot.autoconfigure.data.redis.RedisProperties springRedisProperties() {
+            return new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        }
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.redis.enabled=false 时，不装配任何 Bean")
+    void shouldNotLoadWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("redisTemplate");
+                    assertThat(context).doesNotHaveBean("redisValueSerializer");
+                });
+    }
+
+    @Test
+    @DisplayName("当缺少 RedisOperations 类时，条件装配不生效")
+    void shouldNotLoadWhenClassMissing() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withClassLoader(new FilteredClassLoader(RedisOperations.class))
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("redisTemplate");
+                });
+    }
+
+    @Test
+    @DisplayName("默认启用时装配 RedisTemplate 且各序列化器契约正确")
+    void shouldAutoConfigureRedisTemplateWithProperSerializers() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("redisValueSerializer");
+                    assertThat(context).hasBean("redisTemplate");
+
+                    RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
+                    assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
+
+                    @SuppressWarnings("unchecked")
+                    RedisTemplate<String, Object> template = context.getBean("redisTemplate", RedisTemplate.class);
+                    assertThat(template.getKeySerializer()).isInstanceOf(StringRedisSerializer.class);
+                    assertThat(template.getHashKeySerializer()).isInstanceOf(StringRedisSerializer.class);
+                    assertThat(template.getValueSerializer()).isEqualTo(valueSerializer);
+                    assertThat(template.getHashValueSerializer()).isEqualTo(valueSerializer);
+                });
+    }
+
+    @Test
+    @DisplayName("单机模式配置映射：正确解析 Host, Port, Database, Password 与 Timeout")
+    void shouldMapSingleServerConfigCorrectly() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        props.setHost("192.168.1.100");
+        props.setPort(6380);
+        props.setPassword("secret-pass");
+        props.setDatabase(3);
+        props.setTimeout(Duration.ofMillis(4500));
+        props.setClientName("ateng-app");
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(props);
+
+        assertThat(config.isClusterConfig()).isFalse();
+        assertThat(config.isSentinelConfig()).isFalse();
+    }
+
+    @Test
+    @DisplayName("单机 SSL 模式配置映射：地址自动携带 rediss:// 前缀")
+    void shouldMapSslSingleServerConfigCorrectly() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        props.setHost("secure-redis.internal");
+        props.setPort(6379);
+        props.getSsl().setEnabled(true);
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(props);
+
+        assertThat(config.isClusterConfig()).isFalse();
+    }
+
+    @Test
+    @DisplayName("集群模式配置映射：正确解析多个节点与密码")
+    void shouldMapClusterConfigCorrectly() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties.Cluster cluster = new org.springframework.boot.autoconfigure.data.redis.RedisProperties.Cluster();
+        cluster.setNodes(List.of("10.0.0.1:7000", "10.0.0.2:7001"));
+        props.setCluster(cluster);
+        props.setPassword("cluster-secret");
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(props);
+
+        assertThat(config.isClusterConfig()).isTrue();
+    }
+
+    @Test
+    @DisplayName("哨兵模式配置映射：正确解析 Master 名称、哨兵节点与 Database")
+    void shouldMapSentinelConfigCorrectly() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties.Sentinel sentinel = new org.springframework.boot.autoconfigure.data.redis.RedisProperties.Sentinel();
+        sentinel.setMaster("my-sentinel-master");
+        sentinel.setNodes(List.of("10.0.0.10:26379", "10.0.0.11:26379"));
+        props.setSentinel(sentinel);
+        props.setDatabase(5);
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(props);
+
+        assertThat(config.isSentinelConfig()).isTrue();
+    }
+}

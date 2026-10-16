@@ -29,6 +29,8 @@
 | **0019** | 原生高性能分批批量插入引擎架构决策 | `Accepted` | 挂载 InsertBatchSomeColumn 单条多值 SQL，过滤逻辑删除列，BatchUtil 智能切片与 AtengBaseService 强事务守护 | `ateng-boot-mybatis-plus` | [查看](./0019-native-high-performance-batch-insert-engine.md) |
 | **0020** | 零膨胀分布式 ID 引擎与全场景敏感数据脱敏架构决策 | `Accepted` | 纯 JDK 17 原生 Snowflake/IdUtil 引擎，四级自适应节点，全场景脱敏策略扩展与持久层发号器大一统 | `core` / `mybatis-plus` | [查看](./0020-zero-bloat-distributed-id-and-mask-strategy.md) |
 | **0021** | 存量核心基线收敛与零冗余封版战略决策 | `Accepted` | 宣布三大核心模块功能完备，横向冻结新模块分裂，微创补强 ServletUtil 流式下载，极限测试加固与文档大一统 | `core` / `web` / `mybatis-plus` | [查看](./0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md) |
+| **0022** | 双核驱动 Redis 基础设施与企业级分布式协同架构决策 | `Accepted` | 双核驱动融合（Spring Data Redis + Redisson 原生），纯净 JSON 序列化防 @class 污染，@DistributedLock 4 阶模式与慢锁审计，延时队列与全能 RedisUtil | `ateng-boot-redis` | [查看](./0022-dual-core-redis-and-distributed-coordination-architecture.md) |
+
 
 ---
 

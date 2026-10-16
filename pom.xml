@@ -39,6 +39,7 @@
         <module>ateng-boot-core</module>
         <module>ateng-boot-web</module>
         <module>ateng-boot-mybatis-plus</module>
+        <module>ateng-boot-redis</module>
         <module>ateng-boot-all</module>
         <module>ateng-boot-samples</module>
     </modules>
@@ -110,6 +111,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-mybatis-plus</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-redis</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
