@@ -60,6 +60,9 @@
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
         <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+
+        <!-- Surefire 测试参数 (Java 21+ 动态代理增强，默认空以兼容 Java 17) -->
+        <argLine></argLine>
     </properties>
 
     <dependencyManagement>
@@ -138,6 +141,18 @@
                             </goals>
                         </execution>
                     </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.sonatype.central</groupId>
+                    <artifactId>central-publishing-maven-plugin</artifactId>
+                    <version>${central-publishing-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <argLine>${argLine}</argLine>
+                    </configuration>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -224,6 +239,16 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <!-- Java 21+ 单元测试动态 Agent 与挂载增强 (JEP 451 兼容) -->
+        <profile>
+            <id>java21-surefire</id>
+            <activation>
+                <jdk>[21,)</jdk>
+            </activation>
+            <properties>
+                <argLine>-XX:+EnableDynamicAgentLoading -Djdk.attach.allowAttachSelf=true -Xshare:off</argLine>
+            </properties>
         </profile>
     </profiles>
 </project>
