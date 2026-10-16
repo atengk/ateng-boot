@@ -3,6 +3,7 @@ package io.github.atengk.boot.mybatisplus.permission;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
 import io.github.atengk.boot.mybatisplus.context.DataPermissionContextHolder;
 import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.StringValue;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.schema.Column;
@@ -153,5 +154,21 @@ class AtengDataPermissionInnerInterceptorTest {
         Table otherTable = new Table("orders").withAlias(new net.sf.jsqlparser.expression.Alias("o"));
         Expression exprOther = interceptor.buildTableExpression(otherTable, null, msId);
         assertThat(exprOther).isNull();
+    }
+
+    @Test
+    @DisplayName("9. 软删除与逻辑删除边界：存在现有 where 条件 (deleted = 0) 时正确生成 AST 权限表达式")
+    void shouldGenerateExpressionWhenWhereContainsLogicDelete() {
+        String msId = MethodScopeMapper.class.getName() + ".queryWithScope";
+        Table matchingTable = new Table("sys_user").withAlias(new net.sf.jsqlparser.expression.Alias("u"));
+
+        // 模拟已存在逻辑删除条件 u.deleted = 0
+        EqualsTo existingWhere = new EqualsTo();
+        existingWhere.setLeftExpression(new Column("u.deleted"));
+        existingWhere.setRightExpression(new LongValue(0));
+
+        Expression expr = interceptor.buildTableExpression(matchingTable, existingWhere, msId);
+        assertThat(expr).isNotNull();
+        assertThat(expr.toString()).isEqualTo("u.dept_id = '100'");
     }
 }

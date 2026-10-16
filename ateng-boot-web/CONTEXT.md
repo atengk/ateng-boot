@@ -33,7 +33,7 @@ _Avoid_: ThreadPoolProperties, AsyncConfigProperties
 _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 
 **ServletUtil**:
-Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别与文本写入。
+Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别、JSON 文本直接写入，以及基于 RFC 6266 / RFC 5987 双重文件名防乱码编码的安全流式文件下载与导出辅助（setDownloadHeader / writeDownload）。
 _Avoid_: WebUtil, HttpUtil, RequestUtil
 
 **WebLog**:

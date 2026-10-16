@@ -112,4 +112,78 @@ class ServletUtilTest {
         ServletUtil.writeJson(null, json);
         ServletUtil.writeJson(response, null);
     }
+
+    @Test
+    @DisplayName("文件下载响应头：遵循 RFC 6266 双重文件名编码且中文字符防乱码")
+    void shouldSetDownloadHeaderWithRfc6266Compliance() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        String filename = "用户账单明细 2026.xlsx";
+
+        ServletUtil.setDownloadHeader(response, filename);
+
+        assertThat(response.getContentType()).contains(MediaType.APPLICATION_OCTET_STREAM_VALUE);
+        assertThat(response.getCharacterEncoding()).isEqualToIgnoringCase("UTF-8");
+
+        String disposition = response.getHeader(ServletUtil.HEADER_CONTENT_DISPOSITION);
+        assertThat(disposition).isNotNull();
+        assertThat(disposition).startsWith("attachment;");
+        assertThat(disposition).contains("filename*=UTF-8''");
+        // 空格转为 %20 且包含 UTF-8 编码
+        assertThat(disposition).contains("%202026.xlsx");
+
+        // 自定义 ContentType 测试
+        MockHttpServletResponse customResponse = new MockHttpServletResponse();
+        ServletUtil.setDownloadHeader(customResponse, "report.pdf", MediaType.APPLICATION_PDF_VALUE);
+        assertThat(customResponse.getContentType()).contains(MediaType.APPLICATION_PDF_VALUE);
+        assertThat(customResponse.getHeader(ServletUtil.HEADER_CONTENT_DISPOSITION)).contains("report.pdf");
+    }
+
+    @Test
+    @DisplayName("字节数组流式下载：正确写入 Content-Length、响应头与二进制数据")
+    void shouldWriteDownloadByteArray() throws IOException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        byte[] payload = "Hello Ateng Boot Stream Download".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        ServletUtil.writeDownload(response, "test_file.txt", payload);
+
+        assertThat(response.getContentAsByteArray()).isEqualTo(payload);
+        assertThat(response.getHeader(ServletUtil.HEADER_CONTENT_DISPOSITION)).contains("test_file.txt");
+        assertThat(response.getContentLength()).isEqualTo(payload.length);
+    }
+
+    @Test
+    @DisplayName("输入流流式下载：基于 transferTo 传输数据并安全自动关闭")
+    void shouldWriteDownloadInputStream() throws IOException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        byte[] payload = "Stream Transfer Test Data".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(payload);
+
+        ServletUtil.writeDownload(response, "stream_test.bin", in);
+
+        assertThat(response.getContentAsByteArray()).isEqualTo(payload);
+        assertThat(response.getHeader(ServletUtil.HEADER_CONTENT_DISPOSITION)).contains("stream_test.bin");
+    }
+
+    @Test
+    @DisplayName("下载辅助方法全方位空安全与边界防御")
+    void shouldHandleDownloadDefensiveNulls() throws IOException {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        // setDownloadHeader 空防御
+        ServletUtil.setDownloadHeader(null, "test.txt");
+        ServletUtil.setDownloadHeader(response, null);
+        ServletUtil.setDownloadHeader(response, "   ");
+        assertThat(response.getHeader(ServletUtil.HEADER_CONTENT_DISPOSITION)).isNull();
+
+        // writeDownload(byte[]) 空防御
+        ServletUtil.writeDownload(null, "test.txt", new byte[0]);
+        ServletUtil.writeDownload(response, null, new byte[0]);
+        ServletUtil.writeDownload(response, "test.txt", (byte[]) null);
+
+        // writeDownload(InputStream) 空防御
+        ServletUtil.writeDownload(null, "test.txt", java.io.InputStream.nullInputStream());
+        ServletUtil.writeDownload(response, null, java.io.InputStream.nullInputStream());
+        ServletUtil.writeDownload(response, "test.txt", (java.io.InputStream) null);
+    }
 }
+

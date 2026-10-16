@@ -10,7 +10,7 @@
     <packaging>pom</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>高内聚、低侵入、对标 Hutool 组织心智的 Spring Boot 3 基础框架与中间件 Starter 套件</description>
+    <description>面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 &amp; JDK 17 基础设施与中间件 Starter 套件</description>
     <url>https://github.com/atengk/ateng-boot</url>
 
     <licenses>

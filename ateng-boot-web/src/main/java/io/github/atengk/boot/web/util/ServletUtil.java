@@ -9,6 +9,9 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -22,6 +25,7 @@ public final class ServletUtil {
 
     public static final String HEADER_ACCEPT = "Accept";
     public static final String HEADER_CONTENT_TYPE = "Content-Type";
+    public static final String HEADER_CONTENT_DISPOSITION = "Content-Disposition";
     public static final String HEADER_X_REQUESTED_WITH = "X-Requested-With";
     public static final String XML_HTTP_REQUEST = "XMLHttpRequest";
 
@@ -174,4 +178,80 @@ public final class ServletUtil {
         response.getWriter().write(json);
         response.getWriter().flush();
     }
+
+    /**
+     * 设置安全防乱码的文件下载响应头（默认 application/octet-stream）
+     * 遵循 RFC 6266 与 RFC 5987 规范，生成双重文件名声明（ASCII 兼容与 UTF-8 编码），
+     * 彻底解决 Chrome、Edge、Safari、Firefox 等主流浏览器的中文与特殊字符乱码问题
+     *
+     * @param response HTTP 响应对象
+     * @param filename 待下载的文件名称（如 "用户数据导出_2026.xlsx"）
+     */
+    public static void setDownloadHeader(HttpServletResponse response, String filename) {
+        setDownloadHeader(response, filename, MediaType.APPLICATION_OCTET_STREAM_VALUE);
+    }
+
+    /**
+     * 设置指定媒体类型的安全防乱码文件下载响应头
+     *
+     * @param response    HTTP 响应对象
+     * @param filename    待下载的文件名称
+     * @param contentType 响应内容类型（为 null 时默认 application/octet-stream）
+     */
+    public static void setDownloadHeader(HttpServletResponse response, String filename, String contentType) {
+        if (response == null || filename == null || filename.isBlank()) {
+            return;
+        }
+        String mimeType = (contentType != null && !contentType.isBlank()) ? contentType : MediaType.APPLICATION_OCTET_STREAM_VALUE;
+        response.setContentType(mimeType);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+
+        String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+        String asciiFallback = filename.replaceAll("[^a-zA-Z0-9._-]", "_");
+
+        String contentDisposition = "attachment; filename=\"" + asciiFallback + "\"; filename*=UTF-8''" + encodedFilename;
+        response.setHeader(HEADER_CONTENT_DISPOSITION, contentDisposition);
+    }
+
+    /**
+     * 向响应直接写入文件二进制字节数组完成流式下载
+     * 内部自动配置安全防乱码响应头并写入 Content-Length
+     *
+     * @param response HTTP 响应对象
+     * @param filename 下载文件名
+     * @param data     文件字节数组
+     * @throws IOException 写入异常
+     */
+    public static void writeDownload(HttpServletResponse response, String filename, byte[] data) throws IOException {
+        if (response == null || filename == null || data == null) {
+            return;
+        }
+        setDownloadHeader(response, filename);
+        response.setContentLength(data.length);
+        try (OutputStream out = response.getOutputStream()) {
+            out.write(data);
+            out.flush();
+        }
+    }
+
+    /**
+     * 向响应直接输出文件输入流完成流式下载
+     * 基于 JDK 17 原生 transferTo 实现高吞吐零拷贝式流传输，自动关闭输入流并刷新响应流
+     *
+     * @param response    HTTP 响应对象
+     * @param filename    下载文件名
+     * @param inputStream 文件输入流（方法执行后将自动关闭该流）
+     * @throws IOException 传输异常
+     */
+    public static void writeDownload(HttpServletResponse response, String filename, InputStream inputStream) throws IOException {
+        if (response == null || filename == null || inputStream == null) {
+            return;
+        }
+        setDownloadHeader(response, filename);
+        try (InputStream in = inputStream; OutputStream out = response.getOutputStream()) {
+            in.transferTo(out);
+            out.flush();
+        }
+    }
 }
+

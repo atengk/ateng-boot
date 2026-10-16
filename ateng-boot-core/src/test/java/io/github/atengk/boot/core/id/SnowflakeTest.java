@@ -171,4 +171,29 @@ class SnowflakeTest {
             System.clearProperty("ateng.boot.snowflake.datacenter-id");
         }
     }
+
+    @Test
+    @DisplayName("毫秒内序列溢出等待：单毫秒产生超过 4096 个 ID 时自旋推进至下一毫秒")
+    void shouldAdvanceToNextMillisWhenSequenceOverflows() {
+        AtomicLong mockClock = new AtomicLong(1000L);
+        Snowflake snowflake = new Snowflake(1, 1, 0L, mockClock::get);
+
+        // 第一次生成 ID（seq = 0, ts = 1000）
+        long firstId = snowflake.nextId();
+        assertEquals(1000L, Snowflake.getTimestamp(firstId, 0L));
+        assertEquals(0L, Snowflake.getSequence(firstId));
+
+        // 循环生成剩余 4095 个，序列号递增至 4095
+        for (int i = 1; i <= 4095; i++) {
+            long id = snowflake.nextId();
+            assertEquals(1000L, Snowflake.getTimestamp(id, 0L));
+            assertEquals(i, Snowflake.getSequence(id));
+        }
+
+        // 在第 4097 次调用前推进时钟至 1001L，触发 tilNextMillis 成功跨入下一毫秒
+        mockClock.set(1001L);
+        long overflowId = snowflake.nextId();
+        assertEquals(1001L, Snowflake.getTimestamp(overflowId, 0L));
+        assertEquals(0L, Snowflake.getSequence(overflowId));
+    }
 }

@@ -8,7 +8,7 @@
 - [Core 核心底座](./ateng-boot-core/CONTEXT.md) — 提供全局统一 API 响应契约、异常体系、业务断言、用户审计 SPI、异步上下文传递工具、全场景敏感数据脱敏与纯原生分布式 ID 发号引擎。
 - [Web 运行时增强](./ateng-boot-web/CONTEXT.md) — 提供基于 Filter 的链路追踪、全局异常防御拦截、Jackson 防失真与时间格式化，以及 CORS 自动化配置。
 - [MyBatis-Plus 持久层增强](./ateng-boot-mybatis-plus/CONTEXT.md) — 提供通用实体基类、审计填充器、行级多租户安全隔离、声明式细粒度数据权限引擎、原生高性能分批批量插入引擎、多方言分页插件、防全表更新删除、乐观锁与分布式 ID 扩展。
-- [All 聚合全家桶](./ateng-boot-all/CONTEXT.md) — 面向单体或快速起步业务，提供类 Hutool 风格的一键依赖打包交付。
+- [All 聚合全家桶](./ateng-boot-all/CONTEXT.md) — 面向单体或快速起步业务，提供零配置开箱即用的一键依赖打包交付。
 - [Samples 验证工程](./ateng-boot-samples/CONTEXT.md) — 采用 H2 内存库提供内测验证用例与工程化最佳实践 Demo。
 
 ## Relationships

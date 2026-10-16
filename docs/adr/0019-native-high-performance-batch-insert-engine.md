@@ -82,7 +82,7 @@ flowchart TD
 - 使用 `List.subList` 视图避免深拷贝内存冗余，安全将万级数据切片并循环调用 `insertBatchSomeColumn`，聚合返回真实影响行数。
 
 ### 4. 事务守护的增强业务服务基类 (`AtengBaseService<T>` & `AtengServiceImpl<M, T>`)
-- 继承 `IService<T>` 与 `ServiceImpl<M, T>`，对标 MyBatis-Plus 架构体系；
+- 继承 `IService<T>` 与 `ServiceImpl<M, T>`，无缝融入 MyBatis-Plus 官方架构生态；
 - 显式标注 `@Transactional(rollbackFor = Exception.class)`，确保在分批切片执行过程中一旦任意批次发生异常，已写入的所有批次数据全部原子回滚，无残留脏数据；
 - 深度整合配置属性 `ateng.boot.mybatis-plus.batch.default-size`，支持应用级灵活调优；
 - 统一提供 `insertBatch` 与 `insertBatchSomeColumn` 命名方法，契合不同开发者的编码直觉。

@@ -1,7 +1,7 @@
 # ateng-boot 研发指南与 Agent 行为指引
 
 ## 1. 项目定位与技术基线 (Project Baseline)
-`ateng-boot` 是基于 Spring Boot 3 与 JDK 17 的基础框架与中间件 Starter 套件，对标 Hutool 的精炼、高内聚心智，兼顾单体应用开箱即用与未来微服务生态（`ateng-cloud`）底座支撑。
+`ateng-boot` 是面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 & JDK 17 基础设施与中间件 Starter 套件，坚持纯原生、零臃肿依赖设计，兼顾单体应用极速起步与未来微服务生态（`ateng-cloud`）底座支撑。
 
 - **运行与编译**：JDK 17 LTS（字节码 17，兼容 21+ 运行）
 - **核心基线**：Spring Boot `3.3.13`，MyBatis-Plus `3.5.17`（参见 [ADR-0006](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)）
@@ -11,7 +11,7 @@
 
 ## 2. 核心架构与编码契约 (Architecture & Contracts)
 - **显式响应契约 (Explicit Contract)**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽；严禁引入 `@ResponseBodyAdvice` 全局自动拦截包装（参见 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）。
-- **零重型外部依赖 (Zero-Bloat Invariant)**：彻底禁止引入 `hutool-all`、`guava`、`commons-collections` 等全量工具包；100% 依托 JDK 17 原生能力与 Spring 6 内置基础工具；工具类依运行时上下文深度内聚（`core` 通用算法、`web` Servlet/HTTP、`mybatis-plus` ORM 映射），坚决杜绝“通用垃圾桶 (Junk Drawer)”模块（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）。
+- **零重型外部依赖 (Zero-Bloat Invariant)**：彻底禁止引入 `hutool-all`、`guava`、`commons-collections` 等重型第三方全量工具包；100% 依托 JDK 17 原生能力与 Spring 6 内置基础工具；工具类依运行时上下文深度内聚（`core` 通用算法、`web` Servlet/HTTP、`mybatis-plus` ORM 映射），坚决杜绝“通用垃圾桶 (Junk Drawer)”模块（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）。
 - **传输契约与持久层彻底解耦 (Transport Decoupling)**：Controller 传输层严禁泄露 ORM `Page<T>` 或数据持久层实体；分页查询统一入参 `PageQuery`，统一返回契约 `PageResult<VO>`，在 Service 边界通过 `PageUtil` 或 `.map()` 完成转换（参见 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md)）。
 - **数据安全与“内存真明文”不变量 (In-Memory Plaintext Invariant)**：Service 业务逻辑与实体对象在内存中始终保持 100% 原始真实明文，严禁在业务逻辑中直接对实体属性打星号；存储加密收敛于 MyBatis `TypeHandler`（入库密文、出库明文），展示脱敏收敛于 Jackson 视图序列化器（输出 JSON 动态掩码），杜绝掩码脏数据写回数据库（参见 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
 - **防御性自动装配 (Defensive Autoconfiguration)**：自动装配类统配 `@AutoConfiguration` 标注，统一且只能注册于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`（严格遵循 Spring Boot 3 规范，严禁使用旧版 `spring.factories`）；装配类标配 `@ConditionalOnClass`、`@ConditionalOnProperty`、`@ConditionalOnMissingBean` 守卫；Jackson 定制统一注入 `Jackson2ObjectMapperBuilderCustomizer`，严禁覆盖 `ObjectMapper` Bean（参见 [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)）。
@@ -25,7 +25,7 @@
 
 ## 3. 质量门禁与文档自洽 (Quality Gates & Docs)
 - **反应堆单测准出门禁 (Reactor-Safe Test Gate)**：特性验收均以 `ateng-boot-samples` 模块执行 `mvn clean test` 100% 绿色通过作为唯一准出标准；多模块联动调试时必须在根目录执行 `mvn test` 或追加依赖构建 `-pl <module> -am`，杜绝单模块测试意外拉取 Maven Central 旧版 Jar。
-- **特性即文档与单工单闭环门禁 (Doc-as-Feature & Per-Ticket Sync)**：代码产生的功能与配置必须在相关文档中同步体现，严禁只堆砌代码与工单而缺失使用说明；所有特性与接口改造均遵循“单工单文档准出闭环”原则，在同一个工单与提交中必须同步更新文档；日常高频功能采用“混合落盘”拓扑——根目录 `README.md` 的「核心代码范式」与「配置属性参考」提供开箱即用的极简速查，复杂中间件与架构专题沉淀于 `docs/guides/`；文档示例严格遵循“三板斧”质量规范：① 一句话场景痛点、② 可直接复制粘贴的最小 Java/YAML 代码块、③ 预期控制台/SQL/JSON 契约呈现；缺少文档与使用示例的改动一律视为未达验收标准。
+- **特性即文档与子模块内聚门禁 (Doc-as-Feature & Submodule-Co-located Sync)**：代码产生的功能与配置必须在相关文档中同步体现，严禁只堆砌代码而缺失使用说明；所有特性与接口改造均遵循“单工单文档准出闭环”原则，在同一个工单与提交中必须同步更新文档；采用“子模块内聚”文档拓扑——根目录 `README.md` 保持轻量门户与各模块索引导航，各模块具体代码范式与配置属性完整收敛沉淀于对应子模块专属的 `README.md`（如 `ateng-boot-core/README.md`、`ateng-boot-web/README.md`、`ateng-boot-mybatis-plus/README.md`），确保功能详实可查可复制；复杂架构专题沉淀于 `docs/guides/`；文档示例严格遵循“三板斧”质量规范：① 一句话场景痛点、② 可直接复制粘贴的最小 Java/YAML 代码块、③ 预期控制台/SQL/JSON 契约呈现；缺少文档与使用示例的改动一律视为未达验收标准。
 
 ---
 
