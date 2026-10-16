@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.sample.entity.UserEntity;
 import io.github.atengk.boot.sample.entity.UserRoleEntity;
 import io.github.atengk.boot.sample.mapper.UserMapper;
@@ -685,5 +686,107 @@ class SampleApplicationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("success: " + bizId));
+    }
+
+    @Test
+    @DisplayName("23. 敏感数据脱敏策略扩展与持久层雪花发号器大一统端到端集成测试")
+    void shouldVerifyExtendedDesensitizeAndSnowflakeIntegrationEndToEnd() throws Exception {
+        // 1. 构造包含新增脱敏策略（地址、车牌号、IPv4、统一社会信用代码、自定义掩码）的入参
+        String rawAddress = "北京市海淀区中关村南大街1号院";
+        String rawCarLicense = "京A88888";
+        String rawIpv4 = "192.168.1.100";
+        String rawCreditCode = "91110000000000000X";
+        String rawCustomMask = "ABCDEFG12345";
+
+        String jsonPayload = """
+                {
+                    "name": "脱敏综合测试用户",
+                    "age": 32,
+                    "email": "desensitize@example.com",
+                    "phone": "13912345678",
+                    "idCard": "110101199003072345",
+                    "address": "%s",
+                    "carLicense": "%s",
+                    "ipv4": "%s",
+                    "socialCreditCode": "%s",
+                    "customMask": "%s"
+                }
+                """.formatted(rawAddress, rawCarLicense, rawIpv4, rawCreditCode, rawCustomMask);
+
+        // 2. 调用 POST /api/users 创建用户，验证持久层通过 Snowflake 自动发号入库
+        MvcResult postResult = mockMvc.perform(post("/api/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        JsonNode postNode = objectMapper.readTree(postResult.getResponse().getContentAsString());
+        Long generatedId = postNode.get("data").asLong();
+        assertThat(generatedId).isPositive();
+
+        // 验证生成的 ID 来源于 ateng-boot-core 的 Snowflake 引擎（合法的 workerId 与 datacenterId 范围 0~31）
+        long workerId = Snowflake.getWorkerId(generatedId);
+        long datacenterId = Snowflake.getDatacenterId(generatedId);
+        assertThat(workerId).isBetween(0L, 31L);
+        assertThat(datacenterId).isBetween(0L, 31L);
+
+        // 3. 验证数据库物理存储与内存真明文不变量：
+        // 探查 H2 数据库物理行：未加密字段必须 100% 存储真实明文，绝对不能在入库时被打码为星号！
+        java.util.Map<String, Object> rawDbRow = jdbcTemplate.queryForMap(
+                "SELECT address, car_license, ipv4, social_credit_code, custom_mask FROM sys_user WHERE id = ?", generatedId
+        );
+        assertThat(rawDbRow.get("address")).isEqualTo(rawAddress);
+        assertThat(rawDbRow.get("car_license")).isEqualTo(rawCarLicense);
+        assertThat(rawDbRow.get("ipv4")).isEqualTo(rawIpv4);
+        assertThat(rawDbRow.get("social_credit_code")).isEqualTo(rawCreditCode);
+        assertThat(rawDbRow.get("custom_mask")).isEqualTo(rawCustomMask);
+
+        // 查询实体：Java 内存中对象属性必须为 100% 原始真实明文
+        UserEntity entity = userMapper.selectById(generatedId);
+        assertThat(entity).isNotNull();
+        assertThat(entity.getAddress()).isEqualTo(rawAddress);
+        assertThat(entity.getCarLicense()).isEqualTo(rawCarLicense);
+        assertThat(entity.getIpv4()).isEqualTo(rawIpv4);
+        assertThat(entity.getSocialCreditCode()).isEqualTo(rawCreditCode);
+        assertThat(entity.getCustomMask()).isEqualTo(rawCustomMask);
+
+        // 4. 调用 GET /api/users/{id}：断言 Controller 响应 JSON 中所有新增敏感字段动态脱敏掩码呈现
+        mockMvc.perform(get("/api/users/" + generatedId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.address").value("北京市海淀区*********"))
+                .andExpect(jsonPath("$.data.carLicense").value("京A***88"))
+                .andExpect(jsonPath("$.data.ipv4").value("192.168.1.*"))
+                .andExpect(jsonPath("$.data.socialCreditCode").value("91************000X"))
+                .andExpect(jsonPath("$.data.customMask").value("AB********45"));
+
+        // 5. 调用 GET /api/users/page：断言解耦后的 PageResult<UserVO> 视图层同样正确动态脱敏
+        MvcResult pageResult = mockMvc.perform(get("/api/users/page")
+                        .param("current", "1")
+                        .param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String pageJson = pageResult.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(pageJson)
+                .contains("\"address\":\"北京市海淀区*********\"")
+                .contains("\"carLicense\":\"京A***88\"")
+                .contains("\"ipv4\":\"192.168.1.*\"")
+                .contains("\"socialCreditCode\":\"91************000X\"")
+                .contains("\"customMask\":\"AB********45\"");
+
+        // 6. 验证防脏写回铁律：修改实体其他属性（如姓名）后执行 updateById，再次断言数据库物理字段依然保持真实原始值
+        entity.setName("脱敏综合测试用户_已更名");
+        userMapper.updateById(entity);
+
+        java.util.Map<String, Object> updatedDbRow = jdbcTemplate.queryForMap(
+                "SELECT address, car_license, ipv4, social_credit_code, custom_mask FROM sys_user WHERE id = ?", generatedId
+        );
+        assertThat(updatedDbRow.get("address")).isEqualTo(rawAddress);
+        assertThat(updatedDbRow.get("car_license")).isEqualTo(rawCarLicense);
+        assertThat(updatedDbRow.get("ipv4")).isEqualTo(rawIpv4);
+        assertThat(updatedDbRow.get("social_credit_code")).isEqualTo(rawCreditCode);
+        assertThat(updatedDbRow.get("custom_mask")).isEqualTo(rawCustomMask);
     }
 }

@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerIntercept
 import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
 import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
+import io.github.atengk.boot.core.id.Snowflake;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -51,6 +52,12 @@ class AtengMybatisPlusAutoConfigurationTest {
             PaginationInnerInterceptor pagination = (PaginationInnerInterceptor) interceptors.get(0);
             assertThat(pagination.getMaxLimit()).isEqualTo(500L);
             assertThat(pagination.isOverflow()).isFalse();
+
+            IdentifierGenerator generator = context.getBean(IdentifierGenerator.class);
+            Number id = generator.nextId(new Object());
+            assertThat(id).isNotNull();
+            assertThat(id.longValue()).isPositive();
+            assertThat(generator.nextUUID(new Object())).hasSize(32);
         });
     }
 
@@ -75,6 +82,9 @@ class AtengMybatisPlusAutoConfigurationTest {
             IdentifierGenerator generator = context.getBean(IdentifierGenerator.class);
             Number id = generator.nextId(new Object());
             assertThat(id).isNotNull();
+            assertThat(Snowflake.getWorkerId(id.longValue())).isEqualTo(3L);
+            assertThat(Snowflake.getDatacenterId(id.longValue())).isEqualTo(7L);
+            assertThat(generator.nextUUID(new Object())).hasSize(32);
         });
     }
 

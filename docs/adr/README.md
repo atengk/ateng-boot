@@ -27,6 +27,7 @@
 | **0017** | 企业级行级多租户安全隔离与自动填充架构 | `Accepted` | 深度集成 MP 3.5.17 TenantLineInnerInterceptor，数字列索引保护，@IgnoreTenant 与闭包短路，智能插入填充 | `ateng-boot-mybatis-plus` | [查看](./0017-multi-tenant-row-level-isolation-architecture.md) |
 | **0018** | 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构 | `Accepted` | 声明式 @DataScope 注解，多表别名校验，DataPermissionHandler SPI 解耦，超管与闭包秒级短路，分页 count 自动保护 | `ateng-boot-mybatis-plus` | [查看](./0018-declarative-data-permission-engine-architecture.md) |
 | **0019** | 原生高性能分批批量插入引擎架构决策 | `Accepted` | 挂载 InsertBatchSomeColumn 单条多值 SQL，过滤逻辑删除列，BatchUtil 智能切片与 AtengBaseService 强事务守护 | `ateng-boot-mybatis-plus` | [查看](./0019-native-high-performance-batch-insert-engine.md) |
+| **0020** | 零膨胀分布式 ID 引擎与全场景敏感数据脱敏架构决策 | `Accepted` | 纯 JDK 17 原生 Snowflake/IdUtil 引擎，四级自适应节点，全场景脱敏策略扩展与持久层发号器大一统 | `core` / `mybatis-plus` | [查看](./0020-zero-bloat-distributed-id-and-mask-strategy.md) |
 
 ---
 

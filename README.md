@@ -363,12 +363,23 @@ public class AuditLogService {
 **场景痛点**：传统企业级项目往往盲目引入 `hutool-all`、`guava` 等几十兆外部巨型依赖，导致类路径膨胀、版本冲突以及“通用垃圾桶 (Junk Drawer)”模块乱象。`ateng-boot` 遵循 Zero-Bloat 原则与高内聚架构，100% 依托 JDK 17 与 Spring 基础组件能力，按运行时上下文就近收敛：
 
 #### 1. 核心底座工具 (`ateng-boot-core`)
-- **数据脱敏 (`DesensitizeUtil`)**：全场景极速动态掩码（手机号、身份证、银行卡、中文姓名、邮箱、固话、密码）：
+- **数据脱敏 (`DesensitizeUtil`)**：全场景极速动态掩码（手机号、身份证、银行卡、中文姓名、邮箱、固话、密码、国内地址、车牌号、IPv4/IPv6、统一社会信用代码及首尾保留）：
   ```java
-  DesensitizeUtil.mobilePhone("13812345678");   // "138****5678"
-  DesensitizeUtil.idCard("110101199003072345"); // "110101********2345"
-  DesensitizeUtil.chineseName("诸葛孔明");      // "诸**明"
-  DesensitizeUtil.password("secret123");        // "******"
+  DesensitizeUtil.mobilePhone("13812345678");        // "138****5678"
+  DesensitizeUtil.idCard("110101199003072345");      // "110101********2345"
+  DesensitizeUtil.chineseName("诸葛孔明");           // "诸**明"
+  DesensitizeUtil.address("北京市海淀区中关村南大街1号院"); // "北京市海淀区*********"
+  DesensitizeUtil.carLicense("京A88888");            // "京A***88"
+  DesensitizeUtil.ipv4("192.168.1.100");             // "192.168.1.*"
+  DesensitizeUtil.socialCreditCode("91110000MA001ABC12"); // "91************BC12"
+  DesensitizeUtil.maskKeepHeadTail("ABCDEFG12345", 2, 2); // "AB********45"
+  ```
+- **纯 JDK 原生唯一 ID 门面 (`IdUtil`) 与雪花引擎 (`Snowflake`)**：基于 2026 纪元自定义 41-bit 时间戳与轻量四级自适应节点推导，内置纳秒回拨自旋容错；提供高吞吐无锁 UUID 与 URL 安全短 ID：
+  ```java
+  long snowflakeId = IdUtil.getSnowflakeNextId();     // 纯原生雪花 ID（如 104477445831643136L）
+  String idStr = IdUtil.getSnowflakeNextIdStr();      // 雪花 ID 字符串
+  String simpleUuid = IdUtil.fastSimpleUUID();        // 32 位高性能无横线 UUID（无锁并发）
+  String shortId = IdUtil.nanoId();                   // 21 位 URL 安全 NanoId 短 ID
   ```
 - **纯 JDK 原生加解密 (`CryptoUtil`)**：支持 `AES/CBC/PKCS5Padding` 与带防篡改认证标签的 `AES/GCM/NoPadding`，内置安全随机 IV 与 Base64 编解码，彻底无 Bouncy Castle 外部依赖：
   ```java
@@ -455,6 +466,18 @@ public class UserEntity extends BaseFullEntity {
     @TableField(typeHandler = EncryptTypeHandler.class)
     @FieldSensitive(SensitiveType.ID_CARD)
     private String idCard;
+
+    /**
+     * 国内地址：出库时动态等长脱敏（前 6 位保留）
+     */
+    @FieldSensitive(SensitiveType.ADDRESS)
+    private String address;
+
+    /**
+     * 自定义凭据：出库时保留首尾各 2 位（如 AB********45）
+     */
+    @FieldSensitive(value = SensitiveType.KEEP_HEAD_TAIL, keepHead = 2, keepTail = 2)
+    private String customMask;
 }
 ```
 
@@ -1098,6 +1121,10 @@ ateng:
         enabled: false            # 是否启用细粒度数据权限拦截器（默认 false，按需开启）
       crypto:
         secret-key: "YourSecretKey" # AES 密钥（可选，未配置时自适应默认内置密钥）
+      snowflake:
+        enabled: true             # 是否装配雪花发号器（默认 true，统一桥接至 ateng-boot-core 的 Snowflake 与 IdUtil）
+        worker-id: 1              # 工作节点 ID（0~31，未配置时四级自适应推导）
+        datacenter-id: 1          # 数据中心 ID（0~31，未配置时四级自适应推导）
 ```
 
 ---
@@ -1124,6 +1151,7 @@ ateng:
   - [ADR-0017: 企业级行级多租户安全隔离与自动填充架构决策](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)
   - [ADR-0018: 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构决策](./docs/adr/0018-declarative-data-permission-engine-architecture.md)
   - [ADR-0019: 原生高性能分批批量插入引擎架构决策](./docs/adr/0019-native-high-performance-batch-insert-engine.md)
+  - [ADR-0020: 零膨胀分布式 ID 引擎与全场景敏感数据脱敏架构决策](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md)
 
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）

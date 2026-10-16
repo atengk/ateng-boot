@@ -56,6 +56,36 @@ public class UserVO implements Serializable {
     private String idCard;
 
     /**
+     * 国内地址（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.ADDRESS)
+    private String address;
+
+    /**
+     * 车牌号（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.CAR_LICENSE)
+    private String carLicense;
+
+    /**
+     * IPv4 地址（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.IPV4)
+    private String ipv4;
+
+    /**
+     * 企业统一社会信用代码（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.SOCIAL_CREDIT_CODE)
+    private String socialCreditCode;
+
+    /**
+     * 自定义首尾保留掩码（出库动态脱敏：保留前 2 位与后 2 位）
+     */
+    @FieldSensitive(value = SensitiveType.KEEP_HEAD_TAIL, keepHead = 2, keepTail = 2)
+    private String customMask;
+
+    /**
      * 实体对象转换为视图对象的工厂方法
      *
      * @param entity 用户实体
@@ -72,6 +102,11 @@ public class UserVO implements Serializable {
         vo.setEmail(entity.getEmail());
         vo.setPhone(entity.getPhone());
         vo.setIdCard(entity.getIdCard());
+        vo.setAddress(entity.getAddress());
+        vo.setCarLicense(entity.getCarLicense());
+        vo.setIpv4(entity.getIpv4());
+        vo.setSocialCreditCode(entity.getSocialCreditCode());
+        vo.setCustomMask(entity.getCustomMask());
         return vo;
     }
 }

@@ -1,9 +1,10 @@
 package io.github.atengk.boot.mybatisplus.autoconfigure;
 
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
-import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
 import com.baomidou.mybatisplus.core.injector.ISqlInjector;
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.util.IdUtil;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
@@ -158,19 +159,32 @@ public class AtengMybatisPlusAutoConfiguration {
 
 
     /**
-     * 注册分布式主键发号器
+     * 注册分布式主键发号器，统一桥接委托至 ateng-boot-core 的 Snowflake 引擎与 IdUtil 静态门面
      *
-     * @return 基于 Twitter Snowflake 算法的分布式发号器
+     * @return 遵循 MyBatis-Plus 契约的分布式发号器
      */
     @Bean
     @ConditionalOnMissingBean(IdentifierGenerator.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.snowflake", name = "enabled", havingValue = "true", matchIfMissing = true)
     public IdentifierGenerator identifierGenerator() {
         MybatisPlusProperties.SnowflakeProperties snowflake = properties.getSnowflake();
+        final Snowflake engine;
         if (snowflake.getWorkerId() != null && snowflake.getDatacenterId() != null) {
-            return new DefaultIdentifierGenerator(snowflake.getWorkerId(), snowflake.getDatacenterId());
+            engine = new Snowflake(snowflake.getWorkerId(), snowflake.getDatacenterId());
+        } else {
+            engine = IdUtil.getSnowflake();
         }
-        return new DefaultIdentifierGenerator();
+        return new IdentifierGenerator() {
+            @Override
+            public Number nextId(Object entity) {
+                return engine.nextId();
+            }
+
+            @Override
+            public String nextUUID(Object entity) {
+                return IdUtil.fastSimpleUUID();
+            }
+        };
     }
 
     /**

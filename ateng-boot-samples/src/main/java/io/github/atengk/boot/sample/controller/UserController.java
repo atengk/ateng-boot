@@ -63,6 +63,11 @@ public class UserController {
         entity.setEmail(dto.getEmail());
         entity.setPhone(dto.getPhone());
         entity.setIdCard(dto.getIdCard());
+        entity.setAddress(dto.getAddress());
+        entity.setCarLicense(dto.getCarLicense());
+        entity.setIpv4(dto.getIpv4());
+        entity.setSocialCreditCode(dto.getSocialCreditCode());
+        entity.setCustomMask(dto.getCustomMask());
         userMapper.insert(entity);
         return Result.success(entity.getId());
     }

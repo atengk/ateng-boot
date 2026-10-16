@@ -46,4 +46,29 @@ public class UserCreateDTO {
      * 身份证号码
      */
     private String idCard;
+
+    /**
+     * 国内地址
+     */
+    private String address;
+
+    /**
+     * 车牌号
+     */
+    private String carLicense;
+
+    /**
+     * IPv4 地址
+     */
+    private String ipv4;
+
+    /**
+     * 企业统一社会信用代码
+     */
+    private String socialCreditCode;
+
+    /**
+     * 自定义掩码测试串
+     */
+    private String customMask;
 }
