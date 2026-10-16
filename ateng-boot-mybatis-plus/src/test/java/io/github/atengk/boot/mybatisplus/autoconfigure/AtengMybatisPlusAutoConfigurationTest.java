@@ -111,4 +111,14 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context).hasSingleBean(DefaultMetaObjectHandler.class);
                 });
     }
+
+    @Test
+    @DisplayName("支持自动装配注入自定义 secretKey")
+    void shouldConfigureSecretKey() {
+        String testKey = "TestCustomSecretKey123456789012";
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.crypto.secret-key=" + testKey)
+                .run(context -> {
+                    assertThat(io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler.getGlobalSecretKey()).isEqualTo(testKey);
+                });
+    }
 }

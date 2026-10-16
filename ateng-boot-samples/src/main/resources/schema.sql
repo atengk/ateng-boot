@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS sys_user (
     name VARCHAR(64) NOT NULL,
     age INT,
     email VARCHAR(128),
+    phone VARCHAR(256),
+    id_card VARCHAR(256),
     create_time TIMESTAMP,
     update_time TIMESTAMP,
     create_by VARCHAR(64),

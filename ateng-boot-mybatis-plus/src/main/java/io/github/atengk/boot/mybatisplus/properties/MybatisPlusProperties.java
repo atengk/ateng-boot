@@ -38,6 +38,11 @@ public class MybatisPlusProperties {
      */
     private SnowflakeProperties snowflake = new SnowflakeProperties();
 
+    /**
+     * 数据加解密配置
+     */
+    private CryptoProperties crypto = new CryptoProperties();
+
     public AuditProperties getAudit() {
         return audit;
     }
@@ -76,6 +81,14 @@ public class MybatisPlusProperties {
 
     public void setSnowflake(SnowflakeProperties snowflake) {
         this.snowflake = snowflake;
+    }
+
+    public CryptoProperties getCrypto() {
+        return crypto;
+    }
+
+    public void setCrypto(CryptoProperties crypto) {
+        this.crypto = crypto;
     }
 
     /**
@@ -243,6 +256,25 @@ public class MybatisPlusProperties {
 
         public void setDatacenterId(Long datacenterId) {
             this.datacenterId = datacenterId;
+        }
+    }
+
+    /**
+     * 数据持久化加解密属性配置
+     */
+    public static class CryptoProperties {
+        /**
+         * AES 加密密钥（支持 16/24/32 字节原生字符、Base64 编码密钥或任意自定义密钥串）
+         * 未配置时自适应默认内置安全密钥
+         */
+        private String secretKey;
+
+        public String getSecretKey() {
+            return secretKey;
+        }
+
+        public void setSecretKey(String secretKey) {
+            this.secretKey = secretKey;
         }
     }
 }

@@ -18,9 +18,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
+
+import jakarta.annotation.PostConstruct;
+
 /**
  * MyBatis-Plus 增强生态核心自动装配类
- * 按需防御性装配审计填充器、动态拦截器插件链（分页、防全表更新删除、乐观锁）与雪花分布式发号器
+ * 按需防御性装配审计填充器、动态拦截器插件链（分页、防全表更新删除、乐观锁）、雪花分布式发号器与透明加解密类型处理器
  *
  * @author Ateng
  * @since 2026-10-15
@@ -34,6 +38,16 @@ public class AtengMybatisPlusAutoConfiguration {
 
     public AtengMybatisPlusAutoConfiguration(MybatisPlusProperties properties) {
         this.properties = properties;
+    }
+
+    /**
+     * 初始化全局持久层加解密密钥配置
+     */
+    @PostConstruct
+    public void initCrypto() {
+        if (properties.getCrypto() != null && properties.getCrypto().getSecretKey() != null) {
+            EncryptTypeHandler.setGlobalSecretKey(properties.getCrypto().getSecretKey());
+        }
     }
 
     /**

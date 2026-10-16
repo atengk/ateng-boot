@@ -36,4 +36,14 @@ public class UserCreateDTO {
      */
     @Email(message = "电子邮箱格式不正确")
     private String email;
+
+    /**
+     * 手机号码
+     */
+    private String phone;
+
+    /**
+     * 身份证号码
+     */
+    private String idCard;
 }

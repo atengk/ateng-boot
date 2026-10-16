@@ -1,7 +1,12 @@
 package io.github.atengk.boot.sample.entity;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
+import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.annotation.FieldSensitive;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
+import io.github.atengk.boot.mybatisplus.enums.SensitiveType;
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -16,7 +21,7 @@ import lombok.ToString;
 @Getter
 @Setter
 @ToString(callSuper = true)
-@TableName("sys_user")
+@TableName(value = "sys_user", autoResultMap = true)
 public class UserEntity extends BaseFullEntity {
 
     private static final long serialVersionUID = 1L;
@@ -35,4 +40,20 @@ public class UserEntity extends BaseFullEntity {
      * 电子邮箱
      */
     private String email;
+
+    /**
+     * 手机号码（数据库透明加密存储，视图出库动态脱敏）
+     */
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+
+    /**
+     * 身份证号码（数据库透明加密存储，视图出库动态脱敏）
+     */
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldSensitive(SensitiveType.ID_CARD)
+    private String idCard;
 }

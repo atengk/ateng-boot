@@ -426,6 +426,62 @@ public class UserController {
 ```
 - **核心特性**：自动提取客户端真实 IP 并感知 MDC `traceId`；通过 `excludeParams` 递归脱敏排除密码等敏感凭据；大文件（`MultipartFile`）及输入输出流自动占位替换，严防 OOM；发生业务异常时自动捕获异常上下文并打印入参与耗时。
 
+### 5.7 持久层透明加密与视图动态脱敏 (@FieldEncrypt & @FieldSensitive)
+
+**场景痛点**：传统脱敏方案常在业务逻辑层直接对实体对象的属性做打星号修改，导致后续执行 `updateById` 或持久化更新时，极易将掩码脏数据（如 `138****0000`）写回数据库，造成不可逆的数据破坏与资损；若全库明文存储，又无法满足网络安全与隐私合规要求。`ateng-boot` 严格践行**“生命周期分离与内存真明文”**不变量：持久化存储加密收敛于 MyBatis `TypeHandler`（落盘密文、查询明文），展示脱敏收敛于 Jackson 视图序列化器（输出 JSON 动态掩码），业务逻辑与实体对象在内存中始终保持 100% 原始真实明文！
+
+**核心代码范式**：
+```java
+@Getter
+@Setter
+@ToString(callSuper = true)
+@TableName(value = "sys_user", autoResultMap = true)
+public class UserEntity extends BaseFullEntity {
+
+    private String name;
+
+    /**
+     * 手机号码：数据库中以 AES 密文存储；Controller 输出 JSON 时动态掩码为 138****5678
+     */
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+
+    /**
+     * 身份证号码：数据库中以 AES 密文存储；Controller 输出 JSON 时动态掩码为 110101********2345
+     */
+    @FieldEncrypt
+    @TableField(typeHandler = EncryptTypeHandler.class)
+    @FieldSensitive(SensitiveType.ID_CARD)
+    private String idCard;
+}
+```
+
+**全生命周期一致性对比**：
+- **底层数据库物理存储 (H2/MySQL 原生 SQL)**：
+  ```sql
+  SELECT phone, id_card FROM sys_user WHERE id = 2110888996374634498;
+  -- 结果呈现为强安全性 AES Base64 密文（含前置随机 16 字节 IV）：
+  -- phone:   uiPi0MfpVUhgRrTK1FEVoYfNYtisSOx/lRZspr3yLUU=
+  -- id_card: 8iEvZbd7XsQZ789n8UssUhLpK+Pib+ahA7+yCeqD3Q/PQP6CnTMYq+tHssnxWIzB
+  ```
+- **Java 内存实体 (`user.getPhone()`)**：`13812345678`（100% 原始真实明文，业务流转零感知）
+- **Controller 最终输出的 JSON 响应**：
+  ```json
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": {
+      "id": "2110888996374634498",
+      "name": "安全测试用户",
+      "phone": "138****5678",
+      "idCard": "110101********2345"
+    }
+  }
+  ```
+- **调用 `userMapper.updateById(user)`**：持久层基于内存真明文重新计算随机 IV 加密落盘，**绝不会把 `*` 号脏数据写回数据库**！
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -463,6 +519,8 @@ ateng:
         enabled: true             # 是否装配防全表更新删除插件（默认 true）
       optimistic-locker:
         enabled: true             # 是否装配乐观锁插件（默认 true）
+      crypto:
+        secret-key: "YourSecretKey" # AES 密钥（可选，未配置时自适应默认内置密钥）
 ```
 
 ---

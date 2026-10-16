@@ -61,6 +61,8 @@ public class UserController {
         entity.setName(dto.getName());
         entity.setAge(dto.getAge());
         entity.setEmail(dto.getEmail());
+        entity.setPhone(dto.getPhone());
+        entity.setIdCard(dto.getIdCard());
         userMapper.insert(entity);
         return Result.success(entity.getId());
     }

@@ -35,6 +35,12 @@
             <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
 
+        <!-- Jackson Databind（用于 @FieldSensitive 与 SensitiveJsonSerializer 视图动态脱敏） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

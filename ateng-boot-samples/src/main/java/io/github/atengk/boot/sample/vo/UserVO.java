@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.vo;
 
+import io.github.atengk.boot.mybatisplus.annotation.FieldSensitive;
+import io.github.atengk.boot.mybatisplus.enums.SensitiveType;
 import io.github.atengk.boot.sample.entity.UserEntity;
 import lombok.Getter;
 import lombok.Setter;
@@ -42,6 +44,18 @@ public class UserVO implements Serializable {
     private String email;
 
     /**
+     * 手机号码（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+
+    /**
+     * 身份证号码（出库动态脱敏）
+     */
+    @FieldSensitive(SensitiveType.ID_CARD)
+    private String idCard;
+
+    /**
      * 实体对象转换为视图对象的工厂方法
      *
      * @param entity 用户实体
@@ -56,6 +70,8 @@ public class UserVO implements Serializable {
         vo.setName(entity.getName());
         vo.setAge(entity.getAge());
         vo.setEmail(entity.getEmail());
+        vo.setPhone(entity.getPhone());
+        vo.setIdCard(entity.getIdCard());
         return vo;
     }
 }

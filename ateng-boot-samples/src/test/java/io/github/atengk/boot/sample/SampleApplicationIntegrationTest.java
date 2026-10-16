@@ -11,6 +11,7 @@ import io.github.atengk.boot.sample.entity.UserEntity;
 import io.github.atengk.boot.sample.entity.UserRoleEntity;
 import io.github.atengk.boot.sample.mapper.UserMapper;
 import io.github.atengk.boot.sample.mapper.UserRoleMapper;
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -20,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -57,6 +59,9 @@ class SampleApplicationIntegrationTest {
 
     @Autowired
     private UserRoleMapper userRoleMapper;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -504,5 +509,94 @@ class SampleApplicationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.msg").value("用户积分余额不足"));
+    }
+
+    @Test
+    @DisplayName("22. 持久层透明加密 @FieldEncrypt 与视图动态脱敏 @FieldSensitive 全生命周期端到端集成测试")
+    void shouldVerifyFieldEncryptAndSensitiveLifecycleEndToEnd() throws Exception {
+        // 1. 通过 Controller 接口创建携带手机号与身份证号的用户记录
+        String rawPhone = "13812345678";
+        String rawIdCard = "110101199003072345";
+        String createJson = """
+                {
+                    "name": "安全测试用户",
+                    "age": 30,
+                    "email": "security@example.com",
+                    "phone": "%s",
+                    "idCard": "%s"
+                }
+                """.formatted(rawPhone, rawIdCard);
+
+        MvcResult createResult = mockMvc.perform(post("/api/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        JsonNode createNode = objectMapper.readTree(createResult.getResponse().getContentAsString());
+        String userIdStr = createNode.get("data").asText();
+        Long userId = Long.valueOf(userIdStr);
+
+        // 2. 原生 SQL 探查 H2 数据库底层存储：直接断言物理字段值为 AES 密文，绝对不包含原始明文！
+        java.util.Map<String, Object> rawDbRow = jdbcTemplate.queryForMap(
+                "SELECT phone, id_card FROM sys_user WHERE id = ?", userId
+        );
+        String dbPhone = (String) rawDbRow.get("phone");
+        String dbIdCard = (String) rawDbRow.get("id_card");
+
+        assertThat(dbPhone)
+                .isNotNull()
+                .isNotEqualTo(rawPhone)
+                .doesNotContain("1381234");
+        assertThat(EncryptTypeHandler.decrypt(dbPhone)).isEqualTo(rawPhone);
+
+        assertThat(dbIdCard)
+                .isNotNull()
+                .isNotEqualTo(rawIdCard)
+                .doesNotContain("110101");
+        assertThat(EncryptTypeHandler.decrypt(dbIdCard)).isEqualTo(rawIdCard);
+
+        // 3. Mapper 查询实体：断言 Java 内存实体对象中的属性值为解密后的 100% 原始真实明文！
+        UserEntity inMemoryEntity = userMapper.selectById(userId);
+        assertThat(inMemoryEntity).isNotNull();
+        assertThat(inMemoryEntity.getPhone()).isEqualTo(rawPhone);
+        assertThat(inMemoryEntity.getIdCard()).isEqualTo(rawIdCard);
+
+        // 4. 请求 Controller 接口：断言响应 JSON 中敏感数据呈现为星号掩码（视图层出库脱敏）
+        mockMvc.perform(get("/api/users/" + userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.phone").value("138****5678"))
+                .andExpect(jsonPath("$.data.idCard").value("110101********2345"))
+                .andExpect(jsonPath("$.data.name").value("安全测试用户"));
+
+        // 5. 再次验证内存真明文不变量：经过 Controller/Jackson 序列化后，实体对象内的字段值依然保持真实明文，未被任何星号污染
+        assertThat(inMemoryEntity.getPhone()).isEqualTo(rawPhone);
+        assertThat(inMemoryEntity.getIdCard()).isEqualTo(rawIdCard);
+
+        // 6. 调用 updateById 修改实体其他属性（如姓名），验证更新后加密字段依然保持合法密文，绝不会把掩码星号写入数据库
+        inMemoryEntity.setName("安全测试用户_已更名");
+        userMapper.updateById(inMemoryEntity);
+
+        java.util.Map<String, Object> updatedDbRow = jdbcTemplate.queryForMap(
+                "SELECT name, phone, id_card FROM sys_user WHERE id = ?", userId
+        );
+        assertThat(updatedDbRow.get("name")).isEqualTo("安全测试用户_已更名");
+
+        String updatedDbPhone = (String) updatedDbRow.get("phone");
+        String updatedDbIdCard = (String) updatedDbRow.get("id_card");
+
+        assertThat(updatedDbPhone)
+                .isNotNull()
+                .doesNotContain("*")
+                .doesNotContain("1381234");
+        assertThat(EncryptTypeHandler.decrypt(updatedDbPhone)).isEqualTo(rawPhone);
+
+        assertThat(updatedDbIdCard)
+                .isNotNull()
+                .doesNotContain("*")
+                .doesNotContain("110101");
+        assertThat(EncryptTypeHandler.decrypt(updatedDbIdCard)).isEqualTo(rawIdCard);
     }
 }

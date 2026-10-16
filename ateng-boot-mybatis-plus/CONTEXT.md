@@ -41,12 +41,24 @@ _Avoid_: SafeDeleteInterceptor, TableAttackBlocker
 _Avoid_: VersionInterceptor, ConcurrencyInterceptor
 
 **FieldEncrypt**:
-声明在实体敏感属性上的持久化对称加解密注解，在入库时自动密文转换，查询时自动明文还原。
+声明在实体敏感属性上的持久化透明加密注解，在落盘写入数据库时自动加密为 AES 密文，在查询读取时自动解密为真实明文。配合 `@TableField(typeHandler = EncryptTypeHandler.class)` 使用。
 _Avoid_: SecretField, CryptoField, EncryptField
 
+**EncryptTypeHandler**:
+继承 MyBatis `BaseTypeHandler<String>` 的透明加解密类型处理器，采用 AES 对称算法，前置 16 字节随机 IV 并进行 Base64 组合编码，具备自包含解密与防御性历史明文兼容能力。
+_Avoid_: AesTypeHandler, SecretHandler, CryptoHandler
+
 **FieldSensitive**:
-声明在实体或 VO 属性上的出库数据脱敏注解，按指定策略（手机号、身份证、邮箱等）自动掩码序列化输出。
+声明在实体或 VO 属性上的出库数据动态脱敏注解，基于 Jackson `SensitiveJsonSerializer` 在序列化为 JSON 响应时动态掩码，确保 Java 内存中始终保持 100% 原始真实明文。
 _Avoid_: MaskField, Desensitize, SensitiveData
+
+**SensitiveJsonSerializer**:
+基于 Jackson `ContextualSerializer` 动态感知 `@FieldSensitive` 配置的动态脱敏序列化器，委托 `DesensitizeUtil` 执行高性能掩码转换。
+_Avoid_: MaskSerializer, DesensitizeSerializer
+
+**SensitiveType**:
+脱敏策略枚举类，包含 `CHINESE_NAME`、`MOBILE_PHONE`、`FIXED_PHONE`、`ID_CARD`、`EMAIL`、`BANK_CARD`、`PASSWORD`、`CUSTOM` 与 `NONE`。
+_Avoid_: MaskType, DesensitizeType
 
 **PageUtil**:
 用于将持久层 IPage 转换为标准 PageResult，以及将 PageQuery 转换为 MyBatis-Plus Page 的双向映射工具类。
