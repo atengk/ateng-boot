@@ -52,4 +52,21 @@ class JitterTtlFunctionTest {
         JitterTtlFunction functionNegative = new JitterTtlFunction(Duration.ofSeconds(-1), Duration.ofSeconds(30), true);
         assertThat(functionNegative.getTimeToLive("key", "val")).isEqualTo(Duration.ofSeconds(-1));
     }
+
+    @Test
+    @DisplayName("当缓存值为空或 NullValue 时，自动分流使用短 nullTtl 防穿透")
+    void testNullValueCachingShortTtl() {
+        Duration baseTtl = Duration.ofHours(2);
+        Duration nullTtl = Duration.ofMinutes(5);
+        Duration maxJitter = Duration.ofSeconds(30);
+        JitterTtlFunction function = new JitterTtlFunction(baseTtl, nullTtl, maxJitter, false);
+
+        // 1. null 值
+        Duration ttlForNull = function.getTimeToLive("key_null", null);
+        assertThat(ttlForNull).isEqualTo(nullTtl);
+
+        // 2. 正常非空业务对象返回 baseTtl
+        Duration ttlForNormal = function.getTimeToLive("key_normal", "normal_data");
+        assertThat(ttlForNormal).isEqualTo(baseTtl);
+    }
 }

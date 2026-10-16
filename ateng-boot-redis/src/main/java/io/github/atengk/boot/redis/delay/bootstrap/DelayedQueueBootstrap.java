@@ -26,6 +26,7 @@ import org.springframework.util.StringValueResolver;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -50,6 +51,7 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     private final RedissonClient redissonClient;
     private final RedisDelayedQueue redisDelayedQueue;
     private final ObjectMapper objectMapper;
+    private final io.github.atengk.boot.redis.properties.RedisProperties redisProperties;
 
     private ApplicationContext applicationContext;
     private StringValueResolver embeddedValueResolver;
@@ -59,9 +61,17 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     public DelayedQueueBootstrap(RedissonClient redissonClient,
                                  RedisDelayedQueue redisDelayedQueue,
                                  ObjectMapper objectMapper) {
+        this(redissonClient, redisDelayedQueue, objectMapper, null);
+    }
+
+    public DelayedQueueBootstrap(RedissonClient redissonClient,
+                                 RedisDelayedQueue redisDelayedQueue,
+                                 ObjectMapper objectMapper,
+                                 io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
         this.redisDelayedQueue = Objects.requireNonNull(redisDelayedQueue, "redisDelayedQueue must not be null");
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
+        this.redisProperties = redisProperties;
     }
 
     @Override
@@ -168,7 +178,7 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
                 // 采用 1 秒超时轮询，保障优雅停机时迅速退出
                 Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
                 if (rawMessage != null) {
-                    invokeListener(bean, method, rawMessage, queueName);
+                    processMessageWithRetry(bean, method, rawMessage, queueName);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -185,6 +195,38 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
             }
         }
         log.debug("Redis 延时队列消费者正常退出 [queue={}, thread={}]", queueName, Thread.currentThread().getName());
+    }
+
+    /**
+     * 带有重试补偿的消息消费执行逻辑
+     */
+    private void processMessageWithRetry(Object bean, Method method, Object rawMessage, String queueName) {
+        int maxRetries = (redisProperties != null && redisProperties.getDelayQueue() != null)
+                ? redisProperties.getDelayQueue().getRetryTimes() : 3;
+        Duration retryDelay = (redisProperties != null && redisProperties.getDelayQueue() != null)
+                ? redisProperties.getDelayQueue().getRetryDelay() : Duration.ofSeconds(3);
+
+        int attempt = 0;
+        while (running && !Thread.currentThread().isInterrupted()) {
+            try {
+                invokeListener(bean, method, rawMessage, queueName);
+                return;
+            } catch (Throwable e) {
+                attempt++;
+                if (attempt <= maxRetries) {
+                    log.warn("Redis 延时队列 [{}] 消费异常，准备执行第 {}/{} 次重试: {}", queueName, attempt, maxRetries, e.getMessage());
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(retryDelay.toMillis());
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                } else {
+                    log.error("Redis 延时队列 [{}] 消费失败且达到最大重试次数 ({} 次)，消息已丢弃: {}", queueName, maxRetries, e.getMessage(), e);
+                    return;
+                }
+            }
+        }
     }
 
     /**

@@ -15,8 +15,10 @@ import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.SessionCallback;
+import org.springframework.data.redis.core.ZSetOperations;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -98,6 +100,31 @@ public class RedisUtil {
     }
 
     /**
+     * 设置 key 过期时间
+     *
+     * @param key 键名
+     * @param timeout 过期时长
+     * @return 是否设置成功
+     */
+    public static boolean expire(String key, Duration timeout) {
+        if (timeout == null) {
+            return false;
+        }
+        Boolean success = getTemplate().expire(key, timeout.toMillis(), TimeUnit.MILLISECONDS);
+        return Boolean.TRUE.equals(success);
+    }
+
+    /**
+     * 获取 key 剩余存活时间（单位：秒）
+     *
+     * @param key 键名
+     * @return 剩余时间（秒）
+     */
+    public static long getExpire(String key) {
+        return getExpire(key, TimeUnit.SECONDS);
+    }
+
+    /**
      * 获取 key 剩余存活时间
      *
      * @param key 键名
@@ -107,6 +134,17 @@ public class RedisUtil {
     public static long getExpire(String key, TimeUnit unit) {
         Long expire = getTemplate().getExpire(key, unit);
         return expire != null ? expire : -1L;
+    }
+
+    /**
+     * 移除 key 的过期时间，使其永久保持有效
+     *
+     * @param key 键名
+     * @return 是否移除成功
+     */
+    public static boolean persist(String key) {
+        Boolean success = getTemplate().persist(key);
+        return Boolean.TRUE.equals(success);
     }
 
     /**
@@ -195,6 +233,21 @@ public class RedisUtil {
     }
 
     /**
+     * 写入带过期时间的缓存
+     *
+     * @param key 键名
+     * @param value 缓存值
+     * @param timeout 过期时长
+     */
+    public static void set(String key, Object value, Duration timeout) {
+        if (timeout != null) {
+            set(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } else {
+            set(key, value);
+        }
+    }
+
+    /**
      * 仅当不存在时写入缓存 (SETNX)
      *
      * @param key 键名
@@ -218,6 +271,21 @@ public class RedisUtil {
     public static boolean setIfAbsent(String key, Object value, long timeout, TimeUnit unit) {
         Boolean success = getTemplate().opsForValue().setIfAbsent(key, value, timeout, unit);
         return Boolean.TRUE.equals(success);
+    }
+
+    /**
+     * 仅当不存在时写入带过期时间的缓存
+     *
+     * @param key 键名
+     * @param value 缓存值
+     * @param timeout 过期时长
+     * @return 是否写入成功
+     */
+    public static boolean setIfAbsent(String key, Object value, Duration timeout) {
+        if (timeout != null) {
+            return setIfAbsent(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+        return setIfAbsent(key, value);
     }
 
     /**
@@ -274,6 +342,26 @@ public class RedisUtil {
      */
     public static Object getAndSet(String key, Object value) {
         return getTemplate().opsForValue().getAndSet(key, value);
+    }
+
+    /**
+     * 设置新值并返回旧值并转换为目标类型
+     *
+     * @param key 键名
+     * @param value 新值
+     * @param clazz 目标类型 Class
+     * @param <T> 泛型
+     * @return 转换后的旧值
+     */
+    public static <T> T getAndSet(String key, Object value, Class<T> clazz) {
+        Object oldVal = getAndSet(key, value);
+        if (oldVal == null) {
+            return null;
+        }
+        if (clazz.isInstance(oldVal)) {
+            return clazz.cast(oldVal);
+        }
+        return OBJECT_MAPPER.convertValue(oldVal, clazz);
     }
 
     /**
@@ -454,6 +542,60 @@ public class RedisUtil {
         return getTemplate().opsForHash().increment(key, hashKey, delta);
     }
 
+    /**
+     * 获取 Hash 所有的键集合
+     *
+     * @param key 键名
+     * @return 散列键集合
+     */
+    public static Set<Object> hKeys(String key) {
+        Set<Object> keys = getTemplate().opsForHash().keys(key);
+        return keys != null ? keys : Collections.emptySet();
+    }
+
+    /**
+     * 获取 Hash 所有的值列表
+     *
+     * @param key 键名
+     * @return 散列值列表
+     */
+    public static List<Object> hValues(String key) {
+        List<Object> values = getTemplate().opsForHash().values(key);
+        return values != null ? values : Collections.emptyList();
+    }
+
+    /**
+     * 渐进式游标遍历 Hash 键值对，避免阻塞 Redis
+     *
+     * @param key 键名
+     * @param pattern 匹配模式（如 "*"）
+     * @param count 每次遍历批次大小
+     * @param action 回调处理函数
+     */
+    public static void hScan(String key, String pattern, long count, Consumer<Map.Entry<Object, Object>> action) {
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(count)
+                .build();
+        try (Cursor<Map.Entry<Object, Object>> cursor = getTemplate().opsForHash().scan(key, options)) {
+            while (cursor.hasNext()) {
+                action.accept(cursor.next());
+            }
+        }
+    }
+
+    /**
+     * 删除 Hash 中的字段（hDel 别名）
+     *
+     * @param key 键名
+     * @param hashKeys 字段名数组
+     * @return 成功删除的数量
+     */
+    @Deprecated
+    public static long hDelete(String key, Object... hashKeys) {
+        return hDel(key, hashKeys);
+    }
+
     // ==================== 4. List 列表操作 ====================
 
     /**
@@ -587,6 +729,16 @@ public class RedisUtil {
     }
 
     /**
+     * 获取列表长度（lLen 别名）
+     *
+     * @param key 键名
+     * @return 长度
+     */
+    public static long lSize(String key) {
+        return lLen(key);
+    }
+
+    /**
      * 根据索引获取元素
      *
      * @param key 键名
@@ -666,6 +818,48 @@ public class RedisUtil {
     public static long sCard(String key) {
         Long card = getTemplate().opsForSet().size(key);
         return card != null ? card : 0L;
+    }
+
+    /**
+     * 从集合中移除元素（sRem 别名）
+     *
+     * @param key 键名
+     * @param values 待移除元素
+     * @return 移除成功的数量
+     */
+    @Deprecated
+    public static long sRemove(String key, Object... values) {
+        return sRem(key, values);
+    }
+
+    /**
+     * 获取集合大小（sCard 别名）
+     *
+     * @param key 键名
+     * @return 大小
+     */
+    public static long sSize(String key) {
+        return sCard(key);
+    }
+
+    /**
+     * 渐进式游标遍历 Set 成员
+     *
+     * @param key 键名
+     * @param pattern 匹配模式
+     * @param count 批次大小
+     * @param action 回调处理
+     */
+    public static void sScan(String key, String pattern, long count, Consumer<Object> action) {
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(count)
+                .build();
+        try (Cursor<Object> cursor = getTemplate().opsForSet().scan(key, options)) {
+            while (cursor.hasNext()) {
+                action.accept(cursor.next());
+            }
+        }
     }
 
     /**
@@ -827,6 +1021,51 @@ public class RedisUtil {
         return count != null ? count : 0L;
     }
 
+    /**
+     * 获取指定排名区间的成员及分值
+     *
+     * @param key 键名
+     * @param start 起始名次
+     * @param end 终止名次
+     * @return 带分值的成员集合
+     */
+    public static Set<ZSetOperations.TypedTuple<Object>> zRangeWithScores(String key, long start, long end) {
+        Set<ZSetOperations.TypedTuple<Object>> range = getTemplate().opsForZSet().rangeWithScores(key, start, end);
+        return range != null ? range : Collections.emptySet();
+    }
+
+    /**
+     * 移除有序集合中的成员（zRem 别名）
+     *
+     * @param key 键名
+     * @param values 待移除成员
+     * @return 移除成功的数量
+     */
+    @Deprecated
+    public static long zRemove(String key, Object... values) {
+        return zRem(key, values);
+    }
+
+    /**
+     * 渐进式游标遍历 ZSet 成员
+     *
+     * @param key 键名
+     * @param pattern 匹配模式
+     * @param count 批次大小
+     * @param action 回调处理
+     */
+    public static void zScan(String key, String pattern, long count, Consumer<ZSetOperations.TypedTuple<Object>> action) {
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(pattern)
+                .count(count)
+                .build();
+        try (Cursor<ZSetOperations.TypedTuple<Object>> cursor = getTemplate().opsForZSet().scan(key, options)) {
+            while (cursor.hasNext()) {
+                action.accept(cursor.next());
+            }
+        }
+    }
+
     // ==================== 7. Geo 空间位置计算 ====================
 
     /**
@@ -985,44 +1224,50 @@ public class RedisUtil {
         });
     }
 
-    // ==================== 11. 实例方法委托（满足 @Autowired 注入范式） ====================
+    // ==================== 11. 历史兼容性别名（所有静态方法均支持通过 RedisUtil Bean 实例直接调用） ====================
 
+    // --- 兼容性别名（推荐使用同名实例方法） ---
+    @Deprecated
     public boolean isKeyExists(String key) {
         return hasKey(key);
     }
 
+    @Deprecated
     public boolean setKeyExpire(String key, long timeout, TimeUnit unit) {
         return expire(key, timeout, unit);
     }
 
+    @Deprecated
     public long getKeyExpire(String key, TimeUnit unit) {
         return getExpire(key, unit);
     }
 
+    @Deprecated
     public boolean deleteKey(String key) {
         return delete(key);
     }
 
+    @Deprecated
     public long deleteKeys(Collection<String> keys) {
         return delete(keys);
     }
 
-    public Set<String> scanKeys(String pattern, long count) {
-        return scan(pattern, count);
-    }
-
+    @Deprecated
     public void setVal(String key, Object value) {
         set(key, value);
     }
 
+    @Deprecated
     public void setVal(String key, Object value, long timeout, TimeUnit unit) {
         set(key, value, timeout, unit);
     }
 
+    @Deprecated
     public Object getVal(String key) {
         return get(key);
     }
 
+    @Deprecated
     public <T> T getVal(String key, Class<T> clazz) {
         return get(key, clazz);
     }

@@ -148,17 +148,20 @@ public class AtengRedisAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(DelayedQueueBootstrap.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DelayedQueueBootstrap delayedQueueBootstrap(RedissonClient redissonClient, RedisDelayedQueue redisDelayedQueue) {
-        return new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper());
+    public DelayedQueueBootstrap delayedQueueBootstrap(RedissonClient redissonClient,
+                                                       RedisDelayedQueue redisDelayedQueue,
+                                                       RedisProperties redisProperties) {
+        return new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
     }
 
     /**
-     * 装配 Redis 主题消息监听容器 RedisMessageListenerContainer
+     * 装配 Redis 主题消息监听容器 RedisMessageListenerContainer（按需懒加载）
      *
      * @param connectionFactory Redis 连接工厂
      * @return 监听容器
      */
     @Bean
+    @org.springframework.context.annotation.Lazy
     @ConditionalOnMissingBean(RedisMessageListenerContainer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
@@ -229,10 +232,11 @@ public class AtengRedisAutoConfiguration {
 
         // 2. 注入带随机抖动的 TtlFunction
         Duration defaultTtl = cacheProps.getDefaultTtl();
+        Duration nullTtl = cacheProps.getNullTtl();
         Duration maxJitter = cacheProps.getMaxJitter();
         boolean jitterEnabled = cacheProps.isJitterEnabled();
 
-        defaultConfig = defaultConfig.entryTtl(new JitterTtlFunction(defaultTtl, maxJitter, jitterEnabled));
+        defaultConfig = defaultConfig.entryTtl(new JitterTtlFunction(defaultTtl, nullTtl, maxJitter, jitterEnabled));
 
         // 3. 空值缓存防穿透配置
         if (!cacheProps.isCacheNullValues()) {
@@ -246,7 +250,7 @@ public class AtengRedisAutoConfiguration {
                 String cacheName = entry.getKey();
                 Duration specificTtl = entry.getValue();
                 RedisCacheConfiguration specificConfig = defaultConfig.entryTtl(
-                        new JitterTtlFunction(specificTtl, maxJitter, jitterEnabled)
+                        new JitterTtlFunction(specificTtl, nullTtl, maxJitter, jitterEnabled)
                 );
                 initialCacheConfigs.put(cacheName, specificConfig);
             }

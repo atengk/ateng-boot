@@ -349,6 +349,7 @@ ateng:
       delay-queue:
         enabled: true                   # 是否启用延时队列支持 (默认 true)
         retry-times: 3                  # 延时消费失败最大重试次数 (默认 3)
+        retry-delay: 3s                 # 延时消费失败重试间隔 (默认 3s)
       pub-sub:
         enabled: true                   # 是否启用 Pub/Sub 广播引擎 (默认 true)
       cache:
@@ -357,6 +358,7 @@ ateng:
         jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
         max-jitter: 5m                  # 随机抖动最大时间跨度 (默认 5m)
         cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
+        null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
         expires:                        # 针对不同 CacheName 的个性化 TTL
           short_cache: 10m
           long_cache: 24h

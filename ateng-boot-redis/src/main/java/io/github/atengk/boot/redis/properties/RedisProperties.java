@@ -95,6 +95,16 @@ public class RedisProperties {
          * 是否启用延时队列支持与生命周期消费者调度器
          */
         private boolean enabled = true;
+
+        /**
+         * 延时消费失败最大重试次数（默认 3 次）
+         */
+        private int retryTimes = 3;
+
+        /**
+         * 延时消费失败重试等待间隔（默认 3 秒）
+         */
+        private Duration retryDelay = Duration.ofSeconds(3);
     }
 
     /**
@@ -129,6 +139,11 @@ public class RedisProperties {
          * 是否缓存空对象防穿透（默认 true）
          */
         private boolean cacheNullValues = true;
+
+        /**
+         * 空对象防穿透独立短过期时间（默认 5 分钟，避免脏数据长期常驻）
+         */
+        private Duration nullTtl = Duration.ofMinutes(5);
 
         /**
          * 是否启用 TTL 随机抖动防雪崩（默认 true）

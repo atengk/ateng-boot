@@ -10,6 +10,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.data.redis.serializer.RedisSerializer;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -19,8 +21,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -110,15 +114,16 @@ class RedisAtomicUtilTest {
     @Test
     @DisplayName("测试滑动窗口频控校验 (slidingWindowCheck) 放行与拦截")
     void testSlidingWindowCheck() {
-        // 场景 1：窗口内请求数为 3 < 阈值 5 -> 放行并写入
-        when(zSetOperations.zCard("ratelimit:ip:127.0.0.1")).thenReturn(3L);
+        // 场景 1：Lua 脚本返回 1L -> 放行
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), any(), any(), any(), any(), any()))
+                .thenReturn(1L);
         boolean allowed = atomicUtil.slidingWindowCheck("ratelimit:ip:127.0.0.1", 5, Duration.ofSeconds(10));
         assertThat(allowed).isTrue();
-        verify(zSetOperations).add(eq("ratelimit:ip:127.0.0.1"), anyString(), anyDouble());
-        verify(redisTemplate).expire(eq("ratelimit:ip:127.0.0.1"), any(Duration.class));
+        assertThat(atomicUtil.isAllowedBySlidingWindow("ratelimit:ip:127.0.0.1", 5, Duration.ofSeconds(10))).isTrue();
 
-        // 场景 2：窗口内请求数为 5 >= 阈值 5 -> 拦截拒绝
-        when(zSetOperations.zCard("ratelimit:ip:127.0.0.1")).thenReturn(5L);
+        // 场景 2：Lua 脚本返回 0L -> 拦截拒绝
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), any(), any(), any(), any(), any()))
+                .thenReturn(0L);
         boolean blocked = atomicUtil.slidingWindowCheck("ratelimit:ip:127.0.0.1", 5, Duration.ofSeconds(10));
         assertThat(blocked).isFalse();
     }

@@ -1,11 +1,15 @@
 package io.github.atengk.boot.redis.atomic;
 
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.util.Assert;
 
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -20,6 +24,30 @@ public class RedisAtomicUtil {
 
     public static final String DEFAULT_DATE_PATTERN = "yyyyMMdd";
     private static final Duration DAILY_SEQ_RETENTION = Duration.ofDays(2);
+    private static final StringRedisSerializer STRING_SERIALIZER = new StringRedisSerializer();
+
+    private static final RedisScript<Long> SLIDING_WINDOW_SCRIPT = new DefaultRedisScript<>(
+            """
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local windowStart = tonumber(ARGV[2])
+            local maxRequests = tonumber(ARGV[3])
+            local expireSeconds = tonumber(ARGV[4])
+            local member = ARGV[5]
+
+            redis.call('ZREMRANGEBYSCORE', key, 0, windowStart)
+            local currentCount = redis.call('ZCARD', key)
+
+            if currentCount < maxRequests then
+                redis.call('ZADD', key, now, member)
+                redis.call('EXPIRE', key, expireSeconds)
+                return 1
+            else
+                return 0
+            end
+            """,
+            Long.class
+    );
 
     private final RedisTemplate<String, Object> redisTemplate;
 
@@ -169,35 +197,47 @@ public class RedisAtomicUtil {
 
     /**
      * 滑动窗口流控校验（判断当前请求在滑动时间窗口内是否超限，未超限则自动计入本次访问）
-     * 基于 Redis Sorted Set 积分窗口实现真正的毫秒级平滑时间滑动，杜绝固定窗口突刺与临界双倍流量
+     * 基于 Redis Lua 脚本原子执行 ZSet 历史淘汰、当前计数判定与本次记录入库，彻底杜绝并发竞态穿透
      *
      * @param key 频控键（如限流维度 ip/userId）
      * @param maxRequests 窗口内最大允许请求数
      * @param window 滑动时间窗口时长
      * @return true 表示在阈值内放行；false 表示超限拦截
      */
-    public boolean slidingWindowCheck(String key, int maxRequests, Duration window) {
+     public boolean slidingWindowCheck(String key, int maxRequests, Duration window) {
         Assert.hasText(key, "key must not be blank");
         Assert.isTrue(maxRequests > 0, "maxRequests must be greater than 0");
         Assert.notNull(window, "window must not be null");
 
         long now = System.currentTimeMillis();
         long windowStart = now - window.toMillis();
-
-        // 1. 移除窗口外的历史过期项
-        redisTemplate.opsForZSet().removeRangeByScore(key, 0, windowStart);
-
-        // 2. 统计窗口内现存请求数
-        Long count = redisTemplate.opsForZSet().zCard(key);
-        if (count != null && count >= maxRequests) {
-            return false;
-        }
-
-        // 3. 计入本次请求
+        long expireSeconds = Math.max(window.toSeconds() + 10, 10);
         String member = now + ":" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
-        redisTemplate.opsForZSet().add(key, member, (double) now);
-        redisTemplate.expire(key, window.plusSeconds(10));
-        return true;
+
+        Long result = redisTemplate.execute(
+                SLIDING_WINDOW_SCRIPT,
+                STRING_SERIALIZER,
+                null,
+                Collections.singletonList(key),
+                String.valueOf(now),
+                String.valueOf(windowStart),
+                String.valueOf(maxRequests),
+                String.valueOf(expireSeconds),
+                member
+        );
+        return result != null && result == 1L;
+    }
+
+    /**
+     * 滑动窗口流控校验别名方法（语义同 {@link #slidingWindowCheck(String, int, Duration)}）
+     *
+     * @param key 频控键
+     * @param maxRequests 窗口内最大允许请求数
+     * @param window 滑动时间窗口时长
+     * @return true 表示在阈值内放行；false 表示超限拦截
+     */
+    public boolean isAllowedBySlidingWindow(String key, int maxRequests, Duration window) {
+        return slidingWindowCheck(key, maxRequests, window);
     }
 
     /**

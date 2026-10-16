@@ -113,7 +113,10 @@ class DelayedQueueBootstrapTest {
     void setUp() {
         objectMapper = RedisSerializerFactory.createSafeObjectMapper();
         redisDelayedQueue = new RedisDelayedQueue(redissonClient, objectMapper);
-        bootstrap = new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, objectMapper);
+        io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
+        properties.getDelayQueue().setRetryTimes(2);
+        properties.getDelayQueue().setRetryDelay(java.time.Duration.ofMillis(50));
+        bootstrap = new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, objectMapper, properties);
     }
 
     @AfterEach
@@ -219,5 +222,41 @@ class DelayedQueueBootstrapTest {
         boolean completed = service.latch.await(3, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         verify(redissonClient, atLeastOnce()).getBlockingQueue("resolved-queue");
+    }
+
+    @Test
+    @DisplayName("测试消费失败自动重试机制")
+    void testConsumerRetryOnFailure() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+        CountDownLatch retryLatch = new CountDownLatch(3);
+
+        class RetryConsumer {
+            @DelayedQueueListener(queue = "retry-queue")
+            public void handle(String msg) {
+                attempts.incrementAndGet();
+                retryLatch.countDown();
+                throw new RuntimeException("每次调用均模拟失败以触发重试");
+            }
+        }
+
+        RetryConsumer retryService = new RetryConsumer();
+
+        when(redissonClient.getBlockingQueue("retry-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("MSG-RETRY")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("retryService", retryService);
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        boolean reached = retryLatch.await(3, TimeUnit.SECONDS);
+        assertThat(reached).isTrue();
+        // 初始 1 次 + 重试 2 次 = 3 次执行
+        assertThat(attempts.get()).isEqualTo(3);
     }
 }

@@ -319,18 +319,26 @@ class RedisUtilTest {
     }
 
     @Test
-    @DisplayName("实例方法委托与 Spring 注入双重范式验证")
+    @DisplayName("实例方法全量对齐与 Spring 注入双重范式验证")
     void shouldSupportInstanceMethodDelegation() {
         when(redisTemplate.hasKey("inst:k")).thenReturn(true);
+        assertThat(redisUtil.hasKey("inst:k")).isTrue();
         assertThat(redisUtil.isKeyExists("inst:k")).isTrue();
 
         when(redisTemplate.expire("inst:k", 10, TimeUnit.SECONDS)).thenReturn(true);
+        assertThat(redisUtil.expire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
         assertThat(redisUtil.setKeyExpire("inst:k", 10, TimeUnit.SECONDS)).isTrue();
 
         when(redisTemplate.getExpire("inst:k", TimeUnit.SECONDS)).thenReturn(10L);
+        assertThat(redisUtil.getExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
         assertThat(redisUtil.getKeyExpire("inst:k", TimeUnit.SECONDS)).isEqualTo(10L);
 
         when(redisTemplate.delete("inst:k")).thenReturn(true);
+        assertThat(redisUtil.delete("inst:k")).isTrue();
         assertThat(redisUtil.deleteKey("inst:k")).isTrue();
+
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get("inst:k")).thenReturn("inst_val");
+        assertThat(redisUtil.get("inst:k")).isEqualTo("inst_val");
     }
 }
