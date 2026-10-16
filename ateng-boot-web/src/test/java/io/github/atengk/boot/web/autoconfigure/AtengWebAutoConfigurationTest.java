@@ -34,6 +34,7 @@ class AtengWebAutoConfigurationTest {
             assertThat(context).hasSingleBean(GlobalExceptionHandler.class);
             assertThat(context).hasSingleBean(JacksonCustomizer.class);
             assertThat(context).doesNotHaveBean(CorsFilter.class);
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.aspect.WebLogAspect.class);
         });
     }
 
@@ -53,6 +54,15 @@ class AtengWebAutoConfigurationTest {
         contextRunner.withPropertyValues("ateng.boot.web.cors.enabled=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(CorsFilter.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.log.enabled=true 时自动装配 WebLogAspect 切面")
+    void shouldEnableWebLogAspectWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.log.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.web.aspect.WebLogAspect.class);
                 });
     }
 }

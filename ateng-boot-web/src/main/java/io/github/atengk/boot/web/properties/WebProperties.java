@@ -89,4 +89,22 @@ public class WebProperties {
          */
         private Long maxAge = 3600L;
     }
+
+    /**
+     * Web 接口审计日志切面配置
+     */
+    private LogProperties log = new LogProperties();
+
+    /**
+     * Web 日志切面属性配置
+     */
+    @Getter
+    @Setter
+    public static class LogProperties {
+
+        /**
+         * 是否启用 Web 接口审计日志切面
+         */
+        private boolean enabled = false;
+    }
 }

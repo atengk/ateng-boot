@@ -9,9 +9,11 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.sample.dto.UserCreateDTO;
+import io.github.atengk.boot.sample.dto.UserLoginDTO;
 import io.github.atengk.boot.sample.entity.UserEntity;
 import io.github.atengk.boot.sample.mapper.UserMapper;
 import io.github.atengk.boot.sample.vo.UserVO;
+import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -52,6 +55,7 @@ public class UserController {
      * @return 新增用户分配的全局雪花 ID
      */
     @PostMapping
+    @WebLog(value = "创建用户", printParams = true, printResult = true, printCostTime = true)
     public Result<Long> create(@Valid @RequestBody UserCreateDTO dto) {
         UserEntity entity = new UserEntity();
         entity.setName(dto.getName());
@@ -59,6 +63,31 @@ public class UserController {
         entity.setEmail(dto.getEmail());
         userMapper.insert(entity);
         return Result.success(entity.getId());
+    }
+
+    /**
+     * 用户登录模拟端点，演示敏感参数排除脱敏（排除 password）
+     *
+     * @param dto 登录请求 DTO
+     * @return 模拟颁发的 Token
+     */
+    @PostMapping("/login")
+    @WebLog(value = "用户登录", excludeParams = {"password"})
+    public Result<String> login(@Valid @RequestBody UserLoginDTO dto) {
+        String username = (dto != null && dto.getUsername() != null) ? dto.getUsername() : "anonymous";
+        return Result.success("mock-token-" + username);
+    }
+
+    /**
+     * 文件上传端点，演示大文件 MultipartFile 自动占位替换防 OOM
+     *
+     * @param file 上传文件
+     * @return 文件名
+     */
+    @PostMapping("/upload")
+    @WebLog(value = "文件上传")
+    public Result<String> upload(@RequestParam("file") MultipartFile file) {
+        return Result.success(file.getOriginalFilename());
     }
 
     /**
@@ -125,6 +154,7 @@ public class UserController {
      * @return 无返回值
      */
     @GetMapping("/error/business")
+    @WebLog(value = "业务异常端点", printParams = true, printCostTime = true)
     public Result<Void> businessError() {
         throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "用户积分余额不足");
     }

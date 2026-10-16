@@ -35,3 +35,11 @@ _Avoid_: AddressUtil, NetworkUtil, ClientIpUtil
 **ServletUtil**:
 Servlet 上下文与请求响应静态操作门面，基于 RequestContextHolder 安全获取当前 Request/Response 并提供 Header、Cookie、JSON/AJAX 请求识别与文本写入。
 _Avoid_: WebUtil, HttpUtil, RequestUtil
+
+**WebLog**:
+Web 接口审计日志注解，支持标注于 Controller 类或方法上，提供操作描述、入参/出参打印控制、耗时观测与敏感参数显式排除配置。
+_Avoid_: ApiLog, AuditLog, RequestLog, LogOperation
+
+**WebLogAspect**:
+基于 AOP 环绕拦截的 Web 接口审计日志切面，由 `ateng.boot.web.log.enabled` 开关驱动装配，自动提取客户端真实 IP、感知链路追踪 traceId、过滤大文件与流式对象防 OOM，并在方法成功或异常时统一输出结构化审计日志。
+_Avoid_: ApiLogAspect, AuditLogAspect, RequestLogAspect

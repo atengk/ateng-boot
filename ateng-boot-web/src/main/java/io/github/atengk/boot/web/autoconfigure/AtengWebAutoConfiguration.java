@@ -1,9 +1,14 @@
 package io.github.atengk.boot.web.autoconfigure;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.trace.TraceFilter;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -18,7 +23,7 @@ import org.springframework.web.filter.CorsFilter;
 
 /**
  * Web 运行时增强自动配置类
- * 负责装配全链路追踪 TraceFilter、全局异常防御处理器、Jackson 日期与长整型定制，以及可选的全局 CORS 跨域过滤器
+ * 负责装配全链路追踪 TraceFilter、全局异常防御处理器、Jackson 日期与长整型定制，以及可选的全局 CORS 跨域过滤器与 Web 接口审计日志切面 WebLogAspect
  *
  * @author Ateng
  * @since 2026-10-15
@@ -101,5 +106,19 @@ public class AtengWebAutoConfiguration {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return new CorsFilter(source);
+    }
+
+    /**
+     * 注册 Web 接口审计日志切面
+     *
+     * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @return WebLogAspect 切面实例
+     */
+    @Bean
+    @ConditionalOnClass({ProceedingJoinPoint.class, Aspect.class})
+    @ConditionalOnProperty(prefix = "ateng.boot.web.log", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(WebLogAspect.class)
+    public WebLogAspect webLogAspect(ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return new WebLogAspect(objectMapperProvider.getIfAvailable(ObjectMapper::new));
     }
 }

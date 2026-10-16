@@ -21,6 +21,8 @@ ateng:
       trace:
         enabled: true
       long-to-string: true
+      log:
+        enabled: true
     mybatis-plus:
       pagination:
         max-limit: 500

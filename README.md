@@ -395,6 +395,37 @@ public class AuditLogService {
   boolean isJson = ServletUtil.isJsonRequest(ServletUtil.getRequest());
   ```
 
+### 5.6 Web 请求接口审计日志与耗时观测 (@WebLog)
+
+**场景痛点**：生产环境中排查接口偶发延迟、复现偶发缺陷或满足安全合规审计时，开发者常需要在各个 Controller 方法中手工编写繁琐且重复的日志代码，且极易因直接打印请求体造成密码、Token 等明文凭据泄漏，或因序列化 `MultipartFile` 大文件及流对象引发严重内存溢出 (OOM)。`ateng-boot-web` 提供配置开关驱动的 `@WebLog` 接口审计注解与 AOP 切面 `WebLogAspect`。
+
+**核心代码范式**：
+```java
+@RestController
+@RequestMapping("/users")
+public class UserController {
+
+    @PostMapping("/login")
+    @WebLog(value = "用户登录认证", excludeParams = {"password"})
+    public Result<String> login(@RequestBody LoginDTO dto) {
+        return Result.success(authService.login(dto));
+    }
+
+    @PostMapping("/upload")
+    @WebLog(value = "用户头像上传")
+    public Result<String> uploadAvatar(@RequestParam("file") MultipartFile file) {
+        return Result.success(ossService.upload(file));
+    }
+}
+```
+
+**控制台审计日志呈现**：
+```text
+2026-10-16 08:00:00.123 INFO  [main] [c563ed5e6d70430b9c0a9ab836985582] i.g.atengk.boot.web.aspect.WebLogAspect : [WebLog] 开始请求: URL=[POST /users/login], IP=[192.0.2.1], 操作=[用户登录认证], 目标=[UserController#login], 入参={"dto":{"username":"admin","password":"[EXCLUDED]"}}
+2026-10-16 08:00:00.145 INFO  [main] [c563ed5e6d70430b9c0a9ab836985582] i.g.atengk.boot.web.aspect.WebLogAspect : [WebLog] 结束请求: URL=[POST /users/login], 耗时=[22ms], 出参={"code":200,"msg":"操作成功","data":"mock-token-admin","timestamp":"1792108967810","traceId":"c563ed5e6d70430b9c0a9ab836985582","success":true}
+```
+- **核心特性**：自动提取客户端真实 IP 并感知 MDC `traceId`；通过 `excludeParams` 递归脱敏排除密码等敏感凭据；大文件（`MultipartFile`）及输入输出流自动占位替换，严防 OOM；发生业务异常时自动捕获异常上下文并打印入参与耗时。
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -408,6 +439,8 @@ ateng:
       trace:
         enabled: true             # 是否启用 TraceFilter 链路追踪与 MDC 自动流转（默认 true）
         header-name: "X-Trace-Id" # 链路追踪头名称（默认 X-Trace-Id）
+      log:
+        enabled: true             # 是否装配 @WebLog 接口审计切面（默认 false，按需开启）
       cors:
         enabled: false            # 是否开启通用跨域支持（默认 false）
     async:

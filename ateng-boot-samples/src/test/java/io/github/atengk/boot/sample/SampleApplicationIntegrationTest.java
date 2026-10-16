@@ -20,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -444,5 +445,64 @@ class SampleApplicationIntegrationTest {
         assertThat(stored).isNotNull();
         assertThat(stored.getCreateBy()).isEqualTo(testUser);
         assertThat(stored.getUpdateBy()).isEqualTo(testUser);
+    }
+
+    @Test
+    @DisplayName("18. @WebLog 接口审计：正常请求执行，切面透明拦截并返回正确业务结果")
+    void shouldAuditWebLogSuccessfullyOnNormalRequest() throws Exception {
+        String jsonPayload = """
+                {
+                    "name": "审计测试用户",
+                    "age": 28,
+                    "email": "audit_user@example.com"
+                }
+                """;
+
+        mockMvc.perform(post("/api/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString());
+    }
+
+    @Test
+    @DisplayName("19. @WebLog 敏感字段排除：excludeParams 排除 password 等凭据防泄露")
+    void shouldAuditWebLogWithExcludedParams() throws Exception {
+        String loginJson = """
+                {
+                    "username": "sec-admin",
+                    "password": "rawSuperPassword123"
+                }
+                """;
+
+        mockMvc.perform(post("/api/users/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("mock-token-sec-admin"));
+    }
+
+    @Test
+    @DisplayName("20. @WebLog 大文件上传：MultipartFile 参数自动占位替换，严防内存溢出")
+    void shouldAuditWebLogWithFileUploadSafely() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "report.pdf", MediaType.APPLICATION_PDF_VALUE, "PDF content".getBytes()
+        );
+
+        mockMvc.perform(multipart("/api/users/upload").file(file))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("report.pdf"));
+    }
+
+    @Test
+    @DisplayName("21. @WebLog 异常感知：发生业务异常时，切面捕获异常上下文并由全局异常处理器统一脱敏")
+    void shouldAuditWebLogOnException() throws Exception {
+        mockMvc.perform(get("/api/users/error/business"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("用户积分余额不足"));
     }
 }
