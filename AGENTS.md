@@ -1,7 +1,7 @@
 # ateng-boot 研发指南与 Agent 行为指引
 
 ## 1. 项目定位与技术基线 (Project Baseline)
-`ateng-boot` 是面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 & JDK 17 基础设施与中间件 Starter 套件，坚持纯原生、零臃肿依赖设计，兼顾单体应用极速起步与未来微服务生态（`ateng-cloud`）底座支撑。
+`ateng-boot` 是面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 基础设施与中间件 Starter 套件，坚持纯原生、零臃肿依赖设计，兼顾单体应用极速起步与未来微服务生态（`ateng-cloud`）底座支撑。
 
 - **运行与编译**：JDK 17 LTS（字节码 17，兼容 21+ 运行）
 - **核心基线**：Spring Boot `3.3.13`，MyBatis-Plus `3.5.17`（参见 [ADR-0006](./docs/adr/0006-dependency-baseline-and-upgrade-strategy.md)）

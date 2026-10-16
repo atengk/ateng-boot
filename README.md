@@ -1,10 +1,10 @@
 # ateng-boot
 
-> 面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 & JDK 17 基础设施与中间件 Starter 套件。
+> 面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 基础设施与中间件 Starter 套件。
 
 [![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.atengk/ateng-boot.svg?style=flat-square&color=blue)](https://central.sonatype.com/artifact/io.github.atengk/ateng-boot)
-[![JDK](https://img.shields.io/badge/JDK-17%20LTS-orange.svg)](https://www.oracle.com/java/)
+[![JDK](https://img.shields.io/badge/JDK-17%20~%2021+-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.13-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![MyBatis-Plus](https://img.shields.io/badge/MyBatis--Plus-3.5.17-blue.svg)](https://baomidou.com/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -33,7 +33,8 @@ flowchart TD
 - **基石定位**：无论是单体应用，还是作为 `ateng-cloud` 微服务节点的基础依赖，`ateng-boot` 均作为统一底层支撑；
 - **非侵入与低耦合**：不绑定具体业务模型，业务工程可自由引入、按需组装；
 - **纯原生零臃肿**：彻底杜绝重型外部工具包，100% 依托 JDK 17 原生能力与 Spring 6 官方基准；
-- **显式契约原则**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截包装。
+- **显式契约原则**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截包装；
+- **环境兼容矩阵**：以 Java 17 LTS 作为编译目标，运行时 100% 兼容 Java 17、21 LTS 及更高版本，通过 GitHub Actions CI 全量矩阵验证。
 
 ---
 
