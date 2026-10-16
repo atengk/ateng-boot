@@ -40,6 +40,7 @@
         <module>ateng-boot-web</module>
         <module>ateng-boot-mybatis-plus</module>
         <module>ateng-boot-redis</module>
+        <module>ateng-boot-excel</module>
         <module>ateng-boot-all</module>
         <module>ateng-boot-samples</module>
     </modules>
@@ -55,6 +56,7 @@
         <spring-boot.version>3.3.13</spring-boot.version>
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <redisson.version>3.44.0</redisson.version>
+        <fesod.version>2.1.0-incubating</fesod.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -97,6 +99,13 @@
                 <version>${redisson.version}</version>
             </dependency>
 
+            <!-- Apache Fesod (Incubating) -->
+            <dependency>
+                <groupId>org.apache.fesod</groupId>
+                <artifactId>fesod-sheet</artifactId>
+                <version>${fesod.version}</version>
+            </dependency>
+
             <!-- ateng-boot 模块版本管控 -->
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -116,6 +125,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-redis</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-excel</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

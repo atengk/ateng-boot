@@ -40,8 +40,20 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-excel</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-all</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- Apache Fesod (Incubating) -->
+            <dependency>
+                <groupId>org.apache.fesod</groupId>
+                <artifactId>fesod-sheet</artifactId>
+                <version>${fesod.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
