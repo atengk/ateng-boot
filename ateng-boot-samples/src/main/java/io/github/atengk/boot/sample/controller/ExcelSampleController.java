@@ -88,7 +88,7 @@ public class ExcelSampleController {
         if (!result.isSuccess()) {
             return Result.fail(CommonResultCode.BAD_REQUEST, "Excel 数据校验不通过，共 " + result.getErrorCount() + " 行错误");
         }
-        return Result.success(result.getDataList());
+        return Result.success(result.getData());
     }
 
     /**
@@ -109,12 +109,12 @@ public class ExcelSampleController {
         }
         if (!result.isSuccess()) {
             try (InputStream templateStream = new ByteArrayInputStream(fileBytes)) {
-                ExcelUtil.exportErrorFeedback(response, "导入错误反馈.xlsx", templateStream, result.getErrorRows());
+                ExcelUtil.exportErrorFeedback(response, "导入错误反馈.xlsx", templateStream, result.getErrors());
             }
             return;
         }
         response.setContentType("application/json;charset=UTF-8");
-        objectMapper.writeValue(response.getWriter(), Result.success(result.getDataList().size()));
+        objectMapper.writeValue(response.getWriter(), Result.success(result.getData().size()));
     }
 
     /**
@@ -127,15 +127,15 @@ public class ExcelSampleController {
     @GetMapping("/export-dynamic")
     @WebLog(value = "无实体动态导出", printParams = false, printResult = false, printCostTime = true)
     public void exportDynamic(HttpServletResponse response) throws IOException {
-        List<List<String>> headList = Arrays.asList(
-                Collections.singletonList("报表日期"),
-                Collections.singletonList("销售大区"),
-                Collections.singletonList("业绩金额")
+        List<List<String>> headList = List.of(
+                List.of("报表日期"),
+                List.of("销售大区"),
+                List.of("业绩金额")
         );
-        List<List<Object>> dataList = Arrays.asList(
-                Arrays.asList("2026-10-17", "华东大区", 88888.88),
-                Arrays.asList("2026-10-17", "华南大区", 66666.66),
-                Arrays.asList("2026-10-17", "华北大区", 99999.99)
+        List<List<Object>> dataList = List.of(
+                List.of("2026-10-17", "华东大区", 88888.88),
+                List.of("2026-10-17", "华南大区", 66666.66),
+                List.of("2026-10-17", "华北大区", 99999.99)
         );
         ExcelUtil.exportDynamic(response, "动态销售报表.xlsx", headList, dataList);
     }

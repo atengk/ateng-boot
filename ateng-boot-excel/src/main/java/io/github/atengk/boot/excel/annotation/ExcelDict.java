@@ -27,7 +27,14 @@ public @interface ExcelDict {
      *
      * @return 字典类型编码
      */
-    String value();
+    String value() default "";
+
+    /**
+     * 字典类型标识（与 {@link #value()} 互为别名）
+     *
+     * @return 字典类型编码
+     */
+    String type() default "";
 
     /**
      * 当字典提供者未查到匹配映射时，是否保留原值

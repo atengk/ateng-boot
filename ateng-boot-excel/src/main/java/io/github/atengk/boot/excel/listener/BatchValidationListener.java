@@ -2,6 +2,7 @@ package io.github.atengk.boot.excel.listener;
 
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
@@ -224,8 +225,8 @@ public class BatchValidationListener<T> implements ReadListener<T> {
      *
      * @return 结构化读取与校验结果
      */
-    public io.github.atengk.boot.excel.model.ExcelReadResult<T> toResult() {
-        return io.github.atengk.boot.excel.model.ExcelReadResult.<T>builder()
+    public ExcelReadResult<T> toResult() {
+        return ExcelReadResult.<T>builder()
                 .data(new ArrayList<>(validDataList))
                 .errors(new ArrayList<>(errorList))
                 .build();

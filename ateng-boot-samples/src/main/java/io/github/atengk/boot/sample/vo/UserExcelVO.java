@@ -5,6 +5,7 @@ import io.github.atengk.boot.excel.annotation.ExcelDropdown;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
 import io.github.atengk.boot.excel.annotation.ExcelPrompt;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
+import io.github.atengk.boot.excel.converter.ExcelDictConverter;
 import io.github.atengk.boot.excel.enums.DesensitizeType;
 import io.github.atengk.boot.sample.enums.SampleGenderEnum;
 import jakarta.validation.constraints.Email;
@@ -75,8 +76,8 @@ public class UserExcelVO implements Serializable {
     /**
      * 账号状态代码（0-正常，1-停用）
      */
-    @ExcelDict(type = "user_status")
-    @ExcelProperty(value = "账号状态", index = 6)
+    @ExcelDict("user_status")
+    @ExcelProperty(value = "账号状态", index = 6, converter = ExcelDictConverter.class)
     private String status;
 
     public UserExcelVO() {

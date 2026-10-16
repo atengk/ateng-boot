@@ -48,11 +48,12 @@ public class ExcelDictConverter implements Converter<Object> {
         }
 
         ExcelDict excelDict = field.getAnnotation(ExcelDict.class);
-        if (excelDict == null || excelDict.value().isEmpty()) {
+        String dictType = resolveDictType(excelDict);
+        if (dictType.isEmpty()) {
             return io.github.atengk.boot.excel.util.TypeConvertUtil.convertStringToTargetType(text, field.getType());
         }
 
-        return DictProviderHolder.toCode(excelDict.value(), text, field.getType(), excelDict.keepOriginalIfUnmapped());
+        return DictProviderHolder.toCode(dictType, text, field.getType(), excelDict.keepOriginalIfUnmapped());
     }
 
     @Override
@@ -67,11 +68,22 @@ public class ExcelDictConverter implements Converter<Object> {
         }
 
         ExcelDict excelDict = field.getAnnotation(ExcelDict.class);
-        if (excelDict == null || excelDict.value().isEmpty()) {
+        String dictType = resolveDictType(excelDict);
+        if (dictType.isEmpty()) {
             return new WriteCellData<>(String.valueOf(value));
         }
 
-        String label = DictProviderHolder.toLabel(excelDict.value(), value, excelDict.keepOriginalIfUnmapped());
+        String label = DictProviderHolder.toLabel(dictType, value, excelDict.keepOriginalIfUnmapped());
         return new WriteCellData<>(label != null ? label : "");
+    }
+
+    private static String resolveDictType(ExcelDict excelDict) {
+        if (excelDict == null) {
+            return "";
+        }
+        if (!excelDict.value().isEmpty()) {
+            return excelDict.value();
+        }
+        return excelDict.type() != null ? excelDict.type() : "";
     }
 }

@@ -80,7 +80,7 @@ class SampleExcelIntegrationTest {
 
             // 索引 3: 邮箱脱敏
             String email = row1.getCell(3).getStringCellValue();
-            assertThat(email).contains("***@");
+            assertThat(email).contains("@example.com").contains("*");
 
             // 索引 4: 性别枚举转义
             String gender = row1.getCell(4).getStringCellValue();
@@ -133,13 +133,12 @@ class SampleExcelIntegrationTest {
         validList.add(new UserExcelVO(2001L, "赵六", "13600136000", "zhaoliu@example.com",
                 SampleGenderEnum.MALE, "研发部", "0"));
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.export(out, UserExcelVO.class, validList);
+        byte[] rawExcelBytes = createRawExcel(validList);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "import_users.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                out.toByteArray()
+                rawExcelBytes
         );
 
         MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
@@ -162,13 +161,12 @@ class SampleExcelIntegrationTest {
         invalidList.add(new UserExcelVO(3001L, "", "invalid-phone", "not-an-email",
                 SampleGenderEnum.FEMALE, "研发部", "0"));
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.export(out, UserExcelVO.class, invalidList);
+        byte[] rawExcelBytes = createRawExcel(invalidList);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "invalid_users.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                out.toByteArray()
+                rawExcelBytes
         );
 
         MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
@@ -188,13 +186,12 @@ class SampleExcelIntegrationTest {
         invalidList.add(new UserExcelVO(4001L, "", "13800138000", "good@example.com",
                 SampleGenderEnum.FEMALE, "研发部", "0"));
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.export(out, UserExcelVO.class, invalidList);
+        byte[] rawExcelBytes = createRawExcel(invalidList);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "feedback_test.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                out.toByteArray()
+                rawExcelBytes
         );
 
         MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import-feedback").file(file))
@@ -228,13 +225,12 @@ class SampleExcelIntegrationTest {
         validList.add(new UserExcelVO(5001L, "孙七", "13500135000", "sunqi@example.com",
                 SampleGenderEnum.MALE, "研发部", "0"));
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelUtil.export(out, UserExcelVO.class, validList);
+        byte[] rawExcelBytes = createRawExcel(validList);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "valid_feedback.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                out.toByteArray()
+                rawExcelBytes
         );
 
         MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import-feedback").file(file))
@@ -245,6 +241,18 @@ class SampleExcelIntegrationTest {
         JsonNode root = objectMapper.readTree(responseBody);
         assertThat(root.get("code").asInt()).isEqualTo(200);
         assertThat(root.get("data").asInt()).isEqualTo(1);
+    }
+
+    /**
+     * 生成未经脱敏的原始用户上传 Excel 文件字节（模拟用户手工填写的真实明文表单）
+     */
+    private byte[] createRawExcel(List<UserExcelVO> list) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        org.apache.fesod.sheet.FesodSheet.write(out, UserExcelVO.class)
+                .registerConverter(new io.github.atengk.boot.excel.converter.ExcelEnumConverter(SampleGenderEnum.class, null, null))
+                .sheet("Sheet1")
+                .doWrite(list);
+        return out.toByteArray();
     }
 
     @Test
