@@ -43,3 +43,23 @@ _Avoid_: ApiLog, AuditLog, RequestLog, LogOperation
 **WebLogAspect**:
 基于 AOP 环绕拦截的 Web 接口审计日志切面，由 `ateng.boot.web.log.enabled` 开关驱动装配，自动提取客户端真实 IP、感知链路追踪 traceId、过滤大文件与流式对象防 OOM，并在方法成功或异常时统一输出结构化审计日志。
 _Avoid_: ApiLogAspect, AuditLogAspect, RequestLogAspect
+
+**Idempotent**:
+Web 接口防重幂等注解，声明于 Controller 方法上，定义幂等键 SpEL 表达式、锁定超时时长（TTL）与异常自动释放策略。
+_Avoid_: RepeatSubmit, PreventDuplicate, Idempotence, NoRepeat
+
+**IdempotentAspect**:
+基于 AOP 环绕拦截的接口防重幂等切面，解析 `@Idempotent` 契约，调用 `IdempotentKeyStore` 实施原子加锁与全生命周期治理。
+_Avoid_: IdempotentInterceptor, RepeatSubmitAspect, DuplicateAspect
+
+**IdempotentKeyStore**:
+幂等键状态存储与锁操作的通用 SPI 接口，定义原子加锁（tryLock）、主动释放（unlock）与过期时间淘汰契约。
+_Avoid_: LockStore, IdempotentManager, KeyStorage, DistributedLockStore
+
+**InMemoryIdempotentKeyStore**:
+基于 JDK 原生无锁并发容器与防爆淘汰机制的单机内存幂等存储默认实现，提供零外部依赖的开箱即用保障。
+_Avoid_: LocalKeyStore, MemoryLockStore, SimpleKeyStore
+
+**RedisIdempotentKeyStore**:
+基于 Spring Data Redis 的分布式原子加锁与过期释放实现，由条件注解在宿主环境包含 Redis 依赖时自动按需装配。
+_Avoid_: DistributedRedisStore, RedisLockStore

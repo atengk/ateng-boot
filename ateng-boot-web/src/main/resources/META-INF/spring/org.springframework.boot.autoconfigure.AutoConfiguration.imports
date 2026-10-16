@@ -1,2 +1,3 @@
 io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration
 io.github.atengk.boot.web.autoconfigure.AtengAsyncAutoConfiguration
+io.github.atengk.boot.web.idempotent.autoconfigure.AtengIdempotentAutoConfiguration

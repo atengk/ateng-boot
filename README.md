@@ -482,6 +482,58 @@ public class UserEntity extends BaseFullEntity {
   ```
 - **调用 `userMapper.updateById(user)`**：持久层基于内存真明文重新计算随机 IV 加密落盘，**绝不会把 `*` 号脏数据写回数据库**！
 
+### 5.5 接口防重幂等与请求防抖 (@Idempotent)
+
+**场景痛点**：网络抖动重发、前端按钮连击或并发重放攻击极易导致重复下单、重复扣款等高危事故。传统方案要么强行绑定 Redis 中间件破坏单体零依赖，要么采用固定死锁导致业务异常后无法立即重试。`ateng-boot-web` 内置 SPI 混合防重引擎，默认零配置单机内存防爆运行，检测到 Redis 时自动平滑升级为分布式锁。
+
+**最小可用代码范式**：
+```java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+
+    /**
+     * 1. 业务主键精准防重：SpEL 绑定订单号，有效窗口 3 秒；异常时自动释放锁允许立即重试
+     */
+    @PostMapping
+    @Idempotent(key = "#dto.orderNo", prefix = "order:", timeout = 3, message = "订单处理中，请勿重复提交")
+    public Result<String> createOrder(@Valid @RequestBody OrderCreateDTO dto) {
+        orderService.create(dto);
+        return Result.success(dto.getOrderNo());
+    }
+
+    /**
+     * 2. 通用按钮无参防抖：自动提取 URL + Method + UserID + 请求参数 SHA-256 哈希作为防重指纹
+     */
+    @PostMapping("/submit-form")
+    @Idempotent(timeout = 2)
+    public Result<Void> submitForm(@RequestParam String formToken) {
+        return Result.success();
+    }
+}
+```
+
+**预期 HTTP 响应契约呈现**：
+- **首个合法请求（正常放行）**：
+  ```json
+  {
+    "code": 200,
+    "msg": "操作成功",
+    "data": "ORD_20261016_001",
+    "success": true
+  }
+  ```
+- **窗口期内重复提交（切面统一阻断，遵循 ADR-0002/0004 统一契约）**：
+  ```json
+  {
+    "code": 40003,
+    "msg": "订单处理中，请勿重复提交",
+    "data": null,
+    "success": false,
+    "traceId": "9b1deb4d3b7d4bad9bdd2b0d7b3dcb6d"
+  }
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -499,6 +551,12 @@ ateng:
         enabled: true             # 是否装配 @WebLog 接口审计切面（默认 false，按需开启）
       cors:
         enabled: false            # 是否开启通用跨域支持（默认 false）
+      idempotent:
+        enabled: true             # 是否启用接口防重幂等切面与存储引擎（默认 true）
+        key-prefix: "idempotent:" # 存储全局 Key 前缀（默认 idempotent:）
+        in-memory:
+          max-capacity: 10000     # 单机内存存储软上限（默认 10000，防爆防 OOM）
+          clean-interval: 60s     # 定时扫描过期淘汰周期（默认 60s）
     async:
       enabled: true               # 是否启用受管异步线程池（默认 true）
       core-pool-size: 8           # 核心线程数（默认可用 CPU 核心数）
@@ -540,6 +598,7 @@ ateng:
   - [ADR-0010: 传输契约与持久层解耦与流式转换工具](./docs/adr/0010-transport-pagination-contract-decoupling.md)
   - [ADR-0011: 零重型外部依赖与上下文就近内聚工具集](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)
   - [ADR-0012: 数据安全生命周期分离：存储加密与视图脱敏](./docs/adr/0012-lifecycle-separated-data-security.md)
+  - [ADR-0013: 基于 SPI 抽象的混合式接口幂等防重引擎](./docs/adr/0013-spi-based-hybrid-idempotent-engine.md)
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)

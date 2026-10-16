@@ -41,6 +41,10 @@ class CommonResultCodeTest {
                 () -> {
                     assertEquals(500, CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
                     assertEquals("系统繁忙，请稍后再试", CommonResultCode.INTERNAL_SERVER_ERROR.getMsg());
+                },
+                () -> {
+                    assertEquals(40003, CommonResultCode.REPEAT_SUBMIT.getCode());
+                    assertEquals("操作过于频繁，请稍后再试", CommonResultCode.REPEAT_SUBMIT.getMsg());
                 }
         );
     }

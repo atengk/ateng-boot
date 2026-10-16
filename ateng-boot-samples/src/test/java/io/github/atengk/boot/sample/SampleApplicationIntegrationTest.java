@@ -599,4 +599,91 @@ class SampleApplicationIntegrationTest {
                 .doesNotContain("110101");
         assertThat(EncryptTypeHandler.decrypt(updatedDbIdCard)).isEqualTo(rawIdCard);
     }
+
+    @Test
+    @DisplayName("端到端测试：验证基于 SpEL 业务键精准防重、TTL过期恢复与自定义错误提示")
+    void shouldPreventDuplicateOrderCreationWithSpelKey() throws Exception {
+        String orderNo = "ORD_" + System.currentTimeMillis();
+        String jsonPayload = """
+                {
+                    "orderNo": "%s",
+                    "amount": 99.80
+                }
+                """.formatted(orderNo);
+
+        // 1. 首个创建请求成功放行
+        mockMvc.perform(post("/api/samples/idempotent/order")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(orderNo));
+
+        // 2. 窗口期内相同订单号重复提交被切面拦截
+        mockMvc.perform(post("/api/samples/idempotent/order")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40003))
+                .andExpect(jsonPath("$.msg").value("订单处理中，请勿重复提交"));
+
+        // 3. 等待超时（2秒）后，锁自动失效，请求再次放行
+        Thread.sleep(2200);
+        mockMvc.perform(post("/api/samples/idempotent/order")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(orderNo));
+    }
+
+    @Test
+    @DisplayName("端到端测试：验证无参 @Idempotent 通用按钮指纹哈希防抖与异参放行")
+    void shouldPreventRapidButtonClickWithAutoFingerprint() throws Exception {
+        String tokenA = "token_" + System.currentTimeMillis();
+        String tokenB = tokenA + "_diff";
+
+        // 1. 首个按钮提交成功放行
+        mockMvc.perform(post("/api/samples/idempotent/button")
+                        .param("formToken", tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("submitted: " + tokenA));
+
+        // 2. 立即重复点击相同表单，指纹一致，被切面拦截
+        mockMvc.perform(post("/api/samples/idempotent/button")
+                        .param("formToken", tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40003))
+                .andExpect(jsonPath("$.msg").value("操作过于频繁，请稍后再试"));
+
+        // 3. 提交不同参数，指纹不同，成功放行
+        mockMvc.perform(post("/api/samples/idempotent/button")
+                        .param("formToken", tokenB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("submitted: " + tokenB));
+    }
+
+    @Test
+    @DisplayName("端到端测试：验证业务执行发生异常时锁被立即释放，支持无等待重试")
+    void shouldReleaseLockImmediatelyWhenBusinessThrowsException() throws Exception {
+        String bizId = "BIZ_" + System.currentTimeMillis();
+
+        // 1. 请求触发可恢复业务异常
+        mockMvc.perform(post("/api/samples/idempotent/fail-retry")
+                        .param("bizId", bizId)
+                        .param("fail", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("可恢复业务校验失败"));
+
+        // 2. 验证锁已被主动释放：无需等待 5 秒超时，立即修正参数重试即可成功
+        mockMvc.perform(post("/api/samples/idempotent/fail-retry")
+                        .param("bizId", bizId)
+                        .param("fail", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("success: " + bizId));
+    }
 }

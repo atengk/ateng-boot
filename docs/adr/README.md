@@ -20,6 +20,7 @@
 | **0010** | 传输契约与持久层解耦与流式转换工具 | `Accepted` | 传输层解耦持久层 ORM，提供纯净 `PageResult<T>`、`PageQuery` 与 `PageUtil` 流式转换门面 | `core` / `mybatis-plus` | [查看](./0010-transport-pagination-contract-decoupling.md) |
 | **0011** | 零重型外部依赖与上下文就近内聚工具集 | `Accepted` | 彻底杜绝全量外部工具包，100% 依托 JDK 17 与 Spring 6，依运行时就近内聚 | `core` / `web` / `mybatis-plus` | [查看](./0011-zero-bloat-and-co-located-utilities.md) |
 | **0012** | 数据安全生命周期分离：存储加密与视图脱敏 | `Accepted` | 确立“内存真明文”不变量，存储加密收敛于 TypeHandler，展示脱敏收敛于 Jackson | `core` / `mybatis-plus` | [查看](./0012-lifecycle-separated-data-security.md) |
+| **0013** | 基于 SPI 抽象的混合式接口幂等防重引擎 | `Accepted` | 确立两级存储 SPI 自适应装配，内聚内存防爆与 Redis 无缝升级，全生命周期锁语义与 SpEL 支持 | `ateng-boot-web` | [查看](./0013-spi-based-hybrid-idempotent-engine.md) |
 
 ---
 

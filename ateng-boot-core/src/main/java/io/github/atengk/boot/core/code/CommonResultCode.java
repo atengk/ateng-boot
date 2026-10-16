@@ -41,7 +41,12 @@ public enum CommonResultCode implements IResultCode {
     /**
      * 系统繁忙，请稍后再试
      */
-    INTERNAL_SERVER_ERROR(500, "系统繁忙，请稍后再试");
+    INTERNAL_SERVER_ERROR(500, "系统繁忙，请稍后再试"),
+
+    /**
+     * 重复提交或操作过于频繁
+     */
+    REPEAT_SUBMIT(40003, "操作过于频繁，请稍后再试");
 
     /**
      * 状态码数值
