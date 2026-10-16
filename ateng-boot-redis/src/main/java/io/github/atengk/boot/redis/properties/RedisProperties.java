@@ -31,6 +31,16 @@ public class RedisProperties {
     private LockProperties lock = new LockProperties();
 
     /**
+     * 延时队列配置属性
+     */
+    private DelayQueueProperties delayQueue = new DelayQueueProperties();
+
+    /**
+     * 主题广播消息配置属性
+     */
+    private PubSubProperties pubSub = new PubSubProperties();
+
+    /**
      * Redisson 专属扩展配置
      */
     private RedissonProperties redisson = new RedissonProperties();
@@ -65,6 +75,30 @@ public class RedisProperties {
          * 慢锁告警阈值（毫秒），方法持锁执行时间超过该阈值时自动记录 WARN 日志
          */
         private long slowThresholdMs = 3000L;
+    }
+
+    /**
+     * 延时队列配置详情
+     */
+    @Data
+    public static class DelayQueueProperties {
+
+        /**
+         * 是否启用延时队列支持与生命周期消费者调度器
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * 主题广播消息配置详情
+     */
+    @Data
+    public static class PubSubProperties {
+
+        /**
+         * 是否启用主题广播发布与监听容器
+         */
+        private boolean enabled = true;
     }
 
     /**

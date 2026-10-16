@@ -1,7 +1,10 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
+import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.properties.RedisProperties;
+import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
@@ -11,6 +14,7 @@ import org.redisson.config.ClusterServersConfig;
 import org.redisson.config.Config;
 import org.redisson.config.SentinelServersConfig;
 import org.redisson.config.SingleServerConfig;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -23,6 +27,7 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.util.CollectionUtils;
@@ -109,6 +114,63 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.redis.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DistributedLockAspect distributedLockAspect(RedissonClient redissonClient, RedisProperties redisProperties) {
         return new DistributedLockAspect(redissonClient, redisProperties);
+    }
+
+    /**
+     * 装配编程式延时队列门面 RedisDelayedQueue
+     *
+     * @param redissonClient Redisson 客户端
+     * @return RedisDelayedQueue 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisDelayedQueue.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisDelayedQueue redisDelayedQueue(RedissonClient redissonClient) {
+        return new RedisDelayedQueue(redissonClient, RedisSerializerFactory.createSafeObjectMapper());
+    }
+
+    /**
+     * 装配声明式延时队列容器生命周期调度器 DelayedQueueBootstrap
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisDelayedQueue 延时队列门面
+     * @return 延时队列生命周期调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(DelayedQueueBootstrap.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DelayedQueueBootstrap delayedQueueBootstrap(RedissonClient redissonClient, RedisDelayedQueue redisDelayedQueue) {
+        return new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper());
+    }
+
+    /**
+     * 装配 Redis 主题消息监听容器 RedisMessageListenerContainer
+     *
+     * @param connectionFactory Redis 连接工厂
+     * @return 监听容器
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisMessageListenerContainer.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(connectionFactory);
+        return container;
+    }
+
+    /**
+     * 装配轻量 Pub/Sub 广播消息发布与动态监听门面 RedisMessagePublisher
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param containerProvider 监听容器提供者（可选）
+     * @return RedisMessagePublisher 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisMessagePublisher.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisMessagePublisher redisMessagePublisher(RedisTemplate<String, Object> redisTemplate,
+                                                       ObjectProvider<RedisMessageListenerContainer> containerProvider) {
+        return new RedisMessagePublisher(redisTemplate, containerProvider.getIfAvailable());
     }
 
     /**

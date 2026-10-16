@@ -62,6 +62,10 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("redisValueSerializer");
                     assertThat(context).doesNotHaveBean("redisUtil");
                     assertThat(context).doesNotHaveBean("distributedLockAspect");
+                    assertThat(context).doesNotHaveBean("redisDelayedQueue");
+                    assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
+                    assertThat(context).doesNotHaveBean("redisMessagePublisher");
                 });
     }
 
@@ -98,6 +102,10 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).hasBean("redisUtil");
                     assertThat(context).hasBean("distributedLockAspect");
+                    assertThat(context).hasBean("redisDelayedQueue");
+                    assertThat(context).hasBean("delayedQueueBootstrap");
+                    assertThat(context).hasBean("redisMessageListenerContainer");
+                    assertThat(context).hasBean("redisMessagePublisher");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
@@ -108,6 +116,32 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(template.getHashKeySerializer()).isInstanceOf(StringRedisSerializer.class);
                     assertThat(template.getValueSerializer()).isEqualTo(valueSerializer);
                     assertThat(template.getHashValueSerializer()).isEqualTo(valueSerializer);
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.redis.delay-queue.enabled=false 时，不装配延时队列门面与生命周期调度器")
+    void shouldNotLoadDelayQueueWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.delay-queue.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).doesNotHaveBean("redisDelayedQueue");
+                    assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).hasBean("redisMessagePublisher");
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.redis.pub-sub.enabled=false 时，不装配广播监听容器与消息发布客户端")
+    void shouldNotLoadPubSubWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.pub-sub.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisDelayedQueue");
+                    assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
+                    assertThat(context).doesNotHaveBean("redisMessagePublisher");
                 });
     }
 
