@@ -3,18 +3,22 @@ package io.github.atengk.boot.excel.util;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
+import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
+import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
+import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
+import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
@@ -74,6 +78,11 @@ public final class ExcelUtil {
      */
     private static volatile int defaultBatchSize = 1000;
 
+    /**
+     * 全局样式与模版主题配置（可通过配置文件 ateng.boot.excel.style.* 调整）
+     */
+    private static volatile ExcelStyleProperties defaultStyleProperties = new ExcelStyleProperties();
+
     private ExcelUtil() {
         // 私有构造，工具类禁止实例化
     }
@@ -91,6 +100,63 @@ public final class ExcelUtil {
             if (properties.getTempDir() != null && !properties.getTempDir().isBlank()) {
                 System.setProperty("java.io.tmpdir", properties.getTempDir());
             }
+            if (properties.getStyle() != null) {
+                defaultStyleProperties = properties.getStyle();
+            }
+        }
+    }
+
+    /**
+     * 获取当前生效的全局样式配置对象
+     *
+     * @return 全局样式配置
+     */
+    public static ExcelStyleProperties getStyleProperties() {
+        return defaultStyleProperties;
+    }
+
+    /**
+     * 自动装配企业级模版主题与智能自适应列宽拦截器
+     *
+     * @param writerBuilder 写出器构建器
+     * @param clazz         导出的实体 Class（为 null 时使用全局默认配置）
+     */
+    public static void configureStyle(ExcelWriterBuilder writerBuilder, Class<?> clazz) {
+        if (writerBuilder == null) {
+            return;
+        }
+
+        ExcelStyleProperties styleProps = defaultStyleProperties;
+        ExcelTheme annotation = (clazz != null) ? clazz.getAnnotation(ExcelTheme.class) : null;
+
+        if (annotation != null && !annotation.enabled()) {
+            return; // 显式注解关闭
+        }
+        if (annotation == null && !styleProps.isEnabled()) {
+            return; // 全局关闭
+        }
+
+        io.github.atengk.boot.excel.enums.ExcelTheme theme;
+        if (annotation != null) {
+            if (!annotation.value().isBlank()) {
+                theme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(annotation.value());
+            } else {
+                theme = annotation.theme();
+            }
+        } else {
+            theme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(styleProps.getTheme());
+        }
+
+        boolean zebraStripe = (annotation != null) ? annotation.zebraStripe() : styleProps.isZebraStripe();
+        boolean autoColumnWidth = (annotation != null) ? annotation.autoColumnWidth() : styleProps.isAutoColumnWidth();
+        int minWidth = (annotation != null && annotation.minColumnWidth() > 0) ? annotation.minColumnWidth() : styleProps.getMinColumnWidth();
+        int maxWidth = (annotation != null && annotation.maxColumnWidth() > 0) ? annotation.maxColumnWidth() : styleProps.getMaxColumnWidth();
+        int padding = (styleProps.getPaddingColumnWidth() > 0) ? styleProps.getPaddingColumnWidth() : SmartAutoColumnWidthWriteHandler.DEFAULT_PADDING;
+        String fontName = (annotation != null && !annotation.fontName().isBlank()) ? annotation.fontName() : styleProps.getFontName();
+
+        writerBuilder.registerWriteHandler(new ExcelThemeWriteHandler(theme, zebraStripe, fontName));
+        if (autoColumnWidth) {
+            writerBuilder.registerWriteHandler(new SmartAutoColumnWidthWriteHandler(minWidth, maxWidth, padding));
         }
     }
 
@@ -139,6 +205,7 @@ public final class ExcelUtil {
         if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
             writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
         }
+        configureStyle(writerBuilder, clazz);
         registerEnumConverters(writerBuilder, clazz);
 
         writerBuilder.sheet(targetSheetName)
@@ -454,13 +521,13 @@ public final class ExcelUtil {
     public static <T> void exportTemplate(OutputStream outputStream, String sheetName, Class<T> clazz) {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
         Assert.notNull(clazz, "实体 Class 类型不可为空");
-
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
 
-        FesodSheet.write(outputStream, clazz)
+        var writerBuilder = FesodSheet.write(outputStream, clazz)
                 .registerWriteHandler(new DropdownSheetWriteHandler(clazz))
-                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER)
-                .sheet(targetSheetName)
+                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER);
+        configureStyle(writerBuilder, clazz);
+        writerBuilder.sheet(targetSheetName)
                 .doWrite(Collections.emptyList());
     }
 
@@ -678,9 +745,10 @@ public final class ExcelUtil {
         List<List<String>> fesodHead = normalizeHead(headList);
         List<?> normalizedData = normalizeData(dataList, headList);
 
-        FesodSheet.write(out)
-                .head(fesodHead)
-                .sheet(targetSheetName)
+        var writerBuilder = FesodSheet.write(out)
+                .head(fesodHead);
+        configureStyle(writerBuilder, null);
+        writerBuilder.sheet(targetSheetName)
                 .doWrite(normalizedData);
     }
 
@@ -712,9 +780,10 @@ public final class ExcelUtil {
             }
         }
 
-        FesodSheet.write(out)
-                .head(fesodHead)
-                .sheet(targetSheetName)
+        var writerBuilder = FesodSheet.write(out)
+                .head(fesodHead);
+        configureStyle(writerBuilder, null);
+        writerBuilder.sheet(targetSheetName)
                 .doWrite(rows);
     }
 

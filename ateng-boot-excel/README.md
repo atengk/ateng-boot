@@ -378,18 +378,21 @@ List<UserBusinessVO> importedList = ExcelUtil.read(file.getInputStream(), UserBu
 ## 9. 复杂报表填充、单元格合并与多 Sheet 链式构建器
 
 ### 场景痛点
-在企业级经营分析与财务报表场景中，开发者往往面临四大棘手诉求：
+在企业级经营分析与财务报表场景中，开发者往往面临五大棘手诉求：
 1. **模板格式复杂**：带有公司 Logo、公式计算、复杂合并表头的发票与预算表，手写代码排版极其耗时；
-2. **相同数据折叠合并**：同部门或同类别的相邻行数据零散罗列，需要根据层级关系纵向合并单元格；
-3. **无实体与动态 SQL 导出**：BI 自定义报表或聚合统计场景无法预先定义固定 Java VO 类；
-4. **多工作表编排繁琐**：单文件包含“明细”、“汇总”、“参数说明”等多个 Sheet 时，传统代码需要繁复的 Writer 与 Sheet 对象管理。
+2. **业务转义与展示脱敏**：模板中的字段涉及枚举（如状态、性别）与字典（如部门、渠道）时，需要优雅呈现为中文描述（`desc`）或字典标签，而非生硬的代码或常量名；
+3. **相同数据折叠合并**：同部门或同类别的相邻行数据零散罗列，需要根据层级关系纵向合并单元格；
+4. **无实体与动态 SQL 导出**：BI 自定义报表或聚合统计场景无法预先定义固定 Java VO 类；
+5. **多工作表编排繁琐**：单文件包含“明细”、“汇总”、“参数说明”等多个 Sheet 时，传统代码需要繁复的 Writer 与 Sheet 对象管理。
 
 ### 核心代码范式
 `ateng-boot-excel` 提供声明式合并注解、模板填充门面、动态流式导出以及 Fluent 链式构建器：
 
 ```java
+import io.github.atengk.boot.excel.annotation.ExcelDict;
 import io.github.atengk.boot.excel.annotation.ExcelMerge;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
+import io.github.atengk.boot.excel.converter.ExcelDictConverter;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.write.metadata.fill.FillConfig;
@@ -420,15 +423,40 @@ public class DepartmentStaffVO {
     private Double salary;
 }
 
-// 2. 导出带自动纵向合并的报表（在 ExcelUtil.export 中全自动识别生效）
+// 2. 报表模板填充数据模型：支持枚举派生 desc 与字典标签自动转义
+@Data
+@AllArgsConstructor
+public class BudgetExpenseVO {
+    private String itemName;
+    private Double amount;
+
+    // 字典字段：标注 @ExcelDict 并挂载 ExcelDictConverter，模板填充 {.status} 时自动翻译为中文标签
+    @ExcelDict("sys_budget_status")
+    @ExcelProperty(converter = ExcelDictConverter.class)
+    private String status;
+
+    // 枚举字段：推荐提供 getGenderDesc() 派生 Getter，模板占位符直接声明 {.genderDesc}
+    private UserGenderEnum gender;
+
+    public String getGenderDesc() {
+        return gender != null ? gender.getDesc() : "";
+    }
+}
+
+// 3. 导出带自动纵向合并的报表（在 ExcelUtil.export 中全自动识别生效）
 ExcelUtil.export(response, "部门花名册", staffList, DepartmentStaffVO.class);
 
-// 3. 模板填充：同时支持单变量占位符 {title} 与列表循环占位符 {.name}
-Map<String, Object> variables = Map.of("title", "2026年度预算", "date", "2026-10-16", "author", "Ateng");
-List<BudgetItemVO> items = List.of(new BudgetItemVO("云服务器", 50000.0), new BudgetItemVO("光纤专线", 12000.0));
-ExcelUtil.fill(response, "年度预算表", templateInputStream, variables, items, FillConfig.builder().forceNewRow(true).build());
+// 4. 复杂模板填充：同时支持单变量占位符 {title} 与列表循环占位符 {.itemName}、{.status}、{.genderDesc}
+Map<String, Object> variables = Map.of("title", "2026年度预算执行表", "date", "2026-10-16", "author", "Ateng");
+List<BudgetExpenseVO> items = List.of(
+    new BudgetExpenseVO("云服务器扩容", 50000.0, "0", UserGenderEnum.MALE),
+    new BudgetExpenseVO("光纤专线接入", 12000.0, "1", UserGenderEnum.FEMALE)
+);
+// 使用 forceNewRow(true) 保证列表填充时自动下移模板后续行，防止覆盖底部的汇总公式与签字栏
+FillConfig fillConfig = FillConfig.builder().forceNewRow(true).build();
+ExcelUtil.fill(response, "预算执行报表", templateInputStream, variables, items, fillConfig);
 
-// 4. 无实体动态导出：基于表头列表与 List<List<Object>> 或 List<Map<String, Object>> 直接导出
+// 5. 无实体动态导出：基于表头列表与 List<List<Object>> 或 List<Map<String, Object>> 直接导出
 List<String> headers = List.of("工号", "商品名称", "销售金额");
 List<List<Object>> dynamicData = List.of(
     List.of(101, "机械键盘", 499.0),
@@ -436,15 +464,42 @@ List<List<Object>> dynamicData = List.of(
 );
 ExcelUtil.exportDynamic(response, "实时销售报表", headers, dynamicData);
 
-// 5. 多 Sheet 链式构建器：连续配置多个 Sheet 并借助 try-with-resources 自动冲刷关闭
+// 6. 多 Sheet 链式构建器：连续配置多个 Sheet 并借助 try-with-resources 自动冲刷关闭
 try (ExcelBuilder builder = ExcelUtil.builder(response, "企业综合运营报表")) {
     builder.sheet("员工信息", DepartmentStaffVO.class, staffList)
            .sheetDynamic("销售动态", headers, dynamicData);
 }
 ```
 
+> [!TIP] **模板填充中枚举与字典的映射契约**
+> - **字典自动转义**：实体字段标注 `@ExcelDict("dictType")` 并显式声明 `@ExcelProperty(converter = ExcelDictConverter.class)`，模板变量 `{.status}` 填充时将自动触发 `DictProvider` SPI 转换为中文描述标签（如 `"0"` -> `"正常"`）；
+> - **枚举呈现 `desc`（推荐派生 Getter）**：模板填充属于无表头注册的表达式属性反射提取流程。当需要将枚举（如 `gender`）输出为中文描述时，最直观可靠的规范是在 VO 中声明 `getGenderDesc()` 派生 Getter并在模板中使用占位符 `{.genderDesc}`；若在模板中直接声明 `{.gender}`，底层反射将回退调用枚举的 `toString()`，若枚举重写了 `toString()` 返回 `desc` 亦可自动呈现中文。
+
 ### 预期呈现契约
-1. **单元格纵向合并呈现**：
+1. **复杂模板填充呈现**：
+   - **预设 Excel 模板内容**：
+     ```text
+     【{title}】       编制人: {author}       制表日期: {date}
+     +-----------------+-----------------+-----------------+-----------------+
+     | 费用项目        | 经办人性别      | 报销状态        | 金额 (元)       |
+     +-----------------+-----------------+-----------------+-----------------+
+     | {.itemName}     | {.genderDesc}   | {.status}       | {.amount}       |
+     +-----------------+-----------------+-----------------+-----------------+
+     | 财务审批签字:                     | 部门总监签字:                     |
+     ```
+   - **导出生成 Excel 呈现效果**：
+     ```text
+     【2026年度预算执行表】   编制人: Ateng          制表日期: 2026-10-16
+     +-----------------+-----------------+-----------------+-----------------+
+     | 费用项目        | 经办人性别      | 报销状态        | 金额 (元)       |
+     +-----------------+-----------------+-----------------+-----------------+
+     | 云服务器扩容    | 男              | 正常            | 50000.0         |
+     | 光纤专线接入    | 女              | 待审批          | 12000.0         |
+     +-----------------+-----------------+-----------------+-----------------+
+     | 财务审批签字:                     | 部门总监签字:                     |
+     ```
+
+2. **单元格纵向合并呈现**：
    | 部门 | 岗位 | 员工姓名 | 薪资 |
    | :--- | :--- | :--- | :--- |
    | 技术部 (合并 3 行) | 后端研发 (合并 2 行) | 张三 | 10000.0 |
@@ -453,14 +508,109 @@ try (ExcelBuilder builder = ExcelUtil.builder(response, "企业综合运营报�
    | 市场部 (合并 2 行) | 商务经理 (合并 2 行) | 赵六 | 8500.0 |
    | | | 钱七 | 9000.0 |
 
-2. **多 Sheet 导出呈现**：
+3. **多 Sheet 导出呈现**：
    生成的 `.xlsx` 文件底部同时呈现多个标签页（`员工信息`、`销售动态`），各 Sheet 分别持有独立的格式、表头与脱敏/合并策略。
 
 ---
 
-## 10. 配置属性参考
+## 10. 企业级多模版主题与自适应列宽 (@ExcelTheme & SmartAutoColumnWidth)
 
-在 `application.yml` 中按需定制：
+### 场景痛点
+默认导出的 Excel 表格通常存在三大视觉与排版痛点：
+1. **视觉粗糙老旧**：原生 Fesod/POI 导出无正文样式、表头采用陈旧宋体、纯白底色毫无层次感，难以直接向企业客户或管理层呈现；
+2. **列宽计算失真**：原生自适应列宽按 UTF-8 字节计算导致中文字符宽度按 3 字符严重膨胀；且数字单元格由于缺少安全内边距，在 Excel 中经常因宽度不足显示为 `###`；
+3. **样式侵入与代码繁琐**：开发者手动编写 POI `CellStyle`、`Font` 会导致大段样板代码侵入业务逻辑，且极易因样式对象超标引发 Excel 报错。
+
+### 核心代码范式
+`ateng-boot-excel` 内置 5 套企业级商务主题色系、奇偶行斑马纹与中英文精准加权自适应列宽：
+- **内置 5 套主题**：`MINIMAL_CLEAN`（现代极简白，默认推荐）、`BUSINESS_BLUE`（经典商务蓝）、`CLASSIC_GREY`（稳重石墨灰）、`FRESH_GREEN`（清新薄荷绿）、`WARM_ORANGE`（活力温暖橙）；
+- **三级平滑优先级**：`ExcelBuilder` 链式设置 > 类级 `@ExcelTheme` 注解 > `application.yml` 全局配置；
+- **100% 兼容原生**：零冲突继承 Apache Fesod 原生 `@HeadStyle`、`@ContentStyle`、`@ColumnWidth` 等字段级定制注解；
+- **纯原生零依赖**：基于 Fesod 原生 `HorizontalCellStyleStrategy` 实现，支持一键 `enabled: false` 彻底旁路关闭。
+
+#### 1. 类级声明式主题与自适应列宽 (`@ExcelTheme`)
+```java
+import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+// 声明该实体导出时采用清新薄荷绿主题，开启斑马纹与精准列宽（支持 "FRESH_GREEN" 或 "fresh-green"）
+@Data
+@ExcelTheme(value = "FRESH_GREEN", zebraStripe = true, autoColumnWidth = true)
+public class EcoReportVO {
+
+    @ExcelProperty("项目编号")
+    private Long projectId;
+
+    @ExcelProperty("项目名称")
+    private String projectName;
+
+    @ExcelProperty("碳减排量 (吨)")
+    private Double carbonReduction;
+}
+
+// 正常导出，自动应用 FRESH_GREEN 绿色系样式与自适应列宽
+ExcelUtil.export(response, "碳减排统计报表", dataList, EcoReportVO.class);
+```
+
+#### 2. Fluent 链式多 Sheet 样式定制 (`ExcelBuilder`)
+```java
+import io.github.atengk.boot.excel.builder.ExcelBuilder;
+import io.github.atengk.boot.excel.enums.ExcelTheme;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+try (ExcelBuilder builder = ExcelUtil.builder(response, "集团跨部门经营报表")) {
+    builder.theme(ExcelTheme.BUSINESS_BLUE)
+           .zebraStripe(true)
+           .autoColumnWidth(true)
+           .sheet("国内业务汇总", DomesticVO.class, domesticList)
+           .theme(ExcelTheme.WARM_ORANGE) // 第二个 Sheet 独立切换为温暖橙主题
+           .zebraStripe(false)
+           .sheet("海外业务拓展", OverseasVO.class, overseasList);
+}
+```
+
+#### 3. 字段级原生定制无缝兼容
+```java
+import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import org.apache.fesod.sheet.annotation.write.style.ContentStyle;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import lombok.Data;
+
+@Data
+@ExcelTheme("BUSINESS_BLUE")
+public class FinancialOrderVO {
+
+    @ExcelProperty("订单流水号")
+    private String orderNo;
+
+    // 字段级通过 Fesod 原生 @ContentStyle 覆盖特定列样式（如金额列高亮或居右）
+    @ExcelProperty("实付金额")
+    @ContentStyle(fillPatternType = FillPatternType.SOLID_FOREGROUND, fillForegroundColor = 13)
+    private Double paidAmount;
+}
+```
+
+#### 预期主题呈现效果
+| 主题代码 | 主题名称 | 表头背景色 | 表头字体 | 偶数行斑马纹 | 适用场景 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `MINIMAL_CLEAN` | 极简白 (默认) | 纯净无底色 (`NO_FILL`) | 微软雅黑 11pt 黑色加粗 | 纯白 / 细实线网格边框 | 默认通用、设计简约风、极简无彩色打印、轻量清单 |
+| `CLASSIC_GREY` | 石墨灰 | 厚重石墨灰 (`#B0B7C0`) | 微软雅黑 11pt 黑色加粗 | 清晰浅灰 (`#DEE2E6`) 斑马纹交替 | 财务对账、严谨审计、公文报表、立体商务质感 |
+| `BUSINESS_BLUE` | 商务蓝 | 沉稳海蓝 (`PALE_BLUE`) | 微软雅黑 11pt 黑色加粗 | 浅淡蓝 (`LIGHT_TURQUOISE`) | 企业级经典报表、系统后台数据清单 |
+| `FRESH_GREEN` | 清新绿 | 活力翠绿 (`LIGHT_GREEN`) | 微软雅黑 11pt 黑色加粗 | 极淡薄荷黄绿 (`LEMON_CHIFFON`) | 环保能源、生鲜农业、健康医疗 |
+| `WARM_ORANGE` | 温暖橙 | 活力暖橙 (`LIGHT_ORANGE`) | 微软雅黑 11pt 黑色加粗 | 极浅暖杏 (`LEMON_CHIFFON`) | 电商大促、营销获客、销售业绩排名 |
+
+> [!TIP]
+> **精准中英文自适应列宽算法说明**：
+> `SmartAutoColumnWidthWriteHandler` 算法中，每个汉字/全角字符计 **2.0** 字符宽度，英文字母/半角数字/符号计 **1.0** 字符宽度，换行文本取各段最长分段，并在最终列宽基础上额外补偿 **2.0** 字符的单元格左右内边距（Padding），防止 Excel/WPS 因边距不足出现 `###` 遮挡。同时设置全局列宽上下限（默认最小 12 字符，最大 60 字符），防止极短字段缩紧变形或极长备注撑爆屏幕。
+
+---
+
+## 11. 配置属性参考
+
+在 `application.yml` 中按需定制全局行为与样式参数：
 
 ```yaml
 ateng:
@@ -472,7 +622,24 @@ ateng:
       default-batch-size: 1000
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
+      # 样式与主题配置
+      style:
+        # 是否启用全局样式拦截增强（默认 true；设置为 false 时完全关闭样式与列宽增强，零开销）
+        enabled: true
+        # 默认商务主题：MINIMAL_CLEAN / BUSINESS_BLUE / CLASSIC_GREY / FRESH_GREEN / WARM_ORANGE（默认 MINIMAL_CLEAN）
+        theme: MINIMAL_CLEAN
+        # 是否默认开启奇偶行斑马纹交替底色（默认 true）
+        zebra-stripe: true
+        # 是否默认启用中英文加权自适应列宽（默认 true）
+        auto-column-width: true
+        # 自适应最小列宽字符数（默认 12，防止极短列挤压变形）
+        min-column-width: 12
+        # 自适应最大列宽字符数（默认 60，防止大文本列撑裂屏幕）
+        max-column-width: 60
+        # 自适应内边距补偿字符数（默认 2，预留左右安全间隙，杜绝数值变 ###）
+        padding-column-width: 2
 ```
+
 
 
 

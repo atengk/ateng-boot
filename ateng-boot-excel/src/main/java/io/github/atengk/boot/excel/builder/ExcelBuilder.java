@@ -1,8 +1,12 @@
 package io.github.atengk.boot.excel.builder;
 
+import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
+import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
+import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
@@ -34,6 +38,15 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     private int currentSheetNo = 0;
     private boolean finished = false;
 
+    // 链式自定义样式状态
+    private io.github.atengk.boot.excel.enums.ExcelTheme theme;
+    private Boolean zebraStripe;
+    private Boolean autoColumnWidth;
+    private Integer minColumnWidth;
+    private Integer maxColumnWidth;
+    private String fontName;
+    private boolean styleDisabled = false;
+
     /**
      * 基于输出流构造 Fluent 构建器
      *
@@ -57,6 +70,74 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
                 .registerWriteHandler(new PromptHeadWriteHandler())
                 .registerWriteHandler(new MergeCellWriteHandler())
                 .build();
+    }
+
+    /**
+     * 流式指定后续 Sheet 的模版主题
+     *
+     * @param theme 模版主题枚举
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder theme(io.github.atengk.boot.excel.enums.ExcelTheme theme) {
+        this.theme = theme;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 是否开启斑马纹交替渲染
+     *
+     * @param zebraStripe 是否开启斑马纹
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder zebraStripe(boolean zebraStripe) {
+        this.zebraStripe = zebraStripe;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 是否开启智能自适应列宽
+     *
+     * @param autoColumnWidth 是否开启自适应列宽
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder autoColumnWidth(boolean autoColumnWidth) {
+        this.autoColumnWidth = autoColumnWidth;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 智能自适应列宽的最小与最大字符阈值
+     *
+     * @param minWidth 最小列宽字符数
+     * @param maxWidth 最大列宽字符数
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder autoColumnWidth(int minWidth, int maxWidth) {
+        this.autoColumnWidth = true;
+        this.minColumnWidth = minWidth;
+        this.maxColumnWidth = maxWidth;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 的全局字体名称
+     *
+     * @param fontName 字体名称（如 "微软雅黑"）
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder fontName(String fontName) {
+        this.fontName = fontName;
+        return this;
+    }
+
+    /**
+     * 针对当前构建器彻底停用企业级样式体系
+     *
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder disableStyle() {
+        this.styleDisabled = true;
+        return this;
     }
 
     /**
@@ -88,9 +169,11 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         if (sheetConfigurator != null) {
             sheetConfigurator.accept(sheetBuilder, headClass);
         }
+        applyStyle(sheetBuilder, headClass);
         WriteSheet writeSheet = sheetBuilder.build();
         Collection<T> writeData = (data != null) ? data : Collections.emptyList();
         excelWriter.write(writeData, writeSheet);
+        resetSheetStyle();
         return this;
     }
 
@@ -119,10 +202,88 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         List<List<String>> fesodHead = ExcelUtil.normalizeHead(headList);
         List<?> normalizedData = ExcelUtil.normalizeData(dataList, headList);
         ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(fesodHead);
+        applyStyle(sheetBuilder, null);
         WriteSheet writeSheet = sheetBuilder.build();
         Collection<?> writeData = (normalizedData != null) ? (Collection<?>) normalizedData : Collections.emptyList();
         excelWriter.write(writeData, writeSheet);
+        resetSheetStyle();
         return this;
+    }
+
+    private void resetSheetStyle() {
+        this.theme = null;
+        this.zebraStripe = null;
+        this.autoColumnWidth = null;
+        this.minColumnWidth = null;
+        this.maxColumnWidth = null;
+        this.fontName = null;
+    }
+
+    private void applyStyle(ExcelWriterSheetBuilder sheetBuilder, Class<?> headClass) {
+        if (styleDisabled) {
+            return;
+        }
+
+        ExcelStyleProperties styleProps = ExcelUtil.getStyleProperties();
+        ExcelTheme annotation = (headClass != null) ? headClass.getAnnotation(ExcelTheme.class) : null;
+
+        if (annotation != null && !annotation.enabled() && this.theme == null) {
+            return;
+        }
+        if (annotation == null && !styleProps.isEnabled() && this.theme == null) {
+            return;
+        }
+
+        io.github.atengk.boot.excel.enums.ExcelTheme finalTheme;
+        if (this.theme != null) {
+            finalTheme = this.theme;
+        } else if (annotation != null) {
+            if (!annotation.value().isBlank()) {
+                finalTheme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(annotation.value());
+            } else {
+                finalTheme = annotation.theme();
+            }
+        } else {
+            finalTheme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(styleProps.getTheme());
+        }
+
+        boolean finalZebra;
+        if (this.zebraStripe != null) {
+            finalZebra = this.zebraStripe;
+        } else if (annotation != null) {
+            finalZebra = annotation.zebraStripe();
+        } else {
+            finalZebra = styleProps.isZebraStripe();
+        }
+
+        String finalFont;
+        if (this.fontName != null && !this.fontName.isBlank()) {
+            finalFont = this.fontName;
+        } else if (annotation != null && !annotation.fontName().isBlank()) {
+            finalFont = annotation.fontName();
+        } else {
+            finalFont = styleProps.getFontName();
+        }
+
+        sheetBuilder.registerWriteHandler(new ExcelThemeWriteHandler(finalTheme, finalZebra, finalFont));
+
+        boolean finalAutoWidth;
+        if (this.autoColumnWidth != null) {
+            finalAutoWidth = this.autoColumnWidth;
+        } else if (annotation != null) {
+            finalAutoWidth = annotation.autoColumnWidth();
+        } else {
+            finalAutoWidth = styleProps.isAutoColumnWidth();
+        }
+
+        if (finalAutoWidth) {
+            int minW = (this.minColumnWidth != null) ? this.minColumnWidth
+                    : ((annotation != null && annotation.minColumnWidth() > 0) ? annotation.minColumnWidth() : styleProps.getMinColumnWidth());
+            int maxW = (this.maxColumnWidth != null) ? this.maxColumnWidth
+                    : ((annotation != null && annotation.maxColumnWidth() > 0) ? annotation.maxColumnWidth() : styleProps.getMaxColumnWidth());
+            int padding = (styleProps.getPaddingColumnWidth() > 0) ? styleProps.getPaddingColumnWidth() : SmartAutoColumnWidthWriteHandler.DEFAULT_PADDING;
+            sheetBuilder.registerWriteHandler(new SmartAutoColumnWidthWriteHandler(minW, maxW, padding));
+        }
     }
 
     /**

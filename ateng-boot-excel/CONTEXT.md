@@ -43,3 +43,16 @@ _Avoid_: DictConverter, DictionaryTranslator, DictBridge
 **MergeCellWriteHandler**:
 相邻行单元格纵向动态合并拦截器，配合属性级注解 `@ExcelMerge`，在工作表写入完毕后（`afterSheetDispose`）自动识别指定列在连续行中的相同数值并实施纵向合并，支持父子列级联约束防误合并。
 _Avoid_: CellMergeHandler, AutoMergeProcessor, RowMergeInterceptor
+
+**ExcelTheme**:
+企业级 Excel 预设多模版主题枚举，封装表头背景色、表头字体颜色、正文字体及斑马纹浅底色等元数据配置。默认推荐为极简白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白，保留细灰实线网格边框）；并开箱即用支持石墨灰（`CLASSIC_GREY`，沉稳深灰表头配白色加粗字体，正文浅灰斑马纹交替）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）与暖阳橙（`WARM_ORANGE`）等多模版样式。
+_Avoid_: StyleTheme, ColorScheme, ExcelSkin
+
+**SmartAutoColumnWidthWriteHandler**:
+智能自适应列宽拦截器，按中文字符（2.0 字符宽）与英文字符（1.0 字符宽）精准加权计算列宽并预留安全内边距，提供 `minColumnWidth` 与 `maxColumnWidth` 上下限阈值保护，彻底避免短表头截断与长数字 `###` 溢出。
+_Avoid_: AutoWidthHandler, ColumnResizeListener, BestFitWidthStrategy
+
+**ExcelThemeWriteHandler**:
+企业级主题与行级斑马纹样式写入拦截器，基于 Apache Fesod 原生 `HorizontalCellStyleStrategy` 构建，统一挂载现代字体、细灰色网格边框与居中对齐，并支持正文奇偶行浅底纹交替渲染。
+_Avoid_: ThemeStyleStrategy, ZebraWriteHandler, SheetColorizer
+

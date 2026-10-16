@@ -27,4 +27,9 @@ public class ExcelProperties {
      * 大文件磁盘缓存临时目录（留空时使用系统临时目录）
      */
     private String tempDir;
+
+    /**
+     * Excel 企业级样式与模版主题配置
+     */
+    private ExcelStyleProperties style = new ExcelStyleProperties();
 }

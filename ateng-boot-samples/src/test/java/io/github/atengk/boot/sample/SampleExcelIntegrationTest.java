@@ -2,16 +2,12 @@ package io.github.atengk.boot.sample;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.excel.builder.ExcelBuilder;
+import io.github.atengk.boot.excel.enums.ExcelTheme;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.vo.UserExcelVO;
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.Comment;
-import org.apache.poi.ss.usermodel.DataValidation;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.usermodel.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -73,6 +69,11 @@ class SampleExcelIntegrationTest {
             Sheet sheet = workbook.getSheetAt(0);
             assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
 
+            // 验证样式：企业级默认极简白表头（无底色填充）、细边框与加粗字体
+            CellStyle headStyle = sheet.getRow(0).getCell(0).getCellStyle();
+            assertThat(headStyle.getFillPattern()).isEqualTo(FillPatternType.NO_FILL);
+            assertThat(headStyle.getBorderTop()).isEqualTo(BorderStyle.THIN);
+
             Row row1 = sheet.getRow(1);
             // 索引 2: 手机号脱敏
             String phone = row1.getCell(2).getStringCellValue();
@@ -90,6 +91,21 @@ class SampleExcelIntegrationTest {
             String status = row1.getCell(6).getStringCellValue();
             assertThat(status).isEqualTo("正常");
         }
+
+        saveTempExcel("sample-exported-users.xlsx", content);
+    }
+
+    private void saveTempExcel(String fileName, byte[] bytes) throws Exception {
+        java.nio.file.Path tempDir = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "ateng-excel-test");
+        java.nio.file.Files.createDirectories(tempDir);
+        java.io.File tempFile = tempDir.resolve(fileName).toFile();
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
+            fos.write(bytes);
+        }
+        System.out.println("====== [SampleIntegrationTest] Excel 文件已落盘 ======");
+        System.out.println("文件绝对路径: " + tempFile.getAbsolutePath());
+        System.out.println("本地直达链接: file:///" + tempFile.getAbsolutePath().replace("\\", "/"));
+        System.out.println("=====================================================");
     }
 
     @Test
@@ -278,6 +294,31 @@ class SampleExcelIntegrationTest {
             Row row1 = sheet.getRow(1);
             assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("华东大区");
             assertThat(row1.getCell(2).getNumericCellValue()).isEqualTo(88888.88);
+        }
+
+        saveTempExcel("sample-exported-dynamic.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("测试生成 5 套企业级内置主题样例 Excel 并输出至临时目录供人工核验")
+    void testAllSampleThemesOutputToTempDirectory() throws Exception {
+        List<UserExcelVO> sampleUsers = List.of(
+                new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(102L, "李清照", "13800000002", "li@example.com", SampleGenderEnum.FEMALE, "市场部", "0"),
+                new UserExcelVO(103L, "王阳明", "13800000003", "wang@example.com", SampleGenderEnum.MALE, "财务部", "1")
+        );
+
+        for (ExcelTheme theme : ExcelTheme.values()) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (ExcelBuilder builder = ExcelUtil.builder(out)) {
+                builder.theme(theme)
+                        .zebraStripe(true)
+                        .autoColumnWidth(12, 60)
+                        .sheet(theme.name(), UserExcelVO.class, sampleUsers);
+            }
+            byte[] bytes = out.toByteArray();
+            saveTempExcel("sample-theme-" + theme.name().toLowerCase().replace('_', '-') + ".xlsx", bytes);
+            assertThat(bytes).isNotEmpty();
         }
     }
 }

@@ -15,13 +15,15 @@
 5. **模板自由手填导致的数据脏乱差 (Template Vulnerability)**：
    - 缺乏在生成模板时自动化植入单元格下拉选项约束与表头填写指南的能力，导致用户随意输入无效代码或格式错误，大幅增加数据清洗与校验失败成本；
 6. **枚举与业务字典转义代码臃肿分散 (Dispersed Enum/Dict Conversion)**：
-   - 业务状态、性别、分类等枚举与字典项在导入导出时需要大量样板代码反复转换，缺乏统一的声明式注解与标准化 SPI 扩展支撑。
+   - 业务状态、性别、分类等枚举与字典项在导入导出时需要大量样板代码反复转换，缺乏统一的声明式注解与标准化 SPI 扩展支撑；
+7. **原生样式单调生硬与列宽计算失真 (Default Aesthetics & Width Distortion)**：
+   - Apache Fesod 原生导出默认无正文样式、表头采用陈旧宋体，整体视觉老旧粗糙；中文字符在原生自适应列宽中按 UTF-8 字节计算导致 3 字节膨胀、数字格式缺乏边界安全内边距导致在 Excel/WPS 中频繁变为 `###`；且缺乏开箱即用的商务主题色系与斑马纹支持。
 
 ---
 
 ## 核心架构与决策内容
 
-经深入推演，`ateng-boot` 正式确立并交付 `ateng-boot-excel` 企业级轻量流式 Starter，建立集**“流式低损耗、内存真明文、行级精准验、模板智能防、双向自转义、多流式编排”**于一体的 Excel 处理底座。
+经深入推演，`ateng-boot` 正式确立并交付 `ateng-boot-excel` 企业级轻量流式 Starter，建立集**“流式低损耗、内存真明文、行级精准验、模板智能防、双向自转义、多流式编排、商务美观排版”**于一体的 Excel 处理底座。
 
 ```mermaid
 flowchart TD
@@ -38,6 +40,11 @@ flowchart TD
 
         subgraph Security["数据安全与脱敏 (ADR-0012)"]
             SensitiveHandler["SensitiveCellWriteHandler\n(@ExcelSensitive + DesensitizeUtil 动态改写单元格)"]
+        end
+
+        subgraph Styling["多模版样式与自适应列宽"]
+            ThemeHandler["ExcelThemeWriteHandler\n(@ExcelTheme + 5 套商务色系 + 斑马纹交替)"]
+            WidthHandler["SmartAutoColumnWidthWriteHandler\n(中文2.0/英文1.0加权 + 2.0内边距防###)"]
         end
 
         subgraph Validation["行级校验与回写 (JSR-303)"]
@@ -67,6 +74,8 @@ flowchart TD
 
     ExpReq --> ExcelFacade
     ExcelFacade --> SensitiveHandler
+    ExcelFacade --> ThemeHandler
+    ExcelFacade --> WidthHandler
     ExcelFacade --> EnumConverter
     ExcelFacade --> DictConverter
     ExcelFacade --> MergeHandler
@@ -114,6 +123,13 @@ flowchart TD
 - **无实体动态导出**：交付 `ExcelUtil.exportDynamic`，支持基于动态表头 `List<List<String>>` 与动态数据行 `List<List<Object>>` 直接导出，免除创建静态 VO 的沉重开销；
 - **Fluent 链式编排**：交付 `ExcelBuilder` 构建器，支持在同一个工作簿中链式编排多个 Sheet、独立配置不同表头与数据源，一键输出至文件、输出流或 HTTP 响应。
 
+### 7. 企业级多模版样式体系与自适应列宽 (@ExcelTheme & SmartAutoColumnWidth)
+- **内置 5 套商务主题**：交付 `ExcelTheme`，全局默认推荐选用极简高雅白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白配细灰边框，清爽高雅），并提供石墨灰（`CLASSIC_GREY`，沉稳深灰表头配白色加粗字体，正文白底与浅灰斑马纹交替，高对比度防底色混淆）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）、暖阳橙（`WARM_ORANGE`），统一采用“微软雅黑”字体与清晰的灰度/色阶对比；
+- **零额外开销斑马纹**：基于 Fesod 原生 `HorizontalCellStyleStrategy` 多重 `WriteCellStyle` 实现奇偶行交替底色，完全依托 Fesod 行索引取模机制，无额外内存开销；
+- **精准中英文双字节列宽**：交付 `SmartAutoColumnWidthWriteHandler`，严格遵循中文/全角 2.0 字符宽、英文/半角 1.0 字符宽计算，换行文本取各段最大值，追加 2.0 字符安全内边距（解决数值变为 `###`），并设置 12~60 字符宽度边界保护；
+- **三级平滑优先级控制**：`ExcelBuilder` 链式设置 > 类级 `@ExcelTheme` 注解 > `application.yml` 全局配置 (`ateng.boot.excel.style.*`)；可全局/局部彻底开启或关闭（`enabled: false` 零开销旁路）；
+- **100% 兼容原生**：零冲突继承 Apache Fesod 原生 `@HeadStyle`、`@ContentStyle`、`@ColumnWidth` 等字段级定制注解。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
@@ -124,9 +140,13 @@ flowchart TD
 3. **极佳的开发者与用户体验**：
    - 开发者仅需基于统一门面 `ExcelUtil` 或 `ExcelBuilder` 即可完成从简单单表导出到复杂报表填充的全部需求；
    - 业务用户获得带下拉防呆约束的规范模板，并在导入出错时获得精准标红与悬浮批注的错题集 Excel，大幅降低沟通排查成本。
+4. **企业级现代商务美感与防呆排版**：
+   - 告别老旧宋体与生硬纯白底色，内置 5 套经典商务色系与优雅斑马纹；自适应列宽计算精准，杜绝文字挤压与数值 `###` 遮挡。
 
 ### 负向代价与权衡
 1. **错误反馈回写需要 POI 内存句柄**：标红批注回写机制（`ExcelFeedbackUtil`）需要基于 POI 操作样式与批注，若单次导入百万级全部报错并全量标红会带来瞬时内存压力。
    - **权衡处置**：错误回写仅在“导入校验存在失败行”的异常流程中触发，且通常大批量数据合格率较高；对于单次导入行数超过 10,000 行的极端场景，推荐在业务层限制导入批次或结合快速失败模式。
 2. **多 Sheet 链式构建器的状态收口**：`ExcelBuilder` 内部封装了 Apache Fesod 的 `ExcelWriter` 生命周期。
    - **权衡处置**：构建器在执行 `finish()` 或流式写出完毕后自动关闭底层 Writer 与流句柄，并通过 API 防呆设计确保一次构建仅能触发一次终止写入。
+3. **样式与列宽拦截器微量计算开销**：自适应列宽需对每行写出单元格进行字符加权计算。
+   - **权衡处置**：字符长度加权基于高效单循环与位运算；针对极限超大文件导出，提供全局 `ateng.boot.excel.style.enabled=false` 或注解 `@ExcelTheme(autoColumnWidth = false)` 旁路机制，完全回退至零计算开销模式。
