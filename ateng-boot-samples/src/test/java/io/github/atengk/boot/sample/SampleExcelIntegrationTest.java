@@ -222,6 +222,32 @@ class SampleExcelIntegrationTest {
     }
 
     @Test
+    @DisplayName("测试导入反馈端点校验通过场景：全部合规时写回强类型成功 Result")
+    void testImportWithFeedbackSuccess() throws Exception {
+        List<UserExcelVO> validList = new ArrayList<>();
+        validList.add(new UserExcelVO(5001L, "孙七", "13500135000", "sunqi@example.com",
+                SampleGenderEnum.MALE, "研发部", "0"));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.export(out, UserExcelVO.class, validList);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "valid_feedback.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                out.toByteArray()
+        );
+
+        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import-feedback").file(file))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode root = objectMapper.readTree(responseBody);
+        assertThat(root.get("code").asInt()).isEqualTo(200);
+        assertThat(root.get("data").asInt()).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("测试无实体动态导出：验证动态表头与二维数据流式写出")
     void testExportDynamic() throws Exception {
         MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-dynamic"))

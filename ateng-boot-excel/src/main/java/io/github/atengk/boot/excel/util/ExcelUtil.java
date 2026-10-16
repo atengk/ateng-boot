@@ -107,6 +107,18 @@ public final class ExcelUtil {
     }
 
     /**
+     * 流式导出数据至指定的 OutputStream（实体类型在前签名重载）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param data         待导出的数据集合（为 null 时视为空集合）
+     * @param <T>          实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, Class<T> clazz, List<T> data) {
+        export(outputStream, DEFAULT_SHEET_NAME, data, clazz);
+    }
+
+    /**
      * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称
      *
      * @param outputStream 目标输出流（不可为空）
@@ -146,6 +158,19 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz) {
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz);
+    }
+
+    /**
+     * Web 环境下流式导出 Excel 并直接写入 HttpServletResponse（实体类型在前签名重载）
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param clazz    导出的实体类型 Class（不可为空）
+     * @param data     待导出的数据集合
+     * @param <T>      实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, Class<T> clazz, List<T> data) {
         export(response, fileName, DEFAULT_SHEET_NAME, data, clazz);
     }
 
@@ -191,6 +216,25 @@ public final class ExcelUtil {
         List<T> list = readerBuilder.sheet()
                 .doReadSync();
         return (list != null) ? list : Collections.emptyList();
+    }
+
+    /**
+     * 流式读取 Excel 数据并交由指定的 ReadListener 自定义处理
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param listener    自定义读取监听器（不可为空）
+     * @param <T>         实体数据泛型
+     */
+    public static <T> void read(InputStream inputStream, Class<T> clazz, ReadListener<T> listener) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+        Assert.notNull(listener, "ReadListener 监听器不可为空");
+
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet()
+                .doRead();
     }
 
     /**
