@@ -44,3 +44,15 @@ CREATE TABLE IF NOT EXISTS sys_document (
     create_time TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS sys_batch_item (
+    id BIGINT NOT NULL PRIMARY KEY,
+    name VARCHAR(64) NOT NULL,
+    code VARCHAR(64) NOT NULL,
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64),
+    version INT DEFAULT 0,
+    deleted INT DEFAULT 0
+);
+

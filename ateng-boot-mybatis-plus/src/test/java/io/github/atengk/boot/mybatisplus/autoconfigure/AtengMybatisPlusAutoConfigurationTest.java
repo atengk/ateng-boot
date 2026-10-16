@@ -212,5 +212,15 @@ class AtengMybatisPlusAutoConfigurationTest {
             assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
         });
     }
+
+    @Test
+    @DisplayName("默认自动装配增强型 AtengSqlInjector 实例")
+    void shouldAutoConfigureSqlInjector() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(com.baomidou.mybatisplus.core.injector.ISqlInjector.class);
+            assertThat(context.getBean(com.baomidou.mybatisplus.core.injector.ISqlInjector.class))
+                    .isInstanceOf(io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector.class);
+        });
+    }
 }
 

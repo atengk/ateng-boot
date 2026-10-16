@@ -3,7 +3,9 @@ package io.github.atengk.boot.mybatisplus.autoconfigure;
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
+import com.baomidou.mybatisplus.core.injector.ISqlInjector;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
+import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.BlockAttackInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
@@ -169,5 +171,16 @@ public class AtengMybatisPlusAutoConfiguration {
             return new DefaultIdentifierGenerator(snowflake.getWorkerId(), snowflake.getDatacenterId());
         }
         return new DefaultIdentifierGenerator();
+    }
+
+    /**
+     * 注册增强型全局 SQL 注入器（自动挂载 insertBatchSomeColumn 原生批量插入并排除逻辑删除字段）
+     *
+     * @return 增强型 SQL 注入器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ISqlInjector.class)
+    public ISqlInjector sqlInjector() {
+        return new AtengSqlInjector();
     }
 }

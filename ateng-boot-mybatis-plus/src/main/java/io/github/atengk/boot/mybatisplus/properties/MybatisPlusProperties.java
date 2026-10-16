@@ -26,6 +26,11 @@ public class MybatisPlusProperties {
      */
     private DataPermissionProperties dataPermission = new DataPermissionProperties();
 
+    /**
+     * 原生批量操作属性配置
+     */
+    private BatchProperties batch = new BatchProperties();
+
 
     /**
      * 自动审计填充配置
@@ -119,6 +124,14 @@ public class MybatisPlusProperties {
 
     public void setDataPermission(DataPermissionProperties dataPermission) {
         this.dataPermission = dataPermission;
+    }
+
+    public BatchProperties getBatch() {
+        return batch;
+    }
+
+    public void setBatch(BatchProperties batch) {
+        this.batch = batch;
     }
 
 
@@ -368,6 +381,24 @@ public class MybatisPlusProperties {
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+    }
+
+    /**
+     * 原生批量操作属性配置
+     */
+    public static class BatchProperties {
+        /**
+         * 原生分批批量插入默认切片批次大小，默认 1000
+         */
+        private int defaultSize = 1000;
+
+        public int getDefaultSize() {
+            return defaultSize;
+        }
+
+        public void setDefaultSize(int defaultSize) {
+            this.defaultSize = defaultSize;
         }
     }
 }

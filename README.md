@@ -932,6 +932,81 @@ ateng:
   SELECT d.*, u.name AS author_name FROM sys_document d LEFT JOIN sys_user u ON d.user_id = u.id WHERE d.dept_id IN (10, 20)
   ```
 
+### 5.14 原生高性能分批批量插入引擎 (AtengBaseMapper & AtengBaseService)
+
+**场景痛点**：在数据迁移、报表归档、批量 Excel 导入及高并发写入场景中，MyBatis-Plus 原生 `IService.saveBatch` 底层使用 JDBC `executeBatch` 逐条循环提交单条 SQL，万级数据插入网络 RTT 开销极大，耗时长达数十秒。而直接使用单条超长 `INSERT INTO ... VALUES (...), (...)...` 多值语句，又面临 MySQL `max_allowed_packet` 溢出、Prepared Parameter 超限（65,535 个占位符上限）以及缺少事务切片等物理崩溃风险。此外，批量插入时若未正确排除逻辑删除字段（`deleted`），极易导致脏数据写回。`ateng-boot-mybatis-plus` 深度打造开箱即用的原生高性能分批批量插入引擎：
+- **原生多值 SQL 注入器 (`AtengSqlInjector`)**：自动挂载 `InsertBatchSomeColumn` 注入器，利用数据库原生单条多值语法，将批量插入吞吐量提升 10~50 倍；
+- **智能过滤逻辑删除字段**：注入器构造时配置 `field -> !field.isLogicDelete()`，批量插入期从 SQL 列清单中严格剔除 `@TableLogic` 标记字段，由数据库默认值兜底，杜绝逻辑删除标记被误覆盖；
+- **通用持久层增强基类 (`AtengBaseMapper<T>`)**：继承 MyBatis-Plus `BaseMapper<T>` 并显式声明 `insertBatchSomeColumn` 方法，业务 Mapper 零 XML 配置直接调用；
+- **声明式强事务守护 (`AtengBaseService<T>` & `AtengServiceImpl<M, T>`)**：业务 Service 继承增强基类，分批切片插入由 `@Transactional(rollbackFor = Exception.class)` 全程守护，任意切片发生异常时全量回滚，彻底消除脏数据残留；
+- **零外部依赖切片门面 (`BatchUtil`)**：纯 JDK 17 `List.subList` 视图切片，开箱支持自定义 `batchSize`，小于等于 0 时自动回退至全局配置（默认 1000），空集合前置卫语句安全返回 0。
+
+**最小可用代码与配置范式**：
+
+1. **Mapper 与 Service 声明**：
+```java
+// 1. 持久层 Mapper 继承 AtengBaseMapper 获得原生多值 SQL 批量注入能力
+@Mapper
+public interface UserMapper extends AtengBaseMapper<UserEntity> {
+}
+
+// 2. 业务 Service 接口继承 AtengBaseService
+public interface UserService extends AtengBaseService<UserEntity> {
+}
+
+// 3. 业务 Service 实现继承 AtengServiceImpl
+@Service
+public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
+}
+```
+
+2. **业务调用与批量切片执行**：
+```java
+@Service
+public class UserImportService {
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private UserMapper userMapper;
+
+    public void importUserData(List<UserEntity> userList) {
+        // 方式 1：推荐通过 Service 执行（受事务守护，自动采用全局默认切片大小 1000 分批入库）
+        int affectedRows = userService.insertBatch(userList);
+
+        // 方式 2：Service 指定自定义切片大小（如 500 条一批）
+        int affectedCustom = userService.insertBatch(userList, 500);
+
+        // 方式 3：静态门面工具 BatchUtil（支持对任意 AtengBaseMapper 实施安全分批插入）
+        int affectedUtil = BatchUtil.insertBatch(userMapper, userList, 1000);
+
+        // 方式 4：直接调用 Mapper 原生单批插入（适用于已知极小集合如 <= 200 条）
+        int singleBatchRows = userMapper.insertBatchSomeColumn(userList);
+    }
+}
+```
+
+3. **开箱即用 YAML 配置**：
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      batch:
+        default-size: 1000                # 原生批量插入默认单批次切片大小（默认 1000）
+```
+
+**预期控制台与 SQL 契约呈现**：
+- **切片分批执行多值 SQL（2,500 条数据自动切分为 3 批：1000 + 1000 + 500）**：
+  ```sql
+  -- 第 1 批 (1,000 条)
+  INSERT INTO sys_user (id, name, email, create_time, update_time) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), ... [1000 行 values]
+  -- 第 2 批 (1,000 条)
+  INSERT INTO sys_user (id, name, email, create_time, update_time) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), ... [1000 行 values]
+  -- 第 3 批 (500 条)
+  INSERT INTO sys_user (id, name, email, create_time, update_time) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), ... [500 行 values]
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -1002,6 +1077,8 @@ ateng:
       await-termination-seconds: 60 # 优雅停机等待超时时间（秒，默认 60）
     mybatis-plus:
       enabled: true               # 是否启用 MyBatis-Plus 增强配置（默认 true）
+      batch:
+        default-size: 1000        # 原生批量插入默认单批次切片大小（默认 1000，防网络包与占位符溢出）
       audit:
         default-operator: "system"# 上下文为空时的默认审计操作人兜底（默认 null）
       pagination:
@@ -1046,6 +1123,7 @@ ateng:
   - [ADR-0016: 纯 JDK 原生双向 API 数据加签验签与防重放引擎](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)
   - [ADR-0017: 企业级行级多租户安全隔离与自动填充架构决策](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)
   - [ADR-0018: 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构决策](./docs/adr/0018-declarative-data-permission-engine-architecture.md)
+  - [ADR-0019: 原生高性能分批批量插入引擎架构决策](./docs/adr/0019-native-high-performance-batch-insert-engine.md)
 
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
