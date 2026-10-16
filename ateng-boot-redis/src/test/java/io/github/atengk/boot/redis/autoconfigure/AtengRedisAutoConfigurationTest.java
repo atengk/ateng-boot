@@ -61,6 +61,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisValueSerializer");
                     assertThat(context).doesNotHaveBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("distributedLockAspect");
                 });
     }
 
@@ -72,17 +73,31 @@ class AtengRedisAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("distributedLockAspect");
                 });
     }
 
     @Test
-    @DisplayName("默认启用时装配 RedisTemplate 与 RedisUtil 且各序列化器契约正确")
+    @DisplayName("当配置 ateng.boot.redis.lock.enabled=false 时，不装配分布式锁切面但基础组件正常")
+    void shouldNotLoadLockAspectWhenLockDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.lock.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("distributedLockAspect");
+                });
+    }
+
+    @Test
+    @DisplayName("默认启用时装配 RedisTemplate, RedisUtil 与 DistributedLockAspect 且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasBean("redisValueSerializer");
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).hasBean("redisUtil");
+                    assertThat(context).hasBean("distributedLockAspect");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);

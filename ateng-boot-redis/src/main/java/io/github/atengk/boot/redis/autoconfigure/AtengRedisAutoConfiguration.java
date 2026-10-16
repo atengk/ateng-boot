@@ -1,5 +1,6 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
@@ -94,6 +95,20 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnMissingBean(RedisUtil.class)
     public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate) {
         return new RedisUtil(redisTemplate);
+    }
+
+    /**
+     * 装配声明式分布式锁切面 DistributedLockAspect
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式锁切面
+     */
+    @Bean
+    @ConditionalOnMissingBean(DistributedLockAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DistributedLockAspect distributedLockAspect(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new DistributedLockAspect(redissonClient, redisProperties);
     }
 
     /**
