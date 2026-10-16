@@ -11,6 +11,9 @@ import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerIntercept
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
+import io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor;
+import io.github.atengk.boot.mybatisplus.permission.DataPermissionHandler;
+import io.github.atengk.boot.mybatisplus.permission.DefaultDataPermissionHandler;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
 import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
@@ -81,18 +84,33 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
-     * 注册 MyBatis-Plus 插件拦截器链
-     * 顺序装配：多租户拦截器 -> 分页拦截器 -> 防全表更新/删除拦截器 -> 乐观锁拦截器
+     * 注册默认细粒度数据权限处理器
      *
-     * @param tenantLineHandlerProvider 可选的多租户处理器提供者
+     * @return 默认透传的数据权限处理器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DataPermissionHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.data-permission", name = "enabled", havingValue = "true")
+    public DataPermissionHandler dataPermissionHandler() {
+        return new DefaultDataPermissionHandler();
+    }
+
+    /**
+     * 注册 MyBatis-Plus 插件拦截器链
+     * 顺序装配：多租户拦截器 -> 细粒度数据权限拦截器 -> 分页拦截器 -> 防全表更新/删除拦截器 -> 乐观锁拦截器
+     *
+     * @param tenantLineHandlerProvider     可选的多租户处理器提供者
+     * @param dataPermissionHandlerProvider 可选的数据权限处理器提供者
      * @return 组合插件拦截器
      */
     @Bean
     @ConditionalOnMissingBean(MybatisPlusInterceptor.class)
-    public MybatisPlusInterceptor mybatisPlusInterceptor(ObjectProvider<TenantLineHandler> tenantLineHandlerProvider) {
+    public MybatisPlusInterceptor mybatisPlusInterceptor(
+            ObjectProvider<TenantLineHandler> tenantLineHandlerProvider,
+            ObjectProvider<DataPermissionHandler> dataPermissionHandlerProvider) {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
 
-        // 1. 装配多租户插件（必须置于分页插件之前，保障分页 count SQL 与列表查询受同等租户隔离保护）
+        // 1. 装配多租户插件（必须置于数据权限与分页插件之前，保障全局多租户隔离最外层生效）
         MybatisPlusProperties.TenantProperties tenant = properties.getTenant();
         if (tenant.isEnabled()) {
             TenantLineHandler tenantLineHandler = tenantLineHandlerProvider.getIfAvailable(
@@ -101,7 +119,16 @@ public class AtengMybatisPlusAutoConfiguration {
             interceptor.addInnerInterceptor(new AtengTenantLineInnerInterceptor(tenantLineHandler));
         }
 
-        // 2. 装配分页插件
+        // 2. 装配细粒度数据权限插件（置于分页插件之前，保障分页 count SQL 与列表查询受同等权限隔离保护）
+        MybatisPlusProperties.DataPermissionProperties dataPermission = properties.getDataPermission();
+        if (dataPermission.isEnabled()) {
+            DataPermissionHandler dataPermissionHandler = dataPermissionHandlerProvider.getIfAvailable(
+                    DefaultDataPermissionHandler::new
+            );
+            interceptor.addInnerInterceptor(new AtengDataPermissionInnerInterceptor(dataPermissionHandler));
+        }
+
+        // 3. 装配分页插件
         MybatisPlusProperties.PaginationProperties pagination = properties.getPagination();
         if (pagination.isEnabled()) {
             PaginationInnerInterceptor paginationInnerInterceptor = pagination.getDbType() != null
@@ -114,12 +141,12 @@ public class AtengMybatisPlusAutoConfiguration {
             interceptor.addInnerInterceptor(paginationInnerInterceptor);
         }
 
-        // 3. 装配防全表更新与删除插件
+        // 4. 装配防全表更新与删除插件
         if (properties.getBlockAttack().isEnabled()) {
             interceptor.addInnerInterceptor(new BlockAttackInnerInterceptor());
         }
 
-        // 4. 装配乐观锁插件
+        // 5. 装配乐观锁插件
         if (properties.getOptimisticLocker().isEnabled()) {
             interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
         }

@@ -830,6 +830,108 @@ ateng:
           - "sys_config"
 ```
 
+### 5.13 基于 JSqlParser AST 的细粒度数据权限 (@DataScope)
+
+**场景痛点**：在企业级应用与政企管理系统中，不同角色的用户数据访问范围各异（如“仅看本人”、“仅看本部门”、“本部门及下属部门”或“指定部门”）。传统方案多在业务 Service 或 XML 中手工硬编码拼接 `AND dept_id IN (...)`，不仅极易遗漏引发越权漏洞与 SQL 注入风险，且破坏多表关联与复杂查询的语法结构。`ateng-boot-mybatis-plus` 深度集成 MyBatis-Plus 3.5.17 内置拦截器与 JSqlParser AST 语法树改写引擎，构建声明式细粒度数据权限防护：
+- **声明式无侵入拦截 (`@DataScope`)**：仅需在 Mapper 接口或方法上声明 `@DataScope`，框架自动结合业务实现的 `DataPermissionHandler` SPI 追加参数化权限条件，业务 Service 零侵入；
+- **多表关联别名精准注入**：通过 `@DataScope(alias = "d")` 指定目标表别名，AST 语法树遍历时精准比对表别名，杜绝复杂多表 JOIN 时将条件误加到其它关联表引发语法错误；
+- **认证中心生态彻底解耦**：抽象统一 `DataPermissionHandler` SPI，业务方只需负责根据当前登录用户组织权限返回 JSqlParser `Expression`，单体、微服务、MQ 或定时任务均可平滑复用；
+- **纳秒级元数据缓存与零 AST 损耗短路**：内部通过 `ConcurrentHashMap` 缓存解析结果，未标注解的普通查询、超管特权查询（`runAsSuperAdmin`）与编程式忽略闭包（`runWithoutPermission`）毫秒级放行，跳过 AST 解析；
+- **分页总记录数自动同步保护**：拦截器置于分页插件之前，自动识别 MyBatis-Plus 内部 `_mpCount` 计数语句，确保分页总记录数与列表数据受到完全同等的数据权限隔离。
+
+**最小可用代码与配置范式**：
+
+1. **业务实现 `DataPermissionHandler` SPI 契约**：
+```java
+@Component
+public class CustomDataPermissionHandler implements DataPermissionHandler {
+
+    @Override
+    public Expression getSqlSegment(Table table, Expression where, String mappedStatementId, DataScope dataScope) {
+        // 1. 获取当前安全上下文中的当前用户与部门权限（如从 Security / Token 获取）
+        Long currentUserId = SecurityUtils.getUserId();
+        List<Long> deptIds = SecurityUtils.getDeptIds();
+        String prefix = dataScope.alias().isBlank() ? "" : dataScope.alias() + ".";
+
+        // 2. 仅看本人数据权限：追加 user_id = ?
+        if (SecurityUtils.isSelfScope()) {
+            EqualsTo equalsTo = new EqualsTo();
+            equalsTo.setLeftExpression(new Column(prefix + dataScope.userColumn()));
+            equalsTo.setRightExpression(new LongValue(currentUserId));
+            return equalsTo;
+        }
+
+        // 3. 部门级数据权限：追加 dept_id IN (...)
+        if (!deptIds.isEmpty()) {
+            ParenthesedExpressionList<LongValue> list = new ParenthesedExpressionList<>();
+            deptIds.forEach(id -> list.add(new LongValue(id)));
+            InExpression inExpression = new InExpression();
+            inExpression.setLeftExpression(new Column(prefix + dataScope.deptColumn()));
+            inExpression.setRightExpression(list);
+            return inExpression;
+        }
+
+        return null;
+    }
+}
+```
+
+2. **Mapper 声明与编程式上下文使用**：
+```java
+@Mapper
+public interface DocumentMapper extends BaseMapper<DocumentEntity> {
+
+    /**
+     * 单表查询：自动根据当前登录人权限追加 WHERE dept_id IN (...) 或 user_id = ?
+     */
+    @DataScope(deptColumn = "dept_id", userColumn = "user_id")
+    @Select("SELECT * FROM sys_document")
+    List<DocumentEntity> selectListWithScope();
+
+    /**
+     * 多表关联查询：显式指定 alias = "d"，精准注入 d.dept_id IN (...)
+     */
+    @DataScope(alias = "d", deptColumn = "dept_id", userColumn = "user_id")
+    @Select("SELECT d.*, u.name AS author_name FROM sys_document d LEFT JOIN sys_user u ON d.user_id = u.id")
+    List<Map<String, Object>> selectDocumentWithAuthor();
+
+    /**
+     * 显式豁免查询：标注 ignore = true，跳过数据权限改写
+     */
+    @DataScope(ignore = true)
+    @Select("SELECT * FROM sys_document")
+    List<DocumentEntity> selectAllExempt();
+}
+
+// 编程式闭包：特权全量查询或超级管理员放行
+DataPermissionContextHolder.runWithoutPermission(() -> {
+    List<DocumentEntity> allDocs = documentMapper.selectListWithScope(); // 闭包执行期间放行全量数据
+});
+```
+
+3. **开箱即用 YAML 配置**：
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      data-permission:
+        enabled: true                     # 开启细粒度数据权限拦截器（默认 false，按需开启）
+```
+
+**预期 SQL AST 改写契约呈现**：
+- **原始开发者手写 SQL**：
+  ```sql
+  SELECT * FROM sys_document
+  ```
+- **本人数据权限自动注入（安全 AST 参数化改写）**：
+  ```sql
+  SELECT * FROM sys_document WHERE user_id = 1001
+  ```
+- **多表关联带别名改写**：
+  ```sql
+  SELECT d.*, u.name AS author_name FROM sys_document d LEFT JOIN sys_user u ON d.user_id = u.id WHERE d.dept_id IN (10, 20)
+  ```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
@@ -915,6 +1017,8 @@ ateng:
         ignore-tables:            # 全局免多租户过滤的静态数据表名清单
           - "sys_dict"
           - "sys_config"
+      data-permission:
+        enabled: false            # 是否启用细粒度数据权限拦截器（默认 false，按需开启）
       crypto:
         secret-key: "YourSecretKey" # AES 密钥（可选，未配置时自适应默认内置密钥）
 ```
@@ -941,6 +1045,7 @@ ateng:
   - [ADR-0015: 动态 CORS 跨域安全与凭据安全反射架构](./docs/adr/0015-dynamic-cors-and-credentials-safe-origin-reflection.md)
   - [ADR-0016: 纯 JDK 原生双向 API 数据加签验签与防重放引擎](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)
   - [ADR-0017: 企业级行级多租户安全隔离与自动填充架构决策](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)
+  - [ADR-0018: 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构决策](./docs/adr/0018-declarative-data-permission-engine-architecture.md)
 
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）

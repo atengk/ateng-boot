@@ -84,6 +84,14 @@ _Avoid_: DataFilter, PermissionScope, DataAuth
 数据权限规则 SPI 契约处理器，负责将业务 RBAC 权限范围转化为 JSqlParser 表达式树安全改写 SQL。
 _Avoid_: PermissionHandler, DataScopeHandler
 
+**DataPermissionContextHolder**:
+细粒度数据权限上下文持有者，维护当前线程忽略标志与超管标志，提供受控编程式闭包（`runWithoutPermission` 与 `runAsSuperAdmin`）。
+_Avoid_: DataScopeContextHolder, PermissionContext
+
+**AtengDataPermissionInnerInterceptor**:
+增强型细粒度数据权限拦截器，继承 MyBatis-Plus `DataPermissionInterceptor`，集成 `@DataScope` 纳秒级元数据缓存、多表别名校验与超管/闭包秒级短路放行。
+_Avoid_: CustomDataPermissionInterceptor, DataScopeInterceptor
+
 **AtengBaseMapper**:
 继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值高性能批量插入（`insertBatchSomeColumn`）方法。
 _Avoid_: SuperMapper, EnhancedMapper, CustomBaseMapper

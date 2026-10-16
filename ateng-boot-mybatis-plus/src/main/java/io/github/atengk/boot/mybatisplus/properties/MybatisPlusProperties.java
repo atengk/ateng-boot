@@ -21,6 +21,11 @@ public class MybatisPlusProperties {
      */
     private TenantProperties tenant = new TenantProperties();
 
+    /**
+     * 细粒度数据权限插件配置
+     */
+    private DataPermissionProperties dataPermission = new DataPermissionProperties();
+
 
     /**
      * 自动审计填充配置
@@ -106,6 +111,14 @@ public class MybatisPlusProperties {
 
     public void setTenant(TenantProperties tenant) {
         this.tenant = tenant;
+    }
+
+    public DataPermissionProperties getDataPermission() {
+        return dataPermission;
+    }
+
+    public void setDataPermission(DataPermissionProperties dataPermission) {
+        this.dataPermission = dataPermission;
     }
 
 
@@ -337,6 +350,24 @@ public class MybatisPlusProperties {
 
         public void setIgnoreTables(List<String> ignoreTables) {
             this.ignoreTables = ignoreTables;
+        }
+    }
+
+    /**
+     * 细粒度数据权限属性配置
+     */
+    public static class DataPermissionProperties {
+        /**
+         * 是否启用细粒度数据权限拦截器，默认 false
+         */
+        private boolean enabled = false;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 }

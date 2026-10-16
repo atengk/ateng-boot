@@ -24,7 +24,8 @@
 | **0014** | 基于三级自适应 SPI 架构的接口限流防刷引擎 | `Accepted` | 统一令牌桶模型，纯 JDK 原子无锁单机兜底与 Redis/Redisson 集群自适应，复合维度与 HTTP 429/Retry-After | `ateng-boot-web` | [查看](./0014-three-tier-adaptive-rate-limiter-engine.md) |
 | **0015** | 基于 SPI 扩展与凭证安全反射的动态 CORS 架构 | `Accepted` | 深度集成 Spring 原生 CorsConfigurationSource，支持动态来源 SPI 与带凭据安全反射 Vary 响应头 | `ateng-boot-web` | [查看](./0015-dynamic-cors-and-credentials-safe-origin-reflection.md) |
 | **0016** | 双向 API 数据加签验签与防重放引擎 | `Accepted` | 纯 JDK 17 原生零膨胀签名 SPI，标准化待签串，复用 IdempotentKeyStore 防重放，AOP 切面遵守 ADR-0002 | `ateng-boot-web` | [查看](./0016-dual-direction-api-signature-and-anti-replay-engine.md) |
-
+| **0017** | 企业级行级多租户安全隔离与自动填充架构 | `Accepted` | 深度集成 MP 3.5.17 TenantLineInnerInterceptor，数字列索引保护，@IgnoreTenant 与闭包短路，智能插入填充 | `ateng-boot-mybatis-plus` | [查看](./0017-multi-tenant-row-level-isolation-architecture.md) |
+| **0018** | 基于 JSqlParser AST 的声明式细粒度数据权限引擎架构 | `Accepted` | 声明式 @DataScope 注解，多表别名校验，DataPermissionHandler SPI 解耦，超管与闭包秒级短路，分页 count 自动保护 | `ateng-boot-mybatis-plus` | [查看](./0018-declarative-data-permission-engine-architecture.md) |
 
 ---
 

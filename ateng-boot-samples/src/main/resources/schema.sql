@@ -36,3 +36,11 @@ CREATE TABLE IF NOT EXISTS sys_dict (
     dict_value VARCHAR(128)
 );
 
+CREATE TABLE IF NOT EXISTS sys_document (
+    id BIGINT NOT NULL PRIMARY KEY,
+    title VARCHAR(128) NOT NULL,
+    dept_id BIGINT,
+    user_id BIGINT,
+    create_time TIMESTAMP
+);
+

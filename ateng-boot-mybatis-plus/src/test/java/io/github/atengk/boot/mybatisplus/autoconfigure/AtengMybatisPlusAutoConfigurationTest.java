@@ -176,5 +176,41 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(tenantInterceptor.getTenantLineHandler()).isSameAs(customHandler);
                 });
     }
+
+    @Test
+    @DisplayName("开启细粒度数据权限时成功装配 DataPermissionHandler 并在插件链中置于分页之前")
+    void shouldConfigureDataPermissionInterceptorsWhenEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.data-permission.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.permission.DataPermissionHandler.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.permission.DefaultDataPermissionHandler.class);
+
+                    MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+                    List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
+                    assertThat(innerInterceptors).hasSize(4);
+                    assertThat(innerInterceptors.get(0)).isInstanceOf(io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(1)).isInstanceOf(PaginationInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(2)).isInstanceOf(BlockAttackInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(3)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("多租户与数据权限同时开启时拦截器顺序严格保障：多租户 -> 数据权限 -> 分页 -> 防全表 -> 乐观锁")
+    void shouldMaintainStrictInterceptorOrderWhenBothTenantAndDataPermissionEnabled() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.tenant.enabled=true",
+                "ateng.boot.mybatis-plus.data-permission.enabled=true"
+        ).run(context -> {
+            MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+            List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
+            assertThat(innerInterceptors).hasSize(5);
+            assertThat(innerInterceptors.get(0)).isInstanceOf(AtengTenantLineInnerInterceptor.class);
+            assertThat(innerInterceptors.get(1)).isInstanceOf(io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor.class);
+            assertThat(innerInterceptors.get(2)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(innerInterceptors.get(3)).isInstanceOf(BlockAttackInnerInterceptor.class);
+            assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+        });
+    }
 }
 
