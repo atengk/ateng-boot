@@ -2,6 +2,7 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.FesodSheet;
@@ -35,6 +36,11 @@ public final class ExcelUtil {
     private static final String DEFAULT_SHEET_NAME = "Sheet1";
     private static final String XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=utf-8";
     private static final String XLSX_EXTENSION = ".xlsx";
+
+    /**
+     * 默认脱敏单元格写出拦截器（无状态线程安全单例）
+     */
+    private static final SensitiveCellWriteHandler DEFAULT_SENSITIVE_WRITE_HANDLER = new SensitiveCellWriteHandler();
 
     /**
      * 流式读取全局默认批次大小（可通过配置文件 ateng.boot.excel.default-batch-size 调整）
@@ -90,6 +96,7 @@ public final class ExcelUtil {
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
         FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
                 .sheet(targetSheetName)
                 .doWrite(exportList);
     }

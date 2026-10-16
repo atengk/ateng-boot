@@ -104,7 +104,62 @@ ExcelUtil.readBatch(file.getInputStream(), UserVO.class, batchList -> {
 
 ---
 
-## 5. 配置属性参考
+## 5. 数据安全与导出动态脱敏 (`@ExcelSensitive`)
+
+### 场景痛点
+根据数据安全合规要求，手机号、身份证、银行卡等隐私字段在导出 Excel 报表时必须掩码脱敏。传统做法是在 Service 业务层打星号（如 `138****0000`），这不仅污染业务实体，而且极易由于开发者疏忽将掩码脏数据回写数据库，严重破坏数据一致性与系统安全。
+
+### 核心代码范式
+只需在导出实体的字段上标注 `@ExcelSensitive` 注解，`ExcelUtil` 会在单元格写出阶段自动拦截转换并进行安全掩码，**源实体对象在 JVM 内存中始终保持 100% 原始真实明文**，严格遵守项目安全规范：
+
+```java
+import io.github.atengk.boot.excel.annotation.ExcelSensitive;
+import io.github.atengk.boot.excel.enums.DesensitizeType;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class SensitiveUserVO {
+
+    @ExcelProperty("用户编号")
+    private Long id;
+
+    @ExcelProperty("用户名称")
+    @ExcelSensitive(DesensitizeType.CHINESE_NAME)
+    private String name;
+
+    @ExcelProperty("手机号码")
+    @ExcelSensitive(DesensitizeType.MOBILE_PHONE)
+    private String phone;
+
+    @ExcelProperty("身份证号")
+    @ExcelSensitive(DesensitizeType.ID_CARD)
+    private String idCard;
+
+    @ExcelProperty("电子邮箱")
+    @ExcelSensitive(DesensitizeType.EMAIL)
+    private String email;
+
+    @ExcelProperty("首尾保留脱敏")
+    @ExcelSensitive(keepHead = 2, keepTail = 2, maskChar = '#')
+    private String secretCode;
+}
+
+// 正常流式或 Web 导出，拦截器自动完成单元格无侵入脱敏
+ExcelUtil.export(outputStream, userList, SensitiveUserVO.class);
+```
+
+### 预期导出的 Excel 单元格呈现
+| 用户编号 | 用户名称 | 手机号码 | 身份证号 | 电子邮箱 | 首尾保留脱敏 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 1001 | 张*丰 | 138\*\*\*\*0000 | 110101\*\*\*\*\*\*\*\*0001 | a\*\*\*g@example.com | AB##EF |
+
+> [!NOTE]
+> 支持内置脱敏策略：`CHINESE_NAME`（中文名）、`ID_CARD`（身份证）、`MOBILE_PHONE`（手机号）、`FIXED_PHONE`（座机号）、`EMAIL`（电子邮箱）、`BANK_CARD`（银行卡）、`IPV4`、`IPV6`、`CAR_LICENSE`（车牌号）、`KEEP_HEAD_TAIL`（基于 `keepHead`/`keepTail`/`maskChar` 首尾保留）、`CUSTOM`（基于 `startInclude`/`endExclude`/`maskChar` 自定义区间）。
+
+---
+
+## 6. 配置属性参考
 
 在 `application.yml` 中按需定制：
 
@@ -119,3 +174,4 @@ ateng:
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
 ```
+
