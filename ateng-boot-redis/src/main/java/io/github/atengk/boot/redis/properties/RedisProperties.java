@@ -80,6 +80,11 @@ public class RedisProperties {
         private TimeUnit timeUnit = TimeUnit.SECONDS;
 
         /**
+         * 分布式锁统一键名前缀（默认 "lock:"）
+         */
+        private String prefix = "lock:";
+
+        /**
          * 慢锁告警阈值（毫秒），方法持锁执行时间超过该阈值时自动记录 WARN 日志
          */
         private long slowThresholdMs = 3000L;

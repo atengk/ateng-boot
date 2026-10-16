@@ -24,6 +24,14 @@ _Avoid_: RedissonLock, RedisLock, LockAnnotation, SyncLock
 基于 AOP 环绕拦截的分布式锁切面，驱动 `RedissonClient` 实施锁争抢、超时判断，在 `finally` 阶段安全校验当前线程持锁状态以杜绝 `IllegalMonitorStateException` 异常覆盖，并在持锁时间超过慢锁阈值时输出告警审计日志。
 _Avoid_: LockInterceptor, DistributedLockHandler, RedissonLockAspect
 
+**DistributedLockTemplate**:
+编程式分布式锁执行模板，提供基于函数式回调的受保护代码块执行，自动编排锁获取、看门狗自动延期、`finally` 安全防误删释放、慢锁审计与超时快速失败。
+_Avoid_: LockExecutor, RedissonTemplate, DistributedLockManager
+
+**RedisLockUtil**:
+编程式分布式锁的静态操作门面，底层委托给 `DistributedLockTemplate`，支持在静态上下文或无需注入组件中一键式安全执行加锁代码块。
+_Avoid_: LockUtil, RedissonUtil, DistributedLockHelper
+
 **DelayedQueue**:
 基于 Redisson `RDelayedQueue` 与 `RBlockingQueue` 封装的企业级分布式轻量延时任务队列，支持到期自动出队调度。
 _Avoid_: DelayQueue, RedisDelayQueue, TimeoutQueue

@@ -35,7 +35,9 @@ flowchart TD
     subgraph FacadeLayer["企业级门面与契约层"]
         RT["RedisTemplate<String, Object>\n(纯净 JSON 序列化 / 无 @class 污染)"]
         RU["RedisUtil 全能操作门面\n(String/Hash/List/Set/ZSet/Geo/BitMap/HLL/Pipeline)\n【防呆拦截: 强制游标 scan, 严禁 keys *】"]
-        DL["@DistributedLock 声明式锁切面\n(可重入/公平/读写/联锁 MultiLock + 看门狗 + 慢锁告警)"]
+        DL["@DistributedLock 声明式锁切面\n(SpEL 动态解析 + 看门狗 + 慢锁告警)"]
+        DT["DistributedLockTemplate 编程式模板\n(函数式闭包 + 统一降级/重载 + 安全释放)"]
+        LU["RedisLockUtil 静态门面\n(无注入无侵入静态调用)"]
         DQ["延时队列双模引擎 (DelayedQueue)\n(声明式 @DelayedQueueListener + 编程式 API)"]
         PS["Pub/Sub 广播引擎\n(跨实例轻量通知与本地缓存刷新)"]
         RL["业务级流控与计数\n(RedisRateLimiterClient + RedisAtomicUtil)"]
@@ -45,12 +47,15 @@ flowchart TD
     SpringCfg --> LettuceCore
     SpringCfg --> RedissonCore
     AtengCfg --> DL
+    AtengCfg --> DT
 
     LettuceCore --> RT
     LettuceCore --> CM
     RT --> RU
 
-    RedissonCore --> DL
+    RedissonCore --> DT
+    DT --> DL
+    DT --> LU
     RedissonCore --> DQ
     RedissonCore --> RL
     LettuceCore --> PS
@@ -65,11 +70,16 @@ flowchart TD
 - Value/HashValue 采用基于 Jackson 的安全序列化，支持 Java 8 日期时间标准格式化与 Long 精度防丢失；
 - **坚决不开启 `@class` 多态侵入**，Redis 中存储纯净标准 JSON，读取时通过 `RedisUtil.get(key, Class<T>)` 或 `TypeReference<T>` 完成安全映射，杜绝反序列化漏洞与跨服务重命名故障。
 
-### 3. 全能声明式分布式锁 (`@DistributedLock`)
+### 3. 双模一体化分布式锁引擎 (`@DistributedLock` + `DistributedLockTemplate` + `RedisLockUtil`)
+- **声明式与编程式同构内核**：通过底层核心模板 `DistributedLockTemplate` 实现加锁、看门狗自动延期、`finally` 安全防误删释放与慢锁审计的 100% 逻辑复用，`DistributedLockAspect` 切面直接委托给模板执行；
+- **双层调用接口**：
+  - 声明式注解 `@DistributedLock`：面向方法级切面声明，支持 SpEL 动态键解析与数组多键联锁；
+  - 编程式模板 `DistributedLockTemplate`：面向复杂流程内部受管闭包，支持 `execute`（默认快速失败）、带降级回调 `fallback` 重载与 `tryExecute`（布尔试探）；
+  - 静态门面 `RedisLockUtil`：面向任意静态上下文与无需注入 Spring Bean 的轻量调用；
 - **四阶锁模式**：支持 `REENTRANT`（可重入锁）、`FAIR`（公平锁）、`READ`（读锁）、`WRITE`（写锁）；
-- **复合联锁 (MultiLock)**：支持 SpEL 数组形式动态解析多个业务键，原子锁住多重资源；
-- **租约与看门狗**：租约时间默认 `-1` 激活 Redisson 看门狗自动续期；支持显式配置超时时长与等待时长；
-- **防呆释放与慢锁审计**：在 `finally` 块中严格以 `lock.isHeldByCurrentThread()` 防御，释放失败仅记录告警日志，绝不抛出 `IllegalMonitorStateException`；业务持锁超过慢锁阈值（默认 3s）自动触发 WARN 审计日志；争锁超时统一抛出 `BusinessException`。
+- **复合联锁 (MultiLock)**：支持同时原子锁定多个业务键，防止分布式死锁；
+- **租约与看门狗**：租约时间默认 `-1` 激活 Redisson 看门狗自动续期（30s 周期自延）；支持自定义超时时长与等待时长；
+- **防呆释放与慢锁审计**：在 `finally` 块中严格以 `lock.isHeldByCurrentThread()` 防御，释放失败仅记录告警日志，绝不抛出 `IllegalMonitorStateException` 掩盖业务异常；业务持锁超过慢锁阈值（默认 3s）自动触发 WARN 审计日志；争锁超时统一抛出 `BusinessException(429)`。
 
 ### 4. 游标安全扫描与全能门面 (`RedisUtil`)
 - 封装五大基础结构（String, Hash, List, Set, ZSet）以及高频高级结构（Geo 地理位置、BitMap 签到打卡、HyperLogLog UV 统计）；

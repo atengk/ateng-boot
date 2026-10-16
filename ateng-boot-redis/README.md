@@ -114,18 +114,23 @@ public class ProductCacheService {
 
 ---
 
-## 4. 声明式四阶分布式锁 (`@DistributedLock`)
+## 4. 双模一体化分布式锁 (`@DistributedLock` & `RedisLockUtil` & `DistributedLockTemplate`)
 
 ### 场景痛点
-手动调用分布式锁容易发生死锁、异常时未在 `finally` 块释放、锁重入计数紊乱、锁超时后误删其他线程持有的锁，以及并发大事务锁持有时间过长拖垮数据库。
+手动调用分布式锁容易发生死锁、异常时未在 `finally` 块释放、锁重入计数紊乱、锁超时后误删其他线程持有的锁，以及并发大事务锁持有时间过长拖垮数据库。此外，注解加锁强制要求抽取独立 Spring Bean 方法，对于类内部小代码块、定时任务、异步多线程或静态工具类场景，直接调用原生 Redisson 极易写错 `try-finally` 造成锁泄露，且缺乏全局锁前缀隔离与慢锁可观测审计。
 
 ### 特性矩阵
-- **四阶锁模式**：可重入锁 (`REENTRANT`)、公平锁 (`FAIR`)、共享读锁 (`READ`)、排他写锁 (`WRITE`)；
-- **动态 SpEL 解析**：支持复合键与多参数拼接，如 `key = "'order:' + #orderId"`；
-- **智能租期守护**：若 `leaseTime = -1` 则自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期；若指定具体租期则强制超时熔断防死锁；
-- **慢锁告警网关**：锁持有耗时超过阈值（默认 3 秒）自动输出 WARN 级别慢锁日志。
+- **双模同构内核**：声明式切面与编程式门面均全量委托 `DistributedLockTemplate`，保证锁前缀拼接、看门狗自动续期、安全持锁释放与慢锁审计 100% 规则自洽；
+- **极简静态门面 (`RedisLockUtil`)**：无需注入 Spring Bean，在任意上下文一行代码安全执行闭包加锁；
+- **无损异常穿透**：定制 `LockSupplier<T>` 与 `LockAction` 声明 `throws Throwable`，闭包内自由抛出业务异常，模板安全释放锁后原样透传，杜绝多余的 `try-catch` 包装；
+- **弹性容灾机制**：支持争锁超时降级闭包 `fallback` 以及非阻塞/短等待布尔试探 `tryExecute`；
+- **四阶锁模式与多键联锁**：支持可重入锁 (`REENTRANT`)、公平锁 (`FAIR`)、共享读锁 (`READ`)、排他写锁 (`WRITE`) 以及跨资源原子联锁 (`MultiLock`)；
+- **智能租期守护**：缺省 `leaseTime = -1` 自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期；指定具体租期则强制超时熔断防死锁；
+- **慢锁告警网关**：锁持有耗时超过阈值（默认 3 秒）自动输出 WARN 级别慢锁审计日志。
 
 ### 核心代码示例
+
+#### 范式 A：声明式注解加锁 (`@DistributedLock`)
 ```java
 @Service
 public class OrderLockService {
@@ -155,11 +160,58 @@ public class OrderLockService {
 }
 ```
 
+#### 范式 B：编程式模板与静态门面加锁 (`RedisLockUtil`)
+```java
+@Service
+public class OrderPaymentService {
+
+    /**
+     * 1. 最简调用：默认排他锁 + 看门狗自动续期 + 争锁超时快速熔断 BusinessException(429)
+     */
+    public void processPayment(String orderId) {
+        RedisLockUtil.execute("order:pay:" + orderId, () -> {
+            updatePayStatus(orderId);
+        });
+    }
+
+    /**
+     * 2. 带返回值与异常无损穿透：
+     */
+    public String deductStock(String skuId, int count) {
+        return RedisLockUtil.execute("stock:" + skuId, () -> {
+            return stockService.doDeduct(skuId, count);
+        });
+    }
+
+    /**
+     * 3. 弹性降级回调（争锁超时不抛异常，返回兜底内容）：
+     */
+    public String snatchCoupon(String couponId, Long userId) {
+        return RedisLockUtil.execute("coupon:" + couponId,
+                () -> couponService.doSnatch(couponId, userId),
+                () -> "活动太火爆了，优惠券已被抢光或请稍后重试"
+        );
+    }
+
+    /**
+     * 4. 布尔试探模式（定时任务或幂等分发试跑）：
+     */
+    public void runJob() {
+        boolean executed = RedisLockUtil.tryExecute("job:sync_daily", () -> {
+            doSyncData();
+        });
+        if (!executed) {
+            log.info("已有其他节点在执行同步任务，本次跳过");
+        }
+    }
+}
+```
+
 ### 预期日志呈现
 ```text
-2026-10-16 18:20:10.123 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.a.DistributedLockAspect : [DistributedLock] 加锁成功: keys=[lock:order:create:888:1001], mode=REENTRANT
-2026-10-16 18:20:13.567 WARN  [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.a.DistributedLockAspect : [DistributedLock] 慢锁检测: keys=[lock:order:create:888:1001], 持有耗时 3444ms, 超过告警阈值 3000ms
-2026-10-16 18:20:13.568 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.a.DistributedLockAspect : [DistributedLock] 锁成功释放: keys=[lock:order:create:888:1001]
+2026-10-16 18:20:10.123 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 加锁成功: keys=[lock:order:pay:ORD_888], mode=REENTRANT
+2026-10-16 18:20:13.567 WARN  [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 检测到慢分布式锁持锁: keys=[lock:order:pay:ORD_888], mode=REENTRANT, holdCost=3444ms, slowThreshold=3000ms
+2026-10-16 18:20:13.568 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 释放分布式锁成功: keys=[lock:order:pay:ORD_888]
 ```
 
 ---

@@ -3,6 +3,8 @@ package io.github.atengk.boot.sample;
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
 import io.github.atengk.boot.redis.lock.annotation.DistributedLock;
 import io.github.atengk.boot.redis.lock.enums.LockMode;
+import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
+import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
 import io.github.atengk.boot.web.idempotent.store.RedissonIdempotentKeyStore;
@@ -58,6 +60,7 @@ class SampleRedisIntegrationTest {
             RLock lock = mock(RLock.class);
             try {
                 when(lock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(true);
+                when(lock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
                 when(lock.isHeldByCurrentThread()).thenReturn(true);
             } catch (InterruptedException ignored) {
             }
@@ -109,6 +112,9 @@ class SampleRedisIntegrationTest {
     @Autowired(required = false)
     private IdempotentKeyStore idempotentKeyStore;
 
+    @Autowired(required = false)
+    private DistributedLockTemplate distributedLockTemplate;
+
     @Test
     @DisplayName("端到端验证：@DistributedLock 声明式分布式锁切面拦截、SpEL 动态解析与加解锁协同")
     void shouldInterceptAndAcquireDistributedLockViaAspect() throws Exception {
@@ -118,6 +124,21 @@ class SampleRedisIntegrationTest {
         verify(redissonClient).getLock("lock:order:ORD_9999");
         verify(sampleRLock).tryLock(eq(2000L), eq(8000L), eq(TimeUnit.SECONDS));
         verify(sampleRLock).unlock();
+    }
+
+    @Test
+    @DisplayName("端到端验证：DistributedLockTemplate 与 RedisLockUtil 编程式分布式锁执行并释放")
+    void shouldExecuteProgrammaticDistributedLockViaTemplateAndUtil() throws Throwable {
+        assertThat(distributedLockTemplate).isNotNull();
+
+        String res1 = distributedLockTemplate.execute("prog:order:1", () -> "TEMPLATE_OK");
+        assertThat(res1).isEqualTo("TEMPLATE_OK");
+
+        String res2 = RedisLockUtil.execute("prog:order:2", () -> "UTIL_OK");
+        assertThat(res2).isEqualTo("UTIL_OK");
+
+        verify(redissonClient).getLock("lock:prog:order:1");
+        verify(redissonClient).getLock("lock:prog:order:2");
     }
 
     @Test

@@ -5,6 +5,8 @@ import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
+import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
+import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
 import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
@@ -112,17 +114,33 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
-     * 装配声明式分布式锁切面 DistributedLockAspect
+     * 装配编程式分布式锁执行模板 DistributedLockTemplate 并初始化 RedisLockUtil 门面
      *
      * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式锁模板
+     */
+    @Bean
+    @ConditionalOnMissingBean(DistributedLockTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DistributedLockTemplate distributedLockTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
+        DistributedLockTemplate template = new DistributedLockTemplate(redissonClient, redisProperties);
+        RedisLockUtil.init(template);
+        return template;
+    }
+
+    /**
+     * 装配声明式分布式锁切面 DistributedLockAspect
+     *
+     * @param distributedLockTemplate 分布式锁模板
      * @param redisProperties 属性配置
      * @return 分布式锁切面
      */
     @Bean
     @ConditionalOnMissingBean(DistributedLockAspect.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DistributedLockAspect distributedLockAspect(RedissonClient redissonClient, RedisProperties redisProperties) {
-        return new DistributedLockAspect(redissonClient, redisProperties);
+    public DistributedLockAspect distributedLockAspect(DistributedLockTemplate distributedLockTemplate, RedisProperties redisProperties) {
+        return new DistributedLockAspect(distributedLockTemplate, redisProperties);
     }
 
     /**
