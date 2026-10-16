@@ -14,8 +14,8 @@
 ## Relationships
 
 - **BOM → Core / Web / MyBatis-Plus / All**：BOM 模块作为顶层依赖物料清单，统一定义并对齐所有可分发构件的版本号，下游通过 import 即可按需引入且免配版本（参见 [ADR-0003](./docs/adr/0003-dependency-management-via-bom-import.md)）。
-- **Web → Core**：Web 模块依赖 Core 模块的 `Result`、`BusinessException` 与 `IResultCode`，全局异常拦截器将未捕获异常转换为标准 `Result`，并联动 MDC 注入 `traceId`。
-- **MyBatis-Plus → Core**：MyBatis-Plus 模块依赖 Core 模块的 `CurrentUserProvider` SPI 与 `UserContextHolder`，在数据持久化自动填充时动态获取当前操作人。
+- **Web → Core**：Web 模块依赖 Core 模块的 `Result`、`BusinessException` 与 `IResultCode`，全局异常拦截器将未捕获异常转换为标准 `Result`，并联动 MDC 注入 `traceId`；通过 `ContextCopyingTaskDecorator` 包装 `AsyncContext` 实现跨线程上下文透传；同时遵循零重型外部依赖哲学，就近内聚 `IpUtil` 与 `ServletUtil`（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）。
+- **MyBatis-Plus → Core**：MyBatis-Plus 模块依赖 Core 模块的 `CurrentUserProvider` SPI 与 `UserContextHolder` 获取操作人；依赖 `CryptoUtil` 与 `DesensitizeUtil` 实现持久层 `@FieldEncrypt` 透明加密与 `@FieldSensitive` 视图脱敏（参见 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）；并通过 `PageUtil` 实现 ORM `IPage` 到纯净 `PageResult` 的流式转换（参见 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md)）。
 - **All → Core / Web / MyBatis-Plus**：All 模块为纯依赖聚合工程，向下游调用端透传三大核心 Starter。
 - **Samples → All**：Samples 工程作为下游消费端样例，验证所有模块组合后的开箱即用自动装配与端到端运行表现。
 
