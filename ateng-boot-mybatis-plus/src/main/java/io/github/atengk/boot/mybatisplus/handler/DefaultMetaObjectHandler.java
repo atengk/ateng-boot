@@ -3,13 +3,14 @@ package io.github.atengk.boot.mybatisplus.handler;
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
 import org.apache.ibatis.reflection.MetaObject;
 
 import java.time.LocalDateTime;
 
 /**
  * 数据持久层智能审计元对象填充处理器
- * 插入时自动填充创建/修改时间与操作人，更新时自动填充修改时间与修改人，采用防御性策略优先保留开发者显式赋值
+ * 插入时自动填充创建/修改时间、操作人与租户标识，更新时自动填充修改时间与修改人，采用防御性策略优先保留开发者显式赋值
  *
  * @author Ateng
  * @since 2026-10-15
@@ -20,6 +21,7 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
     public static final String FIELD_UPDATE_TIME = "updateTime";
     public static final String FIELD_CREATE_BY = "createBy";
     public static final String FIELD_UPDATE_BY = "updateBy";
+    public static final String FIELD_TENANT_ID = "tenantId";
     public static final String DEFAULT_OPERATOR = "SYSTEM";
 
     private final CurrentUserProvider currentUserProvider;
@@ -48,7 +50,11 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
         fillPropertyIfNull(FIELD_UPDATE_TIME, now, metaObject);
         fillPropertyIfNull(FIELD_CREATE_BY, operator, metaObject);
         fillPropertyIfNull(FIELD_UPDATE_BY, operator, metaObject);
+
+        // 多租户 ID 自动填充：仅当属性存在且当前为 null，且上下文有租户标识时填充
+        fillTenantIdIfNull(metaObject);
     }
+
 
     @Override
     public void updateFill(MetaObject metaObject) {
@@ -105,4 +111,35 @@ public class DefaultMetaObjectHandler implements MetaObjectHandler {
 
         return user;
     }
+
+    /**
+     * 多租户属性防御性自动填充：仅当目标实体包含 tenantId 属性且当前为 null，且当前线程上下文存在有效租户时填充
+     * 兼容 Long 与 String 两种常见的租户字段类型，保留业务端显式赋值
+     *
+     * @param metaObject 元对象
+     */
+    private void fillTenantIdIfNull(MetaObject metaObject) {
+        if (metaObject == null || !metaObject.hasSetter(FIELD_TENANT_ID)) {
+            return;
+        }
+        Object currentVal = getFieldValByName(FIELD_TENANT_ID, metaObject);
+        if (currentVal != null) {
+            return;
+        }
+        String tenantId = TenantContextHolder.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            return;
+        }
+        Class<?> getterType = metaObject.getGetterType(FIELD_TENANT_ID);
+        if (Long.class.equals(getterType)) {
+            try {
+                setFieldValByName(FIELD_TENANT_ID, Long.parseLong(tenantId), metaObject);
+            } catch (NumberFormatException ignored) {
+                // 上下文为非纯数字格式时静默跳过，避免类型转换异常
+            }
+        } else if (String.class.equals(getterType)) {
+            setFieldValByName(FIELD_TENANT_ID, tenantId, metaObject);
+        }
+    }
 }
+

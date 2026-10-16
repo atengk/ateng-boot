@@ -4,12 +4,17 @@ import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.BlockAttackInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
+import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
+import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -18,9 +23,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
-import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
-
-import jakarta.annotation.PostConstruct;
 
 /**
  * MyBatis-Plus 增强生态核心自动装配类
@@ -67,17 +69,39 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
-     * 注册 MyBatis-Plus 插件拦截器链
-     * 顺序装配：分页拦截器 -> 防全表更新/删除拦截器 -> 乐观锁拦截器
+     * 注册默认行级多租户处理器
      *
+     * @return 默认行级多租户处理器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TenantLineHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.tenant", name = "enabled", havingValue = "true")
+    public TenantLineHandler tenantLineHandler() {
+        return new DefaultTenantLineHandler(properties.getTenant());
+    }
+
+    /**
+     * 注册 MyBatis-Plus 插件拦截器链
+     * 顺序装配：多租户拦截器 -> 分页拦截器 -> 防全表更新/删除拦截器 -> 乐观锁拦截器
+     *
+     * @param tenantLineHandlerProvider 可选的多租户处理器提供者
      * @return 组合插件拦截器
      */
     @Bean
     @ConditionalOnMissingBean(MybatisPlusInterceptor.class)
-    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+    public MybatisPlusInterceptor mybatisPlusInterceptor(ObjectProvider<TenantLineHandler> tenantLineHandlerProvider) {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
 
-        // 1. 装配分页插件
+        // 1. 装配多租户插件（必须置于分页插件之前，保障分页 count SQL 与列表查询受同等租户隔离保护）
+        MybatisPlusProperties.TenantProperties tenant = properties.getTenant();
+        if (tenant.isEnabled()) {
+            TenantLineHandler tenantLineHandler = tenantLineHandlerProvider.getIfAvailable(
+                    () -> new DefaultTenantLineHandler(tenant)
+            );
+            interceptor.addInnerInterceptor(new AtengTenantLineInnerInterceptor(tenantLineHandler));
+        }
+
+        // 2. 装配分页插件
         MybatisPlusProperties.PaginationProperties pagination = properties.getPagination();
         if (pagination.isEnabled()) {
             PaginationInnerInterceptor paginationInnerInterceptor = pagination.getDbType() != null
@@ -90,18 +114,19 @@ public class AtengMybatisPlusAutoConfiguration {
             interceptor.addInnerInterceptor(paginationInnerInterceptor);
         }
 
-        // 2. 装配防全表更新与删除插件
+        // 3. 装配防全表更新与删除插件
         if (properties.getBlockAttack().isEnabled()) {
             interceptor.addInnerInterceptor(new BlockAttackInnerInterceptor());
         }
 
-        // 3. 装配乐观锁插件
+        // 4. 装配乐观锁插件
         if (properties.getOptimisticLocker().isEnabled()) {
             interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
         }
 
         return interceptor;
     }
+
 
     /**
      * 注册分布式主键发号器

@@ -762,9 +762,78 @@ ateng:
   }
   ```
 
+### 5.12 企业级行级多租户安全隔离 (@IgnoreTenant)
+
+**场景痛点**：在 SaaS 多租户架构与平台型应用中，租户间的数据严格逻辑与物理隔离是核心安全底线。传统方案常依赖业务层手工拼接 `WHERE tenant_id = ?`（极易疏忽引发越权泄露事故），或者将租户绑定至特定 Web 会话导致在异步 MQ、定时任务等脱离请求头的环境下无法复用。此外，缺乏细粒度的运行时忽略手段，导致特权统计或公共字典查询难以兼顾。`ateng-boot-mybatis-plus` 基于 JSqlParser AST 语法树改写打造无侵入的企业级行级多租户防护引擎：
+- **无感行级数据隔离**：普通 CRUD 与自定义 SQL 统一由 `AtengTenantLineInnerInterceptor` 拦截改写，自动注入 `WHERE tenant_id = ?`，杜绝代码遗漏与数据越权；
+- **JSqlParser 智能类型自适应**：提取当前租户 ID 时，纯数字自动构造 `LongValue`（精确匹配 `BIGINT` 租户索引，杜绝隐式类型转换导致索引失效与全表扫描慢查），字符构造 `StringValue`；
+- **解耦的租户上下文与编程式闭包**：定义独立 `TenantContextHolder`，提供 `runWithTenant(tenantId, Supplier<T>)` 与 `runWithoutTenant(Supplier<T>)` 受控闭包，支持多层嵌套并在退出时严格还原，异步与定时任务平滑复用；
+- **声明式细粒度短路注解 (`@IgnoreTenant`)**：支持标注于 Mapper 接口类或方法上，纳秒级缓存判定，遇到特权汇总或跨租户查询秒级短路放行；
+- **防御性数据插入自动填充**：联动 `DefaultMetaObjectHandler`，插入记录时若实体拥有 `tenantId` 且当前为 `null`，自动从上下文提取当前租户填充；显式赋值时保留原值（支持数据迁移与管理员特权导入）。
+
+**最小可用代码与配置范式**：
+
+1. **实体与 Mapper 声明**：
+```java
+@TableName("sys_order")
+public class OrderEntity extends BaseEntity implements TenantEntity {
+    private String orderNo;
+    private BigDecimal amount;
+    private String tenantId; // 插入时自动填充，查询与更新时自动受租户拦截器隔离保护
+    // getters and setters...
+}
+
+@Mapper
+public interface OrderMapper extends BaseMapper<OrderEntity> {
+
+    /**
+     * 普通业务查询：底层自动追加 WHERE tenant_id = ? 条件
+     */
+    List<OrderEntity> selectRecentOrders();
+
+    /**
+     * 跨租户特权统计：标注 @IgnoreTenant 跳过多租户改写，查询全平台全量数据
+     */
+    @IgnoreTenant
+    @Select("SELECT * FROM sys_order WHERE amount > 10000")
+    List<OrderEntity> selectPlatformBigOrders();
+}
+```
+
+2. **编程式上下文使用**：
+```java
+// 1. 设置当前租户 ID
+TenantContextHolder.setTenantId(1001L);
+List<OrderEntity> tenantOrders = orderMapper.selectList(null); // 仅查出租户 1001 的数据
+
+// 2. 编程式闭包：临时忽略租户过滤（执行完毕后自动恢复租户 1001）
+TenantContextHolder.runWithoutTenant(() -> {
+    List<OrderEntity> allOrders = orderMapper.selectList(null); // 查出跨租户全量数据
+});
+
+// 3. 异步定时任务：显式指定在租户 1002 环境下执行批处理
+TenantContextHolder.runWithTenant(1002L, () -> {
+    orderService.settleDailyOrders();
+});
+```
+
+3. **开箱即用 YAML 配置**：
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      tenant:
+        enabled: true                     # 开启行级多租户安全拦截（默认 false，按需开启）
+        column: "tenant_id"               # 数据库租户列名（默认 tenant_id）
+        ignore-tables:                    # 全局免租户过滤的静态白名单表
+          - "sys_dict"
+          - "sys_config"
+```
+
 ---
 
 ## 6. 配置属性参考 (`application.yml`)
+
 
 ```yaml
 ateng:
@@ -840,6 +909,12 @@ ateng:
         enabled: true             # 是否装配防全表更新删除插件（默认 true）
       optimistic-locker:
         enabled: true             # 是否装配乐观锁插件（默认 true）
+      tenant:
+        enabled: false            # 是否启用行级多租户插件（默认 false，按需开启）
+        column: "tenant_id"       # 数据库租户字段列名（默认 tenant_id）
+        ignore-tables:            # 全局免多租户过滤的静态数据表名清单
+          - "sys_dict"
+          - "sys_config"
       crypto:
         secret-key: "YourSecretKey" # AES 密钥（可选，未配置时自适应默认内置密钥）
 ```
@@ -865,6 +940,8 @@ ateng:
   - [ADR-0014: 三级自适应架构的高性能接口限流防刷引擎](./docs/adr/0014-three-tier-adaptive-rate-limiter-engine.md)
   - [ADR-0015: 动态 CORS 跨域安全与凭据安全反射架构](./docs/adr/0015-dynamic-cors-and-credentials-safe-origin-reflection.md)
   - [ADR-0016: 纯 JDK 原生双向 API 数据加签验签与防重放引擎](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)
+  - [ADR-0017: 企业级行级多租户安全隔离与自动填充架构决策](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)
+
 - **多上下文领域映射**：[CONTEXT-MAP.md](./CONTEXT-MAP.md)
 - **变更日志 (Changelog)**：[CHANGELOG.md](./CHANGELOG.md)（权威动态日志参见 [GitHub Releases](https://github.com/atengk/ateng-boot/releases)）
 - **Agent 研发指南**：[AGENTS.md](./AGENTS.md)

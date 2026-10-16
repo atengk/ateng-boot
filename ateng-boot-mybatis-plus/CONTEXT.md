@@ -63,3 +63,44 @@ _Avoid_: MaskType, DesensitizeType
 **PageUtil**:
 用于将持久层 IPage 转换为标准 PageResult，以及将 PageQuery 转换为 MyBatis-Plus Page 的双向映射工具类。
 _Avoid_: PageHelper, PaginationUtil, MpPageUtil
+
+**TenantContextHolder**:
+维护当前线程租户上下文与租户忽略标志位的上下文持有者，提供受控编程式闭包与跨线程透传能力。
+_Avoid_: TenantManager, TenantHolder, TenantSession
+
+**TenantLineHandler**:
+MyBatis-Plus 行级租户隔离 SPI 契约处理器，负责根据当前上下文动态生成租户过滤 SQL 表达式与判定忽略表。
+_Avoid_: TenantHandler, TenantFilter
+
+**IgnoreTenant**:
+声明在 Mapper 接口或方法上的注解，用于细粒度短路绕过行级租户 SQL 拦截改写。
+_Avoid_: SkipTenant, NoTenant, DisableTenant
+
+**DataScope**:
+声明在 Mapper 接口或方法上的数据权限控制注解，声明目标数据表别名、部门与人员归属字段。
+_Avoid_: DataFilter, PermissionScope, DataAuth
+
+**DataPermissionHandler**:
+数据权限规则 SPI 契约处理器，负责将业务 RBAC 权限范围转化为 JSqlParser 表达式树安全改写 SQL。
+_Avoid_: PermissionHandler, DataScopeHandler
+
+**AtengBaseMapper**:
+继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值高性能批量插入（`insertBatchSomeColumn`）方法。
+_Avoid_: SuperMapper, EnhancedMapper, CustomBaseMapper
+
+**AtengBaseService**:
+继承 MyBatis-Plus `IService` 的通用业务增强接口，扩展自定义分片的原生批量插入契约。
+_Avoid_: SuperService, EnhancedService, CustomBaseService
+
+**AtengServiceImpl**:
+继承 MyBatis-Plus `ServiceImpl` 并实现 `AtengBaseService` 的通用实现基类，提供声明式事务守护的分片多值批量插入。
+_Avoid_: SuperServiceImpl, EnhancedServiceImpl
+
+**BatchUtil**:
+批量操作静态门面工具类，提供无侵入的原生多值批量插入切片工具方法。
+_Avoid_: BatchHelper, BulkUtil
+
+**TenantEntity**:
+可选的租户实体标记接口，提供类型安全的租户读写契约。
+_Avoid_: TenantModel, HasTenant
+

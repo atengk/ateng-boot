@@ -2,6 +2,7 @@ package io.github.atengk.boot.mybatisplus.handler;
 
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
@@ -30,6 +31,23 @@ class DefaultMetaObjectHandlerTest {
         public void setOrderNo(String orderNo) { this.orderNo = orderNo; }
     }
 
+    static class TenantOrderEntity extends BaseEntity {
+        private String orderNo;
+        private String tenantId;
+
+        public String getOrderNo() { return orderNo; }
+        public void setOrderNo(String orderNo) { this.orderNo = orderNo; }
+        public String getTenantId() { return tenantId; }
+        public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+    }
+
+    static class LongTenantOrderEntity extends BaseEntity {
+        private Long tenantId;
+
+        public Long getTenantId() { return tenantId; }
+        public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
+    }
+
     static class IdOnlyEntity extends io.github.atengk.boot.mybatisplus.entity.BaseIdEntity {
         private String content;
 
@@ -48,7 +66,9 @@ class DefaultMetaObjectHandlerTest {
     @AfterEach
     void cleanUp() {
         UserContextHolder.clear();
+        TenantContextHolder.clear();
     }
+
 
     @Test
     @DisplayName("插入填充：当字段为 null 时从 SPI 自动填充时间与当前操作人")
@@ -189,4 +209,62 @@ class DefaultMetaObjectHandlerTest {
         assertDoesNotThrow(() -> handler.updateFill(metaObject));
         assertEquals(createdTime, entity.getCreateTime());
     }
+
+    @Test
+    @DisplayName("多租户自动填充：当实体含 String 类型 tenantId 且上下文存在租户时自动填充")
+    void shouldAutoFillStringTenantIdOnInsertWhenNull() {
+        TenantContextHolder.setTenantId("corp-tencent-100");
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        TenantOrderEntity entity = new TenantOrderEntity();
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+
+        handler.insertFill(metaObject);
+
+        assertEquals("corp-tencent-100", entity.getTenantId());
+    }
+
+    @Test
+    @DisplayName("多租户自动填充：当实体含 Long 类型 tenantId 且上下文为数字租户时自动转换并填充")
+    void shouldAutoFillLongTenantIdOnInsertWhenNull() {
+        TenantContextHolder.setTenantId(88888L);
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        LongTenantOrderEntity entity = new LongTenantOrderEntity();
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+
+        handler.insertFill(metaObject);
+
+        assertEquals(88888L, entity.getTenantId());
+    }
+
+    @Test
+    @DisplayName("多租户防御性填充：开发者显式赋值 tenantId 时予以保留不被覆盖")
+    void shouldPreserveExplicitTenantIdOnInsert() {
+        TenantContextHolder.setTenantId("context-tenant-999");
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        TenantOrderEntity entity = new TenantOrderEntity();
+        entity.setTenantId("explicit-tenant-override");
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+
+        handler.insertFill(metaObject);
+
+        assertEquals("explicit-tenant-override", entity.getTenantId());
+    }
+
+    @Test
+    @DisplayName("多租户防空填充：上下文无租户时不填充 tenantId，保持 null")
+    void shouldKeepTenantIdNullWhenContextIsEmpty() {
+        TenantContextHolder.clear();
+        DefaultMetaObjectHandler handler = new DefaultMetaObjectHandler();
+
+        TenantOrderEntity entity = new TenantOrderEntity();
+        MetaObject metaObject = SystemMetaObject.forObject(entity);
+
+        handler.insertFill(metaObject);
+
+        assertNull(entity.getTenantId());
+    }
 }
+

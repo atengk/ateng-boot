@@ -3,6 +3,9 @@ package io.github.atengk.boot.mybatisplus.properties;
 import com.baomidou.mybatisplus.annotation.DbType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * MyBatis-Plus 模块配置属性
  * 提供审计填充、分页限额防刷、防全表更新删除、乐观锁插件与雪花发号器的全局可控开关
@@ -12,6 +15,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "ateng.boot.mybatis-plus")
 public class MybatisPlusProperties {
+
+    /**
+     * 行级多租户插件配置
+     */
+    private TenantProperties tenant = new TenantProperties();
+
 
     /**
      * 自动审计填充配置
@@ -90,6 +99,15 @@ public class MybatisPlusProperties {
     public void setCrypto(CryptoProperties crypto) {
         this.crypto = crypto;
     }
+
+    public TenantProperties getTenant() {
+        return tenant;
+    }
+
+    public void setTenant(TenantProperties tenant) {
+        this.tenant = tenant;
+    }
+
 
     /**
      * 审计填充属性配置
@@ -277,4 +295,49 @@ public class MybatisPlusProperties {
             this.secretKey = secretKey;
         }
     }
+
+    /**
+     * 行级多租户属性配置
+     */
+    public static class TenantProperties {
+        /**
+         * 是否启用行级多租户插件，默认 false
+         */
+        private boolean enabled = false;
+
+        /**
+         * 数据库租户字段列名，默认 tenant_id
+         */
+        private String column = "tenant_id";
+
+        /**
+         * 全局免多租户过滤的静态数据表名清单
+         */
+        private List<String> ignoreTables = new ArrayList<>();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getColumn() {
+            return column;
+        }
+
+        public void setColumn(String column) {
+            this.column = column;
+        }
+
+        public List<String> getIgnoreTables() {
+            return ignoreTables;
+        }
+
+        public void setIgnoreTables(List<String> ignoreTables) {
+            this.ignoreTables = ignoreTables;
+        }
+    }
 }
+

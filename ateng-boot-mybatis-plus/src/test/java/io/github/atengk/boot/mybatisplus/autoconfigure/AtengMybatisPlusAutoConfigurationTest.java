@@ -3,15 +3,19 @@ package io.github.atengk.boot.mybatisplus.autoconfigure;
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.BlockAttackInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.InnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.handler.DefaultMetaObjectHandler;
+import io.github.atengk.boot.mybatisplus.tenant.AtengTenantLineInnerInterceptor;
+import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+
 
 import java.util.List;
 
@@ -121,4 +125,56 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler.getGlobalSecretKey()).isEqualTo(testKey);
                 });
     }
+
+    @Test
+    @DisplayName("开启行级多租户时成功装配 TenantLineHandler 并在插件链第一位注册 AtengTenantLineInnerInterceptor")
+    void shouldConfigureTenantInterceptorsWhenEnabled() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.tenant.enabled=true",
+                "ateng.boot.mybatis-plus.tenant.column=tenant_num",
+                "ateng.boot.mybatis-plus.tenant.ignore-tables=sys_dict,sys_log"
+        ).run(context -> {
+            assertThat(context).hasSingleBean(TenantLineHandler.class);
+            assertThat(context).hasSingleBean(DefaultTenantLineHandler.class);
+
+            TenantLineHandler handler = context.getBean(TenantLineHandler.class);
+            assertThat(handler.getTenantIdColumn()).isEqualTo("tenant_num");
+            assertThat(handler.ignoreTable("sys_dict")).isTrue();
+
+            MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+            List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
+            assertThat(innerInterceptors).hasSize(4);
+            assertThat(innerInterceptors.get(0)).isInstanceOf(AtengTenantLineInnerInterceptor.class);
+            assertThat(innerInterceptors.get(1)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(innerInterceptors.get(2)).isInstanceOf(BlockAttackInnerInterceptor.class);
+            assertThat(innerInterceptors.get(3)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+        });
+    }
+
+    @Test
+    @DisplayName("当业务已显式注册自定义 TenantLineHandler 时优先使用业务自定义 Bean")
+    void shouldPreferCustomTenantLineHandlerBean() {
+        TenantLineHandler customHandler = new TenantLineHandler() {
+            @Override
+            public net.sf.jsqlparser.expression.Expression getTenantId() {
+                return new net.sf.jsqlparser.expression.LongValue(9999L);
+            }
+            @Override
+            public String getTenantIdColumn() {
+                return "custom_tenant_id";
+            }
+        };
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.tenant.enabled=true")
+                .withBean(TenantLineHandler.class, () -> customHandler)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(TenantLineHandler.class);
+                    assertThat(context.getBean(TenantLineHandler.class)).isSameAs(customHandler);
+
+                    MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+                    AtengTenantLineInnerInterceptor tenantInterceptor = (AtengTenantLineInnerInterceptor) interceptor.getInterceptors().get(0);
+                    assertThat(tenantInterceptor.getTenantLineHandler()).isSameAs(customHandler);
+                });
+    }
 }
+
