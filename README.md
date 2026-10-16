@@ -47,7 +47,8 @@ flowchart TD
 | **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约、异常体系、业务断言、雪花发号器、全场景脱敏、加解密工具 | [查看文档](./ateng-boot-core/README.md) |
 | **Web 运行时增强** | `ateng-boot-web` | 链路追踪 `TraceFilter`、全局异常防御、自适应防重幂等、自适应限流、动态 CORS、双向加签验签、流式下载 | [查看文档](./ateng-boot-web/README.md) |
 | **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
-| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web 与 mybatis-plus 全部构件 | [查看文档](./ateng-boot-all/README.md) |
+| **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
+| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus 与 redis 全部构件 | [查看文档](./ateng-boot-all/README.md) |
 | **BOM 管控中心** | `ateng-boot-bom` | 依赖版本统管清单（纯 `<dependencyManagement>`），下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
 | **自验演示套件** | `ateng-boot-samples` | 基于 H2 内存库与 MockMvc 的端到端自动化测试金字塔与工程化最佳实践 Demo | [查看文档](./ateng-boot-samples/README.md) |
 
@@ -72,6 +73,10 @@ flowchart TD
 | **细粒度数据权限** | 动态拼接 SQL 容易引发 SQL 注入漏洞 | 声明式 `@DataScope` 自动重写 AST 条件；多表别名防御与超管秒级放行 | `mybatis-plus` | [ADR-0018](./docs/adr/0018-declarative-data-permission-engine-architecture.md) |
 | **高效批量插入** | 原生 `saveBatch` 循环单条 Insert 网络 RTT 极高 | `insertBatchSomeColumn` 单条多值批量插入；`BatchUtil` 自动切片防溢出 | `mybatis-plus` | [ADR-0019](./docs/adr/0019-native-high-performance-batch-insert-engine.md) |
 | **契约解耦** | ORM 的 `Page<T>` 泄露给 Controller 造成属性噪音 | 统一入参 `PageQuery`，出参 `PageResult<VO>`，`PageUtil` 流式纯净转换 | `mybatis-plus` | [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md) |
+| **双核分布式协同** | 依赖不统一、序列化 `@class` 污染引发反序列化漏洞与跨语言障碍 | Spring Data Redis + Redisson 双核融合、纯净安全 JSON 序列化 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
+| **四阶分布式锁** | 手写 Redis 锁易发看门狗失效、非可重入与死锁问题 | 四阶 `@DistributedLock`（可重入/公平/读/写）、SpEL 动态解析与慢锁告警 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
+| **双模延时队列** | 为简单延时任务引入 RocketMQ/RabbitMQ 等重型组件带来维护负担 | Redisson 原生双模轻量延时队列与 `@DelayedQueueListener` 声明式监听 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
+| **缓存雪崩穿透** | 缓存集中过期雪崩、空值穿透打爆数据库 | 增强 `RedisCacheManager` 支持分 Cache 独立 TTL、空值缓存与随机抖动防雪崩 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
 
 ---
 

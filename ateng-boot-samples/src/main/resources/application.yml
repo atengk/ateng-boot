@@ -10,6 +10,10 @@ spring:
     init:
       mode: always
       schema-locations: classpath:schema.sql
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
 
 mybatis-plus:
   configuration:
@@ -34,3 +38,5 @@ ateng:
       audit:
         enabled: true
         default-operator: SYSTEM
+    redis:
+      enabled: false
