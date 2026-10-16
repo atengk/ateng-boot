@@ -212,7 +212,70 @@ userService.saveBatch(result.getData());
 
 ---
 
-## 7. 配置属性参考
+## 7. 防呆模板智能生成与下拉/提示约束 (`@ExcelDropdown` & `@ExcelPrompt`)
+
+### 场景痛点
+在传统的后台导入业务中，开发人员必须在代码库或对象存储维护大量静态 `.xlsx` 模板文件，一旦字段变更就必须重新制作并上传；且用户在手工录入性别、状态等枚举字段时极易敲错，导致导入时反复校验失败。
+
+### 核心代码范式
+只需在实体字段上标注 `@ExcelDropdown`（支持静态字符数组或动态 `DropdownProvider`）与 `@ExcelPrompt`，调用 `ExcelUtil.exportTemplate` 即可 1 行代码动态生成带原生防呆约束的空白模板：
+
+```java
+import io.github.atengk.boot.excel.annotation.DropdownProvider;
+import io.github.atengk.boot.excel.annotation.ExcelDropdown;
+import io.github.atengk.boot.excel.annotation.ExcelPrompt;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.servlet.http.HttpServletResponse;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class UserTemplateVO {
+
+    @ExcelProperty("用户名称")
+    @ExcelPrompt("请填写 2-20 位真实中文姓名")
+    private String name;
+
+    @ExcelProperty("用户性别")
+    @ExcelDropdown({"男", "女", "保密"})
+    private String gender;
+
+    @ExcelProperty("所属部门")
+    @ExcelDropdown(source = DeptDropdownProvider.class)
+    private String department;
+
+    @ExcelProperty("手机号码")
+    @ExcelPrompt(title = "联系方式", value = "仅支持 11 位有效手机号码")
+    private String mobile;
+
+    public static class DeptDropdownProvider implements DropdownProvider {
+        @Override
+        public String[] getOptions() {
+            return new String[]{"技术研发中心", "产品设计部", "市场运营部", "综合财务部"};
+        }
+    }
+}
+
+// 1. Controller 中 1 行代码下载动态防呆模板
+@GetMapping("/template")
+public void downloadTemplate(HttpServletResponse response) {
+    ExcelUtil.exportTemplate(response, "用户导入模板", UserTemplateVO.class);
+}
+
+// 2. 本地或离线文件生成
+try (FileOutputStream out = new FileOutputStream("用户导入模板.xlsx")) {
+    ExcelUtil.exportTemplate(out, "员工填报表", UserTemplateVO.class);
+}
+```
+
+### 预期导出的模板防呆呈现
+- **表头单元格浮动批注**：表头单元格右上角标红，鼠标悬浮时展示提示说明（如 `[联系方式] 仅支持 11 位有效手机号码`）；
+- **数据列原生输入提示框 (Prompt Box)**：光标落在数据列单元格时，右侧自动浮出黄色填写指导小窗；
+- **数据列原生下拉菜单 (DataValidation)**：点击性别与部门单元格时，右侧自动出现下拉选择箭头，严格限定仅能选择候选列表项，从源头杜绝敲错。
+
+---
+
+## 8. 配置属性参考
 
 在 `application.yml` 中按需定制：
 
@@ -227,5 +290,6 @@ ateng:
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
 ```
+
 
 

@@ -3,6 +3,8 @@ package io.github.atengk.boot.excel.util;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
+import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
+import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
@@ -45,6 +47,11 @@ public final class ExcelUtil {
      * 默认脱敏单元格写出拦截器（无状态线程安全单例）
      */
     private static final SensitiveCellWriteHandler DEFAULT_SENSITIVE_WRITE_HANDLER = new SensitiveCellWriteHandler();
+
+    /**
+     * 默认表头批注与输入提示拦截器（无状态线程安全单例）
+     */
+    private static final PromptHeadWriteHandler DEFAULT_PROMPT_HEAD_WRITE_HANDLER = new PromptHeadWriteHandler();
 
     /**
      * 流式读取全局默认批次大小（可通过配置文件 ateng.boot.excel.default-batch-size 调整）
@@ -132,21 +139,9 @@ public final class ExcelUtil {
      * @param <T>       实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz) {
-        Assert.notNull(response, "HttpServletResponse 响应对象不可为空");
-        Assert.hasText(fileName, "导出文件名不可为空");
+        prepareWebResponse(response, fileName);
         Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
 
-        // 1. 设置标准响应头与编码
-        response.setContentType(XLSX_CONTENT_TYPE);
-        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-
-        String safeFileName = fileName.endsWith(XLSX_EXTENSION) ? fileName : fileName + XLSX_EXTENSION;
-        ContentDisposition disposition = ContentDisposition.attachment()
-                .filename(safeFileName, StandardCharsets.UTF_8)
-                .build();
-        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
-
-        // 2. 流式写出数据
         try {
             export(response.getOutputStream(), sheetName, data, clazz);
         } catch (IOException e) {
@@ -358,23 +353,98 @@ public final class ExcelUtil {
                                           String fileName,
                                           InputStream originalExcelStream,
                                           List<ExcelErrorRow> errorRows) {
-        Assert.notNull(response, "HttpServletResponse 不可为空");
-        Assert.hasText(fileName, "导出文件名不可为空");
+        prepareWebResponse(response, fileName);
 
         try {
-            String encodedFileName = fileName.endsWith(XLSX_EXTENSION) ? fileName : fileName + XLSX_EXTENSION;
-            ContentDisposition disposition = ContentDisposition.attachment()
-                    .filename(encodedFileName, StandardCharsets.UTF_8)
-                    .build();
-
-            response.setContentType(XLSX_CONTENT_TYPE);
-            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
-            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-
             exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows);
         } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + ex.getMessage());
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + ex.getMessage(), ex);
         }
     }
+
+    /**
+     * 导出带有智能下拉选择约束与提示说明的空白导入模板（写入 OutputStream）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        实体类型 Class（不可为空）
+     * @param <T>          实体泛型
+     */
+    public static <T> void exportTemplate(OutputStream outputStream, Class<T> clazz) {
+        exportTemplate(outputStream, DEFAULT_SHEET_NAME, clazz);
+    }
+
+    /**
+     * 导出带有智能下拉选择约束与提示说明的空白导入模板（写入 OutputStream，指定工作表名称）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param sheetName    工作表名称（为空时默认 Sheet1）
+     * @param clazz        实体类型 Class（不可为空）
+     * @param <T>          实体泛型
+     */
+    public static <T> void exportTemplate(OutputStream outputStream, String sheetName, Class<T> clazz) {
+        Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
+        Assert.notNull(clazz, "实体 Class 类型不可为空");
+
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+
+        FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(new DropdownSheetWriteHandler(clazz))
+                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER)
+                .sheet(targetSheetName)
+                .doWrite(Collections.emptyList());
+    }
+
+    /**
+     * Web 环境下直接下载带有智能下拉选择约束与提示说明的空白导入模板
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 下载文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param clazz    实体类型 Class（不可为空）
+     * @param <T>      实体泛型
+     */
+    public static <T> void exportTemplate(HttpServletResponse response, String fileName, Class<T> clazz) {
+        exportTemplate(response, fileName, DEFAULT_SHEET_NAME, clazz);
+    }
+
+    /**
+     * Web 环境下直接下载带有智能下拉选择约束与提示说明的空白导入模板（指定工作表名称）
+     *
+     * @param response  响应对象（不可为空）
+     * @param fileName  下载文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param sheetName 工作表名称（为空时默认 Sheet1）
+     * @param clazz     实体类型 Class（不可为空）
+     * @param <T>       实体泛型
+     */
+    public static <T> void exportTemplate(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz) {
+        prepareWebResponse(response, fileName);
+        Assert.notNull(clazz, "实体 Class 类型不可为空");
+
+        try {
+            exportTemplate(response.getOutputStream(), sheetName, clazz);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 模板失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 统一配置遵循 RFC 5987 / RFC 6266 标准的 Web 下载响应头与 MIME 类型
+     *
+     * @param response 响应对象
+     * @param fileName 下载文件名
+     */
+    private static void prepareWebResponse(HttpServletResponse response, String fileName) {
+        Assert.notNull(response, "HttpServletResponse 响应对象不可为空");
+        Assert.hasText(fileName, "导出文件名不可为空");
+
+        response.setContentType(XLSX_CONTENT_TYPE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+
+        String safeFileName = fileName.endsWith(XLSX_EXTENSION) ? fileName : fileName + XLSX_EXTENSION;
+        ContentDisposition disposition = ContentDisposition.attachment()
+                .filename(safeFileName, StandardCharsets.UTF_8)
+                .build();
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+    }
 }
+
 
