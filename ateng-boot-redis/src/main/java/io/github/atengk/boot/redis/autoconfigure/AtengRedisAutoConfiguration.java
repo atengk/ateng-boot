@@ -1,10 +1,13 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
+import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
+import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
@@ -24,10 +27,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.data.redis.cache.RedisCacheConfiguration;
+import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.util.CollectionUtils;
@@ -35,8 +41,11 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Redis 增强基础设施与分布式协同自动装配类
@@ -171,6 +180,82 @@ public class AtengRedisAutoConfiguration {
     public RedisMessagePublisher redisMessagePublisher(RedisTemplate<String, Object> redisTemplate,
                                                        ObjectProvider<RedisMessageListenerContainer> containerProvider) {
         return new RedisMessagePublisher(redisTemplate, containerProvider.getIfAvailable());
+    }
+
+    /**
+     * 装配分布式业务级并发限流客户端 RedisRateLimiterClient
+     *
+     * @param redissonClient Redisson 客户端
+     * @return RedisRateLimiterClient 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisRateLimiterClient.class)
+    public RedisRateLimiterClient redisRateLimiterClient(RedissonClient redissonClient) {
+        return new RedisRateLimiterClient(redissonClient);
+    }
+
+    /**
+     * 装配分布式原子自增、发号与滑动窗口工具 RedisAtomicUtil
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @return RedisAtomicUtil 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisAtomicUtil.class)
+    public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
+        return new RedisAtomicUtil(redisTemplate);
+    }
+
+    /**
+     * 装配工业级增强 RedisCacheManager，支持独立 TTL、空对象缓存防穿透与随机抖动防雪崩
+     *
+     * @param connectionFactory Redis 连接工厂
+     * @param redisProperties 增强配置属性
+     * @param redisValueSerializer 统一纯净值序列化器
+     * @return 定制装配的 RedisCacheManager
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisCacheManager.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisCacheManager redisCacheManager(RedisConnectionFactory connectionFactory,
+                                               RedisProperties redisProperties,
+                                               @Qualifier("redisValueSerializer") RedisSerializer<Object> redisValueSerializer) {
+        RedisProperties.CacheProperties cacheProps = redisProperties.getCache();
+
+        // 1. 构建基准默认配置（防穿透空对象缓存、纯净 JSON 序列化、东八区时区、防精度丢失）
+        RedisCacheConfiguration defaultConfig = RedisCacheConfiguration.defaultCacheConfig()
+                .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(redisValueSerializer));
+
+        // 2. 注入带随机抖动的 TtlFunction
+        Duration defaultTtl = cacheProps.getDefaultTtl();
+        Duration maxJitter = cacheProps.getMaxJitter();
+        boolean jitterEnabled = cacheProps.isJitterEnabled();
+
+        defaultConfig = defaultConfig.entryTtl(new JitterTtlFunction(defaultTtl, maxJitter, jitterEnabled));
+
+        // 3. 空值缓存防穿透配置
+        if (!cacheProps.isCacheNullValues()) {
+            defaultConfig = defaultConfig.disableCachingNullValues();
+        }
+
+        // 4. 针对不同 cacheName 注入独立个性化 TTL 配置
+        Map<String, RedisCacheConfiguration> initialCacheConfigs = new HashMap<>();
+        if (!CollectionUtils.isEmpty(cacheProps.getExpires())) {
+            for (Map.Entry<String, Duration> entry : cacheProps.getExpires().entrySet()) {
+                String cacheName = entry.getKey();
+                Duration specificTtl = entry.getValue();
+                RedisCacheConfiguration specificConfig = defaultConfig.entryTtl(
+                        new JitterTtlFunction(specificTtl, maxJitter, jitterEnabled)
+                );
+                initialCacheConfigs.put(cacheName, specificConfig);
+            }
+        }
+
+        return RedisCacheManager.builder(connectionFactory)
+                .cacheDefaults(defaultConfig)
+                .withInitialCacheConfigurations(initialCacheConfigs)
+                .build();
     }
 
     /**

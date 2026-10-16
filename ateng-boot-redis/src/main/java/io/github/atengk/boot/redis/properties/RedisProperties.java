@@ -3,6 +3,9 @@ package io.github.atengk.boot.redis.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -39,6 +42,11 @@ public class RedisProperties {
      * 主题广播消息配置属性
      */
     private PubSubProperties pubSub = new PubSubProperties();
+
+    /**
+     * Spring Cache 缓存增强配置属性
+     */
+    private CacheProperties cache = new CacheProperties();
 
     /**
      * Redisson 专属扩展配置
@@ -99,6 +107,43 @@ public class RedisProperties {
          * 是否启用主题广播发布与监听容器
          */
         private boolean enabled = true;
+    }
+
+    /**
+     * Spring Cache 缓存增强配置详情
+     */
+    @Data
+    public static class CacheProperties {
+
+        /**
+         * 是否启用 RedisCacheManager 定制装配
+         */
+        private boolean enabled = true;
+
+        /**
+         * 默认缓存过期时间（默认 30 分钟）
+         */
+        private Duration defaultTtl = Duration.ofMinutes(30);
+
+        /**
+         * 是否缓存空对象防穿透（默认 true）
+         */
+        private boolean cacheNullValues = true;
+
+        /**
+         * 是否启用 TTL 随机抖动防雪崩（默认 true）
+         */
+        private boolean jitterEnabled = true;
+
+        /**
+         * 随机抖动最大时长（默认 60 秒，在基准 TTL 上随机上浮 0 ~ maxJitter）
+         */
+        private Duration maxJitter = Duration.ofSeconds(60);
+
+        /**
+         * 针对特定 cacheName 的独立过期时间配置（如 userCache: 10m, dictCache: 2h）
+         */
+        private Map<String, Duration> expires = new HashMap<>();
     }
 
     /**

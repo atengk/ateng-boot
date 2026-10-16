@@ -66,6 +66,9 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
                     assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
                     assertThat(context).doesNotHaveBean("redisMessagePublisher");
+                    assertThat(context).doesNotHaveBean("redisRateLimiterClient");
+                    assertThat(context).doesNotHaveBean("redisAtomicUtil");
+                    assertThat(context).doesNotHaveBean("redisCacheManager");
                 });
     }
 
@@ -94,7 +97,7 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("默认启用时装配 RedisTemplate, RedisUtil 与 DistributedLockAspect 且各序列化器契约正确")
+    @DisplayName("默认启用时装配 Redis 全家桶组件且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
                 .run(context -> {
@@ -106,6 +109,9 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("delayedQueueBootstrap");
                     assertThat(context).hasBean("redisMessageListenerContainer");
                     assertThat(context).hasBean("redisMessagePublisher");
+                    assertThat(context).hasBean("redisRateLimiterClient");
+                    assertThat(context).hasBean("redisAtomicUtil");
+                    assertThat(context).hasBean("redisCacheManager");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
@@ -142,6 +148,34 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
                     assertThat(context).doesNotHaveBean("redisMessagePublisher");
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.redis.cache.enabled=false 时，不装配 RedisCacheManager")
+    void shouldNotLoadCacheManagerWhenCacheDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.cache.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).doesNotHaveBean("redisCacheManager");
+                });
+    }
+
+    @Test
+    @DisplayName("测试按 cacheName 配置个性化独立 TTL 与空值缓存防穿透")
+    void shouldConfigureCustomTtlPerCacheName() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.redis.cache.default-ttl=20m",
+                        "ateng.boot.redis.cache.expires.userCache=10m",
+                        "ateng.boot.redis.cache.cache-null-values=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasBean("redisCacheManager");
+                    org.springframework.data.redis.cache.RedisCacheManager cacheManager =
+                            context.getBean(org.springframework.data.redis.cache.RedisCacheManager.class);
+                    assertThat(cacheManager.getCacheConfigurations()).containsKey("userCache");
                 });
     }
 
