@@ -62,4 +62,36 @@ public class ExcelReadResult<T> implements Serializable {
     public List<ExcelErrorRow> getErrors() {
         return errors != null ? Collections.unmodifiableList(errors) : Collections.emptyList();
     }
+
+    /**
+     * 是否全部校验通过
+     *
+     * @return true 若无校验错误
+     */
+    public boolean isSuccess() {
+        return !hasErrors();
+    }
+
+    /**
+     * 获取错误行数
+     *
+     * @return 错误行总数
+     */
+    public int getErrorCount() {
+        return errors != null ? errors.size() : 0;
+    }
+
+    /**
+     * 获取不可修改的合法数据列表别名
+     */
+    public List<T> getDataList() {
+        return getData();
+    }
+
+    /**
+     * 获取不可修改的错误列表别名
+     */
+    public List<ExcelErrorRow> getErrorRows() {
+        return getErrors();
+    }
 }

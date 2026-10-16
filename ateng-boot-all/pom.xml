@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 依赖聚合全家桶（一键全量引入 core、web、mybatis-plus、redis）</description>
+    <description>ateng-boot 依赖聚合全家桶（一键全量引入 core、web、mybatis-plus、redis、excel）</description>
 
     <dependencies>
         <dependency>
@@ -32,6 +32,10 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-excel</artifactId>
         </dependency>
     </dependencies>
 </project>

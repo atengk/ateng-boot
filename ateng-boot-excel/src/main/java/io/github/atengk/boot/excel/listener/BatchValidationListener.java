@@ -76,6 +76,27 @@ public class BatchValidationListener<T> implements ReadListener<T> {
     }
 
     /**
+     * 构造支持注入 Validator 的监听器
+     *
+     * @param targetClass 读取映射的目标实体 Class（不可为空）
+     * @param validator   自定义 Validator 校验器
+     */
+    public BatchValidationListener(Class<T> targetClass, Validator validator) {
+        this(targetClass, DEFAULT_BATCH_SIZE, false, null, null, validator);
+    }
+
+    /**
+     * 构造支持注入 Validator 与指定 failFast 模式的监听器
+     *
+     * @param targetClass 读取映射的目标实体 Class（不可为空）
+     * @param validator   自定义 Validator 校验器
+     * @param failFast    是否快速失败
+     */
+    public BatchValidationListener(Class<T> targetClass, Validator validator, boolean failFast) {
+        this(targetClass, DEFAULT_BATCH_SIZE, failFast, null, null, validator);
+    }
+
+    /**
      * 构造全功能分批校验监听器
      *
      * @param targetClass     读取映射的目标实体 Class（不可为空）
@@ -191,9 +212,23 @@ public class BatchValidationListener<T> implements ReadListener<T> {
 
     /**
      * 是否存在校验错误
+     *
+     * @return true 若存在至少一条错误
      */
     public boolean hasErrors() {
         return !errorList.isEmpty();
+    }
+
+    /**
+     * 将当前校验解析状态转换为只读的 ExcelReadResult 复合对象
+     *
+     * @return 结构化读取与校验结果
+     */
+    public io.github.atengk.boot.excel.model.ExcelReadResult<T> toResult() {
+        return io.github.atengk.boot.excel.model.ExcelReadResult.<T>builder()
+                .data(new ArrayList<>(validDataList))
+                .errors(new ArrayList<>(errorList))
+                .build();
     }
 
     private static Validator getOrCreateDefaultValidator() {

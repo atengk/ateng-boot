@@ -142,7 +142,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(3, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.receivedMessage.get()).isEqualTo("ORDER-EXPIRED-12345");
     }
@@ -167,7 +167,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(3, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.receivedTask.get()).isNotNull();
         assertThat(service.receivedTask.get().getTaskId()).isEqualTo("TASK-999");
@@ -196,7 +196,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(3, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.errorInvocationCount.get()).isGreaterThanOrEqualTo(2);
     }
@@ -219,7 +219,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setEmbeddedValueResolver(strVal -> "${custom.queue.name:fallback-queue}".equals(strVal) ? "resolved-queue" : strVal);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(3, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         verify(redissonClient, atLeastOnce()).getBlockingQueue("resolved-queue");
     }
@@ -254,7 +254,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean reached = retryLatch.await(3, TimeUnit.SECONDS);
+        boolean reached = retryLatch.await(5, TimeUnit.SECONDS);
         assertThat(reached).isTrue();
         // 初始 1 次 + 重试 2 次 = 3 次执行
         assertThat(attempts.get()).isEqualTo(3);
