@@ -2,7 +2,11 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
+import io.github.atengk.boot.excel.listener.BatchValidationListener;
+import io.github.atengk.boot.excel.model.ExcelErrorRow;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.FesodSheet;
@@ -232,4 +236,145 @@ public final class ExcelUtil {
                 .sheet()
                 .doRead();
     }
+
+    /**
+     * 强类型读取 Excel 并执行 JSR-303 行级数据校验（默认错误聚合模式）
+     * <p>
+     * 校验全部通过时返回数据列表；若存在至少一行校验失败，抛出包含结构化错误详情的 {@link ExcelValidationException}。
+     * </p>
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param <T>         实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException 当存在行级校验错误时抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz) {
+        return readWithValidation(inputStream, clazz, false);
+    }
+
+    /**
+     * 强类型读取 Excel 并执行 JSR-303 行级数据校验
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param failFast    是否快速失败（true: 遇到第一个错误立即抛出异常中断；false: 聚合所有错误行）
+     * @param <T>         实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException 当存在行级校验错误时抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, boolean failFast) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+
+        BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, failFast);
+        FesodSheet.read(inputStream, clazz, listener)
+                .sheet()
+                .doRead();
+
+        if (listener.hasErrors()) {
+            throw new ExcelValidationException(listener.getErrorList());
+        }
+
+        return listener.getValidDataList();
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常）
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param <T>         实体数据泛型
+     * @return 包含合法数据与错误行信息的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+
+        BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, false);
+        FesodSheet.read(inputStream, clazz, listener)
+                .sheet()
+                .doRead();
+
+        return ExcelReadResult.<T>builder()
+                .data(new ArrayList<>(listener.getValidDataList()))
+                .errors(new ArrayList<>(listener.getErrorList()))
+                .build();
+    }
+
+    /**
+     * 流式分批读取 Excel 并逐行执行 JSR-303 数据校验
+     *
+     * @param inputStream   输入流（不可为空）
+     * @param clazz         读取映射的目标实体 Class（不可为空）
+     * @param batchSize     合法数据分批消费大小（大于 0）
+     * @param dataConsumer  合法数据分批回调消费者（可为 null）
+     * @param errorConsumer 聚合错误回调消费者（可为 null）
+     * @param <T>           实体数据泛型
+     */
+    public static <T> void readBatchWithValidation(InputStream inputStream,
+                                                   Class<T> clazz,
+                                                   int batchSize,
+                                                   Consumer<List<T>> dataConsumer,
+                                                   Consumer<List<ExcelErrorRow>> errorConsumer) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+
+        BatchValidationListener<T> listener = new BatchValidationListener<>(
+                clazz, batchSize, false, dataConsumer, errorConsumer, null
+        );
+
+        FesodSheet.read(inputStream, clazz, listener)
+                .sheet()
+                .doRead();
+    }
+
+    /**
+     * 生成带错误标红与悬浮批注的反馈 Excel 文件
+     *
+     * @param originalExcelStream  原始上传的 Excel 输入流（不可为空）
+     * @param feedbackOutputStream 标红输出流（不可为空）
+     * @param errorRows            校验失败错误行集合
+     */
+    public static void exportErrorFeedback(InputStream originalExcelStream,
+                                          OutputStream feedbackOutputStream,
+                                          List<ExcelErrorRow> errorRows) {
+        try {
+            ExcelFeedbackUtil.renderErrorFeedback(originalExcelStream, feedbackOutputStream, errorRows);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "生成 Excel 错误反馈文件失败: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Web 环境下直接输出带错误标红与悬浮批注的反馈 Excel 文件
+     *
+     * @param response            HTTP 响应（不可为空）
+     * @param fileName            下载文件名（自动补全 .xlsx）
+     * @param originalExcelStream 原始上传的 Excel 输入流（不可为空）
+     * @param errorRows           校验失败错误行集合
+     */
+    public static void exportErrorFeedback(HttpServletResponse response,
+                                          String fileName,
+                                          InputStream originalExcelStream,
+                                          List<ExcelErrorRow> errorRows) {
+        Assert.notNull(response, "HttpServletResponse 不可为空");
+        Assert.hasText(fileName, "导出文件名不可为空");
+
+        try {
+            String encodedFileName = fileName.endsWith(XLSX_EXTENSION) ? fileName : fileName + XLSX_EXTENSION;
+            ContentDisposition disposition = ContentDisposition.attachment()
+                    .filename(encodedFileName, StandardCharsets.UTF_8)
+                    .build();
+
+            response.setContentType(XLSX_CONTENT_TYPE);
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+
+            exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + ex.getMessage());
+        }
+    }
 }
+

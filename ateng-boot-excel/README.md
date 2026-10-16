@@ -159,7 +159,60 @@ ExcelUtil.export(outputStream, userList, SensitiveUserVO.class);
 
 ---
 
-## 6. 配置属性参考
+## 6. JSR-303 行级校验与失败标红批注回写
+
+### 场景痛点
+用户上传成百上千行 Excel 进行批量导入时，若遇到错误采用改一条重传一次的体验极差；更关键的是，后台返回的一串干瘪 JSON 报错文字（如“第 58 行手机号格式不合法”）让业务运营人员很难在庞大的表格中肉眼定位修改。
+
+### 核心代码范式
+`ateng-boot-excel` 原生联动 Jakarta Validation (JSR-303/380)，支持强类型聚合校验与“一键生成带标红底色和悬浮批注的反馈 Excel”：
+
+```java
+import io.github.atengk.boot.excel.model.ExcelErrorRow;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.constraints.*;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class UserImportVO {
+
+    @ExcelProperty("用户姓名")
+    @NotBlank(message = "用户姓名不可为空")
+    private String name;
+
+    @ExcelProperty("手机号码")
+    @Pattern(regexp = "^1[3-9]\\d{9}$", message = "手机号码格式不合法")
+    private String phone;
+
+    @ExcelProperty("年龄")
+    @Min(value = 18, message = "年龄须满18周岁")
+    private Integer age;
+}
+
+// 1. 结构化读取与校验（不抛异常，聚合所有行级错误）
+ExcelReadResult<UserImportVO> result = ExcelUtil.readWithResult(file.getInputStream(), UserImportVO.class);
+
+if (result.hasErrors()) {
+    // 2. 若存在校验错误，直接将上传的原始 Excel 标红并嵌入悬浮批注，写出供用户直接下载排查
+    ExcelUtil.exportErrorFeedback(response, "导入失败_请核对修改", file.getInputStream(), result.getErrors());
+    return;
+}
+
+// 3. 校验完全通过，执行合法数据批量入库
+userService.saveBatch(result.getData());
+```
+
+### 预期导出的反馈 Excel 单元格呈现
+- **错误单元格视觉高亮**：出错单元格自动填充警示浅粉红色背景（`ROSE`）；
+- **悬浮批注浮层**：鼠标悬停在出错单元格上时，自动弹出悬浮批注框：`"1. 手机号码格式不合法"`；若单单元格多项规则校验不通过，自动换行排版呈现；
+- **快速失败模式 (fail-fast)**：亦可通过 `ExcelUtil.readWithValidation(inputStream, UserImportVO.class, true)` 开启首错即抛 `ExcelValidationException` 模式。
+
+---
+
+## 7. 配置属性参考
 
 在 `application.yml` 中按需定制：
 
@@ -174,4 +227,5 @@ ateng:
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
 ```
+
 
