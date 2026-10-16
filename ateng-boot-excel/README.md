@@ -275,7 +275,107 @@ try (FileOutputStream out = new FileOutputStream("用户导入模板.xlsx")) {
 
 ---
 
-## 8. 配置属性参考
+## 8. 业务数据双向转义 (`@ExcelEnum` 与 `@ExcelDict` SPI)
+
+### 场景痛点
+数据库与微服务传输通常使用数字编码（如 `gender=1`）或字典代号（如 `role="ADMIN"`、`status="ENABLE"`），而面向业务运营人员的 Excel 报表必须呈现为通俗易懂的中文描述（如“男”、“超级管理员”、“已启用”）。传统做法需要在 Service 层编写大量死板冗长的 `switch-case` 或批量查字典打补丁，导入时反向翻译更是一团乱麻。
+
+### 核心代码范式
+`ateng-boot-excel` 提供内置的枚举与字典双向映射体系：
+- **枚举双向转义 (`@ExcelEnum`)**：枚举字段仅需标注 `@ExcelEnum` 即可零配置自动生效，导出时自动将枚举或底层编码转换为中文文本，导入时自动反查还原为枚举实例或编码；
+- **字典双向转义 (`@ExcelDict` & `DictProvider`)**：通过轻量 SPI 接口一键桥接业务现有字典中心、Redis 缓存或数据库表。
+
+```java
+import io.github.atengk.boot.excel.annotation.ExcelDict;
+import io.github.atengk.boot.excel.annotation.ExcelEnum;
+import io.github.atengk.boot.excel.converter.ExcelDictConverter;
+import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
+import io.github.atengk.boot.excel.spi.DictProvider;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import lombok.Data;
+
+// 1. 定义实体模型
+@Data
+public class UserBusinessVO {
+
+    @ExcelProperty("用户名称")
+    private String username;
+
+    /**
+     * 强类型枚举：仅标注 @ExcelEnum，无需显式指定 converter 即可全自动双向互转
+     */
+    @ExcelProperty("用户性别")
+    @ExcelEnum
+    private UserGenderEnum gender;
+
+    /**
+     * 基础编码字段：通过 @ExcelEnum 绑定枚举 Class，实现 code 与中文文本的双向互转
+     */
+    @ExcelProperty(value = "状态编码", converter = ExcelEnumConverter.class)
+    @ExcelEnum(value = UserStatusEnum.class, codeField = "code", textField = "desc")
+    private String statusCode;
+
+    /**
+     * 字典代码字段：标注 @ExcelDict 并指定 ExcelDictConverter 实现双向导入导出互转
+     */
+    @ExcelProperty(value = "用户角色", converter = ExcelDictConverter.class)
+    @ExcelDict("sys_user_role")
+    private String roleCode;
+
+    /**
+     * 字典数值字段：标注 @ExcelDict 并指定 ExcelDictConverter 实现双向导入导出互转
+     */
+    @ExcelProperty(value = "会员等级", converter = ExcelDictConverter.class)
+    @ExcelDict("sys_user_level")
+    private Integer level;
+}
+
+// 2. 业务工程接入 DictProvider SPI（注入为 Spring Bean 即可自动装配）
+@Configuration
+public class ExcelDictConfig {
+
+    @Bean
+    public DictProvider customDictProvider(SysDictService dictService) {
+        return new DictProvider() {
+            @Override
+            public String toLabel(String dictType, Object code) {
+                return dictService.getLabel(dictType, String.valueOf(code));
+            }
+
+            @Override
+            public String toCode(String dictType, String label) {
+                return dictService.getCode(dictType, label);
+            }
+        };
+    }
+}
+
+// 3. 极速导出与导入调用
+// 导出：自动转义为中文描述输出到 Excel
+ExcelUtil.export(outputStream, userList, UserBusinessVO.class);
+
+// 导入：自动将 Excel 中的中文标签还原为枚举常量或原始数字/字符串编码
+List<UserBusinessVO> importedList = ExcelUtil.read(file.getInputStream(), UserBusinessVO.class);
+```
+
+### 预期呈现与还原契约
+1. **导出的 Excel 单元格呈现**：
+   | 用户名称 | 用户性别 | 状态编码 | 用户角色 | 会员等级 |
+   | :--- | :--- | :--- | :--- | :--- |
+   | 张三 | 男 | 已启用 | 超级管理员 | 黄金会员 |
+   | 李四 | 女 | 已禁用 | 普通用户 | 钻石会员 |
+
+2. **反向读取还原的 Java 对象**：
+   - `importedList.get(0).getGender()` -> `UserGenderEnum.MALE`（强类型枚举常量）
+   - `importedList.get(0).getStatusCode()` -> `"ENABLE"`（原始状态编码）
+   - `importedList.get(0).getLevel()` -> `Integer` 值 `1`（还原为目标数值类型编码）
+
+---
+
+## 9. 配置属性参考
 
 在 `application.yml` 中按需定制：
 
@@ -290,6 +390,7 @@ ateng:
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
 ```
+
 
 
 

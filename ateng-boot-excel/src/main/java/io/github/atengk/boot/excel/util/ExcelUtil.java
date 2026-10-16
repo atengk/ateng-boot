@@ -2,6 +2,9 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.annotation.ExcelEnum;
+import io.github.atengk.boot.excel.converter.EnumMappingCache;
+import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -13,7 +16,11 @@ import io.github.atengk.boot.excel.properties.ExcelProperties;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.FesodSheet;
 import org.apache.fesod.sheet.context.AnalysisContext;
+import org.apache.fesod.sheet.enums.CellDataTypeEnum;
+import org.apache.fesod.sheet.metadata.AbstractParameterBuilder;
+import org.apache.fesod.sheet.read.builder.ExcelReaderBuilder;
 import org.apache.fesod.sheet.read.listener.ReadListener;
+import org.apache.fesod.sheet.write.builder.ExcelWriterBuilder;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.util.Assert;
@@ -25,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -106,9 +114,11 @@ public final class ExcelUtil {
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
-        FesodSheet.write(outputStream, clazz)
-                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
-                .sheet(targetSheetName)
+        var writerBuilder = FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
+        registerEnumConverters(writerBuilder, clazz);
+
+        writerBuilder.sheet(targetSheetName)
                 .doWrite(exportList);
     }
 
@@ -164,9 +174,10 @@ public final class ExcelUtil {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
-        List<T> list = FesodSheet.read(inputStream)
-                .head(clazz)
-                .sheet()
+        var readerBuilder = FesodSheet.read(inputStream)
+                .head(clazz);
+        registerEnumConverters(readerBuilder, clazz);
+        List<T> list = readerBuilder.sheet()
                 .doReadSync();
         return (list != null) ? list : Collections.emptyList();
     }
@@ -227,8 +238,9 @@ public final class ExcelUtil {
             }
         };
 
-        FesodSheet.read(inputStream, clazz, listener)
-                .sheet()
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet()
                 .doRead();
     }
 
@@ -263,8 +275,9 @@ public final class ExcelUtil {
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
         BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, failFast);
-        FesodSheet.read(inputStream, clazz, listener)
-                .sheet()
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet()
                 .doRead();
 
         if (listener.hasErrors()) {
@@ -287,8 +300,9 @@ public final class ExcelUtil {
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
         BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, false);
-        FesodSheet.read(inputStream, clazz, listener)
-                .sheet()
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet()
                 .doRead();
 
         return ExcelReadResult.<T>builder()
@@ -319,8 +333,9 @@ public final class ExcelUtil {
                 clazz, batchSize, false, dataConsumer, errorConsumer, null
         );
 
-        FesodSheet.read(inputStream, clazz, listener)
-                .sheet()
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet()
                 .doRead();
     }
 
@@ -444,6 +459,23 @@ public final class ExcelUtil {
                 .filename(safeFileName, StandardCharsets.UTF_8)
                 .build();
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+    }
+
+    /**
+     * 自动向 ParameterBuilder 注册实体类关联枚举类型的双向转换器（使用类级并发缓存）
+     *
+     * @param builder ParameterBuilder (ExcelWriterBuilder 或 ExcelReaderBuilder)
+     * @param clazz   实体 Class
+     */
+    private static void registerEnumConverters(AbstractParameterBuilder<?, ?> builder, Class<?> clazz) {
+        if (builder == null || clazz == null) {
+            return;
+        }
+        Set<Class<?>> enumClasses = EnumMappingCache.getEntityEnumClasses(clazz);
+        for (Class<?> enumClass : enumClasses) {
+            builder.registerConverter(new ExcelEnumConverter(enumClass, null, null));
+            builder.registerConverter(new ExcelEnumConverter(enumClass, null, CellDataTypeEnum.STRING));
+        }
     }
 }
 
