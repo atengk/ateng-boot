@@ -123,28 +123,32 @@ public final class AsyncContext {
         public static ContextSnapshot capturePrevious() {
             return new ContextSnapshot(
                     MDC.getCopyOfContextMap(),
-                    UserContextHolder.get(),
+                    UserContextHolder.getExplicit(),
                     TenantContextHolder.capturePrevious()
             );
         }
 
         /**
-         * 将快照中的上下文状态注入至当前线程
+         * 将快照中的上下文状态注入至当前线程（嵌套 try-finally 确保任何单点异常均不阻断后续清理）
          */
         public void apply() {
-            if (this.mdc != null && !this.mdc.isEmpty()) {
-                MDC.setContextMap(this.mdc);
-            } else {
-                MDC.clear();
+            try {
+                if (this.mdc != null && !this.mdc.isEmpty()) {
+                    MDC.setContextMap(this.mdc);
+                } else {
+                    MDC.clear();
+                }
+            } finally {
+                try {
+                    if (this.user != null) {
+                        UserContextHolder.set(this.user);
+                    } else {
+                        UserContextHolder.clear();
+                    }
+                } finally {
+                    TenantContextHolder.restore(this.tenant);
+                }
             }
-
-            if (this.user != null) {
-                UserContextHolder.set(this.user);
-            } else {
-                UserContextHolder.clear();
-            }
-
-            TenantContextHolder.restore(this.tenant);
         }
     }
 }

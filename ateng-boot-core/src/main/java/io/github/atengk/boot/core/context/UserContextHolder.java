@@ -79,6 +79,16 @@ public final class UserContextHolder {
     }
 
     /**
+     * 获取当前线程显式绑定的操作人唯一标识（纯净提取，不触发外部 SPI 回退）
+     * 专供上下文现场暂存、恢复与防污染快照，确保无状态工作线程不被全局 SPI 用户固化写入
+     *
+     * @return 当前线程显式绑定的操作人，未显式绑定则返回 null
+     */
+    public static String getExplicit() {
+        return USER_HOLDER.get();
+    }
+
+    /**
      * 获取当前线程绑定的操作人唯一标识（get 别名）
      *
      * @return 操作人唯一标识，若未设置则返回 null

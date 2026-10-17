@@ -70,7 +70,7 @@ public final class TenantContextHolder {
         if (provider != null) {
             try {
                 return provider.getCurrentTenantId();
-            } catch (Exception ignored) {
+            } catch (Throwable ignored) {
                 return null;
             }
         }

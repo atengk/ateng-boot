@@ -73,15 +73,21 @@ public final class TreeUtil {
         Objects.requireNonNull(parentIdGetter, "parentIdGetter 提取函数不能为空");
         Objects.requireNonNull(childrenSetter, "childrenSetter 回写函数不能为空");
 
-        // 1. 第一遍扫描：按 parentId 将所有子节点归类至哈希表，保留原有相对次序
+        // 1. 第一遍扫描：按 parentId 将所有子节点归类至哈希表，保留原有相对次序（跳过 null 脏数据）
         Map<ID, List<T>> parentChildrenMap = new LinkedHashMap<>();
         for (T node : list) {
+            if (node == null) {
+                continue;
+            }
             ID parentId = parentIdGetter.apply(node);
             parentChildrenMap.computeIfAbsent(parentId, k -> new ArrayList<>()).add(node);
         }
 
         // 2. 第二遍扫描：为每个节点精准挂载其对应的子节点列表（无子节点时回写空集合避免 NPE）
         for (T node : list) {
+            if (node == null) {
+                continue;
+            }
             ID id = idGetter.apply(node);
             List<T> children = parentChildrenMap.get(id);
             childrenSetter.accept(node, children != null ? children : Collections.emptyList());
@@ -90,7 +96,7 @@ public final class TreeUtil {
         // 3. 提取根节点集合
         List<T> roots = new ArrayList<>();
         for (T node : list) {
-            if (rootPredicate.test(node)) {
+            if (node != null && rootPredicate.test(node)) {
                 roots.add(node);
             }
         }

@@ -295,9 +295,8 @@ public final class ValidatorUtil {
             synchronized (ValidatorUtil.class) {
                 if (defaultValidator == null) {
                     try {
-                        try (jakarta.validation.ValidatorFactory factory = jakarta.validation.Validation.buildDefaultValidatorFactory()) {
-                            defaultValidator = factory.getValidator();
-                        }
+                        jakarta.validation.ValidatorFactory factory = jakarta.validation.Validation.buildDefaultValidatorFactory();
+                        defaultValidator = factory.getValidator();
                     } catch (Throwable ex) {
                         // 若类路径缺失 jakarta.el 依赖，尝试通过 Hibernate Validator 的 ParameterMessageInterpolator 无 EL 降级构建
                         try {

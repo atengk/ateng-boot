@@ -72,7 +72,8 @@ public final class CollectionUtil {
             return Collections.emptyList();
         }
         int totalSize = list.size();
-        List<List<T>> partitions = new ArrayList<>((totalSize + batchSize - 1) / batchSize);
+        int capacity = (int) ((((long) totalSize) + batchSize - 1) / batchSize);
+        List<List<T>> partitions = new ArrayList<>(capacity);
         for (int i = 0; i < totalSize; i += batchSize) {
             partitions.add(list.subList(i, Math.min(i + batchSize, totalSize)));
         }

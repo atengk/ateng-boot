@@ -110,4 +110,24 @@ class RetryUtilTest {
 
         assertEquals(2, count.get());
     }
+
+    @Test
+    @DisplayName("RetryConfig 紧凑构造对非法入参实施强类型防卫拦截")
+    void shouldDefendAgainstInvalidParametersInRecordConstructor() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUtil.RetryConfig(0, Duration.ofMillis(100), 2.0, Duration.ofMillis(1000), ex -> true)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUtil.RetryConfig(3, Duration.ofMillis(-10), 2.0, Duration.ofMillis(1000), ex -> true)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUtil.RetryConfig(3, Duration.ofMillis(100), 0.8, Duration.ofMillis(1000), ex -> true)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUtil.RetryConfig(3, Duration.ofMillis(100), 2.0, Duration.ofMillis(-50), ex -> true)
+        );
+        assertThrows(NullPointerException.class, () ->
+                new RetryUtil.RetryConfig(3, null, 2.0, Duration.ofMillis(1000), ex -> true)
+        );
+    }
 }

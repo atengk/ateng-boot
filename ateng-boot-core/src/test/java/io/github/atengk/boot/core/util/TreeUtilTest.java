@@ -239,4 +239,26 @@ class TreeUtilTest {
         );
         assertTrue(noMatch.isEmpty());
     }
+
+    @Test
+    @DisplayName("列表包含 null 脏数据时的空安全防御")
+    void shouldFilterOutNullNodesInInputListDefensively() {
+        MenuNode r1 = new MenuNode(1L, 0L, "根节点");
+        MenuNode c1 = new MenuNode(2L, 1L, "子节点");
+
+        List<MenuNode> listWithNull = Arrays.asList(r1, null, c1);
+
+        assertDoesNotThrow(() -> {
+            List<MenuNode> tree = TreeUtil.build(
+                    listWithNull,
+                    0L,
+                    MenuNode::getId,
+                    MenuNode::getParentId,
+                    MenuNode::setChildren
+            );
+            assertEquals(1, tree.size());
+            assertEquals("根节点", tree.get(0).getName());
+            assertEquals(1, tree.get(0).getChildren().size());
+        });
+    }
 }

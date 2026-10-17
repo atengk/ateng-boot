@@ -38,6 +38,24 @@ public final class RetryUtil {
             Duration maxDelay,
             Predicate<Throwable> retryPredicate
     ) {
+        public RetryConfig {
+            if (maxAttempts < 1) {
+                throw new IllegalArgumentException("maxAttempts 必须大于或等于 1");
+            }
+            Objects.requireNonNull(delay, "delay 不能为空");
+            if (delay.isNegative()) {
+                throw new IllegalArgumentException("delay 不能为负数");
+            }
+            if (multiplier < 1.0) {
+                throw new IllegalArgumentException("multiplier 不能小于 1.0");
+            }
+            Objects.requireNonNull(maxDelay, "maxDelay 不能为空");
+            if (maxDelay.isNegative()) {
+                throw new IllegalArgumentException("maxDelay 不能为负数");
+            }
+            Objects.requireNonNull(retryPredicate, "retryPredicate 不能为空");
+        }
+
         /**
          * 默认重试配置：最多重试 3 次，初始间隔 100ms，指数退避倍数 2.0，最大上限 5000ms，所有异常均重试
          */

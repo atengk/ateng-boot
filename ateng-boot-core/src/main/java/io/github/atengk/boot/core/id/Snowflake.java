@@ -49,11 +49,17 @@ public class Snowflake {
     private long sequence = 0L;
     private long lastTimestamp = -1L;
 
+    private record NodeIds(long workerId, long datacenterId) {}
+
     /**
      * 默认构造函数：自适应推导 workerId 与 datacenterId，采用框架默认基准时间戳
      */
     public Snowflake() {
-        this(deriveWorkerId(), deriveDatacenterId(), DEFAULT_EPOCH);
+        this(deriveNodeIds(), DEFAULT_EPOCH);
+    }
+
+    private Snowflake(NodeIds nodeIds, long epoch) {
+        this(nodeIds.workerId(), nodeIds.datacenterId(), epoch);
     }
 
     /**
@@ -251,27 +257,20 @@ public class Snowflake {
     // ==================== 自适应四级节点推导实现 ====================
 
     /**
-     * 四级平滑推导 workerId (0~31)
+     * 一次性平滑推导 workerId 与 datacenterId (0~31)
      * 1. JVM 系统属性/环境变量 -> 2. 网卡 MAC 地址哈希 -> 3. 本机 IP 地址低位哈希 -> 4. 随机数兜底
+     * 单次遍历网卡与 IP 解析，杜绝重复网络 I/O，并防御 Math.abs 绝对值负溢出
      *
-     * @return 推导得到的 workerId
+     * @return 推导得到的节点 ID 载体
      */
-    private static long deriveWorkerId() {
-        // 1. 系统属性与环境变量
-        String prop = System.getProperty("ateng.boot.snowflake.worker-id");
-        if (prop == null || prop.isBlank()) {
-            prop = System.getenv("ATENG_BOOT_SNOWFLAKE_WORKER_ID");
+    private static NodeIds deriveNodeIds() {
+        Long workerId = parseIdProperty("ateng.boot.snowflake.worker-id", "ATENG_BOOT_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
+        Long datacenterId = parseIdProperty("ateng.boot.snowflake.datacenter-id", "ATENG_BOOT_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+        if (workerId != null && datacenterId != null) {
+            return new NodeIds(workerId, datacenterId);
         }
-        if (prop != null && !prop.isBlank()) {
-            try {
-                long id = Long.parseLong(prop.trim());
-                if (id >= 0 && id <= MAX_WORKER_ID) {
-                    return id;
-                }
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        // 2. 网卡 MAC 地址哈希
+
+        // 尝试从网卡 MAC 地址推导
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces != null && interfaces.hasMoreElements()) {
@@ -279,78 +278,75 @@ public class Snowflake {
                 if (!ni.isLoopback() && ni.isUp()) {
                     byte[] mac = ni.getHardwareAddress();
                     if (mac != null && mac.length > 0) {
-                        int sum = 0;
-                        for (byte b : mac) {
-                            sum = (sum << 5) - sum + (b & 0xFF);
+                        if (workerId == null) {
+                            int sum = 0;
+                            for (byte b : mac) {
+                                sum = (sum << 5) - sum + (b & 0xFF);
+                            }
+                            workerId = (long) ((sum & 0x7FFFFFFF) % (MAX_WORKER_ID + 1));
                         }
-                        return Math.abs(sum) % (MAX_WORKER_ID + 1);
+                        if (datacenterId == null) {
+                            if (mac.length >= 2) {
+                                datacenterId = (long) (((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) % (MAX_DATACENTER_ID + 1));
+                            } else {
+                                datacenterId = (long) ((mac[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                            }
+                        }
+                        break;
                     }
                 }
             }
         } catch (Exception ignored) {
         }
-        // 3. 本机 IP 地址低位哈希
-        try {
-            InetAddress localHost = InetAddress.getLocalHost();
-            byte[] address = localHost.getAddress();
-            if (address != null && address.length > 0) {
-                return (address[address.length - 1] & 0xFF) % (MAX_WORKER_ID + 1);
+
+        // 尝试从本机 IP 推导
+        if (workerId == null || datacenterId == null) {
+            try {
+                InetAddress localHost = InetAddress.getLocalHost();
+                byte[] address = localHost.getAddress();
+                if (address != null && address.length > 0) {
+                    if (workerId == null) {
+                        workerId = (long) ((address[address.length - 1] & 0xFF) % (MAX_WORKER_ID + 1));
+                    }
+                    if (datacenterId == null) {
+                        if (address.length >= 2) {
+                            datacenterId = (long) ((address[address.length - 2] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                        } else {
+                            datacenterId = (long) ((address[0] & 0xFF) % (MAX_DATACENTER_ID + 1));
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
             }
-        } catch (Exception ignored) {
         }
-        // 4. 随机兜底
-        long fallback = ThreadLocalRandom.current().nextLong(MAX_WORKER_ID + 1);
-        log.warn("无法从环境变量、网卡 MAC 或本机 IP 推导 workerId，降级采用随机兜底值: {}", fallback);
-        return fallback;
+
+        // 随机兜底
+        if (workerId == null) {
+            workerId = ThreadLocalRandom.current().nextLong(MAX_WORKER_ID + 1);
+            log.warn("无法从环境变量、网卡 MAC 或本机 IP 推导 workerId，降级采用随机兜底值: {}", workerId);
+        }
+        if (datacenterId == null) {
+            datacenterId = ThreadLocalRandom.current().nextLong(MAX_DATACENTER_ID + 1);
+            log.warn("无法从环境变量、网卡 MAC 或本机 IP 推导 datacenterId，降级采用随机兜底值: {}", datacenterId);
+        }
+
+        return new NodeIds(workerId, datacenterId);
     }
 
-    /**
-     * 四级平滑推导 datacenterId (0~31)
-     * 1. JVM 系统属性/环境变量 -> 2. 网卡 MAC 地址异或哈希 -> 3. 本机 IP 地址次低位哈希 -> 4. 随机数兜底
-     *
-     * @return 推导得到的 datacenterId
-     */
-    private static long deriveDatacenterId() {
-        // 1. 系统属性与环境变量
-        String prop = System.getProperty("ateng.boot.snowflake.datacenter-id");
+    private static Long parseIdProperty(String sysProp, String envProp, long maxId) {
+        String prop = System.getProperty(sysProp);
         if (prop == null || prop.isBlank()) {
-            prop = System.getenv("ATENG_BOOT_SNOWFLAKE_DATACENTER_ID");
+            prop = System.getenv(envProp);
         }
         if (prop != null && !prop.isBlank()) {
             try {
                 long id = Long.parseLong(prop.trim());
-                if (id >= 0 && id <= MAX_DATACENTER_ID) {
+                if (id >= 0 && id <= maxId) {
                     return id;
                 }
             } catch (NumberFormatException ignored) {
             }
         }
-        // 2. 网卡 MAC 地址异或哈希
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces != null && interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                if (!ni.isLoopback() && ni.isUp()) {
-                    byte[] mac = ni.getHardwareAddress();
-                    if (mac != null && mac.length >= 2) {
-                        return ((mac[0] & 0xFF) ^ (mac[1] & 0xFF)) % (MAX_DATACENTER_ID + 1);
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        // 3. 本机 IP 地址次低位哈希
-        try {
-            InetAddress localHost = InetAddress.getLocalHost();
-            byte[] address = localHost.getAddress();
-            if (address != null && address.length >= 2) {
-                return (address[address.length - 2] & 0xFF) % (MAX_DATACENTER_ID + 1);
-            }
-        } catch (Exception ignored) {
-        }
-        // 4. 随机兜底
-        long fallback = ThreadLocalRandom.current().nextLong(MAX_DATACENTER_ID + 1);
-        log.warn("无法从环境变量、网卡 MAC 或本机 IP 推导 datacenterId，降级采用随机兜底值: {}", fallback);
-        return fallback;
+        return null;
     }
 }

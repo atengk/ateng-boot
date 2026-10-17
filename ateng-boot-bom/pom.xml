@@ -18,6 +18,15 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Spring Boot 依赖版本统管 (Import 模式) -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-core</artifactId>

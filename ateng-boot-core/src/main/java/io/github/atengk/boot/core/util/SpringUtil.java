@@ -20,8 +20,8 @@ import java.util.Objects;
  */
 public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProcessor {
 
-    private static ApplicationContext applicationContext;
-    private static ConfigurableListableBeanFactory beanFactory;
+    private static volatile ApplicationContext applicationContext;
+    private static volatile ConfigurableListableBeanFactory beanFactory;
 
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {

@@ -191,4 +191,13 @@ class TenantContextHolderTest {
             assertEquals("outer_tenant", TenantContextHolder.getTenantId());
         });
     }
+
+    @Test
+    @DisplayName("10. SPI 容错：当 CurrentTenantProvider 抛出 LinkageError/Error 时平滑降级返回 null")
+    void shouldHandleErrorGracefullyFromTenantProvider() {
+        TenantContextHolder.setTenantProvider(() -> {
+            throw new NoClassDefFoundError("simulated missing class");
+        });
+        assertNull(TenantContextHolder.getTenantId(), "当 SPI 发生 JVM Error 时应平滑降级返回 null 而非中断主线程");
+    }
 }

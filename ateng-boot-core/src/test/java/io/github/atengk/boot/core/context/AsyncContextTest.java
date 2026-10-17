@@ -26,6 +26,9 @@ class AsyncContextTest {
     void setUp() {
         MDC.clear();
         UserContextHolder.clear();
+        UserContextHolder.setUserProvider(null);
+        TenantContextHolder.clear();
+        TenantContextHolder.setTenantProvider(null);
         executor = Executors.newSingleThreadExecutor();
     }
 
@@ -33,6 +36,9 @@ class AsyncContextTest {
     void tearDown() {
         MDC.clear();
         UserContextHolder.clear();
+        UserContextHolder.setUserProvider(null);
+        TenantContextHolder.clear();
+        TenantContextHolder.setTenantProvider(null);
         executor.shutdownNow();
     }
 
@@ -153,5 +159,50 @@ class AsyncContextTest {
         assertNull(AsyncContext.wrap((Runnable) null));
         assertNull(AsyncContext.wrap((Callable<String>) null));
         assertNull(AsyncContext.wrapSupplier(null));
+    }
+
+    @Test
+    @DisplayName("配置全局 CurrentUserProvider SPI 时工作线程不被 SPI 用户固化污染")
+    void shouldNotPolluteWorkerThreadWithSpiUserWhenWorkerHasNoExplicitUser() throws Exception {
+        UserContextHolder.setUserProvider(() -> "global-spi-user-999");
+
+        // 父线程未显式绑定 ThreadLocal 用户
+        assertNull(UserContextHolder.getExplicit());
+        assertEquals("global-spi-user-999", UserContextHolder.get());
+
+        Runnable task = AsyncContext.wrap(() -> {
+            // 异步任务内执行普通逻辑
+        });
+
+        Future<?> future = executor.submit(task);
+        future.get(2, TimeUnit.SECONDS);
+
+        // 任务完成后，工作线程必须恢复为未显式绑定的纯净现场，严禁被 SPI 用户固化写入 ThreadLocal
+        Future<String> explicitUserFuture = executor.submit(UserContextHolder::getExplicit);
+        assertNull(explicitUserFuture.get(2, TimeUnit.SECONDS), "工作线程显式用户必须为 null，严禁固化 SPI 用户");
+    }
+
+    @Test
+    @DisplayName("异步任务抛出未受检异常时四维现场仍被安全完整还原")
+    void shouldSafelyRestore4DContextWhenAsyncTaskThrowsException() throws Exception {
+        MDC.put("traceId", "trace-parent-err");
+        UserContextHolder.set("user-parent-err");
+        TenantContextHolder.setTenantId("tenant-parent-err");
+
+        Callable<String> faultyTask = AsyncContext.wrap((Callable<String>) () -> {
+            throw new IllegalStateException("模拟业务抛出异常");
+        });
+
+        Future<String> future = executor.submit(faultyTask);
+        assertThrows(ExecutionException.class, () -> future.get(2, TimeUnit.SECONDS));
+
+        // 验证执行抛出异常后，工作线程中的四维现场依然被彻底清理还原
+        Future<Boolean> threadCleanCheck = executor.submit(() ->
+                MDC.get("traceId") == null &&
+                        UserContextHolder.getExplicit() == null &&
+                        TenantContextHolder.getTenantId() == null &&
+                        !TenantContextHolder.isIgnoreTenant()
+        );
+        assertTrue(threadCleanCheck.get(2, TimeUnit.SECONDS), "抛出异常时工作线程四维现场仍应被严格自清理还原");
     }
 }

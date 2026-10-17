@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.model;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -23,11 +25,14 @@ public class PageQuery implements Serializable {
     /**
      * 当前页码（从 1 开始，默认 1）
      */
+    @Min(value = 1, message = "当前页码必须大于或等于 1")
     private long current = 1L;
 
     /**
      * 单页记录条数（默认 10）
      */
+    @Min(value = 1, message = "单页条数必须大于或等于 1")
+    @Max(value = 1000, message = "单页条数最大不能超过 1000")
     private long size = 10L;
 
     /**

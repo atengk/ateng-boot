@@ -59,4 +59,13 @@ class CollectionUtilTest {
         assertTrue(CollectionUtil.partition(List.of(1, 2), 0).isEmpty());
         assertTrue(CollectionUtil.partition(List.of(1, 2), -1).isEmpty());
     }
+
+    @Test
+    @DisplayName("partition: batchSize 为 Integer.MAX_VALUE 时不发生整数溢出异常")
+    void shouldHandleMaxIntegerBatchSizeWithoutOverflow() {
+        List<Integer> list = Arrays.asList(1, 2, 3);
+        List<List<Integer>> parts = CollectionUtil.partition(list, Integer.MAX_VALUE);
+        assertEquals(1, parts.size());
+        assertEquals(list, parts.get(0));
+    }
 }
