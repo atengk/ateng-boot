@@ -59,55 +59,6 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
-     * S3Client Bean 自动装配（当 type=s3 且类路径存在 S3Client 时生效）
-     *
-     * @param properties 存储配置属性
-     * @return S3Client 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(S3Client.class)
-    @ConditionalOnClass(S3Client.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "s3")
-    public S3Client s3Client(StorageProperties properties) {
-        return S3Driver.createS3Client(properties.getS3());
-    }
-
-    /**
-     * S3Presigner Bean 自动装配（当 type=s3 且类路径存在 S3Presigner 时生效）
-     *
-     * @param properties 存储配置属性
-     * @return S3Presigner 实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(S3Presigner.class)
-    @ConditionalOnClass(S3Presigner.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "s3")
-    public S3Presigner s3Presigner(StorageProperties properties) {
-        return S3Driver.createS3Presigner(properties.getS3());
-    }
-
-    /**
-     * S3 存储驱动 Bean 装配（当 type=s3 且类路径存在 S3Client 时生效）
-     *
-     * @param properties          存储配置属性
-     * @param s3ClientProvider    S3Client 候选 Provider
-     * @param s3PresignerProvider S3Presigner 候选 Provider
-     * @return S3Driver 驱动实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(StorageDriver.class)
-    @ConditionalOnClass(S3Client.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "s3")
-    public StorageDriver s3StorageDriver(StorageProperties properties,
-                                        ObjectProvider<S3Client> s3ClientProvider,
-                                        ObjectProvider<S3Presigner> s3PresignerProvider) {
-        S3StorageProperties s3 = properties.getS3();
-        S3Client s3Client = s3ClientProvider.getIfAvailable(() -> S3Driver.createS3Client(s3));
-        S3Presigner s3Presigner = s3PresignerProvider.getIfAvailable(() -> S3Driver.createS3Presigner(s3));
-        return new S3Driver(s3Client, s3Presigner, s3.getBucket(), s3.getDomain());
-    }
-
-    /**
      * 存储核心操作门面 Bean 装配
      *
      * @param defaultDriver 默认存储驱动
@@ -117,6 +68,60 @@ public class AtengStorageAutoConfiguration {
     @ConditionalOnMissingBean(StorageOperations.class)
     public StorageTemplate storageTemplate(StorageDriver defaultDriver) {
         return new StorageTemplate(defaultDriver);
+    }
+
+    /**
+     * S3 存储驱动及相关客户端静态嵌套配置类
+     * 仅当类路径存在 S3Client 且配置了 type=s3 时激活，隔离类加载与方法内省防御
+     */
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(S3Client.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "s3")
+    static class S3StorageConfiguration {
+
+        /**
+         * S3Client Bean 自动装配
+         *
+         * @param properties 存储配置属性
+         * @return S3Client 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean(S3Client.class)
+        public S3Client s3Client(StorageProperties properties) {
+            return S3Driver.createS3Client(properties.getS3());
+        }
+
+        /**
+         * S3Presigner Bean 自动装配
+         *
+         * @param properties 存储配置属性
+         * @return S3Presigner 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean(S3Presigner.class)
+        @ConditionalOnClass(S3Presigner.class)
+        public S3Presigner s3Presigner(StorageProperties properties) {
+            return S3Driver.createS3Presigner(properties.getS3());
+        }
+
+        /**
+         * S3 存储驱动 Bean 装配
+         *
+         * @param properties          存储配置属性
+         * @param s3ClientProvider    S3Client 候选 Provider
+         * @param s3PresignerProvider S3Presigner 候选 Provider
+         * @return S3Driver 驱动实例
+         */
+        @Bean
+        @ConditionalOnMissingBean(StorageDriver.class)
+        public StorageDriver s3StorageDriver(StorageProperties properties,
+                                            ObjectProvider<S3Client> s3ClientProvider,
+                                            ObjectProvider<S3Presigner> s3PresignerProvider) {
+            S3StorageProperties s3 = properties.getS3();
+            S3Client s3Client = s3ClientProvider.getIfAvailable(() -> S3Driver.createS3Client(s3));
+            S3Presigner s3Presigner = s3PresignerProvider.getIfAvailable(() -> S3Driver.createS3Presigner(s3));
+            return new S3Driver(s3Client, s3Presigner, s3.getBucket(), s3.getDomain());
+        }
     }
 
     /**
