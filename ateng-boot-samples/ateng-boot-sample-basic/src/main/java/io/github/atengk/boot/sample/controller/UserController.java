@@ -1,20 +1,17 @@
 package io.github.atengk.boot.sample.controller;
 
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.core.util.BusinessAssert;
-import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.sample.dto.UserCreateDTO;
 import io.github.atengk.boot.sample.dto.UserLoginDTO;
-import io.github.atengk.boot.sample.entity.UserEntity;
-import io.github.atengk.boot.sample.mapper.UserMapper;
+import io.github.atengk.boot.sample.service.UserService;
 import io.github.atengk.boot.sample.vo.UserVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,20 +30,17 @@ import java.util.Map;
 
 /**
  * 示例用户控制层
- * 显式遵循 Result 契约，提供用户创建、按 ID 查询、乐观锁更新、分页防刷与受控/非受控异常演示端点
+ * 显式遵循 Result 契约与接入层薄层原则，调度 UserService 执行业务逻辑，提供用户管理、分页检索与异常演示端点
  *
  * @author Ateng
  * @since 2026-10-15
  */
 @RestController
 @RequestMapping("/api/users")
+@RequiredArgsConstructor
 public class UserController {
 
-    private final UserMapper userMapper;
-
-    public UserController(UserMapper userMapper) {
-        this.userMapper = userMapper;
-    }
+    private final UserService userService;
 
     /**
      * 创建用户端点，结合 @Valid 校验前置拦截
@@ -57,19 +51,7 @@ public class UserController {
     @PostMapping
     @WebLog(value = "创建用户", printParams = true, printResult = true, printCostTime = true)
     public Result<Long> create(@Valid @RequestBody UserCreateDTO dto) {
-        UserEntity entity = new UserEntity();
-        entity.setName(dto.getName());
-        entity.setAge(dto.getAge());
-        entity.setEmail(dto.getEmail());
-        entity.setPhone(dto.getPhone());
-        entity.setIdCard(dto.getIdCard());
-        entity.setAddress(dto.getAddress());
-        entity.setCarLicense(dto.getCarLicense());
-        entity.setIpv4(dto.getIpv4());
-        entity.setSocialCreditCode(dto.getSocialCreditCode());
-        entity.setCustomMask(dto.getCustomMask());
-        userMapper.insert(entity);
-        return Result.success(entity.getId());
+        return Result.success(userService.createUser(dto));
     }
 
     /**
@@ -105,9 +87,7 @@ public class UserController {
      */
     @GetMapping("/{id}")
     public Result<UserVO> getById(@PathVariable("id") Long id) {
-        UserEntity user = userMapper.selectById(id);
-        BusinessAssert.notNull(user, "目标用户不存在");
-        return Result.success(UserVO.from(user));
+        return Result.success(userService.getUserById(id));
     }
 
     /**
@@ -119,26 +99,19 @@ public class UserController {
      */
     @PutMapping("/{id}")
     public Result<Boolean> update(@PathVariable("id") Long id, @RequestParam("name") String name) {
-        UserEntity user = userMapper.selectById(id);
-        BusinessAssert.notNull(user, "目标用户不存在");
-        user.setName(name);
-        int rows = userMapper.updateById(user);
-        return Result.success(rows > 0);
+        return Result.success(userService.updateUserName(id, name));
     }
 
     /**
      * 分页查询用户列表，接收标准 PageQuery 入参，返回彻底与持久层解耦的 PageResult<UserVO>
-     * 在服务边界通过 PageUtil 一行完成 Entity 到 VO 的流式转换，消除 ORM 属性泄露
+     * 业务逻辑与实体映射由 UserService 纯净流式承接，消除 Controller 对持久层 ORM 的直接依赖
      *
      * @param query 分页查询入参
      * @return 分页结果
      */
     @GetMapping("/page")
     public Result<PageResult<UserVO>> page(PageQuery query) {
-        Page<UserEntity> page = PageUtil.toPage(query);
-        Page<UserEntity> entityPage = userMapper.selectPage(page, null);
-        PageResult<UserVO> result = PageUtil.toPageResult(entityPage).map(UserVO::from);
-        return Result.success(result);
+        return Result.success(userService.pageUsers(query));
     }
 
     /**

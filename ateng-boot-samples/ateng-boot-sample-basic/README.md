@@ -23,33 +23,28 @@
 mvn -pl ateng-boot-samples/ateng-boot-sample-basic spring-boot:run
 ```
 
-### 极简 CRUD Controller 示例
+### 极简 CRUD 示例（接入层薄层 + Service 业务防腐）
 ```java
 @RestController
 @RequestMapping("/api/users")
+@RequiredArgsConstructor
 public class UserController {
 
-    private final UserMapper userMapper;
-
-    public UserController(UserMapper userMapper) {
-        this.userMapper = userMapper;
-    }
+    private final UserService userService;
 
     @PostMapping
     public Result<Long> create(@Valid @RequestBody UserCreateDTO dto) {
-        UserEntity entity = new UserEntity();
-        entity.setName(dto.getName());
-        entity.setAge(dto.getAge());
-        entity.setEmail(dto.getEmail());
-        userMapper.insert(entity);
-        return Result.success(entity.getId());
+        return Result.success(userService.createUser(dto));
     }
 
     @GetMapping("/{id}")
     public Result<UserVO> getById(@PathVariable("id") Long id) {
-        UserEntity user = userMapper.selectById(id);
-        BusinessAssert.notNull(user, "目标用户不存在");
-        return Result.success(UserVO.from(user));
+        return Result.success(userService.getUserById(id));
+    }
+
+    @GetMapping("/page")
+    public Result<PageResult<UserVO>> page(PageQuery query) {
+        return Result.success(userService.pageUsers(query));
     }
 }
 ```
