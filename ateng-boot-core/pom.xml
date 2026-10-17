@@ -49,6 +49,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Context (用于 SpringUtil 容器门面与 Bean 访问，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

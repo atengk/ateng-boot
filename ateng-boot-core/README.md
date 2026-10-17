@@ -403,3 +403,115 @@ ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
 executor.setTaskDecorator(new ContextCopyingTaskDecorator());
 ```
 
+---
+
+## 11. 未来中间件孵化通用原语套件
+
+> 为未来扩展存储（Storage）、消息队列（MQ）、分布式任务调度（Job）、邮件短信及 AI 等功能模块提供统一的纯原生零外部依赖基础设施标准件。
+
+### 1. Spring 容器静态门面 (`SpringUtil`)
+在非受管 POJO、静态工具类或异步闭包中安全获取 Spring Bean、环境变量与发布事件：
+```java
+import io.github.atengk.boot.core.util.SpringUtil;
+
+// 1. 获取已注册的 Bean
+UserService userService = SpringUtil.getBean(UserService.class);
+DataSource dataSource = SpringUtil.getBean("dataSource", DataSource.class);
+
+// 2. 读取配置属性与环境环境
+String port = SpringUtil.getProperty("server.port", "8080");
+Integer timeout = SpringUtil.getProperty("rpc.timeout", Integer.class, 3000);
+String activeProfile = SpringUtil.getActiveProfile();
+
+// 3. 发布应用事件
+SpringUtil.publishEvent(new UserRegisteredEvent(userId));
+```
+
+### 2. 强类型方法引用解析 (`LambdaUtil`)
+纯 JDK 17 原生通过方法引用推导 JavaBean 字段名，告别易错的硬编码字符串属性名：
+```java
+import io.github.atengk.boot.core.util.LambdaUtil;
+
+// 1. 标准 Getter 方法引用推导
+String nameField = LambdaUtil.getFieldName(User::getName); // "name"
+String ageField = LambdaUtil.getFieldName(User::getAge);   // "age"
+
+// 2. boolean is 方法推导
+String deletedField = LambdaUtil.getFieldName(User::isDeleted); // "deleted"
+
+// 3. 连续大写缩写保护
+String urlField = LambdaUtil.getFieldName(User::getURL); // "URL"
+```
+
+### 3. 内存零拷贝分批与安全收集器 (`CollectionUtil` & `MoreCollectors`)
+```java
+import io.github.atengk.boot.core.util.CollectionUtil;
+import io.github.atengk.boot.core.util.MoreCollectors;
+
+// 1. 基于 subList 原生视图的零拷贝安全分批（内存防 OOM 批量流转）
+List<Order> orders = orderMapper.selectHugeList();
+List<List<Order>> batches = CollectionUtil.partition(orders, 500);
+for (List<Order> batch : batches) {
+    orderService.processBatch(batch);
+}
+
+// 2. 防 NPE 与防 DuplicateKey 的流收集器（原生 Collectors.toMap 当 Value 为 null 时会抛出 NPE）
+Map<Long, String> userMap = userList.stream()
+        .collect(MoreCollectors.toSafeMap(User::getId, User::getRemark));
+```
+
+### 4. 自动实例化反射拷贝与非空合并 (`BeanUtil`)
+基于 Spring `BeanUtils` 提供强类型自动实例化与 Patch 增量覆盖：
+```java
+import io.github.atengk.boot.core.util.BeanUtil;
+
+// 1. 单实体自动实例化拷贝
+UserVO vo = BeanUtil.copy(userEntity, UserVO.class);
+
+// 2. 列表批量拷贝（空安全返回空列表）
+List<UserVO> voList = BeanUtil.copyList(userEntityList, UserVO.class);
+
+// 3. 局部非空覆盖（仅用 source 的非 null 字段覆盖 target，保留 target 原有字段）
+BeanUtil.copyIgnoreNull(patchDTO, existEntity);
+```
+
+### 5. 纯函数式指数退避重试执行器 (`RetryUtil`)
+100% 原生 JDK 实现，无需依赖 Spring Retry 或 Resilience4j 等重型 AOP 框架：
+```java
+import io.github.atengk.boot.core.util.RetryUtil;
+import java.time.Duration;
+
+// 1. 默认重试（最多 3 次，初始间隔 100ms，指数倍数 2.0）
+String result = RetryUtil.execute(() -> remoteRpcService.call());
+
+// 2. 定制化指数退避与异常谓词过滤
+RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+        .maxAttempts(5)
+        .delay(Duration.ofMillis(200))
+        .multiplier(1.5)
+        .maxDelay(Duration.ofSeconds(2))
+        .retryPredicate(ex -> ex instanceof SocketTimeoutException) // 仅网络超时才重试
+        .build();
+
+RetryUtil.execute(() -> thirdPartyApiClient.sendRequest(), config);
+```
+
+### 6. 路径穿越安全清洗与容量格式化 (`FileUtil`)
+```java
+import io.github.atengk.boot.core.util.FileUtil;
+
+// 1. 防御路径穿越攻击（彻底消除 ../ 与空字符路径穿越漏洞）
+String cleanName = FileUtil.cleanFilename("../../etc/passwd"); // "passwd"
+String safeDoc = FileUtil.cleanFilename("report\0.pdf");        // "report.pdf"
+
+// 2. 扩展名与主文件名提取（统一转小写）
+String ext = FileUtil.getExtName("archive.tar.gz"); // "gz"
+String base = FileUtil.getBaseName("avatar.png");   // "avatar"
+
+// 3. 字节容量人类可读格式化
+String size1 = FileUtil.formatSize(1536);          // "1.50 KB"
+String size2 = FileUtil.formatSize(10485760);       // "10.00 MB"
+String size3 = FileUtil.formatSize(2684354560L);    // "2.50 GB"
+```
+
+
