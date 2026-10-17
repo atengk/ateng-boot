@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: ateng-boot-sample-redis
+
+ateng:
+  boot:
+    redis:
+      enabled: true
+      delay-queue:
+        enabled: false
+    web:
+      trace:
+        enabled: true
+      log:
+        enabled: true

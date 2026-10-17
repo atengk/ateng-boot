@@ -11,41 +11,37 @@
     </parent>
 
     <artifactId>ateng-boot-samples</artifactId>
-    <packaging>jar</packaging>
+    <packaging>pom</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 自验集成样例与自动化测试套件（禁止部署发布）</description>
+    <description>ateng-boot 自验集成样例与自动化测试聚合套件（禁止部署发布）</description>
+
+    <modules>
+        <module>ateng-boot-sample-basic</module>
+        <module>ateng-boot-sample-redis</module>
+        <module>ateng-boot-sample-excel</module>
+        <module>ateng-boot-sample-satoken</module>
+        <module>ateng-boot-sample-smoke-test</module>
+    </modules>
 
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- 导入 ateng-boot BOM 清单纳管所有 Starter 依赖版本 -->
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
-        <!-- 引入全家桶聚合依赖 -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-all</artifactId>
-        </dependency>
-
-        <!-- Sa-Token 鉴权基础设施 -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-satoken</artifactId>
-        </dependency>
-
-        <!-- SpringDoc OpenAPI (用于端到端验证 Knife4j / Swagger 鉴权组件装配) -->
-        <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-        </dependency>
-
-        <!-- H2 内存数据库 (运行时自测) -->
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
         <!-- Lombok (编译期使用) -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -62,6 +58,23 @@
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- 允许本地通过 mvn spring-boot:run 快速启动演示样例 -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>repackage</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <!-- 严禁将样例与集成测试工程发布到公共 Maven Central -->
             <plugin>
@@ -70,19 +83,6 @@
                 <configuration>
                     <skipPublishing>true</skipPublishing>
                 </configuration>
-            </plugin>
-            <!-- 允许本地通过 mvn spring-boot:run 快速启动演示样例 -->
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>${spring-boot.version}</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>repackage</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>

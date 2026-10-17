@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: ateng-boot-sample-smoke-test
+  datasource:
+    url: jdbc:h2:mem:smokedb;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+
+ateng:
+  boot:
+    web:
+      trace:
+        enabled: true
+      long-to-string: true
+      log:
+        enabled: true
+    mybatis-plus:
+      audit:
+        enabled: true
+        default-operator: SYSTEM
+    redis:
+      enabled: false

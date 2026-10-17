@@ -289,6 +289,11 @@
                             <waitUntil>validated</waitUntil>
                             <excludeArtifacts>
                                 <excludeArtifact>ateng-boot-samples</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-basic</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-redis</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>
                     </plugin>

@@ -12,7 +12,7 @@
 - [Redis 基础设施与分布式协同](./ateng-boot-redis/CONTEXT.md) — 提供双核驱动 Redis 基础设施（Spring Data Redis + Redisson 原生客户端）、纯净无 @class 污染序列化、全能 RedisUtil（强制游标扫描）、四阶声明式分布式锁 @DistributedLock、双模轻量延时队列、Pub/Sub 广播及业务流控计数。
 - [Excel 轻量流式处理](./ateng-boot-excel/CONTEXT.md) — 提供基于 Apache Fesod 的轻量流式 Excel 处理引擎，深度融合 ADR-0012 内存真明文与导出动态脱敏（@ExcelSensitive）、JSR-303 行级校验与红字批注错误回写（BatchValidationListener / ExcelFeedbackUtil）、智能防呆模板生成（@ExcelDropdown / @ExcelPrompt）、双向业务转义（@ExcelEnum / @ExcelDict SPI）、复杂报表填充、单元格合并与 Fluent 多 Sheet 编排（ExcelBuilder）。
 - [Sa-Token 安全鉴权与会话管控](./ateng-boot-satoken/CONTEXT.md) — 面向企业级应用的高性能轻量鉴权与分布式会话治理底座，提供细粒度权限控制、双轨拦截防御、自适应存储桥接、强类型 LoginUser/LoginHelper 载荷、MyBatis-Plus 审计全链路贯通、两级权限缓存与 Spring 原生事件广播（参见 [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)、[ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md)）。
-- [Samples 验证工程](./ateng-boot-samples/CONTEXT.md) — 采用 H2 内存库提供内测验证用例与工程化最佳实践 Demo。
+- [Samples 验证工程矩阵](./ateng-boot-samples/CONTEXT.md) — 采用二级 Parent POM 聚合解耦的多模块自验矩阵（包含 basic、redis、excel、satoken 等专一场景 Demo 与 smoke-test 全家桶冒烟门禁），以最小外部依赖（H2 内存库 / 纯内存模式）完成端到端自动化测试验证与开箱即用最佳实践。
 
 ## Relationships
 
@@ -23,7 +23,7 @@
 - **Web → Core**：Web 模块依赖 Core 模块的 `Result`、`BusinessException` 与 `IResultCode`，全局异常拦截器将未捕获异常转换为标准 `Result`，`TraceFilter` 采用 `IdUtil.fastSimpleUUID()` 极速无锁生成 `traceId` 并联动 MDC 注入；直接继承 Core 模块提供的受管异步线程池与四维上下文透传设施（`ContextCopyingTaskDecorator` 与 `AsyncContext`）；基于 SPI 抽象与两级存储自适应提供接口防重幂等引擎 `@Idempotent`（参见 [ADR-0013](./docs/adr/0013-spi-based-hybrid-idempotent-engine.md)）；提供三级自适应令牌桶限流防刷引擎 `@RateLimiter`（参见 [ADR-0014](./docs/adr/0014-three-tier-adaptive-rate-limiter-engine.md)）；提供基于 SPI 扩展与凭据安全反射的动态 CORS 方案（参见 [ADR-0015](./docs/adr/0015-dynamic-cors-and-credentials-safe-origin-reflection.md)）；提供双向数据加签验签与防重放引擎 `@ApiSign`（参见 [ADR-0016](./docs/adr/0016-dual-direction-api-signature-and-anti-replay-engine.md)）；同时遵循零重型外部依赖哲学，就近内聚 `IpUtil` 与 `ServletUtil`（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）。
 - **MyBatis-Plus → Core**：MyBatis-Plus 模块依赖 Core 模块的 `CurrentUserProvider` SPI 与 `UserContextHolder` 获取操作人；依赖 `CryptoUtil` 与 `DesensitizeUtil` 实现持久层 `@FieldEncrypt` 透明加密与 `@FieldSensitive` 视图脱敏（参见 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）；桥接 Core 模块纯原生 `Snowflake` 统一持久层分布式主键发号引擎（参见 [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md)）；基于 JSqlParser AST 自适应语法树构建企业级行级多租户安全隔离体系 `@IgnoreTenant`（参见 [ADR-0017](./docs/adr/0017-multi-tenant-row-level-isolation-architecture.md)）与声明式细粒度数据权限引擎 `@DataScope`（参见 [ADR-0018](./docs/adr/0018-declarative-data-permission-engine-architecture.md)）；提供原生高性能分批批量插入引擎 `AtengBaseMapper`、`AtengBaseService` 与 `BatchUtil`（参见 [ADR-0019](./docs/adr/0019-native-high-performance-batch-insert-engine.md)）；并通过 `PageUtil` 实现 ORM `IPage` 到纯净 `PageResult` 的流式转换（参见 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md)）。
 - **All → Core / Web / MyBatis-Plus / Redis / Excel / SaToken**：All 模块为纯依赖聚合工程，向下游调用端透传全套核心 Starter。
-- **Samples → All**：Samples 工程作为下游消费端样例，验证所有模块组合后的开箱即用自动装配与端到端运行表现。
+- **Samples Matrix → Core / Web / MyBatis-Plus / Redis / Excel / SaToken / All**：Samples 矩阵作为下游消费端样例群，遵循零共享代码（Zero-Shared-Code）与高内聚隔离原则。各专一场景子模块（`sample-basic`、`sample-redis`、`sample-excel`、`sample-satoken`）按需精准依赖对应 Starter，提供最小可用代码块与秒级精准单测；`sample-smoke-test` 聚合依赖 `ateng-boot-all` 专职负责全家桶装配冒烟准出门禁（参见 [ADR-0028](./docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)）。
 
 ## Architectural Decisions
 

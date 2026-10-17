@@ -243,8 +243,8 @@ public class UserController {
 
 ### 本地样例一键运行 (Demo Samples)
 ```bash
-# 启动样例演示工程（内置 H2 内存库与完整自验用例）
-mvn -pl ateng-boot-samples spring-boot:run
+# 启动基础极简脚手架工程（内置 H2 内存库与完整自验用例）
+mvn -pl ateng-boot-samples/ateng-boot-sample-basic spring-boot:run
 ```
 
 ---
@@ -278,6 +278,9 @@ mvn -pl ateng-boot-samples spring-boot:run
 - [ADR-0023: 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md)
 - [ADR-0024: 企业级 Sa-Token 鉴权生态与安全防御/分布式会话一体化架构决策](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
 - [ADR-0025: Core 核心底座全方位扩建与未来中间件孵化地基架构决策](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md)
+- [ADR-0026: 生产级基线加固与底层设施大一统架构决策](./docs/adr/0026-production-hardening-and-foundations-unification.md)
+- [ADR-0027: 分层双防数据校验体系与标准化原语架构决策](./docs/adr/0027-defense-in-depth-validation-and-standardized-primitives.md)
+- [ADR-0028: 示例工程多模块解耦与精准增量集成测试架构决策](./docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)
 
 ---
 

@@ -35,6 +35,7 @@
 | **0025** | Core 核心底座全方位扩建与未来中间件孵化地基架构决策 | `Accepted` | 序列化门面 JsonUtil 下沉、脱敏/租户上下文彻底归位、四维异步透传闭环、函数式 Result 演化与 SpringUtil/LambdaUtil/RetryUtil 等未来孵化原语矩阵 | `ateng-boot-core` / 全工程 | [查看](./0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
 | **0026** | 生产级基线加固与底层设施大一统架构决策 | `Accepted` | 全域 JSON 100% 收敛 JsonUtil、双维上下文镜像对称与 Sa-Token 自动无感桥接、TraceFilter 无锁原语、异步线程池下沉 core、底座原语复用与延时队列 MDC 追踪 | `core` / `web` / `satoken` / `redis` / `excel` | [查看](./0026-production-hardening-and-foundations-unification.md) |
 | **0027** | 分层双防数据校验体系与标准化原语架构决策 | `Accepted` | 确立分层双防铁律，沉淀 ValidationGroups 标准分组契约与 ValidList 批量级联容器，扩展 ValidatorUtil POJO 编程式校验与无 EL 优雅降级 | `core` / `web` | [查看](./0027-defense-in-depth-validation-and-standardized-primitives.md) |
+| **0028** | 示例工程多模块解耦与精准增量集成测试架构决策 | `Accepted` | 二级 Parent POM 聚合解耦，自包含场景子模块矩阵（零共享代码），秒级精准增量测试门禁与发布双层排除隔离 | `ateng-boot-samples` / 全工程 | [查看](./0028-samples-modularization-and-incremental-integration-testing.md) |
 
 
 
