@@ -2,6 +2,7 @@ package io.github.atengk.boot.satoken.autoconfigure;
 
 import cn.dev33.satoken.dao.SaTokenDao;
 import cn.dev33.satoken.filter.SaTokenCorsFilterForJakartaServlet;
+import cn.dev33.satoken.listener.SaTokenListener;
 import cn.dev33.satoken.stp.StpInterface;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.strategy.SaFirewallStrategy;
@@ -9,19 +10,24 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.satoken.aspect.SaCheckSameTokenAspect;
 import io.github.atengk.boot.satoken.cache.CachedStpInterface;
 import io.github.atengk.boot.satoken.cache.DefaultUserRolePermissionLoader;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.cache.UserRolePermissionLoader;
 import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.dao.SaTokenRedisDao;
+import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
+import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -195,5 +201,51 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnMissingBean(CurrentUserProvider.class)
     public CurrentUserProvider saTokenCurrentUserProvider() {
         return new SaTokenCurrentUserProvider();
+    }
+
+    /**
+     * 注册 Sa-Token 原生事件广播发布器（桥接为 Spring ApplicationEvent）
+     *
+     * @param eventPublisher Spring 事件发布器
+     * @return SaTokenListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SaTokenListener.class)
+    public SaTokenListener saTokenEventPublisher(ApplicationEventPublisher eventPublisher) {
+        return new SaTokenEventPublisher(eventPublisher);
+    }
+
+    /**
+     * 注册微服务内部调用 Same-Token 零信任安全校验切面
+     *
+     * @return SaCheckSameTokenAspect 切面实例
+     */
+    @Bean
+    @ConditionalOnClass(org.aspectj.lang.annotation.Aspect.class)
+    @ConditionalOnMissingBean(SaCheckSameTokenAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaCheckSameTokenAspect saCheckSameTokenAspect() {
+        return new SaCheckSameTokenAspect();
+    }
+
+    /**
+     * OpenAPI / Knife4j 鉴权组件嵌套配置（防 Missing Class 类加载异常）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(GlobalOpenApiCustomizer.class)
+    public static class OpenApiConfiguration {
+
+        /**
+         * 注册 Sa-Token OpenAPI / Knife4j 鉴权组件定制器
+         *
+         * @param properties 配置属性
+         * @return SaTokenOpenApiCustomizer 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean(SaTokenOpenApiCustomizer.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.satoken.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public SaTokenOpenApiCustomizer saTokenOpenApiCustomizer(SaTokenProperties properties) {
+            return new SaTokenOpenApiCustomizer(properties);
+        }
     }
 }

@@ -52,6 +52,9 @@ class SampleSaTokenIntegrationTest {
     @Autowired
     private cn.dev33.satoken.stp.StpInterface stpInterface;
 
+    @Autowired
+    private io.github.atengk.boot.sample.listener.SampleSecurityEventListener securityEventListener;
+
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
     void shouldInterceptWhenNotLogin() throws Exception {
@@ -496,5 +499,96 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.length()").value(0));
+    }
+
+    @Test
+    @DisplayName("12. Spring 原生事件广播端到端验证：登录与踢人触发 @EventListener 并捕获事件载荷")
+    void shouldBroadcastSpringSecurityEventsOnLoginAndKickout() throws Exception {
+        securityEventListener.clear();
+
+        LoginUser user = LoginUser.builder()
+                .userId("88001")
+                .userName("事件测试员")
+                .build();
+
+        // 1. 登录
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 验证 EventListener 捕获登录事件
+        assertThat(securityEventListener.getLoginEvents()).hasSize(1);
+        io.github.atengk.boot.satoken.event.SaLoginEvent loginEvent = securityEventListener.getLoginEvents().get(0);
+        assertThat(loginEvent.getLoginId()).isEqualTo("88001");
+        assertThat(loginEvent.getTokenValue()).isEqualTo(token);
+
+        // 2. 踢人下线
+        mockMvc.perform(post("/api/auth/kickout")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("userId", "88001"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 验证 EventListener 捕获踢下线事件
+        assertThat(securityEventListener.getKickoutEvents()).hasSize(1);
+        io.github.atengk.boot.satoken.event.SaKickoutEvent kickoutEvent = securityEventListener.getKickoutEvents().get(0);
+        assertThat(kickoutEvent.getLoginId()).isEqualTo("88001");
+    }
+
+    @Test
+    @DisplayName("13. Knife4j / OpenAPI 自动鉴权弹窗端到端验证：校验 /v3/api-docs 包含 satoken 安全方案")
+    void shouldAutoMountKnife4jAndOpenApiSecurityScheme() throws Exception {
+        MvcResult apiDocsResult = mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode root = objectMapper.readTree(apiDocsResult.getResponse().getContentAsString());
+
+        // 验证 components.securitySchemes 包含 satoken
+        JsonNode satokenScheme = root.path("components").path("securitySchemes").path("satoken");
+        assertThat(satokenScheme.isMissingNode()).isFalse();
+        assertThat(satokenScheme.path("type").asText()).isEqualTo("apiKey");
+        assertThat(satokenScheme.path("name").asText()).isEqualTo("satoken");
+        assertThat(satokenScheme.path("in").asText()).isEqualTo("header");
+
+        // 验证全局 security 列表包含 satoken
+        JsonNode securityArray = root.path("security");
+        assertThat(securityArray.isArray()).isTrue();
+        boolean hasSatokenSecurity = false;
+        for (JsonNode item : securityArray) {
+            if (item.has("satoken")) {
+                hasSatokenSecurity = true;
+                break;
+            }
+        }
+        assertThat(hasSatokenSecurity).isTrue();
+    }
+
+    @Test
+    @DisplayName("14. Same-Token 零信任安全端到端验证：未携带/非法凭据拦截，合法凭据放行")
+    void shouldEnforceSameTokenZeroTrustSecurity() throws Exception {
+        // 1. 未携带 Same-Token 访问内部机密接口，返回 HTTP 200 + code: 401
+        mockMvc.perform(get("/api/auth/internal/data"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
+
+        // 2. 携带无效 Same-Token 访问，被 401 拦截
+        mockMvc.perform(get("/api/auth/internal/data")
+                        .header(cn.dev33.satoken.same.SaSameUtil.SAME_TOKEN, "invalid-same-token-xxx"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
+
+        // 3. 携带系统实时合法 Same-Token 访问，成功放行
+        String validSameToken = cn.dev33.satoken.same.SaSameUtil.getToken();
+        mockMvc.perform(get("/api/auth/internal/data")
+                        .header(cn.dev33.satoken.same.SaSameUtil.SAME_TOKEN, validSameToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("内部机密数据访问成功"));
     }
 }

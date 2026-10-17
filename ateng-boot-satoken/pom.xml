@@ -75,6 +75,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- SpringDoc OpenAPI (Knife4j / Swagger 鉴权组件可选依赖) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

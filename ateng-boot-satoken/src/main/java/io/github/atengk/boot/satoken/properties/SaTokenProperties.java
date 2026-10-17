@@ -130,4 +130,26 @@ public class SaTokenProperties {
          */
         private long emptyTtlSeconds = 60;
     }
+
+    /**
+     * OpenAPI / Knife4j 自动鉴权弹窗配置
+     */
+    private OpenApiProperties openapi = new OpenApiProperties();
+
+    /**
+     * OpenAPI 鉴权属性
+     */
+    @Data
+    public static class OpenApiProperties {
+
+        /**
+         * 是否自动为 OpenAPI / Knife4j 挂载 Sa-Token 鉴权弹窗
+         */
+        private boolean enabled = true;
+
+        /**
+         * 鉴权 Header 名称（默认回退使用 Sa-Token 全局配置中的 tokenName，兜底 satoken）
+         */
+        private String tokenName;
+    }
 }

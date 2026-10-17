@@ -306,4 +306,28 @@ public class SaTokenSampleController {
         LoginHelper.checkLogin();
         return Result.success(cn.dev33.satoken.stp.StpUtil.getPermissionList());
     }
+
+    /**
+     * 主动将指定用户踢下线
+     *
+     * @param body 请求体（含 userId）
+     * @return 成功响应
+     */
+    @PostMapping("/kickout")
+    public Result<Void> kickout(@RequestBody Map<String, String> body) {
+        String userId = body.get("userId");
+        cn.dev33.satoken.stp.StpUtil.kickout(userId);
+        return Result.success();
+    }
+
+    /**
+     * 标注 @CheckSameToken 的微服务内部机密数据接口
+     *
+     * @return 业务数据
+     */
+    @GetMapping("/internal/data")
+    @io.github.atengk.boot.satoken.annotation.CheckSameToken
+    public Result<String> getInternalData() {
+        return Result.success("内部机密数据访问成功");
+    }
 }

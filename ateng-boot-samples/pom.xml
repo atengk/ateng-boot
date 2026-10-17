@@ -33,6 +33,12 @@
             <artifactId>ateng-boot-satoken</artifactId>
         </dependency>
 
+        <!-- SpringDoc OpenAPI (用于端到端验证 Knife4j / Swagger 鉴权组件装配) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+
         <!-- H2 内存数据库 (运行时自测) -->
         <dependency>
             <groupId>com.h2database</groupId>
