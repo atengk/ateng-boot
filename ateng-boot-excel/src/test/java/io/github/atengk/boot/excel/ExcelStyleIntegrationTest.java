@@ -1,6 +1,7 @@
 package io.github.atengk.boot.excel;
 
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
@@ -81,7 +82,7 @@ class ExcelStyleIntegrationTest {
     }
 
     // 注解定制模型：绿色主题 + 金额列右对齐
-    @ExcelTheme(theme = io.github.atengk.boot.excel.enums.ExcelTheme.FRESH_GREEN, zebraStripe = true)
+    @ExcelTheme(theme = ExcelThemeEnum.FRESH_GREEN, zebraStripe = true)
     public static class AnnotatedGreenModel {
         @ExcelProperty("订单号")
         private Long orderId;
@@ -224,7 +225,7 @@ class ExcelStyleIntegrationTest {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (ExcelBuilder builder = ExcelUtil.builder(out)) {
             // Sheet 1: 显式链式设为暖阳橙
-            builder.theme(io.github.atengk.boot.excel.enums.ExcelTheme.WARM_ORANGE)
+            builder.theme(ExcelThemeEnum.WARM_ORANGE)
                     .autoColumnWidth(15, 50)
                     .sheet("用户清单", DefaultUserModel.class, users);
 

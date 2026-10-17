@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
@@ -141,15 +142,15 @@ public final class ExcelUtil {
             return; // 全局关闭
         }
 
-        io.github.atengk.boot.excel.enums.ExcelTheme theme;
+        ExcelThemeEnum theme;
         if (annotation != null) {
             if (!annotation.value().isBlank()) {
-                theme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(annotation.value());
+                theme = ExcelThemeEnum.fromName(annotation.value());
             } else {
                 theme = annotation.theme();
             }
         } else {
-            theme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(styleProps.getTheme());
+            theme = ExcelThemeEnum.fromName(styleProps.getTheme());
         }
 
         boolean zebraStripe = (annotation != null) ? annotation.zebraStripe() : styleProps.isZebraStripe();

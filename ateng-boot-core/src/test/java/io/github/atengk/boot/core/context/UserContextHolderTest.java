@@ -99,4 +99,49 @@ class UserContextHolderTest {
             UserContextHolder.setUserProvider(null);
         }
     }
+
+    @Test
+    @DisplayName("验证 runWithUser 编程式闭包执行与现场安全还原（含 SPI 回退无泄漏验证）")
+    void shouldExecuteRunWithUserAndRestoreContextWithoutSpiLeak() {
+        // 1. 无 SPI 且 ThreadLocal 为空时的闭包执行
+        assertNull(UserContextHolder.get());
+        String result = UserContextHolder.runWithUser("temp-user-1", () -> {
+            assertEquals("temp-user-1", UserContextHolder.get());
+            return "ok";
+        });
+        assertEquals("ok", result);
+        assertNull(UserContextHolder.get());
+
+        // 2. 原本有 ThreadLocal 时的嵌套闭包执行
+        UserContextHolder.set("outer-user");
+        UserContextHolder.runWithUser("inner-user", () -> {
+            assertEquals("inner-user", UserContextHolder.get());
+            UserContextHolder.runWithUser("deep-inner-user", (Runnable) () -> {
+                assertEquals("deep-inner-user", UserContextHolder.get());
+            });
+            assertEquals("inner-user", UserContextHolder.get());
+        });
+        assertEquals("outer-user", UserContextHolder.get());
+        UserContextHolder.clear();
+
+        // 3. 关键防卫测试：存在 SPI 时执行 runWithUser，执行完毕后不得将 SPI 用户固化写入 ThreadLocal
+        java.util.concurrent.atomic.AtomicReference<String> dynamicSpiUser = new java.util.concurrent.atomic.AtomicReference<>("spi-alice");
+        try {
+            UserContextHolder.setUserProvider(dynamicSpiUser::get);
+            assertEquals("spi-alice", UserContextHolder.get());
+
+            // 闭包内临时切换为 temp-bob
+            UserContextHolder.runWithUser("temp-bob", () -> {
+                assertEquals("temp-bob", UserContextHolder.get());
+            });
+
+            // 闭包结束后，ThreadLocal 必须已清理，能够正确感知 SPI 动态变更为 spi-charlie
+            assertEquals("spi-alice", UserContextHolder.get());
+            dynamicSpiUser.set("spi-charlie");
+            assertEquals("spi-charlie", UserContextHolder.get(), "闭包结束后不得将之前的 SPI 值固化到 ThreadLocal 中，应继续动态跟随 SPI 变更");
+        } finally {
+            UserContextHolder.setUserProvider(null);
+            UserContextHolder.clear();
+        }
+    }
 }

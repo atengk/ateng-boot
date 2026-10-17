@@ -1,6 +1,6 @@
 package io.github.atengk.boot.excel.handler;
 
-import io.github.atengk.boot.excel.enums.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import org.apache.fesod.sheet.write.handler.context.CellWriteHandlerContext;
 import org.apache.fesod.sheet.write.metadata.holder.WriteWorkbookHolder;
 import org.apache.fesod.sheet.write.metadata.style.WriteCellStyle;
@@ -30,7 +30,7 @@ public class ExcelThemeWriteHandler extends HorizontalCellStyleStrategy {
 
     public static final String DEFAULT_FONT_NAME = "微软雅黑";
 
-    private final ExcelTheme theme;
+    private final ExcelThemeEnum theme;
     private final boolean zebraStripe;
     private final String fontName;
 
@@ -41,20 +41,20 @@ public class ExcelThemeWriteHandler extends HorizontalCellStyleStrategy {
     private final Map<Workbook, CellStyle> zebraStyleCache = new HashMap<>(4);
 
     public ExcelThemeWriteHandler() {
-        this(ExcelTheme.BUSINESS_BLUE, true, DEFAULT_FONT_NAME);
+        this(ExcelThemeEnum.BUSINESS_BLUE, true, DEFAULT_FONT_NAME);
     }
 
-    public ExcelThemeWriteHandler(ExcelTheme theme) {
+    public ExcelThemeWriteHandler(ExcelThemeEnum theme) {
         this(theme, true, DEFAULT_FONT_NAME);
     }
 
-    public ExcelThemeWriteHandler(ExcelTheme theme, boolean zebraStripe) {
+    public ExcelThemeWriteHandler(ExcelThemeEnum theme, boolean zebraStripe) {
         this(theme, zebraStripe, DEFAULT_FONT_NAME);
     }
 
-    public ExcelThemeWriteHandler(ExcelTheme theme, boolean zebraStripe, String fontName) {
+    public ExcelThemeWriteHandler(ExcelThemeEnum theme, boolean zebraStripe, String fontName) {
         super();
-        this.theme = (theme != null) ? theme : ExcelTheme.BUSINESS_BLUE;
+        this.theme = (theme != null) ? theme : ExcelThemeEnum.BUSINESS_BLUE;
         this.zebraStripe = zebraStripe;
         this.fontName = (fontName != null && !fontName.isBlank()) ? fontName : DEFAULT_FONT_NAME;
 
@@ -121,9 +121,9 @@ public class ExcelThemeWriteHandler extends HorizontalCellStyleStrategy {
         }
     }
 
-    private static WriteCellStyle buildHeadStyle(ExcelTheme theme, String fontName) {
+    private static WriteCellStyle buildHeadStyle(ExcelThemeEnum theme, String fontName) {
         WriteCellStyle headStyle = new WriteCellStyle();
-        if (theme == ExcelTheme.MINIMAL_CLEAN) {
+        if (theme == ExcelThemeEnum.MINIMAL_CLEAN) {
             headStyle.setFillPatternType(FillPatternType.NO_FILL);
         } else {
             headStyle.setFillPatternType(FillPatternType.SOLID_FOREGROUND);
@@ -150,10 +150,10 @@ public class ExcelThemeWriteHandler extends HorizontalCellStyleStrategy {
         return headStyle;
     }
 
-    private static List<WriteCellStyle> buildContentStyles(ExcelTheme theme, boolean zebraStripe, String fontName) {
+    private static List<WriteCellStyle> buildContentStyles(ExcelThemeEnum theme, boolean zebraStripe, String fontName) {
         List<WriteCellStyle> list = new ArrayList<>(2);
         list.add(createContentStyle(theme.getContentBaseColorIndex(), fontName));
-        if (zebraStripe && theme != ExcelTheme.MINIMAL_CLEAN) {
+        if (zebraStripe && theme != ExcelThemeEnum.MINIMAL_CLEAN) {
             list.add(createContentStyle(theme.getZebraColorIndex(), fontName));
         }
         return list;
@@ -176,7 +176,7 @@ public class ExcelThemeWriteHandler extends HorizontalCellStyleStrategy {
         return style;
     }
 
-    public ExcelTheme getTheme() {
+    public ExcelThemeEnum getTheme() {
         return theme;
     }
 

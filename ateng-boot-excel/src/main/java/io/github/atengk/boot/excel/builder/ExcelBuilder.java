@@ -1,6 +1,7 @@
 package io.github.atengk.boot.excel.builder;
 
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
@@ -42,7 +43,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     private boolean finished = false;
 
     // 链式自定义样式状态
-    private io.github.atengk.boot.excel.enums.ExcelTheme theme;
+    private ExcelThemeEnum theme;
     private Boolean zebraStripe;
     private Boolean autoColumnWidth;
     private Integer minColumnWidth;
@@ -83,7 +84,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
      * @param theme 模版主题枚举
      * @return 当前构建器实例
      */
-    public ExcelBuilder theme(io.github.atengk.boot.excel.enums.ExcelTheme theme) {
+    public ExcelBuilder theme(ExcelThemeEnum theme) {
         this.theme = theme;
         return this;
     }
@@ -273,17 +274,17 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
             return;
         }
 
-        io.github.atengk.boot.excel.enums.ExcelTheme finalTheme;
+        ExcelThemeEnum finalTheme;
         if (this.theme != null) {
             finalTheme = this.theme;
         } else if (annotation != null) {
             if (!annotation.value().isBlank()) {
-                finalTheme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(annotation.value());
+                finalTheme = ExcelThemeEnum.fromName(annotation.value());
             } else {
                 finalTheme = annotation.theme();
             }
         } else {
-            finalTheme = io.github.atengk.boot.excel.enums.ExcelTheme.fromName(styleProps.getTheme());
+            finalTheme = ExcelThemeEnum.fromName(styleProps.getTheme());
         }
 
         boolean finalZebra;

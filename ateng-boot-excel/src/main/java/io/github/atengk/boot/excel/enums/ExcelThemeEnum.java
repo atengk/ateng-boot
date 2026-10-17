@@ -13,7 +13,7 @@ import java.util.Locale;
  * @author Ateng
  * @since 2026-10-17
  */
-public enum ExcelTheme {
+public enum ExcelThemeEnum {
 
     /**
      * 极简高雅白（默认推荐）：表头无底色加粗，正文纯白，保留精致细实线网格边框
@@ -47,11 +47,11 @@ public enum ExcelTheme {
     private final byte[] headerRgb;
     private final byte[] zebraRgb;
 
-    ExcelTheme(short headerColorIndex, short contentBaseColorIndex, short zebraColorIndex) {
+    ExcelThemeEnum(short headerColorIndex, short contentBaseColorIndex, short zebraColorIndex) {
         this(headerColorIndex, contentBaseColorIndex, zebraColorIndex, null, null);
     }
 
-    ExcelTheme(short headerColorIndex, short contentBaseColorIndex, short zebraColorIndex, byte[] headerRgb, byte[] zebraRgb) {
+    ExcelThemeEnum(short headerColorIndex, short contentBaseColorIndex, short zebraColorIndex, byte[] headerRgb, byte[] zebraRgb) {
         this.headerColorIndex = headerColorIndex;
         this.contentBaseColorIndex = contentBaseColorIndex;
         this.zebraColorIndex = zebraColorIndex;
@@ -88,14 +88,14 @@ public enum ExcelTheme {
      * 支持连字符与下划线不区分大小写，如 "minimal-clean"、"MINIMAL_CLEAN"、"classic-grey"
      *
      * @param themeName 主题名称
-     * @return 匹配的 ExcelTheme 枚举，未匹配或为空时返回默认值 MINIMAL_CLEAN
+     * @return 匹配的 ExcelThemeEnum 枚举，未匹配或为空时返回默认值 MINIMAL_CLEAN
      */
-    public static ExcelTheme fromName(String themeName) {
+    public static ExcelThemeEnum fromName(String themeName) {
         if (themeName == null || themeName.isBlank()) {
             return MINIMAL_CLEAN;
         }
         String normalized = themeName.trim().replace('-', '_').toUpperCase(Locale.ROOT);
-        for (ExcelTheme theme : values()) {
+        for (ExcelThemeEnum theme : values()) {
             if (theme.name().equals(normalized)) {
                 return theme;
             }

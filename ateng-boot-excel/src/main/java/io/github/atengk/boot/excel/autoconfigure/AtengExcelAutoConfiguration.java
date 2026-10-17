@@ -27,14 +27,26 @@ import org.springframework.context.annotation.Bean;
 @EnableConfigurationProperties(ExcelProperties.class)
 public class AtengExcelAutoConfiguration {
 
-    public AtengExcelAutoConfiguration(ExcelProperties properties,
-                                      ObjectProvider<DictProvider> dictProviderProvider) {
-        if (properties != null) {
-            ExcelUtil.initProperties(properties);
-        }
-        if (dictProviderProvider != null) {
-            dictProviderProvider.ifAvailable(DictProviderHolder::setProvider);
-        }
+    /**
+     * 容器初始化完成后自动将受管配置与字典提供者注入静态工具门面与持有者
+     * 规避在构造方法中对静态状态产生副作用的生命周期异味
+     *
+     * @param properties 配置属性
+     * @param dictProviderProvider 字典提供者 SPI
+     * @return SmartInitializingSingleton 实例
+     */
+    @Bean
+    public org.springframework.beans.factory.SmartInitializingSingleton excelStaticFacadeInitializer(
+            ExcelProperties properties,
+            ObjectProvider<DictProvider> dictProviderProvider) {
+        return () -> {
+            if (properties != null) {
+                ExcelUtil.initProperties(properties);
+            }
+            if (dictProviderProvider != null) {
+                dictProviderProvider.ifAvailable(DictProviderHolder::setProvider);
+            }
+        };
     }
 
     @Bean

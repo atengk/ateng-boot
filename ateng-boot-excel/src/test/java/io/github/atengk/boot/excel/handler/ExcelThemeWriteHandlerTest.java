@@ -1,6 +1,6 @@
 package io.github.atengk.boot.excel.handler;
 
-import io.github.atengk.boot.excel.enums.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import org.apache.fesod.sheet.FesodSheet;
 import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.poi.ss.usermodel.*;
@@ -85,7 +85,7 @@ class ExcelThemeWriteHandlerTest {
     @DisplayName("测试商务蓝主题(BUSINESS_BLUE)导出：表头底色、边框、字体与正文斑马纹交替")
     void testBusinessBlueThemeWithZebraStripe() throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        ExcelThemeWriteHandler themeHandler = new ExcelThemeWriteHandler(ExcelTheme.BUSINESS_BLUE, true, "微软雅黑");
+        ExcelThemeWriteHandler themeHandler = new ExcelThemeWriteHandler(ExcelThemeEnum.BUSINESS_BLUE, true, "微软雅黑");
 
         FesodSheet.write(out, SampleUser.class)
                 .registerWriteHandler(themeHandler)
@@ -125,7 +125,7 @@ class ExcelThemeWriteHandlerTest {
     void testClassicGreyContrastAndMinimalClean() throws IOException {
         // 1. 验证石墨灰 (CLASSIC_GREY - 方案 B-2)：厚重灰表头(#B0B7C0) + 黑色加粗文字 + 清晰浅灰斑马纹(#DEE2E6)
         ByteArrayOutputStream outGrey = new ByteArrayOutputStream();
-        ExcelThemeWriteHandler greyHandler = new ExcelThemeWriteHandler(ExcelTheme.CLASSIC_GREY, true, "微软雅黑");
+        ExcelThemeWriteHandler greyHandler = new ExcelThemeWriteHandler(ExcelThemeEnum.CLASSIC_GREY, true, "微软雅黑");
         FesodSheet.write(outGrey, SampleUser.class).registerWriteHandler(greyHandler).sheet("石墨灰").doWrite(createSampleUsers());
         byte[] greyBytes = outGrey.toByteArray();
         saveTempExcel("demo-theme-classic_grey.xlsx", greyBytes);
@@ -153,7 +153,7 @@ class ExcelThemeWriteHandlerTest {
 
         // 2. 验证极简白 (MINIMAL_CLEAN)：表头无底色加粗 + 细实线边框
         ByteArrayOutputStream outClean = new ByteArrayOutputStream();
-        ExcelThemeWriteHandler cleanHandler = new ExcelThemeWriteHandler(ExcelTheme.MINIMAL_CLEAN, true, "微软雅黑");
+        ExcelThemeWriteHandler cleanHandler = new ExcelThemeWriteHandler(ExcelThemeEnum.MINIMAL_CLEAN, true, "微软雅黑");
         FesodSheet.write(outClean, SampleUser.class).registerWriteHandler(cleanHandler).sheet("极简白").doWrite(createSampleUsers());
         byte[] cleanBytes = outClean.toByteArray();
         saveTempExcel("demo-theme-minimal_clean.xlsx", cleanBytes);

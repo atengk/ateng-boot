@@ -21,8 +21,17 @@ import java.util.Collection;
  */
 public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceImpl<M, T> implements AtengBaseService<T> {
 
-    @Autowired(required = false)
     private MybatisPlusProperties properties;
+
+    /**
+     * 注入持久层配置属性（Setter 注入规避字段反射注入）
+     *
+     * @param properties 配置属性
+     */
+    @Autowired(required = false)
+    public void setProperties(MybatisPlusProperties properties) {
+        this.properties = properties;
+    }
 
     @Transactional(rollbackFor = Exception.class)
     @Override

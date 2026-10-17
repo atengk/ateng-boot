@@ -98,7 +98,7 @@ public final class UserContextHolder {
      */
     public static <T> T runWithUser(String userId, java.util.function.Supplier<T> supplier) {
         java.util.Objects.requireNonNull(supplier, "supplier 不能为空");
-        String previous = get();
+        String previous = USER_HOLDER.get();
         set(userId);
         try {
             return supplier.get();

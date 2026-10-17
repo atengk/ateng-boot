@@ -557,15 +557,15 @@ ExcelUtil.export(response, "碳减排统计报表", dataList, EcoReportVO.class)
 #### 2. Fluent 链式多 Sheet 样式定制 (`ExcelBuilder`)
 ```java
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
-import io.github.atengk.boot.excel.enums.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 
 try (ExcelBuilder builder = ExcelUtil.builder(response, "集团跨部门经营报表")) {
-    builder.theme(ExcelTheme.BUSINESS_BLUE)
+    builder.theme(ExcelThemeEnum.BUSINESS_BLUE)
            .zebraStripe(true)
            .autoColumnWidth(true)
            .sheet("国内业务汇总", DomesticVO.class, domesticList)
-           .theme(ExcelTheme.WARM_ORANGE) // 第二个 Sheet 独立切换为温暖橙主题
+           .theme(ExcelThemeEnum.WARM_ORANGE) // 第二个 Sheet 独立切换为温暖橙主题
            .zebraStripe(false)
            .sheet("海外业务拓展", OverseasVO.class, overseasList);
 }

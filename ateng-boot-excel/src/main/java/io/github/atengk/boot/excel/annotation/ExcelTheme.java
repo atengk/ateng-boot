@@ -1,5 +1,7 @@
 package io.github.atengk.boot.excel.annotation;
 
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
+
 import java.lang.annotation.*;
 
 /**
@@ -31,7 +33,7 @@ public @interface ExcelTheme {
     /**
      * 预设模版主题（默认极简白）
      */
-    io.github.atengk.boot.excel.enums.ExcelTheme theme() default io.github.atengk.boot.excel.enums.ExcelTheme.MINIMAL_CLEAN;
+    ExcelThemeEnum theme() default ExcelThemeEnum.MINIMAL_CLEAN;
 
     /**
      * 是否启用正文奇偶行斑马纹交替渲染

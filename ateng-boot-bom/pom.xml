@@ -54,6 +54,25 @@
                 <version>${project.version}</version>
             </dependency>
 
+            <!-- MyBatis-Plus Spring Boot 3 Starter -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-jsqlparser</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+
+            <!-- Redisson 分布式客户端 -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+
             <!-- Sa-Token 依赖版本统管 -->
             <dependency>
                 <groupId>cn.dev33</groupId>

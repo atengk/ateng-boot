@@ -3,7 +3,7 @@ package io.github.atengk.boot.sample.excel;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
-import io.github.atengk.boot.excel.enums.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
@@ -303,7 +303,7 @@ class SampleExcelIntegrationTest {
                 new UserExcelVO(103L, "王阳明", "13800000003", "wang@example.com", SampleGenderEnum.MALE, "财务部", "1")
         );
 
-        for (ExcelTheme theme : ExcelTheme.values()) {
+        for (ExcelThemeEnum theme : ExcelThemeEnum.values()) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (ExcelBuilder builder = ExcelUtil.builder(out)) {
                 builder.theme(theme)

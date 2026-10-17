@@ -1,7 +1,7 @@
 package io.github.atengk.boot.satoken.interceptor;
 
 import cn.dev33.satoken.interceptor.SaInterceptor;
-import io.github.atengk.boot.satoken.context.TenantContextBridge;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -23,7 +23,7 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
         if (pass && LoginHelper.isLogin()) {
             String tenantId = LoginHelper.getTenantId();
             if (tenantId != null && !tenantId.isBlank()) {
-                TenantContextBridge.setTenantId(tenantId);
+                TenantContextHolder.setTenantId(tenantId);
             }
         }
         return pass;
@@ -35,7 +35,7 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
             super.afterCompletion(request, response, handler, ex);
         } finally {
             // 无论请求成功与否，强制清空当前线程多租户上下文，彻底杜绝容器线程池复用污染
-            TenantContextBridge.clear();
+            TenantContextHolder.clear();
         }
     }
 }
