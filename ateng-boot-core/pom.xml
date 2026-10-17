@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 核心通用底座（统一响应、异常体系、业务断言、审计 SPI）</description>
+    <description>ateng-boot 核心通用底座（统一强类型响应契约、异常体系、业务断言、纯原生雪花发号器、全场景敏感数据脱敏、上下文透传 SPI）</description>
 
     <dependencies>
         <!-- 日志门面 -->

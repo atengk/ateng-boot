@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot Redis 基础设施与分布式协同（双核驱动、安全序列化、声明式分布式锁、延时队列）</description>
+    <description>ateng-boot Redis 基础设施与分布式协同（双核驱动、纯净安全 JSON 序列化、四阶声明式分布式锁、双模轻量延时队列、防雪崩增强缓存）</description>
 
     <dependencies>
         <!-- 核心底座依赖 -->

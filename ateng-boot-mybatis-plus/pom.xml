@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 数据持久层增强（BaseEntity、审计填充、动态方言分页、防全表更新删除、乐观锁）</description>
+    <description>ateng-boot 数据持久层增强（实体五级继承阶梯、审计填充、AST 行级多租户隔离、AST 细粒度数据权限、高性能分批批量插入、存储透明加密与出库脱敏）</description>
 
     <dependencies>
         <!-- 核心底座依赖 -->

@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot Web 运行时增强（链路追踪 TraceFilter、全局异常处理、Jackson 定制、CORS）</description>
+    <description>ateng-boot Web 运行时增强（链路追踪 TraceFilter、全局异常防御、三级自适应防重幂等、限流防刷、双向验签与 RFC 6266 流式安全下载）</description>
 
     <dependencies>
         <!-- 核心底座依赖 -->

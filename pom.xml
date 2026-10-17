@@ -10,7 +10,7 @@
     <packaging>pom</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 基础设施与中间件 Starter 套件</description>
+    <description>面向生产就绪的 Spring Boot 3 工业级基础设施与全能中间件 Starter 套件</description>
     <url>https://github.com/atengk/ateng-boot</url>
 
     <licenses>

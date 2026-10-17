@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot Excel 基础设施（基于 Apache Fesod 流式读写、动态脱敏、智能模板与校验闭环）</description>
+    <description>ateng-boot Excel 轻量流式基础设施（基于 Apache Fesod 流式防 OOM 读写、单元格动态脱敏、JSR-303 批注回写、智能防呆模板与商务主题）</description>
 
     <dependencies>
         <!-- 核心底座依赖 -->
