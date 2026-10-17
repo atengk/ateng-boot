@@ -1,45 +1,49 @@
 # Storage Context
 
-`ateng-boot-storage` 是面向企业级应用的高性能、轻量级多源对象存储与安全预签名一体化 Starter，统一抽象 Local 本地磁盘存储与 S3 兼容协议，提供覆盖“统一双核协议抽象、扁平与动态多源智能双模配置、Local 预签名防盗链下载端点对齐、三位一体切源与四维上下文透传、Spring 原生资源与断点续传集成、全路径归一化安全防卫以及天然幂等删除”的全场景工业级对象存储底座。
+`ateng-boot-storage` 是面向企业级应用的高性能、轻量级、多源对象存储 Starter 套件，提供覆盖“Local 本地存储与 AWS S3 兼容协议统一驱动、排除 Netty 零膨胀、智能双模平铺与多源配置、内置轻量 HMAC-SHA256 预签名下载端点、三位一体动态切源与四维上下文透传、Spring 原生 Resource 桥接与 HTTP Range 206 断点续传、全路径安全防卫与删除操作天然幂等”的全场景一体化解决方案。
 
 ## Language
 
 **StorageDriver**:
-底层存储协议驱动 SPI，统一抽象物理落盘与网络对象存储交互协议（如 `LocalDriver`、`S3Driver`），定义原子存储操作集（上传、流读取、元数据获取、存在性检查、幂等删除与批量删除）。
+底层存储协议驱动 SPI 接口，统一定义文件落盘与云原生对象交互标准契约（如 `LocalDriver`、`S3Driver`），支持单源与多源扩展。
 _Avoid_: StorageAdapter, StorageClientImpl, FileDriver
 
 **StorageTemplate**:
-面向业务开发者的受管高阶操作门面，负责参数防御清洗、Web 文件适配（`MultipartFile`）、MIME 自动推导、多源路由分发与业务异常转译。
+面向业务开发者的受管高阶操作门面，负责参数防御清洗、MIME 自动推导、Spring Web 表单适配、多存储源路由调度与异常统一转译。
 _Avoid_: FileManager, UploadHelper, StorageUtil, FileService
 
 **StorageResource**:
-实现 Spring 原生 `Resource` 与 `WritableResource` 接口的强类型资源载荷，封装底层流、大小与 Content-Type，支持 Spring MVC Controller 极简流式输出与 HTTP Range 断点续传。
+实现 Spring 原生 `Resource` 与 `WritableResource` 接口的强类型资源载荷，桥接底层存储对象，支持 Spring MVC Controller 极简流式输出与 HTTP Range 206 断点续传。
 _Avoid_: FileResponse, DownloadResult, StorageStream
 
 **StorageObject**:
-表示存储介质中对象的强类型元数据容器，封装对象路径、文件名、字节大小、Content-Type、ETag 与最后修改时间等。
+表示存储介质中对象的强类型元数据容器，封装对象相对路径、字节大小、Content-Type、ETag、最后修改时间等。
 _Avoid_: FileInfo, FileDto, BlobData
 
 **PresignedUrl**:
-具有访问或上传时效的预签名凭证 URL 载荷，云端 S3 基于 V4 签名实现，Local 基于内置轻量 HMAC-SHA256 签名端点 100% 行为对齐。
+具有访问或上传时效的预签名外链凭证模型，包含授权外链 URL、Unix 秒级过期时间戳与 HTTP 动作。云原生 S3 基于 SigV4 实现，Local 驱动基于内置 HMAC-SHA256 签名端点实现 100% 行为平替。
 _Avoid_: TempUrl, DownloadUrl, SignedLink
 
-**LocalDriver**:
-基于 Java NIO 的本地磁盘存储驱动，深度整合路径穿越防卫清洗、基于文件扩展名的标准 MIME 推导与分布式天然幂等删除保障。
-_Avoid_: DiskDriver, FileSystemDriver, NativeFileAdapter
-
-**S3Driver**:
-基于官方精简版 AWS SDK for Java 2.x 的云原生对象存储驱动，彻底剔除庞大的 Netty NIO 传输层，通吃 MinIO、AWS S3、阿里云 OSS、腾讯云 COS 与华为云 OBS。
-_Avoid_: MinioDriver, OssDriver, AwsClient
-
 **StorageContextHolder**:
-线程级当前存储源切换上下文持有者，原生接入 Core 模块的受管异步线程池四维快照透传。
+线程级当前存储源路由标识持有者，内部采用 InheritableThreadLocal 并接入 Core 模块的 `StorageTaskDecorator`，支持受管线程池、异步任务与虚拟线程的全链路上下文透传。
 _Avoid_: StorageThreadLocal, DynamicStorageManager
 
 **@Storage**:
-声明式多存储源切换注解，支持标注于 Spring Service / Controller 类或方法上。
+声明式多存储源切换注解，可标注于 Spring Controller / Service 类或方法上，由 `StorageAspect` 拦截并自动管理上下文压栈与出栈清理。
 _Avoid_: SwitchStorage, DS
 
+**StorageDriverFactory**:
+多存储源驱动容器与生命周期管理器，负责多命名驱动实例的预热缓存、主驱动定位与容器销毁时的优雅停机资源释放。
+_Avoid_: DriverRegistry, DriverPool, StorageManager
+
+**LocalStorageDownloadController**:
+Local 存储内置的预签名防盗链只读安全下载端点，校验 HMAC-SHA256 签名合法性与有效期限，执行二次路径清洗与流式输出。
+_Avoid_: FileDownloadServlet, StaticFileServer
+
+**StorageSecurityUtil**:
+存储安全防卫与路径规范化工具，提供全路径归一化、剥除相对路径与前置斜杠、文件名防御清洗及 HMAC-SHA256 签名验签算法。
+_Avoid_: PathSecurityHelper, SafePathUtil
+
 **StorageException**:
-存储模块受管业务异常根基类，继承自 Core 模块 `BusinessException`，配套标准 `StorageResultCode`。
+存储模块受管业务异常根基类，继承自 Core 模块 `BusinessException`，支持标准的业务错误码与上下文溯源。
 _Avoid_: FileException, S3Exception

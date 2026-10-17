@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-storage
+
+ateng:
+  boot:
+    storage:
+      primary: default
+      sources:
+        default:
+          type: local
+          local:
+            base-path: target/sample-storage/default
+            domain: http://localhost:8080
+            secret-key: sample-test-secret-key-32-bytes-minimum!
+            download-endpoint: /storage/local/download
+        backup:
+          type: local
+          local:
+            base-path: target/sample-storage/backup
+            domain: http://localhost:8080
+            secret-key: sample-test-secret-key-32-bytes-minimum!
+            download-endpoint: /storage/local/download

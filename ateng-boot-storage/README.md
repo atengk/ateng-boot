@@ -404,5 +404,15 @@ TraceId: trace-12345
 3. **路径归一化净化**：多余斜杠（`//`）与 Windows 反斜杠（`\`）自动规范化收敛为标准相对路径；
 4. **常量时间签名校验**：预签名 HMAC-SHA256 校验采用 `MessageDigest.isEqual` 常量时间比对，彻底杜绝时序攻击（Timing Attack）。
 
+---
 
+## 12. 场景样例工程与集成测试
 
+完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
+👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
+
+### 本地快速定向自验
+```bash
+mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C
+```
+无需启动任何外部 Docker / MinIO 容器，纯内存与临时目录闭环，秒级全绿准出。

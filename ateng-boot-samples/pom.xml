@@ -22,6 +22,7 @@
         <module>ateng-boot-sample-excel</module>
         <module>ateng-boot-sample-satoken</module>
         <module>ateng-boot-sample-smoke-test</module>
+        <module>ateng-boot-sample-storage</module>
     </modules>
 
     <properties>
