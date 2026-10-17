@@ -490,4 +490,20 @@ public class S3Driver implements StorageDriver {
             return rawUrl;
         }
     }
+
+    @Override
+    public void close() {
+        if (this.s3Client != null) {
+            try {
+                this.s3Client.close();
+            } catch (Exception ignored) {
+            }
+        }
+        if (this.s3Presigner != null) {
+            try {
+                this.s3Presigner.close();
+            } catch (Exception ignored) {
+            }
+        }
+    }
 }

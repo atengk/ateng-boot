@@ -14,7 +14,15 @@ import java.util.List;
  * @author Ateng
  * @since 2026-10-17
  */
-public interface StorageDriver {
+public interface StorageDriver extends AutoCloseable {
+
+    /**
+     * 释放底层存储驱动持有的连接池、网络通道或系统句柄（默认空实现）
+     */
+    @Override
+    default void close() {
+        // 默认空实现，由持有网络连接池的驱动（如 S3Driver）按需覆写
+    }
 
     /**
      * 上传存储对象

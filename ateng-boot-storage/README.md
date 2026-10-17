@@ -57,6 +57,38 @@ ateng:
         domain: https://cdn.example.com
 ```
 
+#### 方案 C：高阶多存储源双模配置（动态多源自动升阶）
+```yaml
+ateng:
+  boot:
+    storage:
+      enabled: true
+      primary: local
+      sources:
+        local:
+          type: local
+          local:
+            base-path: /data/files
+            domain: http://localhost:8080
+        oss-public:
+          type: s3
+          s3:
+            endpoint: https://oss-cn-hangzhou.aliyuncs.com
+            bucket: app-public
+            access-key: YOUR_ACCESS_KEY
+            secret-key: YOUR_SECRET_KEY
+            path-style: false
+            domain: https://cdn.example.com
+        minio-secure:
+          type: s3
+          s3:
+            endpoint: http://127.0.0.1:9000
+            bucket: app-secure
+            access-key: minioadmin
+            secret-key: minioadmin
+            path-style: true
+```
+
 ---
 
 ## 3. 基础文件流式上传 (`StorageTemplate.upload`)
@@ -289,12 +321,88 @@ HTTP方法: PUT
 
 ---
 
-## 10. 安全路径防卫机制
+## 10. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
+
+### 场景痛点
+大型生产系统往往同时对接多种存储后端（如将公开图片存入 CDN 加速桶、将企业私密合同存入内网私有 MinIO、临时中间数据写入本地磁盘）。若在业务代码中硬编码具体驱动或手动切换，耦合严重且极易在异步线程池中导致上下文串源污染。
+
+### 核心代码范式
+
+#### 1. 编程式链式切源 (`storageTemplate.use`)
+返回绑定目标存储源的不可变独立句柄，局部作用域线程安全，不污染全局上下文：
+
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void uploadMultiSources() {
+    byte[] content = "Hello Multi-Source".getBytes(StandardCharsets.UTF_8);
+
+    // 默认写入 primary 源
+    storageTemplate.upload("data/default.txt", new ByteArrayInputStream(content));
+
+    // 链式切换写入公开 OSS 源
+    storageTemplate.use("oss-public").upload("images/banner.png", new ByteArrayInputStream(content));
+
+    // 链式切换写入私密 MinIO 源
+    storageTemplate.use("minio-secure").upload("contracts/2026.pdf", new ByteArrayInputStream(content));
+}
+```
+
+#### 2. 声明式注解切源 (`@Storage`)
+支持标注在 Spring Service 类或方法上（方法级优先级高于类级），由切面自动切换并在 `finally` 中严格恢复现场：
+
+```java
+@Service
+public class OrderFileService {
+
+    @Autowired
+    private StorageTemplate storageTemplate;
+
+    // 自动切换至 minio-secure 存储源
+    @Storage("minio-secure")
+    public void archiveSecretContract(String path, InputStream in) {
+        // 无需显式切源，方法内部所有 storageTemplate 操作自动路由至 minio-secure
+        storageTemplate.upload(path, in);
+    }
+}
+```
+
+#### 3. 跨线程异步透传 (`StorageContextHolder.wrap`)
+与 Core 模块的 `AsyncContext` 四维快照深度联动，支持在 `@Async`、线程池及虚拟线程中跨线程安全透传当前活动存储源并在任务执行完毕后严格自恢复：
+
+```java
+// 主线程设定上下文
+StorageContextHolder.set("oss-public");
+MDC.put("traceId", "trace-12345");
+
+// 包装异步任务
+Runnable asyncTask = StorageContextHolder.wrap(() -> {
+    // 异步工作子线程精准捕获当前存储源与链路标识
+    System.out.println("当前存储源: " + StorageContextHolder.get());
+    System.out.println("TraceId: " + MDC.get("traceId"));
+});
+
+CompletableFuture.runAsync(asyncTask);
+```
+
+### 预期呈现契约
+控制台输出：
+```text
+当前存储源: oss-public
+TraceId: trace-12345
+```
+异步任务结束后，工作线程上下文被自动彻底恢复至原始现场，主线程现场丝毫不受影响。
+
+---
+
+## 11. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
 2. **深度消解相对路径**：逐级拆解路径片段，对任何包含 `..` 的逃逸路径快速失败抛出 `StorageException(StorageResultCode.INVALID_PATH)`；
 3. **路径归一化净化**：多余斜杠（`//`）与 Windows 反斜杠（`\`）自动规范化收敛为标准相对路径；
 4. **常量时间签名校验**：预签名 HMAC-SHA256 校验采用 `MessageDigest.isEqual` 常量时间比对，彻底杜绝时序攻击（Timing Attack）。
+
 
 

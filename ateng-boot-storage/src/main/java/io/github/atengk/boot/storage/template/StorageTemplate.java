@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -30,7 +31,11 @@ public class StorageTemplate implements StorageOperations {
 
     private final StorageDriver defaultDriver;
 
+    private final StorageDriverFactory factory;
+
     private final Map<String, StorageDriver> driverMap;
+
+    private final boolean bound;
 
     /**
      * 基于单一主驱动构造门面
@@ -38,7 +43,17 @@ public class StorageTemplate implements StorageOperations {
      * @param defaultDriver 默认存储驱动
      */
     public StorageTemplate(StorageDriver defaultDriver) {
-        this(defaultDriver, Collections.emptyMap());
+        this(defaultDriver, null, Collections.emptyMap(), false);
+    }
+
+    /**
+     * 基于主驱动与存储工厂构造门面（推荐多源构造）
+     *
+     * @param defaultDriver 默认主存储驱动
+     * @param factory       驱动工厂
+     */
+    public StorageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory) {
+        this(defaultDriver, factory, factory != null ? factory.getAllDrivers() : Collections.emptyMap(), false);
     }
 
     /**
@@ -48,30 +63,58 @@ public class StorageTemplate implements StorageOperations {
      * @param driverMap     命名存储驱动字典
      */
     public StorageTemplate(StorageDriver defaultDriver, Map<String, StorageDriver> driverMap) {
+        this(defaultDriver, null, driverMap, false);
+    }
+
+    /**
+     * 完整全参构造函数
+     *
+     * @param defaultDriver 默认主存储驱动
+     * @param factory       驱动工厂（可选）
+     * @param driverMap     命名存储驱动字典
+     * @param bound         是否为显式绑定的独立句柄
+     */
+    public StorageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory,
+                           Map<String, StorageDriver> driverMap, boolean bound) {
         if (defaultDriver == null) {
             throw new IllegalArgumentException("Default StorageDriver must not be null");
         }
         this.defaultDriver = defaultDriver;
+        this.factory = factory;
         this.driverMap = (driverMap != null && !driverMap.isEmpty())
                 ? new HashMap<>(driverMap)
                 : Collections.emptyMap();
+        this.bound = bound;
     }
 
     /**
-     * 编程式链式切源：获取指定命名存储源的操作契约
+     * 编程式链式切源：获取指定命名存储源的不可变操作契约
+     * 返回绑定目标驱动的独立句柄，局部作用域线程安全，不污染全局线程上下文
      *
      * @param sourceKey 存储源标识（如 "local", "oss-public", "minio-secure"）
      * @return 绑定目标存储源的操作门面实例
      */
+    @Override
     public StorageOperations use(String sourceKey) {
-        if (sourceKey == null || sourceKey.isBlank() || "primary".equalsIgnoreCase(sourceKey) || "default".equalsIgnoreCase(sourceKey)) {
+        if (sourceKey == null || sourceKey.isBlank()
+                || "primary".equalsIgnoreCase(sourceKey)
+                || "default".equalsIgnoreCase(sourceKey)) {
+            if (this.bound) {
+                StorageDriver primaryDriver = this.factory != null ? this.factory.getPrimaryDriver() : this.defaultDriver;
+                return new StorageTemplate(primaryDriver, this.factory, this.driverMap, true);
+            }
             return this;
         }
-        StorageDriver targetDriver = driverMap.get(sourceKey);
+        StorageDriver targetDriver = null;
+        if (this.factory != null) {
+            targetDriver = this.factory.getDriver(sourceKey);
+        } else if (this.driverMap != null) {
+            targetDriver = this.driverMap.get(sourceKey.trim());
+        }
         if (targetDriver == null) {
             throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "未找到指定的存储源: " + sourceKey);
         }
-        return new StorageTemplate(targetDriver, this.driverMap);
+        return new StorageTemplate(targetDriver, this.factory, this.driverMap, true);
     }
 
     @Override
@@ -151,10 +194,26 @@ public class StorageTemplate implements StorageOperations {
 
     /**
      * 获取当前活动驱动实例
+     * 若当前处于 use() 产生的显式绑定句柄（bound=true），则恒定使用绑定的目标驱动；
+     * 否则优先读取线程上下文 StorageContextHolder 指定的存储源，未设置时回退至 defaultDriver
      *
      * @return StorageDriver 实例
      */
     protected StorageDriver getDriver() {
-        return defaultDriver;
+        if (this.bound) {
+            return this.defaultDriver;
+        }
+        String contextSource = io.github.atengk.boot.storage.context.StorageContextHolder.get();
+        if (contextSource != null && !contextSource.isBlank()) {
+            if (this.factory != null) {
+                return this.factory.getDriver(contextSource);
+            }
+            StorageDriver driver = this.driverMap.get(contextSource.trim());
+            if (driver != null) {
+                return driver;
+            }
+            throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "未找到上下文指定的存储源: " + contextSource);
+        }
+        return this.defaultDriver;
     }
 }

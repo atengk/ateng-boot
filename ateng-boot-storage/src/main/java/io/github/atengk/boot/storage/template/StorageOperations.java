@@ -122,4 +122,15 @@ public interface StorageOperations {
      * @return 预签名外链模型
      */
     PresignedUrl getPresignedUploadUrl(String path, Duration duration);
+
+    /**
+     * 编程式链式切源：获取绑定了指定命名存储源的不可变操作门面句柄
+     * 局部作用域线程安全，不污染全局上下文
+     *
+     * @param sourceKey 目标存储源名称（如 "local", "oss-public", "minio-secure"）
+     * @return 绑定目标存储驱动的操作句柄
+     */
+    default StorageOperations use(String sourceKey) {
+        throw new UnsupportedOperationException("Current StorageOperations implementation does not support multi-source routing");
+    }
 }

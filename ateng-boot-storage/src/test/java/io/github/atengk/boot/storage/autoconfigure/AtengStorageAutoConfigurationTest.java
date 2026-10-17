@@ -103,6 +103,32 @@ class AtengStorageAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("配置多源 sources 模式下自动装配 StorageDriverFactory、StorageAspect 与 StorageTaskDecorator")
+    void testMultiSourceAutoConfiguration(@TempDir Path tempDir1, @TempDir Path tempDir2) {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.storage.primary=source1",
+                        "ateng.boot.storage.sources.source1.type=local",
+                        "ateng.boot.storage.sources.source1.local.base-path=" + tempDir1.toString(),
+                        "ateng.boot.storage.sources.source2.type=local",
+                        "ateng.boot.storage.sources.source2.local.base-path=" + tempDir2.toString()
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.storage.factory.StorageDriverFactory.class);
+                    io.github.atengk.boot.storage.factory.StorageDriverFactory factory =
+                            context.getBean(io.github.atengk.boot.storage.factory.StorageDriverFactory.class);
+                    assertThat(factory.getPrimary()).isEqualTo("source1");
+                    assertThat(factory.containsDriver("source1")).isTrue();
+                    assertThat(factory.containsDriver("source2")).isTrue();
+
+                    assertThat(context).hasSingleBean(StorageDriver.class);
+                    assertThat(context).hasSingleBean(StorageTemplate.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.storage.aspect.StorageAspect.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.storage.context.StorageTaskDecorator.class);
+                });
+    }
+
     @Configuration
     static class CustomDriverConfig {
         @Bean

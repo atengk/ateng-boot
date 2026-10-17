@@ -1,16 +1,16 @@
 package io.github.atengk.boot.storage.autoconfigure;
 
+import io.github.atengk.boot.storage.aspect.StorageAspect;
+import io.github.atengk.boot.storage.context.StorageTaskDecorator;
 import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
-import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.driver.S3Driver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
-import io.github.atengk.boot.storage.properties.LocalStorageProperties;
-import io.github.atengk.boot.storage.properties.S3StorageProperties;
+import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.properties.StorageProperties;
+import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
 import io.github.atengk.boot.storage.template.StorageTemplate;
-import io.github.atengk.boot.storage.util.StorageSecurityUtil;
-import org.springframework.beans.factory.ObjectProvider;
+import org.aspectj.lang.annotation.Aspect;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -18,11 +18,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.task.TaskDecorator;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
+import java.util.Map;
+
 /**
  * 存储基础设施自动装配类
+ * 支持单源平铺与多源 sources 智能双模装配、多驱动生命周期管理、AOP 切面及跨线程异步透传
  *
  * @author Ateng
  * @since 2026-10-17
@@ -34,44 +38,94 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 public class AtengStorageAutoConfiguration {
 
     /**
-     * 默认本地存储驱动 Bean 装配（当 type=local 或未指定时装配）
-     * 优先选用配置的 local.basePath，未指定时降级保底至系统临时目录下的 ateng-storage；
-     * 若未配置 secretKey 则自动生成 256 位安全随机密钥并回填配置属性
+     * 存储驱动单例工厂 Bean 装配
+     * 统一纳管所有命名存储源（单源极简平铺或多源 sources 字典），提供动态切源与生命周期优雅释放
      *
      * @param properties 存储配置属性
-     * @return LocalDriver 实例
+     * @return StorageDriverFactory 工厂实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(StorageDriverFactory.class)
+    public StorageDriverFactory storageDriverFactory(StorageProperties properties) {
+        String primary = properties.getPrimary();
+        if (primary == null || primary.isBlank()) {
+            primary = "primary";
+        }
+        StorageDriverFactory factory = new StorageDriverFactory(primary);
+
+        // 1. 若配置了 sources 多源字典，遍历并创建对应驱动
+        Map<String, StorageSourceProperties> sources = properties.getSources();
+        if (sources != null && !sources.isEmpty()) {
+            for (Map.Entry<String, StorageSourceProperties> entry : sources.entrySet()) {
+                factory.registerDriver(entry.getKey(), StorageDriverFactory.createDriver(entry.getValue()));
+            }
+        }
+
+        // 2. 若工厂中尚未包含 primary 驱动，则使用顶层单源平铺配置补齐作为 primary
+        if (!factory.containsDriver(primary)) {
+            StorageSourceProperties fallbackSource = new StorageSourceProperties();
+            fallbackSource.setType(properties.getType());
+            fallbackSource.setLocal(properties.getLocal());
+            fallbackSource.setS3(properties.getS3());
+            factory.registerDriver(primary, StorageDriverFactory.createDriver(fallbackSource));
+        }
+
+        return factory;
+    }
+
+    /**
+     * 默认主存储驱动 Bean 装配
+     * 从 StorageDriverFactory 中获取 primary 驱动，保障对单驱动注入的 100% 向后兼容
+     *
+     * @param factory 存储驱动工厂
+     * @return primary StorageDriver 实例
      */
     @Bean
     @ConditionalOnMissingBean(StorageDriver.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "local", matchIfMissing = true)
-    public StorageDriver localStorageDriver(StorageProperties properties) {
-        LocalStorageProperties local = properties.getLocal();
-        String basePath = local.getBasePath();
-        if (basePath == null || basePath.isBlank()) {
-            basePath = System.getProperty("java.io.tmpdir") + "/ateng-storage";
-        }
-        String secretKey = local.getSecretKey();
-        if (secretKey == null || secretKey.isBlank()) {
-            secretKey = StorageSecurityUtil.generateRandomSecretKey();
-            local.setSecretKey(secretKey);
-        }
-        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint());
+    public StorageDriver storageDriver(StorageDriverFactory factory) {
+        return factory.getPrimaryDriver();
     }
 
     /**
      * 存储核心操作门面 Bean 装配
      *
-     * @param defaultDriver 默认存储驱动
+     * @param defaultDriver 默认主存储驱动
+     * @param factory       存储驱动工厂
      * @return StorageTemplate 门面实例
      */
     @Bean
     @ConditionalOnMissingBean(StorageOperations.class)
-    public StorageTemplate storageTemplate(StorageDriver defaultDriver) {
-        return new StorageTemplate(defaultDriver);
+    public StorageTemplate storageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory) {
+        return new StorageTemplate(defaultDriver, factory);
     }
 
     /**
-     * S3 存储驱动及相关客户端静态嵌套配置类
+     * 声明式多存储源切换切面 Bean 装配
+     * 仅当类路径存在 AspectJ 切面环境时自动装配
+     *
+     * @return StorageAspect 切面实例
+     */
+    @Bean
+    @ConditionalOnClass(Aspect.class)
+    @ConditionalOnMissingBean(StorageAspect.class)
+    public StorageAspect storageAspect() {
+        return new StorageAspect();
+    }
+
+    /**
+     * 存储上下文感知异步任务装饰器 Bean 装配
+     * 联动 Core 模块四维快照与存储上下文在跨线程池调度时保持透传
+     *
+     * @return StorageTaskDecorator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(TaskDecorator.class)
+    public StorageTaskDecorator storageTaskDecorator() {
+        return new StorageTaskDecorator();
+    }
+
+    /**
+     * S3 独立客户端静态嵌套配置类
      * 仅当类路径存在 S3Client 且配置了 type=s3 时激活，隔离类加载与方法内省防御
      */
     @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
@@ -79,48 +133,17 @@ public class AtengStorageAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "s3")
     static class S3StorageConfiguration {
 
-        /**
-         * S3Client Bean 自动装配
-         *
-         * @param properties 存储配置属性
-         * @return S3Client 实例
-         */
         @Bean
         @ConditionalOnMissingBean(S3Client.class)
         public S3Client s3Client(StorageProperties properties) {
             return S3Driver.createS3Client(properties.getS3());
         }
 
-        /**
-         * S3Presigner Bean 自动装配
-         *
-         * @param properties 存储配置属性
-         * @return S3Presigner 实例
-         */
         @Bean
         @ConditionalOnMissingBean(S3Presigner.class)
         @ConditionalOnClass(S3Presigner.class)
         public S3Presigner s3Presigner(StorageProperties properties) {
             return S3Driver.createS3Presigner(properties.getS3());
-        }
-
-        /**
-         * S3 存储驱动 Bean 装配
-         *
-         * @param properties          存储配置属性
-         * @param s3ClientProvider    S3Client 候选 Provider
-         * @param s3PresignerProvider S3Presigner 候选 Provider
-         * @return S3Driver 驱动实例
-         */
-        @Bean
-        @ConditionalOnMissingBean(StorageDriver.class)
-        public StorageDriver s3StorageDriver(StorageProperties properties,
-                                            ObjectProvider<S3Client> s3ClientProvider,
-                                            ObjectProvider<S3Presigner> s3PresignerProvider) {
-            S3StorageProperties s3 = properties.getS3();
-            S3Client s3Client = s3ClientProvider.getIfAvailable(() -> S3Driver.createS3Client(s3));
-            S3Presigner s3Presigner = s3PresignerProvider.getIfAvailable(() -> S3Driver.createS3Presigner(s3));
-            return new S3Driver(s3Client, s3Presigner, s3.getBucket(), s3.getDomain());
         }
     }
 

@@ -43,6 +43,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring AOP 支持 (用于 @Storage 声明式切源注解切面，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- AWS S3 兼容协议精简依赖（可选依赖，按需装配，版本统管已排除 Netty） -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
