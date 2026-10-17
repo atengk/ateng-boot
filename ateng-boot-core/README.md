@@ -628,5 +628,30 @@ public class UserController {
 }
 ```
 
+---
 
+## 12. 模块配置属性参考 (`application.yml`)
 
+`ateng-boot-core` 内置生产级受管异步线程池与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），可在 `application.yml` 中按需定制线程池参数：
+
+```yaml
+ateng:
+  boot:
+    async:
+      # 是否启用受管异步线程池（默认 true）
+      enabled: true
+      # 核心线程数（默认可用 CPU 核心数）
+      core-pool-size: 8
+      # 最大线程数（默认可用 CPU 核心数 * 2）
+      max-pool-size: 16
+      # 阻塞队列容量（默认 1024）
+      queue-capacity: 1024
+      # 空闲线程存活时间（秒，默认 60）
+      keep-alive-seconds: 60
+      # 异步工作线程名前缀（默认 ateng-async-）
+      thread-name-prefix: "ateng-async-"
+      # 容器关闭时是否等待任务执行完成（默认 true）
+      wait-for-tasks-to-complete-on-shutdown: true
+      # 优雅停机等待超时时间（秒，默认 30）
+      await-termination-seconds: 30
+```

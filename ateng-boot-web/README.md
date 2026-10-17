@@ -255,7 +255,7 @@ ateng:
       long-to-string: true        # 是否将 Long 序列化为 String（防前端雪花丢失精度，默认 true）
       trace:
         enabled: true             # 是否启用 TraceFilter 链路追踪与 MDC 自动流转（默认 true）
-        header-name: "X-Trace-Id" # 链路追踪头名称（默认 X-Trace-Id）
+        header-name: "X-Trace-Id" # 链路追踪头名称（默认 X-Trace-Id；属性别名亦兼容 header）
       log:
         enabled: true             # 是否装配 @WebLog 接口审计切面（默认 false，按需开启）
       cors:
@@ -279,13 +279,14 @@ ateng:
         enabled: true             # 是否启用 API 接口双向加签验签与防重放引擎（默认 true）
         algorithm: HMAC_SHA256    # 签名算法（支持 HMAC_SHA256、RSA，默认 HMAC_SHA256）
         secret-key: "YourSecretKey" # 对称密钥（HMAC_SHA256 算法下使用）
-        expire-seconds: 300       # 签名时效窗口（秒，默认 300 秒 / 5 分钟）
+        expire-seconds: 60        # 全局签名时效窗口（秒，默认 60 秒；可被方法级 @ApiSign(expireSeconds) 覆盖）
         max-body-size: 2097152    # 请求体缓存最大字节数（防 OOM，默认 2MB）
-        header-app-id: "X-App-Id" # 应用标识请求头名称
-        header-timestamp: "X-Timestamp" # 时间戳请求头/响应头名称
-        header-nonce: "X-Nonce"   # 随机防重放串请求头/响应头名称
-        header-signature: "X-Signature" # 签名串请求头/响应头名称
+        header-app-id: "X-App-Id" # 应用标识请求头名称（默认 X-App-Id，支持动态定制）
+        header-timestamp: "X-Timestamp" # 时间戳请求头/响应头名称（默认 X-Timestamp，支持动态定制）
+        header-nonce: "X-Nonce"   # 随机防重放串请求头/响应头名称（默认 X-Nonce，支持动态定制）
+        header-signature: "X-Signature" # 签名串请求头/响应头名称（默认 X-Signature，支持动态定制）
 
+    # 异步线程池配置（统一由 ateng-boot-core 底座装配，Web 运行时天然继承并透传四维上下文）
     async:
       enabled: true               # 是否启用受管异步线程池（默认 true）
       core-pool-size: 8           # 核心线程数（默认可用 CPU 核心数）

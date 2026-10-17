@@ -93,13 +93,18 @@ public class ApiSignAspect {
                                       HttpServletRequest request,
                                       ApiSign apiSign,
                                       String appId) {
-        String timestampStr = request.getHeader(HEADER_TIMESTAMP);
-        String nonce = request.getHeader(HEADER_NONCE);
-        String signature = request.getHeader(HEADER_SIGNATURE);
+        String headerTimestamp = getHeaderTimestamp();
+        String headerNonce = getHeaderNonce();
+        String headerSignature = getHeaderSignature();
+
+        String timestampStr = request.getHeader(headerTimestamp);
+        String nonce = request.getHeader(headerNonce);
+        String signature = request.getHeader(headerSignature);
 
         // (1) 必备安全请求头校验
         if (!StringUtils.hasText(timestampStr) || !StringUtils.hasText(nonce) || !StringUtils.hasText(signature)) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST, "缺少签名必要请求头 (X-Timestamp, X-Nonce, X-Signature)");
+            throw new BusinessException(CommonResultCode.BAD_REQUEST,
+                    String.format("缺少签名必要请求头 (%s, %s, %s)", headerTimestamp, headerNonce, headerSignature));
         }
 
         // (2) 请求时间戳时效性校验
@@ -114,7 +119,8 @@ public class ApiSignAspect {
         }
 
         long now = System.currentTimeMillis();
-        long expireMillis = apiSign.expireSeconds() * 1000L;
+        long expireSeconds = resolveExpireSeconds(apiSign);
+        long expireMillis = expireSeconds * 1000L;
         if (Math.abs(now - clientTime) > expireMillis) {
             throw new BusinessException(CommonResultCode.BAD_REQUEST, "请求签名已过期");
         }
@@ -123,7 +129,7 @@ public class ApiSignAspect {
         IdempotentKeyStore keyStore = idempotentKeyStoreProvider.getIfAvailable();
         if (keyStore != null) {
             String nonceKey = "sign:nonce:" + appId + ":" + nonce;
-            boolean acquired = keyStore.tryLock(nonceKey, apiSign.expireSeconds(), TimeUnit.SECONDS);
+            boolean acquired = keyStore.tryLock(nonceKey, expireSeconds, TimeUnit.SECONDS);
             if (!acquired) {
                 log.warn("ApiSign detected repeated nonce [{}] for appId [{}]", nonce, appId);
                 throw new BusinessException(CommonResultCode.REPEAT_SUBMIT, "请求已被处理或存在重放风险");
@@ -165,8 +171,12 @@ public class ApiSignAspect {
         }
 
         try {
-            String reqTimestamp = request != null ? request.getHeader(HEADER_TIMESTAMP) : null;
-            String reqNonce = request != null ? request.getHeader(HEADER_NONCE) : null;
+            String headerTimestamp = getHeaderTimestamp();
+            String headerNonce = getHeaderNonce();
+            String headerSignature = getHeaderSignature();
+
+            String reqTimestamp = request != null ? request.getHeader(headerTimestamp) : null;
+            String reqNonce = request != null ? request.getHeader(headerNonce) : null;
 
             String respTimestamp = StringUtils.hasText(reqTimestamp) ? reqTimestamp : String.valueOf(System.currentTimeMillis());
             String respNonce = StringUtils.hasText(reqNonce) ? reqNonce : IdUtil.fastSimpleUUID();
@@ -179,13 +189,41 @@ public class ApiSignAspect {
 
             if (StringUtils.hasText(signKey)) {
                 String responseSignature = apiSigner.sign(responseCanonical, signKey);
-                response.setHeader(HEADER_SIGNATURE, responseSignature);
-                response.setHeader(HEADER_TIMESTAMP, respTimestamp);
-                response.setHeader(HEADER_NONCE, respNonce);
+                response.setHeader(headerSignature, responseSignature);
+                response.setHeader(headerTimestamp, respTimestamp);
+                response.setHeader(headerNonce, respNonce);
             }
         } catch (Exception e) {
             log.error("ApiSign outbound response signing failed: {}", e.getMessage(), e);
         }
+    }
+
+    private long resolveExpireSeconds(ApiSign apiSign) {
+        if (apiSign != null && apiSign.expireSeconds() > 0) {
+            return apiSign.expireSeconds();
+        }
+        long globalExpire = webProperties.getSign().getExpireSeconds();
+        return globalExpire > 0 ? globalExpire : 60L;
+    }
+
+    private String getHeaderAppId() {
+        String h = webProperties.getSign().getHeaderAppId();
+        return StringUtils.hasText(h) ? h : HEADER_APP_ID;
+    }
+
+    private String getHeaderTimestamp() {
+        String h = webProperties.getSign().getHeaderTimestamp();
+        return StringUtils.hasText(h) ? h : HEADER_TIMESTAMP;
+    }
+
+    private String getHeaderNonce() {
+        String h = webProperties.getSign().getHeaderNonce();
+        return StringUtils.hasText(h) ? h : HEADER_NONCE;
+    }
+
+    private String getHeaderSignature() {
+        String h = webProperties.getSign().getHeaderSignature();
+        return StringUtils.hasText(h) ? h : HEADER_SIGNATURE;
     }
 
     private String resolveRequestBodySha256(ProceedingJoinPoint joinPoint, HttpServletRequest request) {
@@ -237,7 +275,7 @@ public class ApiSignAspect {
 
     private String resolveAppId(HttpServletRequest request) {
         if (request != null) {
-            String appId = request.getHeader(HEADER_APP_ID);
+            String appId = request.getHeader(getHeaderAppId());
             if (StringUtils.hasText(appId)) {
                 return appId;
             }

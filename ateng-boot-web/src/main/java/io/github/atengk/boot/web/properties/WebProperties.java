@@ -51,6 +51,14 @@ public class WebProperties {
          * 链路追踪请求头键名
          */
         private String header = "X-Trace-Id";
+
+        public String getHeaderName() {
+            return header;
+        }
+
+        public void setHeaderName(String headerName) {
+            this.header = headerName;
+        }
     }
 
     /**
@@ -170,5 +178,25 @@ public class WebProperties {
          * 请求体缓存最大字节数（防 OOM，默认 2MB）
          */
         private int maxBodySize = 2 * 1024 * 1024;
+
+        /**
+         * 应用标识请求头名称（默认 X-App-Id）
+         */
+        private String headerAppId = "X-App-Id";
+
+        /**
+         * 时间戳请求头/响应头名称（默认 X-Timestamp）
+         */
+        private String headerTimestamp = "X-Timestamp";
+
+        /**
+         * 随机防重放串请求头/响应头名称（默认 X-Nonce）
+         */
+        private String headerNonce = "X-Nonce";
+
+        /**
+         * 签名串请求头/响应头名称（默认 X-Signature）
+         */
+        private String headerSignature = "X-Signature";
     }
 }

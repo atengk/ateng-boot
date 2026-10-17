@@ -389,12 +389,19 @@ ateng:
   boot:
     satoken:
       enabled: true               # 是否开启 ateng-boot-satoken 模块增强功能 (默认: true)
+      white-list:                 # 全局路由白名单路径列表（内置基础端点，底层自动与 interceptor.excludes 合并去重）
+        - "/doc.html"
+        - "/webjars/**"
+        - "/swagger-resources/**"
+        - "/v3/api-docs/**"
+        - "/favicon.ico"
+        - "/actuator/**"
       interceptor:                # 路由拦截器与白名单放行配置
         enabled: true             # 是否挂载 Sa-Token 路由拦截器 (默认: true)
         check-login: false        # 是否开启全局路由强制登录校验 (默认: false)
         includes:                 # 拦截匹配的 URL 路径列表 (默认: /**)
           - "/**"
-        excludes:                 # 排除放行的白名单 URL 路径列表
+        excludes:                 # 业务定制排除放行的白名单 URL 路径列表（底层自动与 white-list 聚合去重）
           - "/api/auth/login"
           - "/doc.html"
           - "/webjars/**"

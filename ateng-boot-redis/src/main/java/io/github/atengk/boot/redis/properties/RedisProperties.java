@@ -85,9 +85,33 @@ public class RedisProperties {
         private String prefix = "lock:";
 
         /**
-         * 慢锁告警阈值（毫秒），方法持锁执行时间超过该阈值时自动记录 WARN 日志
+         * 慢锁告警阈值（支持 3s、3000ms 等标准 Duration 格式，默认 3000ms），持锁执行时间超过该阈值时自动记录 WARN 日志
          */
-        private long slowThresholdMs = 3000L;
+        private Duration slowThreshold = Duration.ofMillis(3000L);
+
+        public long getSlowThresholdMs() {
+            return slowThreshold != null ? slowThreshold.toMillis() : 0L;
+        }
+
+        public void setSlowThresholdMs(long slowThresholdMs) {
+            this.slowThreshold = Duration.ofMillis(slowThresholdMs);
+        }
+
+        public Duration getSlowThreshold() {
+            return slowThreshold;
+        }
+
+        public void setSlowThreshold(Duration slowThreshold) {
+            this.slowThreshold = slowThreshold;
+        }
+
+        public Duration getSlowLockThreshold() {
+            return slowThreshold;
+        }
+
+        public void setSlowLockThreshold(Duration slowLockThreshold) {
+            this.slowThreshold = slowLockThreshold;
+        }
     }
 
     /**

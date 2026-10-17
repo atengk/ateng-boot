@@ -877,6 +877,8 @@ ateng:
         max-column-width: 60
         # 自适应内边距补偿字符数（默认 2，预留左右安全间隙，杜绝数值变 ###）
         padding-column-width: 2
+        # 默认全局字体名称（默认 微软雅黑）
+        font-name: "微软雅黑"
 ```
 
 

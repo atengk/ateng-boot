@@ -293,6 +293,8 @@ ateng:
       pagination:
         enabled: true             # 是否装配通用分页插件（默认 true）
         max-limit: 500            # 单页允许查询的最大记录上限（默认 500）
+        overflow: false           # 溢出总页数后是否进行处理（默认 false，继续请求）
+        db-type: ""               # 数据库方言类型（默认留空，框架自动推导）
       block-attack:
         enabled: true             # 是否装配防全表更新删除插件（默认 true）
       optimistic-locker:

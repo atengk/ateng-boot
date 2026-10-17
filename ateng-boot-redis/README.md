@@ -395,10 +395,11 @@ ateng:
   boot:
     redis:
       enabled: true                     # 是否启用 Redis 增强基础设施 (默认 true)
+      key-prefix: ""                    # 全局 Redis 键统一命名前缀 (默认空，不加前缀)
       lock:
         enabled: true                   # 是否启用声明式分布式锁切面 (默认 true)
         prefix: "lock:"                 # 分布式锁 Key 统配全局前缀 (默认 "lock:")
-        slow-lock-threshold: 3s         # 慢锁监控告警阈值 (默认 3s)
+        slow-threshold: 3s              # 慢锁监控告警阈值 (默认 3s，支持 3s、3000ms 等 Duration 格式，亦兼容 slow-threshold-ms 与 slow-lock-threshold)
       delay-queue:
         enabled: true                   # 是否启用延时队列支持 (默认 true)
         retry-times: 3                  # 延时消费失败最大重试次数 (默认 3)
@@ -407,9 +408,9 @@ ateng:
         enabled: true                   # 是否启用 Pub/Sub 广播引擎 (默认 true)
       cache:
         enabled: true                   # 是否启用增强缓存管理器 (默认 true)
-        default-ttl: 1h                 # 缓存默认生存时间 (默认 1h)
+        default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
         jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
-        max-jitter: 5m                  # 随机抖动最大时间跨度 (默认 5m)
+        max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
         cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
         null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
         expires:                        # 针对不同 CacheName 的个性化 TTL
@@ -417,4 +418,6 @@ ateng:
           long_cache: 24h
       redisson:
         config: ""                      # 可选自定义 Redisson 外部配置文件路径 (如 classpath:redisson.yaml)
+        threads: 0                      # Redisson 通用线程池大小 (默认 0，表示采用 Redisson 核心数*2 默认值)
+        netty-threads: 0                # Redisson Netty 线程池大小 (默认 0，表示采用 Redisson 默认值)
 ```
