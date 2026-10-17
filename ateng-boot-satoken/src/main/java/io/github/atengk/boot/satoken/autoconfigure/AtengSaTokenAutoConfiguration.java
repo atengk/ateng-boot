@@ -1,13 +1,16 @@
 package io.github.atengk.boot.satoken.autoconfigure;
 
 import cn.dev33.satoken.filter.SaTokenCorsFilterForJakartaServlet;
+import cn.dev33.satoken.stp.StpInterface;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.strategy.SaFirewallStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +21,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * Sa-Token 核心基础设施与防御性配置自动装配类
@@ -80,5 +84,28 @@ public class AtengSaTokenAutoConfiguration {
         FilterRegistrationBean<SaTokenCorsFilterForJakartaServlet> registration = new FilterRegistrationBean<>(filter);
         registration.setEnabled(false);
         return registration;
+    }
+
+    /**
+     * 注册默认权限与角色数据源实现（开箱即用从当前会话 LoginUser 读取）
+     *
+     * @return StpInterface 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(StpInterface.class)
+    public StpInterface defaultStpInterface() {
+        return new DefaultStpInterface();
+    }
+
+    /**
+     * 注册 Sa-Token WebMVC 路由拦截器配置
+     *
+     * @return WebMvcConfigurer 拦截器配置实例
+     */
+    @Bean
+    @ConditionalOnClass(WebMvcConfigurer.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer() {
+        return new SaTokenWebMvcConfigurer(properties);
     }
 }

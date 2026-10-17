@@ -1,6 +1,10 @@
 package io.github.atengk.boot.sample.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaCheckRole;
+import cn.dev33.satoken.annotation.SaCheckSafe;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.service.SaTokenSampleService;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +27,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
 public class SaTokenSampleController {
+
+    private final SaTokenSampleService sampleService;
 
     /**
      * 用户登录接口
@@ -93,7 +99,7 @@ public class SaTokenSampleController {
     }
 
     /**
-     * 二级安全受保护接口
+     * 编程式二级安全受保护接口
      *
      * @return 业务响应
      */
@@ -102,6 +108,17 @@ public class SaTokenSampleController {
         LoginHelper.checkLogin();
         LoginHelper.checkSafe("payment");
         return Result.success("支付操作通过");
+    }
+
+    /**
+     * AOP 注解式二级安全受保护接口
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/check-safe-annotation")
+    @SaCheckSafe("payment")
+    public Result<String> checkSafeAnnotation() {
+        return Result.success("注解式安全支付通过");
     }
 
     /**
@@ -114,5 +131,79 @@ public class SaTokenSampleController {
         LoginHelper.checkLogin();
         LoginHelper.closeSafe("payment");
         return Result.success();
+    }
+
+    /**
+     * AOP 注解角色校验接口（成功用例）
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/check-role")
+    @SaCheckRole("super_admin")
+    public Result<String> checkRole() {
+        return Result.success("角色校验通过");
+    }
+
+    /**
+     * AOP 注解角色校验接口（权限不足用例）
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/check-role-forbidden")
+    @SaCheckRole("financial_boss")
+    public Result<String> checkRoleForbidden() {
+        return Result.success("财务主管角色通过");
+    }
+
+    /**
+     * AOP 注解权限码校验接口（成功用例）
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/check-permission")
+    @SaCheckPermission("user:query")
+    public Result<String> checkPermission() {
+        return Result.success("权限码校验通过");
+    }
+
+    /**
+     * AOP 注解权限码校验接口（权限不足用例）
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/check-permission-forbidden")
+    @SaCheckPermission("user:delete")
+    public Result<String> checkPermissionForbidden() {
+        return Result.success("用户删除权限通过");
+    }
+
+    /**
+     * 调用 Service 业务层 AOP 角色校验
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/service-role")
+    public Result<String> callServiceRole() {
+        return Result.success(sampleService.checkServiceRole());
+    }
+
+    /**
+     * 调用 Service 业务层 AOP 权限码校验
+     *
+     * @return 业务响应
+     */
+    @GetMapping("/service-permission")
+    public Result<String> callServicePermission() {
+        return Result.success(sampleService.checkServicePermission());
+    }
+
+    /**
+     * 白名单公共测试接口
+     *
+     * @return 响应结果
+     */
+    @GetMapping("/public/ping")
+    public Result<String> publicPing() {
+        return Result.success("pong");
     }
 }

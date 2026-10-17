@@ -22,14 +22,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Sa-Token 安全鉴权与单机内存会话端到端集成测试
- * 验证无状态/单机登录、纯净 JSON 封包、401 细粒度异常映射、多租户主键前缀剥离、二级认证与注销下线
+ * 覆盖单机会话登录、双轨路由白名单拦截、Controller/Service 全域 AOP 注解鉴权与二级认证
  *
  * @author Ateng
  * @since 2026-10-17
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@DisplayName("Sa-Token 安全鉴权与单机会话端到端集成测试")
+@DisplayName("Sa-Token 双轨拦截与全域 AOP 鉴权端到端集成测试")
 class SampleSaTokenIntegrationTest {
 
     @Autowired
@@ -118,7 +118,7 @@ class SampleSaTokenIntegrationTest {
     }
 
     @Test
-    @DisplayName("3. 二级安全认证全生命周期：未开启 403 拦截 -> 开启通过 -> 手动关闭恢复拦截")
+    @DisplayName("3. 编程式二级安全认证全生命周期：未开启 403 拦截 -> 开启通过 -> 手动关闭恢复拦截")
     void shouldHandleSafeActionLifecycle() throws Exception {
         // 1. 登录
         LoginUser loginReq = LoginUser.builder()
@@ -168,5 +168,143 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
+    }
+
+    @Test
+    @DisplayName("4. Controller 层 AOP 注解鉴权：@SaCheckRole 与 @SaCheckPermission 拦截与放行验证")
+    void shouldCheckAopRoleAndPermissionOnController() throws Exception {
+        // 1. 登录具备 super_admin 与 user:query 的用户
+        LoginUser loginReq = LoginUser.builder()
+                .userId("30001")
+                .userName("审计员")
+                .roles(Set.of("super_admin"))
+                .permissions(Set.of("user:query"))
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 具备 super_admin 角色，访问通过
+        mockMvc.perform(get("/api/auth/check-role")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("角色校验通过"));
+
+        // 3. 不具备 financial_boss 角色，拦截返回 403
+        mockMvc.perform(get("/api/auth/check-role-forbidden")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需角色 [financial_boss]"));
+
+        // 4. 具备 user:query 权限，访问通过
+        mockMvc.perform(get("/api/auth/check-permission")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("权限码校验通过"));
+
+        // 5. 不具备 user:delete 权限，拦截返回 403
+        mockMvc.perform(get("/api/auth/check-permission-forbidden")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需权限码 [user:delete]"));
+    }
+
+    @Test
+    @DisplayName("5. Service 业务层 AOP 穿透鉴权：验证 SaAroundAnnotationPointcutAdvisor 全域覆盖 Service")
+    void shouldCheckAopRoleAndPermissionOnServiceLayer() throws Exception {
+        // 1. 登录只具备 super_admin 角色的用户（未赋予 order:cancel 权限）
+        LoginUser loginReq = LoginUser.builder()
+                .userId("40001")
+                .userName("业务专员")
+                .roles(Set.of("super_admin"))
+                .permissions(Set.of("order:view"))
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 调用标注 @SaCheckRole("super_admin") 的 Service 方法，成功通过
+        mockMvc.perform(get("/api/auth/service-role")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Service 角色校验通过"));
+
+        // 3. 调用标注 @SaCheckPermission("order:cancel") 的 Service 方法，因缺少权限被拦截返回 403
+        mockMvc.perform(get("/api/auth/service-permission")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问：缺少所需权限码 [order:cancel]"));
+    }
+
+    @Test
+    @DisplayName("6. AOP 注解式二级安全认证：@SaCheckSafe 注解未开启 403 -> 开启通过 -> 关闭恢复拦截")
+    void shouldCheckAopSafeAnnotation() throws Exception {
+        LoginUser loginReq = LoginUser.builder()
+                .userId("50001")
+                .userName("风控专员")
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 1. 未开启 safe 时访问 @SaCheckSafe("payment") 接口，拦截返回 403
+        mockMvc.perform(get("/api/auth/check-safe-annotation")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
+
+        // 2. 开启 safe 认证
+        mockMvc.perform(post("/api/auth/open-safe")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. 再次访问 @SaCheckSafe("payment") 接口，通过返回 200
+        mockMvc.perform(get("/api/auth/check-safe-annotation")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("注解式安全支付通过"));
+
+        // 4. 关闭 safe 认证
+        mockMvc.perform(post("/api/auth/close-safe")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. 关闭后再次访问，恢复 403 拦截
+        mockMvc.perform(get("/api/auth/check-safe-annotation")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问：当前操作需要二级安全认证"));
+    }
+
+    @Test
+    @DisplayName("7. 白名单公共路由匿名放行验证：无需 Token 凭据直接访问放行")
+    void shouldAllowAnonymousAccessOnPublicEndpoint() throws Exception {
+        mockMvc.perform(get("/api/auth/public/ping"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("pong"));
     }
 }

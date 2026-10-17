@@ -23,7 +23,7 @@ public class SaTokenProperties {
     private boolean enabled = true;
 
     /**
-     * 路由拦截排除的白名单路径列表
+     * 路由拦截排除的全局白名单路径列表
      */
     private List<String> whiteList = new ArrayList<>(Arrays.asList(
             "/doc.html",
@@ -35,6 +35,11 @@ public class SaTokenProperties {
     ));
 
     /**
+     * 路由拦截器与白名单放行配置
+     */
+    private InterceptorProperties interceptor = new InterceptorProperties();
+
+    /**
      * 微服务集群内部 Same-Token 零信任鉴权配置
      */
     private SameTokenProperties sameToken = new SameTokenProperties();
@@ -43,6 +48,44 @@ public class SaTokenProperties {
      * 权限与角色多级缓存治理配置
      */
     private PermissionCacheProperties permissionCache = new PermissionCacheProperties();
+
+    /**
+     * 路由拦截器详细配置属性
+     */
+    @Data
+    public static class InterceptorProperties {
+
+        /**
+         * 是否启用 Sa-Token 路由拦截器
+         */
+        private boolean enabled = true;
+
+        /**
+         * 是否开启全局路由强制登录校验（严格模式，开启后除白名单外的所有路由均强制校验登录）
+         */
+        private boolean checkLogin = false;
+
+        /**
+         * 拦截匹配的路径列表，默认为全部路径
+         */
+        private List<String> includes = new ArrayList<>(List.of("/**"));
+
+        /**
+         * 排除放行的白名单路径列表，内置工业级默认放行配置
+         */
+        private List<String> excludes = new ArrayList<>(Arrays.asList(
+                "/doc.html",
+                "/webjars/**",
+                "/swagger-resources/**",
+                "/v3/api-docs/**",
+                "/favicon.ico",
+                "/actuator/**",
+                "/error",
+                "/*.html",
+                "/*.css",
+                "/*.js"
+        ));
+    }
 
     /**
      * Same-Token 校验属性
