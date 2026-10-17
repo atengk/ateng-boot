@@ -403,17 +403,25 @@ CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
     return billingService.calculateInvoice();
 }), taskExecutor);
 
-// ==================== 4. 开箱即用受管异步线程池 (AtengAsyncAutoConfiguration) ====================
+// ==================== 4. 开箱即用自适应双模异步执行器 (AtengAsyncAutoConfiguration) ====================
 // 位于 core 底座，自动注入 ContextCopyingTaskDecorator，支持 Spring @Async 零配置开箱即用
+// 1. 默认平台线程池模式（前缀 ateng-async-）
+// 2. JDK 21+ 虚拟线程模式：配置 spring.threads.virtual.enabled=true 自动自适应切换为 SimpleAsyncTaskExecutor（前缀 ateng-vt-async-）
 // application.yml 配置项：
+// spring:
+//   threads:
+//     virtual:
+//       enabled: true # 开启虚拟线程（需 JDK 21+ 运行时，默认 false）
 // ateng:
 //   boot:
 //     async:
 //       core-pool-size: 8
 //       max-pool-size: 16
-//       queue-capacity: 1024
+//       queue-capacity: 1000
 //       thread-name-prefix: "ateng-async-"
-//       await-termination-seconds: 30
+//       virtual-thread-name-prefix: "ateng-vt-async-" # 虚拟线程专属前缀
+//       concurrency-limit: 64                         # 虚拟线程并发限制（防下游连接池击穿，默认 -1 无界）
+//       await-termination-seconds: 60
 ```
 
 ---
@@ -632,26 +640,36 @@ public class UserController {
 
 ## 12. 模块配置属性参考 (`application.yml`)
 
-`ateng-boot-core` 内置生产级受管异步线程池与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），可在 `application.yml` 中按需定制线程池参数：
+`ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，可在 `application.yml` 中按需定制配置：
 
 ```yaml
+# 开启 Spring Boot 官方虚拟线程（仅在 JDK 21+ 运行时生效，默认 false）
+spring:
+  threads:
+    virtual:
+      enabled: true
+
 ateng:
   boot:
     async:
-      # 是否启用受管异步线程池（默认 true）
+      # 是否启用受管异步执行器装配（默认 true）
       enabled: true
-      # 核心线程数（默认可用 CPU 核心数）
+      # 核心线程数（平台线程模式，默认可用 CPU 核心数）
       core-pool-size: 8
-      # 最大线程数（默认可用 CPU 核心数 * 2）
+      # 最大线程数（平台线程模式，默认可用 CPU 核心数 * 2）
       max-pool-size: 16
-      # 阻塞队列容量（默认 1024）
-      queue-capacity: 1024
-      # 空闲线程存活时间（秒，默认 60）
+      # 阻塞队列容量（平台线程模式，默认 1000）
+      queue-capacity: 1000
+      # 空闲线程存活时间（平台线程模式，秒，默认 60）
       keep-alive-seconds: 60
-      # 异步工作线程名前缀（默认 ateng-async-）
+      # 平台线程工作线程名前缀（默认 ateng-async-）
       thread-name-prefix: "ateng-async-"
-      # 容器关闭时是否等待任务执行完成（默认 true）
+      # 虚拟线程工作线程名前缀（默认 ateng-vt-async-，虚拟线程模式下生效）
+      virtual-thread-name-prefix: "ateng-vt-async-"
+      # 虚拟线程并发任务限制数（默认 -1 即无界；可按需配置限制防下游 HikariCP 连接池击穿）
+      concurrency-limit: -1
+      # 容器关闭时是否等待任务执行完成（优雅停机，默认 true）
       wait-for-tasks-to-complete-on-shutdown: true
-      # 优雅停机等待超时时间（秒，默认 30）
-      await-termination-seconds: 30
+      # 优雅停机等待超时时间（秒，默认 60）
+      await-termination-seconds: 60
 ```

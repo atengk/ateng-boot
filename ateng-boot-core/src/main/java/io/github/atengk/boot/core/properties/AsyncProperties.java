@@ -47,6 +47,16 @@ public class AsyncProperties {
     private String threadNamePrefix = "ateng-async-";
 
     /**
+     * 虚拟线程工作线程名前缀（默认 ateng-vt-async-）
+     */
+    private String virtualThreadNamePrefix = "ateng-vt-async-";
+
+    /**
+     * 虚拟线程并发任务限制数（默认 -1，表示无界/不设限制）
+     */
+    private int concurrencyLimit = -1;
+
+    /**
      * 容器关闭时是否等待所有已提交的异步任务执行完成（优雅停机，默认 true）
      */
     private boolean waitForTasksToCompleteOnShutdown = true;

@@ -36,6 +36,8 @@
 | **0026** | 生产级基线加固与底层设施大一统架构决策 | `Accepted` | 全域 JSON 100% 收敛 JsonUtil、双维上下文镜像对称与 Sa-Token 自动无感桥接、TraceFilter 无锁原语、异步线程池下沉 core、底座原语复用与延时队列 MDC 追踪 | `core` / `web` / `satoken` / `redis` / `excel` | [查看](./0026-production-hardening-and-foundations-unification.md) |
 | **0027** | 分层双防数据校验体系与标准化原语架构决策 | `Accepted` | 确立分层双防铁律，沉淀 ValidationGroups 标准分组契约与 ValidList 批量级联容器，扩展 ValidatorUtil POJO 编程式校验与无 EL 优雅降级 | `core` / `web` | [查看](./0027-defense-in-depth-validation-and-standardized-primitives.md) |
 | **0028** | 示例工程多模块解耦与精准增量集成测试架构决策 | `Accepted` | 二级 Parent POM 聚合解耦，自包含场景子模块矩阵（零共享代码），秒级精准增量测试门禁与发布双层排除隔离 | `ateng-boot-samples` / 全工程 | [查看](./0028-samples-modularization-and-incremental-integration-testing.md) |
+| **0029** | 基于 Spring Boot 3.3 与 JDK 21+ 的自适应虚拟线程异步运行时架构决策 | `Accepted` | 官方原生 @ConditionalOnThreading 声明式分流，SimpleAsyncTaskExecutor 虚拟线程自适应，四维上下文全生命周期透传，Snowflake 升级 ReentrantLock 彻底杜绝 Carrier Pinning | `ateng-boot-core` / 全工程 | [查看](./0029-virtual-threads-and-adaptive-async-runtime.md) |
+
 
 
 

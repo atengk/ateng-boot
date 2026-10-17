@@ -12,7 +12,8 @@
 - **纯内存闭环**：基于 H2 内存库与自动 schema 初始化，零外部数据库依赖，启动即测；
 - **分层双防校验**：第一道防线 Controller JSR-303 + `ValidList`，第二道防线 Service `BusinessAssert` 与 `ValidatorUtil`；
 - **MyBatis-Plus 全家桶**：通用实体五级阶梯链、审计自动填充、行级租户（`@IgnoreTenant`）、声明式数据权限（`@DataScope`）、高性能批量插入（`AtengBaseService`）；
-- **接口安全防御**：`@ApiSign` 接口防重放与请求加签验签。
+- **接口安全防御**：`@ApiSign` 接口防重放与请求加签验签；
+- **虚拟线程与四维异步透传**：在 JDK 21+ 下配置 `spring.threads.virtual.enabled=true` 自动激活虚拟线程（`ateng-vt-async-`），四维快照全生命周期透传与防泄露清理。
 
 ---
 
@@ -67,6 +68,45 @@ curl -i -X POST http://localhost:8080/api/users \
 }
 ```
 
+### 虚拟线程与四维异步透传范式
+
+1. **一句话场景痛点**：在异步任务中无感启用 JDK 21+ 虚拟线程，实现超轻量级高并发协程调度，同时确保 MDC 链路追踪标识、登录操作人与多租户上下文 100% 全链路透传并在任务完成后严格清理现场。
+2. **最小可用配置与代码块**：
+
+`application.yml` 配置：
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true
+```
+
+异步服务调用（提取自已跑通的 `AsyncSampleService.java`）：
+```java
+@Async
+public CompletableFuture<AsyncExecutionResult> saveUserAsync(UserEntity user) {
+    String capturedTraceId = MDC.get("traceId");
+    String capturedUserId = UserContextHolder.get();
+    String capturedTenantId = TenantContextHolder.getTenantId();
+
+    // 插入数据库，自动由上下文填充审计字段 createBy / updateBy
+    userMapper.insert(user);
+
+    return CompletableFuture.completedFuture(new AsyncExecutionResult(
+            capturedTraceId, capturedUserId, capturedTenantId,
+            TenantContextHolder.isIgnoreTenant(), user.getId(),
+            Thread.currentThread().getName(), isCurrentThreadVirtual()
+    ));
+}
+```
+
+3. **预期呈现契约 (真实控制台日志截取)**：
+```text
+2026-10-17 20:25:00.908 DEBUG [ateng-vt-async-1] [trace-vt-77777] i.g.a.b.s.m.UserMapper.insert : ==>  Preparing: INSERT INTO sys_user (id, name, age, email, create_by, update_by) VALUES (?, ?, ?, ?, ?, ?)
+2026-10-17 20:25:00.908 DEBUG [ateng-vt-async-1] [trace-vt-77777] i.g.a.b.s.m.UserMapper.insert : ==> Parameters: 104917582227034113(Long), 虚拟线程测试用户(String), 25(Integer), vt_user@example.com(String), vt-admin-8888(String), vt-admin-8888(String)
+2026-10-17 20:25:00.909 DEBUG [ateng-vt-async-1] [trace-vt-77777] i.g.a.b.s.m.UserMapper.insert : <==    Updates: 1
+```
+
 ---
 
 ## 3. 定向集成测试
@@ -74,4 +114,4 @@ curl -i -X POST http://localhost:8080/api/users \
 ```bash
 mvn test -pl ateng-boot-samples/ateng-boot-sample-basic -am -T 1C
 ```
-涵盖 10 个端到端集成测试套件（CRUD、租户隔离、数据权限、分批插入、API加签等），秒级全绿准出。
+涵盖 11 个端到端集成测试套件（CRUD、租户隔离、数据权限、分批插入、API加签、虚拟线程自适应等），秒级全绿准出。

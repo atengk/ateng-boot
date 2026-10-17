@@ -6,6 +6,9 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.junit.jupiter.api.condition.EnabledForJreRange;
+import org.junit.jupiter.api.condition.JRE;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.annotation.AsyncConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
@@ -85,6 +88,43 @@ class AtengAsyncAutoConfigurationTest {
                     Executor executor = context.getBean("taskExecutor", Executor.class);
                     assertThat(executor).isSameAs(CustomExecutorConfig.CUSTOM_EXECUTOR);
                 });
+    }
+
+    @Test
+    @DisplayName("开启 spring.threads.virtual.enabled=true 时在 JDK 21+ 下成功装配 SimpleAsyncTaskExecutor 虚拟线程执行器")
+    @EnabledForJreRange(min = JRE.JAVA_21)
+    void shouldAutoConfigureVirtualThreadAsyncExecutorWhenEnabled() {
+        contextRunner.withPropertyValues("spring.threads.virtual.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("taskExecutor");
+                    assertThat(context).hasBean("applicationTaskExecutor");
+                    assertThat(context).hasSingleBean(SimpleAsyncTaskExecutor.class);
+                    assertThat(context).doesNotHaveBean(ThreadPoolTaskExecutor.class);
+                    assertThat(context).hasSingleBean(AsyncConfigurer.class);
+
+                    SimpleAsyncTaskExecutor executor = context.getBean("taskExecutor", SimpleAsyncTaskExecutor.class);
+                    assertThat(executor.getThreadNamePrefix()).isEqualTo("ateng-vt-async-");
+                    assertThat(executor.getConcurrencyLimit()).isEqualTo(SimpleAsyncTaskExecutor.UNBOUNDED_CONCURRENCY);
+
+                    AsyncConfigurer configurer = context.getBean(AsyncConfigurer.class);
+                    assertThat(configurer.getAsyncExecutor()).isSameAs(executor);
+                });
+    }
+
+    @Test
+    @DisplayName("开启虚拟线程并配置自定义 virtual-thread-name-prefix 与 concurrency-limit 时属性成功生效")
+    @EnabledForJreRange(min = JRE.JAVA_21)
+    void shouldApplyCustomVirtualThreadProperties() {
+        contextRunner.withPropertyValues(
+                "spring.threads.virtual.enabled=true",
+                "ateng.boot.async.virtual-thread-name-prefix=custom-vt-",
+                "ateng.boot.async.concurrency-limit=64"
+        ).run(context -> {
+            assertThat(context).hasSingleBean(SimpleAsyncTaskExecutor.class);
+            SimpleAsyncTaskExecutor executor = context.getBean("taskExecutor", SimpleAsyncTaskExecutor.class);
+            assertThat(executor.getThreadNamePrefix()).isEqualTo("custom-vt-");
+            assertThat(executor.getConcurrencyLimit()).isEqualTo(64);
+        });
     }
 
     @Configuration(proxyBeanMethods = false)

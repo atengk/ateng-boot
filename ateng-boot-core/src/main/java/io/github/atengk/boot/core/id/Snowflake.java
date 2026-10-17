@@ -7,6 +7,7 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Enumeration;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
 
 /**
@@ -46,6 +47,7 @@ public class Snowflake {
     private final long epoch;
     private final LongSupplier timeSupplier;
 
+    private final ReentrantLock lock = new ReentrantLock();
     private long sequence = 0L;
     private long lastTimestamp = -1L;
 
@@ -109,47 +111,53 @@ public class Snowflake {
 
     /**
      * 生成下一个全局唯一长整型雪花 ID（线程安全）
+     * 内部使用 ReentrantLock 替代 synchronized，避免在极端时钟回拨休眠时产生虚拟线程 Carrier Thread Pinning
      *
      * @return 64 位全局唯一递增雪花 ID
      */
-    public synchronized long nextId() {
-        long timestamp = timeGen();
+    public long nextId() {
+        lock.lock();
+        try {
+            long timestamp = timeGen();
 
-        // 1. 时钟回拨防御
-        if (timestamp < lastTimestamp) {
-            long offset = lastTimestamp - timestamp;
-            if (offset <= MAX_BACKWARD_MS) {
-                try {
-                    Thread.sleep(offset);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+            // 1. 时钟回拨防御
+            if (timestamp < lastTimestamp) {
+                long offset = lastTimestamp - timestamp;
+                if (offset <= MAX_BACKWARD_MS) {
+                    try {
+                        Thread.sleep(offset);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    timestamp = timeGen();
+                    if (timestamp < lastTimestamp) {
+                        throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", lastTimestamp - timestamp));
+                    }
+                } else {
+                    throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offset));
                 }
-                timestamp = timeGen();
-                if (timestamp < lastTimestamp) {
-                    throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", lastTimestamp - timestamp));
+            }
+
+            // 2. 毫秒内序列递增与溢出处理
+            if (lastTimestamp == timestamp) {
+                sequence = (sequence + 1) & SEQUENCE_MASK;
+                if (sequence == 0) {
+                    timestamp = tilNextMillis(lastTimestamp);
                 }
             } else {
-                throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offset));
+                sequence = 0L;
             }
+
+            lastTimestamp = timestamp;
+
+            // 3. 位运算拼装 64 位 ID
+            return ((timestamp - epoch) << TIMESTAMP_LEFT_SHIFT)
+                    | (datacenterId << DATACENTER_ID_SHIFT)
+                    | (workerId << WORKER_ID_SHIFT)
+                    | sequence;
+        } finally {
+            lock.unlock();
         }
-
-        // 2. 毫秒内序列递增与溢出处理
-        if (lastTimestamp == timestamp) {
-            sequence = (sequence + 1) & SEQUENCE_MASK;
-            if (sequence == 0) {
-                timestamp = tilNextMillis(lastTimestamp);
-            }
-        } else {
-            sequence = 0L;
-        }
-
-        lastTimestamp = timestamp;
-
-        // 3. 位运算拼装 64 位 ID
-        return ((timestamp - epoch) << TIMESTAMP_LEFT_SHIFT)
-                | (datacenterId << DATACENTER_ID_SHIFT)
-                | (workerId << WORKER_ID_SHIFT)
-                | sequence;
     }
 
     /**

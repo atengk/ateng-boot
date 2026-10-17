@@ -10,8 +10,13 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnThreading;
+import org.springframework.boot.autoconfigure.thread.Threading;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.annotation.AsyncConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
@@ -20,9 +25,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 
 /**
- * 上下文感知受管异步线程池自动装配
- * 导出预装配 {@link ContextCopyingTaskDecorator} 的 {@link ThreadPoolTaskExecutor}，
- * 并实现 {@link AsyncConfigurer} 为 Spring 异步任务体系统一提供上下文流转与未捕获异常处理
+ * 上下文感知自适应双模受管异步任务执行器自动装配
+ * 依据运行环境线程模型（{@link ConditionalOnThreading}）自适应装配虚拟线程执行器（{@link SimpleAsyncTaskExecutor}）
+ * 或平台线程池（{@link ThreadPoolTaskExecutor}），统一挂载 {@link ContextCopyingTaskDecorator}
+ * 并实现 {@link AsyncConfigurer} 为 Spring 异步任务体系统一提供四维上下文流转与未捕获异常处理
  *
  * @author Ateng
  * @since 2026-10-16
@@ -32,37 +38,62 @@ import java.util.concurrent.ThreadPoolExecutor;
 @ConditionalOnClass(ThreadPoolTaskExecutor.class)
 @EnableConfigurationProperties(AsyncProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.async", name = "enabled", havingValue = "true", matchIfMissing = true)
+@Import({AtengAsyncAutoConfiguration.VirtualThreadsConfiguration.class, AtengAsyncAutoConfiguration.PlatformThreadsConfiguration.class})
 public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
 
-    private final AsyncProperties asyncProperties;
     private final ObjectProvider<Executor> taskExecutorProvider;
 
-    public AtengAsyncAutoConfiguration(AsyncProperties asyncProperties,
-                                      @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-        this.asyncProperties = asyncProperties;
+    public AtengAsyncAutoConfiguration(@Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         this.taskExecutorProvider = taskExecutorProvider;
     }
 
     /**
-     * 注册核心受管异步线程池，装备上下文传播装饰器、CallerRunsPolicy 饱和策略与优雅停机策略
-     *
-     * @return ThreadPoolTaskExecutor 实例
+     * 虚拟线程执行器装配配置类
      */
-    @Bean(name = {"taskExecutor", "applicationTaskExecutor"})
-    @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
-    public ThreadPoolTaskExecutor taskExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(asyncProperties.getCorePoolSize());
-        executor.setMaxPoolSize(asyncProperties.getMaxPoolSize());
-        executor.setQueueCapacity(asyncProperties.getQueueCapacity());
-        executor.setKeepAliveSeconds(asyncProperties.getKeepAliveSeconds());
-        executor.setThreadNamePrefix(asyncProperties.getThreadNamePrefix());
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        executor.setWaitForTasksToCompleteOnShutdown(asyncProperties.isWaitForTasksToCompleteOnShutdown());
-        executor.setAwaitTerminationSeconds(asyncProperties.getAwaitTerminationSeconds());
-        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-        executor.initialize();
-        return executor;
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnThreading(Threading.VIRTUAL)
+    static class VirtualThreadsConfiguration {
+
+        @Bean(name = {"taskExecutor", "applicationTaskExecutor"})
+        @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
+        public SimpleAsyncTaskExecutor virtualTaskExecutor(AsyncProperties asyncProperties) {
+            SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
+            executor.setVirtualThreads(true);
+            executor.setThreadNamePrefix(asyncProperties.getVirtualThreadNamePrefix());
+            executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+            if (asyncProperties.isWaitForTasksToCompleteOnShutdown()) {
+                executor.setTaskTerminationTimeout(asyncProperties.getAwaitTerminationSeconds() * 1000L);
+            }
+            if (asyncProperties.getConcurrencyLimit() >= 0) {
+                executor.setConcurrencyLimit(asyncProperties.getConcurrencyLimit());
+            }
+            return executor;
+        }
+    }
+
+    /**
+     * 平台线程池装配配置类
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnThreading(Threading.PLATFORM)
+    static class PlatformThreadsConfiguration {
+
+        @Bean(name = {"taskExecutor", "applicationTaskExecutor"})
+        @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
+        public ThreadPoolTaskExecutor platformTaskExecutor(AsyncProperties asyncProperties) {
+            ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+            executor.setCorePoolSize(asyncProperties.getCorePoolSize());
+            executor.setMaxPoolSize(asyncProperties.getMaxPoolSize());
+            executor.setQueueCapacity(asyncProperties.getQueueCapacity());
+            executor.setKeepAliveSeconds(asyncProperties.getKeepAliveSeconds());
+            executor.setThreadNamePrefix(asyncProperties.getThreadNamePrefix());
+            executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+            executor.setWaitForTasksToCompleteOnShutdown(asyncProperties.isWaitForTasksToCompleteOnShutdown());
+            executor.setAwaitTerminationSeconds(asyncProperties.getAwaitTerminationSeconds());
+            executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+            executor.initialize();
+            return executor;
+        }
     }
 
     @Override

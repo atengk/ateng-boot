@@ -125,12 +125,17 @@ _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 _Avoid_: FileHelper, IoHelper, PathUtil
 
 **AtengAsyncAutoConfiguration**:
-位于 core 核心底座的受管异步线程池自动装配类，提供开箱即用的线程池 Bean 并挂载四维上下文快照装饰器（MDC、用户、租户、忽略租户）。
-_Avoid_: AsyncConfig, ThreadPoolAutoConfiguration
+位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
+_Avoid_: AsyncConfig, ThreadPoolAutoConfiguration, VirtualThreadAutoConfiguration
 
 **AsyncProperties**:
-受管异步线程池属性配置类，以 `ateng.boot.async.*` 命名空间统一管理核心线程数、最大线程数、队列容量、线程名前缀与优雅关机策略。
+受管异步执行器运行时增强配置属性类，以 `ateng.boot.async.*` 命名空间统管平台线程池容量、队列缓冲、并发限制阈值（concurrencyLimit）、平台/虚拟线程专属命名规范与优雅停机策略。
 _Avoid_: ThreadPoolProperties, AsyncConfigProperties
+
+**CarrierPinning**:
+在 JDK 21+ 虚拟线程运行中，因在同步代码块（`synchronized`）内部执行阻塞调用或休眠导致虚拟线程锁定底层操作系统载体线程引发调度饥饿的现象，框架内通过 `ReentrantLock` 彻底杜绝。
+_Avoid_: ThreadPinning, WorkerPinning, VTPinning
+
 
 **NamedThreadFactory**:
 纯 JDK 17 原生命名线程工厂标准件，为线程池提供语义化前缀、序号自增、守护线程属性与未捕获异常防护，彻底杜绝线上线程转储中无意义命名。
