@@ -82,4 +82,22 @@ class SaCheckSameTokenAspectTest {
         String result = proxy.callInternal();
         assertThat(result).isEqualTo("SUCCESS_INTERNAL");
     }
+
+    @Test
+    @DisplayName("测试自定义 Same-Token 请求头配置校验通过")
+    void testPassWithCustomHeader() {
+        io.github.atengk.boot.satoken.properties.SaTokenProperties properties = new io.github.atengk.boot.satoken.properties.SaTokenProperties();
+        properties.getSameToken().setHeaderName("X-Custom-Same-Token");
+
+        String validSameToken = SaSameUtil.getToken();
+        when(mockRequest.getHeader("X-Custom-Same-Token")).thenReturn(validSameToken);
+
+        TestServiceImpl target = new TestServiceImpl();
+        AspectJProxyFactory factory = new AspectJProxyFactory(target);
+        factory.addAspect(new SaCheckSameTokenAspect(properties));
+        TestService proxy = factory.getProxy();
+
+        String result = proxy.callInternal();
+        assertThat(result).isEqualTo("SUCCESS_INTERNAL");
+    }
 }

@@ -103,7 +103,10 @@ public class SaTokenRedisDao implements SaTokenDaoByObjectFollowString, SaTokenD
         stringRedisTemplate.execute((RedisCallback<Void>) connection -> {
             try (Cursor<byte[]> cursor = connection.keyCommands().scan(scanOptions)) {
                 while (cursor.hasNext()) {
-                    keys.add(stringRedisTemplate.getStringSerializer().deserialize(cursor.next()));
+                    String key = stringRedisTemplate.getStringSerializer().deserialize(cursor.next());
+                    if (key != null && !key.isBlank()) {
+                        keys.add(key);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("SaTokenRedisDao 执行游标扫描异常: pattern={}", matchPattern, e);

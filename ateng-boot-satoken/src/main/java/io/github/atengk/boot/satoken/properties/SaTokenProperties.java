@@ -96,15 +96,15 @@ public class SaTokenProperties {
         /**
          * 是否开启内部微服务调用 Same-Token 校验
          */
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
-         * Same-Token 传输请求头名称
+         * Same-Token 传输请求头名称，默认为标准 SA-SAME-TOKEN
          */
-        private String headerName = "SAME_TOKEN";
+        private String headerName = "SA-SAME-TOKEN";
 
         /**
-         * 约定的 Same-Token 鉴权凭据密钥
+         * 约定的 Same-Token 鉴权凭据密钥（可选，未配置时使用 Sa-Token 默认密钥生成机制）
          */
         private String tokenValue;
     }

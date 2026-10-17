@@ -78,8 +78,11 @@ public class AtengSaTokenAutoConfiguration {
             Result<Void> failResult = Result.fail(CommonResultCode.BAD_REQUEST.getCode(), "非法请求拦截: " + e.getMessage());
             if (res.getSource() instanceof jakarta.servlet.http.HttpServletResponse servletResponse) {
                 try {
-                    servletResponse.getWriter().write(JsonUtil.toJsonString(failResult));
-                    servletResponse.getWriter().flush();
+                    if (!servletResponse.isCommitted()) {
+                        servletResponse.setContentType("application/json;charset=UTF-8");
+                        servletResponse.getWriter().write(JsonUtil.toJsonString(failResult));
+                        servletResponse.getWriter().flush();
+                    }
                 } catch (Exception ex) {
                     log.error("Sa-Token 防火墙输出异常: ", ex);
                 }
@@ -245,8 +248,8 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnClass(org.aspectj.lang.annotation.Aspect.class)
     @ConditionalOnMissingBean(SaCheckSameTokenAspect.class)
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SaCheckSameTokenAspect saCheckSameTokenAspect() {
-        return new SaCheckSameTokenAspect();
+    public SaCheckSameTokenAspect saCheckSameTokenAspect(SaTokenProperties properties) {
+        return new SaCheckSameTokenAspect(properties);
     }
 
     /**

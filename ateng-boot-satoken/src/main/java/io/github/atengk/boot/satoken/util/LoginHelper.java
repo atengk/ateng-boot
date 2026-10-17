@@ -53,12 +53,13 @@ public final class LoginHelper {
         if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
             throw new IllegalArgumentException("登录失败：登录主体或用户唯一标识 (userId) 不能为空");
         }
+        SaLoginParameter actualParam = loginParameter != null ? loginParameter : new SaLoginParameter();
 
         // 1. 智能合成租户安全复合登录主键（防不同租户同数字主键碰撞踩踏）
         String compositeLoginId = buildCompositeLoginId(loginUser.getTenantId(), loginUser.getUserId());
 
         // 2. 调用底层核心完成登录与令牌签发
-        StpUtil.login(compositeLoginId, loginParameter);
+        StpUtil.login(compositeLoginId, actualParam);
 
         // 3. 封包为纯净 JSON 字符串存储至当前 Token-Session，杜绝 @class 污染
         setLoginUser(loginUser);
@@ -157,11 +158,18 @@ public final class LoginHelper {
      */
     public static void setLoginUser(LoginUser loginUser) {
         if (loginUser == null) {
+            SaSession session = StpUtil.getSession(false);
+            if (session != null) {
+                session.delete(SaTokenConstant.LOGIN_USER_KEY);
+            }
             return;
         }
         try {
             String jsonStr = JsonUtil.toJsonString(loginUser);
-            StpUtil.getSession().set(SaTokenConstant.LOGIN_USER_KEY, jsonStr);
+            SaSession session = StpUtil.getSession();
+            if (session != null) {
+                session.set(SaTokenConstant.LOGIN_USER_KEY, jsonStr);
+            }
         } catch (Exception e) {
             log.error("LoginUser 序列化失败: ", e);
             throw new IllegalStateException("用户上下文序列化异常", e);
@@ -223,11 +231,15 @@ public final class LoginHelper {
         if (loginUser != null && loginUser.getUserId() != null) {
             return loginUser.getUserId();
         }
-        String loginId = StpUtil.getLoginIdAsString();
-        if (loginId != null && loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
-            return loginId.substring(loginId.indexOf(SaTokenConstant.TENANT_DELIMITER) + 1);
+        Object loginIdObj = StpUtil.getLoginIdDefaultNull();
+        if (loginIdObj != null) {
+            String loginId = String.valueOf(loginIdObj);
+            if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
+                return loginId.substring(loginId.indexOf(SaTokenConstant.TENANT_DELIMITER) + 1);
+            }
+            return loginId;
         }
-        return loginId;
+        return null;
     }
 
     /**
@@ -275,7 +287,17 @@ public final class LoginHelper {
      */
     public static String getTenantId() {
         LoginUser user = getLoginUser();
-        return user != null ? user.getTenantId() : null;
+        if (user != null && user.getTenantId() != null) {
+            return user.getTenantId();
+        }
+        Object loginIdObj = StpUtil.getLoginIdDefaultNull();
+        if (loginIdObj != null) {
+            String loginId = String.valueOf(loginIdObj);
+            if (loginId.contains(SaTokenConstant.TENANT_DELIMITER)) {
+                return loginId.substring(0, loginId.indexOf(SaTokenConstant.TENANT_DELIMITER));
+            }
+        }
+        return null;
     }
 
     /**

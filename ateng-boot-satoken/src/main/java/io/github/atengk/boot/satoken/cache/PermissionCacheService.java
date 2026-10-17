@@ -134,7 +134,10 @@ public class PermissionCacheService {
             redisTemplate.execute((RedisCallback<Void>) connection -> {
                 try (Cursor<byte[]> cursor = connection.keyCommands().scan(scanOptions)) {
                     while (cursor.hasNext()) {
-                        keys.add(redisTemplate.getStringSerializer().deserialize(cursor.next()));
+                        String key = redisTemplate.getStringSerializer().deserialize(cursor.next());
+                        if (key != null && !key.isBlank()) {
+                            keys.add(key);
+                        }
                     }
                 } catch (Exception e) {
                     log.warn("清理权限缓存游标扫描异常: ", e);

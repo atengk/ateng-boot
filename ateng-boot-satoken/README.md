@@ -341,8 +341,8 @@ public class FeignClientConfig {
 若未经网关伪造请求或未携带合法的 Same-Token，AOP 切面立即阻断并返回：
 ```json
 {
-  "code": 401,
-  "msg": "微服务内部调用凭证无效或已过期",
+  "code": 403,
+  "msg": "微服务内部鉴权凭据无效或已失效",
   "data": null,
   "success": false
 }
@@ -396,8 +396,8 @@ ateng:
           - "/v3/api-docs/**"
           - "/favicon.ico"
       same-token:                 # 微服务内部 Same-Token 零信任鉴权配置
-        enabled: false            # 是否启用内部 Same-Token 校验 (默认: false)
-        header-name: SAME_TOKEN   # Same-Token 传输请求头名称 (默认: SAME_TOKEN)
+        enabled: true             # 是否启用内部 Same-Token 校验 (默认: true)
+        header-name: SA-SAME-TOKEN # Same-Token 传输请求头名称 (默认: SA-SAME-TOKEN)
         token-value: ""           # 约定的内部调用固定密钥凭据 (留空时采用 Sa-Token 动态时间戳凭据)
       permission-cache:           # 权限与角色多级缓存治理配置
         enabled: true             # 是否开启权限码与角色缓存 (默认: true)

@@ -2,6 +2,7 @@ package io.github.atengk.boot.satoken.interceptor;
 
 import cn.dev33.satoken.interceptor.SaInterceptor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -9,7 +10,8 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * ateng-boot Sa-Token 增强路由拦截器
- * 继承原生 SaInterceptor，在鉴权放行后自动将登录主体的租户 ID 注入 TenantContextHolder，并在 afterCompletion 强制清空租户上下文，杜绝线程池污染
+ * 继承原生 SaInterceptor，在鉴权放行后自动将登录主体的租户 ID 与用户唯一标识注入 TenantContextHolder 与 UserContextHolder，
+ * 并在 afterCompletion 强制清空四维上下文，杜绝容器线程池复用污染
  *
  * @author Ateng
  * @since 2026-10-17
@@ -25,6 +27,10 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
             if (tenantId != null && !tenantId.isBlank()) {
                 TenantContextHolder.setTenantId(tenantId);
             }
+            String userId = LoginHelper.getUserId();
+            if (userId != null && !userId.isBlank()) {
+                UserContextHolder.set(userId);
+            }
         }
         return pass;
     }
@@ -34,8 +40,12 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
         try {
             super.afterCompletion(request, response, handler, ex);
         } finally {
-            // 无论请求成功与否，强制清空当前线程多租户上下文，彻底杜绝容器线程池复用污染
-            TenantContextHolder.clear();
+            // 无论请求成功与否，强制清空当前线程用户与多租户上下文，彻底杜绝容器线程池复用污染
+            try {
+                UserContextHolder.clear();
+            } finally {
+                TenantContextHolder.clear();
+            }
         }
     }
 }
