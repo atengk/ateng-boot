@@ -150,7 +150,7 @@ flowchart TB
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
-        <version>0.0.5</version>
+        <version>1.0.0</version>
     </dependency>
 
     <!-- 按需引入实际业务使用的数据库驱动，例如 MySQL -->
@@ -173,7 +173,7 @@ flowchart TB
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>0.0.5</version>
+            <version>1.0.0</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>

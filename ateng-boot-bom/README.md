@@ -14,7 +14,7 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-bom</artifactId>
-            <version>0.0.5</version>
+            <version>1.0.0</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
