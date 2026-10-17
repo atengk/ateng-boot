@@ -58,4 +58,13 @@ class FileUtilTest {
         assertEquals("2.50 GB", FileUtil.formatSize((long) (2.5 * 1024 * 1024 * 1024)));
         assertEquals("1.00 TB", FileUtil.formatSize(1024L * 1024 * 1024 * 1024));
     }
+
+    @Test
+    @DisplayName("formatSize: 多线程并发调用无竞态格式错乱")
+    void shouldFormatByteSizesConcurrently() {
+        java.util.stream.IntStream.range(0, 50).parallel().forEach(i -> {
+            assertEquals("1.50 KB", FileUtil.formatSize(1536));
+            assertEquals("10.00 MB", FileUtil.formatSize(10L * 1024 * 1024));
+        });
+    }
 }

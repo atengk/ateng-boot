@@ -237,15 +237,15 @@ public class Result<T> implements Serializable {
     }
 
     /**
-     * 获取数据载荷；若当前响应非成功状态，则基于当前错误提示生成并抛出定制异常
+     * 获取数据载荷；若当前响应非成功状态，则基于当前错误提示生成并抛出定制运行时异常
      *
      * @param exceptionSupplier 异常构造函数（入参为错误提示文案 msg）
-     * @param <X>               异常类型
+     * @param <X>               异常类型（约束为 RuntimeException 非受检异常）
      * @return 业务载荷数据
-     * @throws X 当 isSuccess() 为 false 时抛出
+     * @throws X 当 isSuccess() 为 false 时抛出定制运行时异常
      */
     @JsonIgnore
-    public <X extends Throwable> T orElseThrow(java.util.function.Function<String, ? extends X> exceptionSupplier) throws X {
+    public <X extends RuntimeException> T orElseThrow(java.util.function.Function<String, ? extends X> exceptionSupplier) {
         java.util.Objects.requireNonNull(exceptionSupplier, "exceptionSupplier 不能为空");
         if (!isSuccess()) {
             throw exceptionSupplier.apply(this.msg);

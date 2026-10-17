@@ -2,8 +2,8 @@ package io.github.atengk.boot.core.context;
 
 import io.github.atengk.boot.core.spi.CurrentTenantProvider;
 
-import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedList;
 import java.util.Objects;
 import java.util.function.Supplier;
 
@@ -17,9 +17,9 @@ import java.util.function.Supplier;
 public final class TenantContextHolder {
 
     /**
-     * 当前线程租户 ID 栈（支持嵌套 runWithTenant 安全回滚还原）
+     * 当前线程租户 ID 栈（采用 LinkedList 支持 null 元素并支持嵌套 runWithTenant 安全回滚还原）
      */
-    private static final ThreadLocal<Deque<String>> TENANT_ID_STACK = ThreadLocal.withInitial(ArrayDeque::new);
+    private static final ThreadLocal<Deque<String>> TENANT_ID_STACK = ThreadLocal.withInitial(LinkedList::new);
 
     /**
      * 当前线程忽略租户深度计数器（> 0 表示处于忽略状态，支持嵌套 runWithoutTenant 安全还原）
@@ -102,14 +102,12 @@ public final class TenantContextHolder {
      */
     public static void setTenantId(String tenantId) {
         Deque<String> stack = TENANT_ID_STACK.get();
-        if (tenantId == null) {
-            if (!stack.isEmpty()) {
-                stack.pop();
+        if (stack.isEmpty()) {
+            if (tenantId != null) {
+                stack.push(tenantId);
             }
         } else {
-            if (!stack.isEmpty()) {
-                stack.pop();
-            }
+            stack.pop();
             stack.push(tenantId);
         }
     }
@@ -246,7 +244,7 @@ public final class TenantContextHolder {
      */
     public static TenantSnapshot capture() {
         Deque<String> currentStack = TENANT_ID_STACK.get();
-        Deque<String> stackCopy = new ArrayDeque<>(currentStack);
+        Deque<String> stackCopy = new LinkedList<>(currentStack);
         if (stackCopy.isEmpty()) {
             String effectiveTenant = getTenantId();
             if (effectiveTenant != null && !effectiveTenant.isBlank()) {
@@ -264,7 +262,7 @@ public final class TenantContextHolder {
      */
     public static TenantSnapshot capturePrevious() {
         Deque<String> currentStack = TENANT_ID_STACK.get();
-        return new TenantSnapshot(new ArrayDeque<>(currentStack), IGNORE_DEPTH.get());
+        return new TenantSnapshot(new LinkedList<>(currentStack), IGNORE_DEPTH.get());
     }
 
     /**
@@ -279,7 +277,7 @@ public final class TenantContextHolder {
             if (snapshot.tenantStack.isEmpty()) {
                 TENANT_ID_STACK.remove();
             } else {
-                TENANT_ID_STACK.set(new ArrayDeque<>(snapshot.tenantStack));
+                TENANT_ID_STACK.set(new LinkedList<>(snapshot.tenantStack));
             }
             if (snapshot.ignoreDepth == 0) {
                 IGNORE_DEPTH.remove();
@@ -297,7 +295,7 @@ public final class TenantContextHolder {
         private final int ignoreDepth;
 
         private TenantSnapshot(Deque<String> tenantStack, int ignoreDepth) {
-            this.tenantStack = tenantStack != null ? tenantStack : new ArrayDeque<>();
+            this.tenantStack = tenantStack != null ? tenantStack : new LinkedList<>();
             this.ignoreDepth = Math.max(0, ignoreDepth);
         }
 

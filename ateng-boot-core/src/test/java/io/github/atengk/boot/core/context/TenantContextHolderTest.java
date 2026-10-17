@@ -173,4 +173,22 @@ class TenantContextHolderTest {
         // 主线程租户保持不变
         assertEquals("main_thread_tenant", TenantContextHolder.getTenantId());
     }
+
+    @Test
+    @DisplayName("9. 栈深防护：在嵌套 runWithTenant 闭包内部调用 setTenantId(null) 不破坏调用栈深度且退出后外层租户完好")
+    void shouldNotCorruptStackWhenSettingNullInsideClosure() {
+        TenantContextHolder.runWithTenant("outer_tenant", () -> {
+            assertEquals("outer_tenant", TenantContextHolder.getTenantId());
+
+            TenantContextHolder.runWithTenant("inner_tenant", () -> {
+                assertEquals("inner_tenant", TenantContextHolder.getTenantId());
+                // 在内层闭包中动态将当前层置为 null
+                TenantContextHolder.setTenantId((String) null);
+                assertNull(TenantContextHolder.getTenantId());
+            });
+
+            // 内层闭包退出后，外层租户必须完好无损，且不发生 NoSuchElementException
+            assertEquals("outer_tenant", TenantContextHolder.getTenantId());
+        });
+    }
 }

@@ -56,6 +56,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Boot 自动装配（用于 AtengCoreAutoConfiguration 自动挂载 SpringUtil，可选依赖） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

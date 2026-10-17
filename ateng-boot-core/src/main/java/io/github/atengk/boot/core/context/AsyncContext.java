@@ -28,25 +28,14 @@ public final class AsyncContext {
         if (task == null) {
             return null;
         }
-
-        // 1. 捕获父线程当前的四维上下文快照
-        Map<String, String> parentMdc = MDC.getCopyOfContextMap();
-        String parentUser = UserContextHolder.get();
-        TenantContextHolder.TenantSnapshot parentTenant = TenantContextHolder.capture();
-
+        ContextSnapshot parent = ContextSnapshot.capture();
         return () -> {
-            // 2. 暂存异步工作线程原有的上下文现场
-            Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-            String previousUser = UserContextHolder.get();
-            TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capturePrevious();
-
+            ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
-                // 3. 将父线程上下文注入当前工作线程
-                setContext(parentMdc, parentUser, parentTenant);
+                parent.apply();
                 task.run();
             } finally {
-                // 4. 彻底恢复工作线程执行前的原始状态，严防线程池污染与租户越权
-                setContext(previousMdc, previousUser, previousTenant);
+                previous.apply();
             }
         };
     }
@@ -62,25 +51,14 @@ public final class AsyncContext {
         if (task == null) {
             return null;
         }
-
-        // 1. 捕获父线程当前的四维上下文快照
-        Map<String, String> parentMdc = MDC.getCopyOfContextMap();
-        String parentUser = UserContextHolder.get();
-        TenantContextHolder.TenantSnapshot parentTenant = TenantContextHolder.capture();
-
+        ContextSnapshot parent = ContextSnapshot.capture();
         return () -> {
-            // 2. 暂存异步工作线程原有的上下文现场
-            Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-            String previousUser = UserContextHolder.get();
-            TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capturePrevious();
-
+            ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
-                // 3. 将父线程上下文注入当前工作线程
-                setContext(parentMdc, parentUser, parentTenant);
+                parent.apply();
                 return task.call();
             } finally {
-                // 4. 彻底恢复工作线程执行前的原始状态，严防线程池污染与租户越权
-                setContext(previousMdc, previousUser, previousTenant);
+                previous.apply();
             }
         };
     }
@@ -97,42 +75,76 @@ public final class AsyncContext {
         if (task == null) {
             return null;
         }
-
-        // 1. 捕获父线程当前的四维上下文快照
-        Map<String, String> parentMdc = MDC.getCopyOfContextMap();
-        String parentUser = UserContextHolder.get();
-        TenantContextHolder.TenantSnapshot parentTenant = TenantContextHolder.capture();
-
+        ContextSnapshot parent = ContextSnapshot.capture();
         return () -> {
-            // 2. 暂存异步工作线程原有的上下文现场
-            Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-            String previousUser = UserContextHolder.get();
-            TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capturePrevious();
-
+            ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
-                // 3. 将父线程上下文注入当前工作线程
-                setContext(parentMdc, parentUser, parentTenant);
+                parent.apply();
                 return task.get();
             } finally {
-                // 4. 彻底恢复工作线程执行前的原始状态，严防线程池污染与租户越权
-                setContext(previousMdc, previousUser, previousTenant);
+                previous.apply();
             }
         };
     }
 
-    private static void setContext(Map<String, String> mdc, String user, TenantContextHolder.TenantSnapshot tenant) {
-        if (mdc != null && !mdc.isEmpty()) {
-            MDC.setContextMap(mdc);
-        } else {
-            MDC.clear();
+    /**
+     * 四维上下文快照不可变数据载体
+     * 统一聚合 MDC 链路、User 身份、Tenant 租户与 IgnoreTenant 标志位
+     */
+    public static final class ContextSnapshot {
+        private final Map<String, String> mdc;
+        private final String user;
+        private final TenantContextHolder.TenantSnapshot tenant;
+
+        private ContextSnapshot(Map<String, String> mdc, String user, TenantContextHolder.TenantSnapshot tenant) {
+            this.mdc = mdc;
+            this.user = user;
+            this.tenant = tenant;
         }
 
-        if (user != null) {
-            UserContextHolder.set(user);
-        } else {
-            UserContextHolder.clear();
+        /**
+         * 捕获调用方线程四维上下文完整快照
+         *
+         * @return 完整的上下文快照
+         */
+        public static ContextSnapshot capture() {
+            return new ContextSnapshot(
+                    MDC.getCopyOfContextMap(),
+                    UserContextHolder.get(),
+                    TenantContextHolder.capture()
+            );
         }
 
-        TenantContextHolder.restore(tenant);
+        /**
+         * 纯净克隆工作线程执行前的上下文现场
+         *
+         * @return 工作线程执行前的原始现场
+         */
+        public static ContextSnapshot capturePrevious() {
+            return new ContextSnapshot(
+                    MDC.getCopyOfContextMap(),
+                    UserContextHolder.get(),
+                    TenantContextHolder.capturePrevious()
+            );
+        }
+
+        /**
+         * 将快照中的上下文状态注入至当前线程
+         */
+        public void apply() {
+            if (this.mdc != null && !this.mdc.isEmpty()) {
+                MDC.setContextMap(this.mdc);
+            } else {
+                MDC.clear();
+            }
+
+            if (this.user != null) {
+                UserContextHolder.set(this.user);
+            } else {
+                UserContextHolder.clear();
+            }
+
+            TenantContextHolder.restore(this.tenant);
+        }
     }
 }

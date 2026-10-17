@@ -21,9 +21,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.ApplicationListener;
 import org.springframework.context.PayloadApplicationEvent;
-import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -74,9 +72,6 @@ class SampleCoreIntegrationTest {
     @Autowired
     private UserMapper userMapper;
 
-    @Autowired
-    private GenericApplicationContext applicationContext;
-
     private ExecutorService threadPool;
 
     @BeforeEach
@@ -84,7 +79,6 @@ class SampleCoreIntegrationTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
-        SpringUtil.setContext(applicationContext);
         threadPool = Executors.newFixedThreadPool(2);
     }
 
@@ -208,11 +202,15 @@ class SampleCoreIntegrationTest {
 
         // 3. 动态发布 POJO 事件并验证监听接收
         AtomicReference<String> eventCaptured = new AtomicReference<>();
-        applicationContext.addApplicationListener((ApplicationListener<PayloadApplicationEvent<String>>) event -> {
-            if ("core-event-test".equals(event.getPayload())) {
-                eventCaptured.set(event.getPayload());
-            }
-        });
+        if (SpringUtil.getApplicationContext() instanceof org.springframework.context.ConfigurableApplicationContext ctx) {
+            ctx.addApplicationListener(event -> {
+                if (event instanceof PayloadApplicationEvent<?> payloadEvent) {
+                    if ("core-event-test".equals(payloadEvent.getPayload())) {
+                        eventCaptured.set((String) payloadEvent.getPayload());
+                    }
+                }
+            });
+        }
 
         SpringUtil.publishEvent("core-event-test");
         assertEquals("core-event-test", eventCaptured.get());

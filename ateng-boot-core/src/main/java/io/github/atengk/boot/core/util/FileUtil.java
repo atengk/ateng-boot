@@ -1,7 +1,5 @@
 package io.github.atengk.boot.core.util;
 
-import java.text.DecimalFormat;
-
 /**
  * 文件名与文件属性安全通用工具
  * 提供针对路径遍历攻击（Path Traversal）的纯净文件名清洗、扩展名提取与人类可读文件容量格式化
@@ -12,7 +10,6 @@ import java.text.DecimalFormat;
 public final class FileUtil {
 
     private static final String[] SIZE_UNITS = {"B", "KB", "MB", "GB", "TB", "PB"};
-    private static final DecimalFormat SIZE_FORMAT = new DecimalFormat("#,##0.00");
 
     private FileUtil() {
     }
@@ -107,6 +104,6 @@ public final class FileUtil {
             unitIndex = SIZE_UNITS.length - 1;
         }
         double sizeInUnit = bytes / Math.pow(1024, unitIndex);
-        return SIZE_FORMAT.format(sizeInUnit) + " " + SIZE_UNITS[unitIndex];
+        return String.format(java.util.Locale.ROOT, "%,.2f %s", sizeInUnit, SIZE_UNITS[unitIndex]);
     }
 }
