@@ -113,6 +113,21 @@ class IpUtilTest {
         assertThat(IpUtil.isValidIp("   ")).isFalse();
         assertThat(IpUtil.isValidIp("unknown")).isFalse();
         assertThat(IpUtil.isValidIp("UNKNOWN")).isFalse();
+        assertThat(IpUtil.isValidIp("<script>alert(1)</script>")).isFalse();
+        assertThat(IpUtil.isValidIp("999.999.999.999")).isFalse();
+        assertThat(IpUtil.isValidIp("abc.def.ghi.jkl")).isFalse();
         assertThat(IpUtil.isValidIp("127.0.0.1")).isTrue();
+        assertThat(IpUtil.isValidIp("192.168.1.1")).isTrue();
+        assertThat(IpUtil.isValidIp("2001:db8::1")).isTrue();
+    }
+
+    @Test
+    @DisplayName("当 X-Forwarded-For 包含伪造注入字符串时自动跳过并识别后续合法 IP")
+    void shouldSkipMaliciousInjectionInXForwardedFor() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("X-Forwarded-For", "<script>alert(1)</script>, 203.0.113.195, 10.0.0.1");
+
+        String clientIp = IpUtil.getClientIp(request);
+        assertThat(clientIp).isEqualTo("203.0.113.195");
     }
 }

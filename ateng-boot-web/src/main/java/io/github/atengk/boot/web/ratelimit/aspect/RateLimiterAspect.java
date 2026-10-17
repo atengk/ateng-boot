@@ -18,13 +18,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
+import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 接口限流防刷 AOP 切面
@@ -41,6 +44,7 @@ public class RateLimiterAspect {
     private final RateLimiterStore rateLimiterStore;
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
+    private final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
     public RateLimiterAspect(RateLimiterStore rateLimiterStore) {
         this.rateLimiterStore = Objects.requireNonNull(rateLimiterStore, "RateLimiterStore must not be null");
@@ -138,7 +142,8 @@ public class RateLimiterAspect {
         }
 
         try {
-            Object value = expressionParser.parseExpression(spelExpression).getValue(context);
+            Expression expression = expressionCache.computeIfAbsent(spelExpression, expressionParser::parseExpression);
+            Object value = expression.getValue(context);
             if (value == null) {
                 throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "限流键表达式计算结果为空: " + spelExpression);
             }

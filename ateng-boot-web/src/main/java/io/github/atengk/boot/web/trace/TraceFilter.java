@@ -65,6 +65,11 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
     }
 
     @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
+
+    @Override
     public int getOrder() {
         return ORDER;
     }

@@ -51,6 +51,11 @@ class GlobalExceptionHandlerTest {
         public Result<Void> triggerSystemError() {
             throw new NullPointerException("内部敏感空指针引用");
         }
+
+        @GetMapping("/test/type-mismatch")
+        public Result<Void> triggerTypeMismatch(@org.springframework.web.bind.annotation.RequestParam("id") Long id) {
+            return Result.success();
+        }
     }
 
     static class TestParam {
@@ -120,12 +125,22 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    @DisplayName("请求不支持的 HTTP 方法时转译为 400 提示且 HTTP 状态码为 200")
+    @DisplayName("请求不支持的 HTTP 方法时转译为 405 提示且 HTTP 状态码为 200")
     void shouldHandleMethodNotSupportedException() throws Exception {
         mockMvc.perform(post("/test/business-exception"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.code").value(405))
                 .andExpect(jsonPath("$.msg").value("请求方法不支持: POST"))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("参数类型不匹配时捕获 MethodArgumentTypeMismatchException 并返回 400")
+    void shouldHandleMethodArgumentTypeMismatchException() throws Exception {
+        mockMvc.perform(get("/test/type-mismatch").param("id", "not-a-number"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("请求参数非法或缺失"))
                 .andExpect(jsonPath("$.success").value(false));
     }
 

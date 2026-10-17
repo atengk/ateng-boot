@@ -68,12 +68,13 @@ public class AtengApiSignAutoConfiguration {
     /**
      * 注册请求体可重复读缓存过滤器
      *
+     * @param webProperties Web 配置属性
      * @return FilterRegistrationBean 实例
      */
     @Bean
     @ConditionalOnMissingBean(name = "requestBodyCachingFilterRegistration")
-    public FilterRegistrationBean<RequestBodyCachingFilter> requestBodyCachingFilterRegistration() {
-        RequestBodyCachingFilter filter = new RequestBodyCachingFilter();
+    public FilterRegistrationBean<RequestBodyCachingFilter> requestBodyCachingFilterRegistration(WebProperties webProperties) {
+        RequestBodyCachingFilter filter = new RequestBodyCachingFilter(webProperties.getSign().getMaxBodySize());
         FilterRegistrationBean<RequestBodyCachingFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(TraceFilter.ORDER + 20);
         return registration;

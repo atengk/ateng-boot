@@ -39,6 +39,11 @@ public enum CommonResultCode implements IResultCode {
     NOT_FOUND(404, "请求资源不存在"),
 
     /**
+     * 请求方法不支持
+     */
+    METHOD_NOT_ALLOWED(405, "请求方法不支持"),
+
+    /**
      * 系统繁忙，请稍后再试
      */
     INTERNAL_SERVER_ERROR(500, "系统繁忙，请稍后再试"),

@@ -165,5 +165,10 @@ public class WebProperties {
          * 请求时效防重放时间窗口（秒，默认 60 秒）
          */
         private long expireSeconds = 60L;
+
+        /**
+         * 请求体缓存最大字节数（防 OOM，默认 2MB）
+         */
+        private int maxBodySize = 2 * 1024 * 1024;
     }
 }

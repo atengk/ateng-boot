@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.util;
 
+import io.github.atengk.boot.core.util.ValidatorUtil;
 import jakarta.servlet.http.HttpServletRequest;
 
 /**
@@ -90,12 +91,19 @@ public final class IpUtil {
     }
 
     /**
-     * 校验 IP 字符串是否有效（非空且不为 unknown）
+     * 校验 IP 字符串是否有效（非空、非 unknown 且符合严格的 IPv4/IPv6 或本地环回规范）
      *
      * @param ip 待校验 IP
      * @return true 表示有效
      */
     public static boolean isValidIp(String ip) {
-        return ip != null && !ip.isBlank() && !UNKNOWN.equalsIgnoreCase(ip.trim());
+        if (ip == null || ip.isBlank() || UNKNOWN.equalsIgnoreCase(ip.trim())) {
+            return false;
+        }
+        String trimmed = ip.trim();
+        if (LOCAL_IPV4.equals(trimmed) || LOCAL_IPV6.equals(trimmed) || LOCAL_IPV6_SHORT.equals(trimmed) || (LOCAL_IPV6 + "%0").equals(trimmed)) {
+            return true;
+        }
+        return ValidatorUtil.isIp(trimmed);
     }
 }

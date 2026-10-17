@@ -97,15 +97,31 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 拦截客户端入参缺失或类型转换异常
+     *
+     * @param e 客户端请求入参异常
+     * @return 400 校验提示响应结果
+     */
+    @ExceptionHandler({
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,
+            org.springframework.web.bind.MissingServletRequestParameterException.class,
+            org.springframework.web.bind.MissingRequestHeaderException.class
+    })
+    public Result<Void> handleClientParamMismatchException(Exception e) {
+        log.warn("客户端请求参数非法或缺失: {}", e.getMessage());
+        return Result.fail(CommonResultCode.BAD_REQUEST.getCode(), "请求参数非法或缺失");
+    }
+
+    /**
      * 拦截不支持的 HTTP 请求方法异常 HttpRequestMethodNotSupportedException
      *
      * @param e 请求方法不支持异常
-     * @return 400 方法不支持提示响应结果
+     * @return 405 方法不支持提示响应结果
      */
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public Result<Void> handleHttpRequestMethodNotSupportedException(HttpRequestMethodNotSupportedException e) {
         log.warn("HTTP 请求方法不支持: {}", e.getMethod());
-        return Result.fail(CommonResultCode.BAD_REQUEST.getCode(), "请求方法不支持: " + e.getMethod());
+        return Result.fail(CommonResultCode.METHOD_NOT_ALLOWED.getCode(), "请求方法不支持: " + e.getMethod());
     }
 
     /**

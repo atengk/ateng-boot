@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.idempotent.store;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -47,11 +48,8 @@ public class InMemoryIdempotentKeyStore implements IdempotentKeyStore, Disposabl
         Duration interval = cleanInterval != null && !cleanInterval.isZero() && !cleanInterval.isNegative()
                 ? cleanInterval : DEFAULT_CLEAN_INTERVAL;
 
-        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "ateng-idempotent-cleaner");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("ateng-idempotent-cleaner", true));
 
         long intervalMillis = interval.toMillis();
         this.cleanupExecutor.scheduleWithFixedDelay(this::cleanExpiredEntries, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);

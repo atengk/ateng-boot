@@ -25,7 +25,18 @@
 ### 核心机制
 - 在 HTTP 请求入口处自动提取入站请求头 `X-Trace-Id`；若无则通过 `IdUtil.fastSimpleUUID()` 自动生成；
 - 写入日志框架 MDC `traceId`，自动回写至 HTTP 响应头 `X-Trace-Id`，并在请求出口处安全清理，绝无线程池内存泄露；
-- 日志输出模式推荐配置 `%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-NO-TRACE}] %-5level %logger{36} : %msg%n`。
+- 日志输出模式推荐配置 `%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-NO-TRACE}] %-5level %logger{36} : %msg%n`；
+- **全链路追踪门面 (`TraceUtil`)**：提供无侵入编程式提取与注入门面：
+  ```java
+  // 1. 获取当前请求全链路 TraceId
+  String traceId = TraceUtil.getTraceId();
+
+  // 2. 编程式注入自定义 TraceId
+  TraceUtil.setTraceId("CUSTOM_TRACE_999");
+
+  // 3. 安全清理现场
+  TraceUtil.clear();
+  ```
 
 ---
 
@@ -269,6 +280,7 @@ ateng:
         algorithm: HMAC_SHA256    # 签名算法（支持 HMAC_SHA256、RSA，默认 HMAC_SHA256）
         secret-key: "YourSecretKey" # 对称密钥（HMAC_SHA256 算法下使用）
         expire-seconds: 300       # 签名时效窗口（秒，默认 300 秒 / 5 分钟）
+        max-body-size: 2097152    # 请求体缓存最大字节数（防 OOM，默认 2MB）
         header-app-id: "X-App-Id" # 应用标识请求头名称
         header-timestamp: "X-Timestamp" # 时间戳请求头/响应头名称
         header-nonce: "X-Nonce"   # 随机防重放串请求头/响应头名称

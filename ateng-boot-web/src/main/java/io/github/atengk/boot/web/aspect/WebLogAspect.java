@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.aspect;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.web.annotation.WebLog;
 import io.github.atengk.boot.web.util.IpUtil;
@@ -129,7 +130,11 @@ public class WebLogAspect {
             errorMsg.append(", 异常=[{}] {}");
             errorArgs.add(ex.getClass().getSimpleName());
             errorArgs.add(ex.getMessage());
-            log.error(errorMsg.toString(), errorArgs.toArray());
+            if (ex instanceof BusinessException) {
+                log.warn(errorMsg.toString(), errorArgs.toArray());
+            } else {
+                log.error(errorMsg.toString(), errorArgs.toArray());
+            }
             throw ex;
         }
 

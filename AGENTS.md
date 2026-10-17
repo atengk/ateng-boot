@@ -60,9 +60,19 @@
 - **纯文档修改测试豁免 (Doc-Only Exemption)**：若本次变更仅涉及文档（如 `*.md`、纯文本或注释说明）而未改动任何业务源码、配置文件与工程依赖，一律免除执行本地 Maven 单元测试与场景准出验证，直接受控提交。
 
 - **特性即文档与真理源不变量 (Doc-as-Feature & Evergreen Invariant)**：
+  - **单工单文档同步闭环 (Single-Ticket Sync)**：代码产生的功能、配置与新 API 必须同步在相关文档中体现，严禁只堆砌代码缺失使用说明；所有特性与接口改造均遵循“单工单文档准出闭环”原则，在同一个工单与提交中必须同步交付文档；缺少文档与使用示例的改动一律视为未达验收标准，阻断准出；
+  - **子模块就近内聚拓扑 (Submodule-Co-located Docs)**：根目录 `README.md` 保持轻量门户与各模块索引导航；各模块具体代码范式、YAML 配置项与核心能力 100% 强制内聚于所属模块根目录的专属 `README.md`（如 `ateng-boot-core/README.md`、`ateng-boot-excel/README.md` 等），确保开箱即查即用；复杂架构专题沉淀于 `docs/guides/`；
+  - **文档示例“三板斧”规范 (The Triad Quality Standard)**：文档中的功能说明必须严格遵循“三板斧”结构：
+    1. **一句话场景痛点**：直击解决什么问题、何时选用；
+    2. **最小可用代码/配置块**：可直接复制粘贴的 Java 示例或 YAML 片段；
+    3. **预期呈现契约**：控制台输出、SQL 日志、HTTP JSON 响应或导出的文件效果；
+  - **“先测后文、文必有源”防臆造机制 (Zero-Hallucination & Traceability)**：
+    - **代码源头锚定**：文档中展示的 Java 示例必须且只能直接提取自已跑通的单测类（`*Test.java`）或场景样例工程（`ateng-boot-sample-*`），严禁脱离代码在 Markdown 里凭空手敲；若某功能尚无现成范式，必须先在测试用例中写出并跑通后再提取至文档；
+    - **配置源头锚定**：YAML/Properties 配置片段必须 100% 与当前模块的 `@ConfigurationProperties` 字段逐字对齐；
+    - **预期呈现源头锚定**：控制台输出、实际 SQL 与响应结果必须直接截取自本地实际执行 `mvn test` 的真实控制台输出，严禁脑补拼接伪数据；
+  - **重构防漂移与审查拦截 (Anti-Drift & Review Gate)**：修改核心 API 签名、类名或配置项时，必须全工程检索所属子模块 `README.md` 同步修正，杜绝陈旧失效代码；`/code-review` 强制将文档一致性与真实性列为红牌必检项；
   - **四维职责清晰正交**：`README.md` 面向开发者，聚焦痛点与最小可用代码；`CONTEXT.md` 严格恪守“纯领域词汇表 (Glossary)”定位，只定义术语与 Avoid 负面词汇，严禁堆砌长篇实现细节；`CONTEXT-MAP.md` 专职维护系统拓扑与调用依赖；`docs/adr/` 专职沉淀重大架构选型；
-  - **ADR 膨胀防线与合并收敛**：严格收紧独立 ADR 门槛，仅在孵化完整新中间件底座或重大协议契约重构时新建独立 ADR；存量模块优化一律优先在既有归属 ADR 增量修订；
-  - **文档真理源不变量**：文档中呈现的所有配置与代码示例，必须 100% 源自 `ateng-boot-samples` 或单元测试中实际编译运行通过的真实代码片段，杜绝手工臆造伪代码写入文档。
+  - **ADR 膨胀防线与合并收敛**：严格收紧独立 ADR 门槛，仅在孵化完整新中间件底座或重大协议契约重构时新建独立 ADR；存量模块优化一律优先在既有归属 ADR 增量修订。
 
 ---
 
@@ -83,9 +93,9 @@
 - **官方 CLI 与工单生命周期闭环 (CLI & Ticket Lifecycle)**：
   GitHub Issues、PR 审阅与 CI 交互一律通过官方 `gh` 命令行闭环。工单生命周期严格遵循五阶段状态机：
   1. **认领**：查阅工单并指派当前开发者（`gh issue edit <n> --add-assignee "@me"`）；
-  2. **TDD**：测试驱动编码，满足架构与编码契约；
-  3. **准出**：执行第 3 节阶梯二准出测试（纯文档改动免测），通过后调用 `/code-review` 双轴审查；
-  4. **提交**：按第 4 节执行受控提交并推送；
+  2. **TDD 与文档同步实现**：测试驱动编码，满足架构契约；同步在所属子模块 `README.md` 中按“三板斧”补齐真实使用示例与配置说明；
+  3. **准出与双轴审查**：执行第 3 节阶梯二准出测试（纯文档改动免测），通过后调用 `/code-review` 开展审查（文档真实性与一致性为红牌必检项）；
+  4. **受控提交**：按第 4 节执行受控提交并推送（代码与文档同工单同提交原子交付）；
   5. **闭环**：守护 CI 监控至全绿，通过文件回写验收清单与提交哈希（`gh issue comment <n> -F <file>`），关闭工单（`gh issue close <n>`）。
 - **工单操作与 CLI 避坑 (Issue Tracker & CLI)**：操作 GitHub Issues / PR 或编写 PowerShell 交互命令时，遵循 [docs/agents/issue-tracker.md](./docs/agents/issue-tracker.md)（含特殊字符引号包裹、`-F` 文件回写防截断及 Wayfinding 映射）。
 - **分诊标签规范 (Triage Labels)**：分诊或标记 Issue 状态时，遵循 [docs/agents/triage-labels.md](./docs/agents/triage-labels.md)（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。

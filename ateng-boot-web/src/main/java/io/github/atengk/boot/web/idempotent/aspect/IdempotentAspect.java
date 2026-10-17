@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.ParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
+import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
@@ -33,7 +34,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 接口防重幂等 AOP 切面
@@ -53,6 +56,7 @@ public class IdempotentAspect {
 
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
+    private final Map<String, Expression> expressionCache = new ConcurrentHashMap<>();
 
     public IdempotentAspect(IdempotentKeyStore keyStore, IdempotentProperties properties) {
         this(keyStore, properties, null);
@@ -132,7 +136,8 @@ public class IdempotentAspect {
         }
 
         try {
-            Object value = expressionParser.parseExpression(spelExpression).getValue(context);
+            Expression expression = expressionCache.computeIfAbsent(spelExpression, expressionParser::parseExpression);
+            Object value = expression.getValue(context);
             if (value == null) {
                 throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), "幂等键表达式计算结果为空: " + spelExpression);
             }

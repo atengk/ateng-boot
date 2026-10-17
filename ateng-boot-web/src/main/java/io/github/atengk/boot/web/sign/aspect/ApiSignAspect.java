@@ -22,11 +22,11 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.annotation.AnnotationUtils;
+import io.github.atengk.boot.core.util.IdUtil;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -128,6 +128,8 @@ public class ApiSignAspect {
                 log.warn("ApiSign detected repeated nonce [{}] for appId [{}]", nonce, appId);
                 throw new BusinessException(CommonResultCode.REPEAT_SUBMIT, "请求已被处理或存在重放风险");
             }
+        } else {
+            log.warn("ApiSign 未配置 IdempotentKeyStore 实例，已跳过 Nonce 防重放校验: appId=[{}], nonce=[{}]", appId, nonce);
         }
 
         // (4) 提取并计算请求体摘要
@@ -167,7 +169,7 @@ public class ApiSignAspect {
             String reqNonce = request != null ? request.getHeader(HEADER_NONCE) : null;
 
             String respTimestamp = StringUtils.hasText(reqTimestamp) ? reqTimestamp : String.valueOf(System.currentTimeMillis());
-            String respNonce = StringUtils.hasText(reqNonce) ? reqNonce : UUID.randomUUID().toString().replace("-", "");
+            String respNonce = StringUtils.hasText(reqNonce) ? reqNonce : IdUtil.fastSimpleUUID();
 
             String responseJson = (proceedResult != null) ? objectMapper.writeValueAsString(proceedResult) : "";
             String responseBodySha256 = DigestUtil.sha256Hex(responseJson);
