@@ -36,7 +36,7 @@ flowchart TB
         end
 
         subgraph CoreBase["核心通用底座 (Core & Contract)"]
-            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt;<br/>• 语义化断言 BusinessAssert<br/>• 纯原生 Snowflake 引擎 (回拨自旋/熔断)<br/>• 10+ 维度全场景敏感数据脱敏<br/>• 线程上下文透传与操作人审计 SPI"]
+            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt; (函数式算子/优雅兜底)<br/>• 语义化断言 BusinessAssert<br/>• 纯原生 Snowflake 引擎 (回拨自旋/熔断)<br/>• 10+ 维度全场景敏感数据脱敏与 @FieldSensitive<br/>• 线程上下文透传与用户/多租户审计 SPI<br/>• 原生不可变元组 Pair/Triple &amp; 线性树形 TreeUtil<br/>• 通用孵化原语 (Spring/Lambda/Collection/Bean/Retry/File)"]
         end
 
         subgraph Middlewares["高并发与持久层增强 (Persistence & Middlewares)"]
@@ -75,7 +75,7 @@ flowchart TB
 
 | 模块名称 | 坐标 (ArtifactId) | 职责定位 | 详细使用文档 |
 | :--- | :--- | :--- | :---: |
-| **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约、异常体系、业务断言、雪花发号器、全场景脱敏、加解密工具 | [查看文档](./ateng-boot-core/README.md) |
+| **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约（函数式算子）、异常体系、业务断言、雪花发号器、全场景脱敏、用户/多租户上下文透传、元组、树形算法及中间件孵化通用原语 | [查看文档](./ateng-boot-core/README.md) |
 | **Web 运行时增强** | `ateng-boot-web` | 链路追踪 `TraceFilter`、全局异常防御、自适应防重幂等、自适应限流、动态 CORS、双向加签验签、流式下载 | [查看文档](./ateng-boot-web/README.md) |
 | **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
 | **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
@@ -90,9 +90,10 @@ flowchart TB
 
 | 特性维度 | 常见痛点 | `ateng-boot` 解决方案 | 归属模块 | 架构决策 |
 | :--- | :--- | :--- | :---: | :---: |
-| **响应契约** | `@ResponseBodyAdvice` 导致 String 强转报错、污染 Swagger 与文件下载 | 坚持显式契约：Controller 声明 `Result<T>`，提供链式工厂与 `getOrThrow()` | `core` | [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md) |
+| **响应契约** | `@ResponseBodyAdvice` 导致 String 强转报错、污染 Swagger 与文件下载 | 坚持显式契约：Controller 声明 `Result<T>`，提供链式工厂、`getOrThrow()` 及 `map/peek/ifSuccess/orElse` 函数式流转算子 | `core` | [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md) |
 | **分布式发号** | 依赖第三方组件或中心化服务，且多套发号器时间戳规则割裂 | 纯原生 `Snowflake` 引擎（2026 纪元、$\le 5\text{ms}$ 回拨自旋、$> 5\text{ms}$ 熔断）与 `IdUtil` 门面 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
-| **全场景脱敏** | 仅覆盖基础字段；业务层手写星号导致脏数据写回数据库 | `DesensitizeUtil` 覆盖地址/车牌/IP/税号等 10+ 维度；出库 Jackson 动态打码 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
+| **全场景脱敏** | 仅覆盖基础字段；业务层手写星号导致脏数据写回数据库 | `DesensitizeUtil` 覆盖地址/车牌/IP/税号等 10+ 维度；`@FieldSensitive` 视图层动态打码 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
+| **孵化通用原语** | 模块各自定义工具类、重复依赖第三方库、容易产生内存溢出与路径穿越 | `SpringUtil`、`LambdaUtil`、`CollectionUtil`、`BeanUtil`、`RetryUtil` 与 `FileUtil` 统一收敛于 core | `core` | [ADR-0025](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
 | **数字精度** | 64 位雪花 Long 传到前端超出 $2^{53}-1$ 导致末尾截断失真 | 注册 `Jackson2ObjectMapperBuilderCustomizer` 将 Long/BigInteger 序列化为 String | `web` | [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md) |
 | **全链路追踪** | 单体无 APM 时日志串联困难，跨线程上下文丢失 | `TraceFilter` 自动注入/回写 `X-Trace-Id`；受管线程池透传 MDC 与操作人 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |
 | **异常脱敏** | 生产报错直接向前端暴露 SQL 语法与数据表结构 | 全局异常处理器未知异常生产脱敏，内部堆栈与 traceId 仅记录于后台日志 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |
@@ -260,6 +261,8 @@ mvn -pl ateng-boot-samples spring-boot:run
 - [ADR-0021: 存量核心基线收敛与零冗余封版战略决策](./docs/adr/0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md)
 - [ADR-0022: 双核驱动 Redis 基础设施与企业级分布式协同架构决策](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
 - [ADR-0023: 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md)
+- [ADR-0024: 企业级 Sa-Token 鉴权生态与安全防御/分布式会话一体化架构决策](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
+- [ADR-0025: Core 核心底座全方位扩建与未来中间件孵化地基架构决策](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md)
 
 ---
 
