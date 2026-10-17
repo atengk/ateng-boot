@@ -50,9 +50,9 @@
   5. **底座原语优先复用 (Core-First Reuse Gate)**：新增中间件模块（如 Storage、MQ、Job、AI 等）涉及容器查找、方法引用推导、JSON 序列化、分批切片、退避重试或路径清洗等需求时，强制 100% 优先复用 `ateng-boot-core` 已就绪的基础设施与标准件，坚决杜绝在子模块内私造工具类或引入第三方重复全量依赖。
 
 - **三阶梯测试准出与构建并行加速铁律 (Three-Tier Test Gate & Parallel Build)**：
-  面对日益增多的框架模块，严禁在每次改动时无脑在本地执行全项目串行单测（避免陷入耗时膨胀泥潭），实行三阶梯智能分流与并行加速：
-  1. **阶梯一：特性日常自验（秒级极速反馈）**：单个模块改动时，采用多线程依赖树精准定向测试：`mvn test -pl <changed-module> -am -T 1C`（利用多核 CPU 并发编译上游依赖，仅执行当前变更模块单测）；
-  2. **阶梯二：本地提交准出验收（精准端到端集成）**：准备提交前，若涉及底座（`core`）或核心中间件改动，执行变更模块与集成示例工程联动验证：`mvn test -pl <changed-module>,ateng-boot-samples -am -T 1C`，由 `ateng-boot-samples` 纯内存端到端集成测试完成关键跨模块链路验收，严禁无脑回归互不相干的隔离兄弟模块（如改动 `redis` 绝不执行沉重的 `excel` 或 `satoken` 单测）；
+  面对日益增多的框架模块，严禁在每次改动时无脑在本地执行全项目串行单测（避免陷入耗时膨胀泥潭），实行三阶梯智能分流与并行加速（根目录 `.mvn/maven.config` 默认注入 `-T 1C -nsu` 加速配置）：
+  1. **阶梯一：特性日常自验（秒级极速反馈）**：单个模块改动时，采用多线程依赖树精准定向测试：`mvn test -pl <changed-module> -am -T 1C -nsu`（利用多核 CPU 并发编译上游依赖，仅执行当前变更模块单测；在 Agent 自动化或无头脚本中统一附加 `-B` 确保日志流式纯净）；
+  2. **阶梯二：本地提交准出验收（精准端到端集成）**：准备提交前，若涉及底座（`core`）或核心中间件改动，执行变更模块与集成示例工程联动验证：`mvn test -pl <changed-module>,ateng-boot-samples -am -T 1C -nsu`，由 `ateng-boot-samples` 纯内存端到端集成测试完成关键跨模块链路验收，严禁无脑回归互不相干的隔离兄弟模块（如改动 `redis` 绝不执行沉重的 `excel` 或 `satoken` 单测；自动化环境统一附加 `-B`）；
   3. **阶梯三：全反应堆多 JDK 矩阵终极守护 (Post-Push CI Gate)**：全反应堆所有模块（100% 模块全集）在 Linux/Windows 及 JDK 17 & 21 矩阵下的全量回归，100% 交由 GitHub Actions CI 云端并行工作流异步守护；本地推送后通过 `gh run watch <run-id>` 闭环跟踪至全绿。
 
 - **特性即文档与四维正交文档生态 (Doc-as-Feature & Orthogonal Docs)**：
@@ -80,7 +80,7 @@
 - **标准工单生命周期 SOP (End-to-End Ticket Lifecycle)**：
   1. **检索与认领**：使用 `gh issue view <n> --comments` 获取上下文；认领统一执行 `gh issue edit <n> --add-assignee "@me"`；
   2. **TDD 测试驱动实现**：在最高切入点编写验证用例，遵循架构与编码契约完成特性编码；
-  3. **单测准出与代码评审**：执行阶梯二准出测试（`mvn test -pl <changed-module>,ateng-boot-samples -am -T 1C`）验证通过后，调用 `/code-review` 开展 Standards 与 Spec 双轴审查；
+  3. **单测准出与代码评审**：执行阶梯二准出测试（`mvn test -pl <changed-module>,ateng-boot-samples -am -T 1C -nsu`）验证通过后，调用 `/code-review` 开展 Standards 与 Spec 双轴审查；
   4. **受控提交与验证回写**：在收到显式提交指令后，调用 `scripts/commit.sh` 精准提交并推送；
   5. **流水线守护与闭环关闭**：通过 `gh run list -L 1` 获取最新工作流 Run ID，执行 `gh run watch <run-id>` 跟踪 CI 流水线直至 100% 绿色通过；通过 `gh issue comment <n> -F <file>` 回写验收清单、提交哈希与 CI 结果；执行 `gh issue close <n>` 关闭工单，完成闭环。
 - **分诊标签 (Triage Labels)**：采用 5 种标准分诊角色标签（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。详见 [docs/agents/triage-labels.md](./docs/agents/triage-labels.md)。

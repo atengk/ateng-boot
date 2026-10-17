@@ -187,8 +187,8 @@ else
 fi
 
 # 1.6 多模块代码可编译性预检 (防带编译错误代码发版打脏标签)
-log_info "正在执行工程多模块编译快速自检 (mvn test-compile -q)..."
-if ! mvn test-compile -q; then
+log_info "正在执行工程多模块编译快速自检 (mvn test-compile -q -T 1C -nsu)..."
+if ! mvn test-compile -q -T 1C -nsu; then
   log_error "本地代码编译失败！严禁将存在编译错误的脏代码推向远程发版！"
   log_error "请先排查修复本地编译错误后重试。"
   exit 1
