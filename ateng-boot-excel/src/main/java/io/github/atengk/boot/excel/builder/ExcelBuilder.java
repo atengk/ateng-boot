@@ -1,11 +1,14 @@
 package io.github.atengk.boot.excel.builder;
 
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
+import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
+import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
@@ -46,6 +49,8 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     private Integer maxColumnWidth;
     private String fontName;
     private boolean styleDisabled = false;
+    private String watermarkText;
+    private String protectionPassword;
 
     /**
      * 基于输出流构造 Fluent 构建器
@@ -141,6 +146,28 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     }
 
     /**
+     * 流式指定后续 Sheet 的防拍照半透明暗水印文本
+     *
+     * @param watermarkText 水印文本内容
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder watermark(String watermarkText) {
+        this.watermarkText = watermarkText;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 的只读锁定保护密码
+     *
+     * @param protectionPassword 只读锁定保护密码
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder protect(String protectionPassword) {
+        this.protectionPassword = protectionPassword;
+        return this;
+    }
+
+    /**
      * 写入一个强类型实体模型 Sheet（自动递增 Sheet 编号）
      *
      * @param sheetName 工作表名称
@@ -168,6 +195,13 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(headClass);
         if (sheetConfigurator != null) {
             sheetConfigurator.accept(sheetBuilder, headClass);
+        }
+        if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
+            sheetBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
+            sheetBuilder.registerConverter(new SmartImageConverter());
+        }
+        if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
+            sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
         }
         applyStyle(sheetBuilder, headClass);
         WriteSheet writeSheet = sheetBuilder.build();
@@ -202,6 +236,9 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         List<List<String>> fesodHead = ExcelUtil.normalizeHead(headList);
         List<?> normalizedData = ExcelUtil.normalizeData(dataList, headList);
         ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(fesodHead);
+        if ((this.watermarkText != null && !this.watermarkText.isBlank()) || (this.protectionPassword != null && !this.protectionPassword.isBlank())) {
+            sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
+        }
         applyStyle(sheetBuilder, null);
         WriteSheet writeSheet = sheetBuilder.build();
         Collection<?> writeData = (normalizedData != null) ? (Collection<?>) normalizedData : Collections.emptyList();
@@ -217,6 +254,8 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         this.minColumnWidth = null;
         this.maxColumnWidth = null;
         this.fontName = null;
+        this.watermarkText = null;
+        this.protectionPassword = null;
     }
 
     private void applyStyle(ExcelWriterSheetBuilder sheetBuilder, Class<?> headClass) {

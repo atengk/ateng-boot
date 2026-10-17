@@ -124,11 +124,17 @@ flowchart TD
 - **Fluent 链式编排**：交付 `ExcelBuilder` 构建器，支持在同一个工作簿中链式编排多个 Sheet、独立配置不同表头与数据源，一键输出至文件、输出流或 HTTP 响应。
 
 ### 7. 企业级多模版样式体系与自适应列宽 (@ExcelTheme & SmartAutoColumnWidth)
-- **内置 5 套商务主题**：交付 `ExcelTheme`，全局默认推荐选用极简高雅白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白配细灰边框，清爽高雅），并提供石墨灰（`CLASSIC_GREY`，沉稳深灰表头配白色加粗字体，正文白底与浅灰斑马纹交替，高对比度防底色混淆）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）、暖阳橙（`WARM_ORANGE`），统一采用“微软雅黑”字体与清晰的灰度/色阶对比；
+- **内置 5 套商务主题**：交付 `ExcelTheme`，全局默认推荐选用极简高雅白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白配细灰边框，清爽高雅），并提供石墨灰（`CLASSIC_GREY`，厚重工业石墨灰表头 `#B0B7C0` 搭配黑色加粗字体，正文白底与清晰浅灰斑马纹 `#DEE2E6` 规律交替，立体感鲜明）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）、暖阳橙（`WARM_ORANGE`），统一采用“微软雅黑”字体与清晰的灰度/色阶对比；
 - **零额外开销斑马纹**：基于 Fesod 原生 `HorizontalCellStyleStrategy` 多重 `WriteCellStyle` 实现奇偶行交替底色，完全依托 Fesod 行索引取模机制，无额外内存开销；
 - **精准中英文双字节列宽**：交付 `SmartAutoColumnWidthWriteHandler`，严格遵循中文/全角 2.0 字符宽、英文/半角 1.0 字符宽计算，换行文本取各段最大值，追加 2.0 字符安全内边距（解决数值变为 `###`），并设置 12~60 字符宽度边界保护；
 - **三级平滑优先级控制**：`ExcelBuilder` 链式设置 > 类级 `@ExcelTheme` 注解 > `application.yml` 全局配置 (`ateng.boot.excel.style.*`)；可全局/局部彻底开启或关闭（`enabled: false` 零开销旁路）；
 - **100% 兼容原生**：零冲突继承 Apache Fesod 原生 `@HeadStyle`、`@ContentStyle`、`@ColumnWidth` 等字段级定制注解。
+
+### 8. 生产级深度演进（异步导出中心、差错隔离导出、智能多媒体图片与防拍照暗水印）
+- **异步海量导出任务中心 (`AsyncExportTaskService`)**：提供大报表后台异步执行、任务查询与过期清理 SPI，标配 `InMemoryAsyncExportTaskService` 默认实现，解耦长连接与 Nginx 60s 超时；
+- **差错数据隔离提取与纠错 Excel (`FailSplitFeedback`)**：针对大规模批量导入，支持“成功数据自动入库，失败数据单独提取生成纠错 Excel”（附带错误原因汇总列与出错单元格标红高亮），免除整表重试；
+- **智能多媒体图片内嵌 (`@ExcelImage` & `SmartImageConverter`)**：零配置智能识别网络图片 URL、Base64、本地路径与字节流，联动行高处理器自动撑高所在行，抹平 Fesod 原生图片压扁与类型割裂硬伤；
+- **工作表透明防拍照暗水印与锁定 (`WatermarkSheetWriteHandler`)**：利用 Java 2D 动态生成半透明倾斜工号防伪切片注入为工作表底图，屏幕与打印全屏覆盖，不影响单元格操作，配合密码锁定强化合规。
 
 ---
 

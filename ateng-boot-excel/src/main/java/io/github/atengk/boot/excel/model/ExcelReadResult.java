@@ -8,7 +8,9 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Excel 读取与校验结果复合模型
@@ -74,10 +76,27 @@ public class ExcelReadResult<T> implements Serializable {
 
     /**
      * 获取错误行数
-     *
-     * @return 错误行总数
      */
     public int getErrorCount() {
         return errors != null ? errors.size() : 0;
+    }
+
+    /**
+     * 提取去重后的失败实体数据列表（防御性返回空集合）
+     *
+     * @return 校验失败的 Java 实体对象列表
+     */
+    @SuppressWarnings("unchecked")
+    public List<T> getFailedData() {
+        if (errors == null || errors.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Map<Integer, T> uniqueRows = new LinkedHashMap<>();
+        for (ExcelErrorRow err : errors) {
+            if (err.getRowData() != null) {
+                uniqueRows.putIfAbsent(err.getRowIndex(), (T) err.getRowData());
+            }
+        }
+        return new ArrayList<>(uniqueRows.values());
     }
 }

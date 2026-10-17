@@ -32,4 +32,9 @@ public class ExcelProperties {
      * Excel 企业级样式与模版主题配置
      */
     private ExcelStyleProperties style = new ExcelStyleProperties();
+
+    /**
+     * Excel 异步导出任务中心配置
+     */
+    private ExcelAsyncExportProperties asyncExport = new ExcelAsyncExportProperties();
 }

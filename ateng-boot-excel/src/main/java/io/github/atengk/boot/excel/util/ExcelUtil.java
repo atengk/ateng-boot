@@ -7,13 +7,17 @@ import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
+import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
+import io.github.atengk.boot.excel.handler.FailSplitRowWriteHandler;
+import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
+import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
@@ -42,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -184,6 +189,21 @@ public final class ExcelUtil {
         export(outputStream, DEFAULT_SHEET_NAME, data, clazz);
     }
 
+    private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz) {
+        var writerBuilder = FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
+        if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
+            writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
+        }
+        if (ImageRowHeightWriteHandler.hasExcelImage(clazz)) {
+            writerBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(clazz));
+            writerBuilder.registerConverter(new SmartImageConverter());
+        }
+        configureStyle(writerBuilder, clazz);
+        registerEnumConverters(writerBuilder, clazz);
+        return writerBuilder;
+    }
+
     /**
      * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称
      *
@@ -200,14 +220,7 @@ public final class ExcelUtil {
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
-        var writerBuilder = FesodSheet.write(outputStream, clazz)
-                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
-        if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
-            writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
-        }
-        configureStyle(writerBuilder, clazz);
-        registerEnumConverters(writerBuilder, clazz);
-
+        var writerBuilder = createStandardWriterBuilder(outputStream, clazz);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(exportList);
     }
@@ -496,6 +509,177 @@ public final class ExcelUtil {
             exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows);
         } catch (IOException ex) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 差错数据隔离提取导出：仅将校验失败的数据提取并生成专属纠错 Excel 文件
+     * <p>
+     * 在原实体列末尾自动追加【失败原因】列并填充错误说明，同时自动将出错的单元格背景标红（浅粉色高亮）并挂载悬浮批注，
+     * 业务人员修改后可直接重新上传该纠错表格，避免全量重新上传引发主键或唯一索引冲突。
+     * </p>
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param errorRows    校验失败错误行列表（自动提取 rowData 进行去重写出）
+     * @param <T>          实体数据泛型
+     */
+    public static <T> void exportFailedRows(OutputStream outputStream, Class<T> clazz, List<ExcelErrorRow> errorRows) {
+        Assert.notNull(errorRows, "错误行列表不可为空");
+        Map<Integer, T> uniqueRows = new LinkedHashMap<>();
+        for (ExcelErrorRow err : errorRows) {
+            if (err.getRowData() != null) {
+                @SuppressWarnings("unchecked")
+                T rowBean = (T) err.getRowData();
+                uniqueRows.putIfAbsent(err.getRowIndex(), rowBean);
+            }
+        }
+        exportFailedRows(outputStream, clazz, new ArrayList<>(uniqueRows.values()), errorRows);
+    }
+
+    /**
+     * 差错数据隔离提取导出：指定失败实体列表与错误明细导出专属纠错 Excel
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param failedList   失败的实体对象列表
+     * @param errorRows    校验失败错误明细列表
+     * @param <T>          实体数据泛型
+     */
+    public static <T> void exportFailedRows(OutputStream outputStream, Class<T> clazz, List<T> failedList, List<ExcelErrorRow> errorRows) {
+        Assert.notNull(outputStream, "OutputStream 输出流不可为空");
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+        List<T> exportList = (failedList != null) ? failedList : Collections.emptyList();
+
+        var writerBuilder = createStandardWriterBuilder(outputStream, clazz);
+        // 挂载差错数据隔离与高亮拦截器
+        writerBuilder.registerWriteHandler(new FailSplitRowWriteHandler(errorRows));
+
+        writerBuilder.sheet("纠错清单")
+                .doWrite(exportList);
+    }
+
+    /**
+     * Web 环境下差错数据隔离提取导出并直接写入 HttpServletResponse
+     *
+     * @param response  HTTP 响应对象（不可为空）
+     * @param fileName  导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz     导出的实体类型 Class（不可为空）
+     * @param errorRows 校验失败错误行列表
+     * @param <T>       实体数据泛型
+     */
+    public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<ExcelErrorRow> errorRows) {
+        prepareWebResponse(response, fileName);
+        try {
+            exportFailedRows(response.getOutputStream(), clazz, errorRows);
+        } catch (IOException e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "导出 Excel 纠错清单失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Web 环境下差错数据隔离提取导出并直接写入 HttpServletResponse（显式指定失败实体列表）
+     *
+     * @param response   HTTP 响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param failedList 失败的实体对象列表
+     * @param errorRows  校验失败错误明细列表
+     * @param <T>        实体数据泛型
+     */
+    public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<T> failedList, List<ExcelErrorRow> errorRows) {
+        prepareWebResponse(response, fileName);
+        try {
+            exportFailedRows(response.getOutputStream(), clazz, failedList, errorRows);
+        } catch (IOException e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "导出 Excel 纠错清单失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 流式导出带防拍照半透明暗水印的 Excel（写入 OutputStream）
+     *
+     * @param outputStream  目标输出流（不可为空）
+     * @param data          待导出的数据集合
+     * @param clazz         导出的实体类型 Class（不可为空）
+     * @param watermarkText 水印文本（例如 {@code "机密 · 张三 1001 · 2026-10-17"}）
+     * @param <T>           实体数据泛型
+     */
+    public static <T> void exportWithWatermark(OutputStream outputStream, List<T> data, Class<T> clazz, String watermarkText) {
+        exportWithWatermark(outputStream, DEFAULT_SHEET_NAME, data, clazz, watermarkText, null);
+    }
+
+    /**
+     * 流式导出带防拍照半透明暗水印与只读保护密码的 Excel（写入 OutputStream）
+     *
+     * @param outputStream       目标输出流（不可为空）
+     * @param sheetName          工作表名称
+     * @param data               待导出的数据集合
+     * @param clazz              导出的实体类型 Class（不可为空）
+     * @param watermarkText      水印文本
+     * @param protectionPassword 只读密码（为空则不锁定）
+     * @param <T>                实体数据泛型
+     */
+    public static <T> void exportWithWatermark(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz, String watermarkText, String protectionPassword) {
+        Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+
+        String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
+        List<T> exportList = (data != null) ? data : Collections.emptyList();
+
+        var writerBuilder = createStandardWriterBuilder(outputStream, clazz);
+
+        if ((watermarkText != null && !watermarkText.isBlank()) || (protectionPassword != null && !protectionPassword.isBlank())) {
+            writerBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(watermarkText, protectionPassword));
+        }
+
+        writerBuilder.sheet(targetSheetName)
+                .doWrite(exportList);
+    }
+
+    /**
+     * Web 环境下流式导出带防拍照半透明暗水印的 Excel
+     *
+     * @param response      HTTP 响应（不可为空）
+     * @param fileName      导出的文件名（自动补充 .xlsx 后缀）
+     * @param data          待导出的数据集合
+     * @param clazz         导出的实体类型 Class（不可为空）
+     * @param watermarkText 水印文本
+     * @param <T>           实体数据泛型
+     */
+    public static <T> void exportWithWatermark(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String watermarkText) {
+        exportWithWatermark(response, fileName, data, clazz, watermarkText, null);
+    }
+
+    /**
+     * Web 环境下流式导出带防拍照半透明暗水印与只读保护密码的 Excel
+     *
+     * @param response           HTTP 响应（不可为空）
+     * @param fileName           导出的文件名（自动补充 .xlsx 后缀）
+     * @param data               待导出的数据集合
+     * @param clazz              导出的实体类型 Class（不可为空）
+     * @param watermarkText      水印文本
+     * @param protectionPassword 只读密码（为空则不锁定）
+     * @param <T>                实体数据泛型
+     */
+    public static <T> void exportWithWatermark(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String watermarkText, String protectionPassword) {
+        prepareWebResponse(response, fileName);
+        try {
+            exportWithWatermark(response.getOutputStream(), DEFAULT_SHEET_NAME, data, clazz, watermarkText, protectionPassword);
+        } catch (IOException e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出带水印 Excel 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 对指定 POI Sheet 工作表实施只读密码保护锁定
+     *
+     * @param sheet    POI Sheet 对象（不可为空）
+     * @param password 锁定保护密码（不可为空）
+     */
+    public static void protectSheet(org.apache.poi.ss.usermodel.Sheet sheet, String password) {
+        if (sheet != null && password != null && !password.isBlank()) {
+            sheet.protectSheet(password);
         }
     }
 

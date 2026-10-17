@@ -1,5 +1,7 @@
 package io.github.atengk.boot.excel.autoconfigure;
 
+import io.github.atengk.boot.excel.async.AsyncExportTaskService;
+import io.github.atengk.boot.excel.async.InMemoryAsyncExportTaskService;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import io.github.atengk.boot.excel.spi.DictProvider;
 import io.github.atengk.boot.excel.spi.DictProviderHolder;
@@ -8,8 +10,10 @@ import org.apache.fesod.sheet.FesodSheet;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 
 /**
  * Excel 基础设施自动装配类
@@ -31,5 +35,12 @@ public class AtengExcelAutoConfiguration {
         if (dictProviderProvider != null) {
             dictProviderProvider.ifAvailable(DictProviderHolder::setProvider);
         }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AsyncExportTaskService.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AsyncExportTaskService asyncExportTaskService(ExcelProperties properties) {
+        return new InMemoryAsyncExportTaskService(properties);
     }
 }

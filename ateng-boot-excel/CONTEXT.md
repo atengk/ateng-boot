@@ -45,7 +45,7 @@ _Avoid_: DictConverter, DictionaryTranslator, DictBridge
 _Avoid_: CellMergeHandler, AutoMergeProcessor, RowMergeInterceptor
 
 **ExcelTheme**:
-企业级 Excel 预设多模版主题枚举，封装表头背景色、表头字体颜色、正文字体及斑马纹浅底色等元数据配置。默认推荐为极简白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白，保留细灰实线网格边框）；并开箱即用支持石墨灰（`CLASSIC_GREY`，沉稳深灰表头配白色加粗字体，正文浅灰斑马纹交替）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）与暖阳橙（`WARM_ORANGE`）等多模版样式。
+企业级 Excel 预设多模版主题枚举，封装表头背景色、表头字体颜色、正文字体及斑马纹浅底色等元数据配置。默认推荐为极简白（`MINIMAL_CLEAN`，表头无底色加粗，正文纯白，保留细灰实线网格边框）；并开箱即用支持石墨灰（`CLASSIC_GREY`，厚重工业石墨灰表头 `#B0B7C0` 搭配黑色加粗字体，正文浅灰斑马纹 `#DEE2E6` 规律交替）、商务蓝（`BUSINESS_BLUE`）、清新绿（`FRESH_GREEN`）与暖阳橙（`WARM_ORANGE`）等多模版样式。
 _Avoid_: StyleTheme, ColorScheme, ExcelSkin
 
 **SmartAutoColumnWidthWriteHandler**:
@@ -55,4 +55,20 @@ _Avoid_: AutoWidthHandler, ColumnResizeListener, BestFitWidthStrategy
 **ExcelThemeWriteHandler**:
 企业级主题与行级斑马纹样式写入拦截器，基于 Apache Fesod 原生 `HorizontalCellStyleStrategy` 构建，统一挂载现代字体、细灰色网格边框与居中对齐，并支持正文奇偶行浅底纹交替渲染。
 _Avoid_: ThemeStyleStrategy, ZebraWriteHandler, SheetColorizer
+
+**AsyncExportTaskService**:
+异步海量导出任务中心服务 SPI，定义大报表后台受管异步排队、生成、轮询查询与过期清理契约，默认提供并发内存实现 `InMemoryAsyncExportTaskService`，并允许上层微服务无缝桥接分布式 Redis 或文件中心。
+_Avoid_: ExportTaskManager, AsyncTaskQueue, BackgroundExcelWorker
+
+**FailSplitFeedback**:
+差错数据隔离提取与精简纠错导出能力，在 JSR-303 批量校验导入时，将校验失败的记录自动剥离并生成专属纠错 Excel（包含聚合的错误原因汇总列与出错单元格粉红高亮），实现“成功数据自动入库，失败数据仅下载差错子集修正重传”。
+_Avoid_: ErrorSplitter, FailedRowDumper, ErrorSubsetExporter
+
+**SmartImageConverter**:
+多媒体图片智能自适应转换器，配合属性级注解 `@ExcelImage`，零配置自动识别并加载网络 HTTP(S) 图片 URL、Base64 编码、本地绝对文件路径及原始字节流，并与 `ImageRowHeightWriteHandler` 联动自动撑高所在行，杜绝 Fesod 图片压扁变形问题。
+_Avoid_: UrlPictureConverter, UniversalImageLoader, PhotoCellAdapter
+
+**WatermarkSheetWriteHandler**:
+工作表透明防拍照暗水印写入拦截器，在工作表创建时通过 Java 2D 动态生成半透明旋转工号防伪切片并注入为工作表底层背景（Background Picture），在屏幕浏览和纸质打印时呈现全屏 45° 倾斜暗水印，且 100% 不妨碍单元格点击与公式输入；协同提供只读防篡改密码锁定。
+_Avoid_: BackgroundWatermarkHelper, ExcelWatermarkFilter, AntiphotoStamp
 

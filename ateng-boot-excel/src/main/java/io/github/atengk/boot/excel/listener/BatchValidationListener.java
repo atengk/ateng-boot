@@ -161,6 +161,7 @@ public class BatchValidationListener<T> implements ReadListener<T> {
                     .fieldName(propertyName)
                     .invalidValue(violation.getInvalidValue())
                     .message(violation.getMessage())
+                    .rowData(data)
                     .build();
 
             currentErrors.add(errorRow);

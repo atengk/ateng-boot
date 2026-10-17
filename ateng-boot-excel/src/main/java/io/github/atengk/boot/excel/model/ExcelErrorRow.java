@@ -53,4 +53,9 @@ public class ExcelErrorRow implements Serializable {
      * 校验失败错误描述（例如 {@code "手机号格式不正确"}）
      */
     private String message;
+
+    /**
+     * 校验失败行的原始实体数据对象（未通过校验的 Java Bean 实例，便于差错隔离导出）
+     */
+    private Object rowData;
 }

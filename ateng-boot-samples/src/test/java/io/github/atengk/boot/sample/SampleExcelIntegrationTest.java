@@ -321,4 +321,58 @@ class SampleExcelIntegrationTest {
             assertThat(bytes).isNotEmpty();
         }
     }
+
+    @Test
+    @DisplayName("测试防拍照全屏暗水印与工作表密码锁定端到端集成")
+    void testExportWithWatermarkAndProtection() throws Exception {
+        List<UserExcelVO> sampleUsers = List.of(
+                new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0")
+        );
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.exportWithWatermark(
+                out,
+                "机密内参表",
+                sampleUsers,
+                UserExcelVO.class,
+                "机密 · 示例项目 · 2026-10-17",
+                "samplePass123"
+        );
+        byte[] bytes = out.toByteArray();
+        saveTempExcel("sample-watermark-confidential.xlsx", bytes);
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("机密内参表");
+            assertThat(sheet).isNotNull();
+            assertThat(sheet.getProtect()).isTrue();
+            assertThat(workbook.getAllPictures()).isNotEmpty();
+        }
+    }
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.excel.async.AsyncExportTaskService asyncExportTaskService;
+
+    @Test
+    @DisplayName("测试 Spring 上下文中异步导出任务中心受管 Bean 调度与执行")
+    void testAsyncExportCenterBean() throws Exception {
+        assertThat(asyncExportTaskService).isNotNull();
+
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        String taskId = asyncExportTaskService.submit("全量用户异步导出", out -> {
+            List<UserExcelVO> sampleUsers = List.of(
+                    new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0")
+            );
+            ExcelUtil.export(out, sampleUsers, UserExcelVO.class);
+            latch.countDown();
+        });
+
+        assertThat(taskId).isNotNull();
+        assertThat(latch.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(150);
+
+        io.github.atengk.boot.excel.async.ExportTask task = asyncExportTaskService.getTask(taskId);
+        assertThat(task).isNotNull();
+        assertThat(task.getStatus()).isEqualTo(io.github.atengk.boot.excel.async.ExportTaskStatus.SUCCESS);
+        assertThat(new java.io.File(task.getFilePath())).exists();
+    }
 }

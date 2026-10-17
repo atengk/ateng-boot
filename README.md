@@ -1,6 +1,6 @@
 # ateng-boot
 
-> 面向企业级的高内聚、轻量级、开箱即用的 Spring Boot 3 基础设施与中间件 Starter 套件。
+> 面向生产就绪的 Spring Boot 3 工业级基础设施与全能中间件 Starter 套件。
 
 [![CI](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml/badge.svg)](https://github.com/atengk/ateng-boot/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.atengk/ateng-boot.svg?style=flat-square&color=blue)](https://central.sonatype.com/artifact/io.github.atengk/ateng-boot)
@@ -12,28 +12,59 @@
 
 ---
 
-## 1. 项目愿景与生态矩阵
+## 1. 架构全景与设计哲学
 
-`ateng-boot` 专注于为企业级 Spring Boot 3 应用提供高质量、开箱即用的基础设施和中间件赋能。作为 `ateng` 顶级技术品牌的基础底座，采用**多仓解耦演进（Multi-repo）**架构：
+`ateng-boot` 专注于为生产级 Spring Boot 3 应用提供高内聚、纯原生、开箱即用的工业级基础设施和全能中间件赋能。坚持**零重型臃肿依赖**与**显式强类型契约**，各模块边界清晰、高度解耦，既可作为单体业务极速起步的“全家桶”，也可作为大型分布式系统各服务节点的核心依赖底座。
 
 ```mermaid
-flowchart TD
-    subgraph Brand["顶级技术品牌：ateng (io.github.atengk)"]
-        direction TB
-        BOOT["后端基石底座：ateng-boot<br/>(单体与微服务通用的中间件与基础设施)<br/>[当前仓库]"]
-        CLOUD["微服务扩展：ateng-cloud<br/>(Nacos / Feign / Gateway / Sentinel)<br/>[独立仓库，未来规划]"]
-        FRONT["前端中台：ateng-vue / element-plus<br/>(组件库 / 脚手架)<br/>[独立仓库，未来规划]"]
+flowchart TB
+    subgraph Client["接入层与消费端"]
+        APP["企业级单体业务应用 / 微服务业务节点"]
+        SAMPLES["ateng-boot-samples<br/>(端到端自验工程与工程化最佳实践 Demo)"]
     end
 
-    CLOUD -.->|单向依赖| BOOT
-    FRONT -.->|HTTP/JSON 契约对接| BOOT
-    FRONT -.->|网关路由对接| CLOUD
+    subgraph Suite["ateng-boot 工业级基础设施套件 (io.github.atengk)"]
+        direction TB
+
+        subgraph Management["依赖统管与一键聚合"]
+            BOM["ateng-boot-bom<br/>(依赖物料清单 / 纯 dependencyManagement 集中纳管)"]
+            ALL["ateng-boot-all<br/>(一键聚合全家桶 / 零配置快速装配)"]
+        end
+
+        subgraph RuntimeWeb["运行时增强 (Web & Transport)"]
+            WEB["ateng-boot-web<br/>• 链路追踪 TraceFilter (MDC)<br/>• 全局异常生产脱敏与优雅降级<br/>• 三级自适应防重幂等 @Idempotent<br/>• 三级自适应限流防刷 @RateLimiter<br/>• 双向数据加签验签 @ApiSign<br/>• 动态安全 CORS 反射 / RFC 6266 流式安全下载"]
+        end
+
+        subgraph CoreBase["核心通用底座 (Core & Contract)"]
+            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt;<br/>• 语义化断言 BusinessAssert<br/>• 纯原生 Snowflake 引擎 (回拨自旋/熔断)<br/>• 10+ 维度全场景敏感数据脱敏<br/>• 线程上下文透传与操作人审计 SPI"]
+        end
+
+        subgraph Middlewares["高并发与持久层增强 (Persistence & Middlewares)"]
+            direction LR
+            MP["ateng-boot-mybatis-plus<br/>• 实体五级继承阶梯<br/>• JSqlParser AST 行级多租户隔离<br/>• 声明式细粒度数据权限 @DataScope<br/>• 单条多值批量插入 BatchUtil<br/>• 存储透明加密与出库脱敏 (内存真明文)"]
+            REDIS["ateng-boot-redis<br/>• Spring Data Redis + Redisson 双核<br/>• 纯净无 @class 污染序列化 (防 CVE)<br/>• 四阶声明式分布式锁 @DistributedLock<br/>• 双模轻量延时队列 / 发布订阅广播<br/>• 防雪崩防穿透增强缓存"]
+            EXCEL["ateng-boot-excel<br/>• Apache Fesod 流式防 OOM 读写<br/>• 导出单元格动态脱敏 @ExcelSensitive<br/>• JSR-303 行级校验与红字批注回写<br/>• 智能防呆模板 @ExcelDropdown / Prompt<br/>• 双向转义 @ExcelEnum / @ExcelDict SPI<br/>• 纵向合并 / 多 Sheet 链式构建 / 5 套商务主题"]
+        end
+    end
+
+    APP --> BOM
+    APP --> ALL
+    ALL --> WEB
+    ALL --> MP
+    ALL --> REDIS
+    ALL --> EXCEL
+    WEB --> CORE
+    MP --> CORE
+    REDIS --> CORE
+    EXCEL --> CORE
+    EXCEL -.->|可选依赖 Servlet 导出| WEB
+    SAMPLES --> ALL
 ```
 
-- **基石定位**：无论是单体应用，还是作为 `ateng-cloud` 微服务节点的基础依赖，`ateng-boot` 均作为统一底层支撑；
-- **非侵入与低耦合**：不绑定具体业务模型，业务工程可自由引入、按需组装；
-- **纯原生零臃肿**：彻底杜绝重型外部工具包，100% 依托 JDK 17 原生能力与 Spring 6 官方基准；
-- **显式契约原则**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截包装；
+- **工业级生产就绪**：经过高并发、多租户安全隔离、海量数据分批流式消费等企业级生产场景淬炼，具备完整的防死锁、防雪崩、防 OOM 及全链路追踪防御能力；
+- **非侵入与高内聚**：不绑定具体业务模型，模块间高度正交解耦，业务工程可自由引入、按需组合；
+- **纯原生零臃肿**：彻底杜绝 `hutool-all`、`guava` 等重型第三方全量工具包，100% 依托 JDK 17 原生能力与 Spring 6 官方基准；
+- **显式强类型契约**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽，坚决杜绝全局 `@ResponseBodyAdvice` 自动拦截包装；
 - **环境兼容矩阵**：以 Java 17 LTS 作为编译目标，运行时 100% 兼容 Java 17、21 LTS 及更高版本，通过 GitHub Actions CI 全量矩阵验证。
 
 ---
@@ -48,7 +79,8 @@ flowchart TD
 | **Web 运行时增强** | `ateng-boot-web` | 链路追踪 `TraceFilter`、全局异常防御、自适应防重幂等、自适应限流、动态 CORS、双向加签验签、流式下载 | [查看文档](./ateng-boot-web/README.md) |
 | **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
 | **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
-| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus 与 redis 全部构件 | [查看文档](./ateng-boot-all/README.md) |
+| **轻量流式电子表格** | `ateng-boot-excel` | 基于新一代 Apache Fesod 流式防 OOM 读写、导出单元格动态脱敏、JSR-303 悬浮批注标红回写、动态防呆模板、双向转义、多 Sheet 链式构建与 5 套商务主题 | [查看文档](./ateng-boot-excel/README.md) |
+| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus、redis 与 excel 全部构件 | [查看文档](./ateng-boot-all/README.md) |
 | **BOM 管控中心** | `ateng-boot-bom` | 依赖版本统管清单（纯 `<dependencyManagement>`），下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
 | **自验演示套件** | `ateng-boot-samples` | 基于 H2 内存库与 MockMvc 的端到端自动化测试金字塔与工程化最佳实践 Demo | [查看文档](./ateng-boot-samples/README.md) |
 
@@ -77,6 +109,16 @@ flowchart TD
 | **四阶分布式锁** | 手写 Redis 锁易发看门狗失效、非可重入与死锁问题 | 四阶 `@DistributedLock`（可重入/公平/读/写）、SpEL 动态解析与慢锁告警 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
 | **双模延时队列** | 为简单延时任务引入 RocketMQ/RabbitMQ 等重型组件带来维护负担 | Redisson 原生双模轻量延时队列与 `@DelayedQueueListener` 声明式监听 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
 | **缓存雪崩穿透** | 缓存集中过期雪崩、空值穿透打爆数据库 | 增强 `RedisCacheManager` 支持分 Cache 独立 TTL、空值缓存与随机抖动防雪崩 | `redis` | [ADR-0022](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md) |
+| **流式防 OOM 读写** | 大文件全量加载进 JVM 堆内存导致频繁 FullGC 与 OOM 宕机 | 基于 Apache Fesod 流式电子表格引擎，行级/批次流式消费并即时清空内存引用 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **导出单元格动态脱敏** | 导出报表时在业务层打星号破坏内存真明文并污染数据库 | 标注 `@ExcelSensitive` 在单元格写出阶段自动掩码，源实体在 JVM 始终保持真实明文 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **行级校验与批注回写** | 批量导入失败返回干瘪 JSON 报错，业务人员无法直观定位 | 原生整合 JSR-303，一键生成出错单元格标红底色并内嵌悬浮批注的反馈 Excel | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **动态防呆模板** | 维护静态模板文件繁琐且录入枚举易敲错导致校验反复失败 | `@ExcelDropdown` 与 `@ExcelPrompt` 一键生成带单元格下拉限制与浮动批注的防呆模板 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **双向业务转义** | 数据库编码与报表中文描述手工转换繁琐、导入反向还原困难 | `@ExcelEnum` 零配置双向互转；`@ExcelDict` 与 `DictProvider` SPI 桥接业务字典 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **单元格合并与主题** | 复杂报表排版繁琐、原生导出视觉陈旧且自适应列宽中英文失真 | `@ExcelMerge` 纵向合并、`ExcelBuilder` 链式多 Sheet、5 套商务主题与加权列宽 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **海量数据异步导出** | 百万级长耗时报表同步导出引发网关 504 超时与浏览器假死 | `AsyncExportTaskService` 异步任务中心、受管并发调度、进度感知与过期清理 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **导入差错隔离纠错** | 批量导入失败全量回滚、返工排查定位繁琐 | `FailSplitFeedback` 合规数据即刻入库、差错数据隔离提取并追加【失败原因】纠错清单 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **智能多媒体图片** | 商品图片导出扁平挤压、网络/Base64/本地路径手动转换繁琐 | `@ExcelImage` 智能识别多源图片、数据行行高智能自适应联动撑高 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **防拍照全屏暗水印** | 敏感 Excel 文件容易被拍照截屏泄露、浮层水印遮挡点击 | `ExcelWatermarkUtil` 动态生成 -30° 半透明切片、POI 背景平铺不遮挡、协同密码只读锁定 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
 
 ---
 
@@ -88,7 +130,7 @@ flowchart TD
 
 ```xml
 <dependencies>
-    <!-- 一键引入全部核心底座与中间件增强 -->
+    <!-- 一键引入全部核心底座、中间件与 Excel 增强 -->
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-all</artifactId>
@@ -104,7 +146,7 @@ flowchart TD
 </dependencies>
 ```
 
-### 方式二：BOM 按需精细化引入（推荐企业级微服务最佳实践）
+### 方式二：BOM 按需精细化引入（推荐企业级最佳实践）
 
 适用于微服务节点或需要严格控制依赖传递的工程：
 
@@ -123,7 +165,7 @@ flowchart TD
 </dependencyManagement>
 
 <dependencies>
-    <!-- 仅按需引入 Web 与持久层（免配版本号） -->
+    <!-- 仅按需引入 Web、持久层、Redis 与 Excel 模块（免配版本号） -->
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-web</artifactId>
@@ -131,6 +173,14 @@ flowchart TD
     <dependency>
         <groupId>io.github.atengk</groupId>
         <artifactId>ateng-boot-mybatis-plus</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-redis</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-excel</artifactId>
     </dependency>
 </dependencies>
 ```
@@ -208,6 +258,8 @@ mvn -pl ateng-boot-samples spring-boot:run
 - [ADR-0019: 原生高性能分批批量插入引擎架构决策](./docs/adr/0019-native-high-performance-batch-insert-engine.md)
 - [ADR-0020: 零膨胀分布式 ID 引擎与全场景敏感数据脱敏架构决策](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md)
 - [ADR-0021: 存量核心基线收敛与零冗余封版战略决策](./docs/adr/0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md)
+- [ADR-0022: 双核驱动 Redis 基础设施与企业级分布式协同架构决策](./docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
+- [ADR-0023: 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md)
 
 ---
 

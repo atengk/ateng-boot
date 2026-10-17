@@ -608,9 +608,232 @@ public class FinancialOrderVO {
 
 ---
 
-## 11. 配置属性参考
+---
 
-在 `application.yml` 中按需定制全局行为与样式参数：
+## 11. 海量数据异步导出任务中心 (`AsyncExportTaskService`)
+
+### 场景痛点
+数十万至百万级大数据量导出耗时长达数分钟，若采用普通 HTTP 同步接口，极易触发网络反向代理（Nginx/Gateway）`504 Gateway Timeout` 超时断连或浏览器标签页挂起；且缺乏后台生成进度可视化感知与物理文件生命周期管理。
+
+### 核心代码范式
+`ateng-boot-excel` 内置生产级开箱即用的异步导出任务中心抽象与基于受管线程池的内存调度器 `InMemoryAsyncExportTaskService`（支持未来无缝扩展 Redis/MQ/分布式集群架构）。
+
+```java
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.excel.async.AsyncExportTaskService;
+import io.github.atengk.boot.excel.async.ExportTask;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/excel/async")
+public class AsyncExportController {
+
+    @Autowired
+    private AsyncExportTaskService asyncExportTaskService;
+
+    @Autowired
+    private OrderService orderService;
+
+    // 1. 提交长耗时异步导出任务（秒级响应返回 taskId）
+    @PostMapping("/export-orders")
+    public Result<String> submitExportTask(@RequestParam String exportYear) {
+        String taskId = asyncExportTaskService.submit("订单全量分析报表-" + exportYear, out -> {
+            // 分批游标查询并流式写出，有效防御 OOM
+            orderService.streamQueryByYear(exportYear, batchData -> {
+                ExcelUtil.export(out, batchData, OrderReportVO.class);
+            });
+        });
+        return Result.success("任务已提交后台异步生成", taskId);
+    }
+
+    // 2. 轮询任务执行状态与进度
+    @GetMapping("/task/{taskId}")
+    public Result<ExportTask> getTaskProgress(@PathVariable String taskId) {
+        ExportTask task = asyncExportTaskService.getTask(taskId);
+        if (task == null) {
+            return Result.failure(404, "导出任务不存在或已过期清理");
+        }
+        return Result.success(task);
+    }
+
+    // 3. 取消正在执行的导出任务
+    @PostMapping("/task/{taskId}/cancel")
+    public Result<Void> cancelTask(@PathVariable String taskId) {
+        boolean cancelled = asyncExportTaskService.cancel(taskId);
+        return cancelled ? Result.success() : Result.failure("任务已完成或无法取消");
+    }
+}
+```
+
+### 预期任务进度查询 JSON 响应契约
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "taskId": "72f104c1a6ed446f8b4010e2a5d9cd0b",
+    "taskName": "订单全量分析报表-2026",
+    "status": "SUCCESS",
+    "progress": 100,
+    "filePath": "/data/tmp/ateng-excel-async/72f104c1a6ed446f8b4010e2a5d9cd0b.xlsx",
+    "downloadUrl": null,
+    "fileSize": 18452096,
+    "errorMsg": null,
+    "createTime": "2026-10-17T10:15:30",
+    "finishTime": "2026-10-17T10:17:12"
+  }
+}
+```
+
+---
+
+## 12. 批量导入差错隔离与红标纠错导出 (`FailSplitFeedback`)
+
+### 场景痛点
+业务人员批量导入几万条外部报表时，若包含几十处必填缺失或格式错误，传统系统要么“全量回滚”报个笼统的弹窗提示，要么仅给出难以对应位置的纯文本日志，业务人员必须在庞大原表中肉眼逐行排查，返工成本极高。
+
+### 核心代码范式
+基于 JSR-380 注解校验结果自动实施“合规数据即刻入库、差错数据隔离提取”，并在原有字段末尾自动追加【失败原因】汇总说明，对具体出错的单元格实施浅粉红背景高亮（`IndexedColors.ROSE`）与悬浮批注挂载。
+
+```java
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+@RestController
+@RequestMapping("/excel/import")
+public class UserImportController {
+
+    @Autowired
+    private UserService userService;
+
+    @PostMapping("/users-split")
+    public void importWithFailSplit(
+            @RequestParam("file") MultipartFile file,
+            HttpServletResponse response
+    ) throws Exception {
+        // 1. 流式同步解析并执行规则校验（自动捕获并封装原始实体）
+        ExcelReadResult<UserImportDTO> result = ExcelUtil.readWithResult(file.getInputStream(), UserImportDTO.class);
+
+        // 2. 合规数据即刻入库（无须等待错误数据排查）
+        if (!result.getData().isEmpty()) {
+            userService.batchInsert(result.getData());
+        }
+
+        // 3. 若存在非法差错数据，一键生成结构化【纠错清单】下载响应供业务人员直接修改并重新上传
+        if (!result.getErrors().isEmpty()) {
+            ExcelUtil.exportFailedRows(response, "用户批量导入纠错清单", UserImportDTO.class, result.getErrors());
+        }
+    }
+}
+```
+
+### 预期纠错工作表呈现效果
+- **工作表名**：自动命名为 `纠错清单`；
+- **动态追加列**：在实体最后一列自动追加【失败原因】表头，内容自动聚合该行所有违反的业务规则（如 `手机号: 格式不正确；年龄: 不能低于 18 岁`）；
+- **单元格红标高亮**：对发生错误的具体单元格填充 `IndexedColors.ROSE` 浅粉色背景，光标悬浮时显示包含具体校验提示的 POI 批注。
+
+---
+
+## 13. 多媒体图片智能自适应与行高联动 (`@ExcelImage`)
+
+### 场景痛点
+商品封面、人脸证件照等多媒体图片导出时，传统方式需要手动编写繁琐的字节转换器与 POI Drawing Anchor 坐标计算；由于普通数据行行高默认仅约 15pt，图片会被强行挤压成一条细线完全无法辨认，手工逐行拉高耗时费力。
+
+### 核心代码范式
+使用 `@ExcelImage` 注解修饰实体中的 `String` 类型图片字段，系统全自动智能探测：
+1. 网络 `http://` / `https://` 图片 URL（内置连接与读取超时防御，安全直达）；
+2. 标准 Base64 数据流（带前缀 `data:image/...;base64,` 或纯 Base64）；
+3. 本地绝对文件路径或 `file://` URI；
+4. 自动感知并撑高所在数据行行高（默认适配 `60pt`，支持按需注解覆盖），未标注的常规字符串毫秒级直通输出文本。
+
+```java
+import io.github.atengk.boot.excel.annotation.ExcelImage;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class ProductCatalogVO {
+
+    @ExcelProperty("商品编码")
+    private String productCode;
+
+    @ExcelProperty("商品名称")
+    private String productName;
+
+    // 声明为多媒体图片列，自适应撑高数据行至 75pt
+    @ExcelProperty("商品展示图")
+    @ExcelImage(rowHeight = 75, connectTimeout = 3000, readTimeout = 5000)
+    private String coverImageUrl; // 支持网络 URL、Base64 或本地路径
+
+    @ExcelProperty("商品简介")
+    private String summary;
+}
+
+// 正常导出，自动挂载 ImageRowHeightWriteHandler 与 SmartImageConverter
+ExcelUtil.export(response, "商品多媒体图册", productList, ProductCatalogVO.class);
+```
+
+### 预期控制台与视觉契约
+- 数据行行高由系统自动设为 `75pt`，图片按单元格边界等比居中自适应绘制；
+- 工作簿图片资源表中自动嵌入图片二进制流，脱离网络环境离线浏览仍完整可见。
+
+---
+
+## 14. 防拍照半透明全屏暗水印与工作表只读保护
+
+### 场景痛点
+企业级财务薪酬、高管业绩等敏感 Excel 文件极易被翻拍泄露；普通绘图层水印会阻挡用户点击单元格或查看公式，且未锁定的工作表在流转过程中极易被篡改核心数字。
+
+### 核心代码范式
+`ateng-boot-excel` 采用 POI 底层关系注入全屏平铺背景暗水印（Background Picture）：
+- **全屏平铺**：文字动态生成为 -30° 倾斜、半透明（Alpha ~ 0.18）的防伪 PNG 切片，屏幕浏览与打印 100% 全屏平铺；
+- **零点击遮挡**：不占用 Drawing 绘图层，100% 不妨碍单元格选择、编辑与公式输入；
+- **防篡改只读锁定**：协同配置密码锁定工作表结构，阻止他人随意修改数字。
+
+#### 1. 静态门面一键导出水印与保护
+```java
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+// 导出带全屏防拍照暗水印与只读保护密码的 Excel
+String watermarkText = "绝密 · 张三 (E1001) · 2026-10-17";
+String protectPassword = "FinSecurity@2026";
+
+ExcelUtil.exportWithWatermark(
+        response,
+        "年度薪资决算明细",
+        salaryList,
+        SalaryDetailVO.class,
+        watermarkText,
+        protectPassword
+);
+```
+
+#### 2. Fluent 链式多 Sheet 独立配置
+```java
+import io.github.atengk.boot.excel.builder.ExcelBuilder;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+try (ExcelBuilder builder = ExcelUtil.builder(response, "年度经营决算")) {
+    builder.watermark("核心机密 · 严禁外传")
+           .protect("pwdSecret888")
+           .sheet("机密预算汇总", BudgetVO.class, budgetList)
+           // 后续 Sheet 独立解绑水印与只读锁定
+           .sheet("公开经营通告", NoticeVO.class, noticeList);
+}
+```
+
+---
+
+## 15. 配置属性参考
+
+在 `application.yml` 中按需定制全局行为、样式与异步导出中心参数：
 
 ```yaml
 ateng:
@@ -622,6 +845,18 @@ ateng:
       default-batch-size: 1000
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
+      # 异步导出任务中心配置
+      async-export:
+        # 异步导出产物物理文件落盘目录（留空时使用 java.io.tmpdir/ateng-excel-async）
+        temp-dir: /data/tmp/ateng-excel-async
+        # 核心线程池大小（默认 4）
+        core-pool-size: 4
+        # 最大线程池大小（默认 8）
+        max-pool-size: 8
+        # 缓冲队列容量（默认 200）
+        queue-capacity: 200
+        # 产物物理文件保留小时数（默认 24 小时）
+        retention-hours: 24
       # 样式与主题配置
       style:
         # 是否启用全局样式拦截增强（默认 true；设置为 false 时完全关闭样式与列宽增强，零开销）
