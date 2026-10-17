@@ -1,7 +1,7 @@
 package io.github.atengk.boot.mybatisplus.tenant;
 
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.LongValue;

@@ -286,25 +286,63 @@ List<MenuNode> menuTree = TreeUtil.buildTree(
 
 ---
 
-## 9. 用户审计上下文与异步线程透传 (`UserContextHolder` & `AsyncContext`)
+## 9. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
 
 ### 场景痛点
-异步线程 `@Async` 或线程池执行任务时，主线程的登录用户上下文与链路追踪 MDC 会丢失。
+在分布式与 SaaS 架构下，异步线程池（如 `@Async`、`CompletableFuture`、自定义线程池）执行任务时，主线程的链路追踪 `traceId`、当前登录操作人、多租户上下文与忽略租户状态极易发生上下文丢失或线程池污染，导致跨租户越权漏洞。
+
+### 核心特性
+- **四维上下文完整快照**：$\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$；
+- **双重 SPI 可插拔挂载**：`CurrentUserProvider` 与 `CurrentTenantProvider`，无缝桥接 Sa-Token 等安全框架；
+- **栈式租户嵌套与忽略深度**：支持在单次请求中临时切换租户或嵌套忽略租户过滤，方法执行完毕严格恢复上下文；
+- **全生命周期现场克隆与恢复**：执行任务前克隆工作线程既有状态，任务执行后严格恢复工作线程现场，杜绝线程污染与内存泄漏。
 
 ### 核心代码范式
 ```java
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 
-// 1. 设置当前线程的用户上下文
+// ==================== 1. 用户上下文 (UserContextHolder) ====================
 UserContextHolder.setUserId("10086");
 String userId = UserContextHolder.getUserId();
 
-// 2. 闭包式受控执行（执行完成后自动安全清理上下文）
+// 闭包式执行（执行完成后自动清理上下文）
 UserContextHolder.runWithUser("10086", () -> {
     orderService.processOrder();
 });
 
-// 3. 跨线程池安全透传（由 ateng-boot-web 预装配线程池自动支持）
-// 配合 ContextCopyingTaskDecorator 自动将 MDC traceId 与 UserContextHolder 复制到工作线程
+// ==================== 2. 多租户上下文 (TenantContextHolder) ====================
+// 设置与获取租户标识（支持 String 与 Long）
+TenantContextHolder.setTenantId("tenant_001");
+String tenantId = TenantContextHolder.getTenantId();
+
+// 闭包式在临时租户环境中执行
+TenantContextHolder.runWithTenant("tenant_002", () -> {
+    tenantDataSyncService.syncData();
+});
+
+// 闭包式受控忽略租户拦截（如跨租户全局报表统计）
+TenantContextHolder.runWithoutTenant(() -> {
+    sysDictService.initSystemCache();
+});
+
+// ==================== 3. 四维上下文跨线程透传 (AsyncContext) ====================
+// 包装 Runnable / Callable 跨线程安全执行
+CompletableFuture.runAsync(AsyncContext.wrap(() -> {
+    // 自动无缝继承主线程的 traceId、userId、tenantId 及 ignoreTenant 状态
+    reportService.generateReport();
+}), taskExecutor);
+
+// 包装 Supplier<T>（避免 lambda 歧义）
+CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
+    return billingService.calculateInvoice();
+}), taskExecutor);
+
+// ==================== 4. 线程池全局修饰器 (ContextCopyingTaskDecorator) ====================
+// 适用于 ThreadPoolTaskExecutor，全量自动复制四维快照并在消费后严格恢复现场
+ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+executor.setTaskDecorator(new ContextCopyingTaskDecorator());
 ```
+

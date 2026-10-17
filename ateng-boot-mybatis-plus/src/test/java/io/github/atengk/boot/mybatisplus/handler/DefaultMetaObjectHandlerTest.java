@@ -2,7 +2,7 @@ package io.github.atengk.boot.mybatisplus.handler;
 
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.mybatisplus.entity.BaseEntity;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;

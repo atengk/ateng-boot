@@ -114,6 +114,10 @@ SaaS 多租户系统最忌讳数据越权访问。采用 AST 动态改写 SQL，
 
 ### 忽略多租户注解与闭包放行
 ```java
+// 多租户上下文统一来自 ateng-boot-core 底座
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
+
 // 1. Mapper 接口方法级显式忽略多租户（如跨租户统计）
 public interface UserMapper extends BaseMapper<UserEntity> {
     @IgnoreTenant

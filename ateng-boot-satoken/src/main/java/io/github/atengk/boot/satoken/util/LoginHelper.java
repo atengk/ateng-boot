@@ -91,7 +91,12 @@ public final class LoginHelper {
      * @return true 表示已登录
      */
     public static boolean isLogin() {
-        return StpUtil.isLogin();
+        try {
+            return StpUtil.isLogin();
+        } catch (Exception ignored) {
+            // 在非 Web 线程或 SaToken 上下文尚未初始化的后台线程中防御性返回 false
+            return false;
+        }
     }
 
     /**

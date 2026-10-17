@@ -1,7 +1,7 @@
 package io.github.atengk.boot.mybatisplus.tenant;
 
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.AfterEach;

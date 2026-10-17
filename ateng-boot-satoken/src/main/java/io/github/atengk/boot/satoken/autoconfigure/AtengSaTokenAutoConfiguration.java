@@ -5,9 +5,13 @@ import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.strategy.SaFirewallStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.spi.CurrentTenantProvider;
+import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +45,9 @@ public class AtengSaTokenAutoConfiguration {
      */
     @PostConstruct
     public void initFirewallStrategy() {
+        // 自动挂载 Sa-Token 当前租户提取 SPI 至 Core 核心底座
+        TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
+
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
             log.warn("Sa-Token 安全防火墙拦截异常: message={}", e.getMessage());
             res.setHeader("Content-Type", "application/json;charset=UTF-8");
@@ -55,6 +62,28 @@ public class AtengSaTokenAutoConfiguration {
                 }
             }
         };
+    }
+
+    /**
+     * 自动向容器暴露基于 Sa-Token 会话的当前操作人提供者 SPI
+     *
+     * @return CurrentUserProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(CurrentUserProvider.class)
+    public CurrentUserProvider saTokenCurrentUserProvider() {
+        return LoginHelper::getUserId;
+    }
+
+    /**
+     * 自动向容器暴露基于 Sa-Token 会话的当前租户提供者 SPI
+     *
+     * @return CurrentTenantProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(CurrentTenantProvider.class)
+    public CurrentTenantProvider saTokenCurrentTenantProvider() {
+        return LoginHelper::getTenantId;
     }
 
     /**

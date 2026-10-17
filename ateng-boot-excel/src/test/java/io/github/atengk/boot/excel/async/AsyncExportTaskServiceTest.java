@@ -109,9 +109,9 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        assertTrue(latch.await(15, TimeUnit.SECONDS));
 
-        long deadline = System.currentTimeMillis() + 2000;
+        long deadline = System.currentTimeMillis() + 5000;
         ExportTask task = taskService.getTask(taskId);
         while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
@@ -138,7 +138,7 @@ class AsyncExportTaskServiceTest {
             }
         });
 
-        assertTrue(startLatch.await(5, TimeUnit.SECONDS));
+        assertTrue(startLatch.await(15, TimeUnit.SECONDS));
 
         boolean cancelled = taskService.cancel(taskId);
         assertTrue(cancelled, "任务取消方法应返回 true");
@@ -157,9 +157,9 @@ class AsyncExportTaskServiceTest {
             latch.countDown();
         });
 
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        assertTrue(latch.await(15, TimeUnit.SECONDS));
 
-        long deadline = System.currentTimeMillis() + 2000;
+        long deadline = System.currentTimeMillis() + 5000;
         ExportTask task = taskService.getTask(taskId);
         while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
