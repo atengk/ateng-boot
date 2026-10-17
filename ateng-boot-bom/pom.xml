@@ -45,8 +45,25 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-satoken</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-all</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- Sa-Token 依赖版本统管 -->
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-spring-boot3-starter</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-spring-aop</artifactId>
+                <version>${sa-token.version}</version>
             </dependency>
 
             <!-- Apache Fesod (Incubating) -->

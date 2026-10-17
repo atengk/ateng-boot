@@ -42,6 +42,7 @@
         <module>ateng-boot-redis</module>
         <module>ateng-boot-excel</module>
         <module>ateng-boot-all</module>
+        <module>ateng-boot-satoken</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -57,6 +58,7 @@
         <mybatis-plus.version>3.5.17</mybatis-plus.version>
         <redisson.version>3.44.0</redisson.version>
         <fesod.version>2.1.0-incubating</fesod.version>
+        <sa-token.version>1.46.0</sa-token.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -106,6 +108,18 @@
                 <version>${fesod.version}</version>
             </dependency>
 
+            <!-- Sa-Token 依赖版本统管 -->
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-spring-boot3-starter</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-spring-aop</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+
             <!-- ateng-boot 模块版本管控 -->
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -130,6 +144,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-excel</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-satoken</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

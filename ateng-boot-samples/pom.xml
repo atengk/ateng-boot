@@ -27,6 +27,12 @@
             <artifactId>ateng-boot-all</artifactId>
         </dependency>
 
+        <!-- Sa-Token 鉴权基础设施 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-satoken</artifactId>
+        </dependency>
+
         <!-- H2 内存数据库 (运行时自测) -->
         <dependency>
             <groupId>com.h2database</groupId>

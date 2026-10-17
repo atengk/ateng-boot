@@ -31,6 +31,7 @@
 | **0021** | 存量核心基线收敛与零冗余封版战略决策 | `Accepted` | 宣布三大核心模块功能完备，横向冻结新模块分裂，微创补强 ServletUtil 流式下载，极限测试加固与文档大一统 | `core` / `web` / `mybatis-plus` | [查看](./0021-core-baseline-convergence-and-zero-bloat-freeze-strategy.md) |
 | **0022** | 双核驱动 Redis 基础设施与企业级分布式协同架构决策 | `Accepted` | 双核驱动融合（Spring Data Redis + Redisson 原生），纯净 JSON 序列化防 @class 污染，@DistributedLock 4 阶模式与慢锁审计，延时队列与全能 RedisUtil | `ateng-boot-redis` | [查看](./0022-dual-core-redis-and-distributed-coordination-architecture.md) |
 | **0023** | 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策 | `Accepted` | 锁定 Apache Fesod 流式基线，导出动态脱敏（@ExcelSensitive 守卫 ADR-0012 内存真明文），JSR-303 行级校验与红字批注回写，防呆模板下拉提示，双向枚举/字典转义，复杂报表填充合并与多 Sheet 编排 | `ateng-boot-excel` | [查看](./0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **0024** | 企业级 Sa-Token 鉴权生态与安全防御/分布式会话一体化架构决策 | `Accepted` | 独立 Starter，双轨拦截防御，自适应存储桥接，强类型 LoginUser/LoginHelper，底座全链路贯通，两级权限缓存与 Spring 原生事件广播 | `ateng-boot-satoken` | [查看](./0024-enterprise-satoken-authentication-and-security-architecture.md) |
 
 
 ---
