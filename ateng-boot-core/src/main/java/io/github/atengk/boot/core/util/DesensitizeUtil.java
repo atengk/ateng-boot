@@ -373,6 +373,31 @@ public final class DesensitizeUtil {
     }
 
     /**
+     * 字符串保留首尾指定位数，中间使用默认 '*' 掩码（{@link #maskKeepHeadTail(String, int, int)} 别名）
+     *
+     * @param str      原始字符串
+     * @param keepHead 头部保留字符数
+     * @param keepTail 尾部保留字符数
+     * @return 脱敏后的字符串
+     */
+    public static String keepHeadAndTail(String str, int keepHead, int keepTail) {
+        return maskKeepHeadTail(str, keepHead, keepTail);
+    }
+
+    /**
+     * 字符串保留首尾指定位数，中间使用指定掩码字符（{@link #maskKeepHeadTail(String, int, int, char)} 别名）
+     *
+     * @param str      原始字符串
+     * @param keepHead 头部保留字符数
+     * @param keepTail 尾部保留字符数
+     * @param maskChar 自定义掩码字符
+     * @return 脱敏后的字符串
+     */
+    public static String keepHeadAndTail(String str, int keepHead, int keepTail, char maskChar) {
+        return maskKeepHeadTail(str, keepHead, keepTail, maskChar);
+    }
+
+    /**
      * 字符串保留头部指定位数，后部全部掩码
      *
      * @param str      原始字符串

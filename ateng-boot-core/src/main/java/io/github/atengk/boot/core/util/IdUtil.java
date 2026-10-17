@@ -77,11 +77,29 @@ public final class IdUtil {
     }
 
     /**
+     * 基于默认单例雪花实例获取下一个长整型唯一 ID（{@link #getSnowflakeNextId()} 的便捷别名）
+     *
+     * @return 64 位全局唯一递增雪花 ID
+     */
+    public static long nextId() {
+        return DEFAULT_SNOWFLAKE.nextId();
+    }
+
+    /**
      * 基于默认单例雪花实例获取下一个字符串形式的唯一 ID
      *
      * @return 字符串形式的全局唯一雪花 ID
      */
     public static String getSnowflakeNextIdStr() {
+        return DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 基于默认单例雪花实例获取下一个字符串形式的唯一 ID（{@link #getSnowflakeNextIdStr()} 的便捷别名）
+     *
+     * @return 字符串形式的全局唯一雪花 ID
+     */
+    public static String nextIdStr() {
         return DEFAULT_SNOWFLAKE.nextIdStr();
     }
 

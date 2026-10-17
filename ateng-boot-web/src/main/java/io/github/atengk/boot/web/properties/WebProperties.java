@@ -21,6 +21,11 @@ import java.util.List;
 public class WebProperties {
 
     /**
+     * 是否启用 Web 运行时增强模块（默认 true）
+     */
+    private boolean enabled = true;
+
+    /**
      * 链路追踪过滤器配置
      */
     private TraceProperties trace = new TraceProperties();

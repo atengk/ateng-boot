@@ -649,7 +649,7 @@ public class AsyncExportController {
                 ExcelUtil.export(out, batchData, OrderReportVO.class);
             });
         });
-        return Result.success("任务已提交后台异步生成", taskId);
+        return Result.success(taskId, "任务已提交后台异步生成");
     }
 
     // 2. 轮询任务执行状态与进度
@@ -657,7 +657,7 @@ public class AsyncExportController {
     public Result<ExportTask> getTaskProgress(@PathVariable String taskId) {
         ExportTask task = asyncExportTaskService.getTask(taskId);
         if (task == null) {
-            return Result.failure(404, "导出任务不存在或已过期清理");
+            return Result.fail(404, "导出任务不存在或已过期清理");
         }
         return Result.success(task);
     }
@@ -666,7 +666,7 @@ public class AsyncExportController {
     @PostMapping("/task/{taskId}/cancel")
     public Result<Void> cancelTask(@PathVariable String taskId) {
         boolean cancelled = asyncExportTaskService.cancel(taskId);
-        return cancelled ? Result.success() : Result.failure("任务已完成或无法取消");
+        return cancelled ? Result.success() : Result.fail("任务已完成或无法取消");
     }
 }
 ```

@@ -148,4 +148,11 @@ public final class UserContextHolder {
     public static void remove() {
         clear();
     }
+
+    /**
+     * 清理当前线程绑定的操作人标识（clear 别名）
+     */
+    public static void clearUser() {
+        clear();
+    }
 }

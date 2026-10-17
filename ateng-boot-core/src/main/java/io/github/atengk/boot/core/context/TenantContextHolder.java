@@ -237,6 +237,13 @@ public final class TenantContextHolder {
     }
 
     /**
+     * 清理当前线程的所有租户上下文与忽略标记（clear 别名）
+     */
+    public static void clearTenant() {
+        clear();
+    }
+
+    /**
      * 抓取当前线程的多租户状态快照（包含租户栈与忽略深度）
      * 若当前栈为空但通过 SPI 能获取到租户 ID，则固化在快照中以确保跨线程不丢失
      *

@@ -26,16 +26,19 @@ custom_bump_version() {
   log_info "正在执行 Maven versions:set 更新全部 POM 版本至 $RAW_VERSION..."
   mvn versions:set -DnewVersion="$RAW_VERSION" -DgenerateBackupPoms=false
 
-  # 2. 自动同步更新 README.md 中的接入依赖版本 (基于 sed -i 直接原地修改，零临时文件，零注释污染)
-  if [ -f "README.md" ]; then
-    log_info "正在直接原地同步更新 README.md 接入依赖版本至 $RAW_VERSION..."
-    local SED_OPTS=(-i -E)
-    sed --version >/dev/null 2>&1 || SED_OPTS=(-i '' -E)
+  # 2. 自动同步更新门面与 BOM 接入文档中的依赖版本 (基于 sed -i 直接原地修改，零临时文件，零注释污染)
+  local README_FILES=("README.md" "ateng-boot-bom/README.md")
+  local SED_OPTS=(-i -E)
+  sed --version >/dev/null 2>&1 || SED_OPTS=(-i '' -E)
 
-    # 统一使用 '#' 作为分隔符，彻底规避 XML 斜杠与正则管道符 '|' 的解析冲突
-    sed "${SED_OPTS[@]}" "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s#<version>[^<]+</version>#<version>${RAW_VERSION}</version>#}" README.md
-    sed "${SED_OPTS[@]}" "s#(io\.github\.atengk:ateng-boot-(all|bom)):[0-9A-Za-z.-]+#\1:${RAW_VERSION}#g" README.md
-  fi
+  for readme in "${README_FILES[@]}"; do
+    if [ -f "$readme" ]; then
+      log_info "正在直接原地同步更新 $readme 接入依赖版本至 $RAW_VERSION..."
+      # 统一使用 '#' 作为分隔符，彻底规避 XML 斜杠与正则管道符 '|' 的解析冲突
+      sed "${SED_OPTS[@]}" "/<artifactId>ateng-boot-(all|bom)<\/artifactId>/{n;s#<version>[^<]+</version>#<version>${RAW_VERSION}</version>#}" "$readme"
+      sed "${SED_OPTS[@]}" "s#(io\.github\.atengk:ateng-boot-(all|bom)):[0-9A-Za-z.-]+#\1:${RAW_VERSION}#g" "$readme"
+    fi
+  done
 
   return 0
 }
@@ -359,8 +362,9 @@ HOOK_CHANGES=$(git status --porcelain)
 NEED_PUSH_BRANCH=false
 if [ -n "$HOOK_CHANGES" ]; then
   log_info "检测到扩展钩子更新了工程 POM 与接入文档，正在精准暂存并创建版本提交..."
-  git add pom.xml */pom.xml
+  git add pom.xml */pom.xml */*/pom.xml
   [ -f "README.md" ] && git add README.md
+  [ -f "ateng-boot-bom/README.md" ] && git add ateng-boot-bom/README.md
   git commit -m "chore(release): bump version to $TARGET_VERSION"
   NEED_PUSH_BRANCH=true
 elif [ "$AHEAD_COUNT" -gt 0 ]; then

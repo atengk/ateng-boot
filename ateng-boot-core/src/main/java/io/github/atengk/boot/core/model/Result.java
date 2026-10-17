@@ -364,6 +364,62 @@ public class Result<T> implements Serializable {
         return new Result<>(code, customMsg, null);
     }
 
+    /**
+     * 构建默认系统繁忙失败响应（{@link #fail()} 别名）
+     *
+     * @param <T> 数据泛型
+     * @return 失败响应对象
+     */
+    public static <T> Result<T> failure() {
+        return fail();
+    }
+
+    /**
+     * 构建携带自定义错误文案的失败响应（{@link #fail(String)} 别名）
+     *
+     * @param msg 错误提示文案
+     * @param <T> 数据泛型
+     * @return 失败响应对象
+     */
+    public static <T> Result<T> failure(String msg) {
+        return fail(msg);
+    }
+
+    /**
+     * 构建携带指定错误码与错误文案的失败响应（{@link #fail(Integer, String)} 别名）
+     *
+     * @param code 业务错误码
+     * @param msg  错误提示文案
+     * @param <T>  数据泛型
+     * @return 失败响应对象
+     */
+    public static <T> Result<T> failure(Integer code, String msg) {
+        return fail(code, msg);
+    }
+
+    /**
+     * 构建基于统一响应状态码契约的失败响应（{@link #fail(IResultCode)} 别名）
+     *
+     * @param resultCode 状态码对象
+     * @param <T>        数据泛型
+     * @return 失败响应对象
+     */
+    public static <T> Result<T> failure(IResultCode resultCode) {
+        return fail(resultCode);
+    }
+
+    /**
+     * 构建基于统一响应状态码契约与自定义文案的失败响应（{@link #fail(IResultCode, String)} 别名）
+     *
+     * @param resultCode 状态码对象
+     * @param customMsg  自定义提示文案
+     * @param <T>        数据泛型
+     * @return 失败响应对象
+     */
+    public static <T> Result<T> failure(IResultCode resultCode, String customMsg) {
+        return fail(resultCode, customMsg);
+    }
+
     private static boolean isCodeSuccess(Integer code) {
         return code != null && code == 200;
     }

@@ -11,21 +11,10 @@
 - 恪守零重型依赖（ADR-0011），无缝自适应接入项目已有的纯净安全 Redis 存储底座（ADR-0022），无 Redis 时自动平滑降级为内存会话；
 - 深度融合 Core 模块 `CurrentUserProvider` SPI（ADR-0024），全自动贯通持久层审计填充与行级数据权限。
 
-### 方式一：独立子模块引入（推荐配合 BOM）
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-satoken</artifactId>
-    <version>0.0.5</version>
-</dependency>
-```
-
-### 方式二：一键全家桶引入
-```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-all</artifactId>
-    <version>0.0.5</version>
 </dependency>
 ```
 
@@ -135,7 +124,7 @@ public class UserService {
 #### 3. 双轨拦截与四维上下文对称清理 (`AtengSaTokenInterceptor`)
 `ateng-boot-satoken` 注册受管拦截器 `AtengSaTokenInterceptor`，在 Web 请求生命周期中实现与底层 Core 模块无缝双向镜像贯通：
 - **`preHandle` 对称注入**：不仅校验路由白名单与会话登录态，更自动将 Sa-Token 解析出的当前用户与租户无感注入 `UserContextHolder` 与 `TenantContextHolder`；
-- **`afterCompletion` 严格双清理**：在请求结束视图渲染完毕后，强制执行上下文完全清空（`UserContextHolder.clearUser()` 与 `TenantContextHolder.clearTenant()`），彻底杜绝 Web 容器工作线程复用引发的上下文串染与数据越权。
+- **`afterCompletion` 严格双清理**：在请求结束视图渲染完毕后，强制执行上下文完全清空（`UserContextHolder.clear()` 与 `TenantContextHolder.clear()`），彻底杜绝 Web 容器工作线程复用引发的上下文串染与数据越权。
 
 #### 4. MyBatis-Plus 自动审计零配置生效
 当引入 `ateng-boot-satoken` 与 `ateng-boot-mybatis-plus` 时，系统自动注册 `SaTokenCurrentUserProvider` 接入 Core 模块的 `CurrentUserProvider` SPI。业务实体在入库或更新时，无需编写任何代码即可全自动填充 `create_by` 与 `update_by`：

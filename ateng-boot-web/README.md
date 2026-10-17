@@ -112,7 +112,7 @@ public class OrderController {
 @PostMapping("/pay")
 @Idempotent(
     key = "#order.orderNo",            // 支持 SpEL 表达式动态提取业务键
-    expire = 10,                       // 幂等锁定时间（秒）
+    timeout = 10,                      // 幂等锁定时间（默认秒）
     message = "支付请求处理中，请勿重复操作",
     delKeyOnException = true           // 业务异常时是否自动释放锁允许重试
 )
@@ -180,8 +180,7 @@ public class DatabaseCorsOriginProvider implements CorsOriginProvider {
 @RestController
 @RequestMapping("/api/open")
 @ApiSign(
-    algorithm = SignAlgorithm.HMAC_SHA256, // 支持 HMAC_SHA256 或 RSA
-    expireSeconds = 300,                  // 5分钟防重放时间戳校验窗口
+    expireSeconds = 300,                  // 5分钟防重放时间戳校验窗口（算法由 YAML 全局配置）
     signResponse = true                   // 是否在响应时对返回数据加签 (回传 X-Signature)
 )
 public class OpenApiController {
@@ -276,7 +275,7 @@ ateng:
           max-capacity: 10000     # 单机内存令牌桶最大容量软上限（默认 10000）
           clean-interval: 60s     # 过期淘汰扫描周期（默认 60s）
       sign:
-        enabled: true             # 是否启用 API 接口双向加签验签与防重放引擎（默认 true）
+        enabled: false            # 是否启用 API 接口双向加签验签与防重放引擎（默认 false，按需开启）
         algorithm: HMAC_SHA256    # 签名算法（支持 HMAC_SHA256、RSA，默认 HMAC_SHA256）
         secret-key: "YourSecretKey" # 对称密钥（HMAC_SHA256 算法下使用）
         expire-seconds: 60        # 全局签名时效窗口（秒，默认 60 秒；可被方法级 @ApiSign(expireSeconds) 覆盖）

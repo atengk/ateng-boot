@@ -39,6 +39,16 @@ public class SmartImageConverter implements Converter<String> {
 
     private static final int DEFAULT_CONNECT_TIMEOUT = 3000;
     private static final int DEFAULT_READ_TIMEOUT = 10000;
+    private static final String DEFAULT_USER_AGENT;
+
+    static {
+        String version = SmartImageConverter.class.getPackage().getImplementationVersion();
+        if (version != null && !version.isBlank()) {
+            DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ateng-boot-excel/" + version;
+        } else {
+            DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ateng-boot-excel";
+        }
+    }
 
     @Override
     public Class<?> supportJavaTypeKey() {
@@ -130,7 +140,7 @@ public class SmartImageConverter implements Converter<String> {
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(connectTimeout);
         conn.setReadTimeout(readTimeout);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ateng-boot-excel/0.0.5");
+        conn.setRequestProperty("User-Agent", DEFAULT_USER_AGENT);
 
         int code = conn.getResponseCode();
         if (code < 200 || code >= 300) {

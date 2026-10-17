@@ -184,11 +184,11 @@ public class UserVO {
     private String name;
 
     // 自定义区间脱敏：索引 [2, 5) 替换为 '#'
-    @FieldSensitive(type = SensitiveType.CUSTOM, startInclude = 2, endExclude = 5, maskChar = '#')
+    @FieldSensitive(startInclude = 2, endExclude = 5, maskChar = '#')
     private String customCode;
 
     // 首尾保留字符数脱敏：保留前2位与后2位
-    @FieldSensitive(keepHead = 2, keepTail = 2, maskChar = '#')
+    @FieldSensitive(value = SensitiveType.KEEP_HEAD_TAIL, keepHead = 2, keepTail = 2, maskChar = '#')
     private String token;
 }
 ```
@@ -248,27 +248,31 @@ DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO************
 ## 7. 轻量原生加解密与哈希摘要 (`CryptoUtil` & `DigestUtil`)
 
 ### 场景痛点
-提供符合现代密码学安全规范的原生加解密封装，杜绝由于硬编码 IV 或 ECB 模式导致的重放攻击漏洞。
+提供符合现代密码学安全规范的纯 JDK 原生加解密封装，杜绝由于硬编码 IV 或 ECB 模式导致的重放攻击漏洞，100% 零第三方加密依赖。
 
 ### 核心代码范式
 ```java
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 
-// ==================== 1. 加密与解密 (CryptoUtil) ====================
-// AES-GCM (128/256-bit)：企业级推荐，动态附加随机 12-byte IV，认证加密防篡改
-String secretKey = "MySecretKey123456"; // 16或32字符
-String cipherText = CryptoUtil.aesEncrypt("明文密码123", secretKey);
-String plainText = CryptoUtil.aesDecrypt(cipherText, secretKey);
+// ==================== 1. AES/GCM 认证加解密 (推荐，认证防篡改) ====================
+// 生成 256 位安全密钥与 12 字节 GCM 推荐 IV
+byte[] gcmKey = CryptoUtil.generateKey(256);
+byte[] gcmIv = CryptoUtil.generateGcmIv();
 
-// 国密 SM4-CBC 算法支持
-String sm4Cipher = CryptoUtil.sm4Encrypt("机密凭证", "1234567812345678");
-String sm4Plain = CryptoUtil.sm4Decrypt(sm4Cipher, "1234567812345678");
+// 字符串 Base64 契约（带可选 AAD 附加认证数据防篡改）
+String cipherText = CryptoUtil.encryptGcm("机密密码123", gcmKey, gcmIv);
+String plainText = CryptoUtil.decryptGcm(cipherText, gcmKey, gcmIv);
 
-// ==================== 2. 哈希与摘要 (DigestUtil) ====================
-String md5Hex = DigestUtil.md5Hex("raw_text");
+// ==================== 2. AES/CBC 对称加解密 ====================
+byte[] cbcKey = CryptoUtil.generateKey(128);
+byte[] cbcIv = CryptoUtil.generateIv(); // 16 字节 IV
+String cbcCipher = CryptoUtil.encryptCbc("明文凭证", cbcKey, cbcIv);
+String cbcPlain = CryptoUtil.decryptCbc(cbcCipher, cbcKey, cbcIv);
+
+// ==================== 3. 消息哈希与摘要 (DigestUtil) ====================
 String sha256Hex = DigestUtil.sha256Hex("raw_text");
-String sm3Hex = DigestUtil.sm3Hex("raw_text"); // 国密 SM3
+String md5Hex = DigestUtil.md5Hex("raw_text");
 ```
 
 ---

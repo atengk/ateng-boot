@@ -35,6 +35,7 @@ import org.springframework.web.filter.CorsFilter;
  */
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+@ConditionalOnProperty(prefix = "ateng.boot.web", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(WebProperties.class)
 public class AtengWebAutoConfiguration {
 

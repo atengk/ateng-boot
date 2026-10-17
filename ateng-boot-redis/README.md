@@ -8,21 +8,10 @@
 
 `ateng-boot-redis` 坚持双核融合架构，摒弃“Spring Data Redis 与 Redisson 二选一”的传统割裂思维，同时规避了官方 `redisson-spring-boot-starter` 强行覆盖官方 `RedisConnectionFactory` 带来的隐式冲突与序列化漂移。
 
-### 方式一：独立子模块引入（推荐配合 BOM）
 ```xml
 <dependency>
     <groupId>io.github.atengk</groupId>
     <artifactId>ateng-boot-redis</artifactId>
-    <version>0.0.5</version>
-</dependency>
-```
-
-### 方式二：一键全家桶引入
-```xml
-<dependency>
-    <groupId>io.github.atengk</groupId>
-    <artifactId>ateng-boot-all</artifactId>
-    <version>0.0.5</version>
 </dependency>
 ```
 
