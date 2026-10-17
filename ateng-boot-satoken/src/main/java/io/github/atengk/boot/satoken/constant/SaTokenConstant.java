@@ -25,4 +25,12 @@ public final class SaTokenConstant {
      * 内部微服务 Same-Token 请求头名称
      */
     public static final String SAME_TOKEN_HEADER = "SAME_TOKEN";
+
+    /**
+     * 常用登录设备端类型常量
+     */
+    public static final String DEVICE_PC = "PC";
+    public static final String DEVICE_APP = "APP";
+    public static final String DEVICE_MINI_PROGRAM = "MINI_PROGRAM";
+    public static final String DEVICE_H5 = "H5";
 }

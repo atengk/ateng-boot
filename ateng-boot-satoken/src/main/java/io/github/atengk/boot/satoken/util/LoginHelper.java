@@ -86,6 +86,46 @@ public final class LoginHelper {
     }
 
     /**
+     * 当前账号在指定设备端注销下线
+     *
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void logoutByDevice(String deviceType) {
+        Object loginId = StpUtil.getLoginIdDefaultNull();
+        if (loginId != null) {
+            StpUtil.logout(loginId, deviceType);
+        }
+    }
+
+    /**
+     * 将指定登录账号踢下线（全局所有设备端）
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void kickout(Object loginId) {
+        StpUtil.kickout(loginId);
+    }
+
+    /**
+     * 将指定登录账号在指定设备端踢下线
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void kickout(Object loginId, String deviceType) {
+        StpUtil.kickout(loginId, deviceType);
+    }
+
+    /**
+     * 获取当前会话的登录设备端类型
+     *
+     * @return 设备端类型，未登录或未设置返回 null
+     */
+    public static String getLoginDeviceType() {
+        return StpUtil.getLoginDeviceType();
+    }
+
+    /**
      * 判断当前会话是否已经登录
      *
      * @return true 表示已登录
@@ -191,6 +231,24 @@ public final class LoginHelper {
     }
 
     /**
+     * 获取当前操作人原始唯一标识并转换为 Long 类型
+     *
+     * @return 原始用户 Long 唯一标识，未登录或非数字格式时返回 null
+     */
+    public static Long getUserIdAsLong() {
+        String userId = getUserId();
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId.trim());
+        } catch (NumberFormatException e) {
+            log.warn("用户唯一标识无法转换为 Long 数值: userId={}", userId);
+            return null;
+        }
+    }
+
+    /**
      * 获取当前操作人账号
      *
      * @return 用户账号，未登录返回 null
@@ -268,6 +326,21 @@ public final class LoginHelper {
      */
     public static boolean hasPermission(String permission) {
         return getPermissions().contains(permission);
+    }
+
+    /**
+     * 判断当前登录用户是否具备超级管理员特权
+     * 判定标准：角色集合包含 "admin" 或 "super_admin"，或权限集合包含 "*" 或 "*:*:*"
+     *
+     * @return true 表示具备超级管理员特权
+     */
+    public static boolean isSuperAdmin() {
+        Set<String> roles = getRoles();
+        if (roles.contains("admin") || roles.contains("super_admin")) {
+            return true;
+        }
+        Set<String> permissions = getPermissions();
+        return permissions.contains("*") || permissions.contains("*:*:*");
     }
 
     /**

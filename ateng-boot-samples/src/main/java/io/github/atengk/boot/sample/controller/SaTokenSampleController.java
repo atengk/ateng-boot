@@ -5,8 +5,6 @@ import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
-import io.github.atengk.boot.sample.entity.TenantOrderEntity;
-import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.sample.service.SaTokenSampleService;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
@@ -36,7 +34,6 @@ import java.util.Map;
 public class SaTokenSampleController {
 
     private final SaTokenSampleService sampleService;
-    private final TenantOrderMapper orderMapper;
     private final PermissionCacheService permissionCacheService;
 
     /**
@@ -46,8 +43,13 @@ public class SaTokenSampleController {
      * @return 签发的访问凭据 Token
      */
     @PostMapping("/login")
-    public Result<String> login(@RequestBody LoginUser loginUser) {
-        LoginHelper.login(loginUser);
+    public Result<String> login(@RequestBody LoginUser loginUser,
+                                @org.springframework.web.bind.annotation.RequestParam(value = "device", required = false) String device) {
+        if (device != null && !device.isBlank()) {
+            LoginHelper.login(loginUser, device);
+        } else {
+            LoginHelper.login(loginUser);
+        }
         return Result.success(LoginHelper.getTokenValue());
     }
 
@@ -115,13 +117,10 @@ public class SaTokenSampleController {
     @PostMapping("/order")
     public Result<Long> createOrder(@RequestBody Map<String, Object> req) {
         LoginHelper.checkLogin();
-        TenantOrderEntity order = new TenantOrderEntity();
-        order.setOrderNo((String) req.get("orderNo"));
-        if (req.get("amount") != null) {
-            order.setAmount(new BigDecimal(req.get("amount").toString()));
-        }
-        orderMapper.insert(order);
-        return Result.success(order.getId());
+        String orderNo = (String) req.get("orderNo");
+        BigDecimal amount = req.get("amount") != null ? new BigDecimal(req.get("amount").toString()) : null;
+        Long orderId = sampleService.createOrder(orderNo, amount);
+        return Result.success(orderId);
     }
 
     /**
@@ -316,7 +315,12 @@ public class SaTokenSampleController {
     @PostMapping("/kickout")
     public Result<Void> kickout(@RequestBody Map<String, String> body) {
         String userId = body.get("userId");
-        cn.dev33.satoken.stp.StpUtil.kickout(userId);
+        String device = body.get("device");
+        if (device != null && !device.isBlank()) {
+            LoginHelper.kickout(userId, device);
+        } else {
+            LoginHelper.kickout(userId);
+        }
         return Result.success();
     }
 

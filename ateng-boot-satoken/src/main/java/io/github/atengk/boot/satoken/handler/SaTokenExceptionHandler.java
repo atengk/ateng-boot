@@ -103,12 +103,12 @@ public class SaTokenExceptionHandler {
      * 拦截微服务内部 Same-Token 无效异常 (SameTokenInvalidException)
      *
      * @param e 异常实例
-     * @return 401 凭据无效响应
+     * @return 403 零信任鉴权拦截响应
      */
     @ExceptionHandler(SameTokenInvalidException.class)
     public Result<Void> handleSameTokenInvalidException(SameTokenInvalidException e) {
         log.warn("鉴权拦截 - 微服务内部 Same-Token 无效: message={}", e.getMessage());
-        return Result.fail(CommonResultCode.UNAUTHORIZED.getCode(), "微服务内部鉴权凭据无效或已失效");
+        return Result.fail(CommonResultCode.FORBIDDEN.getCode(), "微服务内部鉴权凭据无效或已失效");
     }
 
     /**

@@ -84,15 +84,15 @@ public class AuthController {
     public Result<String> login(@RequestBody LoginDTO dto) {
         // 1. 模拟校验用户名密码并组装工业级强类型 LoginUser
         LoginUser user = LoginUser.builder()
-                .id(1001L)
+                .userId("1001")
                 .tenantId("tenant_001")
-                .deptId(2001L)
-                .username(dto.getUsername())
-                .nickname("张三")
+                .deptId("2001")
+                .userAccount(dto.getUsername())
+                .userName("张三")
                 .userType("SYS_USER")
                 .roles(Set.of("admin", "manager"))
                 .permissions(Set.of("system:user:query", "system:user:export"))
-                .extra(Map.of("clientIp", "127.0.0.1"))
+                .extraData(Map.of("clientIp", "127.0.0.1"))
                 .build();
 
         // 2. 强类型极简登录（底层自动将 LoginUser 存入会话 Session）
@@ -116,14 +116,15 @@ public class AuthController {
 public class UserService {
 
     public void doBusiness() {
-        // 读取当前登录用户 ID（未登录自动抛出 NotLoginException）
-        Long userId = LoginHelper.getUserId();
+        // 读取当前登录用户 ID（支持 String 或 Long 类型安全获取）
+        String userId = LoginHelper.getUserId();
+        Long userIdAsLong = LoginHelper.getUserIdAsLong();
 
         // 读取完整的强类型载荷对象
         LoginUser loginUser = LoginHelper.getLoginUser();
-        log.info("当前用户: {}, 租户: {}, 部门: {}", loginUser.getUsername(), loginUser.getTenantId(), loginUser.getDeptId());
+        log.info("当前用户: {}, 租户: {}, 部门: {}", loginUser.getUserName(), loginUser.getTenantId(), loginUser.getDeptId());
 
-        // 判定是否具备超级管理员权限
+        // 判定是否具备超级管理员特权
         if (LoginHelper.isSuperAdmin()) {
             log.info("执行超级管理员特权逻辑");
         }
@@ -383,20 +384,28 @@ ateng:
   boot:
     satoken:
       enabled: true               # 是否开启 ateng-boot-satoken 模块增强功能 (默认: true)
-      include-paths:              # 拦截器鉴权生效的 URL 路径列表 (默认: /**)
-        - "/**"
-      exclude-paths:              # 自动放行的白名单 URL 路径列表
-        - "/api/auth/login"
-        - "/doc.html"
-        - "/webjars/**"
-        - "/v3/api-docs/**"
-        - "/favicon.ico"
-      same-token-enabled: true    # 是否启用微服务内部 Same-Token 零信任调用校验 (默认: true)
-      permission-cache:           # 两级权限缓存配置
-        enabled: true             # 是否启用权限两级缓存 (默认: true)
-        local-expire-seconds: 5   # L1 进程本地微缓存过期时间 (默认: 5 秒)
-        redis-expire-seconds: 3600 # L2 Redis 缓存过期时间 (默认: 3600 秒)
-        jitter-ratio: 0.1         # 防雪崩随机抖动比例 (默认: 0.1 即 0%~10% 随机增量)
+      interceptor:                # 路由拦截器与白名单放行配置
+        enabled: true             # 是否挂载 Sa-Token 路由拦截器 (默认: true)
+        check-login: false        # 是否开启全局路由强制登录校验 (默认: false)
+        includes:                 # 拦截匹配的 URL 路径列表 (默认: /**)
+          - "/**"
+        excludes:                 # 排除放行的白名单 URL 路径列表
+          - "/api/auth/login"
+          - "/doc.html"
+          - "/webjars/**"
+          - "/v3/api-docs/**"
+          - "/favicon.ico"
+      same-token:                 # 微服务内部 Same-Token 零信任鉴权配置
+        enabled: false            # 是否启用内部 Same-Token 校验 (默认: false)
+        header-name: SAME_TOKEN   # Same-Token 传输请求头名称 (默认: SAME_TOKEN)
+        token-value: ""           # 约定的内部调用固定密钥凭据 (留空时采用 Sa-Token 动态时间戳凭据)
+      permission-cache:           # 权限与角色多级缓存治理配置
+        enabled: true             # 是否开启权限码与角色缓存 (默认: true)
+        timeout-seconds: 300      # 权限与角色缓存有效期，单位秒 (默认: 300)
+        empty-ttl-seconds: 60     # 空权限/空角色防穿透哨兵缓存有效期，单位秒 (默认: 60)
+      openapi:                    # OpenAPI / Knife4j 鉴权弹窗配置
+        enabled: true             # 是否自动为 Knife4j / Swagger 注入鉴权弹窗 (默认: true)
+        token-name: satoken       # 鉴权组件名称与请求头 Key (默认: satoken)
 ```
 
 ---

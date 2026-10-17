@@ -31,7 +31,9 @@ public class SaTokenOpenApiCustomizer implements GlobalOpenApiCustomizer {
         if (tokenName == null || tokenName.isBlank()) {
             try {
                 tokenName = cn.dev33.satoken.SaManager.getConfig().getTokenName();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                // SaManager 尚未初始化或未加载全局配置时平滑降级，采用默认 tokenName
+                log.debug("获取 Sa-Token 运行时全局 tokenName 失败，采用默认值: {}", e.getMessage());
             }
         }
         if (tokenName == null || tokenName.isBlank()) {

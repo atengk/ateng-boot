@@ -151,6 +151,42 @@ public class PermissionCacheService {
     }
 
     /**
+     * 清理指定用户的角色与直属权限缓存（别名方法）
+     *
+     * @param userId 用户唯一标识
+     */
+    public void clearUserCache(String userId) {
+        refreshUserPermissions(userId);
+    }
+
+    /**
+     * 清理指定用户的角色与直属权限缓存（Long 用户标识重载）
+     *
+     * @param userId 用户唯一标识
+     */
+    public void clearUserCache(Long userId) {
+        if (userId != null) {
+            refreshUserPermissions(String.valueOf(userId));
+        }
+    }
+
+    /**
+     * 清理指定角色的权限码集合缓存（别名方法）
+     *
+     * @param roleCode 角色编码
+     */
+    public void clearRoleCache(String roleCode) {
+        refreshRolePermissions(roleCode);
+    }
+
+    /**
+     * 清理全域两级权限与角色缓存（别名方法）
+     */
+    public void clearAllCache() {
+        clearAll();
+    }
+
+    /**
      * 获取底层本地内存缓存容器大小（单机模式辅助调试）
      *
      * @return 本地缓存项数量

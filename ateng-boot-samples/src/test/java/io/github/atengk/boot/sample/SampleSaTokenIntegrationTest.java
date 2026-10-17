@@ -6,6 +6,7 @@ import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
 import io.github.atengk.boot.sample.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -570,17 +571,17 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("14. Same-Token 零信任安全端到端验证：未携带/非法凭据拦截，合法凭据放行")
     void shouldEnforceSameTokenZeroTrustSecurity() throws Exception {
-        // 1. 未携带 Same-Token 访问内部机密接口，返回 HTTP 200 + code: 401
+        // 1. 未携带 Same-Token 访问内部机密接口，返回 HTTP 200 + code: 403
         mockMvc.perform(get("/api/auth/internal/data"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
 
-        // 2. 携带无效 Same-Token 访问，被 401 拦截
+        // 2. 携带无效 Same-Token 访问，被 403 拦截
         mockMvc.perform(get("/api/auth/internal/data")
                         .header(cn.dev33.satoken.same.SaSameUtil.SAME_TOKEN, "invalid-same-token-xxx"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("微服务内部鉴权凭据无效或已失效"));
 
         // 3. 携带系统实时合法 Same-Token 访问，成功放行
@@ -590,5 +591,47 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("内部机密数据访问成功"));
+    }
+
+    @Test
+    @DisplayName("15. 多端设备登录与按设备精准踢下线端到端验证")
+    void shouldSupportDeviceTypeLoginAndKickoutByDevice() throws Exception {
+        LoginUser pcUser = LoginUser.builder()
+                .userId("99001")
+                .userAccount("multidevice")
+                .userName("多端用户")
+                .build();
+
+        // 1. PC 端登录并获取 Token
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login?device=PC")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(pcUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 按设备踢下线 PC 端
+        mockMvc.perform(post("/api/auth/kickout")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("userId", "99001", "device", io.github.atengk.boot.satoken.constant.SaTokenConstant.DEVICE_PC))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. 携带已失效的 Token 访问受保护接口，验证已被踢下线拦截 (401)
+        mockMvc.perform(get("/api/auth/me")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("当前账号已被踢下线"));
+    }
+
+    @Test
+    @DisplayName("16. Sa-Token 防火墙非法路径穿越拦截端到端验证：输出标准 Result 400 契约")
+    void shouldEnforceFirewallStandardResultContract() throws Exception {
+        // 请求包含非法路径穿越的请求路径
+        mockMvc.perform(get("/api/auth/test/..%2F..%2Fetc%2Fpasswd"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.success").value(false));
     }
 }
