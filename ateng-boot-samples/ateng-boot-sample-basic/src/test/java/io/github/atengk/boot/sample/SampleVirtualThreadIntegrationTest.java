@@ -62,18 +62,18 @@ class SampleVirtualThreadIntegrationTest {
     @Autowired
     private UserMapper userMapper;
 
-    @BeforeEach
-    void setUp() {
-        MDC.clear();
-        UserContextHolder.clear();
-        TenantContextHolder.clear();
-    }
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
+    @BeforeEach
     @AfterEach
-    void tearDown() {
+    void cleanUp() {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        if (jdbcTemplate != null) {
+            jdbcTemplate.update("DELETE FROM sys_user WHERE name LIKE '并发用户%' OR name LIKE '%虚拟线程%' OR name LIKE '全局扫描%'");
+        }
     }
 
     @Test
