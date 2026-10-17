@@ -103,9 +103,6 @@ public final class ExcelUtil {
             if (properties.getDefaultBatchSize() > 0) {
                 defaultBatchSize = properties.getDefaultBatchSize();
             }
-            if (properties.getTempDir() != null && !properties.getTempDir().isBlank()) {
-                System.setProperty("java.io.tmpdir", properties.getTempDir());
-            }
             if (properties.getStyle() != null) {
                 defaultStyleProperties = properties.getStyle();
             }

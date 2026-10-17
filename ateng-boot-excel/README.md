@@ -155,7 +155,8 @@ ExcelUtil.export(outputStream, userList, SensitiveUserVO.class);
 | 1001 | 张*丰 | 138\*\*\*\*0000 | 110101\*\*\*\*\*\*\*\*0001 | a\*\*\*g@example.com | AB##EF |
 
 > [!NOTE]
-> 支持内置脱敏策略：`CHINESE_NAME`（中文名）、`ID_CARD`（身份证）、`MOBILE_PHONE`（手机号）、`FIXED_PHONE`（座机号）、`EMAIL`（电子邮箱）、`BANK_CARD`（银行卡）、`IPV4`、`IPV6`、`CAR_LICENSE`（车牌号）、`KEEP_HEAD_TAIL`（基于 `keepHead`/`keepTail`/`maskChar` 首尾保留）、`CUSTOM`（基于 `startInclude`/`endExclude`/`maskChar` 自定义区间）。
+> - 支持内置脱敏策略：`CHINESE_NAME`（中文名）、`ID_CARD`（身份证）、`MOBILE_PHONE`（手机号）、`FIXED_PHONE`（座机号）、`EMAIL`（电子邮箱）、`BANK_CARD`（银行卡）、`IPV4`、`IPV6`、`CAR_LICENSE`（车牌号）、`KEEP_HEAD_TAIL`（基于 `keepHead`/`keepTail`/`maskChar` 首尾保留）、`CUSTOM`（基于 `startInclude`/`endExclude`/`maskChar` 自定义区间）。
+> - **通用底座原语兼容**：除了专属的 `@ExcelSensitive` 注解，`ateng-boot-excel` 亦原生兼容识别 `ateng-boot-core` 中的通用的视图层脱敏注解 `@FieldSensitive`。若同一个 VO 同时用于 Controller JSON 接口返回与 Excel 导出，可直接标注 `@FieldSensitive` 达成一套配置全场景生效。
 
 ---
 
@@ -616,7 +617,10 @@ public class FinancialOrderVO {
 数十万至百万级大数据量导出耗时长达数分钟，若采用普通 HTTP 同步接口，极易触发网络反向代理（Nginx/Gateway）`504 Gateway Timeout` 超时断连或浏览器标签页挂起；且缺乏后台生成进度可视化感知与物理文件生命周期管理。
 
 ### 核心代码范式
-`ateng-boot-excel` 内置生产级开箱即用的异步导出任务中心抽象与基于受管线程池的内存调度器 `InMemoryAsyncExportTaskService`（支持未来无缝扩展 Redis/MQ/分布式集群架构）。
+`ateng-boot-excel` 内置生产级开箱即用的异步导出任务中心抽象与基于受管线程池的内存调度器 `InMemoryAsyncExportTaskService`（支持未来无缝扩展 Redis/MQ/分布式集群架构）：
+- **四维上下文全链路透传**：基于 `AsyncContext` 自动将请求线程的 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 状态无缝透传至后台线程，保证日志 traceId 贯通与多租户数据隔离，且任务执行后自动清理；
+- **线程池过载拒绝防崩**：采用有界任务队列与快速失败保护，队列满时抛出语义化 `TOO_MANY_REQUESTS` 业务异常，杜绝任务倒灌阻塞 Web 容器（如 Tomcat）线程；
+- **定时清理与平滑停机**：内置单线程定时清理调度器周期清理过期任务与物理临时文件，容器停止时提供平滑等待期，杜绝产物损坏。
 
 ```java
 import io.github.atengk.boot.core.model.Result;

@@ -181,4 +181,82 @@ class AsyncExportTaskServiceTest {
         assertNull(taskService.getTask(taskId), "过期任务应从内存映射中移除");
         assertFalse(new File(filePath).exists(), "过期任务对应的物理 Excel 文件应被同步删除");
     }
+
+    @Test
+    @DisplayName("测试异步导出任务四维上下文透传（MDC、User、TenantId）与执行后清理")
+    void testAsyncContextPropagation() throws Exception {
+        io.github.atengk.boot.core.context.UserContextHolder.set("user-1001");
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantId(8888L);
+        org.slf4j.MDC.put("traceId", "trace-export-test-001");
+
+        try {
+            java.util.concurrent.atomic.AtomicReference<String> capturedUser = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Long> capturedTenant = new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<String> capturedTrace = new java.util.concurrent.atomic.AtomicReference<>();
+            CountDownLatch latch = new CountDownLatch(1);
+
+            String taskId = taskService.submit("上下文透传测试", out -> {
+                capturedUser.set(io.github.atengk.boot.core.context.UserContextHolder.get());
+                capturedTenant.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantIdAsLong());
+                capturedTrace.set(org.slf4j.MDC.get("traceId"));
+                ExcelUtil.export(out, Collections.singletonList(new TaskUserVO("王五", 25)), TaskUserVO.class);
+                latch.countDown();
+            });
+
+            assertNotNull(taskId);
+            assertTrue(latch.await(10, TimeUnit.SECONDS));
+
+            assertEquals("user-1001", capturedUser.get(), "异步导出线程应成功继承发起方的 UserId");
+            assertEquals(8888L, capturedTenant.get(), "异步导出线程应成功继承发起方的 TenantId");
+            assertEquals("trace-export-test-001", capturedTrace.get(), "异步导出线程应成功继承发起方的 traceId");
+        } finally {
+            io.github.atengk.boot.core.context.UserContextHolder.clear();
+            io.github.atengk.boot.core.context.TenantContextHolder.clear();
+            org.slf4j.MDC.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("测试异步导出线程池队列打满时的拒绝保护：抛出 BusinessException 且不残留孤儿记录")
+    void testQueueCapacityRejection() throws Exception {
+        ExcelProperties props = new ExcelProperties();
+        ExcelAsyncExportProperties asyncProps = props.getAsyncExport();
+        asyncProps.setTempDir(tempStorageDir.toString());
+        asyncProps.setCorePoolSize(1);
+        asyncProps.setMaxPoolSize(1);
+        asyncProps.setQueueCapacity(1); // 队列容量为 1
+
+        InMemoryAsyncExportTaskService smallPoolService = new InMemoryAsyncExportTaskService(props);
+        CountDownLatch blockLatch = new CountDownLatch(1);
+        CountDownLatch startedLatch = new CountDownLatch(1);
+
+        try {
+            // 1. 提交第一个长耗时任务，占用唯一的执行线程
+            String task1 = smallPoolService.submit("占用线程任务", out -> {
+                startedLatch.countDown();
+                try {
+                    blockLatch.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                }
+            });
+            assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
+
+            // 2. 提交第二个任务，填满唯一的排队队列（queue size = 1）
+            String task2 = smallPoolService.submit("填满队列任务", out -> {});
+            assertNotNull(task2);
+
+            // 3. 提交第三个任务，此时队列与线程均满，必须触发拒绝策略并抛出 BusinessException
+            io.github.atengk.boot.core.exception.BusinessException ex = assertThrows(
+                    io.github.atengk.boot.core.exception.BusinessException.class,
+                    () -> smallPoolService.submit("溢出拒绝任务", out -> {})
+            );
+
+            assertEquals(io.github.atengk.boot.core.code.CommonResultCode.TOO_MANY_REQUESTS.getCode(), ex.getCode());
+            assertTrue(ex.getMessage().contains("异步导出任务队列已满"));
+        } finally {
+            blockLatch.countDown();
+            smallPoolService.destroy();
+        }
+    }
 }
+

@@ -95,4 +95,47 @@ class ExcelSensitiveTest {
         assertEquals("12####78", result.getKeepHeadTail(), "导出的 Excel 首尾保留字段应被掩码");
         assertEquals("绝密明文信息", result.getPlaintext(), "未标记脱敏的字段应保持明文");
     }
+
+    @Data
+    public static class CoreFieldSensitiveUser {
+        @ExcelProperty("真实姓名")
+        @io.github.atengk.boot.core.annotation.FieldSensitive(io.github.atengk.boot.core.enums.SensitiveType.CHINESE_NAME)
+        private String realName;
+
+        @ExcelProperty("手机号")
+        @io.github.atengk.boot.core.annotation.FieldSensitive(io.github.atengk.boot.core.enums.SensitiveType.MOBILE_PHONE)
+        private String mobile;
+
+        @ExcelProperty("身份证号")
+        @io.github.atengk.boot.core.annotation.FieldSensitive(io.github.atengk.boot.core.enums.SensitiveType.ID_CARD)
+        private String idCard;
+    }
+
+    @Test
+    @DisplayName("测试兼容识别 Core 通用 @FieldSensitive 注解：导出时自动脱敏并保持源对象内存真明文")
+    void testFieldSensitiveAnnotationCompatibility() {
+        CoreFieldSensitiveUser user = new CoreFieldSensitiveUser();
+        user.setRealName("李四五");
+        user.setMobile("13987654321");
+        user.setIdCard("440101198506012345");
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.export(out, List.of(user), CoreFieldSensitiveUser.class);
+
+        // 内存真明文断言
+        assertEquals("李四五", user.getRealName());
+        assertEquals("13987654321", user.getMobile());
+        assertEquals("440101198506012345", user.getIdCard());
+
+        // 读取导出内容
+        ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+        List<CoreFieldSensitiveUser> readBack = ExcelUtil.read(in, CoreFieldSensitiveUser.class);
+        assertNotNull(readBack);
+        assertEquals(1, readBack.size());
+
+        CoreFieldSensitiveUser exported = readBack.get(0);
+        assertEquals("李*五", exported.getRealName(), "真实姓名应被掩码");
+        assertEquals("139****4321", exported.getMobile(), "手机号应被掩码");
+        assertEquals("440101********2345", exported.getIdCard(), "身份证号应被掩码");
+    }
 }

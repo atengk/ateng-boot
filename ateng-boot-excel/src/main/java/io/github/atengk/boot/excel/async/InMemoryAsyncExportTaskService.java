@@ -1,5 +1,9 @@
 package io.github.atengk.boot.excel.async;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.properties.ExcelAsyncExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import org.slf4j.Logger;
@@ -21,7 +25,7 @@ import java.util.concurrent.*;
 /**
  * 内存与本地磁盘异步导出任务中心默认实现
  * <p>
- * 基于并发哈希表与受管线程池执行大报表后台流式写出，支持任务进度感知、错误捕获与过期文件定期清理。
+ * 基于并发哈希表与受管线程池执行大报表后台流式写出，支持全链路四维上下文透传、进度感知、错误捕获与过期文件定期清理。
  * </p>
  *
  * @author Ateng
@@ -36,6 +40,7 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
     private final Path tempDirPath;
     private final ThreadPoolExecutor executorService;
+    private final ScheduledExecutorService cleanerExecutor;
 
     public InMemoryAsyncExportTaskService() {
         this(new ExcelProperties());
@@ -61,7 +66,7 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
         int core = Math.max(1, props.getCorePoolSize());
         int max = Math.max(core, props.getMaxPoolSize());
-        int queueCap = Math.max(10, props.getQueueCapacity());
+        int queueCap = Math.max(1, props.getQueueCapacity());
 
         this.executorService = new ThreadPoolExecutor(
                 core,
@@ -69,17 +74,17 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                 60L,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(queueCap),
-                new ThreadFactory() {
-                    private final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0);
+                new NamedThreadFactory("ateng-excel-async-"),
+                new ThreadPoolExecutor.AbortPolicy()
+        );
 
-                    @Override
-                    public Thread newThread(Runnable r) {
-                        Thread t = new Thread(r, "ateng-excel-async-" + count.incrementAndGet());
-                        t.setDaemon(true);
-                        return t;
-                    }
-                },
-                new ThreadPoolExecutor.CallerRunsPolicy()
+        int retentionHours = Math.max(1, props.getRetentionHours());
+        this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("ateng-excel-cleaner-")
+        );
+        this.cleanerExecutor.scheduleAtFixedRate(
+                () -> cleanExpiredTasks(Duration.ofHours(retentionHours)),
+                1, 1, TimeUnit.HOURS
         );
     }
 
@@ -106,34 +111,46 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
         taskMap.put(taskId, task);
 
+        // 捕获调用方线程的四维上下文（MDC、User、TenantId、IgnoreTenant）以透传给后台执行线程并严格自恢复
         final String finalTaskName = taskName;
-        Future<?> future = executorService.submit(() -> {
-            task.setStatus(ExportTaskStatus.PROCESSING);
-            task.setProgress(10);
-            log.info("开始执行异步导出任务 [{}]: {}", taskId, finalTaskName);
 
-            try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-                executor.execute(fos);
-                if (task.getStatus() == ExportTaskStatus.CANCELLED) {
-                    return;
+        Future<?> future;
+        try {
+            future = executorService.submit(AsyncContext.wrap(() -> {
+                task.setStatus(ExportTaskStatus.PROCESSING);
+                task.setProgress(10);
+                log.info("开始执行异步导出任务 [{}]: {}", taskId, finalTaskName);
+
+                try (FileOutputStream fos = new FileOutputStream(targetFile)) {
+                    executor.execute(fos);
+                    if (task.getStatus() == ExportTaskStatus.CANCELLED) {
+                        return;
+                    }
+                    task.setFileSize(targetFile.length());
+                    task.setStatus(ExportTaskStatus.SUCCESS);
+                    task.setProgress(100);
+                    task.setFinishTime(LocalDateTime.now());
+                    log.info("异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
+                } catch (Throwable ex) {
+                    if (task.getStatus() == ExportTaskStatus.CANCELLED) {
+                        return;
+                    }
+                    task.setStatus(ExportTaskStatus.FAILED);
+                    task.setErrorMsg(ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
+                    task.setFinishTime(LocalDateTime.now());
+                    log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
+                } finally {
+                    futureMap.remove(taskId);
                 }
-                task.setFileSize(targetFile.length());
-                task.setStatus(ExportTaskStatus.SUCCESS);
-                task.setProgress(100);
-                task.setFinishTime(LocalDateTime.now());
-                log.info("异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
-            } catch (Throwable ex) {
-                if (task.getStatus() == ExportTaskStatus.CANCELLED) {
-                    return;
-                }
-                task.setStatus(ExportTaskStatus.FAILED);
-                task.setErrorMsg(ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
-                task.setFinishTime(LocalDateTime.now());
-                log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
-            } finally {
-                futureMap.remove(taskId);
+            }));
+        } catch (RejectedExecutionException rex) {
+            taskMap.remove(taskId);
+            if (targetFile.exists()) {
+                targetFile.delete();
             }
-        });
+            log.warn("异步导出任务队列已满，拒绝排队 [{}]: {}", taskId, taskName);
+            throw new BusinessException(CommonResultCode.TOO_MANY_REQUESTS.getCode(), "异步导出任务队列已满，请稍后重试");
+        }
 
         futureMap.put(taskId, future);
         return taskId;
@@ -199,8 +216,19 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
     @Override
     public void destroy() {
+        if (cleanerExecutor != null && !cleanerExecutor.isShutdown()) {
+            cleanerExecutor.shutdownNow();
+        }
         if (executorService != null && !executorService.isShutdown()) {
             executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                    executorService.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
     }
 }

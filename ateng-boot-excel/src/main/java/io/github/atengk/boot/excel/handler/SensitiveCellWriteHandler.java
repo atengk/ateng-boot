@@ -27,9 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SensitiveCellWriteHandler implements CellWriteHandler {
 
     /**
-     * 字段脱敏注解元数据缓存（提升百万级数据写出时的反射性能）
+     * 字段脱敏规则元数据缓存（提升百万级数据写出时的反射性能）
      */
-    private static final Map<Field, Optional<ExcelSensitive>> ANNOTATION_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Field, Optional<SensitiveRule>> RULE_CACHE = new ConcurrentHashMap<>();
 
     @Override
     public void afterCellDataConverted(CellWriteHandlerContext context) {
@@ -45,10 +45,10 @@ public class SensitiveCellWriteHandler implements CellWriteHandler {
         }
 
         Field field = contentProperty.getField();
-        ExcelSensitive sensitive = ANNOTATION_CACHE
-                .computeIfAbsent(field, f -> Optional.ofNullable(f.getAnnotation(ExcelSensitive.class)))
+        SensitiveRule rule = RULE_CACHE
+                .computeIfAbsent(field, SensitiveCellWriteHandler::resolveRule)
                 .orElse(null);
-        if (sensitive == null) {
+        if (rule == null) {
             return;
         }
 
@@ -67,43 +67,70 @@ public class SensitiveCellWriteHandler implements CellWriteHandler {
         }
 
         // 4. 执行动态脱敏掩码转换，并更新输出单元格数据
-        String maskedValue = mask(rawValue, sensitive);
+        String maskedValue = rule.type().mask(
+                rawValue,
+                rule.startInclude(),
+                rule.endExclude(),
+                rule.keepHead(),
+                rule.keepTail(),
+                rule.maskChar()
+        );
 
         cellData.setType(CellDataTypeEnum.STRING);
         cellData.setStringValue(maskedValue);
     }
 
-    /**
-     * 基于 ExcelSensitive 注解与 Core SensitiveType 执行脱敏掩码
-     *
-     * @param value     原始文本
-     * @param sensitive 脱敏注解配置
-     * @return 掩码后的字符串
-     */
-    private static String mask(String value, ExcelSensitive sensitive) {
-        if (value == null || value.isEmpty() || sensitive == null) {
-            return value;
+    private static Optional<SensitiveRule> resolveRule(Field field) {
+        // 1. 优先提取 ExcelSensitive 注解
+        ExcelSensitive excelSensitive = field.getAnnotation(ExcelSensitive.class);
+        if (excelSensitive != null) {
+            SensitiveType targetType = excelSensitive.type();
+            if (targetType == SensitiveType.CUSTOM && excelSensitive.value() != SensitiveType.CUSTOM) {
+                targetType = excelSensitive.value();
+            }
+            if (targetType == SensitiveType.CUSTOM && (excelSensitive.keepHead() > 0 || excelSensitive.keepTail() > 0)) {
+                targetType = SensitiveType.KEEP_HEAD_TAIL;
+            }
+            return Optional.of(new SensitiveRule(
+                    targetType,
+                    excelSensitive.startInclude(),
+                    excelSensitive.endExclude(),
+                    excelSensitive.keepHead(),
+                    excelSensitive.keepTail(),
+                    excelSensitive.maskChar()
+            ));
         }
 
-        // 1. 确定生效的脱敏类型（type 优先，其次 value）
-        SensitiveType targetType = sensitive.type();
-        if (targetType == SensitiveType.CUSTOM && sensitive.value() != SensitiveType.CUSTOM) {
-            targetType = sensitive.value();
+        // 2. 回退提取 Core 模块通用的 FieldSensitive 注解
+        io.github.atengk.boot.core.annotation.FieldSensitive fieldSensitive =
+                field.getAnnotation(io.github.atengk.boot.core.annotation.FieldSensitive.class);
+        if (fieldSensitive != null) {
+            SensitiveType targetType = fieldSensitive.value();
+            if (targetType == SensitiveType.CUSTOM && (fieldSensitive.keepHead() > 0 || fieldSensitive.keepTail() > 0)) {
+                targetType = SensitiveType.KEEP_HEAD_TAIL;
+            }
+            return Optional.of(new SensitiveRule(
+                    targetType,
+                    fieldSensitive.startInclude(),
+                    fieldSensitive.endExclude(),
+                    fieldSensitive.keepHead(),
+                    fieldSensitive.keepTail(),
+                    fieldSensitive.maskChar()
+            ));
         }
 
-        // 2. 自动类型推导：若未显式指定预设类型，但配置了首尾保留字符数，智能转为 KEEP_HEAD_TAIL
-        if (targetType == SensitiveType.CUSTOM && (sensitive.keepHead() > 0 || sensitive.keepTail() > 0)) {
-            targetType = SensitiveType.KEEP_HEAD_TAIL;
-        }
-
-        // 3. 执行掩码
-        return targetType.mask(
-                value,
-                sensitive.startInclude(),
-                sensitive.endExclude(),
-                sensitive.keepHead(),
-                sensitive.keepTail(),
-                sensitive.maskChar()
-        );
+        return Optional.empty();
     }
+
+    /**
+     * 脱敏规则轻量元数据记录
+     */
+    private record SensitiveRule(
+            SensitiveType type,
+            int startInclude,
+            int endExclude,
+            int keepHead,
+            int keepTail,
+            char maskChar
+    ) {}
 }
