@@ -23,10 +23,16 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
-        <!-- Jackson 注解 (用于 Result 序列化控制) -->
+        <!-- Jackson 数据绑定与注解 -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-annotations</artifactId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Jackson Java 8 时间支持 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
 
         <!-- Lombok (编译期使用，不传递) -->
@@ -50,12 +56,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JSON 序列化单测验证 -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <scope>test</scope>
-        </dependency>
 
         <!-- 日志实现（用于单测中验证 MDC 与 TraceId 流转） -->
         <dependency>

@@ -11,25 +11,27 @@
 
 ## 2. 核心架构与编码契约 (Architecture & Contracts)
 - **显式响应契约 (Explicit Contract)**：Controller 统一显式声明返回 `Result<T>`，依托强类型契约自洽；严禁引入 `@ResponseBodyAdvice` 全局自动拦截包装（参见 [ADR-0002](./docs/adr/0002-explicit-result-contract-no-response-body-advice.md)）。
-- **零重型外部依赖 (Zero-Bloat Invariant)**：彻底禁止引入 `hutool-all`、`guava`、`commons-collections` 等重型第三方全量工具包；100% 依托 JDK 17 原生能力与 Spring 6 内置基础工具；工具类依运行时上下文就近内聚（`core` 通用算法、`web` Servlet/HTTP、`mybatis-plus` ORM 映射等），坚决杜绝“通用垃圾桶 (Junk Drawer)”模块（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）。
+- **零重型外部依赖与核心原语收敛 (Zero-Bloat & Core-First Invariants)**：彻底禁止引入 `hutool-all`、`guava`、`commons-collections` 等重型第三方全量工具包；100% 依托 JDK 17 原生能力与 Spring 6 内置基础工具；工具类依运行时上下文就近内聚（`core` 通用算法、`web` Servlet/HTTP、`mybatis-plus` ORM 映射等），坚决杜绝“通用垃圾桶 (Junk Drawer)”模块（参见 [ADR-0011](./docs/adr/0011-zero-bloat-and-co-located-utilities.md)）；**核心底座第一与通用原语收敛**：所有与具体中间件解耦的跨模块契约、通用上下文（用户与租户）、序列化门面、数据脱敏注解及通用工具原语，强制统一沉淀并收敛于 `ateng-boot-core`，严禁在下游子模块私有化闭环或重复造轮子；同时恪守运行时就近原则，强依赖特定 Servlet/ORM 驱动的组件仍严格就近安置（参见 [ADR-0025](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md)）。
 - **工业级防御性与稳定性 (Defensive Stability & Zero-OOM)**：公共单例服务强制保持无状态；高并发分布式协同强制防死锁与原子性；批量与流式数据处理强制实施内存防爆（防 OOM）并在消费后即时清理引用；未知根异常强制生产脱敏，内部堆栈与敏感 SQL 仅记录于后台日志，严禁生吞异常（参见 [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md)）。
 - **数据安全与“内存真明文”不变量 (In-Memory Plaintext Invariant)**：业务层与实体对象在内存中始终保持 100% 原始真实明文，严禁在业务逻辑中直接对实体属性打星号；存储加密收敛于持久层（入库密文、出库明文），展示脱敏收敛于视图序列化/导出拦截器，彻底杜绝掩码脏数据写回数据库（参见 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
 - **传输契约与持久层彻底解耦 (Transport Decoupling)**：Controller 传输层严禁泄露 ORM `Page<T>` 或数据持久层实体；分页查询统一入参 `PageQuery`，统一返回契约 `PageResult<VO>`，在 Service 边界完成纯净转换（参见 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md)）。
 - **防御性自动装配 (Defensive Autoconfiguration)**：自动装配类统配 `@AutoConfiguration` 标注，统一且只能注册于 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`（严格遵循 Spring Boot 3 规范，严禁使用旧版 `spring.factories`）；装配类标配 `@ConditionalOnClass`、`@ConditionalOnProperty`、`@ConditionalOnMissingBean` 守卫；Jackson 定制统一注入 `Jackson2ObjectMapperBuilderCustomizer`，严禁覆盖 `ObjectMapper` Bean（参见 [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md)）。
 - **BOM 依赖统管与向后兼容 (BOM-First & Backward Compatibility)**：对外暴露的公共 API 签名、核心注解属性与依赖基线严禁随意破坏向后兼容；任何新增依赖及其版本必须且只能在根 `pom.xml` 或 `ateng-boot-bom/pom.xml` 的 `<dependencyManagement>` 中集中纳管；各子模块 `pom.xml` 声明依赖时一律免配 `<version>` 标签（参见 [ADR-0003](./docs/adr/0003-dependency-management-via-bom-import.md)）。
 - **空安全与前置卫语句 (Null Safety & Defensive Return)**：查询列表/集合无匹配时统一返回空集合（如 `Collections.emptyList()`），严禁返回 `null`；单实体查询无结果时调用方必须通过前置卫语句显式拦截；实体继承五级阶梯链（`BaseGenericEntity` -> `BaseIdEntity` -> `BaseTimeEntity` -> `BaseEntity` -> `BaseFullEntity`），按需选用，`BaseFullEntity` 的 `deleted` 字段标配 `@JsonIgnore`。
-- **全链路追踪与上下文传递 (Tracing & Context Propagation)**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`，异步方法流转通过受管线程池与 `ContextCopyingTaskDecorator` 透传；跨线程操作严格保持上下文一致。
+- **全链路追踪与四维上下文传递 (Tracing & 4D Context Propagation)**：Web 请求统一经由 `TraceFilter` 注入 MDC `traceId`；异步方法流转通过受管线程池、`AsyncContext` 与 `ContextCopyingTaskDecorator` 实现 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 四维快照的全链路透传并在任务完成后严格恢复现场，彻底杜绝多租户跨线程数据越权与线程池污染。
 - **配置属性类与 IDE 元数据完备 (IDE-Friendly Properties)**：配置属性类统一定义于 `io.github.atengk.boot.*.properties`，标配 `@ConfigurationProperties(prefix = "ateng.boot.*")`，字段提供完整 JavaDoc 说明与默认值，由 `spring-boot-configuration-processor` 自动编译生成 IDE 智能补全元数据。
 - **统一注释规范 (Doc Standards)**：新建源码与核心 API 标配清晰业务注释，类头部标注 `@author Ateng` 与 `@since YYYY-MM-DD`。
 
 ---
 
 ## 3. 质量门禁与文档自洽 (Quality Gates & Docs)
-- **新模块孵化与扩展通用标准 (Modular Extensibility SOP)**：未来无论扩展何种新功能模块，一律遵循“工业级四件套”闭环门禁：
+- **新模块孵化与扩展通用标准 (Modular Extensibility SOP)**：未来无论扩展何种新功能模块，一律遵循“工业级五件套”闭环门禁：
   1. **BOM 统管版本**：在根 `pom.xml` 与 `ateng-boot-bom` 统一纳管版本，子模块声明依赖免配 `<version>`；
   2. **专属自包含文档**：子模块专属 `README.md` 严格遵循“一句话场景痛点、最小可用代码块、预期控制台/JSON/表格呈现”三板斧规范；
   3. **领域边界映射**：子模块配备独立的 `CONTEXT.md` 并在全局 `CONTEXT-MAP.md` 中注册清晰的上下文关系与依赖拓扑；
-  4. **全自动自验用例**：在 `ateng-boot-samples` 中配套纯内存端（如 H2/Mock）的端到端自动化测试验证用例。
+  4. **全自动自验用例**：在 `ateng-boot-samples` 中配套纯内存端（如 H2/Mock）的端到端自动化测试验证用例；
+  5. **底座原语优先复用 (Core-First Reuse Gate)**：新增中间件模块（如 Storage、MQ、Job、AI 等）涉及容器查找、方法引用推导、JSON 序列化、分批切片、退避重试或路径清洗等需求时，强制 100% 优先复用 `ateng-boot-core` 已就绪的基础设施与标准件，坚决杜绝在子模块内私造工具类或引入第三方重复全量依赖。
+
 - **反应堆单测准出门禁 (Reactor-Safe Test Gate)**：特性验收均以 `ateng-boot-samples` 模块执行 `mvn clean test` 100% 绿色通过作为唯一准出标准；多模块联动调试时必须在根目录执行 `mvn test` 或追加依赖构建 `-pl <module> -am`，杜绝单模块测试意外拉取 Maven Central 旧版 Jar。
 - **特性即文档与单工单闭环门禁 (Doc-as-Feature & Single Ticket Closure)**：代码产生的功能与配置必须在相关文档中同步体现，严禁只堆砌代码而缺失使用说明；所有特性与接口改造均遵循“单工单文档准出闭环”原则，在同一个工单与提交中必须同步更新代码、根 README 与子模块 README；重大架构与设计权衡同步在 `docs/adr/` 沉淀对应 ADR；缺少文档与使用示例的改动一律视为未达验收标准。
 

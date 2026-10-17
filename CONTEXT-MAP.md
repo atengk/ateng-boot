@@ -5,7 +5,7 @@
 ## Contexts
 
 - [BOM 管控中心](./ateng-boot-bom/CONTEXT.md) — 依赖版本统管清单（纯 dependencyManagement），为微服务与按需精细化工程提供无侵入版本管控。
-- [Core 核心底座](./ateng-boot-core/CONTEXT.md) — 提供全局统一 API 响应契约、异常体系、业务断言、用户审计 SPI、异步上下文传递工具、全场景敏感数据脱敏与纯原生分布式 ID 发号引擎。
+- [Core 核心底座](./ateng-boot-core/CONTEXT.md) — 提供全局统一 API 响应契约、异常体系、业务断言、用户审计与租户 SPI、多租户上下文持有者、四维跨线程上下文透传、原生安全 JsonUtil 门面、通用敏感数据出界脱敏、纯原生分布式 ID、函数式元原语（DatePattern/Pair/Triple/TreeUtil/LambdaUtil）以及未来中间件孵化支撑原语（SpringUtil/CollectionUtil/BeanUtil/RetryUtil/FileUtil）。
 - [Web 运行时增强](./ateng-boot-web/CONTEXT.md) — 提供基于 Filter 的链路追踪、全局异常防御拦截、Jackson 防失真与时间格式化，以及 CORS 自动化配置。
 - [MyBatis-Plus 持久层增强](./ateng-boot-mybatis-plus/CONTEXT.md) — 提供通用实体基类、审计填充器、行级多租户安全隔离、声明式细粒度数据权限引擎、原生高性能分批批量插入引擎、多方言分页插件、防全表更新删除、乐观锁与分布式 ID 扩展。
 - [All 聚合全家桶](./ateng-boot-all/CONTEXT.md) — 面向单体或快速起步业务，提供零配置开箱即用的一键依赖打包交付。
