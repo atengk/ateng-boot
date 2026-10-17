@@ -90,11 +90,11 @@ flowchart TD
 ### 5. 底座全链路贯通与租户上下文自动同步 (Core & Multi-Tenant Synergy)
 - 自动注册 `SaTokenCurrentUserProvider` 接入 `ateng-boot-core` 的 `CurrentUserProvider` SPI；
 - 只要用户在 Sa-Token 中登录，`ateng-boot-mybatis-plus` 的 `createBy`、`updateBy` 审计填充与 `@DataScope` 数据权限过滤全链路自动感知当前操作人；
-- **租户上下文生命周期自动联动**：鉴权通过后自动将 `LoginUser.tenantId` 同步至 `ateng-boot-mybatis-plus` 的 `TenantContextHolder` 中；并在拦截器 `afterCompletion` 阶段强制触发清理，彻底杜绝容器线程池复用导致的跨租户数据串染。
+- **四维上下文生命周期双向镜像对称**：受管拦截器 `AtengSaTokenInterceptor` 在 `preHandle` 阶段不仅校验会话态，而且自动将当前会话对应的用户和租户同步无感写入 `UserContextHolder` 与 `TenantContextHolder`；在 `afterCompletion` 阶段严格对称调用 `clearUser()` 与 `clearTenant()`，彻底杜绝 Web 容器工作线程池复用导致的跨请求上下文串染与数据越权。
 
-### 6. 多租户 LoginId 防碰撞命名空间 (Tenant-Scoped Composite LoginId)
+### 6. 多租户 LoginId 防碰撞命名空间与复合主键双向对称解析 (Composite LoginId)
 - 在 SaaS 多租户场景下，`LoginHelper.login(user)` 自动识别租户上下文，内部采用下划线合成复合登录凭据（`{tenantId}_{userId}`），规避 Sa-Token 默认禁用冒号的限制并杜绝不同租户相同数字用户主键的会话踩踏；
-- `LoginHelper.getUserId()` 自动剥离租户前缀，向业务层透明还原真实原始主键。
+- **双向对称解析与健壮防空**：`LoginHelper.getUserId()` 与 `getUserIdAsLong()` 自动对称识别并剥离 `{tenantId}_` 复合前缀，向业务层透明还原纯净的真实业务主键；同时对 `login(null)`、`setLoginUser(null)` 及未登录态提供前置防空与完全清空防御，消除 NullPointerException 隐患。
 
 ### 7. 自适应持久化存储 (Zero-Bloat Storage Adaptor)
 - 遵循 [ADR-0011](./0011-zero-bloat-and-co-located-utilities.md) 与 [ADR-0022](./0022-dual-core-redis-and-distributed-coordination-architecture.md)，提供 `SaTokenRedisDao`；
@@ -115,7 +115,8 @@ flowchart TD
 - 自动在 API 文档右上角渲染 `satoken`（或 Bearer）鉴权 Lock 弹窗并自动关联当前 `token-name`，极大简化接口联调心智负担。
 
 ### 11. Same-Token 微服务内部调用防伪装 (Zero-Trust Internal Token)
-- 预置 `@CheckSameToken` 注解与配套拦截处理，针对微服务内部 RPC/HTTP 接口实施防伪造防重放校验，阻断绕过网关的非法内网探测。
+- 预置 `@CheckSameToken` 注解与配套 `SaCheckSameTokenAspect` AOP 切面，针对微服务内部 RPC/HTTP 接口实施防伪造防重放校验，阻断绕过网关的非法内网探测；
+- 请求头名称通过 `ateng.boot.satoken.same-token.header-name` 统一定制（默认契约对齐为 `SA-SAME-TOKEN`），确保跨服务协同零歧义。
 
 ### 12. Spring 原生事件广播总线
 - 实现 `SaTokenListener` 并装配 `SaTokenEventPublisher`；

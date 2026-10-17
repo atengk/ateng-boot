@@ -13,7 +13,7 @@ Fluent 链式多 Sheet 流式构建器，允许通过极简链式 API 在单次�
 _Avoid_: MultiSheetHelper, WorkbookBuilder, ExcelSession
 
 **SensitiveCellWriteHandler**:
-导出动态脱敏拦截器，配合属性级注解 `@ExcelSensitive` 在单元格数据转换后（`afterCellDataConverted`）通过 `DesensitizeUtil` 执行动态掩码。严格遵守 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) 确立的“内存真明文”不变量，仅改写写出至 Excel 的视图字面量，内存中对象字段值始终保持原始真实明文。
+导出动态脱敏拦截器，配合属性级注解 `@ExcelSensitive` 或 `ateng-boot-core` 通用 `@FieldSensitive` 在单元格数据转换后（`afterCellDataConverted`）通过 `DesensitizeUtil` 执行动态掩码，并内置并发安全的反射规则元数据缓存。严格遵守 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) 确立的“内存真明文”不变量，仅改写写出至 Excel 的视图字面量，内存中对象字段值始终保持原始真实明文。
 _Avoid_: DesensitizeInterceptor, MaskCellHandler, ExcelMaskProcessor
 
 **BatchValidationListener**:
@@ -57,7 +57,7 @@ _Avoid_: AutoWidthHandler, ColumnResizeListener, BestFitWidthStrategy
 _Avoid_: ThemeStyleStrategy, ZebraWriteHandler, SheetColorizer
 
 **AsyncExportTaskService**:
-异步海量导出任务中心服务 SPI，定义大报表后台受管异步排队、生成、轮询查询与过期清理契约，默认提供并发内存实现 `InMemoryAsyncExportTaskService`，并允许上层微服务无缝桥接分布式 Redis 或文件中心。
+异步海量导出任务中心服务 SPI，定义大报表后台受管异步排队、生成、轮询查询与过期清理契约，默认提供并发内存实现 `InMemoryAsyncExportTaskService`（支持四维上下文 `AsyncContext` 全链路透传、有界队列快速失败防爆与单线程定时文件回收），并允许上层微服务无缝桥接分布式 Redis 或文件中心。
 _Avoid_: ExportTaskManager, AsyncTaskQueue, BackgroundExcelWorker
 
 **FailSplitFeedback**:

@@ -101,7 +101,8 @@ flowchart TD
 
 ### 2. 数据安全不变量：导出动态脱敏机制
 - **恪守 ADR-0012 铁律**：确立“内存真明文”在 Excel 导出场景的完整延续。业务传入 `ExcelUtil.export` 的 Java 实体集合在整个生命周期中**保持 100% 原始真实明文**；
-- **视图层动态拦截改写**：定义属性级注解 `@ExcelSensitive`，搭配 `SensitiveCellWriteHandler` 在 Apache Fesod 的 `afterCellDataConverted` 阶段通过 `DesensitizeUtil` 仅将写出至工作表单元格的字面量动态打码；杜绝任何在 Service 业务内存中打星号的行为。
+- **视图层动态拦截改写**：定义属性级注解 `@ExcelSensitive`，搭配 `SensitiveCellWriteHandler` 在 Apache Fesod 的 `afterCellDataConverted` 阶段通过 `DesensitizeUtil` 仅将写出至工作表单元格的字面量动态打码；杜绝任何在 Service 业务内存中打星号的行为；
+- **通用脱敏注解原生兼容**：`SensitiveCellWriteHandler` 具备双轨注解自适应识别能力，优先识别 `@ExcelSensitive`，同时无缝回退兼容 `ateng-boot-core` 通用 `@FieldSensitive` 注解，配合并发安全的反射元数据缓存，使同一个业务 VO 在 Controller JSON 序列化与 Excel 报表导出中复用统一脱敏规范，免除多重注解冗余标注。
 
 ### 3. JSR-303 行级校验监听器与失败标红批注回写
 - **结构化行级错误模型**：交付 `ExcelErrorRow` 与 `ExcelReadResult<T>`，记录物理行号（严格对齐 Excel 从 1 开始的行索引，默认补偿表头偏移）、列名与校验不通过原因列表；
@@ -131,7 +132,7 @@ flowchart TD
 - **100% 兼容原生**：零冲突继承 Apache Fesod 原生 `@HeadStyle`、`@ContentStyle`、`@ColumnWidth` 等字段级定制注解。
 
 ### 8. 生产级深度演进（异步导出中心、差错隔离导出、智能多媒体图片与防拍照暗水印）
-- **异步海量导出任务中心 (`AsyncExportTaskService`)**：提供大报表后台异步执行、任务查询与过期清理 SPI，标配 `InMemoryAsyncExportTaskService` 默认实现，解耦长连接与 Nginx 60s 超时；
+- **异步海量导出任务中心 (`AsyncExportTaskService`)**：提供大报表后台异步执行、任务查询与过期清理 SPI，标配 `InMemoryAsyncExportTaskService` 默认实现，解耦长连接与 Nginx 60s 超时；基于 `AsyncContext` 实现四维上下文 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 全链路透传与对称清理；采用有界队列与 `AbortPolicy` 快速失败防御（抛出 `TOO_MANY_REQUESTS` 业务异常），配备单线程定时清理调度器周期回收物理临时文件与平滑停机保护；
 - **差错数据隔离提取与纠错 Excel (`FailSplitFeedback`)**：针对大规模批量导入，支持“成功数据自动入库，失败数据单独提取生成纠错 Excel”（附带错误原因汇总列与出错单元格标红高亮），免除整表重试；
 - **智能多媒体图片内嵌 (`@ExcelImage` & `SmartImageConverter`)**：零配置智能识别网络图片 URL、Base64、本地路径与字节流，联动行高处理器自动撑高所在行，抹平 Fesod 原生图片压扁与类型割裂硬伤；
 - **工作表透明防拍照暗水印与锁定 (`WatermarkSheetWriteHandler`)**：利用 Java 2D 动态生成半透明倾斜工号防伪切片注入为工作表底图，屏幕与打印全屏覆盖，不影响单元格操作，配合密码锁定强化合规。

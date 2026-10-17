@@ -4,8 +4,12 @@
 
 ## Language
 
+**AtengSaTokenInterceptor**:
+企业级双轨路由拦截器，深度承接 Sa-Token 路由匹配与白名单过滤，更关键地负责全链路双维上下文的生命周期镜像管理：在 `preHandle` 将认证上下文无感对称注入 `UserContextHolder` 与 `TenantContextHolder`，在 `afterCompletion` 强制执行双清空，从源头杜绝 Web 容器工作线程池复用造成的跨请求上下文串染与数据越权。
+_Avoid_: SaRouteInterceptor, SecurityFilter, AuthInterceptor
+
 **LoginHelper**:
-基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）与上下文清理。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
+基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
 _Avoid_: AuthHelper, SessionManager, SecurityUtils, TokenHelper
 
 **LoginUser**:
