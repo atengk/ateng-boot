@@ -1,7 +1,7 @@
 package io.github.atengk.boot.excel.model;
 
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
-import io.github.atengk.boot.excel.enums.DesensitizeType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -25,27 +25,27 @@ public class SensitiveUser implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @ExcelProperty("用户姓名")
-    @ExcelSensitive(DesensitizeType.CHINESE_NAME)
+    @ExcelSensitive(SensitiveType.CHINESE_NAME)
     private String name;
 
     @ExcelProperty("手机号")
-    @ExcelSensitive(DesensitizeType.MOBILE_PHONE)
+    @ExcelSensitive(SensitiveType.MOBILE_PHONE)
     private String mobile;
 
     @ExcelProperty("身份证号")
-    @ExcelSensitive(DesensitizeType.ID_CARD)
+    @ExcelSensitive(SensitiveType.ID_CARD)
     private String idCard;
 
     @ExcelProperty("电子邮箱")
-    @ExcelSensitive(DesensitizeType.EMAIL)
+    @ExcelSensitive(SensitiveType.EMAIL)
     private String email;
 
     @ExcelProperty("银行卡号")
-    @ExcelSensitive(DesensitizeType.BANK_CARD)
+    @ExcelSensitive(SensitiveType.BANK_CARD)
     private String bankCard;
 
     @ExcelProperty("自定义掩码")
-    @ExcelSensitive(type = DesensitizeType.CUSTOM, startInclude = 2, endExclude = 5, maskChar = '#')
+    @ExcelSensitive(type = SensitiveType.CUSTOM, startInclude = 2, endExclude = 5, maskChar = '#')
     private String custom;
 
     @ExcelProperty("首尾保留掩码")

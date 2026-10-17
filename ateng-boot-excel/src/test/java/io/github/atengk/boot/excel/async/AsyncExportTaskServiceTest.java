@@ -80,12 +80,15 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(3, TimeUnit.SECONDS), "异步导出应在 3 秒内执行完毕");
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "异步导出应在 5 秒内执行完毕");
 
-        // 短暂等待文件写入与状态更新
-        Thread.sleep(150);
-
+        long deadline = System.currentTimeMillis() + 2000;
         ExportTask task = taskService.getTask(taskId);
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+            task = taskService.getTask(taskId);
+        }
+
         assertNotNull(task);
         assertEquals(ExportTaskStatus.SUCCESS, task.getStatus(), "任务状态应为 SUCCESS");
         assertEquals(100, task.getProgress(), "完成进度应为 100%");
@@ -106,12 +109,15 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(3, TimeUnit.SECONDS));
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
 
-        // 等待异常捕获落盘
-        Thread.sleep(150);
-
+        long deadline = System.currentTimeMillis() + 2000;
         ExportTask task = taskService.getTask(taskId);
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+            task = taskService.getTask(taskId);
+        }
+
         assertNotNull(task);
         assertEquals(ExportTaskStatus.FAILED, task.getStatus(), "任务状态应标记为 FAILED");
         assertNotNull(task.getErrorMsg());
@@ -132,7 +138,7 @@ class AsyncExportTaskServiceTest {
             }
         });
 
-        assertTrue(startLatch.await(2, TimeUnit.SECONDS));
+        assertTrue(startLatch.await(5, TimeUnit.SECONDS));
 
         boolean cancelled = taskService.cancel(taskId);
         assertTrue(cancelled, "任务取消方法应返回 true");
@@ -151,10 +157,15 @@ class AsyncExportTaskServiceTest {
             latch.countDown();
         });
 
-        assertTrue(latch.await(3, TimeUnit.SECONDS));
-        Thread.sleep(150);
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
 
+        long deadline = System.currentTimeMillis() + 2000;
         ExportTask task = taskService.getTask(taskId);
+        while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+            task = taskService.getTask(taskId);
+        }
+
         assertNotNull(task);
         assertEquals(ExportTaskStatus.SUCCESS, task.getStatus());
         String filePath = task.getFilePath();

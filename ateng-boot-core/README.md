@@ -145,12 +145,43 @@ java -Dateng.boot.snowflake.worker-id=2 -Dateng.boot.snowflake.datacenter-id=1 -
 
 ---
 
-## 6. 全场景敏感数据脱敏工具 (`DesensitizeUtil`)
+## 6. 全场景敏感数据脱敏体系 (`DesensitizeUtil` & `@FieldSensitive`)
 
 ### 场景痛点
-涵盖国内常见的所有隐私合规字段，纯 JDK 正则/算法实现，毫秒级脱敏，严禁在业务层手工打星号引发脏数据写回。
+涵盖国内常见的所有隐私合规字段，纯 JDK 算法实现，毫秒级脱敏。支持静态工具调用与视图层出界动态打码（配合 Jackson），源数据在 JVM 内存中 100% 保持未脱敏真明文，严格防范打星号脏数据写回持久层引发数据损毁（[ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
 
 ### 核心代码范式
+#### 1. 视图层 / DTO 字段动态脱敏（自动适配 Controller JSON 响应）
+```java
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
+
+public class UserVO {
+    private Long id;
+
+    // 预设脱敏策略：手机号（138****5678）
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+
+    // 预设脱敏策略：身份证号（110101********2345）
+    @FieldSensitive(SensitiveType.ID_CARD)
+    private String idCard;
+
+    // 预设脱敏策略：中文姓名（两字变 张*，多字变 诸**明）
+    @FieldSensitive(SensitiveType.CHINESE_NAME)
+    private String name;
+
+    // 自定义区间脱敏：索引 [2, 5) 替换为 '#'
+    @FieldSensitive(type = SensitiveType.CUSTOM, startInclude = 2, endExclude = 5, maskChar = '#')
+    private String customCode;
+
+    // 首尾保留字符数脱敏：保留前2位与后2位
+    @FieldSensitive(keepHead = 2, keepTail = 2, maskChar = '#')
+    private String token;
+}
+```
+
+#### 2. 底层通用脱敏原语 (`DesensitizeUtil`)
 ```java
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 
@@ -186,6 +217,18 @@ DesensitizeUtil.socialCreditCode("91110000000000001X"); // 91110000********1X
 
 // 10. 自定义首尾保留位数（例如保留前2位、后2位）
 DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO****************56
+```
+
+### 预期响应 JSON 呈现
+```json
+{
+  "id": "104485532445560832",
+  "phone": "138****5678",
+  "idCard": "110101********2345",
+  "name": "张*",
+  "customCode": "12###67890",
+  "token": "TO################56"
+}
 ```
 
 ---

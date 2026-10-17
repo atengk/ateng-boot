@@ -2,10 +2,10 @@ package io.github.atengk.boot.sample.entity;
 
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
-import io.github.atengk.boot.mybatisplus.annotation.FieldSensitive;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
-import io.github.atengk.boot.mybatisplus.enums.SensitiveType;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
 import lombok.Getter;
 import lombok.Setter;

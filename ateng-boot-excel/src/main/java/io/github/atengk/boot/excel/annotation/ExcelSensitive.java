@@ -1,6 +1,6 @@
 package io.github.atengk.boot.excel.annotation;
 
-import io.github.atengk.boot.excel.enums.DesensitizeType;
+import io.github.atengk.boot.core.enums.SensitiveType;
 
 import java.lang.annotation.*;
 
@@ -21,14 +21,14 @@ public @interface ExcelSensitive {
 
     /**
      * 脱敏规则类型（单属性简写默认值）
-     * <p>例如：{@code @ExcelSensitive(DesensitizeType.MOBILE_PHONE)}</p>
+     * <p>例如：{@code @ExcelSensitive(SensitiveType.MOBILE_PHONE)}</p>
      */
-    DesensitizeType value() default DesensitizeType.CUSTOM;
+    SensitiveType value() default SensitiveType.CUSTOM;
 
     /**
      * 脱敏规则类型（显式属性，优先于 {@link #value()}）
      */
-    DesensitizeType type() default DesensitizeType.CUSTOM;
+    SensitiveType type() default SensitiveType.CUSTOM;
 
     /**
      * 自定义起始包含索引（从 0 开始，仅 CUSTOM 类型生效）
