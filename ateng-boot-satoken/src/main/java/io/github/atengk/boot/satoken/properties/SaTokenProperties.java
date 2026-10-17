@@ -124,5 +124,10 @@ public class SaTokenProperties {
          * 权限与角色缓存有效期（秒），默认 300 秒（5 分钟）
          */
         private long timeoutSeconds = 300;
+
+        /**
+         * 空权限/空角色防穿透哨兵缓存有效期（秒），默认 60 秒
+         */
+        private long emptyTtlSeconds = 60;
     }
 }

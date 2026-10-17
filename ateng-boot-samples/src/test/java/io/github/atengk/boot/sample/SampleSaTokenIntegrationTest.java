@@ -46,6 +46,12 @@ class SampleSaTokenIntegrationTest {
     @Autowired
     private TenantOrderMapper orderMapper;
 
+    @Autowired
+    private io.github.atengk.boot.satoken.cache.PermissionCacheService permissionCacheService;
+
+    @Autowired
+    private cn.dev33.satoken.stp.StpInterface stpInterface;
+
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
     void shouldInterceptWhenNotLogin() throws Exception {
@@ -388,5 +394,107 @@ class SampleSaTokenIntegrationTest {
         mockMvc.perform(get("/api/auth/public/ping"))
                 .andExpect(status().isOk());
         assertThat(TenantContextHolder.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("10. 两级权限缓存切片与即时热刷新端到端验证：登录触发两级缓存，调用热刷新接口后缓存即刻清理")
+    void shouldHandleTwoLevelPermissionCacheAndHotRefresh() throws Exception {
+        // 1. 登录用户
+        LoginUser loginReq = LoginUser.builder()
+                .userId("66001")
+                .userName("权限测试员")
+                .roles(Set.of("finance_operator"))
+                .permissions(Set.of("invoice:create", "invoice:print"))
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 校验 StpInterface 类型为 CachedStpInterface
+        assertThat(stpInterface).isInstanceOf(io.github.atengk.boot.satoken.cache.CachedStpInterface.class);
+
+        // 3. 访问并触发权限与角色加载，验证端到端 HTTP 返回正确
+        mockMvc.perform(get("/api/auth/current-roles")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0]").value("finance_operator"));
+
+        mockMvc.perform(get("/api/auth/current-permissions")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2));
+
+        // 验证底层缓存中存在该用户的角色与直属权限键
+        String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + "66001";
+        String userPermsKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_PERMS_PREFIX + "66001";
+        assertThat(permissionCacheService.get(userRolesKey)).isNotNull();
+        assertThat(permissionCacheService.get(userPermsKey)).isNotNull();
+
+        // 4. 调用热刷新角色缓存端点
+        Map<String, String> refreshRoleReq = Map.of("roleCode", "finance_operator");
+        mockMvc.perform(post("/api/auth/cache/refresh-role")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(refreshRoleReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. 调用热刷新用户缓存端点，并验证缓存键已被即时清理为 null
+        Map<String, String> refreshUserReq = Map.of("userId", "66001");
+        mockMvc.perform(post("/api/auth/cache/refresh-user")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(refreshUserReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(permissionCacheService.get(userRolesKey)).isNull();
+        assertThat(permissionCacheService.get(userPermsKey)).isNull();
+
+        // 6. 清空全域缓存
+        mockMvc.perform(post("/api/auth/cache/clear-all")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @Test
+    @DisplayName("11. 空角色/空权限哨兵防穿透端到端验证：针对空权限用户，生成 __EMPTY__ 哨兵杜绝击穿")
+    void shouldPreventCachePenetrationWithEmptySentinel() throws Exception {
+        LoginUser emptyUser = LoginUser.builder()
+                .userId("77001")
+                .userName("无权限访客")
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(emptyUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // HTTP 端点查询空权限与角色
+        mockMvc.perform(get("/api/auth/current-roles")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
+
+        // 验证缓存已被空哨兵占位，杜绝缓存穿透
+        String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + "77001";
+        assertThat(permissionCacheService.get(userRolesKey)).isEqualTo(io.github.atengk.boot.satoken.cache.CachedStpInterface.EMPTY_SENTINEL);
+
+        // 再次 HTTP 查询依然秒级返回空集合
+        mockMvc.perform(get("/api/auth/current-roles")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
     }
 }

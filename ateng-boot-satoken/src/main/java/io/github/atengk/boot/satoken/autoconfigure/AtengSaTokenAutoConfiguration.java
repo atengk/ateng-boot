@@ -1,5 +1,6 @@
 package io.github.atengk.boot.satoken.autoconfigure;
 
+import cn.dev33.satoken.dao.SaTokenDao;
 import cn.dev33.satoken.filter.SaTokenCorsFilterForJakartaServlet;
 import cn.dev33.satoken.stp.StpInterface;
 import cn.dev33.satoken.stp.StpUtil;
@@ -8,7 +9,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.satoken.cache.CachedStpInterface;
+import io.github.atengk.boot.satoken.cache.DefaultUserRolePermissionLoader;
+import io.github.atengk.boot.satoken.cache.PermissionCacheService;
+import io.github.atengk.boot.satoken.cache.UserRolePermissionLoader;
 import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
+import io.github.atengk.boot.satoken.dao.SaTokenRedisDao;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
@@ -16,13 +22,17 @@ import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -89,14 +99,78 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
-     * 注册默认权限与角色数据源实现（开箱即用从当前会话 LoginUser 读取）
+     * 注册两级权限与角色缓存管理门面服务
+     *
+     * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @return 缓存管理服务实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PermissionCacheService permissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new PermissionCacheService(redisTemplateProvider);
+    }
+
+    /**
+     * 注册默认业务角色与权限加载器（从当前会话载荷读取）
+     *
+     * @return 默认加载器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public UserRolePermissionLoader defaultUserRolePermissionLoader() {
+        return new DefaultUserRolePermissionLoader();
+    }
+
+    /**
+     * 注册带两级高并发缓存防穿透/防雪崩的 StpInterface 数据源
+     *
+     * @param loader                角色与权限加载器
+     * @param permissionCacheService 缓存治理门面服务
+     * @return StpInterface 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(StpInterface.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.permission-cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StpInterface cachedStpInterface(UserRolePermissionLoader loader,
+                                          PermissionCacheService permissionCacheService) {
+        CachedStpInterface stpInterface = new CachedStpInterface(loader, permissionCacheService, properties);
+        cn.dev33.satoken.SaManager.setStpInterface(stpInterface);
+        return stpInterface;
+    }
+
+    /**
+     * 注册默认权限与角色数据源实现（当显式关闭缓存时回退使用）
      *
      * @return StpInterface 实例
      */
     @Bean
     @ConditionalOnMissingBean(StpInterface.class)
     public StpInterface defaultStpInterface() {
-        return new DefaultStpInterface();
+        DefaultStpInterface stpInterface = new DefaultStpInterface();
+        cn.dev33.satoken.SaManager.setStpInterface(stpInterface);
+        return stpInterface;
+    }
+
+    /**
+     * Redis 分布式存储嵌套配置（防 Missing Class 类加载异常）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    public static class RedisDaoConfiguration {
+
+        /**
+         * 注册 Sa-Token Redis 分布式会话与持久层实现
+         *
+         * @param stringRedisTemplate 字符串 Redis 操作模板
+         * @return SaTokenDao 实例
+         */
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(SaTokenDao.class)
+        public SaTokenDao saTokenRedisDao(StringRedisTemplate stringRedisTemplate) {
+            log.info("Sa-Token 检测到 Redis 基础设施，已激活纯净 JSON 分布式会话存储 (SaTokenRedisDao)");
+            return new SaTokenRedisDao(stringRedisTemplate);
+        }
     }
 
     /**

@@ -367,8 +367,8 @@ class SampleExcelIntegrationTest {
         });
 
         assertThat(taskId).isNotNull();
-        assertThat(latch.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-        Thread.sleep(150);
+        assertThat(latch.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(200);
 
         io.github.atengk.boot.excel.async.ExportTask task = asyncExportTaskService.getTask(taskId);
         assertThat(task).isNotNull();

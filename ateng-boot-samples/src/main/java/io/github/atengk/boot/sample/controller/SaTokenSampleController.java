@@ -8,6 +8,7 @@ import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
 import io.github.atengk.boot.sample.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.sample.service.SaTokenSampleService;
+import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +37,7 @@ public class SaTokenSampleController {
 
     private final SaTokenSampleService sampleService;
     private final TenantOrderMapper orderMapper;
+    private final PermissionCacheService permissionCacheService;
 
     /**
      * 用户登录接口
@@ -241,5 +243,67 @@ public class SaTokenSampleController {
     @GetMapping("/public/ping")
     public Result<String> publicPing() {
         return Result.success("pong");
+    }
+
+    /**
+     * 即时刷新指定角色关联的权限缓存
+     *
+     * @param body 请求体（含 roleCode）
+     * @return 成功响应
+     */
+    @PostMapping("/cache/refresh-role")
+    public Result<Void> refreshRoleCache(@RequestBody Map<String, String> body) {
+        LoginHelper.checkLogin();
+        String roleCode = body.get("roleCode");
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success();
+    }
+
+    /**
+     * 即时刷新指定用户的角色与权限缓存
+     *
+     * @param body 请求体（含 userId）
+     * @return 成功响应
+     */
+    @PostMapping("/cache/refresh-user")
+    public Result<Void> refreshUserCache(@RequestBody Map<String, String> body) {
+        LoginHelper.checkLogin();
+        String userId = body.get("userId");
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success();
+    }
+
+    /**
+     * 清空全域两级权限缓存
+     *
+     * @return 成功响应
+     */
+    @PostMapping("/cache/clear-all")
+    public Result<Void> clearAllCache() {
+        LoginHelper.checkLogin();
+        permissionCacheService.clearAll();
+        return Result.success();
+    }
+
+    /**
+     * 获取当前登录用户的角色编码列表
+     *
+     * @return 角色列表
+     */
+    @GetMapping("/current-roles")
+    public Result<java.util.List<String>> getCurrentRoles() {
+        LoginHelper.checkLogin();
+        return Result.success(cn.dev33.satoken.stp.StpUtil.getRoleList());
+    }
+
+    /**
+     * 获取当前登录用户的权限码列表
+     *
+     * @return 权限码列表
+     */
+    @GetMapping("/current-permissions")
+    public Result<java.util.List<String>> getCurrentPermissions() {
+        LoginHelper.checkLogin();
+        return Result.success(cn.dev33.satoken.stp.StpUtil.getPermissionList());
     }
 }
