@@ -136,6 +136,123 @@ public class Result<T> implements Serializable {
         return this.data;
     }
 
+    /**
+     * 函数式转换：若当前响应成功且数据非空，则将数据应用转换函数并包装为新载荷的 Result；若失败则保留原错误要素
+     *
+     * @param mapper 数据映射函数
+     * @param <R>    新数据泛型
+     * @return 转换后的 Result 实例
+     */
+    @JsonIgnore
+    public <R> Result<R> map(java.util.function.Function<? super T, ? extends R> mapper) {
+        java.util.Objects.requireNonNull(mapper, "mapper 函数不能为空");
+        if (!isSuccess()) {
+            Result<R> failResult = Result.fail(this.code, this.msg);
+            failResult.setTimestamp(this.timestamp);
+            return failResult.traceId(this.traceId);
+        }
+        R newData = this.data != null ? mapper.apply(this.data) : null;
+        Result<R> newResult = new Result<>(this.code, this.msg, newData);
+        newResult.setTimestamp(this.timestamp);
+        return newResult.traceId(this.traceId);
+    }
+
+    /**
+     * 函数式观察：若当前响应成功且数据非空，执行消费者副作用并返回自身
+     *
+     * @param consumer 数据消费者
+     * @return 当前 Result 实例
+     */
+    @JsonIgnore
+    public Result<T> peek(java.util.function.Consumer<? super T> consumer) {
+        java.util.Objects.requireNonNull(consumer, "consumer 不能为空");
+        if (isSuccess() && this.data != null) {
+            consumer.accept(this.data);
+        }
+        return this;
+    }
+
+    /**
+     * 函数式条件执行：若当前响应成功且数据非空，执行消费回调
+     *
+     * @param consumer 数据消费者
+     * @return 当前 Result 实例
+     */
+    @JsonIgnore
+    public Result<T> ifSuccess(java.util.function.Consumer<? super T> consumer) {
+        java.util.Objects.requireNonNull(consumer, "consumer 不能为空");
+        if (isSuccess() && this.data != null) {
+            consumer.accept(this.data);
+        }
+        return this;
+    }
+
+    /**
+     * 函数式条件执行：若当前响应表征失败，执行错误回调
+     *
+     * @param consumer 失败结果消费者
+     * @return 当前 Result 实例
+     */
+    @JsonIgnore
+    public Result<T> ifFail(java.util.function.Consumer<Result<T>> consumer) {
+        java.util.Objects.requireNonNull(consumer, "consumer 不能为空");
+        if (!isSuccess()) {
+            consumer.accept(this);
+        }
+        return this;
+    }
+
+    /**
+     * 获取数据载荷，若失败或数据为 null 则返回指定的默认值
+     *
+     * @param other 备选保底值
+     * @return 载荷数据或保底值
+     */
+    @JsonIgnore
+    public T orElse(T other) {
+        return (isSuccess() && this.data != null) ? this.data : other;
+    }
+
+    /**
+     * 获取数据载荷，若失败或数据为 null 则执行供应者函数返回兜底值
+     *
+     * @param supplier 兜底供应者
+     * @return 载荷数据或兜底供应结果
+     */
+    @JsonIgnore
+    public T orElseGet(java.util.function.Supplier<? extends T> supplier) {
+        java.util.Objects.requireNonNull(supplier, "supplier 不能为空");
+        return (isSuccess() && this.data != null) ? this.data : supplier.get();
+    }
+
+    /**
+     * 获取数据载荷；若当前响应非成功状态，则抛出携带当前状态码与提示文案的 BusinessException
+     *
+     * @return 业务载荷数据
+     * @throws BusinessException 当 isSuccess() 为 false 时抛出
+     */
+    @JsonIgnore
+    public T orElseThrow() {
+        return getOrThrow();
+    }
+
+    /**
+     * 获取数据载荷；若当前响应非成功状态，则基于当前错误提示生成并抛出定制异常
+     *
+     * @param exceptionSupplier 异常构造函数（入参为错误提示文案 msg）
+     * @param <X>               异常类型
+     * @return 业务载荷数据
+     * @throws X 当 isSuccess() 为 false 时抛出
+     */
+    @JsonIgnore
+    public <X extends Throwable> T orElseThrow(java.util.function.Function<String, ? extends X> exceptionSupplier) throws X {
+        java.util.Objects.requireNonNull(exceptionSupplier, "exceptionSupplier 不能为空");
+        if (!isSuccess()) {
+            throw exceptionSupplier.apply(this.msg);
+        }
+        return this.data;
+    }
+
     // ==================== 静态工厂方法 ====================
 
     /**

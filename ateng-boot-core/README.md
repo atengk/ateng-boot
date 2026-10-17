@@ -41,6 +41,18 @@ Result<Void> res4 = Result.fail(403, "账户已被冻结，请联系管理员");
 
 // 5. 链式安全取值（失败时直接抛出业务异常 BusinessException）
 UserVO user = res2.getOrThrow();
+
+// 6. 函数式映射（成功时变换载荷类型，失败时自动透传错误码与 traceId）
+Result<UserDTO> dtoResult = userRpcService.queryUser();
+Result<UserVO> voResult = dtoResult.map(UserVO::from);
+
+// 7. 函数式观察与条件消费（支持流畅链式编排）
+dtoResult.peek(u -> log.info("成功获取用户: {}", u.getName()))
+         .ifFail(err -> log.error("调用失败: [{}] {}", err.getCode(), err.getMsg()));
+
+// 8. 优雅兜底与定制异常抛出（orElse / orElseGet / orElseThrow）
+UserDTO safeUser = dtoResult.orElseGet(UserDTO::guestUser);
+UserDTO requiredUser = dtoResult.orElseThrow(CustomException::new);
 ```
 
 ### 预期响应 JSON 契约
@@ -261,10 +273,10 @@ String sm3Hex = DigestUtil.sm3Hex("raw_text"); // 国密 SM3
 
 ---
 
-## 8. 通用线性树形组装工具 (`TreeUtil`)
+## 8. 通用线性树形与森林装配工具 (`TreeUtil`)
 
 ### 场景痛点
-菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配。
+菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配，并支持多根谓词成林与递归剪枝过滤。
 
 ### 核心代码范式
 ```java
@@ -273,20 +285,65 @@ import io.github.atengk.boot.core.util.TreeUtil;
 // 待组装的平铺扁平集合
 List<MenuNode> flatList = menuService.listAll();
 
-// 一行代码组装为树形嵌套结构
-List<MenuNode> menuTree = TreeUtil.buildTree(
+// 1. 指定根节点父 ID 组装单根/多根树（O(N) 线性装配）
+List<MenuNode> menuTree = TreeUtil.build(
         flatList,
         0L,                        // 根节点父 ID 标识
         MenuNode::getId,           // 节点 ID 提取器
         MenuNode::getParentId,     // 父节点 ID 提取器
-        MenuNode::getChildren,     // 子节点集合提取器
         MenuNode::setChildren      // 子节点集合设置器
+);
+
+// 2. 基于自定义谓词成林（适用于非固定 parentId、孤儿节点或复杂根规则森林）
+List<MenuNode> forest = TreeUtil.buildForest(
+        flatList,
+        node -> node.getParentId() == null || node.getParentId() <= 0,
+        MenuNode::getId,
+        MenuNode::getParentId,
+        MenuNode::setChildren
+);
+
+// 3. 递归条件剪枝过滤（保留命中文本的节点及其祖先链路，剔除无关分支）
+List<MenuNode> filteredTree = TreeUtil.filter(
+        menuTree,
+        node -> node.getName().contains("导出"),
+        MenuNode::getChildren,
+        MenuNode::setChildren
 );
 ```
 
 ---
 
-## 9. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
+## 9. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
+
+### 场景痛点
+业务方法常需要返回多个关联属性（如 `count` 与 `totalAmount`，或 `min/avg/max` 区间三要素），创建专用 DTO 过重，使用 `Map<String, Object>` 丧失强类型安全。
+
+### 核心特性
+- **JDK 17 Record 原生实现**：100% 具备值对象语义（不可变、自动实现 `equals`、`hashCode` 与 `toString`）；
+- **全生态别名兼容**：支持 `left()/right()`、`getLeft()/getRight()` 以及 `getKey()/getValue()` 别名，平滑对接 Map/Stream 流；
+- **原生可序列化**：标配实现 `Serializable`，支持 RPC、缓存与文件序列化。
+
+### 核心代码范式
+```java
+import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.Triple;
+
+// 1. 构造与解构双元组 Pair
+Pair<String, Long> pair = Pair.of("用户总数", 1024L);
+String key = pair.left();     // 或 pair.getKey()
+Long value = pair.right();    // 或 pair.getValue()
+
+// 2. 构造与解构三元组 Triple
+Triple<String, BigDecimal, Boolean> triple = Triple.of("VIP-01", new BigDecimal("99.9"), true);
+String grade = triple.left();
+BigDecimal price = triple.middle();
+Boolean enabled = triple.right();
+```
+
+---
+
+## 10. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
 
 ### 场景痛点
 在分布式与 SaaS 架构下，异步线程池（如 `@Async`、`CompletableFuture`、自定义线程池）执行任务时，主线程的链路追踪 `traceId`、当前登录操作人、多租户上下文与忽略租户状态极易发生上下文丢失或线程池污染，导致跨租户越权漏洞。
