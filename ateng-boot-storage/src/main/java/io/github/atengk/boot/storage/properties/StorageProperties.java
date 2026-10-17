@@ -38,6 +38,11 @@ public class StorageProperties {
     private LocalStorageProperties local = new LocalStorageProperties();
 
     /**
+     * S3 兼容协议存储配置
+     */
+    private S3StorageProperties s3 = new S3StorageProperties();
+
+    /**
      * 命名多存储源配置字典（配置 sources 时自动激活多源拓扑）
      */
     private Map<String, StorageSourceProperties> sources = new LinkedHashMap<>();

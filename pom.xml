@@ -61,6 +61,7 @@
         <fesod.version>2.1.0-incubating</fesod.version>
         <sa-token.version>1.46.0</sa-token.version>
         <springdoc.version>2.6.0</springdoc.version>
+        <awssdk.version>2.25.70</awssdk.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -127,6 +128,28 @@
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
                 <version>${springdoc.version}</version>
+            </dependency>
+
+            <!-- AWS SDK for Java 2.x 依赖版本统管 (Import 模式) -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${awssdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- AWS S3 兼容协议精简依赖（彻底排除庞大的 Netty NIO 传输层） -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>s3</artifactId>
+                <version>${awssdk.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>software.amazon.awssdk</groupId>
+                        <artifactId>netty-nio-client</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
 
             <!-- ateng-boot 模块版本管控 -->

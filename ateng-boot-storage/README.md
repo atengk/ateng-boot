@@ -28,6 +28,7 @@
 ### 配置范式
 在 `application.yml` 中配置存储基础属性：
 
+#### 方案 A：本地磁盘存储（默认）
 ```yaml
 ateng:
   boot:
@@ -37,6 +38,23 @@ ateng:
       local:
         base-path: /data/storage
         domain: http://localhost:8080
+```
+
+#### 方案 B：标准 S3 兼容协议（MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS）
+```yaml
+ateng:
+  boot:
+    storage:
+      enabled: true
+      type: s3
+      s3:
+        endpoint: http://127.0.0.1:9000
+        bucket: my-bucket
+        access-key: YOUR_ACCESS_KEY
+        secret-key: YOUR_SECRET_KEY
+        region: us-east-1
+        path-style: true
+        domain: https://cdn.example.com
 ```
 
 ---
@@ -234,11 +252,49 @@ public void generateDownloadUrl() {
 
 ---
 
-## 9. 安全路径防卫机制
+## 9. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
+
+### 场景痛点
+面对音视频、安装包等大文件上传，若全部经过应用服务器中转，将严重占用后端带宽并消耗内存，导致服务器并发瓶颈；而在下载时，为了保护文件隐私，需要生成临时且安全的云端下载直链。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+// 1. 生成 15 分钟有效期的 S3 只读下载外链（自动应用 CDN 域名加速）
+public void generateS3DownloadUrl() {
+    PresignedUrl presigned = storageTemplate.getPresignedUrl("media/video.mp4", Duration.ofMinutes(15));
+    System.out.println("S3下载外链: " + presigned.getUrl());
+    System.out.println("HTTP方法: " + presigned.getHttpMethod());
+}
+
+// 2. 生成 30 分钟有效期的前端大文件直传 PUT 外链
+public void generateS3UploadUrl() {
+    PresignedUrl presigned = storageTemplate.getPresignedUploadUrl("uploads/raw-data.bin", Duration.ofMinutes(30));
+    System.out.println("S3直传外链: " + presigned.getUrl());
+    System.out.println("HTTP方法: " + presigned.getHttpMethod());
+}
+```
+
+### 预期呈现契约
+控制台输出：
+```text
+S3下载外链: https://cdn.example.com/test-bucket/media/video.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261017T141500Z&X-Amz-SignedHeaders=host&X-Amz-Expires=900&X-Amz-Credential=...&X-Amz-Signature=sig123
+HTTP方法: GET
+S3直传外链: https://cdn.example.com/test-bucket/uploads/raw-data.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261017T141500Z&X-Amz-SignedHeaders=host&X-Amz-Expires=1800&X-Amz-Credential=...&X-Amz-Signature=sig456
+HTTP方法: PUT
+```
+前端收到直传 URL 后，即可直接发起标准的 `PUT` 请求将文件推送到对象存储，完全绕过后端应用服务器。
+
+---
+
+## 10. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
 2. **深度消解相对路径**：逐级拆解路径片段，对任何包含 `..` 的逃逸路径快速失败抛出 `StorageException(StorageResultCode.INVALID_PATH)`；
 3. **路径归一化净化**：多余斜杠（`//`）与 Windows 反斜杠（`\`）自动规范化收敛为标准相对路径；
 4. **常量时间签名校验**：预签名 HMAC-SHA256 校验采用 `MessageDigest.isEqual` 常量时间比对，彻底杜绝时序攻击（Timing Attack）。
+
 

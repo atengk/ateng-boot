@@ -43,6 +43,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- AWS S3 兼容协议精简依赖（可选依赖，按需装配，版本统管已排除 Netty） -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

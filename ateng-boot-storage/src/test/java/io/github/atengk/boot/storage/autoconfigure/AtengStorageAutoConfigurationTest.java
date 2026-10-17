@@ -81,6 +81,28 @@ class AtengStorageAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("配置 ateng.boot.storage.type=s3 时自动装配 S3Client、S3Presigner 与 S3Driver")
+    void testS3AutoConfiguration() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.storage.type=s3",
+                        "ateng.boot.storage.s3.bucket=test-bucket",
+                        "ateng.boot.storage.s3.endpoint=http://127.0.0.1:9000",
+                        "ateng.boot.storage.s3.access-key=minioadmin",
+                        "ateng.boot.storage.s3.secret-key=minioadmin",
+                        "ateng.boot.storage.s3.region=us-east-1"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(software.amazon.awssdk.services.s3.S3Client.class);
+                    assertThat(context).hasSingleBean(software.amazon.awssdk.services.s3.presigner.S3Presigner.class);
+                    assertThat(context).hasSingleBean(StorageDriver.class);
+                    assertThat(context.getBean(StorageDriver.class)).isInstanceOf(io.github.atengk.boot.storage.driver.S3Driver.class);
+                    assertThat(context).hasSingleBean(StorageTemplate.class);
+                    assertThat(context).doesNotHaveBean(LocalStorageDownloadController.class);
+                });
+    }
+
     @Configuration
     static class CustomDriverConfig {
         @Bean
