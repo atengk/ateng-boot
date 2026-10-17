@@ -43,9 +43,19 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
     }
 
     /**
+     * 密文版本前缀标识（支持未来密钥轮换与平滑解密）
+     */
+    public static final String CIPHER_PREFIX_V1 = "v1:";
+
+    /**
      * 全局受管 AES 密钥字符串（支持通过 ateng.boot.mybatis-plus.crypto.secret-key 动态注入）
      */
     private static volatile String globalSecretKey;
+
+    /**
+     * 预解析并缓存的 16/24/32 字节 AES 密钥数组（杜绝每次读写重复计算 SHA-256）
+     */
+    private static volatile byte[] cachedSecretKeyBytes = DEFAULT_SECRET_KEY_BYTES;
 
     /**
      * 配置全局加解密密钥
@@ -55,8 +65,10 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
     public static void setGlobalSecretKey(String secretKey) {
         if (secretKey == null || secretKey.isBlank()) {
             globalSecretKey = null;
+            cachedSecretKeyBytes = DEFAULT_SECRET_KEY_BYTES;
         } else {
             globalSecretKey = secretKey.trim();
+            cachedSecretKeyBytes = parseKeyBytes(globalSecretKey);
         }
     }
 
@@ -93,14 +105,14 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
      * 对明文字符串进行 AES 加密
      *
      * @param plaintext 明文字符串
-     * @return Base64 组合密文字符串；若明文为 null 或空串则原样返回
+     * @return 带版本前缀的 Base64 组合密文字符串；若明文为 null 或空串则原样返回
      */
     public static String encrypt(String plaintext) {
         if (plaintext == null || plaintext.isEmpty()) {
             return plaintext;
         }
         try {
-            byte[] keyBytes = resolveKeyBytes();
+            byte[] keyBytes = cachedSecretKeyBytes;
             byte[] iv = CryptoUtil.generateIv();
             byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
             byte[] cipherBytes = CryptoUtil.encryptCbc(plainBytes, keyBytes, iv);
@@ -109,7 +121,7 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
             byte[] combined = new byte[iv.length + cipherBytes.length];
             System.arraycopy(iv, 0, combined, 0, iv.length);
             System.arraycopy(cipherBytes, 0, combined, iv.length, cipherBytes.length);
-            return CryptoUtil.encodeBase64(combined);
+            return CIPHER_PREFIX_V1 + CryptoUtil.encodeBase64(combined);
         } catch (Exception e) {
             log.error("数据持久化加密失败: {}", e.getMessage(), e);
             throw new IllegalStateException("数据持久化加密失败", e);
@@ -117,7 +129,7 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
     }
 
     /**
-     * 对 Base64 组合密文进行 AES 解密
+     * 对 Base64 组合密文进行 AES 解密（兼容带 v1: 前缀与无前缀历史密文）
      *
      * @param ciphertext 密文字符串
      * @return 解密后的真实明文；若密文为 null 或空串则原样返回
@@ -126,15 +138,19 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
         if (ciphertext == null || ciphertext.isEmpty()) {
             return ciphertext;
         }
+        String rawCiphertext = ciphertext;
+        if (ciphertext.startsWith(CIPHER_PREFIX_V1)) {
+            rawCiphertext = ciphertext.substring(CIPHER_PREFIX_V1.length());
+        }
         try {
-            byte[] combined = CryptoUtil.decodeBase64(ciphertext);
+            byte[] combined = CryptoUtil.decodeBase64(rawCiphertext);
             if (combined == null || combined.length <= CryptoUtil.DEFAULT_CBC_IV_SIZE) {
                 // 长度不足 IV 长度，判定为历史未加密数据，安全原样返回
                 return ciphertext;
             }
             byte[] iv = Arrays.copyOfRange(combined, 0, CryptoUtil.DEFAULT_CBC_IV_SIZE);
             byte[] cipherBytes = Arrays.copyOfRange(combined, CryptoUtil.DEFAULT_CBC_IV_SIZE, combined.length);
-            byte[] keyBytes = resolveKeyBytes();
+            byte[] keyBytes = cachedSecretKeyBytes;
             byte[] decrypted = CryptoUtil.decryptCbc(cipherBytes, keyBytes, iv);
             return new String(decrypted, StandardCharsets.UTF_8);
         } catch (Exception e) {
@@ -145,22 +161,26 @@ public class EncryptTypeHandler extends BaseTypeHandler<String> {
     }
 
     /**
-     * 解析密钥为合法的 16/24/32 字节 AES 密钥数组
+     * 获取当前生效的 16/24/32 字节 AES 密钥数组
      *
      * @return 16/24/32 字节数组
      */
     public static byte[] resolveKeyBytes() {
-        if (globalSecretKey == null || globalSecretKey.isBlank()) {
+        return cachedSecretKeyBytes;
+    }
+
+    private static byte[] parseKeyBytes(String key) {
+        if (key == null || key.isBlank()) {
             return DEFAULT_SECRET_KEY_BYTES;
         }
-        byte[] bytes = globalSecretKey.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = key.getBytes(StandardCharsets.UTF_8);
         if (bytes.length == 16 || bytes.length == 24 || bytes.length == 32) {
             return bytes;
         }
 
         // 尝试 Base64 解码校验
         try {
-            byte[] decoded = Base64.getDecoder().decode(globalSecretKey);
+            byte[] decoded = Base64.getDecoder().decode(key);
             if (decoded.length == 16 || decoded.length == 24 || decoded.length == 32) {
                 return decoded;
             }

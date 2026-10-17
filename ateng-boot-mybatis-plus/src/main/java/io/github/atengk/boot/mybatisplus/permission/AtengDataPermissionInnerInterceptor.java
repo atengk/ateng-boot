@@ -13,6 +13,8 @@ import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.session.ResultHandler;
 import org.apache.ibatis.session.RowBounds;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 import java.sql.Connection;
@@ -28,6 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * @since 2026-10-16
  */
 public class AtengDataPermissionInnerInterceptor extends DataPermissionInterceptor {
+
+    private static final Logger log = LoggerFactory.getLogger(AtengDataPermissionInnerInterceptor.class);
 
     /**
      * MappedStatement ID 到 @DataScope 注解元数据的纳秒级缓存（杜绝高频反射损耗）
@@ -99,8 +103,14 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
             }
         }
 
-        // 3. 委派业务 SPI 处理器构造 JSqlParser AST 条件表达式
-        return customHandler.getSqlSegment(table, where, whereSegment, dataScope);
+        // 3. 委派业务 SPI 处理器构造 JSqlParser AST 条件表达式，包裹异常防御
+        try {
+            return customHandler.getSqlSegment(table, where, whereSegment, dataScope);
+        } catch (Exception ex) {
+            log.error("数据权限 AST 条件生成异常，安全跳过当前表拦截: table=[{}], ms=[{}], error=[{}]",
+                    table.getName(), whereSegment, ex.getMessage(), ex);
+            return null;
+        }
     }
 
     /**

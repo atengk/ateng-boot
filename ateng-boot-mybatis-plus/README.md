@@ -194,7 +194,7 @@ public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> im
 
 // 3. 业务层极速批量插入（万级数据秒级入库）
 List<UserEntity> users = generateBatchUsers(20000);
-userService.saveBatchFast(users); // 自动按 1000 条分批切片事务插入
+userService.insertBatch(users); // 自动按 1000 条分批切片插入
 ```
 
 ---
@@ -265,7 +265,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public PageResult<UserVO> queryUserPage(PageQuery pageQuery) {
-        // 1. 将 PageQuery 转换为 MyBatis-Plus Page 对象
+        // 1. 将 PageQuery 转换为 MyBatis-Plus Page 对象（默认限制最大不超过 500 条防 OOM）
         Page<UserEntity> page = PageUtil.toPage(pageQuery);
 
         // 2. 执行持久层分页查询

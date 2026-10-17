@@ -127,6 +127,20 @@ class EncryptTypeHandlerTest {
         String ciphertext = EncryptTypeHandler.encrypt(plaintext);
 
         assertThat(ciphertext).isNotEqualTo(plaintext);
+        assertThat(ciphertext).startsWith(EncryptTypeHandler.CIPHER_PREFIX_V1);
         assertThat(EncryptTypeHandler.decrypt(ciphertext)).isEqualTo(plaintext);
+    }
+
+    @Test
+    @DisplayName("密文带 v1: 前缀生成与无前缀历史密文平滑兼容解密")
+    void shouldSupportV1PrefixAndLegacyNoPrefixCiphertext() {
+        String plaintext = "my-secret-token-2026";
+        String v1Cipher = EncryptTypeHandler.encrypt(plaintext);
+        assertThat(v1Cipher).startsWith("v1:");
+        assertThat(EncryptTypeHandler.decrypt(v1Cipher)).isEqualTo(plaintext);
+
+        // 模拟剥离前缀的旧版历史密文，验证无缝平滑解密
+        String legacyNoPrefixCipher = v1Cipher.substring(3);
+        assertThat(EncryptTypeHandler.decrypt(legacyNoPrefixCipher)).isEqualTo(plaintext);
     }
 }

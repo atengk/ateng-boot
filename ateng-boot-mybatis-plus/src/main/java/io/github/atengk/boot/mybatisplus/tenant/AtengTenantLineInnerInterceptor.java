@@ -91,6 +91,11 @@ public class AtengTenantLineInnerInterceptor extends TenantLineInnerInterceptor 
         String className = mappedStatementId.substring(0, lastDotIndex);
         String methodName = mappedStatementId.substring(lastDotIndex + 1);
 
+        // 如果是 MyBatis-Plus 分页自动生成的 count 语句（如 selectPage_mpCount），剥离后缀还原原方法名
+        if (methodName.endsWith("_mpCount")) {
+            methodName = methodName.substring(0, methodName.length() - "_mpCount".length());
+        }
+
         try {
             Class<?> mapperClass = Class.forName(className);
 

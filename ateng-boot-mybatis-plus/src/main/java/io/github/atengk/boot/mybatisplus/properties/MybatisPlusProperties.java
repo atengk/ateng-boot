@@ -17,6 +17,11 @@ import java.util.List;
 public class MybatisPlusProperties {
 
     /**
+     * 是否启用 MyBatis-Plus 模块自动装配（默认 true）
+     */
+    private boolean enabled = true;
+
+    /**
      * 行级多租户插件配置
      */
     private TenantProperties tenant = new TenantProperties();
@@ -61,6 +66,14 @@ public class MybatisPlusProperties {
      * 数据加解密配置
      */
     private CryptoProperties crypto = new CryptoProperties();
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
 
     public AuditProperties getAudit() {
         return audit;

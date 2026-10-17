@@ -17,6 +17,11 @@ import java.util.function.Function;
  */
 public final class PageUtil {
 
+    /**
+     * 默认单页最大允许查询记录数（500 条），防御恶意构造超大 size 引发全表内存加载与 OOM
+     */
+    public static final long DEFAULT_MAX_LIMIT = 500L;
+
     private PageUtil() {
     }
 
@@ -33,7 +38,7 @@ public final class PageUtil {
 
     /**
      * 将业务传输层分页入参 PageQuery 转换为 MyBatis-Plus 分页对象 Page，并显式指定是否执行 COUNT 查询
-     * 对非法非正整数页码与页容量实施前置防御性修正
+     * 对非法非正整数页码与页容量实施前置防御性修正，并限制最大单页记录数不超过 DEFAULT_MAX_LIMIT (500)
      *
      * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
      * @param searchCount 是否执行 COUNT 查询
@@ -41,8 +46,23 @@ public final class PageUtil {
      * @return MyBatis-Plus 分页实例
      */
     public static <T> Page<T> toPage(PageQuery query, boolean searchCount) {
+        return toPage(query, searchCount, DEFAULT_MAX_LIMIT);
+    }
+
+    /**
+     * 将业务传输层分页入参 PageQuery 转换为 MyBatis-Plus 分页对象 Page，支持自定义单页最大记录数上限
+     *
+     * @param query       分页入参（若为 null 或非正数则自动降级为默认第 1 页每页 10 条）
+     * @param searchCount 是否执行 COUNT 查询
+     * @param maxLimit    单页最大允许记录数上限（若小于等于 0 则自动采用默认 500）
+     * @param <T>         实体泛型
+     * @return MyBatis-Plus 分页实例
+     */
+    public static <T> Page<T> toPage(PageQuery query, boolean searchCount, long maxLimit) {
         long current = (query == null || query.getCurrent() < 1L) ? 1L : query.getCurrent();
-        long size = (query == null || query.getSize() < 1L) ? 10L : query.getSize();
+        long rawSize = (query == null || query.getSize() < 1L) ? 10L : query.getSize();
+        long limit = maxLimit > 0 ? maxLimit : DEFAULT_MAX_LIMIT;
+        long size = Math.min(rawSize, limit);
         return new Page<>(current, size, searchCount);
     }
 

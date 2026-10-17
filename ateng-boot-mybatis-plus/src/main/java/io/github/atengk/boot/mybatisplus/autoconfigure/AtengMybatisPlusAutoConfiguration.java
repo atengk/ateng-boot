@@ -39,6 +39,7 @@ import org.springframework.context.annotation.Bean;
  */
 @AutoConfiguration
 @ConditionalOnClass({MybatisPlusInterceptor.class, MetaObjectHandler.class})
+@ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(MybatisPlusProperties.class)
 public class AtengMybatisPlusAutoConfiguration {
 

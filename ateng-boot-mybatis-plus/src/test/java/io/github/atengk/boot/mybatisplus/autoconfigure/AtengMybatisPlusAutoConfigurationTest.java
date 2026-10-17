@@ -232,5 +232,17 @@ class AtengMybatisPlusAutoConfigurationTest {
                     .isInstanceOf(io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector.class);
         });
     }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.enabled=false 时全局关闭自动装配")
+    void shouldDisableAutoConfigurationWhenEnabledPropertyIsFalse() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MybatisPlusInterceptor.class);
+                    assertThat(context).doesNotHaveBean(DefaultMetaObjectHandler.class);
+                    assertThat(context).doesNotHaveBean(IdentifierGenerator.class);
+                    assertThat(context).doesNotHaveBean(com.baomidou.mybatisplus.core.injector.ISqlInjector.class);
+                });
+    }
 }
 

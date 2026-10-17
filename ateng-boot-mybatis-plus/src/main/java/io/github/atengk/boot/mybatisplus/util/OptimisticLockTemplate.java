@@ -4,8 +4,6 @@ import io.github.atengk.boot.core.util.RetryUtil;
 
 import java.time.Duration;
 import java.util.Objects;
-import java.util.function.Consumer;
-import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 

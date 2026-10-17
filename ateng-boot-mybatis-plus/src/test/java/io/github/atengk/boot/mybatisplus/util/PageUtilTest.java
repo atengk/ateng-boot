@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * @author Ateng
  * @since 2026-10-16
  */
+@DisplayName("MyBatis-Plus 分页模型与传输契约转换单测")
 class PageUtilTest {
 
     @Test
@@ -114,5 +115,20 @@ class PageUtilTest {
 
         Page<String> mpPage = new Page<>(1, 10);
         assertThrows(NullPointerException.class, () -> PageUtil.toPageResult(mpPage, null));
+    }
+
+    @Test
+    @DisplayName("toPage: 超大 pageSize 自动截断为 DEFAULT_MAX_LIMIT (500) 防御 OOM")
+    void shouldTruncateExcessivePageSize() {
+        PageQuery query = new PageQuery();
+        query.setCurrent(1L);
+        query.setSize(1000000L); // 恶意超大页容量
+
+        Page<?> page = PageUtil.toPage(query);
+        assertEquals(PageUtil.DEFAULT_MAX_LIMIT, page.getSize());
+
+        // 自定义 maxLimit 测试
+        Page<?> customPage = PageUtil.toPage(query, true, 200L);
+        assertEquals(200L, customPage.getSize());
     }
 }

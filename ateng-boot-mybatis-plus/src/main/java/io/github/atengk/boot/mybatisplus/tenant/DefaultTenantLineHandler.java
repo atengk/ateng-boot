@@ -8,6 +8,9 @@ import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.NullValue;
 import net.sf.jsqlparser.expression.StringValue;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Locale;
@@ -21,6 +24,8 @@ import java.util.Set;
  * @since 2026-10-16
  */
 public class DefaultTenantLineHandler implements TenantLineHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(DefaultTenantLineHandler.class);
 
     private final String tenantColumn;
     private final Set<String> ignoreTableSet;
@@ -50,6 +55,9 @@ public class DefaultTenantLineHandler implements TenantLineHandler {
     public Expression getTenantId() {
         String tenantId = TenantContextHolder.getTenantId();
         if (tenantId == null || tenantId.isBlank()) {
+            if (!TenantContextHolder.isIgnoreTenant()) {
+                log.warn("多租户环境上下文未获取到有效的 TenantId，将回退为 NULL 表达式进行条件匹配 (tenant_id IS NULL 或插入 NULL)");
+            }
             return new NullValue();
         }
 

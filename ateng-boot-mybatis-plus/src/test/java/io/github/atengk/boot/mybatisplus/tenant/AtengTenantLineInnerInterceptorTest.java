@@ -97,4 +97,14 @@ class AtengTenantLineInnerInterceptorTest {
         assertThat(interceptor.shouldIgnore(msIgnore)).isTrue();
         assertThat(interceptor.shouldIgnore(msNormal)).isFalse();
     }
+
+    @Test
+    @DisplayName("5. 分页 Count 语句：MyBatis-Plus 自动追加的 _mpCount 后缀能正确剥离并识别方法级 @IgnoreTenant")
+    void shouldIgnoreWhenMethodHasMpCountSuffix() {
+        MappedStatement msCount = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithIgnore_mpCount");
+        assertThat(interceptor.shouldIgnore(msCount)).isTrue();
+
+        MappedStatement msNormalCount = createStatement(MethodLevelIgnoreMapper.class.getName() + ".queryWithoutIgnore_mpCount");
+        assertThat(interceptor.shouldIgnore(msNormalCount)).isFalse();
+    }
 }
