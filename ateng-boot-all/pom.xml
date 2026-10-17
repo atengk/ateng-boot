@@ -41,5 +41,9 @@
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-satoken</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-storage</artifactId>
+        </dependency>
     </dependencies>
 </project>

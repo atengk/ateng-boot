@@ -43,6 +43,7 @@
         <module>ateng-boot-excel</module>
         <module>ateng-boot-all</module>
         <module>ateng-boot-satoken</module>
+        <module>ateng-boot-storage</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -157,6 +158,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-satoken</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-storage</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
