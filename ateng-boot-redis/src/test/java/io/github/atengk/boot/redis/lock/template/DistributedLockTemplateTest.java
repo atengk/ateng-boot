@@ -151,10 +151,10 @@ class DistributedLockTemplateTest {
     }
 
     @Test
-    @DisplayName("tryExecute: 争锁成功返回 true，争锁失败返回 false")
+    @DisplayName("tryExecute: 争锁成功返回 true，争锁失败返回 false（默认 0 等待即时试探）")
     void tryExecute_success_and_failure() throws Throwable {
         when(redissonClient.getLock("lock:job:1")).thenReturn(rLock);
-        when(rLock.tryLock(3000L, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(rLock.tryLock(0L, TimeUnit.MILLISECONDS)).thenReturn(true);
         when(rLock.isHeldByCurrentThread()).thenReturn(true);
 
         AtomicBoolean executed = new AtomicBoolean(false);
@@ -164,7 +164,7 @@ class DistributedLockTemplateTest {
         assertThat(executed.get()).isTrue();
         verify(rLock).unlock();
 
-        when(rLock.tryLock(3000L, TimeUnit.MILLISECONDS)).thenReturn(false);
+        when(rLock.tryLock(0L, TimeUnit.MILLISECONDS)).thenReturn(false);
         boolean failure = lockTemplate.tryExecute("job:1", () -> executed.set(false));
         assertThat(failure).isFalse();
     }
@@ -241,6 +241,35 @@ class DistributedLockTemplateTest {
 
         assertThat(result).isEqualTo("CUSTOM_OK");
         verify(redissonClient).getLock("custom:order:1009");
+        verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("tryExecute: 默认试探锁应当使用 0 等待即时非阻塞语义")
+    void tryExecute_immediate_non_blocking() throws Throwable {
+        when(redissonClient.getLock("lock:order:try1")).thenReturn(rLock);
+        when(rLock.tryLock(0L, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        AtomicBoolean executed = new AtomicBoolean(false);
+        boolean success = lockTemplate.tryExecute("order:try1", () -> executed.set(true));
+
+        assertThat(success).isTrue();
+        assertThat(executed.get()).isTrue();
+        verify(rLock).tryLock(0L, TimeUnit.MILLISECONDS);
+        verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("execute: 多键联锁自动对重复键去重")
+    void execute_multiKeys_deduplication() throws Throwable {
+        when(redissonClient.getLock("lock:same_key")).thenReturn(rLock);
+        when(rLock.tryLock(3000L, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        lockTemplate.execute(List.of("same_key", "same_key"), LockMode.REENTRANT, 3000L, -1L, TimeUnit.MILLISECONDS, () -> "DEDUP_OK");
+
+        verify(redissonClient, times(1)).getLock("lock:same_key");
         verify(rLock).unlock();
     }
 }

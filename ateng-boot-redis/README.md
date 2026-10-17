@@ -123,9 +123,9 @@ public class ProductCacheService {
 - **双模同构内核**：声明式切面与编程式门面均全量委托 `DistributedLockTemplate`，保证锁前缀拼接、看门狗自动续期、安全持锁释放与慢锁审计 100% 规则自洽；
 - **极简静态门面 (`RedisLockUtil`)**：无需注入 Spring Bean，在任意上下文一行代码安全执行闭包加锁；
 - **无损异常穿透**：定制 `LockSupplier<T>` 与 `LockAction` 声明 `throws Throwable`，闭包内自由抛出业务异常，模板安全释放锁后原样透传，杜绝多余的 `try-catch` 包装；
-- **弹性容灾机制**：支持争锁超时降级闭包 `fallback` 以及非阻塞/短等待布尔试探 `tryExecute`；
-- **四阶锁模式与多键联锁**：支持可重入锁 (`REENTRANT`)、公平锁 (`FAIR`)、共享读锁 (`READ`)、排他写锁 (`WRITE`) 以及跨资源原子联锁 (`MultiLock`)；
-- **智能租期守护**：缺省 `leaseTime = -1` 自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期；指定具体租期则强制超时熔断防死锁；
+- **弹性容灾机制**：支持争锁超时降级闭包 `fallback` 以及默认 0 等待即时非阻塞试探 `tryExecute`（支持自定义等待时长）；
+- **四阶锁模式与多键联锁**：支持可重入锁 (`REENTRANT`)、公平锁 (`FAIR`)、共享读锁 (`READ`)、排他写锁 (`WRITE`) 以及跨资源原子联锁 (`MultiLock`，自动键去重)；
+- **智能租期守护**：缺省 `leaseTime = -1` 自动启用 Redisson 看门狗 (Watchdog) 30s 自动续期（长事务生产推荐）；指定具体租期则强制超时熔断防死锁（注意：显式指定具体租期将禁用看门狗自动延期）；
 - **慢锁告警网关**：锁持有耗时超过阈值（默认 3 秒）自动输出 WARN 级别慢锁审计日志。
 
 ### 核心代码示例
@@ -307,10 +307,11 @@ public class OrderNumberService {
 
     /**
      * 1. 生成按日自重置的 18 位结构化流水号 (前缀 + yyyyMMdd + 6位递增流水号)
+     * 底层通过原子 Lua 脚本绑定自增与 48 小时 TTL 过期时间，杜绝孤儿 Key 永久泄漏
      * 例如: ORD20261016000001
      */
     public String generateDailyOrderNo() {
-        return redisAtomicUtil.generateDailySeq("order_seq", "ORD", 6);
+        return redisAtomicUtil.generateDailySeq("ORD", 6);
     }
 
     /**

@@ -26,6 +26,28 @@ public class RedisAtomicUtil {
     private static final Duration DAILY_SEQ_RETENTION = Duration.ofDays(2);
     private static final StringRedisSerializer STRING_SERIALIZER = new StringRedisSerializer();
 
+    private static final RedisScript<Long> INCR_EXPIRE_SCRIPT = new DefaultRedisScript<>(
+            """
+            local val = redis.call('INCRBY', KEYS[1], ARGV[1])
+            if tonumber(ARGV[2]) > 0 then
+                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+            end
+            return val
+            """,
+            Long.class
+    );
+
+    private static final RedisScript<Long> DAILY_SEQ_SCRIPT = new DefaultRedisScript<>(
+            """
+            local val = redis.call('INCRBY', KEYS[1], 1)
+            if redis.call('TTL', KEYS[1]) < 0 then
+                redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+            end
+            return val
+            """,
+            Long.class
+    );
+
     private static final RedisScript<Long> SLIDING_WINDOW_SCRIPT = new DefaultRedisScript<>(
             """
             local key = KEYS[1]
@@ -86,11 +108,19 @@ public class RedisAtomicUtil {
      * @return 递增后的值
      */
     public Long increment(String key, long delta, Duration timeout) {
-        Long value = increment(key, delta);
-        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
-            redisTemplate.expire(key, timeout);
+        Assert.hasText(key, "key must not be blank");
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            return increment(key, delta);
         }
-        return value;
+        long seconds = Math.max(1, timeout.toSeconds());
+        return redisTemplate.execute(
+                INCR_EXPIRE_SCRIPT,
+                STRING_SERIALIZER,
+                null,
+                Collections.singletonList(key),
+                String.valueOf(delta),
+                String.valueOf(seconds)
+        );
     }
 
     /**
@@ -186,10 +216,13 @@ public class RedisAtomicUtil {
         String dateStr = LocalDate.now().format(DateTimeFormatter.ofPattern(datePattern));
         String key = "seq:" + prefix + ":" + dateStr;
 
-        Long seq = redisTemplate.opsForValue().increment(key, 1L);
-        if (seq != null && seq == 1L) {
-            redisTemplate.expire(key, DAILY_SEQ_RETENTION);
-        }
+        Long seq = redisTemplate.execute(
+                DAILY_SEQ_SCRIPT,
+                STRING_SERIALIZER,
+                null,
+                Collections.singletonList(key),
+                String.valueOf(DAILY_SEQ_RETENTION.toSeconds())
+        );
 
         String format = "%0" + length + "d";
         return prefix + dateStr + String.format(format, seq != null ? seq : 1L);

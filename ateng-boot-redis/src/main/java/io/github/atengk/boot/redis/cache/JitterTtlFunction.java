@@ -36,7 +36,7 @@ public class JitterTtlFunction implements RedisCacheWriter.TtlFunction {
     @Override
     public Duration getTimeToLive(Object key, Object value) {
         // 1. 若当前缓存值为空或 Spring Cache 的空值占位符 NullValue，则分流使用专门的短 TTL 防穿透
-        boolean isNullValue = (value == null || "NullValue".equals(value.getClass().getSimpleName()));
+        boolean isNullValue = (value == null || value instanceof org.springframework.cache.support.NullValue || "NullValue".equals(value.getClass().getSimpleName()));
         Duration targetTtl = isNullValue ? nullTtl : baseTtl;
 
         if (!jitterEnabled || maxJitter == null || maxJitter.isZero() || maxJitter.isNegative()

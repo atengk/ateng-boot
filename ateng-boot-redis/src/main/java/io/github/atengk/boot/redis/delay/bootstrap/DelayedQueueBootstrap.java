@@ -53,7 +53,6 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
 
     public static final String MDC_TRACE_ID_KEY = "traceId";
 
-    private final RedissonClient redissonClient;
     private final RedisDelayedQueue redisDelayedQueue;
     private final ObjectMapper objectMapper;
     private final io.github.atengk.boot.redis.properties.RedisProperties redisProperties;
@@ -63,20 +62,25 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     private volatile boolean running = true;
     private final List<ExecutorService> executors = new CopyOnWriteArrayList<>();
 
-    public DelayedQueueBootstrap(RedissonClient redissonClient,
-                                 RedisDelayedQueue redisDelayedQueue,
+    public DelayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
                                  ObjectMapper objectMapper) {
-        this(redissonClient, redisDelayedQueue, objectMapper, null);
+        this(redisDelayedQueue, objectMapper, null);
     }
 
+    public DelayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
+                                 ObjectMapper objectMapper,
+                                 io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
+        this.redisDelayedQueue = Objects.requireNonNull(redisDelayedQueue, "redisDelayedQueue must not be null");
+        this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
+        this.redisProperties = redisProperties;
+    }
+
+    @Deprecated
     public DelayedQueueBootstrap(RedissonClient redissonClient,
                                  RedisDelayedQueue redisDelayedQueue,
                                  ObjectMapper objectMapper,
                                  io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
-        this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
-        this.redisDelayedQueue = Objects.requireNonNull(redisDelayedQueue, "redisDelayedQueue must not be null");
-        this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
-        this.redisProperties = redisProperties;
+        this(redisDelayedQueue, objectMapper, redisProperties);
     }
 
     @Override
@@ -290,15 +294,19 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     @Override
     public void destroy() {
         running = false;
+        // 1. 第一阶段：平滑停止接收新轮询任务，允许正在处理的业务执行完成
         for (ExecutorService executor : executors) {
-            executor.shutdownNow();
+            executor.shutdown();
         }
+        // 2. 第二阶段：等待终止，超时后再强制中断
         for (ExecutorService executor : executors) {
             try {
-                if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
-                    log.warn("Redis 延时队列线程池未能在 3 秒内完全终止");
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    log.warn("Redis 延时队列线程池未能在 5 秒内平滑终止，执行强制打断");
+                    executor.shutdownNow();
                 }
             } catch (InterruptedException e) {
+                executor.shutdownNow();
                 Thread.currentThread().interrupt();
             }
         }

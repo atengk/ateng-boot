@@ -10,7 +10,6 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
-import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +25,6 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 生产级声明式分布式锁 AOP 切面
@@ -41,21 +39,24 @@ public class DistributedLockAspect {
     private static final Logger log = LoggerFactory.getLogger(DistributedLockAspect.class);
 
     private final DistributedLockTemplate distributedLockTemplate;
-    private final RedisProperties redisProperties;
 
     private final ExpressionParser expressionParser = new SpelExpressionParser();
     private final ParameterNameDiscoverer parameterNameDiscoverer = new DefaultParameterNameDiscoverer();
 
-    public DistributedLockAspect(DistributedLockTemplate distributedLockTemplate, RedisProperties redisProperties) {
+    public DistributedLockAspect(DistributedLockTemplate distributedLockTemplate) {
         this.distributedLockTemplate = Objects.requireNonNull(distributedLockTemplate, "DistributedLockTemplate must not be null");
-        this.redisProperties = Objects.requireNonNull(redisProperties, "RedisProperties must not be null");
+    }
+
+    @Deprecated
+    public DistributedLockAspect(DistributedLockTemplate distributedLockTemplate, RedisProperties redisProperties) {
+        this(distributedLockTemplate);
     }
 
     /**
      * 兼容基于 RedissonClient 直接构造的构造器
      */
     public DistributedLockAspect(RedissonClient redissonClient, RedisProperties redisProperties) {
-        this(new DistributedLockTemplate(redissonClient, redisProperties), redisProperties);
+        this(new DistributedLockTemplate(redissonClient, redisProperties));
     }
 
     @Around("@annotation(distributedLock)")

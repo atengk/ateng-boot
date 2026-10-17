@@ -244,4 +244,17 @@ class AtengRedisAutoConfigurationTest {
 
         assertThat(config.isSentinelConfig()).isTrue();
     }
+
+    @Test
+    @DisplayName("单机 URL 模式配置映射：优先从 spring.data.redis.url 解析")
+    void shouldMapUrlSingleServerConfigCorrectly() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties props = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        props.setUrl("redis://user:pass@my-redis-host:6389/2");
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(props);
+
+        assertThat(config.isClusterConfig()).isFalse();
+        assertThat(config.isSentinelConfig()).isFalse();
+    }
 }

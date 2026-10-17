@@ -319,6 +319,18 @@ class RedisUtilTest {
     }
 
     @Test
+    @DisplayName("Pipeline 批量流水线操作契约验证：底座返回 null 时保底返回空集合")
+    void shouldReturnEmptyListWhenPipelinedReturnsNull() {
+        when(redisTemplate.executePipelined(any(SessionCallback.class))).thenReturn(null);
+
+        List<Object> results = RedisUtil.executePipelined(ops -> {
+            ops.opsForValue().set("k1", "v1");
+        });
+
+        assertThat(results).isNotNull().isEmpty();
+    }
+
+    @Test
     @DisplayName("实例方法全量对齐与 Spring 注入双重范式验证")
     void shouldSupportInstanceMethodDelegation() {
         when(redisTemplate.hasKey("inst:k")).thenReturn(true);

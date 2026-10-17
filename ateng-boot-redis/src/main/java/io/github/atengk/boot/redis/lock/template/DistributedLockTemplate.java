@@ -35,7 +35,6 @@ public class DistributedLockTemplate {
     public DistributedLockTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
         this.redissonClient = Objects.requireNonNull(redissonClient, "RedissonClient must not be null");
         this.redisProperties = Objects.requireNonNull(redisProperties, "RedisProperties must not be null");
-        RedisLockUtil.init(this);
     }
 
     /**
@@ -145,7 +144,7 @@ public class DistributedLockTemplate {
      * @throws E 业务抛出的异常
      */
     public <E extends Throwable> boolean tryExecute(String key, LockAction<E> action) throws E {
-        return tryExecute(Collections.singletonList(key), LockMode.REENTRANT, -1L, -1L, null, action);
+        return tryExecute(Collections.singletonList(key), LockMode.REENTRANT, 0L, -1L, null, action);
     }
 
     /**
@@ -281,9 +280,24 @@ public class DistributedLockTemplate {
         }
 
         try {
-            if (rLock.isHeldByCurrentThread()) {
+            boolean shouldUnlock = false;
+            try {
+                shouldUnlock = rLock.isHeldByCurrentThread();
+            } catch (Exception e) {
+                // 部分联合锁在异常状态下检查可能报错，降级尝试释放
+                shouldUnlock = true;
+            }
+
+            if (shouldUnlock) {
                 rLock.unlock();
                 log.debug("[DistributedLock] 释放分布式锁成功: keys={}", keys);
+            } else if (rLock instanceof org.redisson.RedissonMultiLock) {
+                // MultiLock 子锁部分过期可能导致 isHeldByCurrentThread 为 false，防御性释放未过期的子锁
+                try {
+                    rLock.unlock();
+                    log.debug("[DistributedLock] MultiLock 级联防御释放成功: keys={}", keys);
+                } catch (Exception ignored) {
+                }
             } else {
                 log.warn("[DistributedLock] 当前线程未持有锁，跳过释放（可能锁已超时或由其他线程持有）: keys={}", keys);
             }
@@ -342,15 +356,19 @@ public class DistributedLockTemplate {
             if (!StringUtils.hasText(key)) {
                 continue;
             }
+            String resolvedKey;
             if (key.startsWith(lockPrefix) || (StringUtils.hasText(globalPrefix) && key.startsWith(globalPrefix))) {
-                resolved.add(key);
+                resolvedKey = key;
             } else {
                 StringBuilder sb = new StringBuilder();
                 if (StringUtils.hasText(globalPrefix)) {
                     sb.append(globalPrefix);
                 }
                 sb.append(lockPrefix).append(key);
-                resolved.add(sb.toString());
+                resolvedKey = sb.toString();
+            }
+            if (!resolved.contains(resolvedKey)) {
+                resolved.add(resolvedKey);
             }
         }
         return resolved;

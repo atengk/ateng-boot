@@ -116,7 +116,7 @@ class DelayedQueueBootstrapTest {
         io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
         properties.getDelayQueue().setRetryTimes(2);
         properties.getDelayQueue().setRetryDelay(java.time.Duration.ofMillis(50));
-        bootstrap = new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, objectMapper, properties);
+        bootstrap = new DelayedQueueBootstrap(redisDelayedQueue, objectMapper, properties);
     }
 
     @AfterEach

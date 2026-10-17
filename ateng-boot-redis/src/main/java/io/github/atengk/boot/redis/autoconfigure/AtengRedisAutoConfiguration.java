@@ -139,8 +139,8 @@ public class AtengRedisAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(DistributedLockAspect.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DistributedLockAspect distributedLockAspect(DistributedLockTemplate distributedLockTemplate, RedisProperties redisProperties) {
-        return new DistributedLockAspect(distributedLockTemplate, redisProperties);
+    public DistributedLockAspect distributedLockAspect(DistributedLockTemplate distributedLockTemplate) {
+        return new DistributedLockAspect(distributedLockTemplate);
     }
 
     /**
@@ -159,17 +159,16 @@ public class AtengRedisAutoConfiguration {
     /**
      * 装配声明式延时队列容器生命周期调度器 DelayedQueueBootstrap
      *
-     * @param redissonClient Redisson 客户端
      * @param redisDelayedQueue 延时队列门面
+     * @param redisProperties 属性配置
      * @return 延时队列生命周期调度器
      */
     @Bean
     @ConditionalOnMissingBean(DelayedQueueBootstrap.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DelayedQueueBootstrap delayedQueueBootstrap(RedissonClient redissonClient,
-                                                       RedisDelayedQueue redisDelayedQueue,
+    public DelayedQueueBootstrap delayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
                                                        RedisProperties redisProperties) {
-        return new DelayedQueueBootstrap(redissonClient, redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+        return new DelayedQueueBootstrap(redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
     }
 
     /**
@@ -378,9 +377,13 @@ public class AtengRedisAutoConfiguration {
 
         // 单机模式 (Single Server, 默认兜底)
         SingleServerConfig singleServerConfig = config.useSingleServer();
-        String host = StringUtils.hasText(properties.getHost()) ? properties.getHost() : "localhost";
-        int port = properties.getPort() != 0 ? properties.getPort() : 6379;
-        singleServerConfig.setAddress(formatAddress(prefix, host + ":" + port));
+        if (StringUtils.hasText(properties.getUrl())) {
+            singleServerConfig.setAddress(properties.getUrl());
+        } else {
+            String host = StringUtils.hasText(properties.getHost()) ? properties.getHost() : "localhost";
+            int port = properties.getPort() != 0 ? properties.getPort() : 6379;
+            singleServerConfig.setAddress(formatAddress(prefix, host + ":" + port));
+        }
         singleServerConfig.setDatabase(properties.getDatabase());
 
         if (StringUtils.hasText(properties.getPassword())) {

@@ -40,7 +40,6 @@ public class RedisUtil {
 
     private static volatile RedisTemplate<String, Object> staticTemplate;
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
-    private final RedisTemplate<String, Object> template;
 
     /**
      * 容器实例化构造器，自动同步静态门面引用
@@ -48,7 +47,6 @@ public class RedisUtil {
      * @param template RedisTemplate
      */
     public RedisUtil(RedisTemplate<String, Object> template) {
-        this.template = template;
         RedisUtil.staticTemplate = template;
     }
 
@@ -1203,7 +1201,8 @@ public class RedisUtil {
      * @return 批量结果列表
      */
     public static List<Object> executePipelined(SessionCallback<?> session) {
-        return getTemplate().executePipelined(session);
+        List<Object> results = getTemplate().executePipelined(session);
+        return results != null ? results : Collections.emptyList();
     }
 
     /**
@@ -1213,7 +1212,7 @@ public class RedisUtil {
      * @return 批量结果列表
      */
     public static List<Object> executePipelined(Consumer<RedisOperations<String, Object>> action) {
-        return getTemplate().executePipelined(new SessionCallback<>() {
+        List<Object> results = getTemplate().executePipelined(new SessionCallback<>() {
             @Override
             public <K, V> Object execute(RedisOperations<K, V> operations) {
                 @SuppressWarnings("unchecked")
@@ -1222,6 +1221,7 @@ public class RedisUtil {
                 return null;
             }
         });
+        return results != null ? results : Collections.emptyList();
     }
 
     // ==================== 11. 历史兼容性别名（所有静态方法均支持通过 RedisUtil Bean 实例直接调用） ====================

@@ -73,11 +73,12 @@ class RedisAtomicUtilTest {
     @Test
     @DisplayName("测试带 TTL 的原子递增操作")
     void testIncrementWithTtl() {
-        when(valueOperations.increment("counter:code", 1L)).thenReturn(1L);
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("1"), eq("300")))
+                .thenReturn(1L);
 
         Long val = atomicUtil.increment("counter:code", 1L, Duration.ofMinutes(5));
         assertThat(val).isEqualTo(1L);
-        verify(redisTemplate).expire("counter:code", Duration.ofMinutes(5));
+        verify(redisTemplate).execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("1"), eq("300"));
     }
 
     @Test
@@ -98,15 +99,15 @@ class RedisAtomicUtilTest {
     @DisplayName("测试基于日期的业务递增流水号发号 (generateDailySeq)")
     void testGenerateDailySeq() {
         String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-        String expectedKey = "seq:ORD:" + today;
 
-        when(valueOperations.increment(expectedKey, 1L)).thenReturn(1L);
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq(String.valueOf(Duration.ofDays(2).toSeconds()))))
+                .thenReturn(1L);
 
         String seq1 = atomicUtil.generateDailySeq("ORD", 6);
         assertThat(seq1).isEqualTo("ORD" + today + "000001");
-        verify(redisTemplate).expire(expectedKey, Duration.ofDays(2));
 
-        when(valueOperations.increment(expectedKey, 1L)).thenReturn(123L);
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq(String.valueOf(Duration.ofDays(2).toSeconds()))))
+                .thenReturn(123L);
         String seq123 = atomicUtil.generateDailySeq("ORD", 6);
         assertThat(seq123).isEqualTo("ORD" + today + "000123");
     }
