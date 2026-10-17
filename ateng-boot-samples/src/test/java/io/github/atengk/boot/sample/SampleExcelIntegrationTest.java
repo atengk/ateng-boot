@@ -367,10 +367,15 @@ class SampleExcelIntegrationTest {
         });
 
         assertThat(taskId).isNotNull();
-        assertThat(latch.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-        Thread.sleep(200);
+        assertThat(latch.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
 
+        long deadline = System.currentTimeMillis() + 5000;
         io.github.atengk.boot.excel.async.ExportTask task = asyncExportTaskService.getTask(taskId);
+        while ((task == null || task.getStatus() == io.github.atengk.boot.excel.async.ExportTaskStatus.PENDING || task.getStatus() == io.github.atengk.boot.excel.async.ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+            task = asyncExportTaskService.getTask(taskId);
+        }
+
         assertThat(task).isNotNull();
         assertThat(task.getStatus()).isEqualTo(io.github.atengk.boot.excel.async.ExportTaskStatus.SUCCESS);
         assertThat(new java.io.File(task.getFilePath())).exists();

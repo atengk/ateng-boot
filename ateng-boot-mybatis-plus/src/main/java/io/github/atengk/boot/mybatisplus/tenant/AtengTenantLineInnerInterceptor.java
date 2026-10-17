@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.PluginUtils;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;

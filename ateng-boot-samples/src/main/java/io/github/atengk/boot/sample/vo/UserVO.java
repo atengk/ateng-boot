@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.vo;
 
-import io.github.atengk.boot.mybatisplus.annotation.FieldSensitive;
-import io.github.atengk.boot.mybatisplus.enums.SensitiveType;
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.sample.entity.UserEntity;
 import lombok.Getter;
 import lombok.Setter;

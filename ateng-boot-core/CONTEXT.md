@@ -64,3 +64,65 @@ _Avoid_: AesUtil, EncryptionUtil, EncryptUtil
 通用泛型树形结构构建工具，依托纯函数式接口与哈希表两遍扫描算法，以 O(N) 线性时间复杂度实现扁平列表到嵌套树的高性能组装。
 _Avoid_: TreeBuilder, NodeUtil, MenuTreeUtil
 
+**JsonUtil**:
+纯 JDK 与 Jackson 原生安全封装的静态门面工具类，内置东八区时区、JSR-310 日期时间模块与未知属性容错，彻底杜绝 @class 漏洞。
+_Avoid_: JacksonUtil, JSON, FastJsonUtil, JsonHelper
+
+**TenantContextHolder**:
+基于 ThreadLocal 与栈结构维护当前线程租户标识及忽略过滤深度的持有者，提供编程式闭包与跨线程隔离能力。
+_Avoid_: TenantHelper, CurrentTenant, TenantManager
+
+**CurrentTenantProvider**:
+供外部多租户接入以提供当前租户上下文标识（租户 ID）的函数式 SPI 接口。
+_Avoid_: TenantSupplier, TenantResolver
+
+**SensitiveType**:
+敏感数据脱敏类型枚举，统一内聚映射 DesensitizeUtil 核心脱敏算法，供 Jackson 序列化与 Excel 导出跨模块复用。
+_Avoid_: MaskType, DesensitizeType
+
+**FieldSensitive**:
+视图层字段动态脱敏注解，基于 Jackson 序列化机制在出界序列化时动态执行掩码，恪守内存真明文原则。
+_Avoid_: Sensitive, MaskField, JsonMask
+
+**DatePattern**:
+标准化日期时间格式与预编译 DateTimeFormatter 常量统管类，终结各模块散落硬编码字符串。
+_Avoid_: DateFormatConstants, TimePattern, DateConsts
+
+**Pair**:
+基于 JDK 17 Record 实现的轻量不可变二元组数据结构，承载两项关联数据的键值对流转。
+_Avoid_: Tuple2, KeyValue, Entry
+
+**Triple**:
+基于 JDK 17 Record 实现的轻量不可变三元组数据结构，承载三项关联数据的强类型流转。
+_Avoid_: Tuple3, Trio
+
+**SpringUtil**:
+基于 ApplicationContextAware 与 BeanFactoryPostProcessor 实现的 Spring 容器上下文全局静态门面，提供非受管对象编程式获取 Bean、环境配置与事件发布能力。
+_Avoid_: SpringContextUtil, SpringContextHolder, BeanFactoryUtil
+
+**LambdaUtil**:
+基于纯 JDK 17 SerializedLambda 反射机制实现的强类型方法引用解析工具，将 Getter 方法引用安全推导为实体属性名。
+_Avoid_: MethodRefUtil, PropertyUtil, FieldReflectUtil
+
+**CollectionUtil**:
+纯原生集合防御与切片增强工具类，提供空安全判断与大容量列表等额切片（partition）。
+_Avoid_: CollUtil, ListUtil, CollectionsHelper
+
+**MoreCollectors**:
+防御性 Java 8+ Stream 收集器扩展类，提供杜绝 NPE 与重复键覆盖的纯净 toSafeMap 实现。
+_Avoid_: StreamUtil, CustomCollectors, SafeCollector
+
+**BeanUtil**:
+基于 Spring 原生 BeanUtils 增强的轻量级对象拷贝门面，支持自动实例化反射拷贝、批量列表流式映射与增量非空覆盖。
+_Avoid_: ObjectCopier, BeanMapper, ModelMapper
+
+**RetryUtil**:
+基于纯函数式接口与指数退避算法的轻量级重试与容错执行引擎，为网络通信与并发冲突提供无侵入高可用守护。
+_Avoid_: RetryHelper, RetryTemplate, BackoffUtil
+
+**FileUtil**:
+纯 JDK 原生轻量文件与路径安全工具类，提供路径遍历穿透（Path Traversal）安全清洗、扩展名截取与人类可读文件容量格式化。
+_Avoid_: FileHelper, IoHelper, PathUtil
+
+
+

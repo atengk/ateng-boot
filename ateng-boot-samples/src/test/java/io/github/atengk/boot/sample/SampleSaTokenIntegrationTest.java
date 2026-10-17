@@ -2,7 +2,7 @@ package io.github.atengk.boot.sample;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.sample.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.satoken.model.LoginUser;

@@ -1,7 +1,7 @@
 package io.github.atengk.boot.excel.handler;
 
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
-import io.github.atengk.boot.excel.enums.DesensitizeType;
 import org.apache.fesod.sheet.enums.CellDataTypeEnum;
 import org.apache.fesod.sheet.metadata.data.WriteCellData;
 import org.apache.fesod.sheet.metadata.property.ExcelContentProperty;
@@ -67,9 +67,43 @@ public class SensitiveCellWriteHandler implements CellWriteHandler {
         }
 
         // 4. 执行动态脱敏掩码转换，并更新输出单元格数据
-        String maskedValue = DesensitizeType.mask(rawValue, sensitive);
+        String maskedValue = mask(rawValue, sensitive);
 
         cellData.setType(CellDataTypeEnum.STRING);
         cellData.setStringValue(maskedValue);
+    }
+
+    /**
+     * 基于 ExcelSensitive 注解与 Core SensitiveType 执行脱敏掩码
+     *
+     * @param value     原始文本
+     * @param sensitive 脱敏注解配置
+     * @return 掩码后的字符串
+     */
+    private static String mask(String value, ExcelSensitive sensitive) {
+        if (value == null || value.isEmpty() || sensitive == null) {
+            return value;
+        }
+
+        // 1. 确定生效的脱敏类型（type 优先，其次 value）
+        SensitiveType targetType = sensitive.type();
+        if (targetType == SensitiveType.CUSTOM && sensitive.value() != SensitiveType.CUSTOM) {
+            targetType = sensitive.value();
+        }
+
+        // 2. 自动类型推导：若未显式指定预设类型，但配置了首尾保留字符数，智能转为 KEEP_HEAD_TAIL
+        if (targetType == SensitiveType.CUSTOM && (sensitive.keepHead() > 0 || sensitive.keepTail() > 0)) {
+            targetType = SensitiveType.KEEP_HEAD_TAIL;
+        }
+
+        // 3. 执行掩码
+        return targetType.mask(
+                value,
+                sensitive.startInclude(),
+                sensitive.endExclude(),
+                sensitive.keepHead(),
+                sensitive.keepTail(),
+                sensitive.maskChar()
+        );
     }
 }

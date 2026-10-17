@@ -1,21 +1,17 @@
-package io.github.atengk.boot.excel.enums;
+package io.github.atengk.boot.core.enums;
 
 import io.github.atengk.boot.core.util.DesensitizeUtil;
-import io.github.atengk.boot.excel.annotation.ExcelSensitive;
 
 import java.util.function.Function;
 
 /**
- * Excel 导出敏感数据脱敏类型枚举
- * <p>
- * 配合 {@link io.github.atengk.boot.excel.annotation.ExcelSensitive} 注解使用，
- * 内部映射 {@link DesensitizeUtil} 高性能纯 JDK 脱敏算法。
- * </p>
+ * 敏感数据脱敏类型枚举
+ * 配合 @FieldSensitive 与 @ExcelSensitive 注解使用，内聚映射 DesensitizeUtil 脱敏算法
  *
  * @author Ateng
- * @since 2026-10-16
+ * @since 2026-10-17
  */
-public enum DesensitizeType {
+public enum SensitiveType {
 
     /**
      * 中文姓名（如：张*、李*四、诸**明）
@@ -78,7 +74,7 @@ public enum DesensitizeType {
     SOCIAL_CREDIT_CODE(DesensitizeUtil::socialCreditCode),
 
     /**
-     * 首尾保留掩码（由 keepHead、keepTail 与 maskChar 决定）
+     * 首尾保留掩码（由 keepHead、keepTail 与 maskChar 决定，超长防御原样返回）
      */
     KEEP_HEAD_TAIL(null),
 
@@ -94,53 +90,32 @@ public enum DesensitizeType {
 
     private final Function<String, String> maskFunction;
 
-    DesensitizeType(Function<String, String> maskFunction) {
+    SensitiveType(Function<String, String> maskFunction) {
         this.maskFunction = maskFunction;
     }
 
     /**
-     * 基于注解定义执行脱敏掩码转换
+     * 执行脱敏掩码转换（兼容旧版入参）
      *
-     * @param value     原始待脱敏字符串
-     * @param sensitive 脱敏注解配置
+     * @param value        原始待脱敏字符串
+     * @param startInclude 自定义起始包含索引（仅 CUSTOM 生效）
+     * @param endExclude   自定义结束排除索引（仅 CUSTOM 生效）
+     * @param maskChar     自定义掩码字符（仅 CUSTOM 生效）
      * @return 掩码后的字符串
      */
-    public static String mask(String value, ExcelSensitive sensitive) {
-        if (value == null || value.isEmpty() || sensitive == null) {
-            return value;
-        }
-
-        // 1. 确定生效的脱敏类型（type 优先，其次 value）
-        DesensitizeType targetType = sensitive.type();
-        if (targetType == CUSTOM && sensitive.value() != CUSTOM) {
-            targetType = sensitive.value();
-        }
-
-        // 2. 自动类型推导：若未显式指定预设类型，但配置了首尾保留字符数，智能转为 KEEP_HEAD_TAIL
-        if (targetType == CUSTOM && (sensitive.keepHead() > 0 || sensitive.keepTail() > 0)) {
-            targetType = KEEP_HEAD_TAIL;
-        }
-
-        // 3. 执行掩码
-        return targetType.mask(
-                value,
-                sensitive.startInclude(),
-                sensitive.endExclude(),
-                sensitive.keepHead(),
-                sensitive.keepTail(),
-                sensitive.maskChar()
-        );
+    public String mask(String value, int startInclude, int endExclude, char maskChar) {
+        return mask(value, startInclude, endExclude, 0, 0, maskChar);
     }
 
     /**
-     * 执行脱敏掩码转换
+     * 执行脱敏掩码转换（支持首尾保留参数）
      *
      * @param value        原始待脱敏字符串
      * @param startInclude 自定义起始包含索引（仅 CUSTOM 生效）
      * @param endExclude   自定义结束排除索引（仅 CUSTOM 生效）
      * @param keepHead     头部保留字符数（仅 KEEP_HEAD_TAIL 生效）
      * @param keepTail     尾部保留字符数（仅 KEEP_HEAD_TAIL 生效）
-     * @param maskChar     用于替换的掩码字符
+     * @param maskChar     自定义掩码字符（CUSTOM 与 KEEP_HEAD_TAIL 生效）
      * @return 掩码后的字符串
      */
     public String mask(String value, int startInclude, int endExclude, int keepHead, int keepTail, char maskChar) {

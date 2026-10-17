@@ -78,7 +78,7 @@ class AsyncContextTest {
         MDC.put("traceId", "trace-parent-202");
         UserContextHolder.set("user-parent-202");
 
-        Callable<String> task = AsyncContext.wrap(() -> {
+        Callable<String> task = AsyncContext.wrap((Callable<String>) () -> {
             String currentTraceId = MDC.get("traceId");
             String currentUser = UserContextHolder.get();
             return currentTraceId + ":" + currentUser;
@@ -93,9 +93,65 @@ class AsyncContextTest {
     }
 
     @Test
+    @DisplayName("四维上下文全链路透传：MDC + User + Tenant + IgnoreTenant 完整流动并安全自清理")
+    void shouldPropagate4DContextAndCleanUp() throws Exception {
+        MDC.put("traceId", "trace-4d-999");
+        UserContextHolder.set("user-4d-888");
+        TenantContextHolder.setTenantId("tenant-4d-777");
+
+        TenantContextHolder.runWithoutTenant(() -> {
+            // 在忽略租户环境下包装异步任务
+            Callable<String> task = AsyncContext.wrap((Callable<String>) () -> {
+                String mdcTrace = MDC.get("traceId");
+                String user = UserContextHolder.get();
+                String tenant = TenantContextHolder.getTenantId();
+                boolean ignoreTenant = TenantContextHolder.isIgnoreTenant();
+                return mdcTrace + "|" + user + "|" + tenant + "|" + ignoreTenant;
+            });
+
+            Future<String> future = executor.submit(task);
+            try {
+                String result = future.get(2, TimeUnit.SECONDS);
+                assertEquals("trace-4d-999|user-4d-888|tenant-4d-777|true", result);
+            } catch (Exception e) {
+                fail("异步执行异常: " + e.getMessage());
+            }
+        });
+
+        // 验证执行后工作线程中租户与忽略标志彻底恢复
+        Future<Boolean> threadCleanCheck = executor.submit(() ->
+                MDC.get("traceId") == null &&
+                        UserContextHolder.get() == null &&
+                        TenantContextHolder.getTenantId() == null &&
+                        !TenantContextHolder.isIgnoreTenant()
+        );
+        assertTrue(threadCleanCheck.get(2, TimeUnit.SECONDS), "工作线程四维上下文应被严格自清理还原");
+    }
+
+    @Test
+    @DisplayName("异步 Supplier 任务结合 CompletableFuture 成功传播四维上下文并安全清理")
+    void shouldPropagateContextForSupplier() throws Exception {
+        MDC.put("traceId", "trace-supplier-303");
+        UserContextHolder.set("user-supplier-303");
+        TenantContextHolder.setTenantId("tenant-supplier-303");
+
+        CompletableFuture<String> future = CompletableFuture.supplyAsync(
+                AsyncContext.wrapSupplier(() -> MDC.get("traceId") + "@" + UserContextHolder.get() + "@" + TenantContextHolder.getTenantId()),
+                executor
+        );
+
+        String result = future.get(2, TimeUnit.SECONDS);
+        assertEquals("trace-supplier-303@user-supplier-303@tenant-supplier-303", result);
+
+        Future<String> cleanCheck = executor.submit(() -> MDC.get("traceId"));
+        assertNull(cleanCheck.get(2, TimeUnit.SECONDS));
+    }
+
+    @Test
     @DisplayName("对 null 任务包装时防御性返回 null")
     void shouldReturnNullWhenWrappingNullTask() {
         assertNull(AsyncContext.wrap((Runnable) null));
         assertNull(AsyncContext.wrap((Callable<String>) null));
+        assertNull(AsyncContext.wrapSupplier(null));
     }
 }

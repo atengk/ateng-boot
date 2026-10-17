@@ -1,9 +1,9 @@
-package io.github.atengk.boot.mybatisplus.annotation;
+package io.github.atengk.boot.core.annotation;
 
 import com.fasterxml.jackson.annotation.JacksonAnnotationsInside;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import io.github.atengk.boot.mybatisplus.enums.SensitiveType;
-import io.github.atengk.boot.mybatisplus.jackson.SensitiveJsonSerializer;
+import io.github.atengk.boot.core.enums.SensitiveType;
+import io.github.atengk.boot.core.jackson.SensitiveJsonSerializer;
 
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
@@ -14,10 +14,10 @@ import java.lang.annotation.Target;
 /**
  * 视图层字段动态脱敏注解
  * 基于 Jackson 序列化机制，仅在 Controller 将实体或 VO 序列化为 JSON 响应时动态掩码
- * 内存中 Java 实体对象与底层数据库始终保持真实原始数据，彻底杜绝星号脏数据写回数据库
+ * 内存中 Java 实体对象与底层存储始终保持真实原始数据，恪守 ADR-0012 内存真明文原则
  *
  * @author Ateng
- * @since 2026-10-16
+ * @since 2026-10-17
  */
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)

@@ -1,7 +1,8 @@
 package io.github.atengk.boot.sample;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.sample.entity.SysDictEntity;
 import io.github.atengk.boot.sample.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.mapper.SysDictMapper;
@@ -17,6 +18,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -246,5 +248,45 @@ class SampleTenantIntegrationTest {
         TenantContextHolder.clear();
         SysDictEntity noTenantReloaded = sysDictMapper.selectById(dict.getId());
         assertThat(noTenantReloaded).isNotNull();
+    }
+
+    @Test
+    @DisplayName("8. 异步线程透传：结合 AsyncContext 在异步线程中准确继承租户隔离与忽略标记")
+    void shouldPropagateTenantContextAcrossAsyncThreads() throws Exception {
+        TenantContextHolder.runWithTenant(1001L, () -> {
+            TenantOrderEntity o1 = new TenantOrderEntity();
+            o1.setOrderNo("ASYNC-01");
+            tenantOrderMapper.insert(o1);
+        });
+        TenantContextHolder.runWithTenant(1002L, () -> {
+            TenantOrderEntity o2 = new TenantOrderEntity();
+            o2.setOrderNo("ASYNC-02");
+            tenantOrderMapper.insert(o2);
+        });
+
+        TenantContextHolder.setTenantId(1001L);
+
+        // 使用 AsyncContext 包装异步执行任务
+        CompletableFuture<List<TenantOrderEntity>> asyncFuture = CompletableFuture.supplyAsync(
+                AsyncContext.wrapSupplier(() -> tenantOrderMapper.selectList(new LambdaQueryWrapper<>()))
+        );
+
+        // 验证异步子线程精准隔离在 1001 租户下，查询仅返回 1 条数据
+        List<TenantOrderEntity> asyncOrders = asyncFuture.get();
+        assertThat(asyncOrders).hasSize(1);
+        assertThat(asyncOrders.get(0).getTenantId()).isEqualTo("1001");
+
+        // 在忽略租户环境下异步查询，验证异步子线程继承忽略标记，查询返回全量 2 条
+        TenantContextHolder.runWithoutTenant(() -> {
+            CompletableFuture<List<TenantOrderEntity>> ignoreFuture = CompletableFuture.supplyAsync(
+                    AsyncContext.wrapSupplier(() -> tenantOrderMapper.selectList(new LambdaQueryWrapper<>()))
+            );
+            try {
+                List<TenantOrderEntity> allOrders = ignoreFuture.get();
+                assertThat(allOrders).hasSize(2);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 }

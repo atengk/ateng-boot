@@ -8,7 +8,9 @@ import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.strategy.SaFirewallStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.spi.CurrentTenantProvider;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.satoken.aspect.SaCheckSameTokenAspect;
 import io.github.atengk.boot.satoken.cache.CachedStpInterface;
@@ -21,8 +23,10 @@ import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
+import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -63,6 +67,9 @@ public class AtengSaTokenAutoConfiguration {
      */
     @PostConstruct
     public void initFirewallStrategy() {
+        // 自动挂载 Sa-Token 当前租户提取 SPI 至 Core 核心底座
+        TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
+
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
             log.warn("Sa-Token 安全防火墙拦截异常: message={}", e.getMessage());
             res.setHeader("Content-Type", "application/json;charset=UTF-8");
@@ -78,6 +85,7 @@ public class AtengSaTokenAutoConfiguration {
             }
         };
     }
+
 
     /**
      * 注册 Sa-Token 全局统一异常处理器
@@ -201,6 +209,18 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnMissingBean(CurrentUserProvider.class)
     public CurrentUserProvider saTokenCurrentUserProvider() {
         return new SaTokenCurrentUserProvider();
+    }
+
+    /**
+     * 注册当前租户身份 SPI 适配提供者（对接 ateng-boot-core SPI）
+     * 自动驱动多租户行级与列级数据隔离
+     *
+     * @return CurrentTenantProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(CurrentTenantProvider.class)
+    public CurrentTenantProvider saTokenCurrentTenantProvider() {
+        return new SaTokenCurrentTenantProvider();
     }
 
     /**

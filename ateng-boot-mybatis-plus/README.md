@@ -68,17 +68,22 @@ public class UserEntity extends BaseFullEntity {
 传统做法直接在业务 Service 中给手机号打星号，导致“星号脏数据写回数据库”的数据损毁事故。`ateng-boot` 严格分离生命周期：
 - **存储加密**：收敛于 MyBatis `TypeHandler`（入库为 AES/SM4 密文，出库反序列化为真实明文）；
 - **内存状态**：Service 业务逻辑与实体对象在内存中始终保持 100% 原始真实明文；
-- **视图脱敏**：收敛于 Jackson 序列化器，仅在向前端响应输出 JSON 时动态掩码。
+- **视图脱敏**：依托 `ateng-boot-core` 底座提供的 `@FieldSensitive` 与 `SensitiveJsonSerializer`，仅在向前端响应输出 JSON 时动态掩码。
 
 ### 核心代码范式
 ```java
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
+import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
+
 @TableName(value = "sys_user", autoResultMap = true) // 必须开启 autoResultMap
 public class UserEntity extends BaseEntity {
 
     // 1. 数据库存储透明加密（入库自动 AES 加密，查询自动解密）
     @FieldEncrypt
     @TableField(typeHandler = EncryptTypeHandler.class)
-    // 2. 接口对外返回时动态脱敏打码（内存与数据库依然保持真明文）
+    // 2. 接口对外返回时动态脱敏打码（内存与数据库依然保持真明文，来自 ateng-boot-core）
     @FieldSensitive(SensitiveType.MOBILE_PHONE)
     private String phone;
 
@@ -109,6 +114,10 @@ SaaS 多租户系统最忌讳数据越权访问。采用 AST 动态改写 SQL，
 
 ### 忽略多租户注解与闭包放行
 ```java
+// 多租户上下文统一来自 ateng-boot-core 底座
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
+
 // 1. Mapper 接口方法级显式忽略多租户（如跨租户统计）
 public interface UserMapper extends BaseMapper<UserEntity> {
     @IgnoreTenant

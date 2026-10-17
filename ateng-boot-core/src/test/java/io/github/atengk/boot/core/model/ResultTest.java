@@ -168,4 +168,117 @@ class ResultTest {
         );
         assertNull(deserializedWithoutTrace.getTraceId());
     }
+
+    @Test
+    @DisplayName("map: 成功状态下正常进行载荷类型转换并保留元信息")
+    void shouldMapSuccessfullyWhenSuccess() {
+        Result<String> original = Result.<String>success("123").traceId("t-1");
+        Result<Integer> mapped = original.map(Integer::parseInt);
+
+        assertTrue(mapped.isSuccess());
+        assertEquals(200, mapped.getCode());
+        assertEquals(123, mapped.getData());
+        assertEquals("t-1", mapped.getTraceId());
+        assertEquals(original.getTimestamp(), mapped.getTimestamp());
+    }
+
+    @Test
+    @DisplayName("map: 成功但载荷为 null 时安全返回 null 载荷")
+    void shouldMapNullDataSafelyWhenSuccess() {
+        Result<String> original = Result.success();
+        Result<Integer> mapped = original.map(Integer::parseInt);
+
+        assertTrue(mapped.isSuccess());
+        assertNull(mapped.getData());
+    }
+
+    @Test
+    @DisplayName("map: 失败状态下跳过转换并透传原错误码、错误提示与 traceId")
+    void shouldPassThroughFailOnMap() {
+        Result<String> fail = Result.<String>fail(403, "无权限").traceId("t-fail");
+        Result<Integer> mapped = fail.map(Integer::parseInt);
+
+        assertFalse(mapped.isSuccess());
+        assertEquals(403, mapped.getCode());
+        assertEquals("无权限", mapped.getMsg());
+        assertNull(mapped.getData());
+        assertEquals("t-fail", mapped.getTraceId());
+    }
+
+    @Test
+    @DisplayName("peek: 仅在成功且数据非空时触发观察，不改变 Result 自身")
+    void shouldPeekOnlyWhenSuccessAndDataPresent() {
+        java.util.concurrent.atomic.AtomicReference<String> observed = new java.util.concurrent.atomic.AtomicReference<>();
+        Result<String> res = Result.success("ateng").peek(observed::set);
+
+        assertSame(res, res.peek(v -> {}));
+        assertEquals("ateng", observed.get());
+
+        // 失败状态下不触发
+        observed.set(null);
+        Result.fail("error").peek(v -> observed.set("unexpected"));
+        assertNull(observed.get());
+    }
+
+    @Test
+    @DisplayName("ifSuccess: 成功且数据非空时执行消费操作")
+    void shouldExecuteIfSuccess() {
+        java.util.concurrent.atomic.AtomicBoolean called = new java.util.concurrent.atomic.AtomicBoolean(false);
+        Result.success("ok").ifSuccess(val -> called.set(true));
+        assertTrue(called.get());
+
+        called.set(false);
+        Result.fail("err").ifSuccess(val -> called.set(true));
+        assertFalse(called.get());
+    }
+
+    @Test
+    @DisplayName("ifFail: 失败状态下执行错误回调")
+    void shouldExecuteIfFail() {
+        java.util.concurrent.atomic.AtomicInteger capturedCode = new java.util.concurrent.atomic.AtomicInteger();
+        Result.fail(404, "not found").ifFail(r -> capturedCode.set(r.getCode()));
+        assertEquals(404, capturedCode.get());
+
+        capturedCode.set(0);
+        Result.success("fine").ifFail(r -> capturedCode.set(r.getCode()));
+        assertEquals(0, capturedCode.get());
+    }
+
+    @Test
+    @DisplayName("orElse 与 orElseGet: 成功返回原数据，失败或 null 返回保底值")
+    void shouldReturnDefaultValueOnOrElseAndOrElseGet() {
+        // 成功且非空
+        assertEquals("real", Result.success("real").orElse("fallback"));
+        assertEquals("real", Result.success("real").orElseGet(() -> "fallback"));
+
+        // 成功但为 null
+        assertEquals("fallback", Result.<String>success().orElse("fallback"));
+        assertEquals("fallback", Result.<String>success().orElseGet(() -> "fallback"));
+
+        // 失败
+        assertEquals("fallback", Result.<String>fail().orElse("fallback"));
+        assertEquals("fallback", Result.<String>fail().orElseGet(() -> "fallback"));
+    }
+
+    @Test
+    @DisplayName("orElseThrow: 成功返回数据，失败抛出 BusinessException")
+    void shouldThrowBusinessExceptionOnOrElseThrow() {
+        assertEquals("data", Result.success("data").orElseThrow());
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> Result.fail(502, "网关超时").orElseThrow());
+        assertEquals(502, ex.getCode());
+        assertEquals("网关超时", ex.getMsg());
+    }
+
+    @Test
+    @DisplayName("orElseThrow(Function): 失败时抛出定制异常")
+    void shouldThrowCustomExceptionOnOrElseThrow() {
+        assertEquals("data", Result.success("data").orElseThrow(IllegalStateException::new));
+
+        IllegalArgumentException ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> Result.fail("参数非法").orElseThrow(IllegalArgumentException::new)
+        );
+        assertEquals("参数非法", ex.getMessage());
+    }
 }

@@ -149,4 +149,23 @@ public class AtengWebAutoConfiguration {
     public WebLogAspect webLogAspect(ObjectProvider<ObjectMapper> objectMapperProvider) {
         return new WebLogAspect(objectMapperProvider.getIfAvailable(ObjectMapper::new));
     }
+
+    /**
+     * 容器初始化完成后自动将受管的定制 ObjectMapper 绑定至 JsonUtil 静态门面
+     * 兑现 ADR-0025 架构承诺，使静态门面与 Spring 容器序列化规则完全保持自洽
+     *
+     * @param objectMapperProvider ObjectMapper 提供者
+     * @return SmartInitializingSingleton 实例
+     */
+    @Bean
+    @ConditionalOnClass(io.github.atengk.boot.core.util.JsonUtil.class)
+    public org.springframework.beans.factory.SmartInitializingSingleton jsonUtilInitializer(
+            ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return () -> {
+            ObjectMapper objectMapper = objectMapperProvider.getIfAvailable();
+            if (objectMapper != null) {
+                io.github.atengk.boot.core.util.JsonUtil.init(objectMapper);
+            }
+        };
+    }
 }

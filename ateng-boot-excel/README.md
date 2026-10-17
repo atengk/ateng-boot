@@ -113,8 +113,8 @@ ExcelUtil.readBatch(file.getInputStream(), UserVO.class, batchList -> {
 只需在导出实体的字段上标注 `@ExcelSensitive` 注解，`ExcelUtil` 会在单元格写出阶段自动拦截转换并进行安全掩码，**源实体对象在 JVM 内存中始终保持 100% 原始真实明文**，严格遵守项目安全规范：
 
 ```java
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
-import io.github.atengk.boot.excel.enums.DesensitizeType;
 import org.apache.fesod.sheet.annotation.ExcelProperty;
 import lombok.Data;
 
@@ -125,19 +125,19 @@ public class SensitiveUserVO {
     private Long id;
 
     @ExcelProperty("用户名称")
-    @ExcelSensitive(DesensitizeType.CHINESE_NAME)
+    @ExcelSensitive(SensitiveType.CHINESE_NAME)
     private String name;
 
     @ExcelProperty("手机号码")
-    @ExcelSensitive(DesensitizeType.MOBILE_PHONE)
+    @ExcelSensitive(SensitiveType.MOBILE_PHONE)
     private String phone;
 
     @ExcelProperty("身份证号")
-    @ExcelSensitive(DesensitizeType.ID_CARD)
+    @ExcelSensitive(SensitiveType.ID_CARD)
     private String idCard;
 
     @ExcelProperty("电子邮箱")
-    @ExcelSensitive(DesensitizeType.EMAIL)
+    @ExcelSensitive(SensitiveType.EMAIL)
     private String email;
 
     @ExcelProperty("首尾保留脱敏")

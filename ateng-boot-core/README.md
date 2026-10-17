@@ -41,6 +41,18 @@ Result<Void> res4 = Result.fail(403, "账户已被冻结，请联系管理员");
 
 // 5. 链式安全取值（失败时直接抛出业务异常 BusinessException）
 UserVO user = res2.getOrThrow();
+
+// 6. 函数式映射（成功时变换载荷类型，失败时自动透传错误码与 traceId）
+Result<UserDTO> dtoResult = userRpcService.queryUser();
+Result<UserVO> voResult = dtoResult.map(UserVO::from);
+
+// 7. 函数式观察与条件消费（支持流畅链式编排）
+dtoResult.peek(u -> log.info("成功获取用户: {}", u.getName()))
+         .ifFail(err -> log.error("调用失败: [{}] {}", err.getCode(), err.getMsg()));
+
+// 8. 优雅兜底与定制异常抛出（orElse / orElseGet / orElseThrow）
+UserDTO safeUser = dtoResult.orElseGet(UserDTO::guestUser);
+UserDTO requiredUser = dtoResult.orElseThrow(CustomException::new);
 ```
 
 ### 预期响应 JSON 契约
@@ -145,12 +157,43 @@ java -Dateng.boot.snowflake.worker-id=2 -Dateng.boot.snowflake.datacenter-id=1 -
 
 ---
 
-## 6. 全场景敏感数据脱敏工具 (`DesensitizeUtil`)
+## 6. 全场景敏感数据脱敏体系 (`DesensitizeUtil` & `@FieldSensitive`)
 
 ### 场景痛点
-涵盖国内常见的所有隐私合规字段，纯 JDK 正则/算法实现，毫秒级脱敏，严禁在业务层手工打星号引发脏数据写回。
+涵盖国内常见的所有隐私合规字段，纯 JDK 算法实现，毫秒级脱敏。支持静态工具调用与视图层出界动态打码（配合 Jackson），源数据在 JVM 内存中 100% 保持未脱敏真明文，严格防范打星号脏数据写回持久层引发数据损毁（[ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
 
 ### 核心代码范式
+#### 1. 视图层 / DTO 字段动态脱敏（自动适配 Controller JSON 响应）
+```java
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
+
+public class UserVO {
+    private Long id;
+
+    // 预设脱敏策略：手机号（138****5678）
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    private String phone;
+
+    // 预设脱敏策略：身份证号（110101********2345）
+    @FieldSensitive(SensitiveType.ID_CARD)
+    private String idCard;
+
+    // 预设脱敏策略：中文姓名（两字变 张*，多字变 诸**明）
+    @FieldSensitive(SensitiveType.CHINESE_NAME)
+    private String name;
+
+    // 自定义区间脱敏：索引 [2, 5) 替换为 '#'
+    @FieldSensitive(type = SensitiveType.CUSTOM, startInclude = 2, endExclude = 5, maskChar = '#')
+    private String customCode;
+
+    // 首尾保留字符数脱敏：保留前2位与后2位
+    @FieldSensitive(keepHead = 2, keepTail = 2, maskChar = '#')
+    private String token;
+}
+```
+
+#### 2. 底层通用脱敏原语 (`DesensitizeUtil`)
 ```java
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 
@@ -188,6 +231,18 @@ DesensitizeUtil.socialCreditCode("91110000000000001X"); // 91110000********1X
 DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO****************56
 ```
 
+### 预期响应 JSON 呈现
+```json
+{
+  "id": "104485532445560832",
+  "phone": "138****5678",
+  "idCard": "110101********2345",
+  "name": "张*",
+  "customCode": "12###67890",
+  "token": "TO################56"
+}
+```
+
 ---
 
 ## 7. 轻量原生加解密与哈希摘要 (`CryptoUtil` & `DigestUtil`)
@@ -218,10 +273,10 @@ String sm3Hex = DigestUtil.sm3Hex("raw_text"); // 国密 SM3
 
 ---
 
-## 8. 通用线性树形组装工具 (`TreeUtil`)
+## 8. 通用线性树形与森林装配工具 (`TreeUtil`)
 
 ### 场景痛点
-菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配。
+菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配，并支持多根谓词成林与递归剪枝过滤。
 
 ### 核心代码范式
 ```java
@@ -230,38 +285,233 @@ import io.github.atengk.boot.core.util.TreeUtil;
 // 待组装的平铺扁平集合
 List<MenuNode> flatList = menuService.listAll();
 
-// 一行代码组装为树形嵌套结构
-List<MenuNode> menuTree = TreeUtil.buildTree(
+// 1. 指定根节点父 ID 组装单根/多根树（O(N) 线性装配）
+List<MenuNode> menuTree = TreeUtil.build(
         flatList,
         0L,                        // 根节点父 ID 标识
         MenuNode::getId,           // 节点 ID 提取器
         MenuNode::getParentId,     // 父节点 ID 提取器
-        MenuNode::getChildren,     // 子节点集合提取器
         MenuNode::setChildren      // 子节点集合设置器
+);
+
+// 2. 基于自定义谓词成林（适用于非固定 parentId、孤儿节点或复杂根规则森林）
+List<MenuNode> forest = TreeUtil.buildForest(
+        flatList,
+        node -> node.getParentId() == null || node.getParentId() <= 0,
+        MenuNode::getId,
+        MenuNode::getParentId,
+        MenuNode::setChildren
+);
+
+// 3. 递归条件剪枝过滤（保留命中文本的节点及其祖先链路，剔除无关分支）
+List<MenuNode> filteredTree = TreeUtil.filter(
+        menuTree,
+        node -> node.getName().contains("导出"),
+        MenuNode::getChildren,
+        MenuNode::setChildren
 );
 ```
 
 ---
 
-## 9. 用户审计上下文与异步线程透传 (`UserContextHolder` & `AsyncContext`)
+## 9. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
 
 ### 场景痛点
-异步线程 `@Async` 或线程池执行任务时，主线程的登录用户上下文与链路追踪 MDC 会丢失。
+业务方法常需要返回多个关联属性（如 `count` 与 `totalAmount`，或 `min/avg/max` 区间三要素），创建专用 DTO 过重，使用 `Map<String, Object>` 丧失强类型安全。
+
+### 核心特性
+- **JDK 17 Record 原生实现**：100% 具备值对象语义（不可变、自动实现 `equals`、`hashCode` 与 `toString`）；
+- **全生态别名兼容**：支持 `left()/right()`、`getLeft()/getRight()` 以及 `getKey()/getValue()` 别名，平滑对接 Map/Stream 流；
+- **原生可序列化**：标配实现 `Serializable`，支持 RPC、缓存与文件序列化。
+
+### 核心代码范式
+```java
+import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.Triple;
+
+// 1. 构造与解构双元组 Pair
+Pair<String, Long> pair = Pair.of("用户总数", 1024L);
+String key = pair.left();     // 或 pair.getKey()
+Long value = pair.right();    // 或 pair.getValue()
+
+// 2. 构造与解构三元组 Triple
+Triple<String, BigDecimal, Boolean> triple = Triple.of("VIP-01", new BigDecimal("99.9"), true);
+String grade = triple.left();
+BigDecimal price = triple.middle();
+Boolean enabled = triple.right();
+```
+
+---
+
+## 10. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
+
+### 场景痛点
+在分布式与 SaaS 架构下，异步线程池（如 `@Async`、`CompletableFuture`、自定义线程池）执行任务时，主线程的链路追踪 `traceId`、当前登录操作人、多租户上下文与忽略租户状态极易发生上下文丢失或线程池污染，导致跨租户越权漏洞。
+
+### 核心特性
+- **四维上下文完整快照**：$\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$；
+- **双重 SPI 可插拔挂载**：`CurrentUserProvider` 与 `CurrentTenantProvider`，无缝桥接 Sa-Token 等安全框架；
+- **栈式租户嵌套与忽略深度**：支持在单次请求中临时切换租户或嵌套忽略租户过滤，方法执行完毕严格恢复上下文；
+- **全生命周期现场克隆与恢复**：执行任务前克隆工作线程既有状态，任务执行后严格恢复工作线程现场，杜绝线程污染与内存泄漏。
 
 ### 核心代码范式
 ```java
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 
-// 1. 设置当前线程的用户上下文
+// ==================== 1. 用户上下文 (UserContextHolder) ====================
 UserContextHolder.setUserId("10086");
 String userId = UserContextHolder.getUserId();
 
-// 2. 闭包式受控执行（执行完成后自动安全清理上下文）
+// 闭包式执行（执行完成后自动清理上下文）
 UserContextHolder.runWithUser("10086", () -> {
     orderService.processOrder();
 });
 
-// 3. 跨线程池安全透传（由 ateng-boot-web 预装配线程池自动支持）
-// 配合 ContextCopyingTaskDecorator 自动将 MDC traceId 与 UserContextHolder 复制到工作线程
+// ==================== 2. 多租户上下文 (TenantContextHolder) ====================
+// 设置与获取租户标识（支持 String 与 Long）
+TenantContextHolder.setTenantId("tenant_001");
+String tenantId = TenantContextHolder.getTenantId();
+
+// 闭包式在临时租户环境中执行
+TenantContextHolder.runWithTenant("tenant_002", () -> {
+    tenantDataSyncService.syncData();
+});
+
+// 闭包式受控忽略租户拦截（如跨租户全局报表统计）
+TenantContextHolder.runWithoutTenant(() -> {
+    sysDictService.initSystemCache();
+});
+
+// ==================== 3. 四维上下文跨线程透传 (AsyncContext) ====================
+// 包装 Runnable / Callable 跨线程安全执行
+CompletableFuture.runAsync(AsyncContext.wrap(() -> {
+    // 自动无缝继承主线程的 traceId、userId、tenantId 及 ignoreTenant 状态
+    reportService.generateReport();
+}), taskExecutor);
+
+// 包装 Supplier<T>（避免 lambda 歧义）
+CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
+    return billingService.calculateInvoice();
+}), taskExecutor);
+
+// ==================== 4. 线程池全局修饰器 (ContextCopyingTaskDecorator) ====================
+// 适用于 ThreadPoolTaskExecutor，全量自动复制四维快照并在消费后严格恢复现场
+ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+executor.setTaskDecorator(new ContextCopyingTaskDecorator());
 ```
+
+---
+
+## 11. 未来中间件孵化通用原语套件
+
+> 为未来扩展存储（Storage）、消息队列（MQ）、分布式任务调度（Job）、邮件短信及 AI 等功能模块提供统一的纯原生零外部依赖基础设施标准件。
+
+### 1. Spring 容器静态门面 (`SpringUtil`)
+在非受管 POJO、静态工具类或异步闭包中安全获取 Spring Bean、环境变量与发布事件：
+```java
+import io.github.atengk.boot.core.util.SpringUtil;
+
+// 1. 获取已注册的 Bean
+UserService userService = SpringUtil.getBean(UserService.class);
+DataSource dataSource = SpringUtil.getBean("dataSource", DataSource.class);
+
+// 2. 读取配置属性与环境环境
+String port = SpringUtil.getProperty("server.port", "8080");
+Integer timeout = SpringUtil.getProperty("rpc.timeout", Integer.class, 3000);
+String activeProfile = SpringUtil.getActiveProfile();
+
+// 3. 发布应用事件
+SpringUtil.publishEvent(new UserRegisteredEvent(userId));
+```
+
+### 2. 强类型方法引用解析 (`LambdaUtil`)
+纯 JDK 17 原生通过方法引用推导 JavaBean 字段名，告别易错的硬编码字符串属性名：
+```java
+import io.github.atengk.boot.core.util.LambdaUtil;
+
+// 1. 标准 Getter 方法引用推导
+String nameField = LambdaUtil.getFieldName(User::getName); // "name"
+String ageField = LambdaUtil.getFieldName(User::getAge);   // "age"
+
+// 2. boolean is 方法推导
+String deletedField = LambdaUtil.getFieldName(User::isDeleted); // "deleted"
+
+// 3. 连续大写缩写保护
+String urlField = LambdaUtil.getFieldName(User::getURL); // "URL"
+```
+
+### 3. 内存零拷贝分批与安全收集器 (`CollectionUtil` & `MoreCollectors`)
+```java
+import io.github.atengk.boot.core.util.CollectionUtil;
+import io.github.atengk.boot.core.util.MoreCollectors;
+
+// 1. 基于 subList 原生视图的零拷贝安全分批（内存防 OOM 批量流转）
+List<Order> orders = orderMapper.selectHugeList();
+List<List<Order>> batches = CollectionUtil.partition(orders, 500);
+for (List<Order> batch : batches) {
+    orderService.processBatch(batch);
+}
+
+// 2. 防 NPE 与防 DuplicateKey 的流收集器（原生 Collectors.toMap 当 Value 为 null 时会抛出 NPE）
+Map<Long, String> userMap = userList.stream()
+        .collect(MoreCollectors.toSafeMap(User::getId, User::getRemark));
+```
+
+### 4. 自动实例化反射拷贝与非空合并 (`BeanUtil`)
+基于 Spring `BeanUtils` 提供强类型自动实例化与 Patch 增量覆盖：
+```java
+import io.github.atengk.boot.core.util.BeanUtil;
+
+// 1. 单实体自动实例化拷贝
+UserVO vo = BeanUtil.copy(userEntity, UserVO.class);
+
+// 2. 列表批量拷贝（空安全返回空列表）
+List<UserVO> voList = BeanUtil.copyList(userEntityList, UserVO.class);
+
+// 3. 局部非空覆盖（仅用 source 的非 null 字段覆盖 target，保留 target 原有字段）
+BeanUtil.copyIgnoreNull(patchDTO, existEntity);
+```
+
+### 5. 纯函数式指数退避重试执行器 (`RetryUtil`)
+100% 原生 JDK 实现，无需依赖 Spring Retry 或 Resilience4j 等重型 AOP 框架：
+```java
+import io.github.atengk.boot.core.util.RetryUtil;
+import java.time.Duration;
+
+// 1. 默认重试（最多 3 次，初始间隔 100ms，指数倍数 2.0）
+String result = RetryUtil.execute(() -> remoteRpcService.call());
+
+// 2. 定制化指数退避与异常谓词过滤
+RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+        .maxAttempts(5)
+        .delay(Duration.ofMillis(200))
+        .multiplier(1.5)
+        .maxDelay(Duration.ofSeconds(2))
+        .retryPredicate(ex -> ex instanceof SocketTimeoutException) // 仅网络超时才重试
+        .build();
+
+RetryUtil.execute(() -> thirdPartyApiClient.sendRequest(), config);
+```
+
+### 6. 路径穿越安全清洗与容量格式化 (`FileUtil`)
+```java
+import io.github.atengk.boot.core.util.FileUtil;
+
+// 1. 防御路径穿越攻击（彻底消除 ../ 与空字符路径穿越漏洞）
+String cleanName = FileUtil.cleanFilename("../../etc/passwd"); // "passwd"
+String safeDoc = FileUtil.cleanFilename("report\0.pdf");        // "report.pdf"
+
+// 2. 扩展名与主文件名提取（统一转小写）
+String ext = FileUtil.getExtName("archive.tar.gz"); // "gz"
+String base = FileUtil.getBaseName("avatar.png");   // "avatar"
+
+// 3. 字节容量人类可读格式化
+String size1 = FileUtil.formatSize(1536);          // "1.50 KB"
+String size2 = FileUtil.formatSize(10485760);       // "10.00 MB"
+String size3 = FileUtil.formatSize(2684354560L);    // "2.50 GB"
+```
+
+

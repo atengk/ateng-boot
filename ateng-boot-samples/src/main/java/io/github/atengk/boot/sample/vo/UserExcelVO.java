@@ -1,12 +1,12 @@
 package io.github.atengk.boot.sample.vo;
 
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.excel.annotation.ExcelDict;
 import io.github.atengk.boot.excel.annotation.ExcelDropdown;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
 import io.github.atengk.boot.excel.annotation.ExcelPrompt;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
 import io.github.atengk.boot.excel.converter.ExcelDictConverter;
-import io.github.atengk.boot.excel.enums.DesensitizeType;
 import io.github.atengk.boot.sample.enums.SampleGenderEnum;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -45,7 +45,7 @@ public class UserExcelVO implements Serializable {
      */
     @NotBlank(message = "联系手机不能为空")
     @Pattern(regexp = "^1[3-9]\\d{9}$", message = "手机号码格式不合法")
-    @ExcelSensitive(DesensitizeType.MOBILE_PHONE)
+    @ExcelSensitive(SensitiveType.MOBILE_PHONE)
     @ExcelProperty(value = "联系手机", index = 2)
     private String phone;
 
@@ -53,7 +53,7 @@ public class UserExcelVO implements Serializable {
      * 电子邮箱
      */
     @Email(message = "电子邮箱格式不正确")
-    @ExcelSensitive(DesensitizeType.EMAIL)
+    @ExcelSensitive(SensitiveType.EMAIL)
     @ExcelProperty(value = "电子邮箱", index = 3)
     private String email;
 

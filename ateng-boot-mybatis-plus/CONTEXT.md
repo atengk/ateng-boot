@@ -49,15 +49,15 @@ _Avoid_: SecretField, CryptoField, EncryptField
 _Avoid_: AesTypeHandler, SecretHandler, CryptoHandler
 
 **FieldSensitive**:
-声明在实体或 VO 属性上的出库数据动态脱敏注解，基于 Jackson `SensitiveJsonSerializer` 在序列化为 JSON 响应时动态掩码，确保 Java 内存中始终保持 100% 原始真实明文。
+声明在实体或 VO 属性上的出库数据动态脱敏注解，定义于 `ateng-boot-core`，基于 Jackson `SensitiveJsonSerializer` 在序列化为 JSON 响应时动态掩码，确保 Java 内存中始终保持 100% 原始真实明文。
 _Avoid_: MaskField, Desensitize, SensitiveData
 
 **SensitiveJsonSerializer**:
-基于 Jackson `ContextualSerializer` 动态感知 `@FieldSensitive` 配置的动态脱敏序列化器，委托 `DesensitizeUtil` 执行高性能掩码转换。
+基于 Jackson `ContextualSerializer` 动态感知 `@FieldSensitive` 配置的动态脱敏序列化器，定义于 `ateng-boot-core`，委托 `DesensitizeUtil` 执行高性能掩码转换。
 _Avoid_: MaskSerializer, DesensitizeSerializer
 
 **SensitiveType**:
-脱敏策略枚举类，包含 `CHINESE_NAME`、`MOBILE_PHONE`、`FIXED_PHONE`、`ID_CARD`、`EMAIL`、`BANK_CARD`、`PASSWORD`、`ADDRESS`、`CAR_LICENSE`、`IPV4`、`IPV6`、`SOCIAL_CREDIT_CODE`、`KEEP_HEAD_TAIL`、`CUSTOM` 与 `NONE`。
+脱敏策略枚举类，定义于 `ateng-boot-core`，包含 `CHINESE_NAME`、`MOBILE_PHONE`、`FIXED_PHONE`、`ID_CARD`、`EMAIL`、`BANK_CARD`、`PASSWORD`、`ADDRESS`、`CAR_LICENSE`、`IPV4`、`IPV6`、`SOCIAL_CREDIT_CODE`、`KEEP_HEAD_TAIL`、`CUSTOM` 与 `NONE`。
 _Avoid_: MaskType, DesensitizeType
 
 **PageUtil**:

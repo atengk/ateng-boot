@@ -4,7 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.sample.service.SaTokenSampleService;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
