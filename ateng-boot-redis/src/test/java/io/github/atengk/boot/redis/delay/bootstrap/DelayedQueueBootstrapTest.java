@@ -259,4 +259,37 @@ class DelayedQueueBootstrapTest {
         // 初始 1 次 + 重试 2 次 = 3 次执行
         assertThat(attempts.get()).isEqualTo(3);
     }
+
+    @Test
+    @DisplayName("测试延时队列消费期间自动注入 MDC traceId 并在消费后安全清理")
+    void testMdcTraceIdPropagation() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> capturedTraceId = new AtomicReference<>();
+
+        class TracedConsumer {
+            @DelayedQueueListener(queue = "traced-queue")
+            public void handle(String msg) {
+                capturedTraceId.set(org.slf4j.MDC.get(DelayedQueueBootstrap.MDC_TRACE_ID_KEY));
+                latch.countDown();
+            }
+        }
+
+        TracedConsumer consumer = new TracedConsumer();
+        when(redissonClient.getBlockingQueue("traced-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("TRACED-MSG")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("tracedConsumer", consumer);
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        boolean completed = latch.await(5, TimeUnit.SECONDS);
+        assertThat(completed).isTrue();
+        assertThat(capturedTraceId.get()).isNotBlank().hasSize(32);
+    }
 }

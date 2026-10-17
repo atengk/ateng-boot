@@ -71,4 +71,32 @@ class UserContextHolderTest {
         UserContextHolder.set("fallback-user");
         assertEquals("fallback-user", fallbackProvider.getCurrentUser());
     }
+
+    @Test
+    @DisplayName("验证 setUserProvider 全局 SPI 自动回退与 ThreadLocal 优先级")
+    void shouldFallbackToUserProviderWhenThreadLocalIsEmpty() {
+        try {
+            UserContextHolder.setUserProvider(() -> "spi-injected-user");
+
+            // 1. ThreadLocal 为空时回退至 SPI
+            assertEquals("spi-injected-user", UserContextHolder.get());
+            assertEquals("spi-injected-user", UserContextHolder.getUserId());
+
+            // 2. ThreadLocal 显式赋值时优先使用 ThreadLocal
+            UserContextHolder.set("explicit-local-user");
+            assertEquals("explicit-local-user", UserContextHolder.get());
+
+            // 3. ThreadLocal 清除后再次回退至 SPI
+            UserContextHolder.clear();
+            assertEquals("spi-injected-user", UserContextHolder.get());
+
+            // 4. SPI 抛出异常时防御性返回 null 而不中断业务
+            UserContextHolder.setUserProvider(() -> {
+                throw new RuntimeException("SPI error");
+            });
+            assertNull(UserContextHolder.get());
+        } finally {
+            UserContextHolder.setUserProvider(null);
+        }
+    }
 }

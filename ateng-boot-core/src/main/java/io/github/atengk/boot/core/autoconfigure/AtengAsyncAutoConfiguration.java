@@ -1,7 +1,7 @@
-package io.github.atengk.boot.web.autoconfigure;
+package io.github.atengk.boot.core.autoconfigure;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
-import io.github.atengk.boot.web.properties.AsyncProperties;
+import io.github.atengk.boot.core.properties.AsyncProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
 import org.springframework.beans.factory.ObjectProvider;

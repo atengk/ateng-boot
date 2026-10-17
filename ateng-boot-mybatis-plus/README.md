@@ -216,7 +216,44 @@ userService.saveBatchFast(users); // 自动按 1000 条分批切片事务插入
 
 ---
 
-## 10. 持久层与传输契约解耦工具 (`PageUtil`)
+## 10. 乐观锁并发自旋重试模板 (`OptimisticLockTemplate`)
+
+### 场景痛点
+在高并发库存扣减、账户余额更新或状态机流转场景下，MyBatis-Plus 的 `@Version` 乐观锁常因并发冲突导致更新影响行数为 0。业务层如果不做自旋重试就会频繁报错，而手工编写 `while` 循环容易产生死锁或缺少指数退避。
+
+### 核心代码范式
+依托 `ateng-boot-core` 纯原生 `RetryUtil` 引擎，提供开箱即用的乐观锁并发重试闭包：
+```java
+import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
+
+// 1. 默认自旋重试（最多 3 次，初始等待 50ms，1.5 倍指数退避）
+Account account = OptimisticLockTemplate.execute(
+        () -> accountMapper.selectById(accountId), // 每次自旋重试重新加载最新版本实体
+        acc -> {
+            if (acc.getBalance() < deductionAmount) {
+                throw new BusinessException(400, "账户余额不足");
+            }
+            acc.setBalance(acc.getBalance() - deductionAmount);
+            // 执行带 @Version 的乐观锁更新，影响行数 > 0 返回 true，版本冲突返回 false 自动触发自旋重试
+            return accountMapper.updateById(acc) > 0;
+        }
+);
+
+// 2. 自定义重试次数与初始退避时长
+Account updated = OptimisticLockTemplate.execute(
+        () -> accountMapper.selectById(accountId),
+        acc -> {
+            acc.setStatus("PROCESSED");
+            return accountMapper.updateById(acc) > 0;
+        },
+        5,                          // 最多重试 5 次
+        Duration.ofMillis(100)      // 初始退避 100ms
+);
+```
+
+---
+
+## 11. 持久层与传输契约解耦工具 (`PageUtil`)
 
 ### 核心代码范式
 ```java
@@ -242,7 +279,7 @@ public class UserServiceImpl implements UserService {
 
 ---
 
-## 11. 模块配置属性参考 (`application.yml`)
+## 12. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:

@@ -33,6 +33,8 @@
 | **0023** | 企业级轻量流式 Excel 引擎与数据安全/校验/防呆一体化架构决策 | `Accepted` | 锁定 Apache Fesod 流式基线，导出动态脱敏（@ExcelSensitive 守卫 ADR-0012 内存真明文），JSR-303 行级校验与红字批注回写，防呆模板下拉提示，双向枚举/字典转义，复杂报表填充合并与多 Sheet 编排 | `ateng-boot-excel` | [查看](./0023-streaming-excel-engine-and-data-security-architecture.md) |
 | **0024** | 企业级 Sa-Token 鉴权生态与安全防御/分布式会话一体化架构决策 | `Accepted` | 独立 Starter，双轨拦截防御，自适应存储桥接，强类型 LoginUser/LoginHelper，底座全链路贯通，两级权限缓存与 Spring 原生事件广播 | `ateng-boot-satoken` | [查看](./0024-enterprise-satoken-authentication-and-security-architecture.md) |
 | **0025** | Core 核心底座全方位扩建与未来中间件孵化地基架构决策 | `Accepted` | 序列化门面 JsonUtil 下沉、脱敏/租户上下文彻底归位、四维异步透传闭环、函数式 Result 演化与 SpringUtil/LambdaUtil/RetryUtil 等未来孵化原语矩阵 | `ateng-boot-core` / 全工程 | [查看](./0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
+| **0026** | 生产级基线加固与底层设施大一统架构决策 | `Accepted` | 全域 JSON 100% 收敛 JsonUtil、双维上下文镜像对称与 Sa-Token 自动无感桥接、TraceFilter 无锁原语、异步线程池下沉 core、底座原语复用与延时队列 MDC 追踪 | `core` / `web` / `satoken` / `redis` / `excel` | [查看](./0026-production-hardening-and-foundations-unification.md) |
+| **0027** | 分层双防数据校验体系与标准化原语架构决策 | `Accepted` | 确立分层双防铁律，沉淀 ValidationGroups 标准分组契约与 ValidList 批量级联容器，扩展 ValidatorUtil POJO 编程式校验与无 EL 优雅降级 | `core` / `web` | [查看](./0027-defense-in-depth-validation-and-standardized-primitives.md) |
 
 
 
@@ -48,3 +50,6 @@
    - **权衡折衷产物 (Real trade-off)**：在多个有明确利弊的备选方案中经过推演做出的取舍。
 2. **编号与命名**：统一采用 4 位递增序号与短横线命名，如 `0009-distributed-lock-redis-integration.md`。
 3. **结构要素**：必须包含【背景与痛点】、【决策内容与落地设计】及【后果与权衡（正向收益与妥协成本）】。
+4. **膨胀防线与合并收敛 (Anti-Inflation & Consolidation)**：
+   - **严禁碎片化滥立 ADR**：单个工具类微调、常规方法扩展、业务小修补坚决禁止新建独立 ADR；
+   - **优先增量修订既有篇目**：针对已就绪模块的功能增强与基线加固，优先在既有归属 ADR（如基线加固并入 ADR-0026、校验设施并入 ADR-0027、核心底座原语并入 ADR-0025）中以增量章节演进；仅在孵化完整新中间件底座、重大跨模块协议契约重构或颠覆性路线变革时，方可分配新编号立篇。

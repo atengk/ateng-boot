@@ -1,1 +1,2 @@
 io.github.atengk.boot.core.autoconfigure.AtengCoreAutoConfiguration
+io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration

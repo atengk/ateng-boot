@@ -3,9 +3,7 @@ package io.github.atengk.boot.satoken.util;
 import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import cn.dev33.satoken.stp.StpUtil;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import lombok.extern.slf4j.Slf4j;
@@ -15,16 +13,13 @@ import java.util.Set;
 
 /**
  * 强类型登录会话操作静态门面
- * 封装 Sa-Token 底层会话操作，提供纯净 JSON 字符串封包存储，彻底杜绝 @class 污染与反序列化白名单异常
+ * 封装 Sa-Token 底层会话操作，基于 JsonUtil 提供纯净 JSON 字符串封包存储，彻底杜绝 @class 污染与反序列化白名单异常
  *
  * @author Ateng
  * @since 2026-10-17
  */
 @Slf4j
 public final class LoginHelper {
-
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private LoginHelper() {
     }
@@ -165,9 +160,9 @@ public final class LoginHelper {
             return;
         }
         try {
-            String jsonStr = OBJECT_MAPPER.writeValueAsString(loginUser);
+            String jsonStr = JsonUtil.toJsonString(loginUser);
             StpUtil.getSession().set(SaTokenConstant.LOGIN_USER_KEY, jsonStr);
-        } catch (JsonProcessingException e) {
+        } catch (Exception e) {
             log.error("LoginUser 序列化失败: ", e);
             throw new IllegalStateException("用户上下文序列化异常", e);
         }
@@ -206,8 +201,8 @@ public final class LoginHelper {
         }
         if (rawVal instanceof String jsonStr) {
             try {
-                return OBJECT_MAPPER.readValue(jsonStr, clazz);
-            } catch (JsonProcessingException e) {
+                return JsonUtil.parseObject(jsonStr, clazz);
+            } catch (Exception e) {
                 log.warn("LoginUser 反序列化失败: json={}, targetClass={}", jsonStr, clazz.getName(), e);
                 return null;
             }

@@ -365,6 +365,9 @@ import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 UserContextHolder.setUserId("10086");
 String userId = UserContextHolder.getUserId();
 
+// 挂载全局 CurrentUserProvider SPI 外部动态降级兜底（例如无缝桥接 Sa-Token 会话）
+UserContextHolder.setUserProvider(LoginHelper::getUserId);
+
 // 闭包式执行（执行完成后自动清理上下文）
 UserContextHolder.runWithUser("10086", () -> {
     orderService.processOrder();
@@ -374,6 +377,9 @@ UserContextHolder.runWithUser("10086", () -> {
 // 设置与获取租户标识（支持 String 与 Long）
 TenantContextHolder.setTenantId("tenant_001");
 String tenantId = TenantContextHolder.getTenantId();
+
+// 挂载全局 CurrentTenantProvider SPI 外部动态降级兜底
+TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
 
 // 闭包式在临时租户环境中执行
 TenantContextHolder.runWithTenant("tenant_002", () -> {
@@ -397,10 +403,17 @@ CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
     return billingService.calculateInvoice();
 }), taskExecutor);
 
-// ==================== 4. 线程池全局修饰器 (ContextCopyingTaskDecorator) ====================
-// 适用于 ThreadPoolTaskExecutor，全量自动复制四维快照并在消费后严格恢复现场
-ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+// ==================== 4. 开箱即用受管异步线程池 (AtengAsyncAutoConfiguration) ====================
+// 位于 core 底座，自动注入 ContextCopyingTaskDecorator，支持 Spring @Async 零配置开箱即用
+// application.yml 配置项：
+// ateng:
+//   boot:
+//     async:
+//       core-pool-size: 8
+//       max-pool-size: 16
+//       queue-capacity: 1024
+//       thread-name-prefix: "ateng-async-"
+//       await-termination-seconds: 30
 ```
 
 ---
@@ -513,5 +526,107 @@ String size1 = FileUtil.formatSize(1536);          // "1.50 KB"
 String size2 = FileUtil.formatSize(10485760);       // "10.00 MB"
 String size3 = FileUtil.formatSize(2684354560L);    // "2.50 GB"
 ```
+
+### 7. 命名线程工厂标准件 (`NamedThreadFactory`)
+纯 JDK 17 原生实现，为自建线程池提供统一前缀、自增序号、守护线程属性与未捕获异常防护，彻底消除线上线程转储 (`jstack`) 中无意义的 `pool-N-thread-M` 命名：
+```java
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+// 1. 创建非守护线程工厂（业务工作线程）
+ExecutorService workerPool = Executors.newFixedThreadPool(8, new NamedThreadFactory("order-worker"));
+// 线程名依次为: order-worker-1, order-worker-2, ...
+
+// 2. 创建守护线程工厂（后台监控/轮询）
+ExecutorService daemonPool = Executors.newCachedThreadPool(new NamedThreadFactory("mq-pull", true));
+
+// 3. 带有未捕获异常处理器的线程工厂
+NamedThreadFactory factory = new NamedThreadFactory("sync-job", false, (thread, ex) -> {
+    log.error("线程 [{}] 发生未捕获致命异常: ", thread.getName(), ex);
+});
+```
+
+### 8. 常用业务数据格式编程式校验 (`ValidatorUtil`)
+100% 依托原生能力，提供手机号、中国居民身份证（带模 11 加权校验码与出生日期真伪验证）、邮箱、IP、车牌号及统一社会信用代码的高精度编程式布尔断言：
+```java
+import io.github.atengk.boot.core.util.ValidatorUtil;
+
+// 1. 手机号码与电话校验
+boolean v1 = ValidatorUtil.isMobile("13812345678"); // true
+boolean v2 = ValidatorUtil.isPhone("010-88889999"); // true
+
+// 2. 18 位身份证权威加权模 11 校验
+boolean v3 = ValidatorUtil.isIdCard("11010519491231002X"); // true (包含生日真实性与校验位校验)
+
+// 3. 电子邮箱校验
+boolean v4 = ValidatorUtil.isEmail("admin@company.com"); // true
+
+// 4. IP 地址校验 (IPv4 / IPv6)
+boolean v5 = ValidatorUtil.isIpv4("192.168.1.1"); // true
+boolean v6 = ValidatorUtil.isIp("::1");           // true
+
+// 5. 中国车牌号 (含新能源绿牌)
+boolean v7 = ValidatorUtil.isCarLicense("京A88888");  // true
+boolean v8 = ValidatorUtil.isCarLicense("粤B12345D"); // true
+
+// 6. 统一社会信用代码 (18位法人证照)
+boolean v9 = ValidatorUtil.isSocialCreditCode("91110000000000001X"); // true
+
+// 7. POJO 编程式整对象快速失败校验（不通过直接抛出 BusinessException 400）
+UserDTO user = new UserDTO(null, "", "13800000000");
+ValidatorUtil.validate(user); // 抛出 BusinessException: "用户名不能为空"
+
+// 8. 支持指定校验分组
+ValidatorUtil.validate(user, ValidationGroups.Update.class);
+
+// 9. 单属性校验断言
+ValidatorUtil.validateProperty(user, "username");
+```
+
+### 9. 校验分组标准契约 (`ValidationGroups`)
+解决全系统分组 Marker 接口随意定义、语义割裂的痛点，提供高频统一标记接口：
+```java
+import io.github.atengk.boot.core.validation.ValidationGroups;
+import jakarta.validation.constraints.*;
+
+public class UserDTO {
+    // 仅在 Update 分组下要求必填
+    @NotNull(groups = ValidationGroups.Update.class, message = "修改时用户ID不能为空")
+    private Long id;
+
+    // 默认全分组必填
+    @NotBlank(message = "用户名不能为空")
+    private String username;
+
+    // 仅在 Status 状态流转分组下校验
+    @NotNull(groups = ValidationGroups.Status.class, message = "变更状态不能为空")
+    private Integer status;
+}
+```
+
+### 10. 批量级联校验 List 包装器 (`ValidList`)
+Spring MVC 默认接收 `@RequestBody @Valid List<DTO>` 时会忽略元素内部字段校验，导致非法数据穿透。`ValidList<E>` 原生透传集合方法并支持完整级联校验：
+```java
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.validation.ValidList;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/user")
+public class UserController {
+
+    /**
+     * 批量创建用户：传入 ValidList 自动级联触发每个 UserCreateDTO 内部字段校验
+     */
+    @PostMapping("/batch")
+    public Result<Void> batchCreate(@RequestBody @Valid ValidList<UserCreateDTO> userList) {
+        userService.saveBatch(userList);
+        return Result.success();
+    }
+}
+```
+
 
 

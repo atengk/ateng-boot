@@ -6,12 +6,13 @@ import cn.dev33.satoken.listener.SaTokenListener;
 import cn.dev33.satoken.stp.StpInterface;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.strategy.SaFirewallStrategy;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.spi.CurrentTenantProvider;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.aspect.SaCheckSameTokenAspect;
 import io.github.atengk.boot.satoken.cache.CachedStpInterface;
 import io.github.atengk.boot.satoken.cache.DefaultUserRolePermissionLoader;
@@ -60,14 +61,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class AtengSaTokenAutoConfiguration {
 
     private final SaTokenProperties properties;
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * 初始化全局安全防火墙策略，统一错误输出为 Result 契约
      */
     @PostConstruct
     public void initFirewallStrategy() {
-        // 自动挂载 Sa-Token 当前租户提取 SPI 至 Core 核心底座
+        // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
+        UserContextHolder.setUserProvider(LoginHelper::getUserId);
         TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
 
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
@@ -77,7 +78,7 @@ public class AtengSaTokenAutoConfiguration {
             Result<Void> failResult = Result.fail(CommonResultCode.BAD_REQUEST.getCode(), "非法请求拦截: " + e.getMessage());
             if (res.getSource() instanceof jakarta.servlet.http.HttpServletResponse servletResponse) {
                 try {
-                    servletResponse.getWriter().write(objectMapper.writeValueAsString(failResult));
+                    servletResponse.getWriter().write(JsonUtil.toJsonString(failResult));
                     servletResponse.getWriter().flush();
                 } catch (Exception ex) {
                     log.error("Sa-Token 防火墙输出异常: ", ex);

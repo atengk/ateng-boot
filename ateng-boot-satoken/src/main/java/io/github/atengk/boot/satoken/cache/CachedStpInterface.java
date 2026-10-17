@@ -1,8 +1,7 @@
 package io.github.atengk.boot.satoken.cache;
 
 import cn.dev33.satoken.stp.StpInterface;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,7 +33,6 @@ public class CachedStpInterface implements StpInterface {
     private final UserRolePermissionLoader loader;
     private final PermissionCacheService cacheService;
     private final SaTokenProperties properties;
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
     public List<String> getRoleList(Object loginId, String loginType) {
@@ -191,7 +189,7 @@ public class CachedStpInterface implements StpInterface {
      */
     private String serializeList(List<String> list) {
         try {
-            return objectMapper.writeValueAsString(list);
+            return JsonUtil.toJsonString(list);
         } catch (Exception e) {
             log.warn("序列化权限列表异常: ", e);
             return "[]";
@@ -203,7 +201,7 @@ public class CachedStpInterface implements StpInterface {
      */
     private List<String> deserializeList(String json) {
         try {
-            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+            return JsonUtil.parseList(json, String.class);
         } catch (Exception e) {
             log.warn("反序列化权限列表异常: json={}", json, e);
             return Collections.emptyList();

@@ -21,11 +21,11 @@ _Avoid_: ObjectMapperConfig, JsonConfig, JacksonConfig
 _Avoid_: CrossFilter, WebCorsConfig
 
 **AtengAsyncAutoConfiguration**:
-上下文感知受管异步线程池自动装配类，抢先于 Spring Boot 默认任务执行配置导出预装配 ContextCopyingTaskDecorator 的 ThreadPoolTaskExecutor（支持 CallerRunsPolicy 与优雅停机），并实现 AsyncConfigurer 为 Spring 异步体系统一提供调度与未捕获异常处理。
+上下文感知受管异步线程池自动装配类（已下沉收敛至 `ateng-boot-core` 统一底座），web 模块直接依赖继承，为 Spring 异步体系统一提供四维上下文快照（MDC、用户、租户、忽略租户）调度与未捕获异常处理。
 _Avoid_: AsyncConfig, ThreadPoolConfiguration, AsyncThreadPoolAutoConfiguration
 
 **AsyncProperties**:
-异步线程池运行时增强配置属性，以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
+异步线程池运行时增强配置属性（位于 `ateng-boot-core`），以 ateng.boot.async 为前缀，提供基于 CPU 核心数自适应的线程池容量、队列缓冲与优雅停机超时控制。
 _Avoid_: ThreadPoolProperties, AsyncConfigProperties
 
 **IpUtil**:

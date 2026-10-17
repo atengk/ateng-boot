@@ -1,8 +1,10 @@
 package io.github.atengk.boot.core.context;
 
+import io.github.atengk.boot.core.spi.CurrentUserProvider;
+
 /**
  * 用户操作人上下文持有者
- * 基于 ThreadLocal 维护当前请求或线程的用户标识，作为未挂载外部安全框架时的轻量级内存回退机制
+ * 基于 ThreadLocal 维护当前请求或线程的用户标识，支持编程式闭包、SPI 自动回退与跨线程隔离能力
  *
  * @author Ateng
  * @since 2026-10-15
@@ -11,7 +13,30 @@ public final class UserContextHolder {
 
     private static final ThreadLocal<String> USER_HOLDER = new ThreadLocal<>();
 
+    /**
+     * 外部用户操作人提取 SPI
+     */
+    private static volatile CurrentUserProvider userProvider;
+
     private UserContextHolder() {
+    }
+
+    /**
+     * 注册或更新全局用户操作人提取 SPI
+     *
+     * @param provider 用户提取提供者
+     */
+    public static void setUserProvider(CurrentUserProvider provider) {
+        userProvider = provider;
+    }
+
+    /**
+     * 获取当前全局配置的用户操作人提取 SPI
+     *
+     * @return 当前用户 SPI，未配置返回 null
+     */
+    public static CurrentUserProvider getUserProvider() {
+        return userProvider;
     }
 
     /**
@@ -34,11 +59,23 @@ public final class UserContextHolder {
 
     /**
      * 获取当前线程绑定的操作人唯一标识
+     * 优先从当前线程显式上下文中提取，若未设置则安全回退至 {@link CurrentUserProvider} SPI
      *
-     * @return 操作人唯一标识，若未设置则返回 null
+     * @return 操作人唯一标识，若未设置且无 SPI 提供者则返回 null
      */
     public static String get() {
-        return USER_HOLDER.get();
+        String user = USER_HOLDER.get();
+        if (user != null && !user.isBlank()) {
+            return user;
+        }
+        if (userProvider != null) {
+            try {
+                return userProvider.getCurrentUser();
+            } catch (Throwable ignored) {
+                // 防御外部 SPI 实现异常中断主业务逻辑
+            }
+        }
+        return null;
     }
 
     /**

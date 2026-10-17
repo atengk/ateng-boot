@@ -225,11 +225,11 @@ ServletUtil.setDownloadHeader(response, "用户花名册.xlsx");
 ## 11. 上下文感知受管异步线程池 (`@Async` & `AtengAsyncAutoConfiguration`)
 
 ### 场景痛点
-使用 Spring `@Async` 时，如果不做定制，MDC `traceId` 与登录用户上下文在子线程中会完全丢失，导致日志断链。
+使用 Spring `@Async` 时，如果不做定制，MDC `traceId` 与登录用户/租户上下文在子线程中会完全丢失，导致日志断链或数据越权。
 
 ### 核心机制
-- 自动注册带有 `ContextCopyingTaskDecorator` 的 `ThreadPoolTaskExecutor` 作为主异步线程池；
-- 异步任务执行前自动抓取主线程的 `traceId` 与 `UserContextHolder`，在子线程执行完成后安全清理；
+- 受管异步线程池已下沉至 `ateng-boot-core` 统一底座，Web 运行时天然继承，自动注册带有 `ContextCopyingTaskDecorator` 的 `ThreadPoolTaskExecutor` 作为主异步线程池；
+- 异步任务执行前自动抓取主线程的四维上下文快照（MDC `traceId`、`UserContextHolder`、`TenantContextHolder` 与忽略租户标记），在子线程执行完成后安全清理并恢复现场；
 - 支持自适应 CPU 核心数与优雅停机（`wait-for-tasks-to-complete-on-shutdown: true`）。
 
 ---

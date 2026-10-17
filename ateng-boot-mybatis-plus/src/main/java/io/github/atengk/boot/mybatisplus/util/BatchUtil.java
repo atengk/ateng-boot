@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mybatisplus.util;
 
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 
 import java.util.ArrayList;
@@ -57,12 +58,8 @@ public final class BatchUtil {
         int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
         List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
 
-        int totalSize = list.size();
         int affectedRows = 0;
-
-        for (int fromIndex = 0; fromIndex < totalSize; fromIndex += effectiveBatchSize) {
-            int toIndex = Math.min(fromIndex + effectiveBatchSize, totalSize);
-            List<T> subList = list.subList(fromIndex, toIndex);
+        for (List<T> subList : CollectionUtil.partition(list, effectiveBatchSize)) {
             affectedRows += mapper.insertBatchSomeColumn(subList);
         }
 

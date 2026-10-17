@@ -1,4 +1,4 @@
-package io.github.atengk.boot.web.properties;
+package io.github.atengk.boot.core.properties;
 
 import lombok.Getter;
 import lombok.Setter;

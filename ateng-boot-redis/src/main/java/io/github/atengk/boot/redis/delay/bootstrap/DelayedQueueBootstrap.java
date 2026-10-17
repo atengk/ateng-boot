@@ -1,12 +1,15 @@
 package io.github.atengk.boot.redis.delay.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBlockingQueue;
 import org.redisson.api.RedissonClient;
+import org.slf4j.MDC;
 import org.springframework.aop.framework.autoproxy.AutoProxyUtils;
 import org.springframework.aop.scope.ScopedProxyUtils;
 import org.springframework.beans.BeansException;
@@ -47,6 +50,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class DelayedQueueBootstrap implements SmartInitializingSingleton, DisposableBean,
         EmbeddedValueResolverAware, ApplicationContextAware {
+
+    public static final String MDC_TRACE_ID_KEY = "traceId";
 
     private final RedissonClient redissonClient;
     private final RedisDelayedQueue redisDelayedQueue;
@@ -153,12 +158,8 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         RBlockingQueue<Object> blockingQueue = redisDelayedQueue.getBlockingQueue(queueName);
 
         final String finalQueueName = queueName;
-        AtomicInteger threadIndex = new AtomicInteger(1);
-        ExecutorService executor = Executors.newFixedThreadPool(concurrency, runnable -> {
-            Thread thread = new Thread(runnable, "redis-delay-queue-" + finalQueueName + "-" + threadIndex.getAndIncrement());
-            thread.setDaemon(true);
-            return thread;
-        });
+        NamedThreadFactory threadFactory = new NamedThreadFactory("redis-delay-queue-" + finalQueueName, true);
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency, threadFactory);
         executors.add(executor);
 
         for (int i = 0; i < concurrency; i++) {
@@ -178,7 +179,13 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
                 // 采用 1 秒超时轮询，保障优雅停机时迅速退出
                 Object rawMessage = blockingQueue.poll(1, TimeUnit.SECONDS);
                 if (rawMessage != null) {
-                    processMessageWithRetry(bean, method, rawMessage, queueName);
+                    String traceId = IdUtil.fastSimpleUUID();
+                    MDC.put(MDC_TRACE_ID_KEY, traceId);
+                    try {
+                        processMessageWithRetry(bean, method, rawMessage, queueName);
+                    } finally {
+                        MDC.remove(MDC_TRACE_ID_KEY);
+                    }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

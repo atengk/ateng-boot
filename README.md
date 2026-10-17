@@ -36,12 +36,12 @@ flowchart TB
         end
 
         subgraph CoreBase["核心通用底座 (Core & Contract)"]
-            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt; (函数式算子/优雅兜底)<br/>• 语义化断言 BusinessAssert<br/>• 纯原生 Snowflake 引擎 (回拨自旋/熔断)<br/>• 10+ 维度全场景敏感数据脱敏与 @FieldSensitive<br/>• 线程上下文透传与用户/多租户审计 SPI<br/>• 原生不可变元组 Pair/Triple &amp; 线性树形 TreeUtil<br/>• 通用孵化原语 (Spring/Lambda/Collection/Bean/Retry/File)"]
+            CORE["ateng-boot-core<br/>• 强类型统一响应契约 Result&lt;T&gt; (函数式算子/优雅兜底)<br/>• 原生安全 JsonUtil 门面 (内置 JavaTimeModule)<br/>• 受管异步线程池 AtengAsyncAutoConfiguration (四维上下文透传)<br/>• 语义化断言 BusinessAssert &amp; 纯原生 Snowflake 发号引擎<br/>• 10+ 维度全场景脱敏 @FieldSensitive 与双维上下文镜像对称<br/>• 原生不可变元组 Pair/Triple &amp; 线性树形 TreeUtil<br/>• 命名线程工厂 NamedThreadFactory &amp; 编程式校验 ValidatorUtil<br/>• 校验分组标准契约 ValidationGroups &amp; 批量级联 ValidList<br/>• 通用孵化原语 (Spring/Lambda/Collection/Bean/Retry/File)"]
         end
 
         subgraph Middlewares["高并发与持久层增强 (Persistence & Middlewares)"]
             direction LR
-            MP["ateng-boot-mybatis-plus<br/>• 实体五级继承阶梯<br/>• JSqlParser AST 行级多租户隔离<br/>• 声明式细粒度数据权限 @DataScope<br/>• 单条多值批量插入 BatchUtil<br/>• 存储透明加密与出库脱敏 (内存真明文)"]
+            MP["ateng-boot-mybatis-plus<br/>• 实体五级继承阶梯<br/>• JSqlParser AST 行级多租户隔离<br/>• 声明式细粒度数据权限 @DataScope<br/>• 单条多值批量插入 BatchUtil<br/>• 乐观锁并发自旋重试 OptimisticLockTemplate<br/>• 存储透明加密与出库脱敏 (内存真明文)"]
             REDIS["ateng-boot-redis<br/>• Spring Data Redis + Redisson 双核<br/>• 纯净无 @class 污染序列化 (防 CVE)<br/>• 四阶声明式分布式锁 @DistributedLock<br/>• 双模轻量延时队列 / 发布订阅广播<br/>• 防雪崩防穿透增强缓存"]
             EXCEL["ateng-boot-excel<br/>• Apache Fesod 流式防 OOM 读写<br/>• 导出单元格动态脱敏 @ExcelSensitive<br/>• JSR-303 行级校验与红字批注回写<br/>• 智能防呆模板 @ExcelDropdown / Prompt<br/>• 双向转义 @ExcelEnum / @ExcelDict SPI<br/>• 纵向合并 / 多 Sheet 链式构建 / 5 套商务主题"]
             SATOKEN["ateng-boot-satoken<br/>• Sa-Token 企业级安全基础设施<br/>• 强类型 LoginHelper / LoginUser 载荷<br/>• 双轨拦截体系与 Core/MP 审计贯通<br/>• 两级权限缓存与动态热刷新<br/>• 零信任 Same-Token / Knife4j 鉴权自动化"]
@@ -79,9 +79,9 @@ flowchart TB
 
 | 模块名称 | 坐标 (ArtifactId) | 职责定位 | 详细使用文档 |
 | :--- | :--- | :--- | :---: |
-| **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约（函数式算子）、异常体系、业务断言、雪花发号器、全场景脱敏、用户/多租户上下文透传、元组、树形算法及中间件孵化通用原语 | [查看文档](./ateng-boot-core/README.md) |
+| **核心通用底座** | `ateng-boot-core` | 统一 API 响应契约（函数式算子）、异常体系、业务断言、雪花发号器、全场景脱敏、用户/多租户上下文透传、命名线程工厂、业务格式校验、校验分组标准契约（ValidationGroups）、批量级联校验包装器（ValidList）、元组、树形算法及中间件孵化通用原语 | [查看文档](./ateng-boot-core/README.md) |
 | **Web 运行时增强** | `ateng-boot-web` | 链路追踪 `TraceFilter`、全局异常防御、自适应防重幂等、自适应限流、动态 CORS、双向加签验签、流式下载 | [查看文档](./ateng-boot-web/README.md) |
-| **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
+| **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、乐观锁自旋重试模板、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
 | **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
 | **轻量流式电子表格** | `ateng-boot-excel` | 基于新一代 Apache Fesod 流式防 OOM 读写、导出单元格动态脱敏、JSR-303 悬浮批注标红回写、动态防呆模板、双向转义、多 Sheet 链式构建与 5 套商务主题 | [查看文档](./ateng-boot-excel/README.md) |
 | **Sa-Token 安全鉴权** | `ateng-boot-satoken` | Sa-Token 企业级安全基础设施、LoginHelper 强类型载荷模型、双轨拦截防御、Core/MP 审计全链路贯通、两级权限缓存、零信任 Same-Token 与 Knife4j 鉴权自动化 | [查看文档](./ateng-boot-satoken/README.md) |
@@ -99,6 +99,11 @@ flowchart TB
 | **分布式发号** | 依赖第三方组件或中心化服务，且多套发号器时间戳规则割裂 | 纯原生 `Snowflake` 引擎（2026 纪元、$\le 5\text{ms}$ 回拨自旋、$> 5\text{ms}$ 熔断）与 `IdUtil` 门面 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
 | **全场景脱敏** | 仅覆盖基础字段；业务层手写星号导致脏数据写回数据库 | `DesensitizeUtil` 覆盖地址/车牌/IP/税号等 10+ 维度；`@FieldSensitive` 视图层动态打码 | `core` | [ADR-0020](./docs/adr/0020-zero-bloat-distributed-id-and-mask-strategy.md) |
 | **孵化通用原语** | 模块各自定义工具类、重复依赖第三方库、容易产生内存溢出与路径穿越 | `SpringUtil`、`LambdaUtil`、`CollectionUtil`、`BeanUtil`、`RetryUtil` 与 `FileUtil` 统一收敛于 core | `core` | [ADR-0025](./docs/adr/0025-core-module-expansion-and-future-proof-middleware-foundations.md) |
+| **基线极致加固** | UUID 加锁争抢导致高频链路损耗，各模块散落私有 ObjectMapper 且缺少时间模块 | 100% 收敛 `JsonUtil` 门面；`TraceFilter` 采用无锁 `fastSimpleUUID()`；双维上下文镜像对称并自动桥接 Sa-Token；受管异步线程池下沉 core | `core` / `web` / `satoken` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
+| **分层双防校验** | Controller 参数漏检引发脏数据渗透，批量 List 默认不触发 JSR-303 校验 | 践行分层双防架构；`ValidationGroups` 标准分组；`ValidList` 治理 Spring 批量漏检；`ValidatorUtil` 整对象编程式快速失败 | `core` / `web` | [ADR-0027](./docs/adr/0027-defense-in-depth-validation-and-standardized-primitives.md) |
+| **规范命名线程** | 匿名线程池线程命名混乱，生产环境 Dump 排查与 Arthas 诊断困难 | `NamedThreadFactory` 支持业务前缀/自增编号/守护标记/优先级；延时队列调度消费全面复用 | `core` / `redis` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
+| **高频业务校验** | 手机号/18位带校验码身份证/车牌/税号等正则散落重复编写易漏易错 | `ValidatorUtil` 预编译正则 + ISO 7064:1983.MOD 11-2 算法，高性能编程式校验 | `core` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
+| **乐观锁自旋重试** | 并发更新 `@Version` 冲突频繁失败，手写 while 重试易死循环 | `OptimisticLockTemplate` 依托 `RetryUtil` 统一自旋重试闭包模板，支持最大次数与退避 | `mybatis-plus` | [ADR-0026](./docs/adr/0026-production-hardening-and-foundations-unification.md) |
 | **数字精度** | 64 位雪花 Long 传到前端超出 $2^{53}-1$ 导致末尾截断失真 | 注册 `Jackson2ObjectMapperBuilderCustomizer` 将 Long/BigInteger 序列化为 String | `web` | [ADR-0005](./docs/adr/0005-jackson-customizer-over-objectmapper-override.md) |
 | **全链路追踪** | 单体无 APM 时日志串联困难，跨线程上下文丢失 | `TraceFilter` 自动注入/回写 `X-Trace-Id`；受管线程池透传 MDC 与操作人 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |
 | **异常脱敏** | 生产报错直接向前端暴露 SQL 语法与数据表结构 | 全局异常处理器未知异常生产脱敏，内部堆栈与 traceId 仅记录于后台日志 | `web` | [ADR-0004](./docs/adr/0004-http-200-with-business-code-and-exception-masking.md) |

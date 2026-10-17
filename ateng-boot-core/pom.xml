@@ -63,13 +63,32 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Boot 配置处理器（生成 IDE 智能提示元数据，可选依赖） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Jakarta Validation API 规范契约标准件 -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
         <!-- 单元测试 -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
+        <!-- 参数校验 Starter（用于单测验证 ValidatorUtil POJO 编程式校验与 Spring 容器集成） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- 日志实现（用于单测中验证 MDC 与 TraceId 流转） -->
         <dependency>

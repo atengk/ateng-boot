@@ -37,12 +37,12 @@ _Avoid_: SwaggerSecurityCustomizer, Knife4jAuthInjector, OpenApiDocCustomizer
 _Avoid_: @InternalOnly, @RequireSameToken, @VerifyServiceToken
 
 **SaTokenCurrentUserProvider**:
-对接 `ateng-boot-core` 的 `CurrentUserProvider` SPI 适配器，自适应将 Sa-Token 会话上下文透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）与行级多租户隔离上下文（`TenantContextHolder`）。
+对接 `ateng-boot-core` 的 `CurrentUserProvider` 与 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(LoginHelper::getUserId)` 与 `TenantContextHolder.setTenantProvider(LoginHelper::getTenantId)` 双向挂载，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）与行级多租户隔离上下文（`TenantContextHolder`）。
 _Avoid_: UserAuditorProvider, SecurityContextAdapter
 
 ## Dependencies
 
-- **ateng-boot-core**: 核心基础异常体系、`CommonResultCode`、`Result<T>` 显式契约、`CurrentUserProvider` 与 `DesensitizeUtil` 基础工具
+- **ateng-boot-core**: 核心基础异常体系、`CommonResultCode`、`Result<T>` 显式契约、`JsonUtil` 序列化门面、`UserContextHolder` 与 `TenantContextHolder` 双维上下文 SPI 及 `DesensitizeUtil` 基础工具
 - **cn.dev33:sa-token-spring-boot3-starter**: Sa-Token 官方 Spring Boot 3 核心鉴权依赖
 - **cn.dev33:sa-token-spring-aop**: Sa-Token 官方 Spring AOP 穿透切面（覆盖 Controller 与 Service 业务层注解鉴权）
 - **org.springframework.data:spring-data-redis** (Optional): 驱动 `SaTokenRedisDao` 与分布式权限缓存

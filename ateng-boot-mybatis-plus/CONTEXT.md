@@ -112,3 +112,8 @@ _Avoid_: BatchHelper, BulkUtil
 可选的租户实体标记接口，提供类型安全的租户读写契约。
 _Avoid_: TenantModel, HasTenant
 
+**OptimisticLockTemplate**:
+基于 core 底座 RetryUtil 实现的乐观锁并发自旋重试模板门面，针对 @Version 并发冲突（更新行数 = 0）提供自动重新加载最新版本实体与自旋退避守护。
+_Avoid_: OptimisticLockHelper, VersionRetryTemplate
+
+

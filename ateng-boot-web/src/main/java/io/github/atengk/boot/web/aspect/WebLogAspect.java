@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.aspect;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.web.annotation.WebLog;
 import io.github.atengk.boot.web.util.IpUtil;
 import io.github.atengk.boot.web.util.ServletUtil;
@@ -49,7 +50,11 @@ public class WebLogAspect {
     private final ObjectMapper objectMapper;
 
     public WebLogAspect(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.objectMapper = objectMapper != null ? objectMapper : JsonUtil.getObjectMapper();
+    }
+
+    public WebLogAspect() {
+        this(JsonUtil.getObjectMapper());
     }
 
     /**

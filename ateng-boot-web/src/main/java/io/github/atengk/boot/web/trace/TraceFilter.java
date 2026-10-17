@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.trace;
 
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.web.properties.WebProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -10,7 +11,6 @@ import org.springframework.core.Ordered;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.UUID;
 
 /**
  * HTTP 请求全生命周期链路追踪过滤器
@@ -46,10 +46,10 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
             headerName = "X-Trace-Id";
         }
 
-        // 1. 优先提取请求头中的追踪标识，缺失则生成 32 位无横杠 UUID
+        // 1. 优先提取请求头中的追踪标识，缺失则生成高性能 32 位无横杠 UUID (无锁并发)
         String traceId = request.getHeader(headerName);
         if (traceId == null || traceId.isBlank()) {
-            traceId = UUID.randomUUID().toString().replace("-", "");
+            traceId = IdUtil.fastSimpleUUID();
         }
 
         // 2. 注入日志上下文 MDC 与 HTTP 响应头

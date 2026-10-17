@@ -1,5 +1,6 @@
 package io.github.atengk.boot.excel.listener;
 
+import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
@@ -237,6 +238,18 @@ public class BatchValidationListener<T> implements ReadListener<T> {
         if (defaultValidator == null) {
             synchronized (BatchValidationListener.class) {
                 if (defaultValidator == null) {
+                    // 1. 优先尝试从 Spring 容器获取受管 Validator Bean（支持 Spring 依赖注入与自定义校验规则）
+                    try {
+                        Validator springValidator = SpringUtil.getBean(Validator.class);
+                        if (springValidator != null) {
+                            defaultValidator = springValidator;
+                            return defaultValidator;
+                        }
+                    } catch (Throwable ignored) {
+                        // Spring 上下文未就绪或未注册 Validator，降级到默认 JSR-303 工厂
+                    }
+
+                    // 2. 降级使用标准 JSR-303 ValidatorFactory
                     try {
                         ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
                         defaultValidator = factory.getValidator();

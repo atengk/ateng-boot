@@ -25,7 +25,7 @@ _Avoid_: Assert, ValidateUtil, CheckUtil
 _Avoid_: PrincipalProvider, SecurityContext, UserSupplier
 
 **UserContextHolder**:
-基于 ThreadLocal 维护当前操作人身份的内存上下文持有者，作为未挂载外部鉴权时的默认回退机制。
+基于 ThreadLocal 维护当前操作人身份的内存上下文持有者，并支持 CurrentUserProvider 动态回退兜底，与 TenantContextHolder 保持双维镜像对称。
 _Avoid_: SessionContext, LocalUser, UserThreadLocal
 
 **AsyncContext**:
@@ -123,6 +123,30 @@ _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 **FileUtil**:
 纯 JDK 原生轻量文件与路径安全工具类，提供路径遍历穿透（Path Traversal）安全清洗、扩展名截取与人类可读文件容量格式化。
 _Avoid_: FileHelper, IoHelper, PathUtil
+
+**AtengAsyncAutoConfiguration**:
+位于 core 核心底座的受管异步线程池自动装配类，提供开箱即用的线程池 Bean 并挂载四维上下文快照装饰器（MDC、用户、租户、忽略租户）。
+_Avoid_: AsyncConfig, ThreadPoolAutoConfiguration
+
+**AsyncProperties**:
+受管异步线程池属性配置类，以 `ateng.boot.async.*` 命名空间统一管理核心线程数、最大线程数、队列容量、线程名前缀与优雅关机策略。
+_Avoid_: ThreadPoolProperties, AsyncConfigProperties
+
+**NamedThreadFactory**:
+纯 JDK 17 原生命名线程工厂标准件，为线程池提供语义化前缀、序号自增、守护线程属性与未捕获异常防护，彻底杜绝线上线程转储中无意义命名。
+_Avoid_: CustomThreadFactory, SimpleThreadFactory
+
+**ValidatorUtil**:
+纯原生业务数据格式校验与整对象 JSR-303 编程式断言门面，提供手机号、带模11加权校验码的中国身份证、邮箱、IP、车牌与统信代码高精度校验，并支持 POJO 快速失败对象校验与属性校验。
+_Avoid_: CheckUtil, ValidateHelper, RegexUtil
+
+**ValidationGroups**:
+通用 JSR-303 / Jakarta Validation 校验分组契约标准件，集中收敛 Create、Update、Query、Status 高频 Marker 接口，避免各子系统私建空分组类。
+_Avoid_: Groups, ValidateGroup, CheckGroup
+
+**ValidList**:
+支持 JSR-303 级联校验的轻量级泛型 List 包装容器，彻底解决 Spring MVC 中 Controller 接收 `@RequestBody @Valid List<DTO>` 时默认忽略列表元素内字段校验的缺陷。
+_Avoid_: ValidatedList, ValidationList, DTOList
 
 
 

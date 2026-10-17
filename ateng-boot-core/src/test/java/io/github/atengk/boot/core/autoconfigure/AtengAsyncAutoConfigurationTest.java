@@ -1,4 +1,4 @@
-package io.github.atengk.boot.web.autoconfigure;
+package io.github.atengk.boot.core.autoconfigure;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
