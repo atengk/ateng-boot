@@ -2,6 +2,9 @@ package io.github.atengk.boot.sample;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.sample.entity.TenantOrderEntity;
+import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,6 +15,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.math.BigDecimal;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,14 +27,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Sa-Token 安全鉴权与单机内存会话端到端集成测试
- * 覆盖单机会话登录、双轨路由白名单拦截、Controller/Service 全域 AOP 注解鉴权与二级认证
+ * 覆盖单机会话登录、双轨路由白名单拦截、Controller/Service 全域 AOP 注解鉴权、CurrentUserProvider SPI 审计自动填充与多租户上下文生命周期治理
  *
  * @author Ateng
  * @since 2026-10-17
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@DisplayName("Sa-Token 双轨拦截与全域 AOP 鉴权端到端集成测试")
+@DisplayName("Sa-Token 全栈安全鉴权与多租户持久层协同端到端集成测试")
 class SampleSaTokenIntegrationTest {
 
     @Autowired
@@ -37,6 +42,9 @@ class SampleSaTokenIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private TenantOrderMapper orderMapper;
 
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
@@ -173,7 +181,6 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("4. Controller 层 AOP 注解鉴权：@SaCheckRole 与 @SaCheckPermission 拦截与放行验证")
     void shouldCheckAopRoleAndPermissionOnController() throws Exception {
-        // 1. 登录具备 super_admin 与 user:query 的用户
         LoginUser loginReq = LoginUser.builder()
                 .userId("30001")
                 .userName("审计员")
@@ -188,28 +195,28 @@ class SampleSaTokenIntegrationTest {
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 具备 super_admin 角色，访问通过
+        // 具备 super_admin 角色，访问通过
         mockMvc.perform(get("/api/auth/check-role")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("角色校验通过"));
 
-        // 3. 不具备 financial_boss 角色，拦截返回 403
+        // 不具备 financial_boss 角色，拦截返回 403
         mockMvc.perform(get("/api/auth/check-role-forbidden")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("无权访问：缺少所需角色 [financial_boss]"));
 
-        // 4. 具备 user:query 权限，访问通过
+        // 具备 user:query 权限，访问通过
         mockMvc.perform(get("/api/auth/check-permission")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("权限码校验通过"));
 
-        // 5. 不具备 user:delete 权限，拦截返回 403
+        // 不具备 user:delete 权限，拦截返回 403
         mockMvc.perform(get("/api/auth/check-permission-forbidden")
                         .header("satoken", token))
                 .andExpect(status().isOk())
@@ -220,7 +227,6 @@ class SampleSaTokenIntegrationTest {
     @Test
     @DisplayName("5. Service 业务层 AOP 穿透鉴权：验证 SaAroundAnnotationPointcutAdvisor 全域覆盖 Service")
     void shouldCheckAopRoleAndPermissionOnServiceLayer() throws Exception {
-        // 1. 登录只具备 super_admin 角色的用户（未赋予 order:cancel 权限）
         LoginUser loginReq = LoginUser.builder()
                 .userId("40001")
                 .userName("业务专员")
@@ -235,14 +241,14 @@ class SampleSaTokenIntegrationTest {
                 .andReturn();
         String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
 
-        // 2. 调用标注 @SaCheckRole("super_admin") 的 Service 方法，成功通过
+        // 调用标注 @SaCheckRole("super_admin") 的 Service 方法，成功通过
         mockMvc.perform(get("/api/auth/service-role")
                         .header("satoken", token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("Service 角色校验通过"));
 
-        // 3. 调用标注 @SaCheckPermission("order:cancel") 的 Service 方法，因缺少权限被拦截返回 403
+        // 调用标注 @SaCheckPermission("order:cancel") 的 Service 方法，因缺少权限被拦截返回 403
         mockMvc.perform(get("/api/auth/service-permission")
                         .header("satoken", token))
                 .andExpect(status().isOk())
@@ -306,5 +312,81 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("pong"));
+    }
+
+    @Test
+    @DisplayName("8. CurrentUserProvider 自动桥接验证：登录状态下持久层实体插入自动回填当前操作人 createBy/updateBy")
+    void shouldAutoFillAuditFieldsViaCurrentUserProvider() throws Exception {
+        // 1. 登录用户 88001
+        LoginUser loginReq = LoginUser.builder()
+                .userId("88001")
+                .userName("审计创建专员")
+                .tenantId("tenant_auto_audit")
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 携带 Token 发起创建订单请求
+        Map<String, Object> orderReq = Map.of(
+                "orderNo", "ORD-AUDIT-88001",
+                "amount", 999.50
+        );
+
+        MvcResult createResult = mockMvc.perform(post("/api/auth/order")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(orderReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        Long orderId = objectMapper.readTree(createResult.getResponse().getContentAsString()).get("data").asLong();
+        assertThat(orderId).isNotNull();
+
+        // 3. 从数据库直接查询并校验审计字段回填
+        TenantOrderEntity orderInDb = orderMapper.selectById(orderId);
+        assertThat(orderInDb).isNotNull();
+        assertThat(orderInDb.getCreateBy()).isEqualTo("88001");
+        assertThat(orderInDb.getUpdateBy()).isEqualTo("88001");
+        assertThat(orderInDb.getCreateTime()).isNotNull();
+        assertThat(orderInDb.getUpdateTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("9. 多租户上下文生命周期协同验证：请求中自动注入 TenantContextHolder，请求结束后强制安全清空")
+    void shouldSyncAndClearTenantContextLifecycle() throws Exception {
+        // 1. 登录包含租户 ID 的用户
+        LoginUser loginReq = LoginUser.builder()
+                .userId("99001")
+                .userName("华东租户管理员")
+                .tenantId("tenant_east_china")
+                .build();
+
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginReq)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 请求期间：拦截器 preHandle 自动将 tenantId 注入 TenantContextHolder
+        mockMvc.perform(get("/api/auth/current-tenant")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("tenant_east_china"));
+
+        // 3. 请求结束后：拦截器 afterCompletion 强制清空租户上下文，当前测试线程池状态应干净无串染
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+
+        // 4. 后续不携带 Token 的公共请求，租户上下文依然保持干净为 null
+        mockMvc.perform(get("/api/auth/public/ping"))
+                .andExpect(status().isOk());
+        assertThat(TenantContextHolder.getTenantId()).isNull();
     }
 }

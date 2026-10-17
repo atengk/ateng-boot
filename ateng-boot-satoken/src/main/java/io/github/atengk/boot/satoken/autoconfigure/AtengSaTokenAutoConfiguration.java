@@ -7,9 +7,11 @@ import cn.dev33.satoken.strategy.SaFirewallStrategy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -107,5 +109,17 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer() {
         return new SaTokenWebMvcConfigurer(properties);
+    }
+
+    /**
+     * 注册当前操作人身份 SPI 适配提供者（对接 ateng-boot-core SPI）
+     * 自动驱动 MyBatis-Plus 审计自动填充与数据权限引擎
+     *
+     * @return CurrentUserProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(CurrentUserProvider.class)
+    public CurrentUserProvider saTokenCurrentUserProvider() {
+        return new SaTokenCurrentUserProvider();
     }
 }

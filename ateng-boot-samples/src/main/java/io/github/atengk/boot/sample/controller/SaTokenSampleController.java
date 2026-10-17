@@ -4,6 +4,9 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.mybatisplus.context.TenantContextHolder;
+import io.github.atengk.boot.sample.entity.TenantOrderEntity;
+import io.github.atengk.boot.sample.mapper.TenantOrderMapper;
 import io.github.atengk.boot.sample.service.SaTokenSampleService;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -14,6 +17,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.math.BigDecimal;
+import java.util.Map;
 
 /**
  * Sa-Token 鉴权与会话治理示例控制器
@@ -29,6 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class SaTokenSampleController {
 
     private final SaTokenSampleService sampleService;
+    private final TenantOrderMapper orderMapper;
 
     /**
      * 用户登录接口
@@ -84,6 +91,35 @@ public class SaTokenSampleController {
     public Result<Boolean> checkLogin() {
         LoginHelper.checkLogin();
         return Result.success(true);
+    }
+
+    /**
+     * 获取当前线程注入的租户 ID 上下文
+     *
+     * @return 当前租户 ID
+     */
+    @GetMapping("/current-tenant")
+    public Result<String> getCurrentTenant() {
+        LoginHelper.checkLogin();
+        return Result.success(TenantContextHolder.getTenantId());
+    }
+
+    /**
+     * 创建订单测试接口（验证审计字段 createBy 与租户 tenantId 自动填充）
+     *
+     * @param req 请求载荷
+     * @return 订单 ID
+     */
+    @PostMapping("/order")
+    public Result<Long> createOrder(@RequestBody Map<String, Object> req) {
+        LoginHelper.checkLogin();
+        TenantOrderEntity order = new TenantOrderEntity();
+        order.setOrderNo((String) req.get("orderNo"));
+        if (req.get("amount") != null) {
+            order.setAmount(new BigDecimal(req.get("amount").toString()));
+        }
+        orderMapper.insert(order);
+        return Result.success(order.getId());
     }
 
     /**

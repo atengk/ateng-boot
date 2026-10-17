@@ -61,6 +61,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- MyBatis-Plus 多租户与持久层审计协同 (可选依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Data Redis (分布式存储可选依赖) -->
         <dependency>
             <groupId>org.springframework.data</groupId>

@@ -34,8 +34,8 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
             return;
         }
 
-        // 1. 创建 SaInterceptor 并强制关闭注解校验（双轨正交设计：AOP 切面统一承接注解，拦截器专精路由）
-        SaInterceptor saInterceptor = new SaInterceptor();
+        // 1. 创建 AtengSaTokenInterceptor 并强制关闭注解校验（双轨正交设计：AOP 切面统一承接注解，拦截器专精路由与租户治理）
+        io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor saInterceptor = new io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor();
         saInterceptor.isAnnotation(false);
 
         // 2. 检查是否开启全局严格路由登录校验
