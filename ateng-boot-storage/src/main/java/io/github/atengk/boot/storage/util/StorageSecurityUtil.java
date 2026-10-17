@@ -4,16 +4,22 @@ import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * 存储安全防卫与路径清洗通用工具
- * 提供严格的路径遍历防卫、全路径归一化净化、MIME 自动推导及高危文件拦截
+ * 存储安全防卫、路径清洗与签名通用工具
+ * 提供严格的路径遍历防卫、全路径归一化净化、MIME 自动推导、高危文件拦截以及轻量 HMAC-SHA256 签名与校验
  *
  * @author Ateng
  * @since 2026-10-17
@@ -21,6 +27,9 @@ import java.util.Set;
 public final class StorageSecurityUtil {
 
     private static final String DEFAULT_CONTENT_TYPE = "application/octet-stream";
+    private static final String HMAC_SHA256_ALGORITHM = "HmacSHA256";
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private static final Map<String, String> MIME_MAP = new HashMap<>();
 
@@ -145,5 +154,62 @@ public final class StorageSecurityUtil {
         }
         String ext = FileUtil.getExtName(filename);
         return DANGEROUS_EXTENSIONS.contains(ext);
+    }
+
+    /**
+     * 基于 HMAC-SHA256 算法计算待签名字符串的消息认证码（小写十六进制）
+     *
+     * @param data 待签名字符串
+     * @param key  密钥字符串
+     * @return 64 位小写十六进制签名摘要
+     * @throws StorageException 若密钥或数据为空，或算法异常
+     */
+    public static String hmacSha256(String data, String key) {
+        if (data == null || key == null || key.isBlank()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "HMAC 签名数据或密钥不能为空");
+        }
+        try {
+            Mac mac = Mac.getInstance(HMAC_SHA256_ALGORITHM);
+            SecretKeySpec secretKeySpec = new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), HMAC_SHA256_ALGORITHM);
+            mac.init(secretKeySpec);
+            byte[] bytes = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(bytes);
+        } catch (Exception e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算 HMAC-SHA256 签名异常", e);
+        }
+    }
+
+    /**
+     * 校验 HMAC-SHA256 签名是否合法（采用常量时间比对，防御时序侧信道攻击 Timing Attack）
+     *
+     * @param data      原始待签名字符串
+     * @param key       密钥字符串
+     * @param signature 待验证的签名十六进制字符串
+     * @return true 签名一致且未被篡改，false 签名不匹配或入参非法
+     */
+    public static boolean verifyHmacSha256(String data, String key, String signature) {
+        if (data == null || key == null || key.isBlank() || signature == null || signature.isBlank()) {
+            return false;
+        }
+        try {
+            String expected = hmacSha256(data, key);
+            return MessageDigest.isEqual(
+                    expected.getBytes(StandardCharsets.UTF_8),
+                    signature.getBytes(StandardCharsets.UTF_8)
+            );
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 生成高强度 256 位安全随机密钥（64 位小写十六进制字符串）
+     *
+     * @return 随机安全密钥
+     */
+    public static String generateRandomSecretKey() {
+        byte[] randomBytes = new byte[32];
+        SECURE_RANDOM.nextBytes(randomBytes);
+        return HexFormat.of().formatHex(randomBytes);
     }
 }

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.storage.autoconfigure;
 
+import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.properties.StorageProperties;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -30,14 +32,27 @@ class AtengStorageAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class));
 
     @Test
-    @DisplayName("默认配置下自动装配 StorageDriver 与 StorageTemplate Bean")
+    @DisplayName("默认非 Web 配置下自动装配 StorageDriver 与 StorageTemplate Bean")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(StorageDriver.class);
             assertThat(context).hasSingleBean(StorageOperations.class);
             assertThat(context).hasSingleBean(StorageTemplate.class);
             assertThat(context).hasSingleBean(StorageProperties.class);
+            assertThat(context).doesNotHaveBean(LocalStorageDownloadController.class);
         });
+    }
+
+    @Test
+    @DisplayName("Servlet Web 环境下自动装配 LocalStorageDownloadController 端点")
+    void testWebAutoConfiguration() {
+        new WebApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(AtengStorageAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(StorageDriver.class);
+                    assertThat(context).hasSingleBean(StorageTemplate.class);
+                    assertThat(context).hasSingleBean(LocalStorageDownloadController.class);
+                });
     }
 
     @Test
@@ -49,6 +64,7 @@ class AtengStorageAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(StorageDriver.class);
                     assertThat(context).doesNotHaveBean(StorageOperations.class);
                     assertThat(context).doesNotHaveBean(StorageTemplate.class);
+                    assertThat(context).doesNotHaveBean(LocalStorageDownloadController.class);
                 });
     }
 

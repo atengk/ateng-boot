@@ -36,6 +36,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Jakarta Servlet API (Web 环境可选依赖) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

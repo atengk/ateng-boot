@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -89,5 +91,47 @@ class StorageSecurityUtilTest {
         assertFalse(StorageSecurityUtil.isDangerousExtension("readme.md"));
         assertFalse(StorageSecurityUtil.isDangerousExtension(null));
         assertFalse(StorageSecurityUtil.isDangerousExtension(""));
+    }
+
+    @Test
+    @DisplayName("HMAC-SHA256 签名计算与常量时间校验")
+    void testHmacSha256() {
+        String data = "uploads/2026/report.pdf:1729180000";
+        String key = "my-secret-key-123456";
+
+        String signature = StorageSecurityUtil.hmacSha256(data, key);
+        assertNotNull(signature);
+        assertEquals(64, signature.length());
+
+        // 验证合法签名
+        assertTrue(StorageSecurityUtil.verifyHmacSha256(data, key, signature));
+
+        // 篡改数据校验失败
+        assertFalse(StorageSecurityUtil.verifyHmacSha256("uploads/2026/tampered.pdf:1729180000", key, signature));
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(data + "1", key, signature));
+
+        // 篡改密钥校验失败
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(data, "wrong-key", signature));
+
+        // 篡改签名内容校验失败
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(data, key, signature.substring(1) + "0"));
+
+        // 空入参校验失败
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(null, key, signature));
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(data, null, signature));
+        assertFalse(StorageSecurityUtil.verifyHmacSha256(data, key, ""));
+    }
+
+    @Test
+    @DisplayName("生成高强度安全随机密钥")
+    void testGenerateRandomSecretKey() {
+        String key1 = StorageSecurityUtil.generateRandomSecretKey();
+        String key2 = StorageSecurityUtil.generateRandomSecretKey();
+
+        assertNotNull(key1);
+        assertEquals(64, key1.length());
+        assertNotNull(key2);
+        assertEquals(64, key2.length());
+        assertNotEquals(key1, key2);
     }
 }

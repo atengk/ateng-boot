@@ -25,4 +25,9 @@ public class LocalStorageProperties {
      * HMAC-SHA256 签名密钥（用于预签名防盗链下载，若未配置则系统启动时自动随机生成）
      */
     private String secretKey;
+
+    /**
+     * 预签名只读安全下载端点路径（默认 /storage/local/download）
+     */
+    private String downloadEndpoint = "/storage/local/download";
 }

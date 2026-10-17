@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
@@ -14,18 +15,24 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 /**
  * 本地磁盘文件存储驱动实现
- * 基于 Java NIO，提供深度路径防穿越清洗、MIME 推导与天然幂等删除保障
+ * 基于 Java NIO，提供深度路径防穿越清洗、MIME 推导、天然幂等删除保障与 HMAC-SHA256 预签名下载
  *
  * @author Ateng
  * @since 2026-10-17
  */
 @Getter
 public class LocalDriver implements StorageDriver {
+
+    /**
+     * 默认预签名下载端点路径
+     */
+    public static final String DEFAULT_DOWNLOAD_ENDPOINT = "/storage/local/download";
 
     /**
      * 本地存储物理基准根目录
@@ -43,22 +50,39 @@ public class LocalDriver implements StorageDriver {
     private final String secretKey;
 
     /**
-     * 构造基础本地磁盘驱动
+     * 预签名只读安全下载端点路径
+     */
+    private final String downloadEndpoint;
+
+    /**
+     * 构造基础本地磁盘驱动（自动生成随机密钥）
      *
      * @param basePath 本地存储物理基准路径
      */
     public LocalDriver(String basePath) {
-        this(basePath, null, null);
+        this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT);
+    }
+
+    /**
+     * 常用参数构造本地磁盘驱动
+     *
+     * @param basePath  本地存储物理基准路径
+     * @param domain    访问域名或基础 URL
+     * @param secretKey 签名密钥（留空时自动生成安全随机密钥）
+     */
+    public LocalDriver(String basePath, String domain, String secretKey) {
+        this(basePath, domain, secretKey, DEFAULT_DOWNLOAD_ENDPOINT);
     }
 
     /**
      * 完整参数构造本地磁盘驱动
      *
-     * @param basePath  本地存储物理基准路径
-     * @param domain    访问域名或基础 URL
-     * @param secretKey 签名密钥
+     * @param basePath         本地存储物理基准路径
+     * @param domain           访问域名或基础 URL
+     * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
+     * @param downloadEndpoint 预签名安全下载端点
      */
-    public LocalDriver(String basePath, String domain, String secretKey) {
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint) {
         if (basePath == null || basePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基础路径 basePath 不能为空");
         }
@@ -71,7 +95,12 @@ public class LocalDriver implements StorageDriver {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "初始化本地存储目录失败: " + basePath, e);
         }
         this.domain = domain;
-        this.secretKey = secretKey;
+        this.secretKey = (secretKey != null && !secretKey.isBlank())
+                ? secretKey
+                : StorageSecurityUtil.generateRandomSecretKey();
+        this.downloadEndpoint = (downloadEndpoint != null && !downloadEndpoint.isBlank())
+                ? downloadEndpoint
+                : DEFAULT_DOWNLOAD_ENDPOINT;
     }
 
     @Override
@@ -192,6 +221,35 @@ public class LocalDriver implements StorageDriver {
             delete(path);
         }
         return true;
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(String path, Duration duration) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
+                ? duration
+                : Duration.ofMinutes(15);
+        Instant expiration = Instant.now().plus(effectiveDuration);
+        long expires = expiration.getEpochSecond();
+
+        String signature = StorageSecurityUtil.hmacSha256(cleanPath + ":" + expires, this.secretKey);
+
+        String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        String endpoint = (downloadEndpoint != null && !downloadEndpoint.isBlank()) ? downloadEndpoint.trim() : DEFAULT_DOWNLOAD_ENDPOINT;
+        if (!endpoint.startsWith("/")) {
+            endpoint = "/" + endpoint;
+        }
+
+        String url = baseUrl + endpoint + "?path=" + cleanPath + "&expires=" + expires + "&signature=" + signature;
+
+        return PresignedUrl.builder()
+                .url(url)
+                .expiration(expiration)
+                .httpMethod("GET")
+                .build();
     }
 
     /**

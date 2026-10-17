@@ -198,9 +198,47 @@ boolean success2 = storageTemplate.deleteBatch(List.of(
 
 ---
 
-## 8. 安全路径防卫机制
+## 8. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
+
+### 场景痛点
+传统本地存储通常缺乏外链时效性控制与防盗链签名，必须手动编写下载控制器或配置静态 Nginx 映射，无法与云端 S3 的 Presigned URL 保持契约一致。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void generateDownloadUrl() {
+    // 生成 15 分钟有效期的只读安全外链（本地驱动自动基于 HMAC-SHA256 签名）
+    PresignedUrl presigned = storageTemplate.getPresignedUrl("documents/2026/report.pdf", Duration.ofMinutes(15));
+    
+    System.out.println("外链地址: " + presigned.getUrl());
+    System.out.println("请求方法: " + presigned.getHttpMethod());
+    System.out.println("过期时间: " + presigned.getExpiration());
+}
+```
+
+### 预期呈现契约
+控制台输出：
+```text
+外链地址: http://localhost:8080/storage/local/download?path=documents/2026/report.pdf&expires=1729180000&signature=63a75877c86a63d91cf0ebbf43fa58a69dcbca58d7c9a622617f6e0b7a8d56b0
+请求方法: GET
+过期时间: 2026-10-17T14:15:00Z
+```
+
+外部 HTTP 客户端（浏览器或移动端）直接请求该 URL 时，内置的 `LocalStorageDownloadController` 端点自动拦截校验：
+- **时效过期**：返回 HTTP 403 Forbidden；
+- **签名不符或参数被篡改**：返回 HTTP 403 Forbidden；
+- **路径穿越攻击**（如注入 `..`）：返回 HTTP 400 Bad Request；
+- **校验合法**：以流式响应输出文件内容，并按文件属性设置标准 `Content-Type` 与 `Content-Disposition` 下载响应头。
+
+---
+
+## 9. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
 2. **深度消解相对路径**：逐级拆解路径片段，对任何包含 `..` 的逃逸路径快速失败抛出 `StorageException(StorageResultCode.INVALID_PATH)`；
-3. **路径归一化净化**：多余斜杠（`//`）与 Windows 反斜杠（`\`）自动规范化收敛为标准相对路径。
+3. **路径归一化净化**：多余斜杠（`//`）与 Windows 反斜杠（`\`）自动规范化收敛为标准相对路径；
+4. **常量时间签名校验**：预签名 HMAC-SHA256 校验采用 `MessageDigest.isEqual` 常量时间比对，彻底杜绝时序攻击（Timing Attack）。
+

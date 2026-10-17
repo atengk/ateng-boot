@@ -2,7 +2,9 @@ package io.github.atengk.boot.storage.driver;
 
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,8 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -134,5 +138,37 @@ class LocalDriverTest {
         ByteArrayInputStream in = new ByteArrayInputStream("bad".getBytes(StandardCharsets.UTF_8));
         StorageException ex = assertThrows(StorageException.class, () -> driver.upload("../evil.sh", in, null, -1));
         assertEquals(StorageResultCode.INVALID_PATH.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("生成有时效性的 HMAC-SHA256 预签名下载外链")
+    void testGetPresignedUrl() {
+        String path = "docs/2026/manual.pdf";
+        PresignedUrl presigned = driver.getPresignedUrl(path, Duration.ofMinutes(10));
+
+        assertNotNull(presigned);
+        assertEquals("GET", presigned.getHttpMethod());
+        assertTrue(presigned.getExpiration().isAfter(Instant.now()));
+
+        String url = presigned.getUrl();
+        assertTrue(url.startsWith("http://localhost:8080/storage/local/download?path=docs/2026/manual.pdf"));
+        assertTrue(url.contains("&expires="));
+        assertTrue(url.contains("&signature="));
+
+        // 提取 expires 与 signature 并验证合法性
+        String query = url.substring(url.indexOf('?') + 1);
+        String expiresStr = null;
+        String signature = null;
+        for (String param : query.split("&")) {
+            if (param.startsWith("expires=")) {
+                expiresStr = param.substring("expires=".length());
+            } else if (param.startsWith("signature=")) {
+                signature = param.substring("signature=".length());
+            }
+        }
+        assertNotNull(expiresStr);
+        assertNotNull(signature);
+
+        assertTrue(StorageSecurityUtil.verifyHmacSha256("docs/2026/manual.pdf:" + expiresStr, driver.getSecretKey(), signature));
     }
 }
