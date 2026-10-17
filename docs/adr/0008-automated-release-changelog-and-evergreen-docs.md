@@ -25,7 +25,7 @@
   ```
   确保 100% 加载根目录 `.cliff.toml` 模板，产出标准中英双语分类（`🐛 缺陷修复 (Bug Fixes)`、`🚀 新特性 (Features)` 等），并自动关联作者与 Commit/PR 直达链接；
 - **关闭原生生成**：将 `generate_release_notes` 显式设为 `false`，杜绝内容冗余拼接；
-- **统一权威源**：以 GitHub Releases 页面作为项目唯一动态权威发布日志源头；根目录持久化 `CHANGELOG.md` 仅保留门面导引与历史基线，发版脚本不再本地尝试生成日志，彻底解耦本地开发环境（免除本地安装 Rust/git-cliff 负担）。
+- **统一权威源与零冗余文件**：以 GitHub Releases 页面作为项目唯一动态权威发布日志源头；代码库根目录不持久化任何冗余静态 `CHANGELOG.md` 文件，发版脚本亦无需在本地安装 Rust/git-cliff 运行日志生成，彻底解耦本地开发环境。
 
 ### 2. 复制即用具体版本与原生 sed -i 原地自驱更新 (Copy-Ready Concrete Version & In-Place sed)
 

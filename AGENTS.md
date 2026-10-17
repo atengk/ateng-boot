@@ -47,11 +47,15 @@
 ---
 
 ## 5. Agent 技能与工单流转规范 (Agent Skills & Ticket SOP)
+- **GitHub CLI (gh) 闭环管控铁律 (Mandatory gh Command Line Usage)**：
+  - 本项目严禁脱离终端命令行进行任何手工网页点击操作或盲目猜测远端状态，所有与 GitHub 仓库的交互（Issues 工单流转、PR 审阅、Actions 流水线监控与 Release 检查）**必须且只能通过官方 `gh` 命令行工具进行全生命周期闭环管控**；
+  - **跨平台参数防转义**：Windows PowerShell 环境下执行 `gh` 命令时，含特殊字符（如 `@me`）或换行文本的参数务必显式使用双引号包裹（如 `--add-assignee "@me"`），长文本回写强制使用 `-F <file>` 避免 shell 转义截断。
 - **标准工单生命周期 SOP (End-to-End Ticket Lifecycle)**：
-  1. **检索与认领**：使用 `gh issue view <n> --comments` 获取上下文；认领统一执行 `gh issue edit <n> --add-assignee "@me"`（PowerShell 环境下参数务必加双引号）；
+  1. **检索与认领**：使用 `gh issue view <n> --comments` 获取上下文；认领统一执行 `gh issue edit <n> --add-assignee "@me"`；
   2. **TDD 测试驱动实现**：在最高切入点编写验证用例，遵循架构与编码契约完成特性编码；
   3. **单测准出与代码评审**：执行 `mvn test` 验证通过后，调用 `/code-review` 开展 Standards 与 Spec 双轴审查；
   4. **受控提交与验证回写**：在收到显式提交指令后，调用 `scripts/commit.sh` 精准提交并推送；
-  5. **流水线守护与闭环关闭**：执行 `gh run watch` 跟踪 CI 流水线直至 100% 绿色通过；通过 `gh issue comment <n> -F <file>` 回写验收清单、提交哈希与 CI 结果；执行 `gh issue close <n>` 关闭工单，完成闭环。
+  5. **流水线守护与闭环关闭**：通过 `gh run list -L 1` 获取最新工作流 Run ID，执行 `gh run watch <run-id>` 跟踪 CI 流水线直至 100% 绿色通过；通过 `gh issue comment <n> -F <file>` 回写验收清单、提交哈希与 CI 结果；执行 `gh issue close <n>` 关闭工单，完成闭环。
 - **分诊标签 (Triage Labels)**：采用 5 种标准分诊角色标签（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。详见 [docs/agents/triage-labels.md](./docs/agents/triage-labels.md)。
 - **领域词汇与 ADR 沉淀 (Domain Docs)**：本项目采用多上下文结构。探索代码库前必须读取全局上下文映射表 [CONTEXT-MAP.md](./CONTEXT-MAP.md) 以及各模块独立的 `CONTEXT.md`；架构决策遵循 [docs/adr/](./docs/adr/) 下的 ADR 记录。规约详见 [docs/agents/domain.md](./docs/agents/domain.md)。
+
