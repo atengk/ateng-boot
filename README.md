@@ -44,6 +44,7 @@ flowchart TB
             MP["ateng-boot-mybatis-plus<br/>• 实体五级继承阶梯<br/>• JSqlParser AST 行级多租户隔离<br/>• 声明式细粒度数据权限 @DataScope<br/>• 单条多值批量插入 BatchUtil<br/>• 存储透明加密与出库脱敏 (内存真明文)"]
             REDIS["ateng-boot-redis<br/>• Spring Data Redis + Redisson 双核<br/>• 纯净无 @class 污染序列化 (防 CVE)<br/>• 四阶声明式分布式锁 @DistributedLock<br/>• 双模轻量延时队列 / 发布订阅广播<br/>• 防雪崩防穿透增强缓存"]
             EXCEL["ateng-boot-excel<br/>• Apache Fesod 流式防 OOM 读写<br/>• 导出单元格动态脱敏 @ExcelSensitive<br/>• JSR-303 行级校验与红字批注回写<br/>• 智能防呆模板 @ExcelDropdown / Prompt<br/>• 双向转义 @ExcelEnum / @ExcelDict SPI<br/>• 纵向合并 / 多 Sheet 链式构建 / 5 套商务主题"]
+            SATOKEN["ateng-boot-satoken<br/>• Sa-Token 企业级安全基础设施<br/>• 强类型 LoginHelper / LoginUser 载荷<br/>• 双轨拦截体系与 Core/MP 审计贯通<br/>• 两级权限缓存与动态热刷新<br/>• 零信任 Same-Token / Knife4j 鉴权自动化"]
         end
     end
 
@@ -53,10 +54,13 @@ flowchart TB
     ALL --> MP
     ALL --> REDIS
     ALL --> EXCEL
+    ALL --> SATOKEN
     WEB --> CORE
     MP --> CORE
     REDIS --> CORE
     EXCEL --> CORE
+    SATOKEN --> CORE
+    SATOKEN -.->|可选依赖分布式会话| REDIS
     EXCEL -.->|可选依赖 Servlet 导出| WEB
     SAMPLES --> ALL
 ```
@@ -80,7 +84,8 @@ flowchart TB
 | **持久层增强底座** | `ateng-boot-mybatis-plus` | 实体五级继承链、审计填充、行级多租户、AST 数据权限、分批批量插入、存储透明加密与出库脱敏 | [查看文档](./ateng-boot-mybatis-plus/README.md) |
 | **Redis 分布式协同** | `ateng-boot-redis` | Spring Data Redis + Redisson 双核融合、安全无污染 JSON 序列化、四阶分布式锁、双模延时队列、发布订阅、并发流控与增强缓存 | [查看文档](./ateng-boot-redis/README.md) |
 | **轻量流式电子表格** | `ateng-boot-excel` | 基于新一代 Apache Fesod 流式防 OOM 读写、导出单元格动态脱敏、JSR-303 悬浮批注标红回写、动态防呆模板、双向转义、多 Sheet 链式构建与 5 套商务主题 | [查看文档](./ateng-boot-excel/README.md) |
-| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus、redis 与 excel 全部构件 | [查看文档](./ateng-boot-all/README.md) |
+| **Sa-Token 安全鉴权** | `ateng-boot-satoken` | Sa-Token 企业级安全基础设施、LoginHelper 强类型载荷模型、双轨拦截防御、Core/MP 审计全链路贯通、两级权限缓存、零信任 Same-Token 与 Knife4j 鉴权自动化 | [查看文档](./ateng-boot-satoken/README.md) |
+| **一键全家桶聚合** | `ateng-boot-all` | 纯依赖聚合 Jar，一键传递引入 core、web、mybatis-plus、redis、excel 与 satoken 全部构件 | [查看文档](./ateng-boot-all/README.md) |
 | **BOM 管控中心** | `ateng-boot-bom` | 依赖版本统管清单（纯 `<dependencyManagement>`），下游按需引入免配版本号 | [查看文档](./ateng-boot-bom/README.md) |
 | **自验演示套件** | `ateng-boot-samples` | 基于 H2 内存库与 MockMvc 的端到端自动化测试金字塔与工程化最佳实践 Demo | [查看文档](./ateng-boot-samples/README.md) |
 
@@ -119,6 +124,11 @@ flowchart TB
 | **导入差错隔离纠错** | 批量导入失败全量回滚、返工排查定位繁琐 | `FailSplitFeedback` 合规数据即刻入库、差错数据隔离提取并追加【失败原因】纠错清单 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
 | **智能多媒体图片** | 商品图片导出扁平挤压、网络/Base64/本地路径手动转换繁琐 | `@ExcelImage` 智能识别多源图片、数据行行高智能自适应联动撑高 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
 | **防拍照全屏暗水印** | 敏感 Excel 文件容易被拍照截屏泄露、浮层水印遮挡点击 | `ExcelWatermarkUtil` 动态生成 -30° 半透明切片、POI 背景平铺不遮挡、协同密码只读锁定 | `excel` | [ADR-0023](./docs/adr/0023-streaming-excel-engine-and-data-security-architecture.md) |
+| **强类型用户载荷** | 原生 StpUtil 仅支持单一标量，多次强制转换且缺少租户/部门属性 | `LoginHelper` 强类型会话门面与 `LoginUser` 载荷模型，一键存取上下文 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
+| **审计全链路贯通** | 持久层操作人与权限框架割裂，需要反复手动取值注入 | 自动装配 `SaTokenCurrentUserProvider` 接入 Core 模块 SPI，全自动打通 MyBatis-Plus `createBy`/`updateBy` | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
+| **两级权限缓存** | 高频接口频繁拉取数据库权限列表或 Redis 网络 RTT 叠加性能损耗 | `CachedStpInterface` 提供 L1 微缓存 + L2 Redis，内置防穿透防雪崩及动态热刷新 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
+| **微服务内部零信任** | 内部 RPC/Feign 调用易被伪造绕过网关造成横向越权 | `@CheckSameToken` AOP 切面与 `SaSameUtil` 密钥校验，未授权秒级阻断 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
+| **鉴权文档无侵入** | 接口文档测试无法便捷携带 Token，手动粘贴 Header 体验繁琐 | 自动装配 `SaTokenOpenApiCustomizer` 注入 Knife4j / Swagger 全局 SecurityScheme 弹窗 | `satoken` | [ADR-0024](./docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md) |
 
 ---
 
