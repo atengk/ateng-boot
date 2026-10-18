@@ -4,6 +4,8 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * 异步线程池运行时增强配置属性
  * 提供基于 CPU 核心数自适应的受管线程池容量、队列缓冲与优雅停机策略控制
@@ -37,9 +39,9 @@ public class AsyncProperties {
     private int queueCapacity = 1000;
 
     /**
-     * 空闲线程存活时间（单位：秒，默认 60 秒）
+     * 空闲线程存活时间（强类型 Duration，默认 60 秒）
      */
-    private int keepAliveSeconds = 60;
+    private Duration keepAlive = Duration.ofSeconds(60);
 
     /**
      * 异步工作线程名前缀（默认 ateng-async-）
@@ -62,7 +64,45 @@ public class AsyncProperties {
     private boolean waitForTasksToCompleteOnShutdown = true;
 
     /**
-     * 容器关闭时等待任务执行完成的最大超时时间（单位：秒，默认 60 秒）
+     * 容器关闭时等待任务执行完成的最大超时时间（强类型 Duration，默认 60 秒）
      */
-    private int awaitTerminationSeconds = 60;
+    private Duration awaitTermination = Duration.ofSeconds(60);
+
+    // ==================== 向后兼容适配方法 ====================
+
+    /**
+     * 获取空闲线程存活时间（秒，向后兼容）
+     *
+     * @return 存活秒数
+     */
+    public int getKeepAliveSeconds() {
+        return keepAlive != null ? (int) keepAlive.toSeconds() : 60;
+    }
+
+    /**
+     * 设置空闲线程存活时间（秒，向后兼容）
+     *
+     * @param keepAliveSeconds 存活秒数
+     */
+    public void setKeepAliveSeconds(int keepAliveSeconds) {
+        this.keepAlive = Duration.ofSeconds(keepAliveSeconds);
+    }
+
+    /**
+     * 获取容器关闭等待超时时间（秒，向后兼容）
+     *
+     * @return 超时秒数
+     */
+    public int getAwaitTerminationSeconds() {
+        return awaitTermination != null ? (int) awaitTermination.toSeconds() : 60;
+    }
+
+    /**
+     * 设置容器关闭等待超时时间（秒，向后兼容）
+     *
+     * @param awaitTerminationSeconds 超时秒数
+     */
+    public void setAwaitTerminationSeconds(int awaitTerminationSeconds) {
+        this.awaitTermination = Duration.ofSeconds(awaitTerminationSeconds);
+    }
 }

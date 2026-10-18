@@ -188,6 +188,17 @@ class SampleApplicationIntegrationTest {
     }
 
     @Test
+    @DisplayName("6.1 因果异常：转译带有底层 cause 的 BusinessException，严格保留堆栈因果链，映射语义化 Result 并关联 traceId")
+    void shouldHandleCausalBusinessExceptionCorrectly() throws Exception {
+        mockMvc.perform(get("/api/users/error/causal"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value("网关代理服务通信异常"))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    @Test
     @DisplayName("7. 生产脱敏：未知根异常生产脱敏为统一文案，禁止泄露内部堆栈，traceId 贯穿可追溯")
     void shouldMaskUnexpectedExceptionAndLogWithTraceId() throws Exception {
         mockMvc.perform(get("/api/users/error/unexpected"))

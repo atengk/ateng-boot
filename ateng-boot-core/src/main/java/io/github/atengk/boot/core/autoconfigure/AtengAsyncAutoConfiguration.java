@@ -61,8 +61,8 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
             executor.setVirtualThreads(true);
             executor.setThreadNamePrefix(asyncProperties.getVirtualThreadNamePrefix());
             executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-            if (asyncProperties.isWaitForTasksToCompleteOnShutdown()) {
-                executor.setTaskTerminationTimeout(asyncProperties.getAwaitTerminationSeconds() * 1000L);
+            if (asyncProperties.isWaitForTasksToCompleteOnShutdown() && asyncProperties.getAwaitTermination() != null) {
+                executor.setTaskTerminationTimeout(asyncProperties.getAwaitTermination().toMillis());
             }
             if (asyncProperties.getConcurrencyLimit() >= 0) {
                 executor.setConcurrencyLimit(asyncProperties.getConcurrencyLimit());

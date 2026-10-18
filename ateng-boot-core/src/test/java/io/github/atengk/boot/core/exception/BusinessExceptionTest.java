@@ -45,20 +45,52 @@ class BusinessExceptionTest {
 
         assertEquals(500, exception.getCode());
         assertEquals("系统处理异常", exception.getMsg());
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR, exception.getResultCode());
     }
 
     @Test
-    @DisplayName("携带根因异常 Cause 链")
-    void shouldPreserveCause() {
+    @DisplayName("携带根因异常 Cause 链并验证默认保留调用栈")
+    void shouldPreserveCauseAndRetainStackTrace() {
         IllegalArgumentException cause = new IllegalArgumentException("参数格式非法");
         BusinessException exception = new BusinessException(CommonResultCode.BAD_REQUEST, cause);
 
         assertEquals(cause, exception.getCause());
         assertEquals(400, exception.getCode());
+        assertEquals("参数校验失败", exception.getMsg());
+        assertTrue(exception.getStackTrace().length > 0, "携带 cause 时默认应保留堆栈以保障排障");
     }
 
     @Test
-    @DisplayName("验证 fillInStackTrace 被优化抑制以提升性能")
+    @DisplayName("纯文本消息携带根因异常并默认保留调用栈")
+    void shouldPreserveCauseWithTextMessage() {
+        IllegalStateException cause = new IllegalStateException("连接池耗尽");
+        BusinessException exception = new BusinessException("系统服务调用异常", cause);
+
+        assertEquals(cause, exception.getCause());
+        assertEquals(500, exception.getCode());
+        assertEquals("系统服务调用异常", exception.getMsg());
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR, exception.getResultCode());
+        assertTrue(exception.getStackTrace().length > 0, "携带 cause 时默认应保留堆栈以保障排障");
+    }
+
+    @Test
+    @DisplayName("验证显式指定 writableStackTrace 开关行为")
+    void shouldRespectExplicitWritableStackTrace() {
+        BusinessException noStack = new BusinessException(1001, "无堆栈异常", null, false);
+        assertEquals(0, noStack.getStackTrace().length);
+        assertSame(noStack, noStack.fillInStackTrace());
+
+        BusinessException withStack = new BusinessException(1002, "显式保留堆栈异常", null, true);
+        assertTrue(withStack.getStackTrace().length > 0);
+
+        IllegalArgumentException cause = new IllegalArgumentException("底层原因");
+        BusinessException forceNoStack = new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "强制抑制", cause, false);
+        assertEquals(cause, forceNoStack.getCause());
+        assertEquals(0, forceNoStack.getStackTrace().length);
+    }
+
+    @Test
+    @DisplayName("验证无根因时 fillInStackTrace 被优化抑制以提升性能")
     void shouldOptimizeFillInStackTrace() {
         BusinessException exception = new BusinessException("无需堆栈追踪的业务中断");
 

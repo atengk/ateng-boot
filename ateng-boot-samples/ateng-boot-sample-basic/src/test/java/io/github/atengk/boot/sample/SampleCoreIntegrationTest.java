@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -26,6 +27,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -292,5 +294,23 @@ class SampleCoreIntegrationTest {
         assertEquals("secret.doc", FileUtil.cleanFilename("../../secret.doc"));
         assertEquals("png", FileUtil.getExtName("avatar.PNG"));
         assertEquals("1.00 KB", FileUtil.formatSize(1024));
+    }
+
+    @Test
+    @DisplayName("7. 因果异常体系与堆栈双模演练：无 cause 默认清空堆栈免开销，有 cause 自动保留调用栈与完整因果链")
+    void testBusinessExceptionCausalDuality() {
+        // 1. 无 cause 业务校验：默认不抓取堆栈，提升高频校验吞吐
+        BusinessException lightEx = new BusinessException(CommonResultCode.BAD_REQUEST);
+        assertThat(lightEx.getStackTrace()).isEmpty();
+        assertThat(lightEx.getCause()).isNull();
+        assertThat(lightEx.getCode()).isEqualTo(400);
+
+        // 2. 有底层驱动 cause：自动采集当前堆栈并保留原始因果链
+        IOException rootCause = new IOException("底层网络连接重置");
+        BusinessException causalEx = new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "第三方网关通信故障", rootCause);
+        assertThat(causalEx.getCause()).isSameAs(rootCause);
+        assertThat(causalEx.getStackTrace()).isNotEmpty();
+        assertThat(causalEx.getMessage()).isEqualTo("第三方网关通信故障");
+        assertThat(causalEx.getResultCode()).isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR);
     }
 }

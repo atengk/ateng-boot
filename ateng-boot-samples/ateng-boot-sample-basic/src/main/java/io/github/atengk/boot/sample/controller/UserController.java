@@ -140,6 +140,21 @@ public class UserController {
     }
 
     /**
+     * 因果异常端点，演示捕获底层驱动异常并转译为业务异常，因果链与堆栈完整保留
+     *
+     * @return 无返回值
+     */
+    @GetMapping("/error/causal")
+    @WebLog(value = "因果异常端点", printParams = true, printCostTime = true)
+    public Result<Void> causalError() {
+        try {
+            throw new java.io.IOException("底层驱动远程连接超时");
+        } catch (java.io.IOException e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "网关代理服务通信异常", e);
+        }
+    }
+
+    /**
      * 非受控未知根异常端点，用于验证未知根异常生产脱敏与后台 traceId 关联
      *
      * @return 无返回值

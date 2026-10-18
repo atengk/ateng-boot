@@ -17,7 +17,35 @@
 
 ---
 
-## 2. 统一 API 响应契约 (`Result<T>`)
+## 2. 特性与公共 API 全景速查矩阵
+
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `SampleApiResponseTest.java` |
+| **标准状态码** | 统一状态码契约与预置枚举 | `IResultCode`, `CommonResultCode` | - | `CommonResultCode.SUCCESS(200)`, `BAD_REQUEST(400)`, `UNAUTHORIZED(401)`, `FORBIDDEN(403)`, `NOT_FOUND(404)`, `INTERNAL_SERVER_ERROR(500)` | `CommonResultCodeTest.java` |
+| **分页传输契约** | 防越界分页入参与纯净出参模型 | `PageQuery`, `PageResult<T>` | - | `PageQuery.getPageNum()`, `PageQuery.getPageSize()`, `PageResult.of(list, total, pageNum, pageSize)`, `PageResult.map(mapper)` | `PageQueryTest.java`, `PageResultTest.java` |
+| **因果异常体系** | 业务受控异常与因果堆栈双模 | `BusinessException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留堆栈）, `BusinessException(..., writableStackTrace)` | `BusinessExceptionTest.java`, `SampleCoreIntegrationTest.java` |
+| **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)` | `BusinessAssertTest.java` |
+| **分布式发号器** | 2026 纪元雪花发号器与无锁短 ID | `IdUtil`, `Snowflake` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java` |
+| **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java` |
+| **异步受管配置** | 自适应平台与虚拟线程池自动装配 | `AsyncProperties`, `AtengAsyncAutoConfiguration` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `wait-for-tasks-to-complete-on-shutdown`, `await-termination` | `AtengAsyncAutoConfiguration` 初始化上下文感知线程池并提供优雅停机钩子 | `AtengAsyncAutoConfigurationTest.java` |
+| **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java` |
+| **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java` |
+| **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `SampleTenantTest.java` |
+| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)` | `JsonUtilTest.java` |
+| **敏感数据脱敏** | 12 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.desensitize(str, type)`, `mobilePhone(str)`, `idCard(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java` |
+| **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java` |
+| **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `RetryUtil.execute(supplier, maxAttempts, backoff)`，支持异常过滤与指数递增 | `RetryUtilTest.java` |
+| **加解密与摘要** | 原生安全加解密与摘要算法门面 | `CryptoUtil`, `DigestUtil` | - | `CryptoUtil.aesEncrypt/Decrypt`, `sm4Encrypt/Decrypt`, `DigestUtil.md5`, `sha256`, `sm3` | `CryptoUtilTest.java`, `DigestUtilTest.java` |
+| **安全文件处理** | 路径穿越防御与扩展名容量格式化 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `getExtName(name)`, `getBaseName(name)`, `formatSize(bytes)` | `FileUtilTest.java` |
+| **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java` |
+| **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java` |
+| **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java` |
+| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java` |
+
+---
+
+## 3. 统一 API 响应契约 (`Result<T>`)
 
 ### 场景痛点
 避免使用 `@ResponseBodyAdvice` 全局强转黑魔法（破坏 Swagger、字符串强转异常、文件下载失效等），坚持显式声明返回类型，保障强类型自洽。
@@ -72,7 +100,7 @@ UserDTO requiredUser = dtoResult.orElseThrow(CustomException::new);
 
 ---
 
-## 3. 通用传输层分页契约 (`PageQuery` & `PageResult<T>`)
+## 4. 通用传输层分页契约 (`PageQuery` & `PageResult<T>`)
 
 ### 场景痛点
 传输层与持久层严格解耦，禁止将 MyBatis-Plus 的 `Page<T>` 泄露至 Controller 外部。
@@ -94,10 +122,16 @@ public Result<PageResult<UserVO>> queryPage(PageQuery pageQuery) {
 
 ---
 
-## 4. 统一业务异常与语义化断言 (`BusinessException` & `BusinessAssert`)
+## 5. 统一业务异常体系与语义化断言 (`BusinessException` & `BusinessAssert`)
 
 ### 场景痛点
-告别满屏冗余的 `if (...) throw new RuntimeException(...)`，提供类似 Spring `Assert` 但语义化更强的业务断言门面。
+1. 传统业务开发充斥着满屏脆弱的 `if (...) throw new RuntimeException(...)`，缺乏统一状态码与规范契约；
+2. 异常要么无脑抓取完整堆栈导致轻量校验性能暴跌，要么盲目抹空全部堆栈导致捕获底层系统/驱动异常时因果链丢失，线上排障如同盲盒。
+
+### 双模堆栈治理机制 (Stack Trace Duality Invariant)
+- **轻量无堆栈模式（默认业务校验）**：当单纯传递状态码或提示信息时（`cause == null`），`BusinessException` 默认重写 `fillInStackTrace() { return this; }` 并清空堆栈，零抓栈 CPU 开销，赋予前置校验最高吞吐；
+- **全真因果链路保留模式（系统/驱动转译）**：当构造器传入了根因异常（`cause != null`）或显式声明 `writableStackTrace = true` 时，**自动采集并保留当前调用栈与原始 cause 因果链**，确保日志精确捕获业务转译代码行；
+- **显式可控开关**：提供 `BusinessException(code, msg, cause, writableStackTrace)` 全量构造重载，赋予复杂中间件极端场景的绝对掌控力。
 
 ### 核心代码范式
 ```java
@@ -105,11 +139,18 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.code.CommonResultCode;
 
-// 1. 直接抛出业务异常
+// 1. 轻量业务中断（默认无堆栈采集开销，极速失败）
 throw new BusinessException(CommonResultCode.UNAUTHORIZED);
 throw new BusinessException(40001, "验证码已失效");
 
-// 2. 语义化前置断言
+// 2. 携带底层驱动 Cause 根因异常（默认自动保留完整调用栈，绝不丢失因果链）
+try {
+    thirdPartyClient.invoke();
+} catch (IOException e) {
+    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "远程服务通信失败", e);
+}
+
+// 3. 语义化前置业务断言（校验未通过时自动抛出轻量 BusinessException）
 BusinessAssert.isTrue(order.getAmount().compareTo(BigDecimal.ZERO) > 0, "订单金额必须大于0");
 BusinessAssert.notNull(user, CommonResultCode.NOT_FOUND);
 BusinessAssert.hasText(dto.getUsername(), "用户名不能为空");
@@ -118,7 +159,7 @@ BusinessAssert.notEmpty(dto.getRoleIds(), "必须至少分配一个角色");
 
 ---
 
-## 5. 纯原生分布式雪花发号器 (`Snowflake`) 与 ID 门面 (`IdUtil`)
+## 6. 纯原生分布式雪花发号器 (`Snowflake`) 与 ID 门面 (`IdUtil`)
 
 ### 场景痛点
 摆脱大型第三方依赖与集中式协调中间件，在纯 JDK 17 环境下实现高并发、递增、趋势有序的 64 位分布式主键发号与轻量短 ID。
@@ -157,7 +198,7 @@ java -Dateng.boot.snowflake.worker-id=2 -Dateng.boot.snowflake.datacenter-id=1 -
 
 ---
 
-## 6. 全场景敏感数据脱敏体系 (`DesensitizeUtil` & `@FieldSensitive`)
+## 7. 全场景敏感数据脱敏体系 (`DesensitizeUtil` & `@FieldSensitive`)
 
 ### 场景痛点
 涵盖国内常见的所有隐私合规字段，纯 JDK 算法实现，毫秒级脱敏。支持静态工具调用与视图层出界动态打码（配合 Jackson），源数据在 JVM 内存中 100% 保持未脱敏真明文，严格防范打星号脏数据写回持久层引发数据损毁（[ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md)）。
@@ -245,7 +286,7 @@ DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO************
 
 ---
 
-## 7. 轻量原生加解密与哈希摘要 (`CryptoUtil` & `DigestUtil`)
+## 8. 轻量原生加解密与哈希摘要 (`CryptoUtil` & `DigestUtil`)
 
 ### 场景痛点
 提供符合现代密码学安全规范的纯 JDK 原生加解密封装，杜绝由于硬编码 IV 或 ECB 模式导致的重放攻击漏洞，100% 零第三方加密依赖。
@@ -277,7 +318,7 @@ String md5Hex = DigestUtil.md5Hex("raw_text");
 
 ---
 
-## 8. 通用线性树形与森林装配工具 (`TreeUtil`)
+## 9. 通用线性树形与森林装配工具 (`TreeUtil`)
 
 ### 场景痛点
 菜单树、组织架构树、品类目录等递归组装是业务极高频操作，传统两层循环性能为 $O(N^2)$，容易发生栈溢出。`TreeUtil` 采用哈希辅助表实现 $O(N)$ 极速装配，并支持多根谓词成林与递归剪枝过滤。
@@ -318,7 +359,7 @@ List<MenuNode> filteredTree = TreeUtil.filter(
 
 ---
 
-## 9. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
+## 10. 原生不可变元组标准件 (`Pair<L, R>` & `Triple<L, M, R>`)
 
 ### 场景痛点
 业务方法常需要返回多个关联属性（如 `count` 与 `totalAmount`，或 `min/avg/max` 区间三要素），创建专用 DTO 过重，使用 `Map<String, Object>` 丧失强类型安全。
@@ -347,7 +388,7 @@ Boolean enabled = triple.right();
 
 ---
 
-## 10. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
+## 11. 用户与多租户上下文及四维异步透传 (`UserContextHolder`, `TenantContextHolder` & `AsyncContext`)
 
 ### 场景痛点
 在分布式与 SaaS 架构下，异步线程池（如 `@Async`、`CompletableFuture`、自定义线程池）执行任务时，主线程的链路追踪 `traceId`、当前登录操作人、多租户上下文与忽略租户状态极易发生上下文丢失或线程池污染，导致跨租户越权漏洞。
@@ -422,15 +463,16 @@ CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
 //       core-pool-size: 8
 //       max-pool-size: 16
 //       queue-capacity: 1000
+//       keep-alive: 60s                               # 强类型 Duration 格式（默认 60s）
 //       thread-name-prefix: "ateng-async-"
 //       virtual-thread-name-prefix: "ateng-vt-async-" # 虚拟线程专属前缀
 //       concurrency-limit: 64                         # 虚拟线程并发限制（防下游连接池击穿，默认 -1 无界）
-//       await-termination-seconds: 60
+//       await-termination: 60s                        # 优雅停机等待超时（默认 60s）
 ```
 
 ---
 
-## 11. 未来中间件孵化通用原语套件
+## 12. 未来中间件孵化通用原语套件
 
 > 为未来扩展存储（Storage）、消息队列（MQ）、分布式任务调度（Job）、邮件短信及 AI 等功能模块提供统一的纯原生零外部依赖基础设施标准件。
 
@@ -642,7 +684,7 @@ public class UserController {
 
 ---
 
-## 12. 模块配置属性参考 (`application.yml`)
+## 13. 模块配置属性参考 (`application.yml`)
 
 `ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，可在 `application.yml` 中按需定制配置：
 
@@ -664,8 +706,8 @@ ateng:
       max-pool-size: 16
       # 阻塞队列容量（平台线程模式，默认 1000）
       queue-capacity: 1000
-      # 空闲线程存活时间（平台线程模式，秒，默认 60）
-      keep-alive-seconds: 60
+      # 空闲线程存活时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 keep-alive-seconds: 60）
+      keep-alive: 60s
       # 平台线程工作线程名前缀（默认 ateng-async-）
       thread-name-prefix: "ateng-async-"
       # 虚拟线程工作线程名前缀（默认 ateng-vt-async-，虚拟线程模式下生效）
@@ -674,6 +716,6 @@ ateng:
       concurrency-limit: -1
       # 容器关闭时是否等待任务执行完成（优雅停机，默认 true）
       wait-for-tasks-to-complete-on-shutdown: true
-      # 优雅停机等待超时时间（秒，默认 60）
-      await-termination-seconds: 60
+      # 优雅停机等待超时时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 await-termination-seconds: 60）
+      await-termination: 60s
 ```

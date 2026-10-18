@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.junit.jupiter.api.condition.EnabledForJreRange;
 import org.junit.jupiter.api.condition.JRE;
+import io.github.atengk.boot.core.properties.AsyncProperties;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.annotation.AsyncConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -66,6 +67,24 @@ class AtengAsyncAutoConfigurationTest {
             assertThat(executor.getMaxPoolSize()).isEqualTo(8);
             assertThat(executor.getKeepAliveSeconds()).isEqualTo(30);
             assertThat(executor.getThreadNamePrefix()).isEqualTo("custom-async-");
+        });
+    }
+
+    @Test
+    @DisplayName("配置强类型 Duration 格式参数时成功解析并在关闭时优雅等待")
+    void shouldSupportStronglyTypedDurationProperties() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.async.keep-alive=45s",
+                "ateng.boot.async.await-termination=90s",
+                "ateng.boot.async.wait-for-tasks-to-complete-on-shutdown=true"
+        ).run(context -> {
+            assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
+            ThreadPoolTaskExecutor executor = context.getBean("taskExecutor", ThreadPoolTaskExecutor.class);
+            assertThat(executor.getKeepAliveSeconds()).isEqualTo(45);
+
+            AsyncProperties properties = context.getBean(AsyncProperties.class);
+            assertThat(properties.getKeepAlive()).isEqualTo(java.time.Duration.ofSeconds(45));
+            assertThat(properties.getAwaitTermination()).isEqualTo(java.time.Duration.ofSeconds(90));
         });
     }
 
