@@ -43,6 +43,7 @@
 | **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java` |
 | **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java` |
 | **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java` |
+| **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java` |
 
 ---
 
@@ -739,6 +740,58 @@ TransactionUtil.publishAfterCommit(new OrderPaidEvent(orderId));
 // 6. 事务与同步器状态判定
 boolean hasActualTx = TransactionUtil.isActualTransactionActive();
 boolean hasSync = TransactionUtil.isSynchronizationActive();
+```
+
+### 12. 操作审计标准契约 (`OperateLogModel` & `OperateTypeEnum`)
+
+#### 场景痛点与特性
+在全栈开发与分布式审计场景中，操作日志流转通常涉及 Web 切面拦截、MQ 消息异步削峰、领域事件分发以及持久层（MySQL / Elasticsearch / ClickHouse）消费落库。
+若各子系统或分层自行定义散落的 Map 或不规范 POJO，极易导致字段命名割裂、操作动作歧义、Jackson 序列化 `@class` 漏洞污染以及缺失租户和全链路 TraceId 透传。
+`ateng-boot-core` 下沉通用审计元数据标准契约：
+- **标准枚举与多源安全解析**：`OperateTypeEnum` 集中收敛 11 种通用操作动作（`OTHER(0)`、`INSERT(1)`、`UPDATE(2)`、`DELETE(3)`、`QUERY(4)`、`EXPORT(5)`、`IMPORT(6)`、`LOGIN(7)`、`LOGOUT(8)`、`GRANT(9)`、`CLEAN(10)`），支持按 code 数值或名称大小写安全匹配，提供 `@JsonCreator` 兼容解析；
+- **18 项全要素结构化元数据**：`OperateLogModel` 覆盖全链路追踪（`traceId`）、多租户（`tenantId`）、操作人（`userId`, `userName`）、功能模块与描述（`module`, `description`）、网络端点（`requestMethod`, `requestUrl`, `clientIp`, `operateLocation`）、出入参摘要（`requestParams`, `responseResult`）、执行度量（`status`, `costTime`, `errorMsg`）、扩展字典（`extra`）与时间戳（`operateTime`）；
+- **语法糖与无失真序列化**：提供 `isSuccess()` 语法糖判定（`status == 0`，标配 `@JsonIgnore` 防派生字段污染），支持 `addExtra(k, v)` 便捷链式扩展，100% 适配 Jackson 规范序列化与未知属性容错。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.audit.OperateLogModel;
+import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.util.JsonUtil;
+
+import java.time.LocalDateTime;
+
+// 1. 构建结构化操作审计日志模型
+OperateLogModel logModel = OperateLogModel.builder()
+        .traceId("c8a14b0365734fb4864f7bdf753b890a")
+        .tenantId("tenant-001")
+        .userId("user-10001")
+        .userName("张三")
+        .module("用户管理")
+        .operateType(OperateTypeEnum.INSERT)
+        .description("新增系统用户")
+        .requestMethod("POST")
+        .requestUrl("/api/users")
+        .clientIp("192.168.1.100")
+        .operateLocation("中国北京北京")
+        .requestParams("{\"username\":\"zhangsan\"}")
+        .responseResult("{\"code\":200,\"msg\":\"操作成功\"}")
+        .status(0)
+        .costTime(28L)
+        .operateTime(LocalDateTime.now())
+        .build();
+
+// 2. 便捷链式追加自定义扩展业务要素
+logModel.addExtra("browser", "Chrome")
+        .addExtra("os", "Windows 11");
+
+// 3. 语法糖判定
+if (logModel.isSuccess()) {
+    log.info("操作成功执行");
+}
+
+// 4. 纯净序列化与反序列化（零 @class 污染，时间格式自动对齐）
+String json = JsonUtil.toJsonString(logModel);
+OperateLogModel parsed = JsonUtil.parseObject(json, OperateLogModel.class);
 ```
 
 ---

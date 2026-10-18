@@ -157,6 +157,11 @@ _Avoid_: ValidatedList, ValidationList, DTOList
 基于 Spring 事务同步器（TransactionSynchronization）实现的事务生命周期全局静态门面，支持在数据库物理事务提交后执行同步/异步任务或发布领域事件，在事务回滚后执行补偿清理逻辑；具备类探测与无事务判定机制，无活跃事务或缺依赖时平滑降级就地同步执行，异步调度自动透传四维上下文快照（MDC、User、TenantId、IgnoreTenant）并隔离次生异常。
 _Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
 
+**OperateTypeEnum**:
+通用操作审计动作类型枚举，集中收敛涵盖 11 种通用操作动作类型（OTHER、INSERT、UPDATE、DELETE、QUERY、EXPORT、IMPORT、LOGIN、LOGOUT、GRANT、CLEAN），为全反应堆跨层审计流转提供强类型契约与多源安全解析能力。
+_Avoid_: AuditActionEnum, LogTypeEnum, ActionType
 
-
+**OperateLogModel**:
+结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
+_Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord
 
