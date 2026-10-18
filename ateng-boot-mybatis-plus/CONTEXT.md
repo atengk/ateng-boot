@@ -152,4 +152,40 @@ _Avoid_: SqlNotifier, SlowSqlHandler, SlowSqlConsumer
 多数据源环境协同守卫探针，校验与防御跨数据源切换时租户与数据权限上下文的隔离有效性。
 _Avoid_: MultiDataSourceHelper, RoutingGuard
 
+**DynamicQueryRequest**:
+标准动态查询请求契约对象，继承 PageQuery，承载前端或服务间传递的结构化过滤条件、受控操作符与排序字段。
+_Avoid_: UniversalQuery, SearchParam, QueryDto
+
+**DynamicQueryHelper**:
+动态查询与排序安全转译门面，基于实体元数据物理白名单将动态条件安全构建为 MyBatis-Plus LambdaQueryWrapper，杜绝 SQL 注入与未授权列探测。
+_Avoid_: QueryBuilder, WrapperHelper, AutoQuery
+
+**QueryField**:
+声明在业务特定 DTO 字段上的动态条件注解，用于显式映射目标实体属性与操作符。
+_Avoid_: SearchColumn, CriteriaField, QueryCondition
+
+**DynamicQueryIgnore**:
+声明在实体敏感属性上的安全防卫注解，显式禁止外部动态查询条件与排序访问该字段。
+_Avoid_: SkipQuery, NoSearch, ForbidQuery
+
+**DataChangeRecord**:
+数据变更增量记录实体，承载实体在 UPDATE/DELETE 时的变更前/后快照与字段级 Diff 明细。
+_Avoid_: AuditLog, ChangeHistory, DiffRecord
+
+**AuditChange**:
+声明在实体类或 Mapper 方法上的变更追踪审计注解，声明触发快照对比与 Diff 抓取。
+_Avoid_: TrackChange, DiffAudit, LogChange
+
+**DataChangeAuditProvider**:
+数据变更审计日志消费与异步持久化 SPI 契约接口，支持业务自由对接存盘、ES 或消息总线。
+_Avoid_: AuditConsumer, ChangeHandler, DiffListener
+
+**ConflictKeys**:
+声明在实体类或关键属性上的冲突键注解，用于 PostgreSQL 原生 Upsert `ON CONFLICT (keys)` 复合唯一索引匹配。
+_Avoid_: ConflictColumn, UniqueConflict, UpsertKeys
+
+**DataChangeAuditContextHolder**:
+数据变更审计上下文持有者，提供编程式闭包（`runWithoutAudit`）用于临时绕过变更快照抓取与 Diff 计算。
+_Avoid_: AuditContext, ChangeSession, AuditHolder
+
 
