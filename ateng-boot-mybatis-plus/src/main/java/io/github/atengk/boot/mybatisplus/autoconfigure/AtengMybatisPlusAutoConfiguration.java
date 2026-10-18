@@ -68,12 +68,16 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
-     * 初始化全局持久层加解密密钥配置
+     * 初始化全局持久层配置（加解密密钥与动态查询引擎开关）
      */
     @PostConstruct
-    public void initCrypto() {
+    public void initGlobalConfig() {
         if (properties.getCrypto() != null && properties.getCrypto().getSecretKey() != null) {
             EncryptTypeHandler.setGlobalSecretKey(properties.getCrypto().getSecretKey());
+        }
+        if (properties.getDynamicQuery() != null) {
+            io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper.setEnabled(
+                    properties.getDynamicQuery().isEnabled());
         }
     }
 

@@ -90,6 +90,12 @@ public class MybatisPlusProperties {
     private DynamicSqlProperties dynamicSql = new DynamicSqlProperties();
 
     /**
+     * 动态查询条件转译引擎配置
+     */
+    @NestedConfigurationProperty
+    private DynamicQueryProperties dynamicQuery = new DynamicQueryProperties();
+
+    /**
      * 持久层守卫与诊断探针配置
      */
     @NestedConfigurationProperty
@@ -197,6 +203,14 @@ public class MybatisPlusProperties {
 
     public void setGuard(GuardProperties guard) {
         this.guard = guard;
+    }
+
+    public DynamicQueryProperties getDynamicQuery() {
+        return dynamicQuery;
+    }
+
+    public void setDynamicQuery(DynamicQueryProperties dynamicQuery) {
+        this.dynamicQuery = dynamicQuery;
     }
 
 
