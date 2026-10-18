@@ -1,5 +1,7 @@
 package io.github.atengk.boot.storage.template;
 
+import io.github.atengk.boot.core.model.PageQuery;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
@@ -250,6 +252,31 @@ public class StorageTemplate implements StorageOperations {
         }
         byte[] bytes = downloadBytes(path);
         return JsonUtil.parseObject(bytes, clazz);
+    }
+
+    @Override
+    public List<StorageObject> list(String prefix, boolean recursive) {
+        return getDriver().list(prefix, recursive);
+    }
+
+    @Override
+    public PageResult<StorageObject> listPage(String prefix, PageQuery pageQuery, boolean recursive) {
+        long current = (pageQuery != null && pageQuery.getCurrent() >= 1) ? pageQuery.getCurrent() : 1L;
+        long size = (pageQuery != null && pageQuery.getSize() >= 1) ? pageQuery.getSize() : 10L;
+
+        List<StorageObject> all = list(prefix, recursive);
+        long total = all.size();
+        if (total == 0) {
+            return PageResult.of(Collections.emptyList(), 0, current, size);
+        }
+
+        long skip = (current - 1) * size;
+        List<StorageObject> pageRecords = all.stream()
+                .skip(skip)
+                .limit(size)
+                .toList();
+
+        return PageResult.of(pageRecords, total, current, size);
     }
 
     @Override

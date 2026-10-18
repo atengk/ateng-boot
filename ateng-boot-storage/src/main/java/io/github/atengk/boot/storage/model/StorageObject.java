@@ -59,4 +59,19 @@ public class StorageObject implements Serializable {
      */
     @Builder.Default
     private Map<String, String> userMetadata = Collections.emptyMap();
+
+    /**
+     * 是否为目录 / 虚拟前缀
+     */
+    @Builder.Default
+    private Boolean directory = false;
+
+    /**
+     * 判断当前对象是否为目录
+     *
+     * @return true 为目录
+     */
+    public boolean isDirectory() {
+        return Boolean.TRUE.equals(this.directory);
+    }
 }

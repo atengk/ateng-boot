@@ -1,5 +1,7 @@
 package io.github.atengk.boot.storage.template;
 
+import io.github.atengk.boot.core.model.PageQuery;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -212,6 +214,46 @@ public interface StorageOperations {
      * @return 业务对象
      */
     <T> T downloadJson(String path, Class<T> clazz);
+
+    /**
+     * 平铺列举指定前缀下的存储对象（默认非递归，仅返回当前层级文件及直接子目录）
+     *
+     * @param prefix 路径前缀（若为 null 或空白表示根目录）
+     * @return 存储对象列表（默认过滤系统隐藏项）
+     */
+    default List<StorageObject> list(String prefix) {
+        return list(prefix, false);
+    }
+
+    /**
+     * 列举指定前缀下的存储对象
+     *
+     * @param prefix    路径前缀（若为 null 或空白表示根目录）
+     * @param recursive 是否递归遍历子目录
+     * @return 存储对象列表（默认过滤系统隐藏项）
+     */
+    List<StorageObject> list(String prefix, boolean recursive);
+
+    /**
+     * 分页检索指定前缀下的存储对象（默认非递归，平铺返回当前层级）
+     *
+     * @param prefix    路径前缀（若为 null 或空白表示根目录）
+     * @param pageQuery 分页参数（页码与页大小）
+     * @return 标准分页结果对象
+     */
+    default PageResult<StorageObject> listPage(String prefix, PageQuery pageQuery) {
+        return listPage(prefix, pageQuery, false);
+    }
+
+    /**
+     * 分页检索指定前缀下的存储对象
+     *
+     * @param prefix    路径前缀（若为 null 或空白表示根目录）
+     * @param pageQuery 分页参数（页码与页大小）
+     * @param recursive 是否递归遍历子目录
+     * @return 标准分页结果对象
+     */
+    PageResult<StorageObject> listPage(String prefix, PageQuery pageQuery, boolean recursive);
 
     /**
      * 获取预签名只读下载外链凭证

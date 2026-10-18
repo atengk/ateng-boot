@@ -18,7 +18,9 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * 本地磁盘文件存储驱动实现
@@ -277,6 +279,73 @@ public class LocalDriver implements StorageDriver {
             return true;
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "移动本地文件失败: " + sourcePath + " -> " + targetPath, e);
+        }
+    }
+
+    @Override
+    public List<StorageObject> list(String prefix, boolean recursive) {
+        String cleanPrefix = (prefix != null && !prefix.isBlank())
+                ? StorageSecurityUtil.normalizePath(prefix)
+                : "";
+        Path targetDir = resolveAndVerify(cleanPrefix);
+        if (!Files.exists(targetDir)) {
+            return Collections.emptyList();
+        }
+        if (Files.isRegularFile(targetDir)) {
+            return List.of(getMetadata(cleanPrefix));
+        }
+
+        try {
+            if (!recursive) {
+                try (Stream<Path> stream = Files.list(targetDir)) {
+                    return stream
+                            .filter(p -> !p.getFileName().toString().startsWith("."))
+                            .sorted()
+                            .map(p -> {
+                                String relPath = basePath.relativize(p).toString().replace('\\', '/');
+                                if (Files.isDirectory(p)) {
+                                    Instant lastModified = Instant.EPOCH;
+                                    try {
+                                        lastModified = Files.getLastModifiedTime(p).toInstant();
+                                    } catch (IOException ignored) {
+                                    }
+                                    return StorageObject.builder()
+                                            .path(relPath)
+                                            .filename(p.getFileName().toString())
+                                            .directory(true)
+                                            .size(0L)
+                                            .lastModified(lastModified)
+                                            .build();
+                                } else {
+                                    return getMetadata(relPath);
+                                }
+                            })
+                            .toList();
+                }
+            } else {
+                try (Stream<Path> stream = Files.walk(targetDir)) {
+                    return stream
+                            .filter(p -> !p.equals(targetDir))
+                            .filter(Files::isRegularFile)
+                            .filter(p -> {
+                                Path relToTarget = targetDir.relativize(p);
+                                for (Path part : relToTarget) {
+                                    if (part.toString().startsWith(".")) {
+                                        return false;
+                                    }
+                                }
+                                return true;
+                            })
+                            .sorted()
+                            .map(p -> {
+                                String relPath = basePath.relativize(p).toString().replace('\\', '/');
+                                return getMetadata(relPath);
+                            })
+                            .toList();
+                }
+            }
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "列举本地存储目录失败: " + prefix, e);
         }
     }
 

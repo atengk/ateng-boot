@@ -16,6 +16,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.CommonPrefix;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
@@ -23,11 +24,14 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -38,6 +42,8 @@ import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -369,6 +375,95 @@ public class S3Driver implements StorageDriver {
         copy(sourcePath, targetPath);
         delete(sourcePath);
         return true;
+    }
+
+    @Override
+    public List<StorageObject> list(String prefix, boolean recursive) {
+        String cleanPrefix = (prefix != null && !prefix.isBlank())
+                ? StorageSecurityUtil.normalizePath(prefix)
+                : "";
+        String s3Prefix;
+        if (cleanPrefix.isEmpty()) {
+            s3Prefix = "";
+        } else {
+            s3Prefix = cleanPrefix.endsWith("/") ? cleanPrefix : cleanPrefix + "/";
+        }
+
+        try {
+            List<StorageObject> results = new ArrayList<>();
+            String continuationToken = null;
+            do {
+                ListObjectsV2Request.Builder requestBuilder = ListObjectsV2Request.builder()
+                        .bucket(this.bucket)
+                        .continuationToken(continuationToken);
+
+                if (!s3Prefix.isEmpty()) {
+                    requestBuilder.prefix(s3Prefix);
+                }
+                if (!recursive) {
+                    requestBuilder.delimiter("/");
+                }
+
+                ListObjectsV2Response response = this.s3Client.listObjectsV2(requestBuilder.build());
+
+                // 1. 处理虚拟子目录（CommonPrefixes）
+                if (!recursive && response.hasCommonPrefixes()) {
+                    for (CommonPrefix cp : response.commonPrefixes()) {
+                        String dirKey = cp.prefix();
+                        if (dirKey.endsWith("/")) {
+                            dirKey = dirKey.substring(0, dirKey.length() - 1);
+                        }
+                        String dirName = dirKey.contains("/") ? dirKey.substring(dirKey.lastIndexOf('/') + 1) : dirKey;
+                        if (!dirName.startsWith(".")) {
+                            results.add(StorageObject.builder()
+                                    .path(dirKey)
+                                    .filename(dirName)
+                                    .directory(true)
+                                    .size(0L)
+                                    .lastModified(Instant.EPOCH)
+                                    .build());
+                        }
+                    }
+                }
+
+                // 2. 处理对象（Contents）
+                if (response.hasContents()) {
+                    for (S3Object s3Obj : response.contents()) {
+                        String key = s3Obj.key();
+                        // 忽略以 / 结尾的目录占位符自身
+                        if (key.endsWith("/") || key.equals(s3Prefix)) {
+                            continue;
+                        }
+                        String filename = FileUtil.cleanFilename(key);
+                        // 过滤隐藏文件（文件名以 . 开头）
+                        if (filename.startsWith(".")) {
+                            continue;
+                        }
+                        results.add(StorageObject.builder()
+                                .path(key)
+                                .filename(filename)
+                                .size(s3Obj.size())
+                                .contentType(StorageSecurityUtil.determineContentType(key))
+                                .etag(stripQuotes(s3Obj.eTag()))
+                                .lastModified(s3Obj.lastModified())
+                                .directory(false)
+                                .build());
+                    }
+                }
+
+                continuationToken = response.isTruncated() ? response.nextContinuationToken() : null;
+            } while (continuationToken != null);
+
+            // 若作为目录列举为空，且 cleanPrefix 非空，探测是否本身为单对象文件
+            if (results.isEmpty() && !cleanPrefix.isEmpty() && exists(cleanPrefix)) {
+                return List.of(getMetadata(cleanPrefix));
+            }
+
+            results.sort(Comparator.comparing(StorageObject::getPath));
+            return results;
+        } catch (Exception e) {
+            throw translateException(e, prefix, "列举 S3 对象列表失败");
+        }
     }
 
     @Override

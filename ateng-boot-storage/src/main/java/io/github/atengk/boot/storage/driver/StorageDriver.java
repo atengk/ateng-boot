@@ -95,6 +95,15 @@ public interface StorageDriver extends AutoCloseable {
     boolean move(String sourcePath, String targetPath);
 
     /**
+     * 列举指定前缀下的存储对象列表
+     *
+     * @param prefix    路径前缀（若为 null 或空白表示根目录）
+     * @param recursive 是否递归遍历子目录（true 深度递归返回所有匹配文件；false 仅返回当前层级文件及直接子目录）
+     * @return 存储对象列表（默认过滤以 . 开头的系统隐藏项）
+     */
+    List<StorageObject> list(String prefix, boolean recursive);
+
+    /**
      * 获取预签名只读下载外链凭证
      *
      * @param path     存储对象相对路径

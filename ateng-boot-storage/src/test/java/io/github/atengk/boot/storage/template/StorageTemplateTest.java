@@ -1,5 +1,7 @@
 package io.github.atengk.boot.storage.template;
 
+import io.github.atengk.boot.core.model.PageQuery;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
@@ -190,6 +192,43 @@ class StorageTemplateTest {
         assertNotNull(downloaded);
         assertEquals("Ateng", downloaded.getName());
         assertEquals(18, downloaded.getAge());
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 门面列举对象并支持分页切片")
+    void testListAndListPage() {
+        for (int i = 1; i <= 5; i++) {
+            template.uploadString("page/doc-" + i + ".txt", "Doc content " + i);
+        }
+
+        // 1. 平铺列举
+        List<StorageObject> items = template.list("page");
+        assertEquals(5, items.size());
+
+        // 2. 分页第 1 页 (page=1, size=2)
+        PageResult<StorageObject> page1 = template.listPage("page", new PageQuery(1, 2));
+        assertNotNull(page1);
+        assertEquals(5, page1.getTotal());
+        assertEquals(1, page1.getCurrent());
+        assertEquals(2, page1.getSize());
+        assertEquals(3, page1.getPages());
+        assertEquals(2, page1.getRecords().size());
+        assertEquals("page/doc-1.txt", page1.getRecords().get(0).getPath());
+        assertEquals("page/doc-2.txt", page1.getRecords().get(1).getPath());
+
+        // 3. 分页第 3 页 (page=3, size=2)
+        PageResult<StorageObject> page3 = template.listPage("page", new PageQuery(3, 2));
+        assertNotNull(page3);
+        assertEquals(5, page3.getTotal());
+        assertEquals(3, page3.getCurrent());
+        assertEquals(1, page3.getRecords().size());
+        assertEquals("page/doc-5.txt", page3.getRecords().get(0).getPath());
+
+        // 4. 超出范围的分页 (page=4, size=2)
+        PageResult<StorageObject> page4 = template.listPage("page", new PageQuery(4, 2));
+        assertNotNull(page4);
+        assertEquals(5, page4.getTotal());
+        assertTrue(page4.getRecords().isEmpty());
     }
 
     public static class TestUser {

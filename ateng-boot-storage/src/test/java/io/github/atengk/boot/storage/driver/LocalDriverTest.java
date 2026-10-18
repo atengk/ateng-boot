@@ -225,4 +225,58 @@ class LocalDriverTest {
         StorageException ex = assertThrows(StorageException.class, () -> driver.move("non/exist.txt", "target/file.txt"));
         assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex.getCode());
     }
+
+    @Test
+    @DisplayName("平铺列举本地目录（非递归，返回直接文件及子目录并过滤系统隐藏项）")
+    void testListFlat() {
+        driver.upload("repo/file1.txt", new ByteArrayInputStream("f1".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
+        driver.upload("repo/file2.txt", new ByteArrayInputStream("f2".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
+        driver.upload("repo/sub/file3.txt", new ByteArrayInputStream("f3".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
+        driver.upload("repo/.chunks/part1", new ByteArrayInputStream("p1".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
+
+        List<StorageObject> items = driver.list("repo", false);
+        assertNotNull(items);
+        assertEquals(3, items.size());
+
+        // 验证 file1.txt, file2.txt, sub (目录)
+        StorageObject file1 = items.stream().filter(i -> "repo/file1.txt".equals(i.getPath())).findFirst().orElse(null);
+        assertNotNull(file1);
+        assertFalse(file1.isDirectory());
+
+        StorageObject file2 = items.stream().filter(i -> "repo/file2.txt".equals(i.getPath())).findFirst().orElse(null);
+        assertNotNull(file2);
+        assertFalse(file2.isDirectory());
+
+        StorageObject subDir = items.stream().filter(i -> "repo/sub".equals(i.getPath())).findFirst().orElse(null);
+        assertNotNull(subDir);
+        assertTrue(subDir.isDirectory());
+        assertEquals("sub", subDir.getFilename());
+    }
+
+    @Test
+    @DisplayName("递归列举本地目录所有文件并过滤隐藏项")
+    void testListRecursive() {
+        driver.upload("tree/a.txt", new ByteArrayInputStream("a".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
+        driver.upload("tree/sub1/b.txt", new ByteArrayInputStream("b".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
+        driver.upload("tree/sub1/sub2/c.txt", new ByteArrayInputStream("c".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
+        driver.upload("tree/sub1/.hidden/d.txt", new ByteArrayInputStream("d".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
+
+        List<StorageObject> items = driver.list("tree", true);
+        assertNotNull(items);
+        assertEquals(3, items.size());
+
+        List<String> paths = items.stream().map(StorageObject::getPath).toList();
+        assertTrue(paths.contains("tree/a.txt"));
+        assertTrue(paths.contains("tree/sub1/b.txt"));
+        assertTrue(paths.contains("tree/sub1/sub2/c.txt"));
+        assertFalse(paths.contains("tree/sub1/.hidden/d.txt"));
+    }
+
+    @Test
+    @DisplayName("列举不存在的路径保底返回空集合")
+    void testListNonExistentPath() {
+        List<StorageObject> items = driver.list("non/exist/dir", false);
+        assertNotNull(items);
+        assertTrue(items.isEmpty());
+    }
 }

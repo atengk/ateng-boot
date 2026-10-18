@@ -17,6 +17,7 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CommonPrefix;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
@@ -25,10 +26,13 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -329,5 +333,65 @@ class S3DriverTest {
 
         verify(s3Client).copyObject(any(CopyObjectRequest.class));
         verify(s3Client).deleteObject(any(DeleteObjectRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 平铺列举对象（含虚拟子目录与普通对象）")
+    void testListObjectsFlat() {
+        S3Object s3Obj = S3Object.builder()
+                .key("photos/avatar.png")
+                .size(1024L)
+                .eTag("\"etag123\"")
+                .lastModified(Instant.now())
+                .build();
+        CommonPrefix commonPrefix = CommonPrefix.builder()
+                .prefix("photos/vacation/")
+                .build();
+
+        ListObjectsV2Response response = ListObjectsV2Response.builder()
+                .contents(List.of(s3Obj))
+                .commonPrefixes(List.of(commonPrefix))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(response);
+
+        List<StorageObject> items = s3Driver.list("photos", false);
+        assertNotNull(items);
+        assertEquals(2, items.size());
+
+        StorageObject dirItem = items.stream().filter(StorageObject::isDirectory).findFirst().orElse(null);
+        assertNotNull(dirItem);
+        assertEquals("photos/vacation", dirItem.getPath());
+        assertEquals("vacation", dirItem.getFilename());
+
+        StorageObject fileItem = items.stream().filter(i -> !i.isDirectory()).findFirst().orElse(null);
+        assertNotNull(fileItem);
+        assertEquals("photos/avatar.png", fileItem.getPath());
+        assertEquals("avatar.png", fileItem.getFilename());
+        assertEquals(1024L, fileItem.getSize());
+        assertEquals("etag123", fileItem.getEtag());
+    }
+
+    @Test
+    @DisplayName("S3 递归列举对象（全量文件平铺返回）")
+    void testListObjectsRecursive() {
+        S3Object obj1 = S3Object.builder().key("data/2026/1.txt").size(10L).eTag("\"e1\"").lastModified(Instant.now()).build();
+        S3Object obj2 = S3Object.builder().key("data/2026/sub/2.txt").size(20L).eTag("\"e2\"").lastModified(Instant.now()).build();
+
+        ListObjectsV2Response response = ListObjectsV2Response.builder()
+                .contents(List.of(obj1, obj2))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(response);
+
+        List<StorageObject> items = s3Driver.list("data", true);
+        assertNotNull(items);
+        assertEquals(2, items.size());
+
+        List<String> paths = items.stream().map(StorageObject::getPath).toList();
+        assertTrue(paths.contains("data/2026/1.txt"));
+        assertTrue(paths.contains("data/2026/sub/2.txt"));
     }
 }

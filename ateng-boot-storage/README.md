@@ -296,7 +296,55 @@ TestUser downloadedUser = storageTemplate.downloadJson("json/user.json", TestUse
 
 ---
 
-## 10. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
+## 10. 目录前缀列举与分页对象检索 (`list` / `listPage`)
+
+### 场景痛点
+管理控制台或文件浏览器高频需要按层级浏览目录、平铺检索或分页展示文件列表。传统实现要么缺乏目录与文件的统一模型区分，要么将全部对象一次性加载导致内存溢出；此外 S3 与本地文件系统的目录模型差异（虚拟公共前缀 vs 物理文件夹）增加了业务适配难度。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+// 1. 平铺列举指定前缀下的第一层文件与子目录（非递归）
+List<StorageObject> flatList = storageTemplate.list("documents");
+for (StorageObject obj : flatList) {
+    if (obj.isDirectory()) {
+        System.out.println("子目录: " + obj.getPath());
+    } else {
+        System.out.println("文件: " + obj.getPath() + ", 大小: " + obj.getSize());
+    }
+}
+
+// 2. 深度递归列举前缀下的所有对象（递归遍历全树，自动过滤 . 开头的系统隐藏项）
+List<StorageObject> allList = storageTemplate.list("documents", true);
+
+// 3. 契约驱动标准分页查询（深度复用 Core 模块 PageQuery / PageResult）
+PageQuery pageQuery = PageQuery.of(1, 10);
+PageResult<StorageObject> pageResult = storageTemplate.listPage("documents", pageQuery);
+
+System.out.println("当前页条数: " + pageResult.getRecords().size());
+System.out.println("总条数: " + pageResult.getTotal());
+System.out.println("总页数: " + pageResult.getPages());
+```
+
+### 预期呈现契约
+控制台输出：
+```text
+子目录: documents/2026
+文件: documents/report.pdf, 大小: 1048576
+当前页条数: 2
+总条数: 2
+总页数: 1
+```
+返回的 `StorageObject` 统一具备 `isDirectory()` 判别：
+- **目录项**：`directory = true`，`size = 0L`，`path` 保证为去除末尾斜杠的标准相对路径；
+- **隐藏文件过滤**：内部自动过滤 `.chunks` 等隐藏项，保障应用业务视图纯净；
+- **分页解耦**：严格遵循 ADR-0010 传输分页契约，在 Service / 门面层完成流式切片与总数统计。
+
+---
+
+## 11. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
 
 ### 场景痛点
 传统本地存储通常缺乏外链时效性控制与防盗链签名，必须手动编写下载控制器或配置静态 Nginx 映射，无法与云端 S3 的 Presigned URL 保持契约一致。
@@ -332,7 +380,7 @@ public void generateDownloadUrl() {
 
 ---
 
-## 11. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
+## 12. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
 
 ### 场景痛点
 面对音视频、安装包等大文件上传，若全部经过应用服务器中转，将严重占用后端带宽并消耗内存，导致服务器并发瓶颈；而在下载时，为了保护文件隐私，需要生成临时且安全的云端下载直链。
@@ -369,7 +417,7 @@ HTTP方法: PUT
 
 ---
 
-## 12. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
+## 13. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
 
 ### 场景痛点
 大型生产系统往往同时对接多种存储后端（如将公开图片存入 CDN 加速桶、将企业私密合同存入内网私有 MinIO、临时中间数据写入本地磁盘）。若在业务代码中硬编码具体驱动或手动切换，耦合严重且极易在异步线程池中导致上下文串源污染。
@@ -444,7 +492,7 @@ TraceId: trace-12345
 
 ---
 
-## 13. 安全路径防卫机制
+## 14. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
@@ -454,7 +502,7 @@ TraceId: trace-12345
 
 ---
 
-## 14. 场景样例工程与集成测试
+## 15. 场景样例工程与集成测试
 
 完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
 👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
