@@ -5,13 +5,16 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 存储操作高阶门面契约接口
@@ -283,4 +286,40 @@ public interface StorageOperations {
     default StorageOperations use(String sourceKey) {
         throw new UnsupportedOperationException("Current StorageOperations implementation does not support multi-source routing");
     }
+
+    /**
+     * 多文件纯流式打包为 ZIP 压缩包写出（零磁盘占用）
+     * 若包含不存在的文件，将抛出 StorageException(OBJECT_NOT_FOUND) 严格阻断
+     *
+     * @param paths 存储对象相对路径列表
+     * @param out   输出流
+     */
+    void downloadAsZip(List<String> paths, OutputStream out);
+
+    /**
+     * 多文件纯流式打包为 ZIP 压缩包写出（支持显式指定 ZIP 内部条目名称，零磁盘占用）
+     * 若包含不存在的文件，将抛出 StorageException(OBJECT_NOT_FOUND) 严格阻断
+     *
+     * @param pathMap 路径映射表（Key: 存储路径, Value: 压缩包内相对路径/名称）
+     * @param out     输出流
+     */
+    void downloadAsZip(Map<String, String> pathMap, OutputStream out);
+
+    /**
+     * 多文件纯流式打包为 ZIP 并通过 HTTP 响应写出下载（自动设置 Content-Type 与 Content-Disposition）
+     *
+     * @param paths       存储对象相对路径列表
+     * @param response    HTTP 响应对象
+     * @param zipFilename 客户端下载的 ZIP 文件名（若未提供 .zip 后缀将自动补齐）
+     */
+    void downloadAsZip(List<String> paths, HttpServletResponse response, String zipFilename);
+
+    /**
+     * 多文件纯流式打包为 ZIP 并通过 HTTP 响应写出下载（支持显式指定 ZIP 内部条目名称）
+     *
+     * @param pathMap     路径映射表（Key: 存储路径, Value: 压缩包内相对路径/名称）
+     * @param response    HTTP 响应对象
+     * @param zipFilename 客户端下载的 ZIP 文件名（若未提供 .zip 后缀将自动补齐）
+     */
+    void downloadAsZip(Map<String, String> pathMap, HttpServletResponse response, String zipFilename);
 }

@@ -344,7 +344,92 @@ System.out.println("总页数: " + pageResult.getPages());
 
 ---
 
-## 11. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
+## 11. 多文件纯流式打包 ZIP 下载 (`downloadAsZip`)
+
+### 场景痛点
+管理后台或业务系统中常见“勾选多个文件批量打包下载”需求。传统做法通常先将所有文件下载落盘到本地物理磁盘临时目录，再执行压缩，极易在并发或大文件场景下压满服务器磁盘导致服务宕机；此外若其中某些文件丢失，生成半截损坏的 ZIP 包体验极差。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+// 1. 纯流式压缩写出至通用 OutputStream（零临时文件、零磁盘占用）
+public void exportZipFile(OutputStream out) {
+    List<String> paths = List.of("docs/report1.pdf", "docs/report2.pdf");
+    storageTemplate.downloadAsZip(paths, out);
+}
+
+// 2. 支持显式指定 ZIP 包内相对路径与重命名
+public void exportCustomZip(OutputStream out) {
+    Map<String, String> pathMap = new LinkedHashMap<>();
+    pathMap.put("docs/report1.pdf", "财务报告/2026年第一季度.pdf");
+    pathMap.put("docs/report2.pdf", "财务报告/2026年第二季度.pdf");
+    storageTemplate.downloadAsZip(pathMap, out);
+}
+
+// 3. Web 环境下一键写入 HTTP 响应（自动适配 Content-Type 与 RFC 5987 中文编码 Content-Disposition）
+@GetMapping("/download/batch-zip")
+public void downloadBatchZip(HttpServletResponse response) {
+    List<String> paths = List.of("export/data1.xlsx", "export/data2.xlsx");
+    storageTemplate.downloadAsZip(paths, response, "经营报表汇总.zip");
+}
+```
+
+### 预期呈现契约
+Web 客户端下载体验：
+- 响应头自动注入：
+  ```http
+  Content-Type: application/zip
+  Content-Disposition: attachment; filename="%E7%BB%8F%E8%90%A5%E6%8A%A5%E8%A1%A8%E6%B1%87%E6%80%BB.zip"; filename*=UTF-8''%E7%BB%8F%E8%90%A5%E6%8A%A5%E8%A1%A8%E6%B1%87%E6%80%BB.zip
+  ```
+- **内存与性能契约**：基于 JDK 原生 `ZipOutputStream` 边读边压缩写出，零物理磁盘文件产生；
+- **严格防御契约**：打包前自动执行前置存在性拦截，若有任何文件缺失立即抛出 `StorageException(StorageResultCode.OBJECT_NOT_FOUND)`，杜绝输出残缺损坏的压缩包；
+- **重名冲突消解**：遇到同名条目自动递增重命名（如 `report.pdf` -> `report (1).pdf`），杜绝 ZIP 规范冲突报错。
+
+---
+
+## 12. Spring 原生存储生命周期事件广播 (`StorageUploadedEvent` / `StorageDeletedEvent`)
+
+### 场景痛点
+在文件成功上传或删除后，业务层常常需要异步触发后续处理（如记录审计日志、刷新 CDN 缓存、生成缩略图、通知消息队列等）。如果直接在业务代码中堆砌强耦合逻辑，代码严重臃肿，且监听器异常可能导致核心文件写入操作被误回滚。
+
+### 核心代码范式
+```java
+// 1. 无侵入声明式监听存储事件（支持 Spring 原生 @EventListener 与 @Async 异步监听）
+@Component
+public class StorageEventListener {
+
+    // 监听文件上传成功事件
+    @EventListener
+    public void onStorageUploaded(StorageUploadedEvent event) {
+        System.out.println("文件上传成功: 源=" + event.getSourceKey() 
+                + ", 路径=" + event.getPath() 
+                + ", 大小=" + event.getSize() + " 字节"
+                + ", MIME=" + event.getContentType());
+    }
+
+    // 监听文件删除成功事件
+    @EventListener
+    public void onStorageDeleted(StorageDeletedEvent event) {
+        System.out.println("文件删除成功: 源=" + event.getSourceKey() 
+                + ", 路径=" + event.getPath());
+    }
+}
+```
+
+### 预期呈现契约
+控制台日志输出：
+```text
+文件上传成功: 源=primary, 路径=documents/2026/report.pdf, 大小=1048576 字节, MIME=application/pdf
+文件删除成功: 源=primary, 路径=temp/cache-123.bin
+```
+- **全链路感知**：`upload`、`uploadBytes`、`uploadString`、`uploadJson`、`copy`、`move` 均会自动触发 `StorageUploadedEvent`；`delete`、`deleteBatch` 与 `move` 源文件均会自动触发 `StorageDeletedEvent`；
+- **Fail-Safe 异常隔离**：事件发布内部包裹异常防御，任何外部监听器抛出的未捕获异常均仅记录 Warn 告警日志，绝不阻断文件核心上传/删除的成功返回。
+
+---
+
+## 13. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
 
 ### 场景痛点
 传统本地存储通常缺乏外链时效性控制与防盗链签名，必须手动编写下载控制器或配置静态 Nginx 映射，无法与云端 S3 的 Presigned URL 保持契约一致。
@@ -380,7 +465,7 @@ public void generateDownloadUrl() {
 
 ---
 
-## 12. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
+## 14. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
 
 ### 场景痛点
 面对音视频、安装包等大文件上传，若全部经过应用服务器中转，将严重占用后端带宽并消耗内存，导致服务器并发瓶颈；而在下载时，为了保护文件隐私，需要生成临时且安全的云端下载直链。
@@ -417,7 +502,7 @@ HTTP方法: PUT
 
 ---
 
-## 13. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
+## 15. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
 
 ### 场景痛点
 大型生产系统往往同时对接多种存储后端（如将公开图片存入 CDN 加速桶、将企业私密合同存入内网私有 MinIO、临时中间数据写入本地磁盘）。若在业务代码中硬编码具体驱动或手动切换，耦合严重且极易在异步线程池中导致上下文串源污染。
@@ -492,7 +577,7 @@ TraceId: trace-12345
 
 ---
 
-## 14. 安全路径防卫机制
+## 16. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
@@ -502,7 +587,7 @@ TraceId: trace-12345
 
 ---
 
-## 15. 场景样例工程与集成测试
+## 17. 场景样例工程与集成测试
 
 完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
 👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
