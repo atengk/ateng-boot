@@ -116,4 +116,20 @@ _Avoid_: TenantModel, HasTenant
 基于 core 底座 RetryUtil 实现的乐观锁并发自旋重试模板门面，针对 @Version 并发冲突（更新行数 = 0）提供自动重新加载最新版本实体与自旋退避守护。
 _Avoid_: OptimisticLockHelper, VersionRetryTemplate
 
+**ExternalSqlLoader**:
+外部 SQL 脚本加载器 SPI 契约接口，定义从外部媒介（数据库配置表、分布式配置中心、远程 HTTP 或文件系统）拉取与监听动态 SQL 元数据的标准扩展规范。
+_Avoid_: SqlFetcher, SqlProvider, ExternalSqlReader
+
+**DynamicSqlDefinition**:
+外部动态 SQL 元数据模型契约，用于承载 SQL 唯一标识（StatementId）、MyBatis XML 脚本片段、命令类型（SELECT/INSERT/UPDATE/DELETE）与目标结果映射类型。
+_Avoid_: SqlModel, SqlEntity, DynamicSqlMeta
+
+**DynamicSqlRegistry**:
+动态 SQL 运行时编排与热替换注册中心，负责将 `DynamicSqlDefinition` 编译并原子注入或刷新至 MyBatis `Configuration` 的 `MappedStatement` 映射容器中。
+_Avoid_: StatementManager, DynamicSqlManager, SqlRegistry
+
+**DynamicSqlExecutor**:
+通用编程式动态 SQL 执行门面组件，依托 `SqlSession` 与已注册的 `MappedStatement`，提供免建 Mapper 接口的增删改查以及符合 ADR-0010 规范的标准分页执行能力。
+_Avoid_: UniversalSqlExecutor, CommonDao, DynamicSqlDao
+
 

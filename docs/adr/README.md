@@ -38,6 +38,7 @@
 | **0028** | 示例工程多模块解耦与精准增量集成测试架构决策 | `Accepted` | 二级 Parent POM 聚合解耦，自包含场景子模块矩阵（零共享代码），秒级精准增量测试门禁与发布双层排除隔离 | `ateng-boot-samples` / 全工程 | [查看](./0028-samples-modularization-and-incremental-integration-testing.md) |
 | **0029** | 基于 Spring Boot 3.3 与 JDK 21+ 的自适应虚拟线程异步运行时架构决策 | `Accepted` | 官方原生 @ConditionalOnThreading 声明式分流，SimpleAsyncTaskExecutor 虚拟线程自适应，四维上下文全生命周期透传，Snowflake 升级 ReentrantLock 彻底杜绝 Carrier Pinning | `ateng-boot-core` / 全工程 | [查看](./0029-virtual-threads-and-adaptive-async-runtime.md) |
 | **0030** | 企业级轻量多源对象存储与安全预签名一体化架构决策 | `Accepted` | Local + S3 统一驱动，排除 Netty 零膨胀，智能双模配置，内置 HMAC 预签名平替，三位一体动态切源，StorageResource 断点续传与纯内存自验门禁 | `ateng-boot-storage` / 全工程 | [查看](./0030-storage-module-architecture.md) |
+| **0031** | 外部动态 SQL 引擎与运行时热更新架构决策 | `Accepted` | SPI 契约解耦外部载体，智能容错包裹 <script>，无锁受控热替换绕过 StrictMap 冲突与回滚防灾，双模驱动深度融合 ADR-0010 分页契约与拦截器透明继承 | `ateng-boot-mybatis-plus` | [查看](./0031-external-dynamic-sql-engine-and-hot-reload-architecture.md) |
 
 
 

@@ -244,5 +244,54 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(com.baomidou.mybatisplus.core.injector.ISqlInjector.class);
                 });
     }
+
+    @Test
+    @DisplayName("默认情况下动态 SQL 增强组件不装配，保持零侵入零开销")
+    void shouldNotConfigureDynamicSqlByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class);
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry.class);
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor.class);
+        });
+    }
+
+    @Test
+    @DisplayName("开启 dynamic-sql.enabled=true 时成功装配 ExternalSqlLoader、DynamicSqlRegistry 与 DynamicSqlExecutor")
+    void shouldConfigureDynamicSqlWhenEnabled() {
+        org.apache.ibatis.session.SqlSessionFactory sqlSessionFactory = org.mockito.Mockito.mock(org.apache.ibatis.session.SqlSessionFactory.class);
+        org.apache.ibatis.session.Configuration configuration = new org.apache.ibatis.session.Configuration();
+        javax.sql.DataSource dataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+        configuration.setEnvironment(new org.apache.ibatis.mapping.Environment("test", new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), dataSource));
+        org.mockito.Mockito.when(sqlSessionFactory.getConfiguration()).thenReturn(configuration);
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.dynamic-sql.enabled=true")
+                .withBean(org.apache.ibatis.session.SqlSessionFactory.class, () -> sqlSessionFactory)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 ExternalSqlLoader 时优先使用业务自定义 Bean")
+    void shouldPreferCustomExternalSqlLoaderBean() {
+        org.apache.ibatis.session.SqlSessionFactory sqlSessionFactory = org.mockito.Mockito.mock(org.apache.ibatis.session.SqlSessionFactory.class);
+        org.apache.ibatis.session.Configuration configuration = new org.apache.ibatis.session.Configuration();
+        javax.sql.DataSource dataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+        configuration.setEnvironment(new org.apache.ibatis.mapping.Environment("test", new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), dataSource));
+        org.mockito.Mockito.when(sqlSessionFactory.getConfiguration()).thenReturn(configuration);
+
+        io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader customLoader = java.util.Collections::emptyList;
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.dynamic-sql.enabled=true")
+                .withBean(org.apache.ibatis.session.SqlSessionFactory.class, () -> sqlSessionFactory)
+                .withBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class, () -> customLoader)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class)).isSameAs(customLoader);
+                });
+    }
 }
 

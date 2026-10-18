@@ -28,6 +28,15 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
+import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
+import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
+import io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader;
+import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.mybatis.spring.SqlSessionTemplate;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.core.io.support.ResourcePatternResolver;
 
 
 /**
@@ -197,5 +206,80 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnMissingBean(ISqlInjector.class)
     public ISqlInjector sqlInjector() {
         return new AtengSqlInjector();
+    }
+
+    /**
+     * 注册外部动态 SQL 资源加载器 SPI 默认实现
+     *
+     * @param resourceResolver Spring 资源模式解析器
+     * @return 基于 Spring Resource 模式的外部 SQL 加载器
+     */
+    @Bean
+    @ConditionalOnMissingBean(ExternalSqlLoader.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
+    public ExternalSqlLoader externalSqlLoader(ResourcePatternResolver resourceResolver) {
+        return new ResourceExternalSqlLoader(properties.getDynamicSql(), resourceResolver);
+    }
+
+    /**
+     * 注册外部动态 SQL 注册中心
+     *
+     * @param configurationProvider 可选的 MyBatis Configuration 提供者
+     * @param sqlSessionFactoryProvider 可选的 SqlSessionFactory 提供者
+     * @param externalSqlLoader 外部 SQL 加载器
+     * @return 动态 SQL 注册中心实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DynamicSqlRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
+    public DynamicSqlRegistry dynamicSqlRegistry(
+            ObjectProvider<Configuration> configurationProvider,
+            ObjectProvider<SqlSessionFactory> sqlSessionFactoryProvider,
+            ExternalSqlLoader externalSqlLoader) {
+        Configuration configuration = configurationProvider.getIfAvailable(() -> {
+            SqlSessionFactory sqlSessionFactory = sqlSessionFactoryProvider.getIfAvailable();
+            if (sqlSessionFactory != null) {
+                return sqlSessionFactory.getConfiguration();
+            }
+            throw new IllegalStateException("未能找到 Configuration 或 SqlSessionFactory 实例，无法初始化 DynamicSqlRegistry");
+        });
+        return new DynamicSqlRegistry(configuration, externalSqlLoader, properties.getDynamicSql().isAutoScriptWrap());
+    }
+
+    /**
+     * 注册通用编程式动态 SQL 执行器
+     *
+     * @param sqlSessionTemplateProvider 可选的 SqlSessionTemplate 提供者
+     * @param sqlSessionFactoryProvider 可选的 SqlSessionFactory 提供者
+     * @param dynamicSqlRegistry 动态 SQL 注册中心
+     * @return 编程式动态 SQL 执行器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DynamicSqlExecutor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
+    public DynamicSqlExecutor dynamicSqlExecutor(
+            ObjectProvider<SqlSessionTemplate> sqlSessionTemplateProvider,
+            ObjectProvider<SqlSessionFactory> sqlSessionFactoryProvider,
+            DynamicSqlRegistry dynamicSqlRegistry) {
+        SqlSessionTemplate sqlSessionTemplate = sqlSessionTemplateProvider.getIfAvailable(() -> {
+            SqlSessionFactory sqlSessionFactory = sqlSessionFactoryProvider.getIfAvailable();
+            if (sqlSessionFactory != null) {
+                return new SqlSessionTemplate(sqlSessionFactory);
+            }
+            throw new IllegalStateException("未能找到 SqlSessionTemplate 或 SqlSessionFactory 实例，无法初始化 DynamicSqlExecutor");
+        });
+        return new DynamicSqlExecutor(sqlSessionTemplate, dynamicSqlRegistry);
+    }
+
+    /**
+     * 注册动态 SQL 启动全量预热与生命周期初始化器
+     *
+     * @param dynamicSqlRegistry 动态 SQL 注册中心
+     * @return 单例初始化完成后的预热回调
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
+    public SmartInitializingSingleton dynamicSqlInitializer(DynamicSqlRegistry dynamicSqlRegistry) {
+        return dynamicSqlRegistry::loadAndRegisterAll;
     }
 }
