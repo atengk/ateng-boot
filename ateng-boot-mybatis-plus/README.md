@@ -313,4 +313,111 @@ ateng:
         enabled: true             # 是否启用雪花发号桥接（默认 true）
         worker-id: 1              # 工作节点编号（0~31，未配置时四级自适应推导）
         datacenter-id: 1          # 数据中心编号（0~31，未配置时四级自适应推导）
+      dynamic-sql:
+        enabled: true             # 是否启用外部动态 SQL 增强引擎（默认 false，按需开启）
+        auto-script-wrap: true    # 是否自动为未包裹 <script> 根标签的动态 SQL 容错包裹（默认 true）
+        locations:                # 默认外部 XML 资源扫描路径
+          - "classpath*:dynamic-sql/**/*.xml"
+
+---
+
+## 13. 外部动态 SQL 引擎与运行时热更新 (`DynamicSqlEngine`)
+
+### 场景痛点
+传统 MyBatis 必须在编译期将 XML 固化打包于应用 JAR 包内部，任何 SQL 调整均需重新编译发版。
+`ateng-boot-mybatis-plus` 提供了开箱即用的外部动态 SQL 引擎：
+1. **全语法动态支持**：原生支持 `<script>`、`<where>`、`<if>`、`<trim>`、`<choose>`、`<foreach>` 等全部 MyBatis 动态标签；
+2. **零停机原子热替换 (Zero-Gap Safe Put)**：基于底层反射原子覆盖，彻底消除 MyBatis 原生 `StrictMap` 冲突，杜绝先删后加带来的毫秒级并发读穿透空洞；
+3. **沙箱语法校验与防灾回滚**：新 SQL 在沙箱隔离预编译，若存在语法错误自动拦截并阻断更新，保留旧版稳定运行；
+4. **拦截器链 100% 透明穿透**：外部动态注入的语句自动享有行级多租户隔离、细粒度数据权限改写、防全表误操作阻断与敏感字段透明加解密；
+5. **双模调用生态**：既支持与已有 Java Mapper 接口无缝透明绑定，又提供全功能编程式执行器 `DynamicSqlExecutor`（原生融入 ADR-0010 分页契约）。
+
+### 1. 外部 XML 脚本编写示例
+在 `src/main/resources/dynamic-sql/user-dynamic.xml` 中定义外部 SQL：
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<dynamic-sql>
+    <select id="user.findActiveUsers" resultType="java.util.Map" description="动态查询活跃用户列表">
+        SELECT id, name, email, status
+        FROM sys_user
+        <where>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND name LIKE CONCAT('%', #{keyword}, '%')
+            </if>
+        </where>
+        ORDER BY id DESC
+    </select>
+</dynamic-sql>
+```
+
+### 2. 编程式全功能调用示例 (`DynamicSqlExecutor`)
+```java
+@Service
+public class DynamicReportService {
+
+    @Autowired
+    private DynamicSqlExecutor dynamicSqlExecutor;
+
+    public void executeReports() {
+        // 1. 查询单行记录并自动映射为强类型 VO 或 Map
+        UserVO user = dynamicSqlExecutor.selectOne(
+                "user.findActiveUsers",
+                Map.of("keyword", "Ateng"),
+                UserVO.class
+        );
+
+        // 2. 深度融合 ADR-0010 分页契约：物理方言分页并流式转换为前端标准 PageResult<VO>
+        PageQuery query = new PageQuery(1L, 10L);
+        PageResult<UserVO> pageResult = dynamicSqlExecutor.selectPage(
+                "user.findActiveUsers",
+                Map.of("status", 1),
+                query,
+                UserVO.class
+        );
+
+        // 3. 动态 INSERT / UPDATE / DELETE 编程式执行
+        int affected = dynamicSqlExecutor.update(
+                "user.updateDynamicStatus",
+                Map.of("id", 1001L, "status", 2)
+        );
+    }
+}
+```
+
+### 3. 运行时零缝隙原子热更新 (`DynamicSqlRegistry`)
+```java
+@Component
+public class SqlHotReloadManager {
+
+    @Autowired
+    private DynamicSqlRegistry dynamicSqlRegistry;
+
+    public void updateSqlRuntime(String sqlId, String newXmlScript) {
+        DynamicSqlDefinition definition = DynamicSqlDefinition.builder()
+                .id(sqlId)
+                .sqlScript(newXmlScript)
+                .commandType(SqlCommandType.SELECT)
+                .resultType(UserVO.class)
+                .autoScriptWrap(true) // 自动容错包裹 <script>
+                .build();
+
+        // 沙箱语法检验与原子覆盖：语法错误时返回 false 并自动保留旧版 SQL，成功则瞬间无感生效
+        boolean success = dynamicSqlRegistry.register(definition);
+        if (!success) {
+            throw new BusinessException("SQL 语法校验失败，热更新已自动回滚");
+        }
+    }
+}
+```
+
+### 4. 真实控制台输出与执行契约
+```text
+10:47:24.730 [main] INFO  i.g.a.b.m.d.DynamicSqlRegistry - 外部动态 SQL [user.findActiveUsers] 成功注册/热更新至持久层容器
+==>  Preparing: SELECT id, name, email, status FROM sys_user WHERE (tenant_id = ?) AND (status = ?) AND (name LIKE CONCAT('%', ?, '%')) ORDER BY id DESC LIMIT ?
+==> Parameters: 100(Long), 1(Integer), Ateng(String), 10(Integer)
+<==      Total: 1
+```
 ```

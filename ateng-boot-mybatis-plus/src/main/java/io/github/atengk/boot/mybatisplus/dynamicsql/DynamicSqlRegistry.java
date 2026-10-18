@@ -28,14 +28,20 @@ public class DynamicSqlRegistry {
     private final ExternalSqlLoader loader;
     private final Map<String, DynamicSqlDefinition> definitions = new ConcurrentHashMap<>();
     private final Field mappedStatementsField;
+    private final boolean defaultAutoScriptWrap;
 
     public DynamicSqlRegistry(Configuration configuration) {
-        this(configuration, null);
+        this(configuration, null, true);
     }
 
     public DynamicSqlRegistry(Configuration configuration, ExternalSqlLoader loader) {
+        this(configuration, loader, true);
+    }
+
+    public DynamicSqlRegistry(Configuration configuration, ExternalSqlLoader loader, boolean defaultAutoScriptWrap) {
         this.configuration = Objects.requireNonNull(configuration, "Configuration must not be null");
         this.loader = loader;
+        this.defaultAutoScriptWrap = defaultAutoScriptWrap;
         this.mappedStatementsField = resolveMappedStatementsField(configuration);
     }
 
@@ -175,8 +181,9 @@ public class DynamicSqlRegistry {
      */
     private MappedStatement buildMappedStatement(DynamicSqlDefinition definition) {
         String id = definition.getId();
+        String script = DynamicSqlDefinition.wrapScriptIfNecessary(definition.getSqlScript(), defaultAutoScriptWrap);
         LanguageDriver languageDriver = configuration.getDefaultScriptingLanguageInstance();
-        SqlSource sqlSource = languageDriver.createSqlSource(configuration, definition.getSqlScript(), Object.class);
+        SqlSource sqlSource = languageDriver.createSqlSource(configuration, script, Object.class);
 
         MappedStatement.Builder builder = new MappedStatement.Builder(
                 configuration,
