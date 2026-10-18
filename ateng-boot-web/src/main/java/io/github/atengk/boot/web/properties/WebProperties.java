@@ -265,4 +265,66 @@ public class WebProperties {
          */
         private String headerSignature = "X-Signature";
     }
+
+    /**
+     * 请求体通用可重读缓存配置
+     */
+    @NestedConfigurationProperty
+    private BodyCacheProperties bodyCache = new BodyCacheProperties();
+
+    /**
+     * HTTP Payload 采样安全日志配置
+     */
+    @NestedConfigurationProperty
+    private PayloadLogProperties payloadLog = new PayloadLogProperties();
+
+    /**
+     * 请求体通用缓存属性配置
+     */
+    @Getter
+    @Setter
+    public static class BodyCacheProperties {
+
+        /**
+         * 请求体缓存最大字节数载荷上限（强类型 DataSize 防 OOM，默认 2MB）
+         */
+        private DataSize maxBodySize = DataSize.ofMegabytes(2);
+
+        /**
+         * 获取请求体最大缓存字节数（向后兼容）
+         *
+         * @return 字节数
+         */
+        public int getMaxBodySizeBytes() {
+            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
+        }
+
+        /**
+         * 设置请求体最大缓存字节数（向后兼容）
+         *
+         * @param maxBodySizeBytes 字节数
+         */
+        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
+            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
+        }
+    }
+
+    /**
+     * Payload 采样日志属性配置
+     */
+    @Getter
+    @Setter
+    public static class PayloadLogProperties {
+
+        /**
+         * 是否启用 HTTP Payload 双向采样安全日志过滤器
+         */
+        private boolean enabled = false;
+
+        /**
+         * 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
+         */
+        private DataSize maxPayloadSize = DataSize.ofKilobytes(4);
+    }
 }
+

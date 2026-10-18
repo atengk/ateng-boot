@@ -66,17 +66,19 @@ public class AtengApiSignAutoConfiguration {
     }
 
     /**
-     * 注册请求体可重复读缓存过滤器
+     * 注册请求体缓存与防爆过滤器 FilterRegistrationBean
      *
      * @param webProperties Web 配置属性
      * @return FilterRegistrationBean 实例
+     * @deprecated 请使用 {@link AtengWebAutoConfiguration#contentCachingFilterRegistration(WebProperties)}，本方法仅保留用于独立装配时的向后兼容
      */
     @Bean
-    @ConditionalOnMissingBean(name = "requestBodyCachingFilterRegistration")
+    @Deprecated(since = "1.0.0", forRemoval = false)
+    @ConditionalOnMissingBean(name = {"contentCachingFilterRegistration", "requestBodyCachingFilterRegistration"})
     public FilterRegistrationBean<RequestBodyCachingFilter> requestBodyCachingFilterRegistration(WebProperties webProperties) {
         RequestBodyCachingFilter filter = new RequestBodyCachingFilter(webProperties.getSign().getMaxBodySize());
         FilterRegistrationBean<RequestBodyCachingFilter> registration = new FilterRegistrationBean<>(filter);
-        registration.setOrder(TraceFilter.ORDER + 20);
+        registration.setOrder(io.github.atengk.boot.web.filter.ContentCachingFilter.ORDER);
         return registration;
     }
 

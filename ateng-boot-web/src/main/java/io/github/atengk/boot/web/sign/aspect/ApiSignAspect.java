@@ -8,7 +8,7 @@ import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.annotation.ApiSign;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
-import io.github.atengk.boot.web.sign.filter.CachedBodyHttpServletRequest;
+import io.github.atengk.boot.web.filter.CachedBodyHttpServletRequest;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;

@@ -2,6 +2,7 @@ package io.github.atengk.boot.web.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
+import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
@@ -17,6 +18,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.util.unit.DataSize;
 import io.github.atengk.boot.web.cors.CorsOriginProvider;
 import io.github.atengk.boot.web.cors.DefaultCorsOriginProvider;
 import io.github.atengk.boot.web.cors.DynamicCorsConfigurationSource;
@@ -53,6 +56,27 @@ public class AtengWebAutoConfiguration {
         org.springframework.boot.web.servlet.FilterRegistrationBean<TraceFilter> registration =
                 new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
         registration.setOrder(TraceFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 条件装配通用的请求体可重读与防爆过滤器
+     * 仅在开启 API 加签验签或 Payload 采样日志时激活，关闭时零包装开销
+     *
+     * @param webProperties 配置属性
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean(name = {"contentCachingFilterRegistration", "requestBodyCachingFilterRegistration"})
+    @Conditional(ContentCachingCondition.class)
+    @ConditionalOnMissingBean(name = "contentCachingFilterRegistration")
+    public FilterRegistrationBean<ContentCachingFilter> contentCachingFilterRegistration(WebProperties webProperties) {
+        DataSize maxBodySize = webProperties.getBodyCache().getMaxBodySize();
+        if (webProperties.getSign().isEnabled() && webProperties.getSign().getMaxBodySize() != null) {
+            maxBodySize = webProperties.getSign().getMaxBodySize();
+        }
+        ContentCachingFilter filter = new ContentCachingFilter(maxBodySize);
+        FilterRegistrationBean<ContentCachingFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(ContentCachingFilter.ORDER);
         return registration;
     }
 

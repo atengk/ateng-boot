@@ -1,52 +1,32 @@
 package io.github.atengk.boot.web.sign.filter;
 
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.web.filter.OncePerRequestFilter;
-
-import java.io.IOException;
+import io.github.atengk.boot.web.filter.ContentCachingFilter;
+import org.springframework.util.unit.DataSize;
 
 /**
  * 请求体缓存过滤器
- * 针对非文件上传且非普通表单的写请求（POST/PUT/PATCH）自动将 HttpServletRequest 升级为可重读包装器
- * 内置排除表单提交以防 Servlet 容器参数解析失效，并支持请求体最大载荷上限防御
  *
  * @author Ateng
  * @since 2026-10-16
+ * @deprecated 请使用 {@link io.github.atengk.boot.web.filter.ContentCachingFilter}，本类仅保留用于向后兼容
  */
-public class RequestBodyCachingFilter extends OncePerRequestFilter {
-
-    private final int maxBodySize;
+@Deprecated(since = "1.0.0", forRemoval = false)
+public class RequestBodyCachingFilter extends ContentCachingFilter {
 
     public RequestBodyCachingFilter() {
-        this(CachedBodyHttpServletRequest.DEFAULT_MAX_BODY_SIZE);
+        super();
     }
 
     public RequestBodyCachingFilter(int maxBodySize) {
-        this.maxBodySize = maxBodySize > 0 ? maxBodySize : CachedBodyHttpServletRequest.DEFAULT_MAX_BODY_SIZE;
+        super(maxBodySize);
     }
 
-    public RequestBodyCachingFilter(org.springframework.util.unit.DataSize maxBodySize) {
-        this(maxBodySize != null ? (int) maxBodySize.toBytes() : CachedBodyHttpServletRequest.DEFAULT_MAX_BODY_SIZE);
+    public RequestBodyCachingFilter(DataSize maxBodySize) {
+        super(maxBodySize);
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain filterChain) throws ServletException, IOException {
-        String contentType = request.getContentType();
-        boolean isMultipart = contentType != null && contentType.toLowerCase().startsWith("multipart/");
-        boolean isForm = contentType != null && contentType.toLowerCase().startsWith("application/x-www-form-urlencoded");
-        String method = request.getMethod();
-        boolean isModifyingMethod = "POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method) || "PATCH".equalsIgnoreCase(method);
-
-        if (!isMultipart && !isForm && isModifyingMethod && !(request instanceof CachedBodyHttpServletRequest)) {
-            CachedBodyHttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request, this.maxBodySize);
-            filterChain.doFilter(wrappedRequest, response);
-        } else {
-            filterChain.doFilter(request, response);
-        }
+    protected jakarta.servlet.http.HttpServletRequest wrapRequest(jakarta.servlet.http.HttpServletRequest request) throws java.io.IOException {
+        return new CachedBodyHttpServletRequest(request, getMaxBodySize());
     }
 }
