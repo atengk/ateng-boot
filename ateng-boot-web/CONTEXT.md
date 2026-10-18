@@ -104,3 +104,12 @@ _Avoid_: Sign, DataSign, Signature, SecureApi
 数字签名生成与验证的通用 SPI 接口，定义明文摘要哈希计算与数字验签契约。
 _Avoid_: SignManager, SignatureEngine, CryptoSigner
 
+**Traffic Drain**:
+容器下线前将就绪探针置为拒绝流量并执行静默等待的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
+_Avoid_: PreStop Sleep, Force Kill, Fast Shutdown
+
+**Slow Request Alert**:
+单次 HTTP 请求执行耗时超过预设阈值时触发的主动性能告警与全链路溯源现场记录机制。
+_Avoid_: Request Timeout, Slow Query, Latency Monitor
+
+

@@ -159,11 +159,12 @@ _Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
 
 **OperateTypeEnum**:
 通用操作审计动作类型枚举，集中收敛涵盖 11 种通用操作动作类型（OTHER、INSERT、UPDATE、DELETE、QUERY、EXPORT、IMPORT、LOGIN、LOGOUT、GRANT、CLEAN），为全反应堆跨层审计流转提供强类型契约与多源安全解析能力。
-_Avoid_: AuditActionEnum, LogTypeEnum, ActionType
+_Avoid_: AuditActionEnum, LogTypeEnum, ActionType, OperationType, BusinessType
 
 **OperateLogModel**:
 结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
-_Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord
+_Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord, OperationAudit, AccessLog, SystemLog, AuditTrail
+
 
 **DateTimeUtil**:
 纯 JDK 17 原生日期时间互转与跨度计算静态门面，提供 LocalDateTime、LocalDate、Date 与毫秒时间戳多向无损互转，绑定系统时区，支持天首天尾起止与任意 ChronoUnit / Duration / Period 时间跨度计算。
