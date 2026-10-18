@@ -2,10 +2,8 @@ package io.github.atengk.boot.sample.storage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.sample.storage.listener.SampleStorageEventListener;
 import io.github.atengk.boot.sample.storage.service.FileStorageDemoService;
-import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,15 +19,19 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.io.ByteArrayInputStream;
-import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,6 +45,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 3. HTTP Range 206 断点续传部分内容自验
  * 4. HMAC 预签名外链访问与防篡改/防过期时效闭环
  * 5. @Storage 与 storageTemplate.use(...) 动态多源物理路径隔离自验
+ * 6. 对象复移 (copy/move) 与删除天然幂等
+ * 7. 目录列举 (list) 与分页检索 (listPage)
+ * 8. 便捷存取 (String/JSON)
+ * 9. 多文件流式打包 ZIP 下载 (downloadAsZip)
+ * 10. 大文件分片上传完整生命周期 (initiate/upload/complete/abort) 与缺片防御
+ * 11. StorageGuard 文件魔数嗅探与伪装文件拦截
+ * 12. StorageUploadedEvent / StorageDeletedEvent 领域事件监听
  *
  * @author Ateng
  * @since 2026-10-17
@@ -64,6 +73,9 @@ class SampleStorageIntegrationTest {
     @Autowired
     private FileStorageDemoService fileStorageDemoService;
 
+    @Autowired
+    private SampleStorageEventListener sampleStorageEventListener;
+
     private static final Path DEFAULT_DIR = Path.of("target/sample-storage/default");
     private static final Path BACKUP_DIR = Path.of("target/sample-storage/backup");
 
@@ -74,6 +86,9 @@ class SampleStorageIntegrationTest {
         org.springframework.util.FileSystemUtils.deleteRecursively(BACKUP_DIR);
         Files.createDirectories(DEFAULT_DIR);
         Files.createDirectories(BACKUP_DIR);
+
+        // 重置领域事件计数器
+        sampleStorageEventListener.reset();
     }
 
     @Test
@@ -87,18 +102,20 @@ class SampleStorageIntegrationTest {
                 fileBytes
         );
 
-        MvcResult mvcResult = mockMvc.perform(multipart("/api/storage/upload").file(file))
+        mockMvc.perform(multipart("/api/storage/upload").file(file))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.path").value("hello.txt"))
                 .andExpect(jsonPath("$.data.size").value(fileBytes.length))
-                .andExpect(jsonPath("$.data.contentType").value("text/plain"))
-                .andReturn();
+                .andExpect(jsonPath("$.data.contentType").value("text/plain"));
 
         // 验证物理磁盘文件已落盘
         Path targetPath = DEFAULT_DIR.resolve("hello.txt");
         assertThat(Files.exists(targetPath)).isTrue();
         assertThat(Files.readAllBytes(targetPath)).isEqualTo(fileBytes);
+
+        // 验证事件广播已记录
+        assertThat(sampleStorageEventListener.getUploadCount()).isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -235,5 +252,291 @@ class SampleStorageIntegrationTest {
         try (InputStream in = backupRes.getInputStream()) {
             assertThat(in.readAllBytes()).isEqualTo(backupBytes);
         }
+    }
+
+    @Test
+    @DisplayName("端到端测试 6：对象跨路径复制 (copy)、移动 (move) 与删除天然幂等")
+    void testCopyMoveAndDeleteIdempotent() throws Exception {
+        // 1. 写入源文件
+        String sourcePath = "orig/source.txt";
+        storageTemplate.uploadString(sourcePath, "Source File Content");
+        assertThat(storageTemplate.exists(sourcePath)).isTrue();
+
+        // 2. 复制为 target.txt
+        String copyPath = "backup/target.txt";
+        mockMvc.perform(post("/api/storage/copy")
+                        .param("sourcePath", sourcePath)
+                        .param("targetPath", copyPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        assertThat(storageTemplate.exists(sourcePath)).isTrue();
+        assertThat(storageTemplate.exists(copyPath)).isTrue();
+        assertThat(storageTemplate.downloadString(copyPath)).isEqualTo("Source File Content");
+
+        // 3. 移动 target.txt 为 moved.txt
+        String movedPath = "final/moved.txt";
+        mockMvc.perform(post("/api/storage/move")
+                        .param("sourcePath", copyPath)
+                        .param("targetPath", movedPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        assertThat(storageTemplate.exists(copyPath)).isFalse();
+        assertThat(storageTemplate.exists(movedPath)).isTrue();
+        assertThat(storageTemplate.downloadString(movedPath)).isEqualTo("Source File Content");
+
+        // 4. 删除 moved.txt
+        mockMvc.perform(post("/api/storage/delete")
+                        .param("path", movedPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        assertThat(storageTemplate.exists(movedPath)).isFalse();
+
+        // 5. 验证删除天然幂等（再次删除已不存在的对象静默返回 true）
+        mockMvc.perform(post("/api/storage/delete")
+                        .param("path", movedPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 验证删除事件记录
+        assertThat(sampleStorageEventListener.getDeleteCount()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("端到端测试 7：目录前缀平铺列举 (list) 与基于 PageResult 的分页检索 (listPage)")
+    void testListAndListPage() throws Exception {
+        // 准备树状目录文件
+        storageTemplate.uploadString("reports/2026/01.txt", "Report Jan");
+        storageTemplate.uploadString("reports/2026/02.txt", "Report Feb");
+        storageTemplate.uploadString("reports/2026/sub/03.txt", "Report Mar");
+
+        // 1. 非递归列举 reports/2026/
+        mockMvc.perform(get("/api/storage/list")
+                        .param("prefix", "reports/2026/")
+                        .param("recursive", "false"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray())
+                .andExpect(jsonPath("$.data.length()").value(3)); // 01.txt, 02.txt, sub/ 虚拟目录
+
+        // 2. 递归列举 reports/2026/
+        mockMvc.perform(get("/api/storage/list")
+                        .param("prefix", "reports/2026/")
+                        .param("recursive", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(3)); // 01.txt, 02.txt, sub/03.txt 递归扁平文件
+
+        // 3. 分页检索：current=1, size=2, recursive=true
+        mockMvc.perform(get("/api/storage/list-page")
+                        .param("prefix", "reports/2026/")
+                        .param("current", "1")
+                        .param("size", "2")
+                        .param("recursive", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.records.length()").value(2))
+                .andExpect(jsonPath("$.data.pages").value(2));
+
+        // 4. 第二页：current=2, size=2
+        mockMvc.perform(get("/api/storage/list-page")
+                        .param("prefix", "reports/2026/")
+                        .param("current", "2")
+                        .param("size", "2")
+                        .param("recursive", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.records.length()").value(1));
+    }
+
+    @Test
+    @DisplayName("端到端测试 8：便捷读写存取（writeString/readString 与 writeJson/readJson）")
+    void testConvenientStringAndJson() throws Exception {
+        // 1. 便捷写入与读取纯文本
+        String textPath = "convenient/note.txt";
+        mockMvc.perform(post("/api/storage/write-string")
+                        .param("path", textPath)
+                        .param("content", "Convenient Plain Text"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(textPath));
+
+        mockMvc.perform(get("/api/storage/read-string")
+                        .param("path", textPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Convenient Plain Text"));
+
+        // 2. 便捷写入与读取 JSON 对象
+        String jsonPath = "convenient/user.json";
+        String payloadJson = "{\"username\":\"ateng\",\"role\":\"architect\",\"age\":30}";
+
+        mockMvc.perform(post("/api/storage/write-json")
+                        .param("path", jsonPath)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payloadJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(jsonPath))
+                .andExpect(jsonPath("$.data.contentType").value(org.hamcrest.Matchers.containsString("application/json")));
+
+        mockMvc.perform(get("/api/storage/read-json")
+                        .param("path", jsonPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.username").value("ateng"))
+                .andExpect(jsonPath("$.data.role").value("architect"))
+                .andExpect(jsonPath("$.data.age").value(30));
+    }
+
+    @Test
+    @DisplayName("端到端测试 9：多文件纯流式打包 ZIP 响应下载 (downloadAsZip) 并验证解压内容")
+    void testDownloadAsZip() throws Exception {
+        // 准备打包测试文件
+        storageTemplate.uploadString("bundle/doc1.txt", "Document 1 Content");
+        storageTemplate.uploadString("bundle/doc2.txt", "Document 2 Content");
+
+        MvcResult zipResult = mockMvc.perform(get("/api/storage/download-zip")
+                        .param("paths", "bundle/doc1.txt,bundle/doc2.txt")
+                        .param("zipFilename", "export.zip"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_TYPE, org.hamcrest.Matchers.containsString("application/zip")))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, org.hamcrest.Matchers.containsString("export.zip")))
+                .andReturn();
+
+        byte[] zipBytes = zipResult.getResponse().getContentAsByteArray();
+        assertThat(zipBytes).isNotEmpty();
+
+        // 解析并验证 ZIP 压缩包内部 Entry 条目与数据
+        Map<String, String> extractedEntries = new HashMap<>();
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                byte[] entryBytes = zis.readAllBytes();
+                extractedEntries.put(entry.getName(), new String(entryBytes, StandardCharsets.UTF_8));
+                zis.closeEntry();
+            }
+        }
+
+        assertThat(extractedEntries).hasSize(2);
+        assertThat(extractedEntries.get("bundle/doc1.txt")).isEqualTo("Document 1 Content");
+        assertThat(extractedEntries.get("bundle/doc2.txt")).isEqualTo("Document 2 Content");
+    }
+
+    @Test
+    @DisplayName("端到端测试 10：大文件分片合并暂存完整生命周期（初始化、逐片上传、合并落盘与缺片防御）")
+    void testChunkedUploadLifecycleAndValidation() throws Exception {
+        String targetPath = "chunks/large-file.bin";
+
+        // 1. 初始化分片会话
+        MvcResult initResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+                        .param("path", targetPath))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isNotEmpty())
+                .andReturn();
+
+        String uploadId = objectMapper.readTree(initResult.getResponse().getContentAsString())
+                .get("data").asText();
+        assertThat(uploadId).isNotBlank();
+
+        // 2. 上传第 1 分片（500 字节）
+        byte[] chunk1 = new byte[500];
+        for (int i = 0; i < 500; i++) chunk1[i] = (byte) 1;
+        MockMultipartFile part1 = new MockMultipartFile("file", "part1.bin", "application/octet-stream", chunk1);
+
+        mockMvc.perform(multipart("/api/storage/chunk/upload")
+                        .file(part1)
+                        .param("uploadId", uploadId)
+                        .param("chunkIndex", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. 故意尝试以 totalChunks=2 合并（此时缺少第 2 片），验证 STORAGE_CHUNK_MISSING (40012)
+        mockMvc.perform(post("/api/storage/chunk/complete")
+                        .param("uploadId", uploadId)
+                        .param("path", targetPath)
+                        .param("totalChunks", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40012));
+
+        // 4. 上传第 2 分片（500 字节）
+        byte[] chunk2 = new byte[500];
+        for (int i = 0; i < 500; i++) chunk2[i] = (byte) 2;
+        MockMultipartFile part2 = new MockMultipartFile("file", "part2.bin", "application/octet-stream", chunk2);
+
+        mockMvc.perform(multipart("/api/storage/chunk/upload")
+                        .file(part2)
+                        .param("uploadId", uploadId)
+                        .param("chunkIndex", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. 再次合并（totalChunks=2），校验合并成功
+        mockMvc.perform(post("/api/storage/chunk/complete")
+                        .param("uploadId", uploadId)
+                        .param("path", targetPath)
+                        .param("totalChunks", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value(targetPath))
+                .andExpect(jsonPath("$.data.size").value(1000));
+
+        // 6. 验证物理文件落盘大小与内容正序无误
+        byte[] mergedBytes = storageTemplate.downloadBytes(targetPath);
+        assertThat(mergedBytes).hasSize(1000);
+        assertThat(mergedBytes[0]).isEqualTo((byte) 1);
+        assertThat(mergedBytes[499]).isEqualTo((byte) 1);
+        assertThat(mergedBytes[500]).isEqualTo((byte) 2);
+        assertThat(mergedBytes[999]).isEqualTo((byte) 2);
+
+        // 7. 验证分片中止清理 (abort)
+        MvcResult initAbortResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+                        .param("path", "chunks/aborted.bin"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String abortUploadId = objectMapper.readTree(initAbortResult.getResponse().getContentAsString()).get("data").asText();
+
+        mockMvc.perform(multipart("/api/storage/chunk/upload")
+                        .file(part1)
+                        .param("uploadId", abortUploadId)
+                        .param("chunkIndex", "1"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/storage/chunk/abort")
+                        .param("uploadId", abortUploadId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 临时分片目录应已彻底清理
+        Path chunkDir = DEFAULT_DIR.resolve(".chunks").resolve(abortUploadId);
+        assertThat(Files.exists(chunkDir)).isFalse();
+    }
+
+    @Test
+    @DisplayName("端到端测试 11：StorageGuard 文件魔数嗅探防伪装拦截（STORAGE_FILE_TYPE_MISMATCH 40010）")
+    void testStorageGuardCamouflageDefense() throws Exception {
+        // 伪装文件：扩展名为 .png，但内部字节为纯文本 "This is plain text pretending to be PNG"
+        byte[] fakeBytes = "This is plain text pretending to be PNG".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile fakePng = new MockMultipartFile(
+                "file",
+                "hacker_avatar.png",
+                "image/png",
+                fakeBytes
+        );
+
+        // 上传伪装文件 -> 预期被 StorageGuard 拦截并返回业务错误码 40010
+        mockMvc.perform(multipart("/api/storage/upload").file(fakePng))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40010))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("魔数")));
     }
 }

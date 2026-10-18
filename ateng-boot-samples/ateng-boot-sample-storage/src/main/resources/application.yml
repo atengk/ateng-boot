@@ -9,6 +9,9 @@ ateng:
   boot:
     storage:
       primary: default
+      guard:
+        enabled: true
+        strict-magic-check: true
       sources:
         default:
           type: local

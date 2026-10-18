@@ -121,10 +121,36 @@ flowchart TD
 - 统一转译为 `StorageException extends BusinessException`，规范化 `StorageResultCode`；
 - **删除操作（`delete` / `deleteBatch`）分布式天然幂等**：当目标文件本身不存在时，静默视为删除成功返回 `true`，杜绝分布式调用链路因对象不存在重试导致雪崩阻塞。
 
-### 7. 纯内存自验门禁 (In-Memory Verification Gate)
+### 7. 对象跨路径复移与常用载荷便捷存取 (Object Relocation & Convenient Payloads)
+- 底层 SPI 显式声明 `copy` 与 `move` 原子契约，`LocalDriver` 优先利用 NIO `Files.copy` / `Files.move(..., ATOMIC_MOVE)` 实现本地磁盘秒级复移；`S3Driver` 封装云原生 `CopyObject` API 并安全移除源对象；
+- 高阶门面 `StorageTemplate` 暴露 `uploadString` / `downloadString`、`uploadBytes` / `downloadBytes` 以及基于 `JsonUtil` 门面的 `uploadJson` / `downloadJson`，消灭业务层样板代码。
+
+### 8. 目录前缀列举与分页检索体系 (Hierarchical Listing & Pagination)
+- 扩展 `StorageObject` 模型，引入 `directory` 标识以无缝兼容虚拟目录项；
+- `list(prefix, recursive)` 支持当前层级与递归子目录检索，内置 `.DS_Store` / `desktop.ini` / `.chunks` 等系统隐藏项自动过滤；
+- `listPage(prefix, pageQuery, recursive)` 全面打通 Core 模块的强类型分页契约（`PageQuery` / `PageResult<StorageObject>`），基于流式内存切片完成分页转换。
+
+### 9. 纯流式 ZIP 打包与 Spring 原生存储事件广播 (Streaming ZIP & Event-Driven Architecture)
+- 彻底摒弃传统“落盘临时文件再读取发送”的高风险做法，推行纯流式 `downloadAsZip`：边自存储驱动按序拉取输入流边写出至 `ZipOutputStream`，支持通用流与直接写入 `HttpServletResponse`；内置同名文件 `file (1).ext` 防重命名算法与严格文件存在性防卫；
+- 存储生命周期领域事件：在对象上传/创建完成及删除完成时，分别广播 `StorageUploadedEvent` 与 `StorageDeletedEvent`；门面层采用 `publishEventSafely` 实现 Fail-Safe 异常隔离，坚决杜绝下游监听器故障反向阻断主存储操作。
+
+### 10. 文件真实魔数特征嗅探与防伪装安全加固 (Magic Byte Sniffing & Camouflage Defense)
+- 解决通过伪造扩展名或 HTTP Header 绕过安全检验的渗透风险，提供 `StorageGuard` 嗅探器；
+- 预置 20+ 种高频标准类型特征（图片、文档、压缩包、音视频及 PE EXE、Linux ELF、Shebang、Java Class 等高危特征）；
+- **零流截断损耗不变量 (Zero-Truncation Invariant)**：基于 `mark(512)` 与 `reset()` 机制探查真实二进制特征，探查完成后流指针精确复位，确保写入下游介质的文件 MD5 与原始数据 100% 绝对一致；
+- 提供白名单拦截、严格魔数比对与高危二进制伪装强拦截。
+
+### 11. 大文件分片合并暂存与生命周期状态机 (Chunked Upload & Lifecycle State Machine)
+- 针对极端大文件上传易受网络波动影响导致全量重传的痛点，构建 1-based 连续性分片状态机；
+- 底层 SPI 扩充 `initiateChunkedUpload`、`uploadChunk`、`completeChunkedUpload`、`abortChunkedUpload`；
+- `LocalDriver` 采用 `.chunks/<uploadId>` 物理隔离目录管理碎片，基于 NIO `FileChannel.transferTo` 实现零拷贝顺序追加合并，并在完成后自动物理清理；
+- `S3Driver` 标准适配 AWS S3 Multipart Upload 原生 API，驱动内部维护并发安全 `S3UploadSession` 分片 ETag 集合，支持本地极速合并与跨节点 fallback；
+- 缺失分片阻断抛出 `STORAGE_CHUNK_MISSING (40012)`，非法分片索引拦截抛出 `STORAGE_CHUNK_INVALID (40013)`。
+
+### 12. 纯内存自验门禁 (In-Memory Verification Gate)
 - 遵循 ADR-0028 规范，全套单元测试与场景工程 `ateng-boot-sample-storage` 0 外部物理依赖；
 - 模块单测基于 `@TempDir` 验证本地驱动，基于 Mockito 打桩验证 S3Client 与 S3Presigner；
-- 场景工程通过 MockMvc 开展端到端 HTTP 上传、Range 206 断点续传、HMAC 授权与防篡改、动态多源隔离全链路自验，秒级准出。
+- 场景工程通过 MockMvc 开展端到端 HTTP 上传、Range 206 断点续传、HMAC 授权与防篡改、动态多源隔离、对象复移、目录分页、便捷存取、流式 ZIP 打包、分片状态机、魔数安全防卫与领域事件广播全链路自验，秒级准出。
 
 ---
 
@@ -135,10 +161,13 @@ flowchart TD
 2. **动静分离与多源无缝切换**：一套配置与一套 API 支持动态多源路由，彻底消灭 `if-else` 硬编码切源；
 3. **环境平替与体验统一**：Local 内置 HMAC 预签名端点让离线单机开发与本地环境也能完整闭环预签名防盗链下载；
 4. **防御纵深安全可靠**：路径归一化防御穿越，HMAC 签名防御篡改与过期，JSR-303 与显式 `Result<StorageObject>` 契约自洽；
-5. **Spring 框架高度融合**：`StorageResource` 带来原生 HTTP Range 206 断点续传与极简代码风格。
+5. **Spring 框架高度融合**：`StorageResource` 带来原生 HTTP Range 206 断点续传与极简代码风格，Spring 原生事件广播无缝接入事件驱动架构；
+6. **企业级高阶能力完备**：对象秒级复移、目录树分页、纯流式零磁盘临时文件 ZIP 打包、零流截断损耗魔数防伪装嗅探、1-based 大文件分片状态机一体化自洽交付。
 
 ### 妥协与规约 (Trade-offs & Constraints)
 1. **S3 协议通用性 vs. 厂商特有专有特性**：
    采用标准 S3 兼容协议统一驱动，默认覆盖主流 CRUD、元数据与预签名能力。若极个别业务需要使用某云厂商高度特异化的专有函数（如专有图片即时处理样式管道），建议通过各厂商标准的 Query 参数或自定义元数据头附加传递，而非引入厂商侵入式 SDK。
 2. **Local 预签名与集群环境**：
    在多实例集群部署 Local 驱动时，各节点必须通过配置显式指定相同的 `ateng.boot.storage.local.secret-key` 并配合共享存储卷（NFS / NAS），以保障跨节点验签通过；单节点或未配置密钥时系统将在启动时安全随机生成。
+3. **分片暂存与临时目录清理**：
+   LocalDriver 的分片暂存目录 `.chunks` 会在完成合并或显式调用 abort 时自动递归清理；在多节点分布式集群部署 Local 驱动时，建议为上传会话配置定时清理任务以防异常中断残留。
