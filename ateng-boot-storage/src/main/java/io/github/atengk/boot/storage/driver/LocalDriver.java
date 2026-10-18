@@ -10,6 +10,7 @@ import lombok.Getter;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -221,6 +222,62 @@ public class LocalDriver implements StorageDriver {
             delete(path);
         }
         return true;
+    }
+
+    @Override
+    public boolean copy(String sourcePath, String targetPath) {
+        if (sourcePath == null || sourcePath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "源文件路径不能为空");
+        }
+        if (targetPath == null || targetPath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "目标文件路径不能为空");
+        }
+        String cleanSource = StorageSecurityUtil.normalizePath(sourcePath);
+        String cleanTarget = StorageSecurityUtil.normalizePath(targetPath);
+        Path src = resolveAndVerify(cleanSource);
+        if (!Files.exists(src) || Files.isDirectory(src)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "源文件不存在或为目录: " + sourcePath);
+        }
+        Path dst = resolveAndVerify(cleanTarget);
+        try {
+            if (dst.getParent() != null && !Files.exists(dst.getParent())) {
+                Files.createDirectories(dst.getParent());
+            }
+            Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING);
+            return true;
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "复制本地文件失败: " + sourcePath + " -> " + targetPath, e);
+        }
+    }
+
+    @Override
+    public boolean move(String sourcePath, String targetPath) {
+        if (sourcePath == null || sourcePath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "源文件路径不能为空");
+        }
+        if (targetPath == null || targetPath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "目标文件路径不能为空");
+        }
+        String cleanSource = StorageSecurityUtil.normalizePath(sourcePath);
+        String cleanTarget = StorageSecurityUtil.normalizePath(targetPath);
+        Path src = resolveAndVerify(cleanSource);
+        if (!Files.exists(src) || Files.isDirectory(src)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "源文件不存在或为目录: " + sourcePath);
+        }
+        Path dst = resolveAndVerify(cleanTarget);
+        try {
+            if (dst.getParent() != null && !Files.exists(dst.getParent())) {
+                Files.createDirectories(dst.getParent());
+            }
+            try {
+                Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return true;
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "移动本地文件失败: " + sourcePath + " -> " + targetPath, e);
+        }
     }
 
     @Override

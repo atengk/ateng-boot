@@ -248,7 +248,55 @@ boolean success2 = storageTemplate.deleteBatch(List.of(
 
 ---
 
-## 8. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
+## 8. 对象跨路径复制与移动 (`StorageTemplate.copy` / `move`)
+
+### 场景痛点
+业务流程中高频需要将文件从暂存目录归档到正式目录，若手动通过“下载流再重新上传并删除原文件”，不仅占用大量应用服务器带宽与内存，还存在网络中断导致的数据不一致风险。
+
+### 核心代码范式
+```java
+// 1. 跨路径复制对象（保留原文件；S3 服务端免流秒传，Local NIO 零拷贝）
+boolean copied = storageTemplate.copy("source/original.txt", "backup/original_bak.txt");
+
+// 2. 跨路径移动对象（源文件自动安全移除）
+boolean moved = storageTemplate.move("source/original.txt", "moved/target.txt");
+```
+
+### 预期呈现契约
+执行结果：
+- `copied == true`：源路径与目标路径文件均存在，MD5 与数据完全一致；
+- `moved == true`：源路径对象已被安全移除，目标路径成功生成对应内容。
+
+---
+
+## 9. 常用载荷便捷快速存取 (`String` / `byte[]` / `JSON`)
+
+### 场景痛点
+日常开发中保存配置文本、JSON 快照或内存字节数组时，必须手动开辟 `ByteArrayInputStream`、设置字符集并管理流生命周期，样板代码繁琐。
+
+### 核心代码范式
+```java
+// 1. 纯文本字符串便捷上传与下载（默认 UTF-8 编码，自动适配 text/plain;charset=UTF-8）
+storageTemplate.uploadString("text/sample.txt", "Hello UTF-8 Content: 工业级存储 Starter");
+String text = storageTemplate.downloadString("text/sample.txt");
+
+// 2. 内存字节数组直接读写
+byte[] bytes = new byte[]{10, 20, 30, 40, 50};
+storageTemplate.uploadBytes("bytes/sample.bin", bytes, "application/octet-stream");
+byte[] downloadedBytes = storageTemplate.downloadBytes("bytes/sample.bin");
+
+// 3. POJO 业务对象 JSON 直接存取（深度复用 Core 模块 JsonUtil，自动适配 application/json;charset=UTF-8）
+TestUser user = new TestUser("Ateng", 18);
+storageTemplate.uploadJson("json/user.json", user);
+TestUser downloadedUser = storageTemplate.downloadJson("json/user.json", TestUser.class);
+```
+
+### 预期呈现契约
+读取到的 `text`、`downloadedBytes` 与 `downloadedUser` 与原始内存对象 100% 一致，自动完成序列化与反序列化，无需开发者编写任何 IO 流样板代码。
+
+---
+
+## 10. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
 
 ### 场景痛点
 传统本地存储通常缺乏外链时效性控制与防盗链签名，必须手动编写下载控制器或配置静态 Nginx 映射，无法与云端 S3 的 Presigned URL 保持契约一致。
@@ -284,7 +332,7 @@ public void generateDownloadUrl() {
 
 ---
 
-## 9. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
+## 11. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
 
 ### 场景痛点
 面对音视频、安装包等大文件上传，若全部经过应用服务器中转，将严重占用后端带宽并消耗内存，导致服务器并发瓶颈；而在下载时，为了保护文件隐私，需要生成临时且安全的云端下载直链。
@@ -321,7 +369,7 @@ HTTP方法: PUT
 
 ---
 
-## 10. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
+## 12. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
 
 ### 场景痛点
 大型生产系统往往同时对接多种存储后端（如将公开图片存入 CDN 加速桶、将企业私密合同存入内网私有 MinIO、临时中间数据写入本地磁盘）。若在业务代码中硬编码具体驱动或手动切换，耦合严重且极易在异步线程池中导致上下文串源污染。
@@ -396,7 +444,7 @@ TraceId: trace-12345
 
 ---
 
-## 11. 安全路径防卫机制
+## 13. 安全路径防卫机制
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
@@ -406,7 +454,7 @@ TraceId: trace-12345
 
 ---
 
-## 12. 场景样例工程与集成测试
+## 14. 场景样例工程与集成测试
 
 完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
 👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)

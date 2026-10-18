@@ -171,4 +171,58 @@ class LocalDriverTest {
 
         assertTrue(StorageSecurityUtil.verifyHmacSha256("docs/2026/manual.pdf:" + expiresStr, driver.getSecretKey(), signature));
     }
+
+    @Test
+    @DisplayName("复制本地文件成功并保留原文件")
+    void testCopySuccess() throws Exception {
+        byte[] content = "Copy Source Content".getBytes(StandardCharsets.UTF_8);
+        String srcPath = "source/original.txt";
+        String dstPath = "archive/copied.txt";
+
+        driver.upload(srcPath, new ByteArrayInputStream(content), "text/plain", content.length);
+        assertTrue(driver.exists(srcPath));
+
+        boolean copied = driver.copy(srcPath, dstPath);
+        assertTrue(copied);
+        assertTrue(driver.exists(srcPath));
+        assertTrue(driver.exists(dstPath));
+
+        try (InputStream in = driver.download(dstPath)) {
+            assertArrayEquals(content, in.readAllBytes());
+        }
+    }
+
+    @Test
+    @DisplayName("复制不存在的源文件时抛出 OBJECT_NOT_FOUND 异常")
+    void testCopySourceNotFound() {
+        StorageException ex = assertThrows(StorageException.class, () -> driver.copy("non/exist.txt", "target/file.txt"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("移动本地文件成功且源文件被移除")
+    void testMoveSuccess() throws Exception {
+        byte[] content = "Move Source Content".getBytes(StandardCharsets.UTF_8);
+        String srcPath = "source/to_move.txt";
+        String dstPath = "archive/moved.txt";
+
+        driver.upload(srcPath, new ByteArrayInputStream(content), "text/plain", content.length);
+        assertTrue(driver.exists(srcPath));
+
+        boolean moved = driver.move(srcPath, dstPath);
+        assertTrue(moved);
+        assertFalse(driver.exists(srcPath));
+        assertTrue(driver.exists(dstPath));
+
+        try (InputStream in = driver.download(dstPath)) {
+            assertArrayEquals(content, in.readAllBytes());
+        }
+    }
+
+    @Test
+    @DisplayName("移动不存在的源文件时抛出 OBJECT_NOT_FOUND 异常")
+    void testMoveSourceNotFound() {
+        StorageException ex = assertThrows(StorageException.class, () -> driver.move("non/exist.txt", "target/file.txt"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex.getCode());
+    }
 }

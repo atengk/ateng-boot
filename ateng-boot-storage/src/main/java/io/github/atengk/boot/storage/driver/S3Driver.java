@@ -16,6 +16,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
@@ -330,6 +331,44 @@ public class S3Driver implements StorageDriver {
         } catch (Exception e) {
             throw translateException(e, String.join(",", paths), "批量删除 S3 对象失败");
         }
+    }
+
+    @Override
+    public boolean copy(String sourcePath, String targetPath) {
+        if (sourcePath == null || sourcePath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "源文件路径不能为空");
+        }
+        if (targetPath == null || targetPath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "目标文件路径不能为空");
+        }
+        String cleanSource = StorageSecurityUtil.normalizePath(sourcePath);
+        String cleanTarget = StorageSecurityUtil.normalizePath(targetPath);
+        try {
+            CopyObjectRequest copyRequest = CopyObjectRequest.builder()
+                    .sourceBucket(this.bucket)
+                    .sourceKey(cleanSource)
+                    .destinationBucket(this.bucket)
+                    .destinationKey(cleanTarget)
+                    .build();
+            this.s3Client.copyObject(copyRequest);
+            return true;
+        } catch (NoSuchKeyException e) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "源存储对象不存在: " + sourcePath, e);
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404 || isNotFoundCode(e)) {
+                throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "源存储对象不存在: " + sourcePath, e);
+            }
+            throw translateException(e, cleanSource + " -> " + cleanTarget, "复制 S3 对象失败");
+        } catch (Exception e) {
+            throw translateException(e, cleanSource + " -> " + cleanTarget, "复制 S3 对象失败");
+        }
+    }
+
+    @Override
+    public boolean move(String sourcePath, String targetPath) {
+        copy(sourcePath, targetPath);
+        delete(sourcePath);
+        return true;
     }
 
     @Override

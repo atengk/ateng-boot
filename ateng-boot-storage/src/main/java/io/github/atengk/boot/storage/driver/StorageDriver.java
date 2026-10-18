@@ -77,6 +77,24 @@ public interface StorageDriver extends AutoCloseable {
     boolean deleteBatch(List<String> paths);
 
     /**
+     * 跨路径复制存储对象
+     *
+     * @param sourcePath 源对象相对路径
+     * @param targetPath 目标对象相对路径
+     * @return true 复制成功
+     */
+    boolean copy(String sourcePath, String targetPath);
+
+    /**
+     * 跨路径移动存储对象
+     *
+     * @param sourcePath 源对象相对路径
+     * @param targetPath 目标对象相对路径
+     * @return true 移动成功
+     */
+    boolean move(String sourcePath, String targetPath);
+
+    /**
      * 获取预签名只读下载外链凭证
      *
      * @param path     存储对象相对路径

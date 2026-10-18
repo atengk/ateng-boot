@@ -17,6 +17,8 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -287,5 +289,45 @@ class S3DriverTest {
 
         S3Presigner presigner = S3Driver.createS3Presigner(properties);
         assertNotNull(presigner);
+    }
+
+    @Test
+    @DisplayName("S3 复制对象成功")
+    void testCopy() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class))).thenReturn(CopyObjectResponse.builder().build());
+
+        boolean result = s3Driver.copy("docs/2026/report.pdf", "archive/2026/report.pdf");
+        assertTrue(result);
+
+        ArgumentCaptor<CopyObjectRequest> captor = ArgumentCaptor.forClass(CopyObjectRequest.class);
+        verify(s3Client).copyObject(captor.capture());
+        CopyObjectRequest req = captor.getValue();
+        assertEquals(TEST_BUCKET, req.sourceBucket());
+        assertEquals("docs/2026/report.pdf", req.sourceKey());
+        assertEquals(TEST_BUCKET, req.destinationBucket());
+        assertEquals("archive/2026/report.pdf", req.destinationKey());
+    }
+
+    @Test
+    @DisplayName("S3 复制不存在的对象时转译为 OBJECT_NOT_FOUND 异常")
+    void testCopyNotFound() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class)))
+                .thenThrow(NoSuchKeyException.builder().message("NoSuchKey").build());
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.copy("missing.txt", "target.txt"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("S3 移动对象成功（复制并删除源对象）")
+    void testMove() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class))).thenReturn(CopyObjectResponse.builder().build());
+
+        boolean result = s3Driver.move("docs/2026/report.pdf", "archive/2026/report.pdf");
+        assertTrue(result);
+
+        verify(s3Client).copyObject(any(CopyObjectRequest.class));
+        verify(s3Client).deleteObject(any(DeleteObjectRequest.class));
     }
 }

@@ -44,6 +44,19 @@ _Avoid_: FileDownloadServlet, StaticFileServer
 存储安全防卫与路径规范化工具，提供全路径归一化、剥除相对路径与前置斜杠、文件名防御清洗及 HMAC-SHA256 签名验签算法。
 _Avoid_: PathSecurityHelper, SafePathUtil
 
+**ChunkedUpload**:
+大文件分片上传与分块暂存抽象，封装全局唯一的上传凭证与分片生命周期状态。
+_Avoid_: MultipartContext, SliceUpload, ChunkSession
+
+**StorageGuard**:
+文件安全防卫与真实内容特征嗅探器，基于魔数比对与扩展名一致性校验拦截伪装文件。
+_Avoid_: FileValidator, SecurityChecker, FileFilter
+
+**StorageEvent**:
+存储介质生命周期领域事件，在对象上传完成或删除后广播给 Spring 容器，包含上传与删除两类生命周期动作。
+_Avoid_: FileEvent, StorageMessage, StorageCallback
+
 **StorageException**:
 存储模块受管业务异常根基类，继承自 Core 模块 `BusinessException`，支持标准的业务错误码与上下文溯源。
 _Avoid_: FileException, S3Exception
+

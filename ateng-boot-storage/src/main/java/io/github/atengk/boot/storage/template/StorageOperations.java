@@ -6,6 +6,8 @@ import io.github.atengk.boot.storage.resource.StorageResource;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 
@@ -104,6 +106,112 @@ public interface StorageOperations {
      * @return true 操作成功
      */
     boolean deleteBatch(List<String> paths);
+
+    /**
+     * 跨路径复制存储对象
+     *
+     * @param sourcePath 源对象相对路径
+     * @param targetPath 目标对象相对路径
+     * @return true 复制成功
+     */
+    boolean copy(String sourcePath, String targetPath);
+
+    /**
+     * 跨路径移动存储对象
+     *
+     * @param sourcePath 源对象相对路径
+     * @param targetPath 目标对象相对路径
+     * @return true 移动成功
+     */
+    boolean move(String sourcePath, String targetPath);
+
+    /**
+     * 上传纯文本字符串（默认 UTF-8 编码）
+     *
+     * @param path    目标相对路径
+     * @param content 文本内容
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadString(String path, String content) {
+        return uploadString(path, content, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 上传纯文本字符串（指定字符集）
+     *
+     * @param path    目标相对路径
+     * @param content 文本内容
+     * @param charset 字符编码
+     * @return 存储元数据对象
+     */
+    StorageObject uploadString(String path, String content, Charset charset);
+
+    /**
+     * 下载对象为纯文本字符串（默认 UTF-8 编码）
+     *
+     * @param path 目标相对路径
+     * @return 文本内容
+     */
+    default String downloadString(String path) {
+        return downloadString(path, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 下载对象为纯文本字符串（指定字符集）
+     *
+     * @param path    目标相对路径
+     * @param charset 字符编码
+     * @return 文本内容
+     */
+    String downloadString(String path, Charset charset);
+
+    /**
+     * 上传字节数组（自动推导 MIME）
+     *
+     * @param path  目标相对路径
+     * @param bytes 字节数据
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadBytes(String path, byte[] bytes) {
+        return uploadBytes(path, bytes, null);
+    }
+
+    /**
+     * 上传字节数组（指定 MIME 类型）
+     *
+     * @param path        目标相对路径
+     * @param bytes       字节数据
+     * @param contentType MIME 内容类型
+     * @return 存储元数据对象
+     */
+    StorageObject uploadBytes(String path, byte[] bytes, String contentType);
+
+    /**
+     * 下载对象为完整字节数组
+     *
+     * @param path 目标相对路径
+     * @return 字节数组
+     */
+    byte[] downloadBytes(String path);
+
+    /**
+     * 上传 POJO 为 JSON 存储对象
+     *
+     * @param path 目标相对路径
+     * @param pojo 业务对象
+     * @return 存储元数据对象
+     */
+    StorageObject uploadJson(String path, Object pojo);
+
+    /**
+     * 下载 JSON 存储对象并反序列化为指定类型 POJO
+     *
+     * @param path  目标相对路径
+     * @param clazz 目标类型 Class
+     * @param <T>   目标泛型
+     * @return 业务对象
+     */
+    <T> T downloadJson(String path, Class<T> clazz);
 
     /**
      * 获取预签名只读下载外链凭证

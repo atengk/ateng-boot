@@ -125,4 +125,99 @@ class StorageTemplateTest {
         StorageException ex = assertThrows(StorageException.class, () -> template.use("non-existent-source"));
         assertEquals(StorageResultCode.STORAGE_SOURCE_NOT_FOUND.getCode(), ex.getCode());
     }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 执行文件复制与移动")
+    void testCopyAndMove() {
+        template.uploadString("source/original.txt", "Original Data");
+        assertTrue(template.exists("source/original.txt"));
+
+        // 复制
+        boolean copied = template.copy("source/original.txt", "backup/original_bak.txt");
+        assertTrue(copied);
+        assertTrue(template.exists("source/original.txt"));
+        assertEquals("Original Data", template.downloadString("backup/original_bak.txt"));
+
+        // 移动
+        boolean moved = template.move("source/original.txt", "moved/target.txt");
+        assertTrue(moved);
+        assertFalse(template.exists("source/original.txt"));
+        assertEquals("Original Data", template.downloadString("moved/target.txt"));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 便捷上传与读取纯文本字符串")
+    void testUploadAndDownloadString() {
+        String content = "Hello UTF-8 Content: 工业级存储 Starter";
+        String path = "text/sample.txt";
+
+        StorageObject obj = template.uploadString(path, content);
+        assertNotNull(obj);
+        assertEquals(path, obj.getPath());
+        assertEquals("text/plain;charset=UTF-8", obj.getContentType());
+
+        String downloaded = template.downloadString(path);
+        assertEquals(content, downloaded);
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 便捷上传与读取字节数组")
+    void testUploadAndDownloadBytes() {
+        byte[] bytes = new byte[]{10, 20, 30, 40, 50};
+        String path = "bytes/sample.bin";
+
+        StorageObject obj = template.uploadBytes(path, bytes, "application/octet-stream");
+        assertNotNull(obj);
+        assertEquals(path, obj.getPath());
+        assertEquals(bytes.length, obj.getSize());
+
+        byte[] downloaded = template.downloadBytes(path);
+        assertArrayEquals(bytes, downloaded);
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 便捷上传与读取 JSON POJO")
+    void testUploadAndDownloadJson() {
+        TestUser user = new TestUser("Ateng", 18);
+        String path = "json/user.json";
+
+        StorageObject obj = template.uploadJson(path, user);
+        assertNotNull(obj);
+        assertEquals(path, obj.getPath());
+        assertEquals("application/json;charset=UTF-8", obj.getContentType());
+
+        TestUser downloaded = template.downloadJson(path, TestUser.class);
+        assertNotNull(downloaded);
+        assertEquals("Ateng", downloaded.getName());
+        assertEquals(18, downloaded.getAge());
+    }
+
+    public static class TestUser {
+        private String name;
+        private Integer age;
+
+        public TestUser() {
+        }
+
+        public TestUser(String name, Integer age) {
+            this.name = name;
+            this.age = age;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public Integer getAge() {
+            return age;
+        }
+
+        public void setAge(Integer age) {
+            this.age = age;
+        }
+    }
 }

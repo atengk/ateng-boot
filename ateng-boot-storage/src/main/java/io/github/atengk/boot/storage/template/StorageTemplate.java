@@ -7,12 +7,16 @@ import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
@@ -180,6 +184,72 @@ public class StorageTemplate implements StorageOperations {
     @Override
     public boolean deleteBatch(List<String> paths) {
         return getDriver().deleteBatch(paths);
+    }
+
+    @Override
+    public boolean copy(String sourcePath, String targetPath) {
+        return getDriver().copy(sourcePath, targetPath);
+    }
+
+    @Override
+    public boolean move(String sourcePath, String targetPath) {
+        return getDriver().move(sourcePath, targetPath);
+    }
+
+    @Override
+    public StorageObject uploadString(String path, String content, Charset charset) {
+        if (content == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文本内容不能为空");
+        }
+        Charset effectiveCharset = charset != null ? charset : StandardCharsets.UTF_8;
+        byte[] bytes = content.getBytes(effectiveCharset);
+        String contentType = "text/plain;charset=" + effectiveCharset.name();
+        return upload(path, new ByteArrayInputStream(bytes), contentType, bytes.length);
+    }
+
+    @Override
+    public String downloadString(String path, Charset charset) {
+        Charset effectiveCharset = charset != null ? charset : StandardCharsets.UTF_8;
+        byte[] bytes = downloadBytes(path);
+        return new String(bytes, effectiveCharset);
+    }
+
+    @Override
+    public StorageObject uploadBytes(String path, byte[] bytes, String contentType) {
+        if (bytes == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传字节数组不能为空");
+        }
+        return upload(path, new ByteArrayInputStream(bytes), contentType, bytes.length);
+    }
+
+    @Override
+    public byte[] downloadBytes(String path) {
+        try (InputStream in = download(path)) {
+            if (in == null) {
+                throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "读取存储对象输入流为空: " + path);
+            }
+            return in.readAllBytes();
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "读取对象字节流失败: " + path, e);
+        }
+    }
+
+    @Override
+    public StorageObject uploadJson(String path, Object pojo) {
+        if (pojo == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传 JSON 对象不能为空");
+        }
+        byte[] bytes = JsonUtil.toJsonBytes(pojo);
+        return upload(path, new ByteArrayInputStream(bytes), "application/json;charset=UTF-8", bytes.length);
+    }
+
+    @Override
+    public <T> T downloadJson(String path, Class<T> clazz) {
+        if (clazz == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "反序列化目标 Class 不能为空");
+        }
+        byte[] bytes = downloadBytes(path);
+        return JsonUtil.parseObject(bytes, clazz);
     }
 
     @Override
