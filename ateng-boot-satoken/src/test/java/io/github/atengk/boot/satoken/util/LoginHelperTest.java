@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
 
@@ -145,6 +146,107 @@ class LoginHelperTest {
             when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(adminUser);
 
             assertThat(LoginHelper.isSuperAdmin()).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("9. openSafe: Duration 强类型重载与前置卫语句防卫")
+    void testOpenSafeDuration() {
+        assertThatThrownBy(() -> LoginHelper.openSafe((Duration) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("维持时长不能为空");
+
+        assertThatThrownBy(() -> LoginHelper.openSafe("pay", (Duration) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("维持时长不能为空");
+
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            LoginHelper.openSafe(Duration.ofMinutes(5));
+            stpUtilMock.verify(() -> StpUtil.openSafe(300));
+
+            LoginHelper.openSafe("payment", Duration.ofSeconds(120));
+            stpUtilMock.verify(() -> StpUtil.openSafe("payment", 120));
+        }
+    }
+
+    @Test
+    @DisplayName("10. replaced: 顶替下线全局与多设备端对称门面")
+    void testReplaced() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            LoginHelper.replaced("user-1");
+            stpUtilMock.verify(() -> StpUtil.replaced("user-1"));
+
+            LoginHelper.replaced("user-2", "PC");
+            stpUtilMock.verify(() -> StpUtil.replaced("user-2", "PC"));
+        }
+    }
+
+    @Test
+    @DisplayName("11. disable & untieDisable: 账号封禁与解封对称门面（含 Duration 强类型）")
+    void testDisableAndUntieDisable() {
+        assertThatThrownBy(() -> LoginHelper.disable("user-1", (Duration) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("封禁时长不能为空");
+
+        assertThatThrownBy(() -> LoginHelper.disable("user-1", "chat", (Duration) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("封禁时长不能为空");
+
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            stpUtilMock.when(() -> StpUtil.isDisable("user-1")).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.isDisable("user-1", "chat")).thenReturn(false);
+            stpUtilMock.when(() -> StpUtil.getDisableTime("user-1")).thenReturn(3600L);
+            stpUtilMock.when(() -> StpUtil.getDisableTime("user-1", "chat")).thenReturn(-2L);
+
+            // Duration 封禁
+            LoginHelper.disable("user-1", Duration.ofHours(1));
+            stpUtilMock.verify(() -> StpUtil.disable("user-1", 3600L));
+
+            // 秒级封禁
+            LoginHelper.disable("user-1", 1800L);
+            stpUtilMock.verify(() -> StpUtil.disable("user-1", 1800L));
+
+            // 服务级封禁
+            LoginHelper.disable("user-1", "chat", Duration.ofMinutes(10));
+            stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 600L));
+
+            LoginHelper.disable("user-1", "chat", 300L);
+            stpUtilMock.verify(() -> StpUtil.disable("user-1", "chat", 300L));
+
+            // 状态判断与校验
+            assertThat(LoginHelper.isDisable("user-1")).isTrue();
+            assertThat(LoginHelper.isDisable("user-1", "chat")).isFalse();
+            assertThat(LoginHelper.getDisableTime("user-1")).isEqualTo(3600L);
+            assertThat(LoginHelper.getDisableTime("user-1", "chat")).isEqualTo(-2L);
+
+            LoginHelper.checkDisable("user-1");
+            stpUtilMock.verify(() -> StpUtil.checkDisable("user-1"));
+
+            LoginHelper.checkDisable("user-1", "chat");
+            stpUtilMock.verify(() -> StpUtil.checkDisable("user-1", "chat"));
+
+            // 解封
+            LoginHelper.untieDisable("user-1");
+            stpUtilMock.verify(() -> StpUtil.untieDisable("user-1"));
+
+            LoginHelper.untieDisable("user-1", "chat");
+            stpUtilMock.verify(() -> StpUtil.untieDisable("user-1", "chat"));
+        }
+    }
+
+    @Test
+    @DisplayName("12. tokenQuery: 获取指定账号/设备 Token 及有效期")
+    void testTokenQueryMethods() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            stpUtilMock.when(() -> StpUtil.getTokenValueByLoginId("user-1")).thenReturn("tk-global");
+            stpUtilMock.when(() -> StpUtil.getTokenValueByLoginId("user-1", "APP")).thenReturn("tk-app");
+            stpUtilMock.when(StpUtil::getTokenTimeout).thenReturn(7200L);
+            stpUtilMock.when(StpUtil::getSessionTimeout).thenReturn(14400L);
+
+            assertThat(LoginHelper.getTokenValueByLoginId("user-1")).isEqualTo("tk-global");
+            assertThat(LoginHelper.getTokenValueByLoginId("user-1", "APP")).isEqualTo("tk-app");
+            assertThat(LoginHelper.getTokenTimeout()).isEqualTo(7200L);
+            assertThat(LoginHelper.getSessionTimeout()).isEqualTo(14400L);
         }
     }
 }

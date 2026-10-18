@@ -8,6 +8,7 @@ import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
 
@@ -366,7 +367,19 @@ public final class LoginHelper {
     }
 
     /**
-     * 开启当前会话的二级安全认证模式
+     * 开启当前会话的二级安全认证模式（强类型 Duration 规范）
+     *
+     * @param duration 安全模式维持时长
+     */
+    public static void openSafe(Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
+        }
+        openSafe((int) duration.toSeconds());
+    }
+
+    /**
+     * 开启当前会话的二级安全认证模式（秒级向后兼容）
      *
      * @param timeoutSeconds 安全模式维持秒数
      */
@@ -375,7 +388,20 @@ public final class LoginHelper {
     }
 
     /**
-     * 开启当前会话指定业务的二级安全认证模式
+     * 开启当前会话指定业务的二级安全认证模式（强类型 Duration 规范）
+     *
+     * @param service  指定业务标识
+     * @param duration 安全模式维持时长
+     */
+    public static void openSafe(String service, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("开启二级安全认证失败：维持时长不能为空");
+        }
+        openSafe(service, (int) duration.toSeconds());
+    }
+
+    /**
+     * 开启当前会话指定业务的二级安全认证模式（秒级向后兼容）
      *
      * @param service        指定业务标识
      * @param timeoutSeconds 安全模式维持秒数
@@ -433,6 +459,192 @@ public final class LoginHelper {
      */
     public static void closeSafe(String service) {
         StpUtil.closeSafe(service);
+    }
+
+    /**
+     * 将指定登录账号顶替下线（全局所有设备端）
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void replaced(Object loginId) {
+        StpUtil.replaced(loginId);
+    }
+
+    /**
+     * 将指定登录账号在指定设备端顶替下线
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     */
+    public static void replaced(Object loginId, String deviceType) {
+        StpUtil.replaced(loginId, deviceType);
+    }
+
+    /**
+     * 封禁指定账号（强类型 Duration 规范）
+     *
+     * @param loginId  登录账号唯一标识
+     * @param duration 封禁时长
+     */
+    public static void disable(Object loginId, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("封禁账号失败：封禁时长不能为空");
+        }
+        disable(loginId, duration.toSeconds());
+    }
+
+    /**
+     * 封禁指定账号（秒级向后兼容）
+     *
+     * @param loginId            登录账号唯一标识
+     * @param disableTimeSeconds 封禁时长（秒）
+     */
+    public static void disable(Object loginId, long disableTimeSeconds) {
+        StpUtil.disable(loginId, disableTimeSeconds);
+    }
+
+    /**
+     * 封禁指定账号指定服务（强类型 Duration 规范）
+     *
+     * @param loginId  登录账号唯一标识
+     * @param service  指定服务标识
+     * @param duration 封禁时长
+     */
+    public static void disable(Object loginId, String service, Duration duration) {
+        if (duration == null) {
+            throw new IllegalArgumentException("封禁服务失败：封禁时长不能为空");
+        }
+        disable(loginId, service, duration.toSeconds());
+    }
+
+    /**
+     * 封禁指定账号指定服务（秒级向后兼容）
+     *
+     * @param loginId            登录账号唯一标识
+     * @param service            指定服务标识
+     * @param disableTimeSeconds 封禁时长（秒）
+     */
+    public static void disable(Object loginId, String service, long disableTimeSeconds) {
+        StpUtil.disable(loginId, service, disableTimeSeconds);
+    }
+
+    /**
+     * 解封指定账号
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void untieDisable(Object loginId) {
+        StpUtil.untieDisable(loginId);
+    }
+
+    /**
+     * 解封指定账号指定服务
+     *
+     * @param loginId 登录账号唯一标识
+     * @param service 指定服务标识
+     */
+    public static void untieDisable(Object loginId, String service) {
+        StpUtil.untieDisable(loginId, service);
+    }
+
+    /**
+     * 判断指定账号是否已被封禁
+     *
+     * @param loginId 登录账号唯一标识
+     * @return true 表示已被封禁
+     */
+    public static boolean isDisable(Object loginId) {
+        return StpUtil.isDisable(loginId);
+    }
+
+    /**
+     * 判断指定账号指定服务是否已被封禁
+     *
+     * @param loginId 登录账号唯一标识
+     * @param service 指定服务标识
+     * @return true 表示已被封禁
+     */
+    public static boolean isDisable(Object loginId, String service) {
+        return StpUtil.isDisable(loginId, service);
+    }
+
+    /**
+     * 校验指定账号是否处于封禁状态，若被封禁则抛出 DisableServiceException
+     *
+     * @param loginId 登录账号唯一标识
+     */
+    public static void checkDisable(Object loginId) {
+        StpUtil.checkDisable(loginId);
+    }
+
+    /**
+     * 校验指定账号指定服务是否处于封禁状态，若被封禁则抛出 DisableServiceException
+     *
+     * @param loginId 登录账号唯一标识
+     * @param service 指定服务标识
+     */
+    public static void checkDisable(Object loginId, String service) {
+        StpUtil.checkDisable(loginId, service);
+    }
+
+    /**
+     * 获取指定账号封禁剩余时间（秒），-1 表示永久封禁，-2 表示未被封禁
+     *
+     * @param loginId 登录账号唯一标识
+     * @return 剩余封禁秒数
+     */
+    public static long getDisableTime(Object loginId) {
+        return StpUtil.getDisableTime(loginId);
+    }
+
+    /**
+     * 获取指定账号指定服务封禁剩余时间（秒），-1 表示永久封禁，-2 表示未被封禁
+     *
+     * @param loginId 登录账号唯一标识
+     * @param service 指定服务标识
+     * @return 剩余封禁秒数
+     */
+    public static long getDisableTime(Object loginId, String service) {
+        return StpUtil.getDisableTime(loginId, service);
+    }
+
+    /**
+     * 获取指定账号当前分配的 Token 字符串值
+     *
+     * @param loginId 登录账号唯一标识
+     * @return Token 字符串值，不存在返回 null
+     */
+    public static String getTokenValueByLoginId(Object loginId) {
+        return StpUtil.getTokenValueByLoginId(loginId);
+    }
+
+    /**
+     * 获取指定账号在指定设备端当前分配的 Token 字符串值
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 设备端类型（如 PC, APP）
+     * @return Token 字符串值，不存在返回 null
+     */
+    public static String getTokenValueByLoginId(Object loginId, String deviceType) {
+        return StpUtil.getTokenValueByLoginId(loginId, deviceType);
+    }
+
+    /**
+     * 获取当前 Token 的剩余有效时间（秒），-1 表示永久有效，-2 表示未登录或已失效
+     *
+     * @return 剩余有效秒数
+     */
+    public static long getTokenTimeout() {
+        return StpUtil.getTokenTimeout();
+    }
+
+    /**
+     * 获取当前 Session 的剩余有效时间（秒），-1 表示永久有效，-2 表示未登录或已失效
+     *
+     * @return 剩余有效秒数
+     */
+    public static long getSessionTimeout() {
+        return StpUtil.getSessionTimeout();
     }
 
     /**

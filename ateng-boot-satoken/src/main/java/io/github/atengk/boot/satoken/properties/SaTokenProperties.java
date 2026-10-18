@@ -2,7 +2,9 @@ package io.github.atengk.boot.satoken.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -37,16 +39,19 @@ public class SaTokenProperties {
     /**
      * 路由拦截器与白名单放行配置
      */
+    @NestedConfigurationProperty
     private InterceptorProperties interceptor = new InterceptorProperties();
 
     /**
      * 微服务集群内部 Same-Token 零信任鉴权配置
      */
+    @NestedConfigurationProperty
     private SameTokenProperties sameToken = new SameTokenProperties();
 
     /**
      * 权限与角色多级缓存治理配置
      */
+    @NestedConfigurationProperty
     private PermissionCacheProperties permissionCache = new PermissionCacheProperties();
 
     /**
@@ -121,19 +126,56 @@ public class SaTokenProperties {
         private boolean enabled = true;
 
         /**
-         * 权限与角色缓存有效期（秒），默认 300 秒（5 分钟）
+         * 权限与角色缓存有效期，生产标准默认 5 分钟 (300s)
          */
-        private long timeoutSeconds = 300;
+        private Duration timeout = Duration.ofSeconds(300);
 
         /**
-         * 空权限/空角色防穿透哨兵缓存有效期（秒），默认 60 秒
+         * 空权限/空角色防穿透哨兵缓存有效期，生产标准默认 60 秒
          */
-        private long emptyTtlSeconds = 60;
+        private Duration emptyTtl = Duration.ofSeconds(60);
+
+        /**
+         * 获取权限与角色缓存有效期秒数（向后兼容）
+         *
+         * @return 缓存秒数
+         */
+        public long getTimeoutSeconds() {
+            return timeout != null ? timeout.toSeconds() : 0L;
+        }
+
+        /**
+         * 设置权限与角色缓存有效期秒数（向后兼容）
+         *
+         * @param timeoutSeconds 缓存秒数
+         */
+        public void setTimeoutSeconds(long timeoutSeconds) {
+            this.timeout = Duration.ofSeconds(timeoutSeconds);
+        }
+
+        /**
+         * 获取空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
+         *
+         * @return 哨兵缓存秒数
+         */
+        public long getEmptyTtlSeconds() {
+            return emptyTtl != null ? emptyTtl.toSeconds() : 0L;
+        }
+
+        /**
+         * 设置空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
+         *
+         * @param emptyTtlSeconds 哨兵缓存秒数
+         */
+        public void setEmptyTtlSeconds(long emptyTtlSeconds) {
+            this.emptyTtl = Duration.ofSeconds(emptyTtlSeconds);
+        }
     }
 
     /**
      * OpenAPI / Knife4j 自动鉴权弹窗配置
      */
+    @NestedConfigurationProperty
     private OpenApiProperties openapi = new OpenApiProperties();
 
     /**

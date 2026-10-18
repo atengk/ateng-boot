@@ -634,4 +634,37 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.success").value(false));
     }
+
+    @Test
+    @DisplayName("17. 多端设备顶替下线与会话隔离端到端验证：账号被顶替后返回 401 提示已在其他设备登录")
+    void shouldHandleDeviceReplacedAndSessionIsolation() throws Exception {
+        LoginUser user = LoginUser.builder()
+                .userId("99002")
+                .userName("顶替测试用户")
+                .build();
+
+        // 1. 登录并获取 Token
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 正常访问受保护接口
+        mockMvc.perform(get("/api/auth/me")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. 执行顶替下线
+        LoginHelper.replaced("99002");
+
+        // 4. 再次携带原 Token 访问，验证已被顶下线拦截 (401)
+        mockMvc.perform(get("/api/auth/me")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.msg").value("当前账号已在其他设备登录，您已被顶下线"));
+    }
 }

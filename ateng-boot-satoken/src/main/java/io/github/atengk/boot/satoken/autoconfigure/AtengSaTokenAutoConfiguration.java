@@ -35,6 +35,7 @@ import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -54,6 +55,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration"
+})
 @ConditionalOnClass(StpUtil.class)
 @EnableConfigurationProperties(SaTokenProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.satoken", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -110,6 +115,7 @@ public class AtengSaTokenAutoConfiguration {
      */
     @Bean
     @ConditionalOnClass(FilterRegistrationBean.class)
+    @ConditionalOnBean(SaTokenCorsFilterForJakartaServlet.class)
     public FilterRegistrationBean<SaTokenCorsFilterForJakartaServlet> disableSaTokenCorsFilter(SaTokenCorsFilterForJakartaServlet filter) {
         FilterRegistrationBean<SaTokenCorsFilterForJakartaServlet> registration = new FilterRegistrationBean<>(filter);
         registration.setEnabled(false);
