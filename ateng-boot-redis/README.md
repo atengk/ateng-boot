@@ -4,6 +4,29 @@
 
 ---
 
+## 0. 特性与公共 API 全景速查矩阵
+
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **基础运维** | 自动装配与主配置 | `RedisProperties` / `RedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix` | 统管双核装配开关与全局统一 Key 命名前缀隔离 | `RedisAutoConfigurationTest` |
+| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `hScan` / `executePipelined` | `RedisUtilTest` |
+| **分布式锁** | 声明式分布式锁 | `@DistributedLock` / `DistributedLockAspect` | `ateng.boot.redis.lock.enabled`<br>`ateng.boot.redis.lock.prefix`<br>`ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `@DistributedLock(key, keys, mode, waitTime, leaseTime, timeUnit, message)`：支持 SpEL、四阶锁模式、看门狗自动续期、防误删释放与慢锁审计 | `DistributedLockAspectTest`<br>`SampleRedisIntegrationTest` |
+| **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest` |
+| **分布式锁** | 静态锁操作门面 | `RedisLockUtil` | `ateng.boot.redis.lock.*` | `RedisLockUtil.execute(key, supplier)` / `RedisLockUtil.tryExecute(key, action)`：静态上下文无需注入 Spring Bean 一键安全加锁 | `RedisLockUtilTest`<br>`SampleRedisIntegrationTest` |
+| **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest` |
+| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`：基于 Redisson 原生轻量延迟队列封装 | `RedisDelayedQueueTest` |
+| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：自动注册消费线程、指数/固定退避重试、上下文隔离与平滑优雅停机 | `DelayedQueueBootstrapTest` |
+| **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
+| **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topic)`：自动装配 Spring Data Redis `MessageListener`，反序列化载荷推送至目标方法 | `RedisMessagePublisherTest` |
+| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest` |
+| **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest` |
+| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest` |
+| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `RedisCacheAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `RedisCacheAutoConfigurationTest` |
+| **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `RedisCacheAutoConfigurationTest` |
+| **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `jsonSerializer(clazz)` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
+
+---
+
 ## 1. 模块定位与 Maven 坐标
 
 `ateng-boot-redis` 坚持双核融合架构，摒弃“Spring Data Redis 与 Redisson 二选一”的传统割裂思维，同时规避了官方 `redisson-spring-boot-starter` 强行覆盖官方 `RedisConnectionFactory` 带来的隐式冲突与序列化漂移。
@@ -130,8 +153,9 @@ public class OrderLockService {
     @DistributedLock(
             key = "'order:create:' + #userId + ':' + #productId",
             mode = LockMode.REENTRANT,
-            waitTime = 3000,
-            leaseTime = 10000,
+            waitTime = 3,
+            leaseTime = 10,
+            timeUnit = TimeUnit.SECONDS,
             message = "当前排队人数较多，请稍后重试"
     )
     public String createOrder(Long userId, Long productId) {
@@ -388,6 +412,9 @@ ateng:
       lock:
         enabled: true                   # 是否启用声明式分布式锁切面 (默认 true)
         prefix: "lock:"                 # 分布式锁 Key 统配全局前缀 (默认 "lock:")
+        wait-time: 3s                   # 默认获取锁最大阻塞等待时长 (默认 3s，支持 3s、3000ms 等标准 Duration 格式)
+        lease-time: -1ms                # 默认持锁租约超时时长 (默认 -1ms 表示启用看门狗自动续期，亦可指定 10s 等固定时长)
+        time-unit: SECONDS              # 默认时间单位 (默认 SECONDS，向后兼容保留)
         slow-threshold: 3s              # 慢锁监控告警阈值 (默认 3s，支持 3s、3000ms 等 Duration 格式，亦兼容 slow-threshold-ms 与 slow-lock-threshold)
       delay-queue:
         enabled: true                   # 是否启用延时队列支持 (默认 true)
@@ -402,7 +429,7 @@ ateng:
         max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
         cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
         null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
-        expires:                        # 针对不同 CacheName 的个性化 TTL
+        expires:                        # 针对不同 CacheName 的个性化 TTL (`Map<String, Duration>`)
           short_cache: 10m
           long_cache: 24h
       redisson:
@@ -410,3 +437,53 @@ ateng:
         threads: 0                      # Redisson 通用线程池大小 (默认 0，表示采用 Redisson 核心数*2 默认值)
         netty-threads: 0                # Redisson Netty 线程池大小 (默认 0，表示采用 Redisson 默认值)
 ```
+
+---
+
+## 10. 生产扩展与高阶定制 (Customization & Extensibility)
+
+`ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
+
+### 10.1 自定义 RedissonClient 接管
+当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
+
+```java
+@Configuration(proxyBeanMethods = false)
+public class CustomRedissonConfiguration {
+
+    @Bean
+    public RedissonClient redissonClient() {
+        Config config = new Config();
+        config.useSingleServer()
+                .setAddress("redis://127.0.0.1:6379")
+                .setConnectionMinimumIdleSize(10)
+                .setConnectionPoolSize(64);
+        return Redisson.create(config);
+    }
+}
+```
+
+### 10.2 编程式延时队列平滑接管
+`RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
+
+```java
+RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMapper);
+delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
+```
+
+---
+
+## 11. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+
+### 11.1 分布式锁防御性释放与防误删不变量
+- **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
+- **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
+
+### 11.2 看门狗自动续期与固定租期选择策略
+- **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
+- **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
+
+### 11.3 延时队列生命周期消费与重试策略
+- **弹性重试与错误隔离**：`DelayedQueueBootstrap` 内置异常受控重试（默认最多重试 3 次，间隔 3s）；若达到重试上限仍未成功，将打印 ERROR 日志并受控丢弃，杜绝因单条毒药消息死循环阻塞整个队列消费。
+- **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环，保障零消息悬挂。
+

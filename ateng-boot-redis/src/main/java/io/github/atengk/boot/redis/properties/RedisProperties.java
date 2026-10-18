@@ -2,6 +2,7 @@ package io.github.atengk.boot.redis.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -31,26 +32,31 @@ public class RedisProperties {
     /**
      * 分布式锁配置属性
      */
+    @NestedConfigurationProperty
     private LockProperties lock = new LockProperties();
 
     /**
      * 延时队列配置属性
      */
+    @NestedConfigurationProperty
     private DelayQueueProperties delayQueue = new DelayQueueProperties();
 
     /**
      * 主题广播消息配置属性
      */
+    @NestedConfigurationProperty
     private PubSubProperties pubSub = new PubSubProperties();
 
     /**
      * Spring Cache 缓存增强配置属性
      */
+    @NestedConfigurationProperty
     private CacheProperties cache = new CacheProperties();
 
     /**
      * Redisson 专属扩展配置
      */
+    @NestedConfigurationProperty
     private RedissonProperties redisson = new RedissonProperties();
 
     /**
@@ -65,17 +71,17 @@ public class RedisProperties {
         private boolean enabled = true;
 
         /**
-         * 默认获取锁等待超时时长（获取锁最大阻塞等待时长）
+         * 默认获取锁等待超时时长（获取锁最大阻塞等待时长，默认 3s）
          */
-        private long waitTime = 3L;
+        private Duration waitTime = Duration.ofSeconds(3);
 
         /**
-         * 默认持锁租约超时时长（-1 表示启用 Redisson 看门狗 Watchdog 自动续期）
+         * 默认持锁租约超时时长（-1ms 表示启用 Redisson 看门狗 Watchdog 自动续期，默认 -1ms）
          */
-        private long leaseTime = -1L;
+        private Duration leaseTime = Duration.ofMillis(-1);
 
         /**
-         * 默认时间单位
+         * 默认时间单位（向后兼容保留，建议优先在配置中使用标准 Duration 格式如 3s、500ms）
          */
         private TimeUnit timeUnit = TimeUnit.SECONDS;
 
@@ -88,6 +94,56 @@ public class RedisProperties {
          * 慢锁告警阈值（支持 3s、3000ms 等标准 Duration 格式，默认 3000ms），持锁执行时间超过该阈值时自动记录 WARN 日志
          */
         private Duration slowThreshold = Duration.ofMillis(3000L);
+
+        public Duration getWaitTime() {
+            return waitTime;
+        }
+
+        public void setWaitTime(Duration waitTime) {
+            this.waitTime = waitTime;
+        }
+
+        /**
+         * 兼容旧版秒级/数值设置
+         *
+         * @param waitTimeSeconds 等待超时秒数
+         */
+        public void setWaitTime(long waitTimeSeconds) {
+            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
+        }
+
+        public long getWaitTimeSeconds() {
+            return waitTime != null ? waitTime.toSeconds() : 3L;
+        }
+
+        public void setWaitTimeSeconds(long waitTimeSeconds) {
+            this.waitTime = Duration.ofSeconds(waitTimeSeconds);
+        }
+
+        public Duration getLeaseTime() {
+            return leaseTime;
+        }
+
+        public void setLeaseTime(Duration leaseTime) {
+            this.leaseTime = leaseTime;
+        }
+
+        /**
+         * 兼容旧版秒级/数值设置
+         *
+         * @param leaseTimeSeconds 租约超时秒数（-1 表示看门狗）
+         */
+        public void setLeaseTime(long leaseTimeSeconds) {
+            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
+        }
+
+        public long getLeaseTimeSeconds() {
+            return leaseTime != null ? (leaseTime.isNegative() ? -1L : leaseTime.toSeconds()) : -1L;
+        }
+
+        public void setLeaseTimeSeconds(long leaseTimeSeconds) {
+            this.leaseTime = leaseTimeSeconds < 0 ? Duration.ofMillis(-1) : Duration.ofSeconds(leaseTimeSeconds);
+        }
 
         public long getSlowThresholdMs() {
             return slowThreshold != null ? slowThreshold.toMillis() : 0L;

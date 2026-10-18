@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -217,9 +218,44 @@ public class DistributedLockTemplate {
         Objects.requireNonNull(supplier, "supplier must not be null");
 
         LockMode actualMode = mode != null ? mode : LockMode.REENTRANT;
-        long actualWaitTime = waitTime >= 0 ? waitTime : redisProperties.getLock().getWaitTime();
-        long actualLeaseTime = leaseTime >= 0 ? leaseTime : redisProperties.getLock().getLeaseTime();
-        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : redisProperties.getLock().getTimeUnit();
+        TimeUnit actualTimeUnit = timeUnit != null ? timeUnit : (redisProperties.getLock().getTimeUnit() != null ? redisProperties.getLock().getTimeUnit() : TimeUnit.SECONDS);
+
+        long actualWaitTime;
+        if (waitTime >= 0) {
+            actualWaitTime = waitTime;
+        } else {
+            Duration configWait = redisProperties.getLock().getWaitTime();
+            if (configWait != null) {
+                long converted = actualTimeUnit.convert(configWait.toMillis(), TimeUnit.MILLISECONDS);
+                if (converted == 0 && !configWait.isZero()) {
+                    actualTimeUnit = TimeUnit.MILLISECONDS;
+                    actualWaitTime = configWait.toMillis();
+                } else {
+                    actualWaitTime = converted;
+                }
+            } else {
+                actualWaitTime = actualTimeUnit.convert(3, TimeUnit.SECONDS);
+            }
+        }
+
+        long actualLeaseTime;
+        if (leaseTime >= 0) {
+            actualLeaseTime = leaseTime;
+        } else {
+            Duration configLease = redisProperties.getLock().getLeaseTime();
+            if (configLease == null || configLease.isNegative() || configLease.isZero()) {
+                actualLeaseTime = -1L;
+            } else {
+                long converted = actualTimeUnit.convert(configLease.toMillis(), TimeUnit.MILLISECONDS);
+                if (converted == 0 && !configLease.isZero()) {
+                    actualLeaseTime = configLease.toMillis();
+                    actualWaitTime = TimeUnit.MILLISECONDS.convert(actualWaitTime, actualTimeUnit);
+                    actualTimeUnit = TimeUnit.MILLISECONDS;
+                } else {
+                    actualLeaseTime = converted;
+                }
+            }
+        }
 
         List<String> resolvedKeys = resolveKeys(keys, prefix);
         RLock rLock = createRLock(resolvedKeys, actualMode);

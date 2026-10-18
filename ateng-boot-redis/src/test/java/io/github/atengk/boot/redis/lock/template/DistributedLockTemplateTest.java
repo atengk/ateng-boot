@@ -15,6 +15,7 @@ import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -53,9 +54,9 @@ class DistributedLockTemplateTest {
     void setUp() {
         redisProperties = new RedisProperties();
         redisProperties.getLock().setPrefix("lock:");
-        redisProperties.getLock().setWaitTime(3000);
-        redisProperties.getLock().setLeaseTime(-1);
-        redisProperties.getLock().setSlowThresholdMs(5000);
+        redisProperties.getLock().setWaitTime(Duration.ofMillis(3000));
+        redisProperties.getLock().setLeaseTime(Duration.ofMillis(-1));
+        redisProperties.getLock().setSlowThreshold(Duration.ofMillis(5000));
         redisProperties.getLock().setTimeUnit(TimeUnit.MILLISECONDS);
 
         lockTemplate = new DistributedLockTemplate(redissonClient, redisProperties);
@@ -271,5 +272,66 @@ class DistributedLockTemplateTest {
 
         verify(redissonClient, times(1)).getLock("lock:same_key");
         verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("execute: 全局配置默认 Duration 3s 且单位为 SECONDS 时正确按秒换算")
+    void execute_defaultSecondsConfig() throws Throwable {
+        RedisProperties customProps = new RedisProperties();
+        customProps.getLock().setWaitTime(Duration.ofSeconds(5));
+        customProps.getLock().setLeaseTime(Duration.ofMillis(-1));
+        customProps.getLock().setTimeUnit(TimeUnit.SECONDS);
+        DistributedLockTemplate template = new DistributedLockTemplate(redissonClient, customProps);
+
+        when(redissonClient.getLock("lock:sec:1")).thenReturn(rLock);
+        when(rLock.tryLock(5L, TimeUnit.SECONDS)).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        String result = template.execute("sec:1", () -> "OK_SEC");
+        assertThat(result).isEqualTo("OK_SEC");
+        verify(rLock).tryLock(5L, TimeUnit.SECONDS);
+        verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("execute: 亚秒级 Duration 自动提升精度为毫秒，防止被整除为 0 造成精度截断")
+    void execute_subSecondDurationWithoutTruncation() throws Throwable {
+        RedisProperties customProps = new RedisProperties();
+        customProps.getLock().setWaitTime(Duration.ofMillis(500));
+        customProps.getLock().setLeaseTime(Duration.ofMillis(-1));
+        customProps.getLock().setTimeUnit(TimeUnit.SECONDS); // 默认单位为 SECONDS，500ms 转换秒会截断为 0
+        DistributedLockTemplate template = new DistributedLockTemplate(redissonClient, customProps);
+
+        when(redissonClient.getLock("lock:sub:1")).thenReturn(rLock);
+        when(rLock.tryLock(500L, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(rLock.isHeldByCurrentThread()).thenReturn(true);
+
+        String result = template.execute("sub:1", () -> "OK_SUB");
+        assertThat(result).isEqualTo("OK_SUB");
+        verify(rLock).tryLock(500L, TimeUnit.MILLISECONDS);
+        verify(rLock).unlock();
+    }
+
+    @Test
+    @DisplayName("LockProperties: 秒级数值向后兼容适配方法正常工作")
+    void lockProperties_backwardCompatibility() {
+        RedisProperties.LockProperties lock = new RedisProperties.LockProperties();
+        lock.setWaitTimeSeconds(10L);
+        assertThat(lock.getWaitTimeSeconds()).isEqualTo(10L);
+        assertThat(lock.getWaitTime()).isEqualTo(Duration.ofSeconds(10));
+
+        lock.setLeaseTimeSeconds(20L);
+        assertThat(lock.getLeaseTimeSeconds()).isEqualTo(20L);
+        assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofSeconds(20));
+
+        lock.setLeaseTimeSeconds(-1L);
+        assertThat(lock.getLeaseTimeSeconds()).isEqualTo(-1L);
+        assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofMillis(-1));
+
+        lock.setWaitTime(15L);
+        assertThat(lock.getWaitTime()).isEqualTo(Duration.ofSeconds(15));
+
+        lock.setLeaseTime(25L);
+        assertThat(lock.getLeaseTime()).isEqualTo(Duration.ofSeconds(25));
     }
 }
