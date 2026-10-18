@@ -42,6 +42,11 @@ class GlobalExceptionHandlerTest {
             throw new BusinessException(403, "账户已被封禁");
         }
 
+        @GetMapping("/test/business-exception-with-cause")
+        public Result<Void> triggerBusinessExceptionWithCause() {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR, "网关服务通信异常", new java.io.IOException("Socket timeout"));
+        }
+
         @PostMapping("/test/validation")
         public Result<Void> triggerValidation(@Valid @RequestBody TestParam param) {
             return Result.success();
@@ -87,6 +92,16 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("账户已被封禁"))
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    @DisplayName("带底层 cause 的 BusinessException 捕获并转译为业务 Result 且因果异常安全记录")
+    void shouldHandleBusinessExceptionWithCause() throws Exception {
+        mockMvc.perform(get("/test/business-exception-with-cause"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.msg").value("网关服务通信异常"))
                 .andExpect(jsonPath("$.success").value(false));
     }
 

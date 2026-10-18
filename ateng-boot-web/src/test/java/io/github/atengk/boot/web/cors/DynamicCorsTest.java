@@ -68,6 +68,7 @@ class DynamicCorsTest {
         assertThat(config.getAllowedOrigins()).containsExactly("https://portal.ateng.com");
         assertThat(config.getAllowCredentials()).isTrue();
         assertThat(config.getExposedHeaders()).contains("X-Trace-Id");
+        assertThat(config.getMaxAge()).isEqualTo(3600L);
     }
 
     @Test

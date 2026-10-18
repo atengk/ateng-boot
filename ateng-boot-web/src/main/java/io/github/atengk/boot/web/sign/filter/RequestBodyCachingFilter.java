@@ -28,6 +28,10 @@ public class RequestBodyCachingFilter extends OncePerRequestFilter {
         this.maxBodySize = maxBodySize > 0 ? maxBodySize : CachedBodyHttpServletRequest.DEFAULT_MAX_BODY_SIZE;
     }
 
+    public RequestBodyCachingFilter(org.springframework.util.unit.DataSize maxBodySize) {
+        this(maxBodySize != null ? (int) maxBodySize.toBytes() : CachedBodyHttpServletRequest.DEFAULT_MAX_BODY_SIZE);
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,

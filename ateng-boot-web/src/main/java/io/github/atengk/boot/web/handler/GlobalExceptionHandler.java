@@ -32,13 +32,19 @@ public class GlobalExceptionHandler {
 
     /**
      * 拦截受控业务中断异常 BusinessException
+     * 当异常携带底层驱动 cause 根因时，记录完整调用栈与 traceId 闭环；无 cause 时以 INFO 记录轻量业务提示
      *
      * @param e 业务异常
      * @return 业务错误响应结果
      */
     @ExceptionHandler(BusinessException.class)
     public Result<Void> handleBusinessException(BusinessException e) {
-        log.info("业务逻辑中断: code={}, msg={}", e.getCode(), e.getMsg());
+        if (e.getCause() != null) {
+            String traceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
+            log.error("[TraceId: {}] 业务因果异常中断: code={}, msg={}, cause: ", traceId, e.getCode(), e.getMsg(), e);
+        } else {
+            log.info("业务逻辑中断: code={}, msg={}", e.getCode(), e.getMsg());
+        }
         return Result.fail(e.getCode(), e.getMsg());
     }
 

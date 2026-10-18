@@ -4,7 +4,10 @@ import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -28,6 +31,7 @@ public class WebProperties {
     /**
      * 链路追踪过滤器配置
      */
+    @NestedConfigurationProperty
     private TraceProperties trace = new TraceProperties();
 
     /**
@@ -38,6 +42,7 @@ public class WebProperties {
     /**
      * CORS 跨域自动化配置
      */
+    @NestedConfigurationProperty
     private CorsProperties cors = new CorsProperties();
 
     /**
@@ -109,14 +114,33 @@ public class WebProperties {
         private List<String> exposedHeaders = new ArrayList<>(Arrays.asList("X-Trace-Id", "Retry-After", "X-Signature"));
 
         /**
-         * 跨域预检请求缓存有效时间（秒）
+         * 跨域预检请求缓存有效时间（强类型 Duration，默认 3600 秒）
          */
-        private Long maxAge = 3600L;
+        private Duration maxAge = Duration.ofSeconds(3600);
+
+        /**
+         * 获取跨域预检请求缓存有效时间（秒，向后兼容）
+         *
+         * @return 缓存秒数
+         */
+        public Long getMaxAgeSeconds() {
+            return maxAge != null ? maxAge.toSeconds() : 3600L;
+        }
+
+        /**
+         * 设置跨域预检请求缓存有效时间（秒，向后兼容）
+         *
+         * @param maxAgeSeconds 缓存秒数
+         */
+        public void setMaxAgeSeconds(Long maxAgeSeconds) {
+            this.maxAge = maxAgeSeconds != null ? Duration.ofSeconds(maxAgeSeconds) : Duration.ofSeconds(3600);
+        }
     }
 
     /**
      * Web 接口审计日志切面配置
      */
+    @NestedConfigurationProperty
     private LogProperties log = new LogProperties();
 
     /**
@@ -135,6 +159,7 @@ public class WebProperties {
     /**
      * API 数据加签验签与防重放配置
      */
+    @NestedConfigurationProperty
     private SignProperties sign = new SignProperties();
 
     /**
@@ -175,14 +200,50 @@ public class WebProperties {
         private String privateKey;
 
         /**
-         * 请求时效防重放时间窗口（秒，默认 60 秒）
+         * 请求时效防重放时间窗口（强类型 Duration，默认 60 秒）
          */
-        private long expireSeconds = 60L;
+        private Duration expire = Duration.ofSeconds(60);
 
         /**
-         * 请求体缓存最大字节数（防 OOM，默认 2MB）
+         * 请求体缓存最大字节数载荷上限（强类型 DataSize 防 OOM，默认 2MB）
          */
-        private int maxBodySize = 2 * 1024 * 1024;
+        private DataSize maxBodySize = DataSize.ofMegabytes(2);
+
+        /**
+         * 获取防重放窗口时间（秒，向后兼容）
+         *
+         * @return 超时秒数
+         */
+        public long getExpireSeconds() {
+            return expire != null ? expire.toSeconds() : 60L;
+        }
+
+        /**
+         * 设置防重放窗口时间（秒，向后兼容）
+         *
+         * @param expireSeconds 超时秒数
+         */
+        public void setExpireSeconds(long expireSeconds) {
+            this.expire = Duration.ofSeconds(expireSeconds);
+        }
+
+        /**
+         * 获取请求体最大缓存字节数（向后兼容）
+         *
+         * @return 字节数
+         */
+        public int getMaxBodySizeBytes() {
+            return maxBodySize != null ? (int) maxBodySize.toBytes() : 2 * 1024 * 1024;
+        }
+
+        /**
+         * 设置请求体最大缓存字节数（向后兼容）
+         *
+         * @param maxBodySizeBytes 字节数
+         */
+        public void setMaxBodySizeBytes(int maxBodySizeBytes) {
+            this.maxBodySize = DataSize.ofBytes(maxBodySizeBytes);
+        }
 
         /**
          * 应用标识请求头名称（默认 X-App-Id）

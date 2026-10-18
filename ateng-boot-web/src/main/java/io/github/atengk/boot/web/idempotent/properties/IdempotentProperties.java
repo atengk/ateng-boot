@@ -2,6 +2,7 @@ package io.github.atengk.boot.web.idempotent.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 
@@ -28,6 +29,7 @@ public class IdempotentProperties {
     /**
      * 单机内存存储配置
      */
+    @NestedConfigurationProperty
     private InMemory inMemory = new InMemory();
 
     /**
