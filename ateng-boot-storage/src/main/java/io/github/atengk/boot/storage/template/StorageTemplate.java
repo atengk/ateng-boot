@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.template;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.FileUtil;
+import io.github.atengk.boot.storage.context.StorageContextHolder;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
@@ -31,6 +32,8 @@ import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.AbstractMap;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -264,14 +267,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     public boolean copy(String sourcePath, String targetPath) {
         boolean result = getDriver().copy(sourcePath, targetPath);
         if (result) {
-            StorageObject meta = null;
-            try {
-                meta = getMetadata(targetPath);
-            } catch (Exception ignored) {
-            }
-            Long size = meta != null ? meta.getSize() : -1L;
-            String contentType = meta != null ? meta.getContentType() : null;
-            publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), StorageSecurityUtil.normalizePath(targetPath), size, contentType));
+            publishUploadedEventSafely(targetPath);
         }
         return result;
     }
@@ -280,17 +276,21 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     public boolean move(String sourcePath, String targetPath) {
         boolean result = getDriver().move(sourcePath, targetPath);
         if (result) {
-            StorageObject meta = null;
-            try {
-                meta = getMetadata(targetPath);
-            } catch (Exception ignored) {
-            }
-            Long size = meta != null ? meta.getSize() : -1L;
-            String contentType = meta != null ? meta.getContentType() : null;
-            publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), StorageSecurityUtil.normalizePath(targetPath), size, contentType));
+            publishUploadedEventSafely(targetPath);
             publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), StorageSecurityUtil.normalizePath(sourcePath)));
         }
         return result;
+    }
+
+    private void publishUploadedEventSafely(String targetPath) {
+        StorageObject meta = null;
+        try {
+            meta = getMetadata(targetPath);
+        } catch (Exception ignored) {
+        }
+        Long size = meta != null ? meta.getSize() : -1L;
+        String contentType = meta != null ? meta.getContentType() : null;
+        publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), StorageSecurityUtil.normalizePath(targetPath), size, contentType));
     }
 
     @Override
@@ -389,13 +389,13 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (paths == null || paths.isEmpty()) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 路径列表不能为空");
         }
-        Map<String, String> pathMap = new LinkedHashMap<>();
+        List<Map.Entry<String, String>> entries = new ArrayList<>();
         for (String path : paths) {
             if (path != null && !path.isBlank()) {
-                pathMap.put(path, path);
+                entries.add(new AbstractMap.SimpleImmutableEntry<>(path, path));
             }
         }
-        downloadAsZip(pathMap, out);
+        downloadAsZipInternal(entries, out);
     }
 
     @Override
@@ -403,12 +403,21 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (pathMap == null || pathMap.isEmpty()) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 路径映射表不能为空");
         }
+        List<Map.Entry<String, String>> entries = new ArrayList<>(pathMap.entrySet());
+        downloadAsZipInternal(entries, out);
+    }
+
+    private void downloadAsZipInternal(List<Map.Entry<String, String>> entries, OutputStream out) {
+        if (entries == null || entries.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 条目列表不能为空");
+        }
         if (out == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 输出流不能为空");
         }
 
         // 1. 严格防御（Q3-A）：前置检查所有文件必须存在，缺失直接抛出 OBJECT_NOT_FOUND 异常
-        for (String path : pathMap.keySet()) {
+        for (Map.Entry<String, String> entry : entries) {
+            String path = entry.getKey();
             if (!exists(path)) {
                 throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "打包 ZIP 失败，指定文件不存在: " + path);
             }
@@ -417,7 +426,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         // 2. 纯流式压缩写出
         try (ZipOutputStream zos = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
             Set<String> usedEntryNames = new HashSet<>();
-            for (Map.Entry<String, String> entry : pathMap.entrySet()) {
+            for (Map.Entry<String, String> entry : entries) {
                 String path = entry.getKey();
                 String rawEntryName = (entry.getValue() != null && !entry.getValue().isBlank())
                         ? entry.getValue()
@@ -445,17 +454,28 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (paths == null || paths.isEmpty()) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 路径列表不能为空");
         }
-        Map<String, String> pathMap = new LinkedHashMap<>();
-        for (String path : paths) {
-            if (path != null && !path.isBlank()) {
-                pathMap.put(path, path);
-            }
+        prepareZipResponse(response, zipFilename);
+        try {
+            downloadAsZip(paths, response.getOutputStream());
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "获取 HTTP 响应输出流失败: " + e.getMessage(), e);
         }
-        downloadAsZip(pathMap, response, zipFilename);
     }
 
     @Override
     public void downloadAsZip(Map<String, String> pathMap, HttpServletResponse response, String zipFilename) {
+        if (pathMap == null || pathMap.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 路径映射表不能为空");
+        }
+        prepareZipResponse(response, zipFilename);
+        try {
+            downloadAsZip(pathMap, response.getOutputStream());
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "获取 HTTP 响应输出流失败: " + e.getMessage(), e);
+        }
+    }
+
+    private void prepareZipResponse(HttpServletResponse response, String zipFilename) {
         if (response == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "HttpServletResponse 不能为空");
         }
@@ -466,11 +486,6 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         response.setContentType("application/zip");
         String encodedFilename = URLEncoder.encode(finalFilename, StandardCharsets.UTF_8).replace("+", "%20");
         response.setHeader("Content-Disposition", "attachment; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename);
-        try {
-            downloadAsZip(pathMap, response.getOutputStream());
-        } catch (IOException e) {
-            throw new StorageException(StorageResultCode.OPERATION_FAILED, "获取 HTTP 响应输出流失败: " + e.getMessage(), e);
-        }
     }
 
     private String resolveUniqueZipEntryName(String rawEntryName, Set<String> usedEntryNames) {
@@ -500,7 +515,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (this.bound && this.boundSourceKey != null && !this.boundSourceKey.isBlank()) {
             return this.boundSourceKey;
         }
-        String contextSource = io.github.atengk.boot.storage.context.StorageContextHolder.get();
+        String contextSource = StorageContextHolder.get();
         if (contextSource != null && !contextSource.isBlank()) {
             return contextSource;
         }
@@ -532,7 +547,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         if (this.bound) {
             return this.defaultDriver;
         }
-        String contextSource = io.github.atengk.boot.storage.context.StorageContextHolder.get();
+        String contextSource = StorageContextHolder.get();
         if (contextSource != null && !contextSource.isBlank()) {
             if (this.factory != null) {
                 return this.factory.getDriver(contextSource);

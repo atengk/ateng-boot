@@ -33,6 +33,21 @@ public class StorageGuard {
             "mp4", "m4v", "mp3", "wav", "avi", "doc", "xls", "ppt"
     );
 
+    // 常用标准与高危魔数特征签名
+    private static final byte[] MAGIC_PE = {(byte) 0x4D, (byte) 0x5A};
+    private static final byte[] MAGIC_ELF = {(byte) 0x7F, (byte) 0x45, (byte) 0x4C, (byte) 0x46};
+    private static final byte[] MAGIC_SHEBANG = {(byte) 0x23, (byte) 0x21};
+    private static final byte[] MAGIC_JAVA_CLASS = {(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE};
+    private static final byte[] MAGIC_PNG = {(byte) 0x89, (byte) 0x50, (byte) 0x4E, (byte) 0x47, (byte) 0x0D, (byte) 0x0A, (byte) 0x1A, (byte) 0x0A};
+    private static final byte[] MAGIC_JPEG = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF};
+    private static final byte[] MAGIC_GIF = {(byte) 0x47, (byte) 0x49, (byte) 0x46, (byte) 0x38};
+    private static final byte[] MAGIC_BMP = {(byte) 0x42, (byte) 0x4D};
+    private static final byte[] MAGIC_PDF = {(byte) 0x25, (byte) 0x50, (byte) 0x44, (byte) 0x46};
+    private static final byte[] MAGIC_OLE2 = {(byte) 0xD0, (byte) 0xCF, (byte) 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, (byte) 0x1A, (byte) 0xE1};
+    private static final byte[] MAGIC_GZIP = {(byte) 0x1F, (byte) 0x8B};
+    private static final byte[] MAGIC_SEVEN_Z = {(byte) 0x37, (byte) 0x7A, (byte) 0xBC, (byte) 0xAF, (byte) 0x27, (byte) 0x1C};
+    private static final byte[] MAGIC_MP3_ID3 = {(byte) 0x49, (byte) 0x44, (byte) 0x33};
+
     private final StorageGuardProperties properties;
 
     public StorageGuard() {
@@ -71,39 +86,30 @@ public class StorageGuard {
         int len = header.length;
 
         // 1. 高危可执行与脚本特征（优先嗅探拦截）
-        // PE: MZ (4D 5A)
-        if (len >= 2 && header[0] == 0x4D && header[1] == 0x5A) {
+        if (startsWith(header, MAGIC_PE)) {
             return StorageFileType.PE_EXE;
         }
-        // ELF: 7F 45 4C 46
-        if (len >= 4 && header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46) {
+        if (startsWith(header, MAGIC_ELF)) {
             return StorageFileType.ELF;
         }
-        // Shebang: #! (23 21)
-        if (len >= 2 && header[0] == 0x23 && header[1] == 0x21) {
+        if (startsWith(header, MAGIC_SHEBANG)) {
             return StorageFileType.SHELL;
         }
-        // Java Class: CA FE BA BE
-        if (len >= 4 && (header[0] & 0xFF) == 0xCA && (header[1] & 0xFF) == 0xFE && (header[2] & 0xFF) == 0xBA && (header[3] & 0xFF) == 0xBE) {
+        if (startsWith(header, MAGIC_JAVA_CLASS)) {
             return StorageFileType.JAVA_CLASS;
         }
 
         // 2. 图片特征
-        // PNG: 89 50 4E 47 0D 0A 1A 0A
-        if (len >= 8 && (header[0] & 0xFF) == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47
-                && header[4] == 0x0D && header[5] == 0x0A && header[6] == 0x1A && header[7] == 0x0A) {
+        if (startsWith(header, MAGIC_PNG)) {
             return StorageFileType.PNG;
         }
-        // JPEG: FF D8 FF
-        if (len >= 3 && (header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
+        if (startsWith(header, MAGIC_JPEG)) {
             return StorageFileType.JPEG;
         }
-        // GIF: GIF8 (47 49 46 38)
-        if (len >= 4 && header[0] == 0x47 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x38) {
+        if (startsWith(header, MAGIC_GIF)) {
             return StorageFileType.GIF;
         }
-        // BMP: BM (42 4D)
-        if (len >= 2 && header[0] == 0x42 && header[1] == 0x4D) {
+        if (startsWith(header, MAGIC_BMP)) {
             return StorageFileType.BMP;
         }
 
@@ -123,14 +129,10 @@ public class StorageGuard {
         }
 
         // 4. 文档与格式
-        // PDF: %PDF (25 50 44 46)
-        if (len >= 4 && header[0] == 0x25 && header[1] == 0x50 && header[2] == 0x44 && header[3] == 0x46) {
+        if (startsWith(header, MAGIC_PDF)) {
             return StorageFileType.PDF;
         }
-        // OLE2 Compound Document: D0 CF 11 E0 A1 B1 1A E1
-        if (len >= 8 && (header[0] & 0xFF) == 0xD0 && (header[1] & 0xFF) == 0xCF && (header[2] & 0xFF) == 0x11
-                && (header[3] & 0xFF) == 0xE0 && (header[4] & 0xFF) == 0xA1 && (header[5] & 0xFF) == 0xB1
-                && (header[6] & 0xFF) == 0x1A && (header[7] & 0xFF) == 0xE1) {
+        if (startsWith(header, MAGIC_OLE2)) {
             return StorageFileType.OLE2;
         }
 
@@ -141,13 +143,10 @@ public class StorageGuard {
                 && (header[3] == 0x04 || header[3] == 0x06 || header[3] == 0x08)) {
             return StorageFileType.ZIP;
         }
-        // GZIP: 1F 8B
-        if (len >= 2 && (header[0] & 0xFF) == 0x1F && (header[1] & 0xFF) == 0x8B) {
+        if (startsWith(header, MAGIC_GZIP)) {
             return StorageFileType.GZIP;
         }
-        // 7Z: 37 7A BC AF 27 1C
-        if (len >= 6 && header[0] == 0x37 && header[1] == 0x7A && (header[2] & 0xFF) == 0xBC
-                && (header[3] & 0xFF) == 0xAF && header[4] == 0x27 && header[5] == 0x1C) {
+        if (startsWith(header, MAGIC_SEVEN_Z)) {
             return StorageFileType.SEVEN_Z;
         }
         // TAR: bytes 257..261 ustar
@@ -160,8 +159,7 @@ public class StorageGuard {
         if (len >= 8 && header[4] == 0x66 && header[5] == 0x74 && header[6] == 0x79 && header[7] == 0x70) {
             return StorageFileType.MP4;
         }
-        // MP3: ID3 (49 44 33) or MPEG sync frames (FF FB / FF F3 / FF F2)
-        if (len >= 3 && header[0] == 0x49 && header[1] == 0x44 && header[2] == 0x33) {
+        if (startsWith(header, MAGIC_MP3_ID3)) {
             return StorageFileType.MP3;
         }
         if (len >= 2 && (header[0] & 0xFF) == 0xFF && ((header[1] & 0xFE) == 0xFA || (header[1] & 0xFE) == 0xF2)) {
@@ -178,6 +176,18 @@ public class StorageGuard {
         }
 
         return null;
+    }
+
+    private static boolean startsWith(byte[] data, byte[] magic) {
+        if (data == null || magic == null || data.length < magic.length) {
+            return false;
+        }
+        for (int i = 0; i < magic.length; i++) {
+            if (data[i] != magic[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

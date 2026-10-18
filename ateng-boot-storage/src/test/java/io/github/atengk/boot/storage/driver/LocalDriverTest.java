@@ -233,6 +233,7 @@ class LocalDriverTest {
         driver.upload("repo/file2.txt", new ByteArrayInputStream("f2".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
         driver.upload("repo/sub/file3.txt", new ByteArrayInputStream("f3".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
         driver.upload("repo/.chunks/part1", new ByteArrayInputStream("p1".getBytes(StandardCharsets.UTF_8)), "text/plain", 2);
+        driver.upload("repo/desktop.ini", new ByteArrayInputStream("ini".getBytes(StandardCharsets.UTF_8)), "text/plain", 3);
 
         List<StorageObject> items = driver.list("repo", false);
         assertNotNull(items);
@@ -260,6 +261,7 @@ class LocalDriverTest {
         driver.upload("tree/sub1/b.txt", new ByteArrayInputStream("b".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
         driver.upload("tree/sub1/sub2/c.txt", new ByteArrayInputStream("c".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
         driver.upload("tree/sub1/.hidden/d.txt", new ByteArrayInputStream("d".getBytes(StandardCharsets.UTF_8)), "text/plain", 1);
+        driver.upload("tree/sub1/desktop.ini", new ByteArrayInputStream("ini".getBytes(StandardCharsets.UTF_8)), "text/plain", 3);
 
         List<StorageObject> items = driver.list("tree", true);
         assertNotNull(items);
@@ -270,6 +272,7 @@ class LocalDriverTest {
         assertTrue(paths.contains("tree/sub1/b.txt"));
         assertTrue(paths.contains("tree/sub1/sub2/c.txt"));
         assertFalse(paths.contains("tree/sub1/.hidden/d.txt"));
+        assertFalse(paths.contains("tree/sub1/desktop.ini"));
     }
 
     @Test

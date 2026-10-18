@@ -9,12 +9,18 @@ import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,6 +46,7 @@ import java.util.Map;
  * @since 2026-10-17
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/api/storage")
 @RequiredArgsConstructor
@@ -57,7 +64,7 @@ public class FileController {
      */
     @PostMapping("/upload")
     public Result<StorageObject> upload(
-            @RequestParam("file") MultipartFile file,
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
             @RequestParam(value = "path", required = false) String path) {
         String targetPath = (path != null && !path.isBlank()) ? path : file.getOriginalFilename();
         StorageObject object = storageTemplate.upload(targetPath, file);
@@ -72,7 +79,7 @@ public class FileController {
      * @throws IOException IO 异常
      */
     @GetMapping("/download")
-    public ResponseEntity<Resource> download(@RequestParam("path") String path) throws IOException {
+    public ResponseEntity<Resource> download(@RequestParam("path") @NotBlank(message = "下载路径不能为空") String path) throws IOException {
         StorageResource resource = storageTemplate.getResource(path);
         String filename = resource.getFilename();
         String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
@@ -93,8 +100,8 @@ public class FileController {
      */
     @GetMapping("/presigned-url")
     public Result<PresignedUrl> getPresignedUrl(
-            @RequestParam("path") String path,
-            @RequestParam(value = "durationSeconds", defaultValue = "300") long durationSeconds) {
+            @RequestParam("path") @NotBlank(message = "文件路径不能为空") String path,
+            @RequestParam(value = "durationSeconds", defaultValue = "300") @Min(value = 1, message = "有效时长必须大于 0") long durationSeconds) {
         PresignedUrl presignedUrl = storageTemplate.getPresignedUrl(path, Duration.ofSeconds(durationSeconds));
         return Result.success(presignedUrl);
     }
@@ -109,7 +116,7 @@ public class FileController {
      */
     @PostMapping("/upload-backup")
     public Result<StorageObject> uploadToBackup(
-            @RequestParam("file") MultipartFile file,
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
             @RequestParam(value = "path", required = false) String path) throws IOException {
         String targetPath = (path != null && !path.isBlank()) ? path : file.getOriginalFilename();
         StorageObject object = fileStorageDemoService.uploadToBackup(
@@ -130,8 +137,8 @@ public class FileController {
      */
     @PostMapping("/copy")
     public Result<Boolean> copy(
-            @RequestParam("sourcePath") String sourcePath,
-            @RequestParam("targetPath") String targetPath) {
+            @RequestParam("sourcePath") @NotBlank(message = "源路径不能为空") String sourcePath,
+            @RequestParam("targetPath") @NotBlank(message = "目标路径不能为空") String targetPath) {
         boolean success = storageTemplate.copy(sourcePath, targetPath);
         return Result.success(success);
     }
@@ -145,8 +152,8 @@ public class FileController {
      */
     @PostMapping("/move")
     public Result<Boolean> move(
-            @RequestParam("sourcePath") String sourcePath,
-            @RequestParam("targetPath") String targetPath) {
+            @RequestParam("sourcePath") @NotBlank(message = "源路径不能为空") String sourcePath,
+            @RequestParam("targetPath") @NotBlank(message = "目标路径不能为空") String targetPath) {
         boolean success = storageTemplate.move(sourcePath, targetPath);
         return Result.success(success);
     }
@@ -158,7 +165,7 @@ public class FileController {
      * @return 操作结果
      */
     @PostMapping("/delete")
-    public Result<Boolean> delete(@RequestParam("path") String path) {
+    public Result<Boolean> delete(@RequestParam("path") @NotBlank(message = "删除路径不能为空") String path) {
         boolean success = storageTemplate.delete(path);
         return Result.success(success);
     }
@@ -189,7 +196,7 @@ public class FileController {
     @GetMapping("/list-page")
     public Result<PageResult<StorageObject>> listPage(
             @RequestParam(value = "prefix", required = false) String prefix,
-            @ModelAttribute PageQuery pageQuery,
+            @Valid @ModelAttribute PageQuery pageQuery,
             @RequestParam(value = "recursive", defaultValue = "false") boolean recursive) {
         PageResult<StorageObject> pageResult = storageTemplate.listPage(prefix, pageQuery, recursive);
         return Result.success(pageResult);
@@ -204,8 +211,8 @@ public class FileController {
      */
     @PostMapping("/write-string")
     public Result<StorageObject> writeString(
-            @RequestParam("path") String path,
-            @RequestParam("content") String content) {
+            @RequestParam("path") @NotBlank(message = "存储路径不能为空") String path,
+            @RequestParam("content") @NotNull(message = "文本内容不能为空") String content) {
         StorageObject object = storageTemplate.uploadString(path, content);
         return Result.success(object);
     }
@@ -217,7 +224,7 @@ public class FileController {
      * @return 纯文本内容
      */
     @GetMapping("/read-string")
-    public Result<String> readString(@RequestParam("path") String path) {
+    public Result<String> readString(@RequestParam("path") @NotBlank(message = "读取路径不能为空") String path) {
         String content = storageTemplate.downloadString(path);
         return Result.success(content);
     }
@@ -231,8 +238,8 @@ public class FileController {
      */
     @PostMapping("/write-json")
     public Result<StorageObject> writeJson(
-            @RequestParam("path") String path,
-            @RequestBody Object data) {
+            @RequestParam("path") @NotBlank(message = "存储路径不能为空") String path,
+            @NotNull(message = "JSON 载荷不能为空") @RequestBody Object data) {
         StorageObject object = storageTemplate.uploadJson(path, data);
         return Result.success(object);
     }
@@ -244,7 +251,7 @@ public class FileController {
      * @return Map 键值对载荷
      */
     @GetMapping("/read-json")
-    public Result<Map<String, Object>> readJson(@RequestParam("path") String path) {
+    public Result<Map<String, Object>> readJson(@RequestParam("path") @NotBlank(message = "读取路径不能为空") String path) {
         @SuppressWarnings("unchecked")
         Map<String, Object> data = storageTemplate.downloadJson(path, Map.class);
         return Result.success(data);
@@ -259,7 +266,7 @@ public class FileController {
      */
     @GetMapping("/download-zip")
     public void downloadZip(
-            @RequestParam("paths") List<String> paths,
+            @RequestParam("paths") @NotEmpty(message = "打包路径列表不能为空") List<@NotBlank(message = "打包路径不能为空") String> paths,
             @RequestParam(value = "zipFilename", defaultValue = "download.zip") String zipFilename,
             HttpServletResponse response) {
         storageTemplate.downloadAsZip(paths, response, zipFilename);
@@ -272,7 +279,7 @@ public class FileController {
      * @return 全局唯一分片上传会话标识 uploadId
      */
     @PostMapping("/chunk/initiate")
-    public Result<String> initiateChunk(@RequestParam("path") String path) {
+    public Result<String> initiateChunk(@RequestParam("path") @NotBlank(message = "目标存储路径不能为空") String path) {
         String uploadId = storageTemplate.initiateChunkedUpload(path);
         return Result.success(uploadId);
     }
@@ -288,9 +295,9 @@ public class FileController {
      */
     @PostMapping("/chunk/upload")
     public Result<Void> uploadChunk(
-            @RequestParam("uploadId") String uploadId,
-            @RequestParam("chunkIndex") int chunkIndex,
-            @RequestParam("file") MultipartFile file) throws IOException {
+            @RequestParam("uploadId") @NotBlank(message = "会话标识 uploadId 不能为空") String uploadId,
+            @RequestParam("chunkIndex") @Min(value = 1, message = "分片序号必须从 1 开始") int chunkIndex,
+            @RequestParam("file") @NotNull(message = "分片文件不能为空") MultipartFile file) throws IOException {
         storageTemplate.uploadChunk(uploadId, chunkIndex, file.getInputStream(), file.getSize());
         return Result.success();
     }
@@ -305,9 +312,9 @@ public class FileController {
      */
     @PostMapping("/chunk/complete")
     public Result<StorageObject> completeChunk(
-            @RequestParam("uploadId") String uploadId,
-            @RequestParam("path") String path,
-            @RequestParam("totalChunks") int totalChunks) {
+            @RequestParam("uploadId") @NotBlank(message = "会话标识 uploadId 不能为空") String uploadId,
+            @RequestParam("path") @NotBlank(message = "目标存储路径不能为空") String path,
+            @RequestParam("totalChunks") @Min(value = 1, message = "总片数必须 >= 1") int totalChunks) {
         StorageObject object = storageTemplate.completeChunkedUpload(uploadId, path, totalChunks);
         return Result.success(object);
     }
@@ -319,7 +326,7 @@ public class FileController {
      * @return 统一成功契约
      */
     @PostMapping("/chunk/abort")
-    public Result<Void> abortChunk(@RequestParam("uploadId") String uploadId) {
+    public Result<Void> abortChunk(@RequestParam("uploadId") @NotBlank(message = "会话标识 uploadId 不能为空") String uploadId) {
         storageTemplate.abortChunkedUpload(uploadId);
         return Result.success();
     }

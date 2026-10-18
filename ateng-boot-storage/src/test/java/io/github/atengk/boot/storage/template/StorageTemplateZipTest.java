@@ -112,6 +112,23 @@ class StorageTemplateZipTest {
     }
 
     @Test
+    @DisplayName("传入包含重复源路径的列表时自动防重命名生成两个压缩条目")
+    void testDownloadAsZip_DuplicatePathsInList() throws Exception {
+        byte[] doc = "Same Template Content".getBytes(StandardCharsets.UTF_8);
+        template.upload("template.docx", new ByteArrayInputStream(doc));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        template.downloadAsZip(List.of("template.docx", "template.docx"), out);
+
+        Map<String, byte[]> unzipped = readZipEntries(out.toByteArray());
+        assertEquals(2, unzipped.size());
+        assertTrue(unzipped.containsKey("template.docx"));
+        assertTrue(unzipped.containsKey("template (1).docx"));
+        assertArrayEquals(doc, unzipped.get("template.docx"));
+        assertArrayEquals(doc, unzipped.get("template (1).docx"));
+    }
+
+    @Test
     @DisplayName("存在缺失文件时严格阻断抛出 OBJECT_NOT_FOUND 异常")
     void testDownloadAsZip_MissingFileStrictDefense() {
         template.uploadString("exist.txt", "I am here");

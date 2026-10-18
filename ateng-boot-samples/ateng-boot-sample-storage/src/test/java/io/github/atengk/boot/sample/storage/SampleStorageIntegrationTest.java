@@ -539,4 +539,41 @@ class SampleStorageIntegrationTest {
                 .andExpect(jsonPath("$.code").value(40010))
                 .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("魔数")));
     }
+
+    @Test
+    @DisplayName("端到端测试 12：多文件打包 ZIP 包含重复源路径时自动重命名生成两份条目")
+    void testDownloadZipWithDuplicatePaths() throws Exception {
+        storageTemplate.uploadString("dups/doc.txt", "Duplicate Template Content");
+
+        MvcResult result = mockMvc.perform(get("/api/storage/download-zip")
+                        .param("paths", "dups/doc.txt", "dups/doc.txt")
+                        .param("zipFilename", "dup_bundle.zip"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] zipBytes = result.getResponse().getContentAsByteArray();
+        Map<String, byte[]> unzipped = new HashMap<>();
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes), StandardCharsets.UTF_8)) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (!entry.isDirectory()) {
+                    unzipped.put(entry.getName(), zis.readAllBytes());
+                }
+                zis.closeEntry();
+            }
+        }
+        assertThat(unzipped).hasSize(2);
+        assertThat(unzipped).containsKey("dups/doc.txt");
+        assertThat(unzipped).containsKey("dups/doc (1).txt");
+    }
+
+    @Test
+    @DisplayName("端到端测试 13：Controller 传输边界 JSR-303 参数校验拦截")
+    void testValidationConstraintDefense() throws Exception {
+        // copy 端点缺少 sourcePath (空白)
+        mockMvc.perform(post("/api/storage/copy")
+                        .param("sourcePath", "   ")
+                        .param("targetPath", "target.txt"))
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
 }

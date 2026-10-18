@@ -304,7 +304,7 @@ public class LocalDriver implements StorageDriver {
             if (!recursive) {
                 try (Stream<Path> stream = Files.list(targetDir)) {
                     return stream
-                            .filter(p -> !p.getFileName().toString().startsWith("."))
+                            .filter(p -> !isHiddenOrSystemFile(p.getFileName().toString()))
                             .sorted()
                             .map(p -> {
                                 String relPath = basePath.relativize(p).toString().replace('\\', '/');
@@ -335,7 +335,7 @@ public class LocalDriver implements StorageDriver {
                             .filter(p -> {
                                 Path relToTarget = targetDir.relativize(p);
                                 for (Path part : relToTarget) {
-                                    if (part.toString().startsWith(".")) {
+                                    if (isHiddenOrSystemFile(part.toString())) {
                                         return false;
                                     }
                                 }
@@ -560,5 +560,12 @@ public class LocalDriver implements StorageDriver {
                     });
         } catch (IOException ignored) {
         }
+    }
+
+    private boolean isHiddenOrSystemFile(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        return name.startsWith(".") || "desktop.ini".equalsIgnoreCase(name) || "thumbs.db".equalsIgnoreCase(name);
     }
 }

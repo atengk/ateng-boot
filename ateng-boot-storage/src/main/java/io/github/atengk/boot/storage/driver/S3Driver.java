@@ -30,10 +30,13 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.ListPartsRequest;
 import software.amazon.awssdk.services.s3.model.ListPartsResponse;
+import software.amazon.awssdk.services.s3.model.MultipartUpload;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.Part;
@@ -430,7 +433,7 @@ public class S3Driver implements StorageDriver {
                             dirKey = dirKey.substring(0, dirKey.length() - 1);
                         }
                         String dirName = dirKey.contains("/") ? dirKey.substring(dirKey.lastIndexOf('/') + 1) : dirKey;
-                        if (!dirName.startsWith(".")) {
+                        if (!isHiddenOrSystemKey(dirKey, s3Prefix)) {
                             results.add(StorageObject.builder()
                                     .path(dirKey)
                                     .filename(dirName)
@@ -450,11 +453,10 @@ public class S3Driver implements StorageDriver {
                         if (key.endsWith("/") || key.equals(s3Prefix)) {
                             continue;
                         }
-                        String filename = FileUtil.cleanFilename(key);
-                        // 过滤隐藏文件（文件名以 . 开头）
-                        if (filename.startsWith(".")) {
+                        if (isHiddenOrSystemKey(key, s3Prefix)) {
                             continue;
                         }
+                        String filename = FileUtil.cleanFilename(key);
                         results.add(StorageObject.builder()
                                 .path(key)
                                 .filename(filename)
@@ -791,16 +793,51 @@ public class S3Driver implements StorageDriver {
             return;
         }
         S3UploadSession session = this.activeSessions.remove(uploadId);
-        if (session != null) {
+        String key = session != null ? session.getKey() : null;
+        if (key == null) {
+            try {
+                ListMultipartUploadsResponse uploadsResp = this.s3Client.listMultipartUploads(
+                        ListMultipartUploadsRequest.builder().bucket(this.bucket).build());
+                if (uploadsResp.hasUploads()) {
+                    for (MultipartUpload u : uploadsResp.uploads()) {
+                        if (uploadId.equals(u.uploadId())) {
+                            key = u.key();
+                            break;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (key != null) {
             try {
                 this.s3Client.abortMultipartUpload(AbortMultipartUploadRequest.builder()
                         .bucket(this.bucket)
-                        .key(session.getKey())
+                        .key(key)
                         .uploadId(uploadId)
                         .build());
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private boolean isHiddenOrSystemKey(String key, String prefix) {
+        if (key == null || key.isBlank()) {
+            return false;
+        }
+        String relKey = (prefix != null && !prefix.isBlank() && key.startsWith(prefix))
+                ? key.substring(prefix.length())
+                : key;
+        while (relKey.startsWith("/")) {
+            relKey = relKey.substring(1);
+        }
+        String[] segments = relKey.split("/");
+        for (String seg : segments) {
+            if (seg.startsWith(".") || "desktop.ini".equalsIgnoreCase(seg) || "thumbs.db".equalsIgnoreCase(seg)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static class S3UploadSession {

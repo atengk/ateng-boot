@@ -32,8 +32,11 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.MultipartUpload;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
@@ -382,13 +385,15 @@ class S3DriverTest {
     }
 
     @Test
-    @DisplayName("S3 递归列举对象（全量文件平铺返回）")
+    @DisplayName("S3 递归列举对象（全量文件平铺返回并过滤隐藏目录与系统文件）")
     void testListObjectsRecursive() {
         S3Object obj1 = S3Object.builder().key("data/2026/1.txt").size(10L).eTag("\"e1\"").lastModified(Instant.now()).build();
         S3Object obj2 = S3Object.builder().key("data/2026/sub/2.txt").size(20L).eTag("\"e2\"").lastModified(Instant.now()).build();
+        S3Object obj3 = S3Object.builder().key("data/2026/.chunks/part1").size(30L).eTag("\"e3\"").lastModified(Instant.now()).build();
+        S3Object obj4 = S3Object.builder().key("data/2026/desktop.ini").size(40L).eTag("\"e4\"").lastModified(Instant.now()).build();
 
         ListObjectsV2Response response = ListObjectsV2Response.builder()
-                .contents(List.of(obj1, obj2))
+                .contents(List.of(obj1, obj2, obj3, obj4))
                 .isTruncated(false)
                 .build();
 
@@ -401,6 +406,8 @@ class S3DriverTest {
         List<String> paths = items.stream().map(StorageObject::getPath).toList();
         assertTrue(paths.contains("data/2026/1.txt"));
         assertTrue(paths.contains("data/2026/sub/2.txt"));
+        assertFalse(paths.contains("data/2026/.chunks/part1"));
+        assertFalse(paths.contains("data/2026/desktop.ini"));
     }
 
     @Test
@@ -480,5 +487,31 @@ class S3DriverTest {
         s3Driver.abortChunkedUpload(uploadId);
 
         verify(s3Client).abortMultipartUpload(any(AbortMultipartUploadRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传在缺失本地会话时通过 ListMultipartUploads 自动 fallback 清理")
+    void testS3AbortChunkedUploadWithoutLocalSession_Fallback() {
+        String uploadId = "remote-upload-fallback-123";
+        String remoteKey = "backups/database.dump";
+
+        MultipartUpload upload = MultipartUpload.builder()
+                .uploadId(uploadId)
+                .key(remoteKey)
+                .build();
+        ListMultipartUploadsResponse resp = ListMultipartUploadsResponse.builder()
+                .uploads(List.of(upload))
+                .build();
+
+        when(s3Client.listMultipartUploads(any(ListMultipartUploadsRequest.class))).thenReturn(resp);
+
+        // 直接中止无本地会话的 uploadId
+        s3Driver.abortChunkedUpload(uploadId);
+
+        ArgumentCaptor<AbortMultipartUploadRequest> captor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        verify(s3Client).abortMultipartUpload(captor.capture());
+        assertEquals(TEST_BUCKET, captor.getValue().bucket());
+        assertEquals(remoteKey, captor.getValue().key());
+        assertEquals(uploadId, captor.getValue().uploadId());
     }
 }
