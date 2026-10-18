@@ -117,7 +117,7 @@ _Avoid_: StreamUtil, CustomCollectors, SafeCollector
 _Avoid_: ObjectCopier, BeanMapper, ModelMapper
 
 **RetryUtil**:
-基于纯函数式接口与指数退避算法的轻量级重试与容错执行引擎，为网络通信与并发冲突提供无侵入高可用守护。
+基于纯函数式接口、指数退避与 Equal Jitter 平滑随机抖动算法的轻量级重试与容错执行引擎，支持 onRetry 度量监听与 Fallback 降级兜底，为网络通信与并发冲突提供无侵入高可用守护。
 _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 
 **FileUtil**:

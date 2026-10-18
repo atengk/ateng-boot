@@ -35,7 +35,7 @@
 | **安全序列化** | 零 `@class` 污染高性能 Jackson 门面 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)` | `JsonUtilTest.java` |
 | **敏感数据脱敏** | 12 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.desensitize(str, type)`, `mobilePhone(str)`, `idCard(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java` |
 | **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java` |
-| **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `RetryUtil.execute(supplier, maxAttempts, backoff)`，支持异常过滤与指数递增 | `RetryUtilTest.java` |
+| **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java` |
 | **加解密与摘要** | 原生安全加解密与摘要算法门面 | `CryptoUtil`, `DigestUtil` | - | `CryptoUtil.aesEncrypt/Decrypt`, `sm4Encrypt/Decrypt`, `DigestUtil.md5`, `sha256`, `sm3` | `CryptoUtilTest.java`, `DigestUtilTest.java` |
 | **安全文件处理** | 路径穿越防御与扩展名容量格式化 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `getExtName(name)`, `getBaseName(name)`, `formatSize(bytes)` | `FileUtilTest.java` |
 | **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java` |
@@ -544,7 +544,7 @@ BeanUtil.copyIgnoreNull(patchDTO, existEntity);
 ```
 
 ### 5. 纯函数式指数退避重试执行器 (`RetryUtil`)
-100% 原生 JDK 实现，无需依赖 Spring Retry 或 Resilience4j 等重型 AOP 框架：
+100% 原生 JDK 实现，支持动态异常谓词断言、指数退避因子、Equal Jitter 随机抖动打散、onRetry 回调监听与 Fallback 降级兜底，无需依赖 Spring Retry 或 Resilience4j 等重型 AOP 框架：
 ```java
 import io.github.atengk.boot.core.util.RetryUtil;
 import java.time.Duration;
@@ -562,6 +562,29 @@ RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
         .build();
 
 RetryUtil.execute(() -> thirdPartyApiClient.sendRequest(), config);
+
+// 3. 启用 Equal Jitter 平滑随机抖动打散并发洪峰，并挂载 onRetry 度量监听器
+RetryUtil.RetryConfig jitterConfig = RetryUtil.RetryConfig.builder()
+        .maxAttempts(3)
+        .delay(Duration.ofMillis(100))
+        .multiplier(2.0)
+        .jitter(true) // 计算公式：delay/2 + random(0, delay/2)
+        .onRetry((attempt, ex) -> metricsCollector.recordRetry("remoteRpc", attempt, ex))
+        .build();
+
+// 4. 重试耗尽时触发 Fallback 降级回调返回兜底值（未配置 Fallback 则默认抛出根异常）
+String fallbackResult = RetryUtil.execute(
+        () -> thirdPartyApiClient.queryRate(),
+        jitterConfig,
+        ex -> "DEFAULT_RATE_1.0"
+);
+
+// 5. 无返回值任务的重试与降级回调
+RetryUtil.executeAction(
+        () -> notificationClient.pushMessage(msg),
+        jitterConfig,
+        ex -> deadLetterQueue.send(msg)
+);
 ```
 
 ### 6. 路径穿越安全清洗与容量格式化 (`FileUtil`)
