@@ -40,9 +40,7 @@
 | **0030** | 企业级轻量多源对象存储与安全预签名一体化架构决策 | `Accepted` | Local + S3 统一驱动，排除 Netty 零膨胀，智能双模配置，内置 HMAC 预签名平替，三位一体动态切源，StorageResource 断点续传与纯内存自验门禁 | `ateng-boot-storage` / 全工程 | [查看](./0030-storage-module-architecture.md) |
 | **0031** | 外部动态 SQL 引擎与运行时热更新架构决策 | `Accepted` | SPI 契约解耦外部载体，智能容错包裹 <script>，无锁受控热替换绕过 StrictMap 冲突与回滚防灾，双模驱动深度融合 ADR-0010 分页契约与拦截器透明继承 | `ateng-boot-mybatis-plus` | [查看](./0031-external-dynamic-sql-engine-and-hot-reload-architecture.md) |
 | **0032** | 运行时安全与流量治理架构决策 | `Accepted` | 通用请求体可重读管道、结构化操作审计切面与 SPI、K8s 云原生就绪探针排空治理、慢请求主动告警与 HTTP Payload 双向采样截断防 OOM | `ateng-boot-web` / `core` | [查看](./0032-web-runtime-audit-payload-and-traffic-governance.md) |
-
-
-
+| **0033** | 持久层生产级加固与流式游标防 OOM 架构决策 | `Accepted` | 唯一索引占位删除实体 BaseDeleteIdEntity，原生批量插入自愈补偿 BatchUtil，慢 SQL 性能审计与防雪崩 SlowSqlInterceptor，受管游标流式查询门面 StreamingQueryTemplate 与多数据源协同诊断探针 DynamicDatasourceGuard | `ateng-boot-mybatis-plus` | [查看](./0033-mybatis-plus-production-hardening-and-streaming-architecture.md) |
 
 ---
 
