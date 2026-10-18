@@ -78,8 +78,12 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnMissingBean(MetaObjectHandler.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.audit", name = "enabled", havingValue = "true", matchIfMissing = true)
     public MetaObjectHandler metaObjectHandler(ObjectProvider<CurrentUserProvider> currentUserProvider) {
+        CurrentUserProvider provider = currentUserProvider.getIfAvailable();
+        if (provider != null) {
+            io.github.atengk.boot.mybatisplus.util.BatchUtil.setCurrentUserProvider(provider);
+        }
         return new DefaultMetaObjectHandler(
-                currentUserProvider.getIfAvailable(),
+                provider,
                 properties.getAudit().getDefaultOperator()
         );
     }
