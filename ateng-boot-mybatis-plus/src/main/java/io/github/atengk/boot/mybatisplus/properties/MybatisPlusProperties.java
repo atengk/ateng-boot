@@ -67,6 +67,11 @@ public class MybatisPlusProperties {
      */
     private CryptoProperties crypto = new CryptoProperties();
 
+    /**
+     * 外部动态 SQL 增强配置
+     */
+    private DynamicSqlProperties dynamicSql = new DynamicSqlProperties();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -121,6 +126,14 @@ public class MybatisPlusProperties {
 
     public void setCrypto(CryptoProperties crypto) {
         this.crypto = crypto;
+    }
+
+    public DynamicSqlProperties getDynamicSql() {
+        return dynamicSql;
+    }
+
+    public void setDynamicSql(DynamicSqlProperties dynamicSql) {
+        this.dynamicSql = dynamicSql;
     }
 
     public TenantProperties getTenant() {
