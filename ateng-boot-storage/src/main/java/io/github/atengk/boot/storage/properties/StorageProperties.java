@@ -2,6 +2,7 @@ package io.github.atengk.boot.storage.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -35,11 +36,13 @@ public class StorageProperties {
     /**
      * 本地磁盘存储配置
      */
+    @NestedConfigurationProperty
     private LocalStorageProperties local = new LocalStorageProperties();
 
     /**
      * S3 兼容协议存储配置
      */
+    @NestedConfigurationProperty
     private S3StorageProperties s3 = new S3StorageProperties();
 
     /**
@@ -50,5 +53,6 @@ public class StorageProperties {
     /**
      * 存储安全防卫与魔数特征嗅探配置
      */
+    @NestedConfigurationProperty
     private StorageGuardProperties guard = new StorageGuardProperties();
 }

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.storage.properties;
 
 import lombok.Data;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 /**
  * 命名多存储源配置属性
@@ -19,10 +20,12 @@ public class StorageSourceProperties {
     /**
      * 本地存储配置
      */
+    @NestedConfigurationProperty
     private LocalStorageProperties local = new LocalStorageProperties();
 
     /**
      * S3 兼容协议存储配置
      */
+    @NestedConfigurationProperty
     private S3StorageProperties s3 = new S3StorageProperties();
 }

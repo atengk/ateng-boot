@@ -4,6 +4,33 @@
 
 ---
 
+## 0. 特性与公共 API 全景速查矩阵 (Feature & API Panorama Matrix)
+
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **文件上传** | 流式/字节/文件上传 | `StorageTemplate` | `ateng.boot.storage.enabled` | `upload(String, InputStream)` / `upload(String, byte[])` / `upload(String, File)` / `upload(String, StorageObject)`，自动推导 MIME 与安全创建父目录 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **分片上传** | 大文件分片流式上传 | `StorageTemplate` | - | `uploadChunk(String, InputStream, long, int, int)` / `completeChunkUpload(String, int)`，受控内存占用与异常自动补偿清理 | `StorageTemplateChunkedTest` |
+| **文件下载** | 流式/字节/落盘下载 | `StorageTemplate` | - | `download(String)` (返回 `InputStream`) / `downloadBytes(String)` (返回 `byte[]`) / `download(String, File)`，严格遵循 try-with-resources 资源确定性释放 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **文件存在与元数据** | 存在性与属性探测 | `StorageTemplate` | - | `exists(String)` / `getMetadata(String)` / `getUrl(String)` / `list(String)`，统一轻量返回 `StorageObject` 强类型元数据 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate` | - | `delete(String)` / `delete(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑成功 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **多源路由** | 动态命名存储源切换 | `StorageTemplate` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `use(String sourceName)`，瞬态切换至目标命名存储源，支持平铺单源与多源字典共存 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
+| **声明式多源** | 声明式数据源路由注解 | `@Storage` / `StorageAspect` | `ateng.boot.storage.sources.*` | 可声明于类或方法上，AOP 自动解析并绑定当前线程存储源上下文 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
+| **多源上下文** | 存储数据源上下文保持器 | `StorageContextHolder` | - | `set(String)` / `get()` / `clear()`，依托 ThreadLocal 保证多源切换无状态与确定性现场清理 | `StorageRoutingTest` |
+| **上下文透传** | 存储多源异步上下文装饰器 | `StorageTaskDecorator` | - | 将当前线程存储源标识快照透传至受管线程池异步任务中，执行完毕后无条件清理 | `StorageRoutingTest` |
+| **打包归档** | 多文件流式 ZIP 打包下载 | `StorageTemplate` | - | `downloadZip(List<String>, OutputStream)` / `downloadZip(List<String>, File)`，内存受控流式压缩打成 ZIP 包 | `StorageTemplateZipTest` |
+| **预签名只读** | 安全只读防盗链预签名 URL | `StorageTemplate` | `ateng.boot.storage.local.secret-key`<br>`ateng.boot.storage.local.download-endpoint` | `getPresignedUrl(String, Duration)`，返回带有效期的强类型 `PresignedUrl`，Local 驱动基于 HMAC-SHA256 签名，S3 驱动原生对接云端凭据 | `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
+| **预签名直传** | 安全上传预签名授权 URL | `StorageTemplate` | - | `getPresignedUploadUrl(String, Duration)`，为前端直传提供带有效期的强类型 `PresignedUrl`（S3 驱动原生支持） | `S3DriverTest` |
+| **本地端点** | 本地文件安全受控下载端点 | `LocalStorageDownloadController` | `ateng.boot.storage.local.download-endpoint` | 提供 `/storage/local/download` 端点，对 URL 时间戳与 HMAC 签名防篡改校验，过期与非法签名 Fail-Fast | `LocalStorageDownloadControllerTest` / `SampleStorageIntegrationTest` |
+| **本地驱动** | 本地文件系统存储驱动 | `LocalDriver` | `ateng.boot.storage.local.base-path`<br>`ateng.boot.storage.local.domain` | 本地存储驱动，封装文件读写、父目录创建、路径穿越清洗与基于 HMAC 签名的安全外链 | `LocalDriverTest` / `SampleStorageIntegrationTest` |
+| **S3 协议驱动** | 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain` | 统一抽象 MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与虚拟主机域名无缝切换 | `S3DriverTest` |
+| **Spring 原生集成** | 原生 WritableResource 契约 | `StorageResource` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源 | `StorageResourceTest` / `SampleStorageIntegrationTest` |
+| **安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别二进制魔数特征，严厉阻断可执行文件或恶意脚本伪装成文档/图片上传，支持白名单拦截 | `StorageGuardTest` / `StorageTemplateGuardTest` |
+| **路径清洗** | 路径穿越防御清洗工具 | `StorageSecurityUtil` | - | 清洗清理 `../`、`./`、非法特殊字符与宿主系统特定隐藏文件，杜绝路径穿越与越权漏洞 | `StorageSecurityUtilTest` |
+| **事件通知** | 存储生命周期事件总线 | `StorageEvent`<br>`StorageUploadedEvent`<br>`StorageDeletedEvent` | - | 文件上传与删除成功后通过 Spring 原生事件广播通知，便于业务解耦监听 | `StorageTemplateEventTest` |
+| **因果异常体系** | 语义化异常与统一错误码 | `StorageException`<br>`StorageResultCode` | - | 将底层驱动抛出的各种 IO/网络/SDK 异常转译为语义化 `StorageException` 并保留因果堆栈链 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+
+---
+
 ## 1. 模块定位与 Maven 坐标
 
 `ateng-boot-storage` 是面向生产就绪的高内聚、轻量级存储基础设施模块：

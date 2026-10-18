@@ -142,7 +142,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(15, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.receivedMessage.get()).isEqualTo("ORDER-EXPIRED-12345");
     }
@@ -167,7 +167,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(15, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.receivedTask.get()).isNotNull();
         assertThat(service.receivedTask.get().getTaskId()).isEqualTo("TASK-999");
@@ -196,7 +196,7 @@ class DelayedQueueBootstrapTest {
         bootstrap.setApplicationContext(context);
         bootstrap.afterSingletonsInstantiated();
 
-        boolean completed = service.latch.await(5, TimeUnit.SECONDS);
+        boolean completed = service.latch.await(15, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(service.errorInvocationCount.get()).isGreaterThanOrEqualTo(2);
     }

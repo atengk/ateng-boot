@@ -2,6 +2,7 @@ package io.github.atengk.boot.mybatisplus.properties;
 
 import com.baomidou.mybatisplus.annotation.DbType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,52 +25,61 @@ public class MybatisPlusProperties {
     /**
      * 行级多租户插件配置
      */
+    @NestedConfigurationProperty
     private TenantProperties tenant = new TenantProperties();
 
     /**
      * 细粒度数据权限插件配置
      */
+    @NestedConfigurationProperty
     private DataPermissionProperties dataPermission = new DataPermissionProperties();
 
     /**
      * 原生批量操作属性配置
      */
+    @NestedConfigurationProperty
     private BatchProperties batch = new BatchProperties();
-
 
     /**
      * 自动审计填充配置
      */
+    @NestedConfigurationProperty
     private AuditProperties audit = new AuditProperties();
 
     /**
      * 分页插件配置
      */
+    @NestedConfigurationProperty
     private PaginationProperties pagination = new PaginationProperties();
 
     /**
      * 防全表更新/删除插件配置
      */
+    @NestedConfigurationProperty
     private BlockAttackProperties blockAttack = new BlockAttackProperties();
 
     /**
      * 乐观锁插件配置
      */
+    @NestedConfigurationProperty
     private OptimisticLockerProperties optimisticLocker = new OptimisticLockerProperties();
 
     /**
      * 雪花发号器配置
      */
+    @NestedConfigurationProperty
     private SnowflakeProperties snowflake = new SnowflakeProperties();
 
     /**
      * 数据加解密配置
      */
+    @NestedConfigurationProperty
     private CryptoProperties crypto = new CryptoProperties();
 
     /**
      * 外部动态 SQL 增强配置
      */
+    @NestedConfigurationProperty
     private DynamicSqlProperties dynamicSql = new DynamicSqlProperties();
 
     public boolean isEnabled() {

@@ -117,6 +117,8 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         Future<?> future;
         try {
             future = executorService.submit(AsyncContext.wrap(() -> {
+                // 防御性清除线程可能残留的中断标志，确保复用线程初始状态纯净
+                Thread.interrupted();
                 task.setStatus(ExportTaskStatus.PROCESSING);
                 task.setProgress(10);
                 log.info("开始执行异步导出任务 [{}]: {}", taskId, finalTaskName);
@@ -141,6 +143,8 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                     log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
                 } finally {
                     futureMap.remove(taskId);
+                    // 任务执行结束后清理中断状态，避免对后续复用该线程的任务产生副作用
+                    Thread.interrupted();
                 }
             }));
         } catch (RejectedExecutionException rex) {

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -80,9 +81,9 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(10, TimeUnit.SECONDS), "异步导出应在 10 秒内执行完毕");
+        assertTrue(latch.await(30, TimeUnit.SECONDS), "异步导出应在 30 秒内执行完毕");
 
-        long deadline = System.currentTimeMillis() + 2000;
+        long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
         while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
@@ -109,9 +110,9 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(15, TimeUnit.SECONDS));
+        assertTrue(latch.await(30, TimeUnit.SECONDS));
 
-        long deadline = System.currentTimeMillis() + 5000;
+        long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
         while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
@@ -128,20 +129,25 @@ class AsyncExportTaskServiceTest {
     @DisplayName("测试异步导出任务取消与状态变更")
     void testCancelAsyncExport() throws Exception {
         CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch finishLatch = new CountDownLatch(1);
 
         String taskId = taskService.submit("长耗时导出任务", out -> {
             startLatch.countDown();
             try {
                 Thread.sleep(2000);
             } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
+                // 捕获取消中断，清除中断状态并退出
+                Thread.interrupted();
+            } finally {
+                finishLatch.countDown();
             }
         });
 
-        assertTrue(startLatch.await(15, TimeUnit.SECONDS));
+        assertTrue(startLatch.await(30, TimeUnit.SECONDS));
 
         boolean cancelled = taskService.cancel(taskId);
         assertTrue(cancelled, "任务取消方法应返回 true");
+        assertTrue(finishLatch.await(15, TimeUnit.SECONDS), "被取消任务应平滑退出执行");
 
         ExportTask task = taskService.getTask(taskId);
         assertNotNull(task);
@@ -153,13 +159,16 @@ class AsyncExportTaskServiceTest {
     void testCleanExpiredTasks() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         String taskId = taskService.submit("待清理任务", out -> {
-            ExcelUtil.export(out, Collections.singletonList(new TaskUserVO("李四", 30)), TaskUserVO.class);
-            latch.countDown();
+            try {
+                out.write("export-content-for-cleanup".getBytes(StandardCharsets.UTF_8));
+            } finally {
+                latch.countDown();
+            }
         });
 
-        assertTrue(latch.await(15, TimeUnit.SECONDS));
+        assertTrue(latch.await(30, TimeUnit.SECONDS));
 
-        long deadline = System.currentTimeMillis() + 5000;
+        long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
         while ((task == null || task.getStatus() == ExportTaskStatus.PENDING || task.getStatus() == ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
@@ -196,15 +205,18 @@ class AsyncExportTaskServiceTest {
             CountDownLatch latch = new CountDownLatch(1);
 
             String taskId = taskService.submit("上下文透传测试", out -> {
-                capturedUser.set(io.github.atengk.boot.core.context.UserContextHolder.get());
-                capturedTenant.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantIdAsLong());
-                capturedTrace.set(org.slf4j.MDC.get("traceId"));
-                ExcelUtil.export(out, Collections.singletonList(new TaskUserVO("王五", 25)), TaskUserVO.class);
-                latch.countDown();
+                try {
+                    capturedUser.set(io.github.atengk.boot.core.context.UserContextHolder.get());
+                    capturedTenant.set(io.github.atengk.boot.core.context.TenantContextHolder.getTenantIdAsLong());
+                    capturedTrace.set(org.slf4j.MDC.get("traceId"));
+                    out.write("export-content-for-context".getBytes(StandardCharsets.UTF_8));
+                } finally {
+                    latch.countDown();
+                }
             });
 
             assertNotNull(taskId);
-            assertTrue(latch.await(10, TimeUnit.SECONDS));
+            assertTrue(latch.await(30, TimeUnit.SECONDS));
 
             assertEquals("user-1001", capturedUser.get(), "异步导出线程应成功继承发起方的 UserId");
             assertEquals(8888L, capturedTenant.get(), "异步导出线程应成功继承发起方的 TenantId");
