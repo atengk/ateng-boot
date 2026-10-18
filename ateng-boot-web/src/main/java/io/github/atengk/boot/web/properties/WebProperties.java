@@ -345,5 +345,49 @@ public class WebProperties {
          */
         private boolean enabled = true;
     }
+
+    /**
+     * K8s 云原生就绪探针排空与容器生命周期治理配置
+     */
+    @NestedConfigurationProperty
+    private GracefulShutdownProperties shutdown = new GracefulShutdownProperties();
+
+    /**
+     * 容器优雅下线与流量排空配置属性
+     */
+    @Getter
+    @Setter
+    public static class GracefulShutdownProperties {
+
+        /**
+         * 是否启用云原生流量排空与生命周期治理（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 就绪探针置为拒绝后静默排空等待时间（强类型 Duration，默认 10 秒）
+         */
+        private Duration drainTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 是否启用 SmartLifecycle 兜底保护（未配 preStop 收到 SIGTERM 时自动排空，默认 true）
+         */
+        private boolean smartLifecycleEnabled = true;
+
+        /**
+         * 是否启用 Actuator preStop 端点（默认 true，当类路径存在 Actuator 时生效）
+         */
+        private boolean actuatorEndpointEnabled = true;
+
+        /**
+         * 是否启用 Spring MVC preStop 控制器（为 null 时自动判定：无 Actuator 时自动降级启用）
+         */
+        private Boolean mvcEndpointEnabled;
+
+        /**
+         * Spring MVC 降级端点路径（默认 /pre-stop）
+         */
+        private String mvcEndpointPath = "/pre-stop";
+    }
 }
 

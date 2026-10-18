@@ -23,6 +23,8 @@ ateng:
       long-to-string: true
       log:
         enabled: true
+      shutdown:
+        drain-timeout: 0s
     mybatis-plus:
       pagination:
         max-limit: 500

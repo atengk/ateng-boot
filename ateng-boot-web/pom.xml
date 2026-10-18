@@ -62,6 +62,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Spring Boot Actuator (用于 /actuator/pre-stop 端点) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Lombok (编译期使用，不传递) -->
         <dependency>
             <groupId>org.projectlombok</groupId>
