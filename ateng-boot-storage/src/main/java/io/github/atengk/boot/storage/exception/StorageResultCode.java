@@ -62,7 +62,17 @@ public enum StorageResultCode implements IResultCode {
     /**
      * 文件类型不被允许上传
      */
-    STORAGE_FILE_NOT_ALLOWED(40011, "文件类型不被允许上传");
+    STORAGE_FILE_NOT_ALLOWED(40011, "文件类型不被允许上传"),
+
+    /**
+     * 分片缺失或不连续，无法完成合并
+     */
+    STORAGE_CHUNK_MISSING(40012, "分片缺失或不连续，无法完成合并"),
+
+    /**
+     * 分片索引或总片数非法
+     */
+    STORAGE_CHUNK_INVALID(40013, "分片索引或总片数非法");
 
     /**
      * 状态码数值

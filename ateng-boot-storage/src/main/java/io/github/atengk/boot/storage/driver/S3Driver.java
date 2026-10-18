@@ -16,8 +16,14 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CommonPrefix;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
+import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
@@ -26,25 +32,35 @@ import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ListPartsRequest;
+import software.amazon.awssdk.services.s3.model.ListPartsResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 标准 S3 兼容协议对象存储驱动实现
@@ -638,6 +654,179 @@ public class S3Driver implements StorageDriver {
                 this.s3Presigner.close();
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    private final ConcurrentMap<String, S3UploadSession> activeSessions = new ConcurrentHashMap<>();
+
+    @Override
+    public String initiateChunkedUpload(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "分片上传目标路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        String contentType = StorageSecurityUtil.determineContentType(cleanPath);
+        try {
+            CreateMultipartUploadRequest req = CreateMultipartUploadRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .contentType(contentType)
+                    .build();
+            CreateMultipartUploadResponse resp = this.s3Client.createMultipartUpload(req);
+            String uploadId = resp.uploadId();
+            this.activeSessions.put(uploadId, new S3UploadSession(cleanPath, uploadId));
+            return uploadId;
+        } catch (Exception e) {
+            throw translateException(e, cleanPath, "初始化 S3 分片上传会话失败");
+        }
+    }
+
+    @Override
+    public void uploadChunk(String uploadId, int chunkIndex, InputStream in, long size) {
+        if (in == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "分片数据输入流不能为空");
+        }
+        if (uploadId == null || uploadId.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "分片上传会话标识 uploadId 不能为空");
+        }
+        if (chunkIndex < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
+        }
+        S3UploadSession session = this.activeSessions.get(uploadId);
+        if (session == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到 S3 分片上传会话或已被清理: " + uploadId);
+        }
+        try {
+            RequestBody body;
+            if (size >= 0) {
+                body = RequestBody.fromInputStream(in, size);
+            } else {
+                byte[] bytes = in.readAllBytes();
+                body = RequestBody.fromBytes(bytes);
+            }
+            UploadPartRequest partReq = UploadPartRequest.builder()
+                    .bucket(this.bucket)
+                    .key(session.getKey())
+                    .uploadId(uploadId)
+                    .partNumber(chunkIndex)
+                    .build();
+            UploadPartResponse partResp = this.s3Client.uploadPart(partReq, body);
+            session.addPart(chunkIndex, stripQuotes(partResp.eTag()));
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取分片数据输入流异常: " + uploadId, e);
+        } catch (Exception e) {
+            throw translateException(e, session.getKey(), "上传 S3 分片失败 (chunk=" + chunkIndex + ")");
+        }
+    }
+
+    @Override
+    public StorageObject completeChunkedUpload(String uploadId, String targetPath, int totalChunks) {
+        if (uploadId == null || uploadId.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "分片上传会话标识 uploadId 不能为空");
+        }
+        if (totalChunks < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片总片数必须 >= 1，当前为: " + totalChunks);
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(targetPath);
+        S3UploadSession session = this.activeSessions.get(uploadId);
+        String key = session != null ? session.getKey() : cleanPath;
+
+        List<CompletedPart> completedParts = new ArrayList<>(totalChunks);
+        if (session != null) {
+            for (int i = 1; i <= totalChunks; i++) {
+                String etag = session.getPartETag(i);
+                if (etag == null || etag.isBlank()) {
+                    throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING,
+                            "S3 分片合并失败，缺失第 " + i + " 个分片（预期总片数: " + totalChunks + "）");
+                }
+                completedParts.add(CompletedPart.builder().partNumber(i).eTag(etag).build());
+            }
+        } else {
+            try {
+                ListPartsResponse listPartsResp = this.s3Client.listParts(ListPartsRequest.builder()
+                        .bucket(this.bucket)
+                        .key(key)
+                        .uploadId(uploadId)
+                        .build());
+                Map<Integer, String> s3Parts = new HashMap<>();
+                if (listPartsResp.hasParts()) {
+                    for (Part p : listPartsResp.parts()) {
+                        s3Parts.put(p.partNumber(), stripQuotes(p.eTag()));
+                    }
+                }
+                for (int i = 1; i <= totalChunks; i++) {
+                    String etag = s3Parts.get(i);
+                    if (etag == null || etag.isBlank()) {
+                        throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING,
+                                "S3 分片合并失败，缺失第 " + i + " 个分片（预期总片数: " + totalChunks + "）");
+                    }
+                    completedParts.add(CompletedPart.builder().partNumber(i).eTag(etag).build());
+                }
+            } catch (Exception e) {
+                throw translateException(e, key, "查询 S3 分片列表失败");
+            }
+        }
+
+        try {
+            CompletedMultipartUpload multipartUpload = CompletedMultipartUpload.builder()
+                    .parts(completedParts)
+                    .build();
+            CompleteMultipartUploadRequest completeReq = CompleteMultipartUploadRequest.builder()
+                    .bucket(this.bucket)
+                    .key(key)
+                    .uploadId(uploadId)
+                    .multipartUpload(multipartUpload)
+                    .build();
+            this.s3Client.completeMultipartUpload(completeReq);
+            this.activeSessions.remove(uploadId);
+            return getMetadata(key);
+        } catch (Exception e) {
+            throw translateException(e, key, "完成 S3 分片合并失败");
+        }
+    }
+
+    @Override
+    public void abortChunkedUpload(String uploadId) {
+        if (uploadId == null || uploadId.isBlank()) {
+            return;
+        }
+        S3UploadSession session = this.activeSessions.remove(uploadId);
+        if (session != null) {
+            try {
+                this.s3Client.abortMultipartUpload(AbortMultipartUploadRequest.builder()
+                        .bucket(this.bucket)
+                        .key(session.getKey())
+                        .uploadId(uploadId)
+                        .build());
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static class S3UploadSession {
+        private final String key;
+        private final String uploadId;
+        private final ConcurrentMap<Integer, String> parts = new ConcurrentHashMap<>();
+
+        public S3UploadSession(String key, String uploadId) {
+            this.key = key;
+            this.uploadId = uploadId;
+        }
+
+        public String getKey() {
+            return key;
+        }
+
+        public String getUploadId() {
+            return uploadId;
+        }
+
+        public void addPart(int partNumber, String etag) {
+            this.parts.put(partNumber, etag);
+        }
+
+        public String getPartETag(int partNumber) {
+            return this.parts.get(partNumber);
         }
     }
 }

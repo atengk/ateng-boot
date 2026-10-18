@@ -124,4 +124,40 @@ public interface StorageDriver extends AutoCloseable {
     default PresignedUrl getPresignedUploadUrl(String path, Duration duration) {
         throw new UnsupportedOperationException("Current storage driver does not support presigned upload URL");
     }
+
+    /**
+     * 初始化大文件分片上传会话
+     *
+     * @param path 目标存储对象路径
+     * @return 全局唯一分片上传会话标识 uploadId
+     */
+    String initiateChunkedUpload(String path);
+
+    /**
+     * 上传单个分片数据（1-based 序号）
+     *
+     * @param uploadId   分片上传会话标识
+     * @param chunkIndex 分片正序编号（从 1 开始，1-based）
+     * @param in         分片数据输入流
+     * @param size       分片字节大小（未知时可传 -1）
+     */
+    void uploadChunk(String uploadId, int chunkIndex, InputStream in, long size);
+
+    /**
+     * 完成分片上传并正序合并碎片
+     * 校验 1 ~ totalChunks 连续性，合并成功后自动清理临时碎片
+     *
+     * @param uploadId    分片上传会话标识
+     * @param targetPath  最终合并落盘的目标对象路径
+     * @param totalChunks 分片总片数（从 1 到 totalChunks 必须全部就绪）
+     * @return 合并完成后的存储对象元数据
+     */
+    StorageObject completeChunkedUpload(String uploadId, String targetPath, int totalChunks);
+
+    /**
+     * 取消或中止分片上传会话并清理所有已上传碎片
+     *
+     * @param uploadId 分片上传会话标识
+     */
+    void abortChunkedUpload(String uploadId);
 }

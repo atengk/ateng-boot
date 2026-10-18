@@ -10,16 +10,21 @@ import lombok.Getter;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.FileChannel;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -414,6 +419,146 @@ public class LocalDriver implements StorageDriver {
             return sb.toString();
         } catch (Exception e) {
             return "";
+        }
+    }
+
+    private static final String CHUNKS_DIR_NAME = ".chunks";
+    private static final Pattern UPLOAD_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]+$");
+
+    @Override
+    public String initiateChunkedUpload(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "分片上传目标路径不能为空");
+        }
+        StorageSecurityUtil.normalizePath(path);
+        String uploadId = UUID.randomUUID().toString().replace("-", "");
+        Path chunkDir = resolveChunkDir(uploadId);
+        try {
+            Files.createDirectories(chunkDir);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "创建分片暂存目录失败: " + uploadId, e);
+        }
+        return uploadId;
+    }
+
+    @Override
+    public void uploadChunk(String uploadId, int chunkIndex, InputStream in, long size) {
+        if (in == null) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "分片数据输入流不能为空");
+        }
+        validateUploadId(uploadId);
+        if (chunkIndex < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
+        }
+        Path chunkDir = resolveChunkDir(uploadId);
+        if (!Files.exists(chunkDir)) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到分片上传会话或已被清理: " + uploadId);
+        }
+        Path chunkFile = chunkDir.resolve("chunk_" + chunkIndex);
+        try {
+            Files.copy(in, chunkFile, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "写入第 " + chunkIndex + " 个分片失败: " + uploadId, e);
+        }
+    }
+
+    @Override
+    public StorageObject completeChunkedUpload(String uploadId, String targetPath, int totalChunks) {
+        validateUploadId(uploadId);
+        if (totalChunks < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片总片数必须 >= 1，当前为: " + totalChunks);
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(targetPath);
+        Path chunkDir = resolveChunkDir(uploadId);
+        if (!Files.exists(chunkDir)) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING, "未找到分片上传会话或已被清理: " + uploadId);
+        }
+
+        // 严格校验 1 ~ totalChunks 连续性
+        for (int i = 1; i <= totalChunks; i++) {
+            Path chunkFile = chunkDir.resolve("chunk_" + i);
+            if (!Files.exists(chunkFile)) {
+                throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING,
+                        "分片合并失败，缺失第 " + i + " 个分片（预期总片数: " + totalChunks + "）");
+            }
+        }
+
+        Path targetFile = resolveAndVerify(cleanPath);
+        try {
+            if (targetFile.getParent() != null && !Files.exists(targetFile.getParent())) {
+                Files.createDirectories(targetFile.getParent());
+            }
+
+            // 正序流式顺序拼接合并分片
+            try (FileChannel outChannel = FileChannel.open(targetFile,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                for (int i = 1; i <= totalChunks; i++) {
+                    Path chunkFile = chunkDir.resolve("chunk_" + i);
+                    try (FileChannel inChannel = FileChannel.open(chunkFile, StandardOpenOption.READ)) {
+                        long chunkSize = inChannel.size();
+                        long transferred = 0;
+                        while (transferred < chunkSize) {
+                            long bytes = inChannel.transferTo(transferred, chunkSize - transferred, outChannel);
+                            if (bytes <= 0) {
+                                break;
+                            }
+                            transferred += bytes;
+                        }
+                    }
+                }
+            }
+
+            long actualSize = Files.size(targetFile);
+            String contentType = StorageSecurityUtil.determineContentType(cleanPath);
+            Instant lastModified = Files.getLastModifiedTime(targetFile).toInstant();
+            String etag = calculateEtag(targetFile);
+
+            // 合并成功后即时清理临时碎片
+            deleteRecursively(chunkDir);
+
+            return StorageObject.builder()
+                    .path(cleanPath)
+                    .filename(FileUtil.cleanFilename(cleanPath))
+                    .size(actualSize)
+                    .contentType(contentType)
+                    .etag(etag)
+                    .lastModified(lastModified)
+                    .build();
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "合并分片写入目标文件失败: " + cleanPath, e);
+        }
+    }
+
+    @Override
+    public void abortChunkedUpload(String uploadId) {
+        validateUploadId(uploadId);
+        Path chunkDir = resolveChunkDir(uploadId);
+        deleteRecursively(chunkDir);
+    }
+
+    private void validateUploadId(String uploadId) {
+        if (uploadId == null || uploadId.isBlank() || !UPLOAD_ID_PATTERN.matcher(uploadId).matches()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "非法的分片上传会话标识 uploadId: " + uploadId);
+        }
+    }
+
+    private Path resolveChunkDir(String uploadId) {
+        return this.basePath.resolve(CHUNKS_DIR_NAME).resolve(uploadId).normalize();
+    }
+
+    private void deleteRecursively(Path dir) {
+        if (dir == null || !Files.exists(dir)) {
+            return;
+        }
+        try (Stream<Path> stream = Files.walk(dir)) {
+            stream.sorted(Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (IOException ignored) {
+                        }
+                    });
+        } catch (IOException ignored) {
         }
     }
 }

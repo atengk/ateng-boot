@@ -654,7 +654,67 @@ HTTP 返回状态码 `40010`（`STORAGE_FILE_TYPE_MISMATCH`），恶意文件被
 
 ---
 
-## 18. 场景样例工程与集成测试
+## 18. 大文件分片合并暂存与生命周期状态机
+
+### 场景痛点
+在面对数百 MB 甚至数十 GB 的超大文件（如高清音视频母带、系统镜像包、离线数据集或数据库全量备份）时，网络瞬断会导致单流直传全盘失败，必须支持客户端切片断点续传。但在服务端实现分片合并时，若处理不当常面临三大痛点：
+1. **内存溢出（OOM）**：在内存中缓存拼接大数据包极易击穿堆内存；
+2. **损坏文件入库**：跳号、乱序或缺失分片导致合并出不可用的损坏残片；
+3. **磁盘与云端碎片泄漏**：异常中断后大量未合并的临时分片残留，吞噬服务器磁盘空间或持续产生云端存储悬挂计费。
+
+### 核心能力与架构设计
+- **100% 双核行为平替**：
+  - **Local 本地驱动**：在受管 `.chunks/<uploadId>/` 临时隔离目录中暂存碎片，合并时利用 Java NIO `FileChannel.transferTo` **零拷贝流式按序追加合并**，合并完成后立即原子删除临时目录；
+  - **S3 云原生驱动**：标准封装 AWS S3 Multipart Upload 原生 API（`CreateMultipartUpload` -> `UploadPart` -> `CompleteMultipartUpload` / `AbortMultipartUpload`），支持 S3 远程服务端无损合并；
+- **1-based 序号与强连续性校验**：分片序号强制为 `1 ~ totalChunks`；合并时严格检测每一片的存在性与连续性，任一分片缺失立即快速失败，抛出 `STORAGE_CHUNK_MISSING`（`40012`）；
+- **全生命周期清理状态机**：提供 `abortChunkedUpload(uploadId)` 主动清理取消机制，与完成合并时的自动清理形成闭环，彻底根绝碎片滞留；
+- **事件广播闭环**：分片合并完成后自动广播 `StorageUploadedEvent`，打通下游消息通知与业务状态流转。
+
+### 核心代码范式
+
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void uploadLargeFile() {
+    String targetPath = "large/backup.tar.gz";
+
+    // 1. 初始化分片上传会话，获取全局唯一 uploadId
+    String uploadId = storageTemplate.initiateChunkedUpload(targetPath);
+    System.out.println("分片上传会话初始化成功, uploadId=" + uploadId);
+
+    // 2. 逐片上传（支持并发或按序上传，序号 1-based）
+    // 支持直接传入 byte[] 或 InputStream
+    storageTemplate.uploadChunk(uploadId, 1, chunk1Bytes);
+    storageTemplate.uploadChunk(uploadId, 2, chunk2Bytes);
+    storageTemplate.uploadChunk(uploadId, 3, chunk3Bytes);
+
+    // 3. 校验并完成最终合并（自动验证 1..3 分片完整性，合并后即时清理临时碎片）
+    StorageObject object = storageTemplate.completeChunkedUpload(uploadId, targetPath, 3);
+    System.out.println("分片合并落盘成功: path=" + object.getPath() + ", size=" + object.getSize() + ", etag=" + object.getEtag());
+
+    // 4. 若客户端主动取消或异常中断，可安全中止并释放已上传碎片
+    // storageTemplate.abortChunkedUpload(uploadId);
+}
+```
+
+### 预期呈现契约
+控制台输出：
+```text
+分片上传会话初始化成功, uploadId=4f5e7a9b0c1d2e3f4a5b6c7d8e9f0a1b
+分片合并落盘成功: path=large/backup.tar.gz, size=31457280, etag=e59ff97941044f85df5297e1c302d260
+```
+若客户端在上传过程中发生异常，仅上传了第 1 片和第 3 片（遗漏第 2 片）即尝试触发合并，系统立即拦截并快速失败：
+```text
+io.github.atengk.boot.storage.exception.StorageException: 分片合并失败，缺失第 2 个分片（预期总片数: 3）
+	at io.github.atengk.boot.storage.driver.LocalDriver.completeChunkedUpload(LocalDriver.java:493)
+	at io.github.atengk.boot.storage.template.StorageTemplate.completeChunkedUpload(StorageTemplate.java:569)
+```
+错误码响应 `40012`（`STORAGE_CHUNK_MISSING`），临时碎片保留在会话中等待重试补传或由客户端调度 `abortChunkedUpload` 安全回收。
+
+---
+
+## 19. 场景样例工程与集成测试
 
 完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
 👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)

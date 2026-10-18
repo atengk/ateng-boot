@@ -553,4 +553,28 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     public void setStorageGuard(StorageGuard storageGuard) {
         this.storageGuard = storageGuard;
     }
+
+    @Override
+    public String initiateChunkedUpload(String path) {
+        return getDriver().initiateChunkedUpload(path);
+    }
+
+    @Override
+    public void uploadChunk(String uploadId, int chunkIndex, InputStream in, long size) {
+        getDriver().uploadChunk(uploadId, chunkIndex, in, size);
+    }
+
+    @Override
+    public StorageObject completeChunkedUpload(String uploadId, String targetPath, int totalChunks) {
+        StorageObject obj = getDriver().completeChunkedUpload(uploadId, targetPath, totalChunks);
+        if (obj != null) {
+            publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), obj.getPath(), obj.getSize(), obj.getContentType()));
+        }
+        return obj;
+    }
+
+    @Override
+    public void abortChunkedUpload(String uploadId) {
+        getDriver().abortChunkedUpload(uploadId);
+    }
 }

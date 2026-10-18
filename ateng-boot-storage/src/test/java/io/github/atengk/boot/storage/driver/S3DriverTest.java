@@ -17,9 +17,15 @@ import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CommonPrefix;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -33,6 +39,8 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
@@ -393,5 +401,84 @@ class S3DriverTest {
         List<String> paths = items.stream().map(StorageObject::getPath).toList();
         assertTrue(paths.contains("data/2026/1.txt"));
         assertTrue(paths.contains("data/2026/sub/2.txt"));
+    }
+
+    @Test
+    @DisplayName("S3 分片上传初始化、分片写入与合并成功")
+    void testS3ChunkedUploadFlow() {
+        String uploadId = "s3-upload-xyz";
+        String targetPath = "large/archive.zip";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(uploadId).build());
+
+        when(s3Client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("\"etag1\"").build())
+                .thenReturn(UploadPartResponse.builder().eTag("\"etag2\"").build());
+
+        when(s3Client.completeMultipartUpload(any(CompleteMultipartUploadRequest.class)))
+                .thenReturn(CompleteMultipartUploadResponse.builder().key(targetPath).eTag("\"mergedEtag\"").build());
+
+        when(s3Client.headObject(any(HeadObjectRequest.class)))
+                .thenReturn(HeadObjectResponse.builder()
+                        .contentLength(2048L)
+                        .contentType("application/zip")
+                        .eTag("\"mergedEtag\"")
+                        .lastModified(Instant.now())
+                        .build());
+
+        // 1. 初始化
+        String actualUploadId = s3Driver.initiateChunkedUpload(targetPath);
+        assertEquals(uploadId, actualUploadId);
+
+        // 2. 上传 2 个分片
+        byte[] p1 = "Part 1 Data".getBytes(StandardCharsets.UTF_8);
+        byte[] p2 = "Part 2 Data".getBytes(StandardCharsets.UTF_8);
+        s3Driver.uploadChunk(uploadId, 1, new ByteArrayInputStream(p1), p1.length);
+        s3Driver.uploadChunk(uploadId, 2, new ByteArrayInputStream(p2), p2.length);
+
+        // 3. 完成合并
+        StorageObject result = s3Driver.completeChunkedUpload(uploadId, targetPath, 2);
+        assertNotNull(result);
+        assertEquals(targetPath, result.getPath());
+        assertEquals(2048L, result.getSize());
+        assertEquals("mergedEtag", result.getEtag());
+    }
+
+    @Test
+    @DisplayName("S3 分片合并时检测到缺失分片抛出 STORAGE_CHUNK_MISSING")
+    void testS3ChunkedUploadMissingChunk() {
+        String uploadId = "s3-upload-missing";
+        String targetPath = "videos/clip.mp4";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(uploadId).build());
+
+        when(s3Client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("\"etag1\"").build());
+
+        s3Driver.initiateChunkedUpload(targetPath);
+        s3Driver.uploadChunk(uploadId, 1, new ByteArrayInputStream("p1".getBytes(StandardCharsets.UTF_8)), 2);
+
+        // 预期总片数 2 片，只上传了第 1 片
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.completeChunkedUpload(uploadId, targetPath, 2));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_MISSING, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("缺失第 2 个分片"));
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传调用 abortMultipartUpload")
+    void testS3AbortChunkedUpload() {
+        String uploadId = "s3-upload-abort";
+        String targetPath = "temp/junk.dat";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(uploadId).build());
+
+        s3Driver.initiateChunkedUpload(targetPath);
+        s3Driver.abortChunkedUpload(uploadId);
+
+        verify(s3Client).abortMultipartUpload(any(AbortMultipartUploadRequest.class));
     }
 }
