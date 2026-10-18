@@ -40,6 +40,7 @@
 | **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectList` / `selectOne` / `selectMaps` / `update` / `insert` / `delete`，提供对称完备的外部动态 SQL 执行能力 | `DynamicSqlExecutorTest` / `DynamicSqlIntegrationTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn` 原生批量插入扩展 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
 
@@ -704,5 +705,84 @@ public class CustomStreamingConfig {
    MyBatis 流式游标建议配合 `@Options(fetchSize = 1000)` 使用（框架推荐默认值 `DEFAULT_FETCH_SIZE = 1000`）。避免底层 JDBC 驱动将数据库千万级记录一次性加载到网络 Socket 缓冲区造成物理机器内存打满。
 4. **切片数据不可变性防卫**：
    `forEachBatch` 传出的每批 `List<T>` 均经由 `Collections.unmodifiableList` 封装，防止下游误操作对其执行 `add` / `remove` 导致数据脏读，并在每批消费完毕后立即解除引用协助 JVM 极速 GC。
+
+---
+
+## 13. 多数据源协同诊断探针与上下文守卫 (`DynamicDatasourceGuard`)
+
+### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
+
+在引入第三方动态切源框架（如 `dynamic-datasource-spring-boot-starter` 或自定义 `AbstractRoutingDataSource`）的场景下，业务系统常面临以下致命痛点：
+1. **活跃事务假切源串库**：Spring 声明式事务在开启后会固定绑定物理连接，若在 `@Transactional` 事务内部切换数据源，切源会被底层物理连接无声覆盖导致更新操作写错数据源；
+2. **多租户越权/报错**：多租户拦截器默认改写所有数据源 SQL，导致公共库或报表库被强行拼接 `tenant_id = ?` 报错；
+3. **数据权限跨库穿透**：上一数据源未及时清理的超管状态（`isSuperAdmin=true`）在切换到新库后引发越权穿透。
+
+`ateng-boot-mybatis-plus` 原生交付 `DynamicDatasourceGuard`：
+- **启动期无感健康诊断探针**：基于 Spring 原生 `SmartInitializingSingleton` 自动感知多数据源环境，输出持久层协同自检建议；
+- **编程式上下文隔离断言**：提供 `validateContextIsolated()` 静态断言门面，供切源切面或业务边界进行 Fail-Fast 快速防卫。
+
+#### 核心配置 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      guard:
+        dynamic-datasource: true   # 是否启用多数据源协同诊断探针，默认 true
+```
+
+#### 启动期健康诊断日志输出示例
+当检测到容器中存在多个 `DataSource` 或动态路由数据源时，自动在控制台打印标准诊断排查建议：
+
+```text
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - ====== [ateng-boot-mybatis-plus 多数据源协同诊断探针] ======
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 环境特征: 检测到 Spring 容器中注册了 2 个 DataSource Bean: [masterDataSource, slaveDataSource]
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 协同自检建议:
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 1. [行级多租户] 若启用多租户拦截器，请核查非业务库（如公共字典库、定时任务库、报表从库）是否已通过 ignore-tables 或 @IgnoreTenant 声明放行；
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 2. [事务切源禁忌] Spring 声明式事务在开启后会固定绑定物理连接，严禁在 @Transactional 事务方法内部执行切源操作，否则切源将静默失效；
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - 3. [上下文隔离] 跨数据源访问前，建议调用 DynamicDatasourceGuard.validateContextIsolated() 校验当前线程事务与数据权限上下文纯净性。
+23:09:25.120 [main] INFO  i.g.a.b.m.g.DynamicDatasourceGuard - ==============================================================
+```
+
+---
+
+### 2. 生产扩展与接管 (Customization & Extensibility)
+
+#### 方案一：在切源切面或业务边界主动调用静态断言
+在自定义切源切面（如处理 `@DS` 注解的前置通知）或跨库 RPC 边界中，直接调用断言防卫：
+
+```java
+@Aspect
+@Component
+public class DynamicDataSourceAspect {
+
+    @Before("@annotation(ds)")
+    public void beforeSwitchDataSource(JoinPoint point, DS ds) {
+        // 1. 切换数据源前，校验当前线程是否处于隔离纯净状态
+        DynamicDatasourceGuard.validateContextIsolated();
+
+        // 2. 若需严格匹配当前租户与期望租户，可传入期望租户 ID 进行强校验
+        // DynamicDatasourceGuard.validateContextIsolated(expectedTenantId);
+
+        // 3. 执行数据源切换上下文绑定...
+    }
+}
+```
+
+#### 方案二：完全接管 `DynamicDatasourceGuard` Bean
+装配类标配 `@ConditionalOnMissingBean(DynamicDatasourceGuard.class)`，下游若有特殊多数据源探针逻辑，可自由声明自定义 Bean 实现 100% 接管覆盖。
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **零臃肿与不重造轮子**：
+   本组件恪守纯原生与底座优先原则，绝不引入或重造多数据源路由轮子；纯粹依托 Spring 原生 `SmartInitializingSingleton` 与 `TransactionSynchronizationManager`，针对持久层在多源环境下的痛点实施外围防卫与诊断。
+2. **活跃事务假切源主动阻断**：
+   当检测到 `TransactionSynchronizationManager.isActualTransactionActive() == true` 时，`validateContextIsolated()` 立即抛出 `IllegalStateException`，杜绝调用方在事务内无意识切源导致假切源和串库更新。
+3. **数据权限未闭合残留防卫**：
+   若当前线程残留有 `DataPermissionContextHolder.isSuperAdmin() == true` 或 `isIgnore() == true`（通常是前置任务异常且未在 `finally` 块清理导致），在跨数据源操作时立即触发阻断，防御越权风险。
+4. **显式污染标记与安全恢复**：
+   支持通过 `DynamicDatasourceGuard.markContextTainted(reason)` 与 `clearTaintedContext()` 对线程上下文实施受控标记与恢复，方便在分布式链路或拦截器管道中传递上下文异常状态。
+
 
 

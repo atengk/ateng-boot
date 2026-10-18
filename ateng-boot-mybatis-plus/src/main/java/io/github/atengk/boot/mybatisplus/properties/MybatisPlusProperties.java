@@ -89,6 +89,12 @@ public class MybatisPlusProperties {
     @NestedConfigurationProperty
     private DynamicSqlProperties dynamicSql = new DynamicSqlProperties();
 
+    /**
+     * 持久层守卫与诊断探针配置
+     */
+    @NestedConfigurationProperty
+    private GuardProperties guard = new GuardProperties();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -183,6 +189,14 @@ public class MybatisPlusProperties {
 
     public void setBatch(BatchProperties batch) {
         this.batch = batch;
+    }
+
+    public GuardProperties getGuard() {
+        return guard;
+    }
+
+    public void setGuard(GuardProperties guard) {
+        this.guard = guard;
     }
 
 
@@ -507,6 +521,24 @@ public class MybatisPlusProperties {
 
         public void setMaskSensitive(boolean maskSensitive) {
             this.maskSensitive = maskSensitive;
+        }
+    }
+
+    /**
+     * 持久层守卫与诊断探针属性配置
+     */
+    public static class GuardProperties {
+        /**
+         * 是否启用多数据源协同诊断探针，默认 true
+         */
+        private boolean dynamicDatasource = true;
+
+        public boolean isDynamicDatasource() {
+            return dynamicDatasource;
+        }
+
+        public void setDynamicDatasource(boolean dynamicDatasource) {
+            this.dynamicDatasource = dynamicDatasource;
         }
     }
 }

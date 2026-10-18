@@ -38,9 +38,11 @@ import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.transaction.PlatformTransactionManager;
+import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
 import java.util.List;
@@ -329,5 +331,18 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnBean(PlatformTransactionManager.class)
     public StreamingQueryTemplate streamingQueryTemplate(PlatformTransactionManager transactionManager) {
         return new StreamingQueryTemplate(transactionManager);
+    }
+
+    /**
+     * 注册多数据源协同诊断探针与上下文守卫组件
+     *
+     * @param applicationContext Spring 应用上下文
+     * @return 多数据源守卫探针实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DynamicDatasourceGuard.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.guard", name = "dynamic-datasource", havingValue = "true", matchIfMissing = true)
+    public DynamicDatasourceGuard dynamicDatasourceGuard(ApplicationContext applicationContext) {
+        return new DynamicDatasourceGuard(applicationContext, properties);
     }
 }

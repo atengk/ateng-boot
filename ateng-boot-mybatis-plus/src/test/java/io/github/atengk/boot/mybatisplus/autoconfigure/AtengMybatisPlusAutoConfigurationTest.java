@@ -376,5 +376,34 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class)).isSameAs(customTemplate);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下成功装配 DynamicDatasourceGuard 多数据源诊断探针与守卫组件")
+    void shouldAutoConfigureDynamicDatasourceGuardByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class);
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.guard.dynamic-datasource=false 时禁用 DynamicDatasourceGuard")
+    void shouldDisableDynamicDatasourceGuardWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.guard.dynamic-datasource=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 DynamicDatasourceGuard 时优先使用业务自定义 Bean")
+    void shouldPreferCustomDynamicDatasourceGuardBean() {
+        io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard customGuard = new io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard();
+
+        contextRunner.withBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class, () -> customGuard)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class)).isSameAs(customGuard);
+                });
+    }
 }
 
