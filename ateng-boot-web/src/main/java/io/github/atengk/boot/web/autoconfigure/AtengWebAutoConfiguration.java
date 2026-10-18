@@ -1,7 +1,10 @@
 package io.github.atengk.boot.web.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.web.aspect.OperateLogAspect;
 import io.github.atengk.boot.web.aspect.WebLogAspect;
+import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
+import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
@@ -17,9 +20,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.util.unit.DataSize;
+import java.util.concurrent.Executor;
 import io.github.atengk.boot.web.cors.CorsOriginProvider;
 import io.github.atengk.boot.web.cors.DefaultCorsOriginProvider;
 import io.github.atengk.boot.web.cors.DynamicCorsConfigurationSource;
@@ -173,6 +178,46 @@ public class AtengWebAutoConfiguration {
     @ConditionalOnMissingBean(WebLogAspect.class)
     public WebLogAspect webLogAspect(ObjectProvider<ObjectMapper> objectMapperProvider) {
         return new WebLogAspect(objectMapperProvider.getIfAvailable(ObjectMapper::new));
+    }
+
+    /**
+     * 注册默认操作审计存储提供者（基于 SLF4J 输出格式化 JSON）
+     *
+     * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @return OperateLogStorageProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(OperateLogStorageProvider.class)
+    public OperateLogStorageProvider defaultOperateLogStorageProvider(ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return new DefaultOperateLogStorageProvider(objectMapperProvider.getIfAvailable(ObjectMapper::new));
+    }
+
+    /**
+     * 注册结构化操作审计切面
+     *
+     * @param storageProvider 审计存储 SPI 提供者
+     * @param taskExecutorProvider 异步任务执行器提供者
+     * @param objectMapperProvider Jackson ObjectMapper 提供者
+     * @param eventPublisherProvider 事件发布者提供者
+     * @param webProperties Web 配置属性
+     * @return OperateLogAspect 实例
+     */
+    @Bean
+    @ConditionalOnClass({ProceedingJoinPoint.class, Aspect.class})
+    @ConditionalOnProperty(prefix = "ateng.boot.web.operate-log", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(OperateLogAspect.class)
+    public OperateLogAspect operateLogAspect(OperateLogStorageProvider storageProvider,
+                                            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                            ObjectProvider<ObjectMapper> objectMapperProvider,
+                                            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+                                            WebProperties webProperties) {
+        return new OperateLogAspect(
+                storageProvider,
+                taskExecutorProvider,
+                objectMapperProvider.getIfAvailable(ObjectMapper::new),
+                eventPublisherProvider.getIfAvailable(),
+                webProperties
+        );
     }
 
     /**

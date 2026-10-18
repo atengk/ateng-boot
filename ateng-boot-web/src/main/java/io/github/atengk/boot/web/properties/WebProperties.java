@@ -326,5 +326,24 @@ public class WebProperties {
          */
         private DataSize maxPayloadSize = DataSize.ofKilobytes(4);
     }
+
+    /**
+     * 结构化操作审计日志切面配置
+     */
+    @NestedConfigurationProperty
+    private OperateLogProperties operateLog = new OperateLogProperties();
+
+    /**
+     * 结构化操作审计属性配置
+     */
+    @Getter
+    @Setter
+    public static class OperateLogProperties {
+
+        /**
+         * 是否启用结构化操作审计切面（默认 true）
+         */
+        private boolean enabled = true;
+    }
 }
 
