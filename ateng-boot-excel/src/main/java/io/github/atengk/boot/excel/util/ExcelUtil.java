@@ -85,6 +85,11 @@ public final class ExcelUtil {
     private static volatile int defaultBatchSize = 1000;
 
     /**
+     * 同步全量读取最大安全行数上限（默认 100,000，超过时快速失败以防御内存 OOM；可通过配置文件 ateng.boot.excel.max-sync-rows 调整）
+     */
+    private static volatile int maxSyncRows = 100_000;
+
+    /**
      * 全局样式与模版主题配置（可通过配置文件 ateng.boot.excel.style.* 调整）
      */
     private static volatile ExcelStyleProperties defaultStyleProperties = new ExcelStyleProperties();
@@ -103,10 +108,31 @@ public final class ExcelUtil {
             if (properties.getDefaultBatchSize() > 0) {
                 defaultBatchSize = properties.getDefaultBatchSize();
             }
+            if (properties.getMaxSyncRows() > 0) {
+                maxSyncRows = properties.getMaxSyncRows();
+            }
             if (properties.getStyle() != null) {
                 defaultStyleProperties = properties.getStyle();
             }
         }
+    }
+
+    /**
+     * 获取当前生效的同步全量读取最大安全行数上限
+     *
+     * @return 同步读取安全行数上限
+     */
+    public static int getMaxSyncRows() {
+        return maxSyncRows;
+    }
+
+    /**
+     * 设置同步全量读取最大安全行数上限（设为 0 或负数则关闭行数限制）
+     *
+     * @param rows 安全行数上限
+     */
+    public static void setMaxSyncRows(int rows) {
+        maxSyncRows = rows;
     }
 
     /**
@@ -293,6 +319,10 @@ public final class ExcelUtil {
         registerEnumConverters(readerBuilder, clazz);
         List<T> list = readerBuilder.sheet()
                 .doReadSync();
+        if (maxSyncRows > 0 && list != null && list.size() > maxSyncRows) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + list.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+        }
         return (list != null) ? list : Collections.emptyList();
     }
 
@@ -417,7 +447,12 @@ public final class ExcelUtil {
             throw new ExcelValidationException(listener.getErrorList());
         }
 
-        return listener.getValidDataList();
+        List<T> validDataList = listener.getValidDataList();
+        if (maxSyncRows > 0 && validDataList != null && validDataList.size() > maxSyncRows) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+        }
+        return validDataList;
     }
 
     /**

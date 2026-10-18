@@ -2,6 +2,7 @@ package io.github.atengk.boot.excel.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 /**
  * Excel 基础设施配置属性
@@ -24,6 +25,11 @@ public class ExcelProperties {
     private int defaultBatchSize = 1000;
 
     /**
+     * 同步全量读取最大允许行数上限（默认 100,000 行，超过时快速失败以防御内存 OOM；大数据量请使用 readBatch 分批流式读取）
+     */
+    private int maxSyncRows = 100_000;
+
+    /**
      * 大文件磁盘缓存临时目录（留空时使用系统临时目录）
      */
     private String tempDir;
@@ -31,10 +37,12 @@ public class ExcelProperties {
     /**
      * Excel 企业级样式与模版主题配置
      */
+    @NestedConfigurationProperty
     private ExcelStyleProperties style = new ExcelStyleProperties();
 
     /**
      * Excel 异步导出任务中心配置
      */
+    @NestedConfigurationProperty
     private ExcelAsyncExportProperties asyncExport = new ExcelAsyncExportProperties();
 }

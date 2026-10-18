@@ -375,4 +375,45 @@ class SampleExcelIntegrationTest {
         assertThat(task.getStatus()).isEqualTo(io.github.atengk.boot.excel.async.ExportTaskStatus.SUCCESS);
         assertThat(new java.io.File(task.getFilePath())).exists();
     }
+
+    @Test
+    @DisplayName("测试万级大数据量流式读写与内存有界分批消费仿真")
+    void testLargeDatasetStreamingSimulation() throws Exception {
+        int totalRows = 5000;
+        List<UserExcelVO> largeList = new ArrayList<>(totalRows);
+        for (int i = 1; i <= totalRows; i++) {
+            largeList.add(new UserExcelVO(
+                    (long) i,
+                    "批量用户_" + i,
+                    "138" + String.format("%08d", i),
+                    "user_" + i + "@example.com",
+                    (i % 2 == 0) ? SampleGenderEnum.MALE : SampleGenderEnum.FEMALE,
+                    "研发部",
+                    "0"
+            ));
+        }
+
+        // 1. 流式写出到输出流
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.export(out, largeList, UserExcelVO.class);
+        byte[] excelBytes = out.toByteArray();
+        assertThat(excelBytes).isNotEmpty();
+
+        // 2. 分批流式读取消费（每批 1000 条），验证有界内存缓冲区与完整性
+        ByteArrayInputStream in = new ByteArrayInputStream(excelBytes);
+        java.util.concurrent.atomic.AtomicInteger batchCounter = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger totalCounter = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        ExcelUtil.readBatch(in, UserExcelVO.class, 1000, batch -> {
+            batchCounter.incrementAndGet();
+            totalCounter.addAndGet(batch.size());
+            // 校验批次数据脱敏前瞻（写出时已由 SensitiveCellWriteHandler 掩码）
+            for (UserExcelVO user : batch) {
+                assertThat(user.getPhone()).contains("****");
+            }
+        });
+
+        assertThat(batchCounter.get()).isEqualTo(5);
+        assertThat(totalCounter.get()).isEqualTo(totalRows);
+    }
 }

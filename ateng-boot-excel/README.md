@@ -4,6 +4,30 @@
 
 ---
 
+## 0. 特性与公共 API 全景速查矩阵
+
+| 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **基础运维** | 自动装配与主配置 | `ExcelProperties` / `AtengExcelAutoConfiguration` | `ateng.boot.excel.enabled`<br>`ateng.boot.excel.default-batch-size`<br>`ateng.boot.excel.max-sync-rows`<br>`ateng.boot.excel.temp-dir` | 统管 Starter 自动装配、流式批次阈值与同步读取防 OOM 最大行数上限 | `AtengExcelAutoConfigurationTest`<br>`ExcelUtilTest` |
+| **核心导出** | 强类型流式导出 | `ExcelUtil` | - | `export(out, list, clazz)` / `export(response, fileName, list, clazz)`：流式写出并自适应配置 RFC 5987 / RFC 6266 标准防乱码响应头 | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
+| **核心读取** | 同步全量与流式分批读取 | `ExcelUtil` | `ateng.boot.excel.default-batch-size`<br>`ateng.boot.excel.max-sync-rows` | `read(in, clazz)`（超限自动 fail-fast 阻断防 OOM）；`readBatch(in, clazz, batchSize, consumer)`（每次达到批次回调并即刻清空内存引用） | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
+| **数据校验** | JSR-303 行级校验导入 | `ExcelUtil` / `BatchValidationListener` | - | `readWithValidation(in, clazz, failFast)` / `readWithResult(in, clazz)` / `readBatchWithValidation(in, clazz, size, dataConsumer, errConsumer)`：精准捕获行号与列字段并聚合错误 | `ExcelValidationTest`<br>`SampleExcelIntegrationTest` |
+| **错题集隔离** | 差错数据隔离提取与标红回写 | `ExcelUtil` / `ExcelFeedbackUtil` / `FailSplitRowWriteHandler` | - | `exportFailedRows(out, clazz, errorRows)`（仅将失败数据提取生成纠错文件并高亮）；`exportErrorFeedback(in, out, errorRows)`（原表单元格粉色高亮并嵌入浮动批注） | `ExcelFailSplitTest`<br>`SampleExcelIntegrationTest` |
+| **数据安全** | 导出动态脱敏 | `@ExcelSensitive` / `SensitiveCellWriteHandler` | - | `@ExcelSensitive(type, keepHead, keepTail)`：写出时拦截掩码，源实体在 JVM 内存中 100% 保持原始明文不变量，杜绝掩码脏写 | `ExcelSensitiveTest`<br>`SampleExcelIntegrationTest` |
+| **企业主题** | 模版主题与智能列宽 | `@ExcelTheme` / `ExcelThemeEnum` / `ExcelThemeWriteHandler` / `SmartAutoColumnWidthWriteHandler` | `ateng.boot.excel.style.enabled`<br>`ateng.boot.excel.style.theme`<br>`ateng.boot.excel.style.zebra-stripe`<br>`ateng.boot.excel.style.auto-column-width` | 5 套企业级内置主题（`minimal-clean`, `business-blue`, `classic-grey`, `fresh-green`, `warm-orange`）；中英文双字节补偿列宽防数值变 `###` | `ExcelThemeWriteHandlerTest`<br>`SampleExcelIntegrationTest` |
+| **链式编排** | 多 Sheet 链式构建器 | `ExcelBuilder` | - | `ExcelUtil.builder(out).theme(theme).sheet(name, clazz, list).finish()`：实现了 `AutoCloseable`，支持在单个工作簿内连续编排实体与动态 Sheet | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
+| **枚举转义** | 字段级枚举映射 | `@ExcelEnum` / `ExcelEnumConverter` | - | `@ExcelEnum(valueField = "code", textField = "text")`：双向自动转换实体枚举与表格文字，内置双向无锁并发缓存 | `ExcelEnumAndDictTest`<br>`SampleExcelIntegrationTest` |
+| **字典翻译** | 动态数据字典 SPI | `@ExcelDict` / `DictProvider` / `DictProviderHolder` | - | `@ExcelDict(dictType = "user_status")`：解耦具体字典存储（数据库/Redis/枚举），导入导出时双向透明翻译 | `ExcelEnumAndDictTest`<br>`SampleExcelIntegrationTest` |
+| **防呆设计** | 表头指南与下拉选单约束 | `@ExcelPrompt` / `@ExcelDropdown` / `DropdownProvider` | - | `@ExcelPrompt(title, content)`（自动写入单元格浮动提示批注）；`@ExcelDropdown`（自动生成工作表级下拉列表限制，超过 255 字符自动外挂隐藏字典工作表） | `ExcelTemplateTest`<br>`SampleExcelIntegrationTest` |
+| **安全审计** | 防拍照暗水印与密码保护 | `ExcelUtil.exportWithWatermark` / `protectSheet` / `WatermarkSheetWriteHandler` | - | `exportWithWatermark(out, list, clazz, watermarkText, password)`：全屏 30° 倾斜半透明平铺暗水印，支持工作表只读密码锁定 | `ExcelWatermarkAndProtectTest`<br>`SampleExcelIntegrationTest` |
+| **多媒体导出** | 图片流式导出与行高自适应 | `@ExcelImage` / `SmartImageConverter` / `ImageRowHeightWriteHandler` | - | `@ExcelImage(width, height)`：支持 `byte[]`、`InputStream`、`File` 与 URL 网络图片，自动根据最大图片像素推算行高并精准锚定单元格居中 | `ExcelImageTest` |
+| **结构排版** | 单元格纵向合并 | `@ExcelMerge` / `MergeCellWriteHandler` | - | `@ExcelMerge(mergeBy = "deptId")`：对连续相同的数据单元格自动纵向合并，支持依赖主键或指定关联列联动合并 | `ExcelAdvancedFeaturesTest` |
+| **复杂报表** | 模板数据填充 | `ExcelUtil.fill` | - | `fill(out, templateIn, data, fillConfig)`：基于预设 `.xlsx` 模板，支持单对象占位符 `{name}` 与列表集合循环 `{.list}` 复合填充 | `ExcelTemplateTest` |
+| **动态导出** | 无实体动态流式导出 | `ExcelUtil.exportDynamic` | - | `exportDynamic(out, headList, dataList)`：支持动态表头与 `List<Map>` / `List<List<?>>` 二维数据直接流式写出 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
+| **异步中心** | 大文件异步导出任务中心 | `AsyncExportTaskService` / `InMemoryAsyncExportTaskService` | `ateng.boot.excel.async-export.enabled`<br>`ateng.boot.excel.async-export.retention-period`<br>`ateng.boot.excel.async-export.core-pool-size`<br>`ateng.boot.excel.async-export.queue-capacity` | `submit(taskName, executor)` / `getTask(taskId)` / `cancel(taskId)`：受管线程池后台写出、四维上下文快照透传、进度感知、防重复队列拦截与过期文件定时自动清理 | `AsyncExportTaskServiceTest`<br>`SampleExcelIntegrationTest` |
+
+---
+
 ## 1. 模块定位与 Maven 坐标
 
 `ateng-boot-excel` 是面向企业级的高内聚、轻量级、开箱即用的 Excel 基础设施模块。
@@ -847,10 +871,14 @@ ateng:
       enabled: true
       # 流式读取默认批次大小（默认 1000）
       default-batch-size: 1000
+      # 同步全量读取最大允许行数上限（默认 100,000，超过时快速失败以防御内存 OOM；大数据量请使用 readBatch 分批流式读取）
+      max-sync-rows: 100000
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
       # 异步导出任务中心配置
       async-export:
+        # 是否启用异步导出中心（默认 true）
+        enabled: true
         # 异步导出产物物理文件落盘目录（留空时使用 java.io.tmpdir/ateng-excel-async）
         temp-dir: /data/tmp/ateng-excel-async
         # 核心线程池大小（默认 4）
@@ -859,14 +887,14 @@ ateng:
         max-pool-size: 8
         # 缓冲队列容量（默认 200）
         queue-capacity: 200
-        # 产物物理文件保留小时数（默认 24 小时）
-        retention-hours: 24
+        # 产物物理文件默认保留过期时长（默认 24h，支持 24h、1d 等标准 Duration 格式，亦兼容 retention-hours）
+        retention-period: 24h
       # 样式与主题配置
       style:
         # 是否启用全局样式拦截增强（默认 true；设置为 false 时完全关闭样式与列宽增强，零开销）
         enabled: true
-        # 默认商务主题：MINIMAL_CLEAN / BUSINESS_BLUE / CLASSIC_GREY / FRESH_GREEN / WARM_ORANGE（默认 MINIMAL_CLEAN）
-        theme: MINIMAL_CLEAN
+        # 默认商务主题：minimal-clean / business-blue / classic-grey / fresh-green / warm-orange（默认 minimal-clean）
+        theme: minimal-clean
         # 是否默认开启奇偶行斑马纹交替底色（默认 true）
         zebra-stripe: true
         # 是否默认启用中英文加权自适应列宽（默认 true）
@@ -880,6 +908,81 @@ ateng:
         # 默认全局字体名称（默认 微软雅黑）
         font-name: "微软雅黑"
 ```
+
+---
+
+## 16. 生产扩展与高阶定制 (Customization & Extensibility)
+
+`ateng-boot-excel` 遵循模块解耦与 SPI 扩展原则，支持企业级核心能力的平滑自定义接管：
+
+### 16.1 自定义动态数据字典提供者 (`DictProvider` SPI)
+当系统使用自定义数据库表、Redis 或远程 RPC 服务维护数据字典时，只需向 Spring 容器注册 `DictProvider` Bean 即可无缝接管 `@ExcelDict` 翻译：
+
+```java
+@Component
+public class RemoteDictProvider implements DictProvider {
+
+    @Autowired
+    private RemoteDictFeignClient dictFeignClient;
+
+    @Override
+    public String toText(String dictType, String dictValue) {
+        return dictFeignClient.queryText(dictType, dictValue);
+    }
+
+    @Override
+    public String toValue(String dictType, String dictText) {
+        return dictFeignClient.queryValue(dictType, dictText);
+    }
+}
+```
+
+### 16.2 自定义异步导出任务中心 (`AsyncExportTaskService` 接管)
+当企业需要分布式任务调度（如持久化至 MySQL/PostgreSQL 或上传至 MinIO/OSS 对象存储）时，仅需声明同类型 Bean 即可覆盖默认的内存实现：
+
+```java
+@Service
+public class OssDistributedAsyncExportService implements AsyncExportTaskService {
+
+    @Override
+    public String submit(String taskName, ExportTaskExecutor executor) {
+        // 自定义提交至分布式任务表或 MQ，执行流式上传至 OSS
+        return "custom_task_id";
+    }
+
+    @Override
+    public ExportTask getTask(String taskId) {
+        return queryTaskFromDb(taskId);
+    }
+
+    @Override
+    public boolean cancel(String taskId) {
+        return cancelTaskInCluster(taskId);
+    }
+
+    @Override
+    public void cleanExpiredTasks(Duration retention) {
+        // 清理 OSS 与数据库过期归档记录
+    }
+}
+```
+
+---
+
+## 17. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+
+### 17.1 流式事件驱动与内存防爆 (OOM 防御)
+- **逐行事件流读取**：底层基于 Apache Fesod 事件模型，逐行解析 XML 标记并不在堆中滞留全表模型；调用 `readBatch` 时每累积至 `batchSize`（默认 1000 行）即回调消费并清空内部缓冲区，千万级行数导入亦可维持平稳的常数级堆内存开销。
+- **同步全量读取安全阈值**：对于一次性返回 List 的同步接口 `ExcelUtil.read` 与 `readWithValidation`，内置 `maxSyncRows`（默认 100,000 行）快速失败防线；超过阈值立即抛出 `BusinessException` 阻断，杜绝恶意或误传超大文件导致 JVM FullGC 与 OOM。
+
+### 17.2 内存真明文与脱敏拦截原理
+- **切面拦截写出**：脱敏统一收敛在 `SensitiveCellWriteHandler` 的 `afterCellDataConverted` 阶段，仅修改输出至 Excel 单元格的字面量文本（`cellData.setStringValue(maskedValue)`）；
+- **内存真明文不变量**：内存中的实体 Bean、Service 业务逻辑与上下文保持 100% 原始真实明文，彻底根除因在业务层打星号导致掩码脏数据写回持久层的致命隐患。
+
+### 17.3 确定性资源释放与临时文件物理清理
+- **流与连接绝对清理**：所有导出、填充与反馈工具方法严格在 `try-with-resources` 或 `finally` 块中关闭 `Workbook` 与流对象；
+- **异步半成品补偿清理**：异步导出任务在发生异常中断或调用 `cancel(taskId)` 时，自动物理删除磁盘上已生成的半成品临时文件；同时由守护线程定期根据 `retentionPeriod` 物理回收历史过期文件，防止磁盘物理空间耗尽。
+
 
 
 

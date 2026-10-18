@@ -136,4 +136,63 @@ class ExcelUtilTest {
         assertThrows(IllegalArgumentException.class, () -> ExcelUtil.read(null, DemoUser.class));
         assertThrows(IllegalArgumentException.class, () -> ExcelUtil.read(in, null));
     }
+
+    @Test
+    @DisplayName("测试同步全量读取超过 maxSyncRows 安全上限时快速失败抛出 BusinessException 防 OOM")
+    void testMaxSyncRowsExceededThrowsBusinessException() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            // 设置一个极小的测试阈值
+            ExcelUtil.setMaxSyncRows(5);
+
+            List<DemoUser> expected = mockUsers(10);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExcelUtil.export(out, expected, DemoUser.class);
+
+            ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+            io.github.atengk.boot.core.exception.BusinessException ex = assertThrows(
+                    io.github.atengk.boot.core.exception.BusinessException.class,
+                    () -> ExcelUtil.read(in, DemoUser.class)
+            );
+            assertTrue(ex.getMessage().contains("Excel 数据行数超出同步读取安全上限"));
+            assertTrue(ex.getMessage().contains("5 行"));
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 maxSyncRows 设置为 0 时关闭同步读取上限")
+    void testMaxSyncRowsDisabled() {
+        int previousLimit = ExcelUtil.getMaxSyncRows();
+        try {
+            ExcelUtil.setMaxSyncRows(0);
+
+            List<DemoUser> expected = mockUsers(10);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExcelUtil.export(out, expected, DemoUser.class);
+
+            ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
+            List<DemoUser> actual = ExcelUtil.read(in, DemoUser.class);
+            assertEquals(10, actual.size());
+        } finally {
+            ExcelUtil.setMaxSyncRows(previousLimit);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 ExcelProperties 配置绑定与向后兼容适配")
+    void testExcelPropertiesConfiguration() {
+        io.github.atengk.boot.excel.properties.ExcelProperties props = new io.github.atengk.boot.excel.properties.ExcelProperties();
+        props.setMaxSyncRows(50000);
+        props.getAsyncExport().setRetentionHours(12);
+
+        assertEquals(50000, props.getMaxSyncRows());
+        assertEquals(12, props.getAsyncExport().getRetentionHours());
+        assertEquals(java.time.Duration.ofHours(12), props.getAsyncExport().getRetentionPeriod());
+
+        props.getAsyncExport().setRetentionPeriod(java.time.Duration.ofHours(48));
+        assertEquals(48, props.getAsyncExport().getRetentionHours());
+        assertEquals(java.time.Duration.ofHours(48), props.getAsyncExport().getRetentionPeriod());
+    }
 }

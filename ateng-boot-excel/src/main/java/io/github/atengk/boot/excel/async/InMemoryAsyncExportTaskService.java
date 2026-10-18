@@ -78,12 +78,12 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                 new ThreadPoolExecutor.AbortPolicy()
         );
 
-        int retentionHours = Math.max(1, props.getRetentionHours());
+        Duration retention = props.getRetentionPeriod() != null ? props.getRetentionPeriod() : Duration.ofHours(Math.max(1, props.getRetentionHours()));
         this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("ateng-excel-cleaner-")
         );
         this.cleanerExecutor.scheduleAtFixedRate(
-                () -> cleanExpiredTasks(Duration.ofHours(retentionHours)),
+                () -> cleanExpiredTasks(retention),
                 1, 1, TimeUnit.HOURS
         );
     }
