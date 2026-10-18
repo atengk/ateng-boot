@@ -165,3 +165,10 @@ _Avoid_: AuditActionEnum, LogTypeEnum, ActionType
 结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
 _Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord
 
+**DateTimeUtil**:
+纯 JDK 17 原生日期时间互转与跨度计算静态门面，提供 LocalDateTime、LocalDate、Date 与毫秒时间戳多向无损互转，绑定系统时区，支持天首天尾起止与任意 ChronoUnit / Duration / Period 时间跨度计算。
+_Avoid_: DateUtil, TimeUtil, JodaTimeUtil
+
+**RandomUtil**:
+纯 JDK 17 原生高性能无锁安全随机工具类，基于 ThreadLocalRandom 提供定长纯数字验证码、数字字母混合随机串、闭区间随机数与列表安全抽样洗牌。
+_Avoid_: RandomHelper, SecureRandomUtil, MathRandom

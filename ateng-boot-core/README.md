@@ -44,6 +44,8 @@
 | **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java` |
 | **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java` |
 | **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java` |
+| **日期时间门面** | 原生日期时间互转与跨度计算 | `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(t1, t2)`, `format(ldt)`, `parseDateTime(str)` | `DateTimeUtilTest.java` |
+| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java` |
 
 ---
 
@@ -792,6 +794,81 @@ if (logModel.isSuccess()) {
 // 4. 纯净序列化与反序列化（零 @class 污染，时间格式自动对齐）
 String json = JsonUtil.toJsonString(logModel);
 OperateLogModel parsed = JsonUtil.parseObject(json, OperateLogModel.class);
+```
+
+### 13. 原生日期时间互转与跨度计算门面 (`DateTimeUtil`)
+
+#### 场景痛点与特性
+Java 8 引入 JSR-310（`java.time`）后，企业老代码库或外部驱动（如 JDBC、旧版 SDK）仍大量充斥 `java.util.Date` 与毫秒时间戳。
+开发者在 `LocalDateTime`、`LocalDate`、`Date` 与时间戳之间互转时，常因忽略时区（`ZoneId`）、纳秒与毫秒换算失真或未防 null 产生 NPE。
+`DateTimeUtil` 坚持 100% 纯 JDK 17 原生封装，坚决杜绝 `joda-time` 或第三方全量包：
+- **三向安全无损互转**：支持 `LocalDateTime`、`LocalDate`、`Date` 与毫秒时间戳多向自由互转，默认绑定系统时区，严格防范 null 崩溃；
+- **天首天尾起止计算**：提供 `beginOfDay`（00:00:00.000000000）与 `endOfDay`（23:59:59.999999999），支持 `LocalDateTime`、`LocalDate` 与 `Date`，涵盖今日开箱即用快捷语法糖；
+- **标准化格式化与解析**：内置 `DatePattern` 标准格式串（`yyyy-MM-dd HH:mm:ss` 与 `yyyy-MM-dd`），支持自定义 Pattern 与预编译 `DateTimeFormatter`；
+- **多维度跨度计算**：提供 `betweenDays`、`betweenHours`、`betweenMinutes`、`betweenSeconds`、`betweenMillis`、`betweenDuration` 与 `betweenPeriod`，缺省入参防御保底返回 0。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.DateTimeUtil;
+
+import java.time.Duration;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Date;
+
+// 1. 无损互转（自动绑定系统默认时区）
+Date date = DateTimeUtil.toDate(LocalDateTime.now());
+LocalDateTime ldt = DateTimeUtil.toLocalDateTime(date);
+Long epochMilli = DateTimeUtil.toEpochMilli(ldt);
+LocalDate localDate = DateTimeUtil.toLocalDate(epochMilli);
+
+// 2. 天首天尾起止
+LocalDateTime dayStart = DateTimeUtil.beginOfDay(ldt); // 2026-10-18T00:00:00
+LocalDateTime dayEnd = DateTimeUtil.endOfDay(ldt);     // 2026-10-18T23:59:59.999999999
+Date todayStart = DateTimeUtil.beginOfTodayDate();
+
+// 3. 标准格式化与解析
+String str = DateTimeUtil.format(ldt); // "2026-10-18 20:15:30"
+LocalDateTime parsed = DateTimeUtil.parseDateTime(str);
+
+// 4. 时间跨度计算
+long days = DateTimeUtil.betweenDays(ldt, ldt.plusDays(3));       // 3
+long hours = DateTimeUtil.betweenHours(ldt, ldt.plusHours(12));   // 12
+Duration duration = DateTimeUtil.betweenDuration(ldt, ldt.plusMinutes(90)); // PT1H30M
+```
+
+### 14. 高性能无锁安全随机标准件 (`RandomUtil`)
+
+#### 场景痛点与特性
+传统业务代码中频繁使用 `new Random()` 或 `Math.random()`，在高并发多线程争用下底层 CAS 种子自旋竞争导致吞吐断崖式下跌；而在需要定长短信验证码、指定区间闭合随机整数、随机抽样与洗牌时，容易写出边界越界、符号位溢出（如 `max == Integer.MAX_VALUE` 时加 1 溢出）或破坏原列表的脆弱代码。
+`RandomUtil` 依托 `ThreadLocalRandom` 提供无锁并发高性能实现：
+- **无锁验证码与随机串**：`randomNumbers(len)` 生成定长纯数字验证码（支持包含前导 0）；`randomString(len)` 生成数字大小写混合串；`randomStringLower(len)` / `randomStringUpper(len)` 生成指定格式随机串；
+- **双向闭区间数值防溢出**：`randomInt(min, max)` 与 `randomLong(min, max)` 生成严格闭区间 `[min, max]` 数值，具备大小边界自动对调与 `Integer.MAX_VALUE` 防溢出保护；
+- **防空抽样与无损洗牌**：`randomEle(list/array)` 单元素安全随机提取；`randomEles(list, count)` 无放回安全抽样（不破坏原列表）；`shuffle(list)` 就地打乱与 `shuffleNew(list)` 防变副本书写。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.RandomUtil;
+
+import java.util.Arrays;
+import java.util.List;
+
+// 1. 生成 6 位纯数字短信验证码
+String smsCode = RandomUtil.randomNumbers(6); // 如 "391845"
+
+// 2. 生成 16 位混合随机密钥串
+String secretKey = RandomUtil.randomString(16);
+
+// 3. 闭区间 [10, 50] 随机整数（自动防溢出与边界对调）
+int randomInt = RandomUtil.randomInt(10, 50);
+
+// 4. 列表随机抽样（防 NPE 与空列表，无放回抽样）
+List<String> users = Arrays.asList("Alice", "Bob", "Charlie", "David");
+String winner = RandomUtil.randomEle(users);            // 随机抽取 1 人
+List<String> luckyTwo = RandomUtil.randomEles(users, 2); // 随机抽取 2 人（不重复）
+
+// 5. 列表无损洗牌打乱（返回新副本，不破坏原列表顺序）
+List<String> shuffled = RandomUtil.shuffleNew(users);
 ```
 
 ---
