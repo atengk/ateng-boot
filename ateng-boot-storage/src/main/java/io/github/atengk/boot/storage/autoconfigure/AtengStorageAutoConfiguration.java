@@ -6,6 +6,7 @@ import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
 import io.github.atengk.boot.storage.driver.S3Driver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
+import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
@@ -87,16 +88,31 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
+     * 存储安全防卫与文件魔数嗅探器 Bean 装配
+     *
+     * @param properties 存储配置属性
+     * @return StorageGuard 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(StorageGuard.class)
+    public StorageGuard storageGuard(StorageProperties properties) {
+        return new StorageGuard(properties.getGuard());
+    }
+
+    /**
      * 存储核心操作门面 Bean 装配
      *
      * @param defaultDriver 默认主存储驱动
      * @param factory       存储驱动工厂
+     * @param storageGuard  存储安全防卫器
      * @return StorageTemplate 门面实例
      */
     @Bean
     @ConditionalOnMissingBean(StorageOperations.class)
-    public StorageTemplate storageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory) {
-        return new StorageTemplate(defaultDriver, factory);
+    public StorageTemplate storageTemplate(StorageDriver defaultDriver, StorageDriverFactory factory, StorageGuard storageGuard) {
+        StorageTemplate template = new StorageTemplate(defaultDriver, factory);
+        template.setStorageGuard(storageGuard);
+        return template;
     }
 
     /**

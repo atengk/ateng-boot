@@ -587,7 +587,74 @@ TraceId: trace-12345
 
 ---
 
-## 17. 场景样例工程与集成测试
+## 17. 文件魔数特征嗅探与防伪装安全加固 (`StorageGuard`)
+
+### 场景痛点
+在文件上传业务中，恶意攻击者常通过修改文件扩展名（例如将恶意的 Windows PE `.exe`、Linux `.elf`、Shell 脚本或木马伪装为 `.png`、`.jpg` 或 `.pdf`）尝试绕过前端与表层扩展名检查直接落盘，引发远程代码执行（RCE）或恶意文件扩散；同时，传统的流探查若盲目 `read()` 原始流，会导致输入流指针偏移造成下游驱动写入被截断或空文件。
+
+### 核心能力与零截断不变量
+- **15+ 种标准特征字节比对**：内置图片（PNG、JPEG、GIF、WEBP、BMP）、文档（PDF、OLE2 DOC/XLS/PPT、XML、SVG）、压缩包（ZIP、Office OpenXML、GZ、7Z、TAR）及音视频（MP4、MP3、WAV、AVI）的标准魔数嗅探器；
+- **高危恶意二进制特征识别**：精准嗅探 Windows PE（`MZ`）、Linux ELF（`.ELF`）、Shell 脚本（`#!`）、Java 字节码（`CAFEBABE`），杜绝伪装上传；
+- **零流截断损耗保障（Zero-Truncation Invariant）**：基于 `BufferedInputStream.mark(512)` 与 `reset()` 机制安全嗅探特征头，嗅探完毕自动精准复位指针，确保下游本地或云端 S3 存储驱动拿到 100% 完整的原始流与 MD5 散列；
+- **异常快速失败拦截**：细分抛出 `STORAGE_FILE_TYPE_MISMATCH`（40010，伪装不匹配）与 `STORAGE_FILE_NOT_ALLOWED`（40011，黑白名单拦截）。
+
+### 配置范式
+在 `application.yml` 中开启安全防卫与魔数校验：
+```yaml
+ateng:
+  boot:
+    storage:
+      guard:
+        enabled: true                 # 开启文件安全防卫与魔数嗅探拦截（默认 false）
+        strict-magic-check: true      # 开启严格魔数强校验（默认 false，开启时已知二进制格式必须与扩展名特征绝对吻合）
+        allowed-extensions:           # 允许上传的文件扩展名白名单（默认空集合，即不限制白名单）
+          - png
+          - jpg
+          - jpeg
+          - pdf
+          - zip
+```
+
+### 核心代码范式
+
+#### 1. 统一门面自动防卫拦截 (`StorageTemplate.upload`)
+无需修改业务层代码，只要在配置中启用 `guard.enabled: true`，所有经由 `StorageTemplate.upload` 的文件流与 MultipartFile 自动受到安全守卫与特征嗅探保护：
+
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void uploadAvatar(InputStream in) {
+    // 若上传的文件声明为 avatar.png，但真实二进制内容为可执行脚本或 PE 二进制，将立即被拦截阻断
+    storageTemplate.upload("uploads/avatar.png", in);
+}
+```
+
+#### 2. 编程式独立特征嗅探 (`StorageGuard.sniff`)
+支持直接调用 `StorageGuard.sniff(in)` 或 `StorageGuard.sniff(headerBytes)` 零损耗推导真实文件类型与 MIME：
+
+```java
+// 基于输入流零损耗嗅探真实类型
+StorageFileType fileType = StorageGuard.sniff(in);
+if (fileType != null) {
+    System.out.println("真实文件类型: " + fileType.getName());
+    System.out.println("标准 MIME 类型: " + fileType.getMimeType());
+    System.out.println("是否为高危文件: " + fileType.isDangerous());
+}
+```
+
+### 预期呈现契约
+当攻击者尝试将可执行脚本伪装为 `avatar.png` 上传时，系统立即阻断并抛出清晰的业务异常：
+```text
+io.github.atengk.boot.storage.exception.StorageException: 检测到文件伪装攻击：文件声明扩展名为 [png]，但实际内容特征为高危文件 [sh]
+	at io.github.atengk.boot.storage.guard.StorageGuard.inspect(StorageGuard.java:232)
+	at io.github.atengk.boot.storage.template.StorageTemplate.upload(StorageTemplate.java:185)
+```
+HTTP 返回状态码 `40010`（`STORAGE_FILE_TYPE_MISMATCH`），恶意文件被彻底拒之门外，零磁盘/S3污染。
+
+---
+
+## 18. 场景样例工程与集成测试
 
 完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
 👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)

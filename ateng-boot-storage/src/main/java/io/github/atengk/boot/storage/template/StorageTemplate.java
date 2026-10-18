@@ -13,6 +13,7 @@ import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import jakarta.servlet.http.HttpServletResponse;
@@ -61,6 +62,8 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     private final String boundSourceKey;
 
     private ApplicationEventPublisher eventPublisher;
+
+    private StorageGuard storageGuard;
 
     /**
      * 基于单一主驱动构造门面
@@ -148,6 +151,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
                 StorageDriver primaryDriver = this.factory != null ? this.factory.getPrimaryDriver() : this.defaultDriver;
                 StorageTemplate sub = new StorageTemplate(primaryDriver, this.factory, this.driverMap, true, "primary");
                 sub.setApplicationEventPublisher(this.eventPublisher);
+                sub.setStorageGuard(this.storageGuard);
                 return sub;
             }
             return this;
@@ -163,6 +167,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         }
         StorageTemplate sub = new StorageTemplate(targetDriver, this.factory, this.driverMap, true, sourceKey.trim());
         sub.setApplicationEventPublisher(this.eventPublisher);
+        sub.setStorageGuard(this.storageGuard);
         return sub;
     }
 
@@ -178,7 +183,17 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size) {
-        StorageObject metadata = getDriver().upload(path, in, contentType, size);
+        InputStream effectiveStream = in;
+        String effectiveContentType = contentType;
+        if (this.storageGuard != null && this.storageGuard.isEnabled()) {
+            StorageGuard.GuardResult guardResult = this.storageGuard.inspect(path, in, contentType);
+            effectiveStream = guardResult.getGuardedStream();
+            if ((effectiveContentType == null || effectiveContentType.isBlank() || "application/octet-stream".equals(effectiveContentType))
+                    && guardResult.getDetectedMimeType() != null) {
+                effectiveContentType = guardResult.getDetectedMimeType();
+            }
+        }
+        StorageObject metadata = getDriver().upload(path, effectiveStream, effectiveContentType, size);
         if (metadata != null) {
             publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), metadata.getPath(), metadata.getSize(), metadata.getContentType()));
         }
@@ -529,5 +544,13 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
             throw new StorageException(StorageResultCode.STORAGE_SOURCE_NOT_FOUND, "未找到上下文指定的存储源: " + contextSource);
         }
         return this.defaultDriver;
+    }
+
+    public StorageGuard getStorageGuard() {
+        return this.storageGuard;
+    }
+
+    public void setStorageGuard(StorageGuard storageGuard) {
+        this.storageGuard = storageGuard;
     }
 }

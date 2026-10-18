@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.autoconfigure;
 import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
+import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
 import io.github.atengk.boot.storage.template.StorageTemplate;
@@ -39,6 +40,7 @@ class AtengStorageAutoConfigurationTest {
             assertThat(context).hasSingleBean(StorageOperations.class);
             assertThat(context).hasSingleBean(StorageTemplate.class);
             assertThat(context).hasSingleBean(StorageProperties.class);
+            assertThat(context).hasSingleBean(StorageGuard.class);
             assertThat(context).doesNotHaveBean(LocalStorageDownloadController.class);
         });
     }

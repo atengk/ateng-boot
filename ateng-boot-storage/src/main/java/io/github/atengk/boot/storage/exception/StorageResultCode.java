@@ -52,7 +52,17 @@ public enum StorageResultCode implements IResultCode {
     /**
      * 存储操作执行异常
      */
-    OPERATION_FAILED(50008, "存储操作执行异常");
+    OPERATION_FAILED(50008, "存储操作执行异常"),
+
+    /**
+     * 文件真实类型与扩展名不匹配（存在伪装风险）
+     */
+    STORAGE_FILE_TYPE_MISMATCH(40010, "文件真实类型与扩展名不匹配"),
+
+    /**
+     * 文件类型不被允许上传
+     */
+    STORAGE_FILE_NOT_ALLOWED(40011, "文件类型不被允许上传");
 
     /**
      * 状态码数值
