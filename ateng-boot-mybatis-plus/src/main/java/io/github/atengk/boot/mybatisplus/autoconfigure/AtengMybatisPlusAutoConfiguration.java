@@ -23,6 +23,7 @@ import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,12 +33,14 @@ import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
 import io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader;
+import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.io.support.ResourcePatternResolver;
+import org.springframework.transaction.PlatformTransactionManager;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
 import java.util.List;
@@ -313,5 +316,18 @@ public class AtengMybatisPlusAutoConfiguration {
                 providers,
                 eventPublisher
         );
+    }
+
+    /**
+     * 注册受管游标流式查询模板与防 OOM 执行门面
+     *
+     * @param transactionManager 平台事务管理器
+     * @return 受管游标流式查询模板实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(StreamingQueryTemplate.class)
+    @ConditionalOnBean(PlatformTransactionManager.class)
+    public StreamingQueryTemplate streamingQueryTemplate(PlatformTransactionManager transactionManager) {
+        return new StreamingQueryTemplate(transactionManager);
     }
 }

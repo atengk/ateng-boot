@@ -348,5 +348,33 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class)).isSameAs(customInterceptor);
                 });
     }
+
+    @Test
+    @DisplayName("当环境中存在 PlatformTransactionManager 时成功装配 StreamingQueryTemplate 门面")
+    void shouldAutoConfigureStreamingQueryTemplateWhenTransactionManagerPresent() {
+        org.springframework.transaction.PlatformTransactionManager mockTm = org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class);
+
+        contextRunner.withBean(org.springframework.transaction.PlatformTransactionManager.class, () -> mockTm)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class);
+                    io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate template = context.getBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class);
+                    assertThat(template.getTransactionTemplate()).isNotNull();
+                    assertThat(template.getTransactionTemplate().isReadOnly()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 StreamingQueryTemplate 时优先使用业务自定义 Bean")
+    void shouldPreferCustomStreamingQueryTemplateBean() {
+        org.springframework.transaction.PlatformTransactionManager mockTm = org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class);
+        io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate customTemplate = new io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate(mockTm);
+
+        contextRunner.withBean(org.springframework.transaction.PlatformTransactionManager.class, () -> mockTm)
+                .withBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class, () -> customTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate.class)).isSameAs(customTemplate);
+                });
+    }
 }
 

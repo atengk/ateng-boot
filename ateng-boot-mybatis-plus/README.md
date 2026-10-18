@@ -39,6 +39,7 @@
 | **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、动态解析与热加载中心，支持运行时动态注册/移除外部 XML 脚本与白名单校验 | `DynamicSqlRegistryTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectList` / `selectOne` / `selectMaps` / `update` / `insert` / `delete`，提供对称完备的外部动态 SQL 执行能力 | `DynamicSqlExecutorTest` / `DynamicSqlIntegrationTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
+| **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn` 原生批量插入扩展 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
 
@@ -597,4 +598,111 @@ public class SlowSqlMetricsListener {
    内置智能框架类过滤逻辑，主动穿透过滤 JDK 内部、MyBatis 驱动、Tomcat 容器、Spring 代理及测试执行器，精准定位到首个业务 Service 或 Controller 代码行号。
 5. **异常容错与弹性降级**：
    告警提供者 SPI 与 Spring 事件发布均处于独立的防卫 `try-catch` 沙箱中。若第三方 Webhook 超时或网络异常，绝不向上抛出异常或阻断业务事务的正常提交。
+
+---
+
+## 12. 受管游标流式查询模板与防 OOM 门面 (`StreamingQueryTemplate`)
+
+### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
+
+在百万级大表导出（如对接 `ateng-boot-excel`）或大规模批处理拉取全量集合时，传统 `selectList` 会一次性将全量数据读入 JVM 堆内存，极易诱发致命的 `OutOfMemoryError` (OOM)；而传统的物理分页（`LIMIT offset, size`）在进入深分页后会导致底层扫描行数爆炸，引发严重的数据库 IO 与慢查询瓶颈。
+
+MyBatis 原生提供了 `Cursor<T>` 游标流式查询能力，但其致命痛点在于：**必须由外层事务维持底层 JDBC 连接在整个迭代期间持续开启**；若开发者忘记显式开启事务、或在业务异常时未闭合游标，极易造成数据库连接池句柄悬挂泄漏与死锁雪崩。
+
+`ateng-boot-mybatis-plus` 原生交付 `StreamingQueryTemplate` 门面：
+- **声明式只读事务守护**：内部由 `TransactionTemplate` 自动开启 `readOnly = true` 事务（`PROPAGATION_REQUIRED`），自适应加入外层事务，确保遍历期间连接有效；
+- **确定性生命周期清理**：借助 `try-with-resources` 机制，无论是正常消费完毕还是下游业务消费器抛出异常，游标 100% 确定性关闭并释放物理连接；
+- **双消费契约自由选用**：提供逐条流式（`forEach`）与分批切片（`forEachBatch`）消费门面，开箱即用。
+
+#### 步骤一：在 Mapper 中定义返回 `Cursor<T>` 的查询方法
+```java
+public interface StreamingTestMapper {
+
+    @Select("SELECT id, name, amount FROM test_streaming_item ORDER BY id ASC")
+    @Options(fetchSize = 1000)
+    Cursor<StreamingItem> selectAllCursor();
+}
+```
+
+#### 步骤二：使用 `StreamingQueryTemplate` 进行逐条或分批消费
+```java
+@Service
+public class StreamingExportService {
+
+    @Autowired
+    private StreamingQueryTemplate streamingQueryTemplate;
+
+    @Autowired
+    private StreamingTestMapper testMapper;
+
+    // 1. 逐条流式消费（适用于逐行导出或流式处理）
+    public void exportSingleItem() {
+        streamingQueryTemplate.forEach(
+                testMapper::selectAllCursor,
+                item -> {
+                    // 业务逻辑处理当前单条记录（内存占用仅单对象级别）
+                }
+        );
+    }
+
+    // 2. 分批切片消费（默认 1000 条切片或自定义切片大小，适用于批量 RPC 或下游微服务分批推送）
+    public void exportInBatches() {
+        streamingQueryTemplate.forEachBatch(
+                testMapper::selectAllCursor,
+                1000,
+                batchList -> {
+                    // batchList 为 unmodifiableList 不可变切片，消费完成后立即由 GC 回收
+                }
+        );
+    }
+}
+```
+
+---
+
+### 2. 生产扩展与接管 (Customization & Extensibility)
+
+#### 方案一：执行自定义聚合计算 (`execute`)
+当需要对游标数据执行自定义聚合、求和或带返回值的复杂流式计算时，可使用通用 `execute` 契约：
+
+```java
+Long maxId = streamingQueryTemplate.execute(testMapper::selectAllCursor, cursor -> {
+    long max = -1L;
+    for (StreamingItem item : cursor) {
+        if (item.getId() > max) {
+            max = item.getId();
+        }
+    }
+    return max;
+});
+```
+
+#### 方案二：基于独立只读数据源或自定义 `TransactionTemplate` 接管
+自动装配标配 `@ConditionalOnMissingBean(StreamingQueryTemplate.class)`，下游若需指定专用的只读从库事务管理器或自定义事务传播配置，可直接声明 Bean 覆盖：
+
+```java
+@Configuration
+public class CustomStreamingConfig {
+
+    @Bean
+    public StreamingQueryTemplate customStreamingQueryTemplate(
+            @Qualifier("readOnlyTransactionManager") PlatformTransactionManager readOnlyTm) {
+        return new StreamingQueryTemplate(readOnlyTm);
+    }
+}
+```
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **确定性生命周期与零连接悬挂**：
+   无论下游业务 `Consumer` 正常执行结束，还是中途抛出受控/非受控异常，`StreamingQueryTemplate` 的 `try-with-resources` 守卫均保证在第一时间内调用 `Cursor.close()`，紧接着由事务管理器归还底层物理连接至连接池，彻底消灭连接泄露隐患。
+2. **因果异常传递与原子回滚**：
+   当下游消费逻辑抛出业务异常（如 `BusinessException` 或其他 `RuntimeException`）时，模板内部在 `catch` 中显式调用 `status.setRollbackOnly()` 触发只读事务安全回滚，并**原样向外透传原始异常**，绝不吞咽异常或二次包装污染因果链。
+3. **JDBC FetchSize 与客户端缓冲区防溢出**：
+   MyBatis 流式游标建议配合 `@Options(fetchSize = 1000)` 使用（框架推荐默认值 `DEFAULT_FETCH_SIZE = 1000`）。避免底层 JDBC 驱动将数据库千万级记录一次性加载到网络 Socket 缓冲区造成物理机器内存打满。
+4. **切片数据不可变性防卫**：
+   `forEachBatch` 传出的每批 `List<T>` 均经由 `Collections.unmodifiableList` 封装，防止下游误操作对其执行 `add` / `remove` 导致数据脏读，并在每批消费完毕后立即解除引用协助 JVM 极速 GC。
+
 
