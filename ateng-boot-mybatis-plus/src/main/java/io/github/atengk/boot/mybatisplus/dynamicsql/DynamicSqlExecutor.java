@@ -124,6 +124,39 @@ public class DynamicSqlExecutor {
     }
 
     /**
+     * 编程式执行动态 INSERT 语句
+     *
+     * @param statementId 动态 SQL 唯一标识
+     * @param params      执行参数
+     * @return 影响的数据库行数
+     */
+    public int insert(String statementId, Object params) {
+        return executeDml(statementId, params);
+    }
+
+    /**
+     * 编程式执行动态 UPDATE 语句
+     *
+     * @param statementId 动态 SQL 唯一标识
+     * @param params      执行参数
+     * @return 影响的数据库行数
+     */
+    public int update(String statementId, Object params) {
+        return executeDml(statementId, params);
+    }
+
+    /**
+     * 编程式执行动态 DELETE 语句
+     *
+     * @param statementId 动态 SQL 唯一标识
+     * @param params      执行参数
+     * @return 影响的数据库行数
+     */
+    public int delete(String statementId, Object params) {
+        return executeDml(statementId, params);
+    }
+
+    /**
      * 深度融合 ADR-0010 分页契约的通用动态流式分页查询
      * 底层自动驱动 MyBatis-Plus 物理方言分页插件完成 count 统计与 limit 分页截取，并流式转换为 PageResult<T>
      *
@@ -193,8 +226,9 @@ public class DynamicSqlExecutor {
                 }
             } catch (Exception e) {
                 log.debug("入参 POJO 转 Map 展开跳过，直接作为 param 载荷包装: {}", e.getMessage());
-                map.put("param", params);
             }
+            map.putIfAbsent("param", params);
+            map.putIfAbsent("entity", params);
         }
         // 挂载分页对象，便于 ParameterUtils.findPage 智能嗅探
         map.put("page", page);

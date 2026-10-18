@@ -181,7 +181,10 @@ public class DynamicSqlRegistry {
      */
     private MappedStatement buildMappedStatement(DynamicSqlDefinition definition) {
         String id = definition.getId();
-        String script = DynamicSqlDefinition.wrapScriptIfNecessary(definition.getSqlScript(), defaultAutoScriptWrap);
+        String script = definition.getSqlScript();
+        if (definition.isAutoScriptWrap() && defaultAutoScriptWrap && !script.trim().startsWith("<script>")) {
+            script = DynamicSqlDefinition.wrapScriptIfNecessary(script, true);
+        }
         LanguageDriver languageDriver = configuration.getDefaultScriptingLanguageInstance();
         SqlSource sqlSource = languageDriver.createSqlSource(configuration, script, Object.class);
 

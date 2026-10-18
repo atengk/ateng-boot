@@ -318,6 +318,7 @@ ateng:
         auto-script-wrap: true    # 是否自动为未包裹 <script> 根标签的动态 SQL 容错包裹（默认 true）
         locations:                # 默认外部 XML 资源扫描路径
           - "classpath*:dynamic-sql/**/*.xml"
+```
 
 ---
 
@@ -330,7 +331,8 @@ ateng:
 2. **零停机原子热替换 (Zero-Gap Safe Put)**：基于底层反射原子覆盖，彻底消除 MyBatis 原生 `StrictMap` 冲突，杜绝先删后加带来的毫秒级并发读穿透空洞；
 3. **沙箱语法校验与防灾回滚**：新 SQL 在沙箱隔离预编译，若存在语法错误自动拦截并阻断更新，保留旧版稳定运行；
 4. **拦截器链 100% 透明穿透**：外部动态注入的语句自动享有行级多租户隔离、细粒度数据权限改写、防全表误操作阻断与敏感字段透明加解密；
-5. **双模调用生态**：既支持与已有 Java Mapper 接口无缝透明绑定，又提供全功能编程式执行器 `DynamicSqlExecutor`（原生融入 ADR-0010 分页契约）。
+5. **双模调用生态**：既支持与已有 Java Mapper 接口无缝透明绑定，又提供全功能编程式执行器 `DynamicSqlExecutor`（原生融入 ADR-0010 分页契约）；
+6. **事务与会话完全统一**：底层统一桥接 Spring 受管的 `SqlSessionTemplate`，与 MyBatis-Plus 的 `ServiceImpl` / `BaseMapper` 100% 共享相同事务上下文与数据库连接。
 
 ### 1. 外部 XML 脚本编写示例
 在 `src/main/resources/dynamic-sql/user-dynamic.xml` 中定义外部 SQL：
@@ -413,11 +415,39 @@ public class SqlHotReloadManager {
 }
 ```
 
-### 4. 真实控制台输出与执行契约
+### 4. 接入自定义外部 SQL 加载器 SPI (`ExternalSqlLoader`)
+若需从数据库表、Nacos 配置中心、Redis 或远程 HTTP 端点动态拉取 SQL 定义，只需实现 `ExternalSqlLoader` 并注册为 Spring Bean，框架自动装配的 `@ConditionalOnMissingBean` 会无感优先采用业务自定义实现：
+
+```java
+@Component
+public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @Override
+    public List<DynamicSqlDefinition> loadAll() {
+        // 从自定义配置表读取动态 SQL 元数据
+        String sql = "SELECT sql_id, sql_content, command_type FROM sys_dynamic_sql WHERE enabled = 1";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> DynamicSqlDefinition.builder()
+                .id(rs.getString("sql_id"))
+                .sqlScript(rs.getString("sql_content"))
+                .commandType(SqlCommandType.valueOf(rs.getString("command_type")))
+                .autoScriptWrap(true)
+                .build());
+    }
+}
+```
+
+### 5. 事务与 SqlSession 会话一致性机制
+- **共享同一事务会话**：`DynamicSqlExecutor` 底层使用的是 Spring 容器受管的 `SqlSessionTemplate`。当业务方法标注 `@Transactional` 时，MyBatis-Plus 的 `ServiceImpl` / `BaseMapper` 与 `DynamicSqlExecutor` 自动绑定到同一个底层数据库事务与连接；
+- **读写立即可见**：在同一个 `@Transactional` 方法内，使用 Service 更新实体后紧接着调用 `DynamicSqlExecutor` 查询，可 100% 读到未提交事务内的最新变更；
+- **异常原子回滚**：动态 SQL 执行的任何更新、插入或删除操作，均严格遵循 Spring 事务边界，抛出异常时与业务数据一同原子回滚。
+
+### 6. 真实控制台输出与执行契约
 ```text
 10:47:24.730 [main] INFO  i.g.a.b.m.d.DynamicSqlRegistry - 外部动态 SQL [user.findActiveUsers] 成功注册/热更新至持久层容器
 ==>  Preparing: SELECT id, name, email, status FROM sys_user WHERE (tenant_id = ?) AND (status = ?) AND (name LIKE CONCAT('%', ?, '%')) ORDER BY id DESC LIMIT ?
 ==> Parameters: 100(Long), 1(Integer), Ateng(String), 10(Integer)
 <==      Total: 1
-```
 ```

@@ -120,7 +120,9 @@ class DynamicSqlExecutorTest {
         when(sqlSessionTemplate.insert(eq(insertId), any())).thenReturn(1);
         int insertRows = executor.executeDml(insertId, Map.of("id", 4L, "name", "David", "status", 1));
         assertEquals(1, insertRows);
-        verify(sqlSessionTemplate, times(1)).insert(eq(insertId), any());
+        int insertConvenient = executor.insert(insertId, Map.of("id", 4L, "name", "David", "status", 1));
+        assertEquals(1, insertConvenient);
+        verify(sqlSessionTemplate, times(2)).insert(eq(insertId), any());
 
         // 2. 测试 UPDATE
         String updateId = "user.updateStatus";
@@ -132,7 +134,9 @@ class DynamicSqlExecutorTest {
         when(sqlSessionTemplate.update(eq(updateId), any())).thenReturn(2);
         int updateRows = executor.executeDml(updateId, Map.of("id", 4L, "status", 0));
         assertEquals(2, updateRows);
-        verify(sqlSessionTemplate, times(1)).update(eq(updateId), any());
+        int updateConvenient = executor.update(updateId, Map.of("id", 4L, "status", 0));
+        assertEquals(2, updateConvenient);
+        verify(sqlSessionTemplate, times(2)).update(eq(updateId), any());
 
         // 3. 测试 DELETE
         String deleteId = "user.deleteSingle";
@@ -144,7 +148,9 @@ class DynamicSqlExecutorTest {
         when(sqlSessionTemplate.delete(eq(deleteId), any())).thenReturn(1);
         int deleteRows = executor.executeDml(deleteId, Map.of("id", 4L));
         assertEquals(1, deleteRows);
-        verify(sqlSessionTemplate, times(1)).delete(eq(deleteId), any());
+        int deleteConvenient = executor.delete(deleteId, Map.of("id", 4L));
+        assertEquals(1, deleteConvenient);
+        verify(sqlSessionTemplate, times(2)).delete(eq(deleteId), any());
     }
 
     @Test

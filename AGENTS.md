@@ -62,15 +62,16 @@
 - **特性即文档与真理源不变量 (Doc-as-Feature & Evergreen Invariant)**：
   - **单工单文档同步闭环 (Single-Ticket Sync)**：代码产生的功能、配置与新 API 必须同步在相关文档中体现，严禁只堆砌代码缺失使用说明；所有特性与接口改造均遵循“单工单文档准出闭环”原则，在同一个工单与提交中必须同步交付文档；缺少文档与使用示例的改动一律视为未达验收标准，阻断准出；
   - **子模块就近内聚拓扑 (Submodule-Co-located Docs)**：根目录 `README.md` 保持轻量门户与各模块索引导航；各模块具体代码范式、YAML 配置项与核心能力 100% 强制内聚于所属模块根目录的专属 `README.md`（如 `ateng-boot-core/README.md`、`ateng-boot-excel/README.md` 等），确保开箱即查即用；复杂架构专题沉淀于 `docs/guides/`；
-  - **文档示例“三板斧”规范 (The Triad Quality Standard)**：文档中的功能说明必须严格遵循“三板斧”结构：
-    1. **一句话场景痛点**：直击解决什么问题、何时选用；
-    2. **最小可用代码/配置块**：可直接复制粘贴的 Java 示例或 YAML 片段；
-    3. **预期呈现契约**：控制台输出、SQL 日志、HTTP JSON 响应或导出的文件效果；
+  - **四维生产就绪交付模型 (The 4D Production-Ready Invariant)**：子模块 `README.md` 面向真实生产接入者，严禁仅停留在简单 Demo 的自嗨罗列；任何新增或修改的功能特性，必须正交覆盖以下四个维度，缺一即阻断准出：
+    1. **维度一：最小起步体验 (Happy Path & Out-of-the-Box)**：直击一句话痛点、最小可用配置与开箱即用的极简代码示例（即原“三板斧”）；
+    2. **维度二：生产扩展接管 (Customization & Extensibility)**：当框架默认行为无法满足企业级生产定制时，开发者如何扩展或接管（如 SPI 自定义实现、`@ConditionalOnMissingBean` 覆盖、事件监听器、插件拦截器注入等，杜绝只教开箱不教定制）；
+    3. **维度三：核心生产边界与非功能语义 (Production Boundary & Failure Modes)**：显式声明该模块在极端、高并发或复杂事务场景下的底层行为机制（如持久层事务可见性与会话共享、MQ 消息幂等与重试死信、Redis 锁可重入与续期策略、网络超时熔断、内存防 OOM 等，杜绝非功能黑盒）；
+    4. **维度四：物理排版与代码全真验证 (Evergreen & Zero-Glitch)**：示例代码必跑通并锚定单测、YAML 配置逐字对齐属性类、Markdown 代码块严格闭合无破损，严禁格式事故与伪数据；
   - **“先测后文、文必有源”防臆造机制 (Zero-Hallucination & Traceability)**：
     - **代码源头锚定**：文档中展示的 Java 示例必须且只能直接提取自已跑通的单测类（`*Test.java`）或场景样例工程（`ateng-boot-sample-*`），严禁脱离代码在 Markdown 里凭空手敲；若某功能尚无现成范式，必须先在测试用例中写出并跑通后再提取至文档；
     - **配置源头锚定**：YAML/Properties 配置片段必须 100% 与当前模块的 `@ConfigurationProperties` 字段逐字对齐；
     - **预期呈现源头锚定**：控制台输出、实际 SQL 与响应结果必须直接截取自本地实际执行 `mvn test` 的真实控制台输出，严禁脑补拼接伪数据；
-  - **重构防漂移与审查拦截 (Anti-Drift & Review Gate)**：修改核心 API 签名、类名或配置项时，必须全工程检索所属子模块 `README.md` 同步修正，杜绝陈旧失效代码；`/code-review` 强制将文档一致性与真实性列为红牌必检项；
+  - **重构防漂移与审查拦截 (Anti-Drift & Review Gate)**：修改核心 API 签名、类名或配置项时，必须全工程检索所属子模块 `README.md` 同步修正，杜绝陈旧失效代码；`/code-review` 强制将文档一致性、格式完整性与四维就绪度列为红牌必检项；
   - **四维职责清晰正交**：`README.md` 面向开发者，聚焦痛点与最小可用代码；`CONTEXT.md` 严格恪守“纯领域词汇表 (Glossary)”定位，只定义术语与 Avoid 负面词汇，严禁堆砌长篇实现细节；`CONTEXT-MAP.md` 专职维护系统拓扑与调用依赖；`docs/adr/` 专职沉淀重大架构选型；
   - **ADR 膨胀防线与合并收敛**：严格收紧独立 ADR 门槛，仅在孵化完整新中间件底座或重大协议契约重构时新建独立 ADR；存量模块优化一律优先在既有归属 ADR 增量修订。
 
@@ -93,8 +94,8 @@
 - **官方 CLI 与工单生命周期闭环 (CLI & Ticket Lifecycle)**：
   GitHub Issues、PR 审阅与 CI 交互一律通过官方 `gh` 命令行闭环。工单生命周期严格遵循五阶段状态机：
   1. **认领**：查阅工单并指派当前开发者（`gh issue edit <n> --add-assignee "@me"`）；
-  2. **TDD 与文档同步实现**：测试驱动编码，满足架构契约；同步在所属子模块 `README.md` 中按“三板斧”补齐真实使用示例与配置说明；
-  3. **准出与双轴审查**：执行第 3 节阶梯二准出测试（纯文档改动免测），通过后调用 `/code-review` 开展审查（文档真实性与一致性为红牌必检项）；
+  2. **TDD 与文档同步实现**：测试驱动编码，满足架构契约；同步在所属子模块 `README.md` 中按“四维生产就绪交付模型”补齐开箱代码、扩展定制接入、核心生产边界与实测输出契约；
+  3. **准出与双轴审查**：执行第 3 节阶梯二准出测试（纯文档改动免测），通过后调用 `/code-review` 开展审查（文档真实性、代码块闭合性与四维完整度为红牌必检项）；
   4. **受控提交**：按第 4 节执行受控提交并推送（代码与文档同工单同提交原子交付）；
   5. **闭环**：守护 CI 监控至全绿，通过文件回写验收清单与提交哈希（`gh issue comment <n> -F <file>`），关闭工单（`gh issue close <n>`）。
 - **工单操作与 CLI 避坑 (Issue Tracker & CLI)**：操作 GitHub Issues / PR 或编写 PowerShell 交互命令时，遵循 [docs/agents/issue-tracker.md](./docs/agents/issue-tracker.md)（含特殊字符引号包裹、`-F` 文件回写防截断及 Wayfinding 映射）。

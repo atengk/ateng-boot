@@ -281,4 +281,22 @@ class DynamicSqlRegistryTest {
         assertFalse(registry.hasStatement(id));
         assertFalse(registry.remove("not.exist.id"));
     }
+
+    @Test
+    @DisplayName("验证单定义显式设置 autoScriptWrap=false 时不被 Registry 全局默认值覆盖")
+    void testRespectExplicitAutoScriptWrapFalse() {
+        String id = "test.noWrap";
+        String rawSql = "SELECT * FROM sys_user WHERE id = 1";
+        DynamicSqlDefinition def = DynamicSqlDefinition.builder()
+                .id(id)
+                .sqlScript(rawSql)
+                .autoScriptWrap(false)
+                .build();
+
+        assertTrue(registry.register(def));
+        DynamicSqlDefinition retrieved = registry.getDefinition(id);
+        assertNotNull(retrieved);
+        assertFalse(retrieved.isAutoScriptWrap());
+        assertEquals(rawSql, retrieved.getSqlScript());
+    }
 }

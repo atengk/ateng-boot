@@ -75,6 +75,7 @@ class DynamicSqlDefinitionTest {
                 .build();
 
         assertEquals(rawSql, def.getSqlScript());
+        assertFalse(def.isAutoScriptWrap());
     }
 
     @Test

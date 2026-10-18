@@ -105,6 +105,12 @@ flowchart TD
 - 动态注册生成的 `MappedStatement` 完全等价于静态编译期 XML 生成的 Statement，执行时完全穿透 MyBatis-Plus 的 `MybatisPlusInterceptor` 插件链；
 - 行级多租户（`AtengTenantLineInnerInterceptor`）、细粒度数据权限（`AtengDataPermissionInnerInterceptor`）、防全表误操作（`BlockAttackInnerInterceptor`）以及透明字段加解密（`EncryptTypeHandler`）自动生效，杜绝出现安全旁路。
 
+### 6. 事务与 SqlSession 会话完全统一 (Spring SqlSessionTemplate Integration)
+- `DynamicSqlExecutor` 底层统一使用 Spring 容器受管的 `SqlSessionTemplate` 驱动执行；
+- 当业务方法标注 `@Transactional` 时，动态 SQL 执行器自动参与 Spring 事务同步管理器（`TransactionSynchronizationManager`），与当前线程中 MyBatis-Plus 的 `ServiceImpl` / `BaseMapper` 共享同一个底层数据库连接与事务上下文；
+- 读写立即可见：同一事务内 Service 的前置更新对紧随其后的 `DynamicSqlExecutor` 动态查询 100% 实时可见；
+- 异常原子回滚：动态 SQL 触发的增删改与业务数据严格受控于同一事务边界，发生未捕获异常时随 Spring 事务整体原子回滚。
+
 ---
 
 ## 配置属性参考 (`application.yml`)

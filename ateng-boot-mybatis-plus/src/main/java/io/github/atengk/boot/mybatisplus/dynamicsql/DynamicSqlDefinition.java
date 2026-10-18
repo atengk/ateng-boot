@@ -48,6 +48,11 @@ public class DynamicSqlDefinition {
      */
     private final String description;
 
+    /**
+     * 是否开启智能容错包裹 <script> 根标签（默认 true）
+     */
+    private final boolean autoScriptWrap;
+
     private DynamicSqlDefinition(Builder builder) {
         Assert.hasText(builder.id, "Dynamic SQL id must not be blank");
         Assert.hasText(builder.sqlScript, "Dynamic SQL script must not be blank");
@@ -56,6 +61,7 @@ public class DynamicSqlDefinition {
         this.commandType = (builder.commandType != null) ? builder.commandType : SqlCommandType.SELECT;
         this.resultType = (builder.resultType != null) ? builder.resultType : Map.class;
         this.description = builder.description;
+        this.autoScriptWrap = builder.autoScriptWrap;
         this.sqlScript = wrapScriptIfNecessary(builder.sqlScript, builder.autoScriptWrap);
     }
 
@@ -110,6 +116,10 @@ public class DynamicSqlDefinition {
         return description;
     }
 
+    public boolean isAutoScriptWrap() {
+        return autoScriptWrap;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -130,6 +140,7 @@ public class DynamicSqlDefinition {
                 ", commandType=" + commandType +
                 ", resultType=" + (resultType != null ? resultType.getName() : "null") +
                 ", description='" + description + '\'' +
+                ", autoScriptWrap=" + autoScriptWrap +
                 '}';
     }
 
