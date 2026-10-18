@@ -112,4 +112,32 @@ _Avoid_: PreStop Sleep, Force Kill, Fast Shutdown
 单次 HTTP 请求执行耗时超过预设阈值时触发的主动性能告警与全链路溯源现场记录机制。
 _Avoid_: Request Timeout, Slow Query, Latency Monitor
 
+**ContentCachingFilter**:
+通用请求体可重读过滤器与包装管道，解决 ServletInputStream 阅后即焚冲突并在超限时快速失败截断防 OOM。
+_Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
+
+**OperateLog**:
+声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除。
+_Avoid_: OperationLog, SysLog, UserLog, ActionLog
+
+**OperateLogAspect**:
+基于 AOP 环绕拦截的结构化操作审计切面，自动关联四维全链路上下文并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
+_Avoid_: SysLogAspect, AuditAspect, ActionAspect
+
+**OperateLogStorageProvider**:
+操作审计存储解耦 SPI 接口，定义审计模型持久化与外部投递契约，支持自定义接入 ES/Kafka。
+_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider
+
+**AtengGracefulShutdownHandler**:
+云原生优雅停机排空生命周期处理器，协调就绪探针反转、静默等待、SmartLifecycle 兜底与原子幂等防重入。
+_Avoid_: GracefulShutdownManager, PreStopHandler, DrainService
+
+**SlowRequestFilter**:
+长耗时慢请求性能主动告警过滤器，出口统计耗时、智能放行 WebSocket/SSE/下载长连接并输出单行全链路 WARN 告警。
+_Avoid_: SlowFilter, LatencyFilter, RequestTimeoutFilter
+
+**PayloadLoggingFilter**:
+HTTP 请求与响应双向安全采样日志过滤器，内建 MIME 过滤、强类型截断、凭据正则脱敏与单行聚合输出。
+_Avoid_: HttpDumpFilter, RequestResponseLogFilter, BodyPrintFilter
+
 

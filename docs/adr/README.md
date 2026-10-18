@@ -39,6 +39,7 @@
 | **0029** | 基于 Spring Boot 3.3 与 JDK 21+ 的自适应虚拟线程异步运行时架构决策 | `Accepted` | 官方原生 @ConditionalOnThreading 声明式分流，SimpleAsyncTaskExecutor 虚拟线程自适应，四维上下文全生命周期透传，Snowflake 升级 ReentrantLock 彻底杜绝 Carrier Pinning | `ateng-boot-core` / 全工程 | [查看](./0029-virtual-threads-and-adaptive-async-runtime.md) |
 | **0030** | 企业级轻量多源对象存储与安全预签名一体化架构决策 | `Accepted` | Local + S3 统一驱动，排除 Netty 零膨胀，智能双模配置，内置 HMAC 预签名平替，三位一体动态切源，StorageResource 断点续传与纯内存自验门禁 | `ateng-boot-storage` / 全工程 | [查看](./0030-storage-module-architecture.md) |
 | **0031** | 外部动态 SQL 引擎与运行时热更新架构决策 | `Accepted` | SPI 契约解耦外部载体，智能容错包裹 <script>，无锁受控热替换绕过 StrictMap 冲突与回滚防灾，双模驱动深度融合 ADR-0010 分页契约与拦截器透明继承 | `ateng-boot-mybatis-plus` | [查看](./0031-external-dynamic-sql-engine-and-hot-reload-architecture.md) |
+| **0032** | 运行时安全与流量治理架构决策 | `Accepted` | 通用请求体可重读管道、结构化操作审计切面与 SPI、K8s 云原生就绪探针排空治理、慢请求主动告警与 HTTP Payload 双向采样截断防 OOM | `ateng-boot-web` / `core` | [查看](./0032-web-runtime-audit-payload-and-traffic-governance.md) |
 
 
 

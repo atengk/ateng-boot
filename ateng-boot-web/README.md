@@ -264,7 +264,118 @@ ServletUtil.setDownloadHeader(response, "用户花名册.xlsx");
 
 ---
 
-## 12. 云原生就绪探针排空与优雅停机治理 (`AtengGracefulShutdownHandler`)
+## 12. 声明式企业级操作审计切面与存储解耦 SPI (`@OperateLog` & `OperateLogStorageProvider`)
+
+### 场景痛点
+企业级系统通常要求对关键业务操作（如增、删、改、查敏感数据）记录完整的结构化审计轨迹。然而传统手写审计方案面临严重痛点：
+1. **代码侵入与繁琐耦合**：在各个 Controller 或 Service 中侵入式手写审计入库代码，与核心业务杂糅；
+2. **上下文缺失断层**：难以自动且完整对齐全链路四维上下文（TraceId、UserId、Username、TenantId、ClientIp）；
+3. **敏感数据污染与内存真明文破坏**：在记录出参时，若直接对实体属性打星号脱敏，将严重破坏 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) 确立的“内存真明文”不变量，导致掩码脏数据被持久化回写至数据库；
+4. **存储紧密耦合**：审计日志若硬编码死绑定于某张本地数据表，系统难以向 Elasticsearch、Kafka 等大数据或集中审计分析平台平滑演进。
+
+### 核心机制
+- **声明式 AOP 切面**：在 Controller 方法上标注 `@OperateLog`，支持声明模块名称（`module` 或 `title`）、操作类型（`type`，依托 Core 模块的 `OperateTypeEnum`）、业务描述（`description`）、入参/出参保存开关（`saveParams`/`saveResult`）及敏感参数排除列表（`excludeParams`）；
+- **四维上下文全链路对齐**：切面执行时自动穿透并提取全链路快照：MDC `traceId`、当前操作人 ID/姓名（`UserContextHolder`）、当前租户 ID（`TenantContextHolder`）及真实客户端 IP（`IpUtil.getClientIp()`）；
+- **坚守“内存真明文”不变量**：出参记录时，自动联动实体上的 `@FieldSensitive` 注解完成脱敏；脱敏仅针对克隆/序列化副本生效，实体在 JVM 内存中始终 100% 保持原始真明文；
+- **存储解耦 SPI 架构**：对外暴露 `OperateLogStorageProvider` SPI 扩展点，开箱提供 `DefaultOperateLogStorageProvider`（基于受管 SLF4J 异步格式化输出 JSON），用户可通过实现接口自由投递至 Kafka、Elasticsearch 或业务表；
+- **异常因果透明传递**：若业务方法抛出异常，切面在捕获后准确标记操作状态为失败（`status = 1`）并记录异常摘要，在 `finally` 块完成异步事件投递后 100% 原样重抛原始异常，绝不吞咽污染调用链。
+
+### 核心代码范式
+```java
+@RestController
+@RequestMapping("/users")
+public class UserController {
+
+    @PostMapping
+    @OperateLog(
+        module = "用户管理",
+        type = OperateTypeEnum.INSERT,
+        description = "新增系统用户",
+        excludeParams = {"password"} // 敏感入参参数名自动脱敏排除
+    )
+    public Result<String> createUser(@RequestBody CreateUserDTO dto) {
+        return Result.success(userService.create(dto));
+    }
+
+    @GetMapping("/{id}")
+    @OperateLog(module = "用户中心", type = OperateTypeEnum.QUERY, description = "查询用户详情")
+    public Result<UserVO> getUser(@PathVariable Long id) {
+        // 出参 UserVO 挂载的 @FieldSensitive 手机号/身份证字段在审计日志中自动脱敏，但内存中保持真明文
+        return Result.success(userService.getById(id));
+    }
+}
+```
+
+### 全真控制台日志呈现
+```log
+2026-10-18 19:43:02.311 INFO  [http-nio-8080-exec-1] [traceId: trace-user-001] i.g.a.b.w.a.DefaultOperateLogStorageProvider : [OPERATE_LOG] {"traceId":"trace-user-001","module":"用户管理","type":"INSERT","description":"新增系统用户","method":"io.github.atengk.boot.web.controller.UserController.createUser()","reqMethod":"POST","clientIp":"127.0.0.1","operUserId":10001,"operUserName":"ateng","tenantId":1,"operParams":"{\"username\":\"ateng\",\"password\":\"[EXCLUDED]\"}","jsonResult":"\"created:ateng\"","status":0,"costTime":15,"operTime":"2026-10-18T19:43:02.310"}
+```
+
+### 生产扩展接管：自定义存储 SPI
+当需要将审计事件集中投递至 Kafka 或 Elasticsearch 时，仅需实现 `OperateLogStorageProvider` 并声明为 Spring Bean：
+```java
+@Component
+public class KafkaOperateLogStorageProvider implements OperateLogStorageProvider {
+
+    private final KafkaTemplate<String, String> kafkaTemplate;
+
+    public KafkaOperateLogStorageProvider(KafkaTemplate<String, String> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
+    @Override
+    public void store(OperateLogModel model) {
+        kafkaTemplate.send("topic-audit-logs", JsonUtil.toJson(model));
+    }
+}
+```
+
+---
+
+## 13. 通用请求体可重读管道与载荷防爆 (`ContentCachingFilter`)
+
+### 场景痛点
+Servlet 规范中的原生 `ServletInputStream` 为阅后即焚的一次性输入流。在 API 验签（`@ApiSign`）、请求报文采样日志（`PayloadLoggingFilter`）以及业务流式解析等多个组件并存时，极易发生流枯竭冲突；同时若无边界地在内存中随意全量缓存，极易遭超大文件上传或恶意超大报文攻击，导致 JVM 堆内存瞬间被打爆产生 OOM。
+
+### 核心机制
+- **通用可重复消费底座**：自动包装为 `CachedBodyHttpServletRequest`，将原始字节缓存于受管的内存数组中，并发重写 `getInputStream()` 与 `getReader()`，支持同一次请求内下游所有过滤器、切面与 Controller 多次重复读取；
+- **强类型载荷上限截断防 OOM**：受 `ateng.boot.web.body-cache.max-body-size: 2MB`（强类型 `DataSize`）严格约束。无论是 `Content-Length` 标头超限，还是无长度分块传输在读取中达到上限，均立即抛出 `BusinessException(CommonResultCode.REQUEST_BODY_TOO_LARGE)` 实施快速失败；
+- **智能免打扰放行**：仅拦截 POST/PUT/PATCH 且为文本或 JSON 的请求；文件上传（`multipart/form-data`）与表单（`application/x-www-form-urlencoded`）自动穿透放行；
+- **零开销按需激活**：由 `ContentCachingCondition` 驱动，仅在配置开启了加签验签（`sign.enabled=true`）或 Payload 采样（`payload-log.enabled=true`）时才自动激活；两者均未开启时跳过装配，实现运行时零额外包装与零性能损耗；
+- **向后兼容**：旧版 `RequestBodyCachingFilter` 声明 `@Deprecated`，内部 100% 委托至 `ContentCachingFilter`。
+
+### 核心代码范式
+下游 Controller 或 Filter 无需任何特殊感知，直接按标准 Servlet API 重复消费即可：
+```java
+@PostMapping("/api/verify")
+public Result<String> verify(HttpServletRequest request) throws IOException {
+    // 第一次读取请求体
+    byte[] firstRead = request.getInputStream().readAllBytes();
+    
+    // 第二次在同一次请求中再次读取输入流（验证流重复消费能力）
+    byte[] secondRead = request.getInputStream().readAllBytes();
+    
+    // 亦可直接强转获取底层缓存字节副本
+    if (request instanceof CachedBodyHttpServletRequest cachedRequest) {
+        byte[] body = cachedRequest.getCachedBody();
+    }
+    return Result.success("ok");
+}
+```
+
+### 生产配置范式
+```yaml
+ateng:
+  boot:
+    web:
+      body-cache:
+        # 通用请求体可重读最大缓存载荷上限（强类型 DataSize 防 OOM，默认 2MB）
+        max-body-size: 2MB
+```
+
+---
+
+## 14. 云原生就绪探针排空与优雅停机治理 (`AtengGracefulShutdownHandler`)
 
 ### 场景痛点
 Kubernetes 在滚动发布或 Pod 缩容销毁时，默认会并行向 Pod 发送 `SIGTERM` 信号并将 Pod 从 Service Endpoints 中摘除。然而，由于 kube-proxy 与 Ingress 网关路由表同步存在客观延迟（通常需 1~5 秒），若容器直接关闭端口停止监听，极易导致上游在途请求遭遇连接重置、HTTP 502 Bad Gateway 或 504 超时。
@@ -301,7 +412,7 @@ spec:
 
 ---
 
-## 13. 长耗时慢请求性能主动告警 (`SlowRequestFilter`)
+## 15. 长耗时慢请求性能主动告警 (`SlowRequestFilter`)
 
 ### 场景痛点
 在高并发微服务与 Web 应用中，部分接口可能因慢 SQL、第三方外部 RPC 延迟或计算密集导致响应时间劣化。若缺乏主动监控手段，运维人员往往只能等到客户端报超时或系统负载飙升时才后知后觉。同时，若无脑拦截所有长耗时请求，极易对本就需要长时间保持的长连接（如 WebSocket、Server-Sent Events、大文件下载分块）产生大量无意义误报。
@@ -349,7 +460,7 @@ public SlowRequestFilter customSlowRequestFilter() {
 
 ---
 
-## 14. HTTP Payload 双向安全采样打印与截断防 OOM (`PayloadLoggingFilter`)
+## 16. HTTP Payload 双向安全采样打印与截断防 OOM (`PayloadLoggingFilter`)
 
 ### 场景痛点
 生产环境排查业务交互故障或审计三方数据往来时，往往需要完整的请求与响应报文。然而直接打印原始载荷面临三大高危隐患：
@@ -397,7 +508,7 @@ public PayloadLoggingFilter customPayloadLoggingFilter() {
 
 ---
 
-## 15. 模块配置属性参考 (`application.yml`)
+## 17. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
