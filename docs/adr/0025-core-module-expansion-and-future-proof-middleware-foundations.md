@@ -41,20 +41,24 @@ flowchart TD
         subgraph S3["3. 契约模型与函数式流式演化"]
             C_Result["Result (map / peek / ifSuccess / orElseThrow)"]
             C_Page["PageResult (流式 records 重映射)"]
+            C_Audit["OperateLogModel + OperateTypeEnum (操作审计全要素元数据契约)"]
         end
 
         subgraph S4["4. 企业级通用标准元原语 (零外部依赖)"]
             C_Date["DatePattern (标准Pattern + 不可变 DateTimeFormatter)"]
+            C_DT["DateTimeUtil (系统时区绑定 / 无损互转 / 天首天尾 / 跨度计算)"]
+            C_Rand["RandomUtil (ThreadLocalRandom / 验证码 / 闭区间 / 安全抽样洗牌)"]
             C_Tuple["Pair / Triple (JDK 17 不可变强类型 Record)"]
             C_Tree["TreeUtil (多根谓词成林 / 递归剪枝过滤)"]
         end
 
         subgraph S5["5. 未来多模块孵化支撑引擎"]
             C_Spring["SpringUtil (ApplicationContextAware / 容器全局门面)"]
+            C_Tx["TransactionUtil (事务提交/回滚同步钩子 / 四维异步透传 / 事件发布)"]
             C_Lambda["LambdaUtil (SerializedLambda 原生属性名安全推导)"]
             C_Coll["CollectionUtil (partition切片) + MoreCollectors (toSafeMap防NPE)"]
             C_Bean["BeanUtil (自动实例化反射拷贝 / 忽略Null增量合并)"]
-            C_Retry["RetryUtil (纯函数式指数退避重试 / 异常过滤)"]
+            C_Retry["RetryUtil (Equal Jitter抖动打散 / onRetry监听 / Fallback降级)"]
             C_File["FileUtil (Path Traversal 清洗 / 可读容量转换)"]
         end
     end
@@ -92,18 +96,37 @@ flowchart TD
 - **`LambdaUtil`**：纯 JDK 17 `SerializedLambda` 原生推导属性名；
 - **`CollectionUtil` & `MoreCollectors`**：安全分批切片 `partition` 与防 NPE `toSafeMap`；
 - **`BeanUtil`**：免 new 反射实例化拷贝与 `copyIgnoreNull` 增量覆盖；
-- **`RetryUtil`**：轻量函数式指数退避重试执行器；
 - **`FileUtil`**：路径穿越安全清洗与可读容量转换。
+
+### 6. 事务同步生命周期门面与上下文穿透 (`TransactionUtil`)
+- **双向生命周期完备性**：基于 Spring `TransactionSynchronizationManager` 打造全局门面，显式提供 `executeAfterCommit` 与 `executeAfterRollback` 对称钩子，从源头消灭“事务未提交、异步已读库”的时序并发脏读；
+- **四维上下文无损穿透**：`executeAfterCommitAsync` 自动调度受管 `taskExecutor` 线程池并全量透传四维快照 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$，防止线程池污染与租户越权；
+- **自适应降级与异常隔离**：具备非事务上下文与类探测机制，在无事务环境平滑降级就地同步执行，回调异常受控隔离记录 WARN 日志，杜绝次生异常反向冲垮外部主链路。
+
+### 7. 退避重试抖动打散与 Fallback 降级 (`RetryUtil`)
+- **平滑随机抖动 (Equal Jitter)**：采用 `delay/2 + random(0, delay/2)` 平滑打散重试时序，彻底化解微服务大规模重试引发的下峰流量共振与雪崩击穿；
+- **多维观测与兜底降级**：提供 `onRetry` 异常监听器与 `Fallback` 降级回调接口，支持带返回值的 `execute` 与 `Runnable` 类型的 `executeAction`；
+- **无侵入与零破坏性**：保持重试最大上限与超时防无界挂起守卫，100% 向后兼容存量 API。
+
+### 8. 全栈操作审计标准模型契约 (`OperateLogModel` & `OperateTypeEnum`)
+- **审计枚举收敛**：`OperateTypeEnum` 集中收敛 11 种通用操作动作（`OTHER(0)` ~ `CLEAN(10)`），提供 `of(Integer code)` 安全匹配与 `@JsonCreator fromValue` 大小写/多源解析；
+- **18 项全要素元数据契约**：`OperateLogModel` 统一纳管 TraceId、租户、用户、模块端点、出入参、状态耗时、异常、扩展字典与时间戳，为 Web 切面、事件总线与持久层提供统一强类型契约；
+- **无失真序列化与语法糖**：`isSuccess()` 标注 `@JsonIgnore` 杜绝派生字段污染，提供 `addExtra(k, v)` 链式扩展，100% 适配 Jackson 规范。
+
+### 9. 原生日期时间互转与无锁安全随机工具 (`DateTimeUtil` & `RandomUtil`)
+- **`DateTimeUtil`**：100% 依托原生 `java.time`，实现 `LocalDateTime`、`LocalDate`、`Date` 与时间戳三者在系统时区下的无损互转，提供天首天尾起止（含今日语法糖）与多维度跨度计算（`betweenDays`、`betweenHours`、`betweenDuration` 等）；
+- **`RandomUtil`**：基于 `ThreadLocalRandom` 提供无锁高性能纯数字验证码（`randomNumbers`）、混合随机串（`randomString`）、双向闭区间 `[min, max]` 防溢出随机数、防空抽样（`randomEle`、`randomEles`）与洗牌打乱（`shuffle` 与 `shuffleNew`），杜绝全量第三方工具包依赖。
 
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
 
 ### 正向收益
-1. **地基稳固，彻底打通未来新模块通道**：未来开发 Storage、MQ、Job、AI 等模块时，底层开箱即用，不再需要每个模块重复造轮子或向业务层索要基础工具；
-2. **消除架构倒置与循环依赖隐患**：脱敏注解与租户上下文归属于底座，彻底解绑持久层，多租户异步线程数据越权漏洞彻底根除；
+1. **地基稳固，彻底打通未来新模块通道**：开发 Web 审计切面、Storage、MQ、Job 等模块时，底层事务同步、操作审计契约、退避重试、日期随机等通用原语开箱即用，彻底杜绝下游重复造轮子；
+2. **消除架构倒置与并发时序隐患**：脱敏注解与租户上下文归属于底座，彻底解绑持久层；事务同步门面消灭跨事务脏读，四维快照保障异步线程数据不越权；
 3. **保持 100% 零臃肿与极高纯粹性**：所有增补构件除 Spring 核心/Jackson 必需生态外，100% 依托 JDK 17 原生能力，零 Hutool、零 Guava、零外部字节码生成库。
 
 ### 妥协与改造成本
 - 需要对 `ateng-boot-mybatis-plus` 与 `ateng-boot-excel` 中原脱敏和租户引用直接进行全局包路径重构；
 - `ateng-boot-core` 的 `pom.xml` 正式吸纳 `jackson-databind`（编译期）与 `spring-context`（可选依赖），但鉴于二者本就是 Spring Boot 的核心构件，实际无任何额外打包负荷。
+
