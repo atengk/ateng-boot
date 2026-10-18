@@ -325,6 +325,29 @@ public class WebProperties {
          * 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
          */
         private DataSize maxPayloadSize = DataSize.ofKilobytes(4);
+
+        /**
+         * 采样日志排除路径白名单（Ant 风格匹配，如 /actuator/**）
+         */
+        private List<String> excludeUrls = new ArrayList<>();
+
+        /**
+         * 获取单次最大采样截断字节数（向后兼容）
+         *
+         * @return 字节数
+         */
+        public int getMaxPayloadSizeBytes() {
+            return maxPayloadSize != null ? (int) maxPayloadSize.toBytes() : 4096;
+        }
+
+        /**
+         * 设置单次最大采样截断字节数（向后兼容）
+         *
+         * @param maxPayloadSizeBytes 字节数
+         */
+        public void setMaxPayloadSizeBytes(int maxPayloadSizeBytes) {
+            this.maxPayloadSize = DataSize.ofBytes(maxPayloadSizeBytes);
+        }
     }
 
     /**

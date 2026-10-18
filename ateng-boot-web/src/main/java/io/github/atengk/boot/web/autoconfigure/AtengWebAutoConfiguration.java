@@ -6,6 +6,7 @@ import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
+import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
 import io.github.atengk.boot.web.filter.SlowRequestFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
@@ -83,6 +84,27 @@ public class AtengWebAutoConfiguration {
         ContentCachingFilter filter = new ContentCachingFilter(maxBodySize);
         FilterRegistrationBean<ContentCachingFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(ContentCachingFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 条件注册 HTTP Payload 双向采样安全日志过滤器
+     * 位于 ContentCachingFilter 之后，支持对请求体与响应体执行安全采样并输出聚合日志
+     *
+     * @param webProperties Web 配置属性
+     * @param payloadLoggingFilterProvider 自定义 PayloadLoggingFilter 提供者
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.payload-log", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "payloadLoggingFilterRegistration")
+    public FilterRegistrationBean<PayloadLoggingFilter> payloadLoggingFilterRegistration(
+            WebProperties webProperties,
+            ObjectProvider<PayloadLoggingFilter> payloadLoggingFilterProvider) {
+        PayloadLoggingFilter filter = payloadLoggingFilterProvider.getIfAvailable(() ->
+                new PayloadLoggingFilter(webProperties.getPayloadLog()));
+        FilterRegistrationBean<PayloadLoggingFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(PayloadLoggingFilter.ORDER);
         return registration;
     }
 

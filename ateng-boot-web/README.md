@@ -30,6 +30,7 @@
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java` |
+| **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称与 RSA 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `SampleApiSignIntegrationTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与安全清洗 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`，穿透 X-Forwarded-For 等多级代理，过滤内网伪造，规整 IPv6 本地环回 | `IpUtilTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java` |
@@ -348,7 +349,55 @@ public SlowRequestFilter customSlowRequestFilter() {
 
 ---
 
-## 14. 模块配置属性参考 (`application.yml`)
+## 14. HTTP Payload 双向安全采样打印与截断防 OOM (`PayloadLoggingFilter`)
+
+### 场景痛点
+生产环境排查业务交互故障或审计三方数据往来时，往往需要完整的请求与响应报文。然而直接打印原始载荷面临三大高危隐患：
+1. **OOM 崩溃风险**：大文件上传、下载或深层大数据量分页若无脑转为全量内存字符串，极易迅速耗尽 JVM 堆内存导致服务雪崩；
+2. **凭据安全泄露**：用户的登录密码、API Token、SecretKey 等若以明文被打印至日志，将触犯数据安全合规红线；
+3. **响应截留挂起**：若使用 `ContentCachingResponseWrapper` 拦截响应体后，因异常等分支遗漏调用 `copyBodyToResponse()`，将直接导致客户端无法接收任何响应内容。
+
+### 核心机制
+- **底座管道协同与流可重读**：位于 `ContentCachingFilter`（`ORDER + 1`）之后，执行优先级为 `TraceFilter.ORDER + 2`，无缝复用可重读请求包装器 `CachedBodyHttpServletRequest`；
+- **MIME 智能过滤防卫**：仅对纯文本与结构化数据（`application/json`、`application/xml`、`text/plain`、`application/x-www-form-urlencoded` 等）进行采样，二进制媒体（`multipart/*`、`application/octet-stream`、`image/*` 等）直接跳过并输出 `[BINARY_STREAM]` 占位；
+- **强类型截断防卫**：严格遵循 `max-payload-size`（强类型 `DataSize`，默认 `4KB`），超出阈值部分强制截断并追加 ` ... [TRUNCATED]` 标识；
+- **敏感凭据正则掩码**：对请求体与响应体中出现的 `password`、`secret`、`token`、`authorization` 等字段，内建轻量纯原生正则表达式自动掩码替换为 `***`；
+- **响应确定性释放不变量**：在 `finally` 嵌套块中 100% 确保调用 `responseWrapper.copyBodyToResponse()`，彻底杜绝异常中止导致的客户端挂起；
+- **状态码自适应提升**：HTTP 响应状态码 $\ge 400$ 时，单行聚合日志级别自动由 `INFO` 提升为 `WARN`；
+- **单行聚合日志**：日志统筹聚合 MDC `traceId`、HTTP 方法、请求 URI、状态码、耗时、请求体与响应体，单行呈现无日志交错。
+
+### 全真控制台日志呈现
+```log
+2026-10-18 20:43:16.120 INFO  [http-nio-8080-exec-1] [traceId: trace-payload-001] i.g.a.b.w.f.PayloadLoggingFilter : [HTTP_PAYLOAD] traceId=[trace-payload-001], method=[POST], uri=[/mock/payload/echo], status=[200], cost=[12ms], reqBody=[{"username":"ateng","password":"***","token":"***"}], respBody=[{"code":200,"msg":"操作成功","data":{"username":"ateng","password":"***","token":"***"}}]
+```
+
+### 生产配置与扩展范式
+```yaml
+ateng:
+  boot:
+    web:
+      payload-log:
+        # 是否启用 HTTP Payload 双向采样安全日志过滤器（默认 false，按需开启）
+        enabled: true
+        # 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
+        max-payload-size: 4KB
+        # 采样日志排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/actuator/**"
+          - "/mock/payload/excluded"
+```
+
+当框架默认行为无法满足需要时，可通过覆盖 `@Bean` 自定义扩展接管：
+```java
+@Bean
+public PayloadLoggingFilter customPayloadLoggingFilter() {
+    return new PayloadLoggingFilter(DataSize.ofKilobytes(8), List.of("/actuator/**", "/internal/**"));
+}
+```
+
+---
+
+## 15. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -390,6 +439,14 @@ ateng:
       body-cache:
         # 通用请求体可重读最大缓存载荷上限（强类型 DataSize 防 OOM，默认 2MB）
         max-body-size: 2MB
+      payload-log:
+        # 是否启用 HTTP Payload 双向采样安全日志过滤器（默认 false，按需开启）
+        enabled: false
+        # 单次最大采样截断字节数上限（强类型 DataSize，默认 4KB）
+        max-payload-size: 4KB
+        # 采样日志排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/actuator/**"
       log:
         # 是否装配 @WebLog 接口审计切面（默认 false，按需开启）
         enabled: true
