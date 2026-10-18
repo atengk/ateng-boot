@@ -13,6 +13,7 @@
 | **实体体系** | 时间流转基类 | `BaseTimeEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createTime` (`FieldFill.INSERT`) 与 `updateTime` (`FieldFill.INSERT_UPDATE`) | `BaseEntityTest` |
 | **实体体系** | 四要素全审计业务基类 | `BaseEntity` | `ateng.boot.mybatis-plus.audit.*` | 提供 `createBy`、`updateBy`、`createTime`、`updateTime` 四要素全审计 | `BaseEntityTest` / `SampleTenantTest` |
 | **实体体系** | 全要素状态业务基类 | `BaseFullEntity` | `ateng.boot.mybatis-plus.optimistic-locker.*` | 在审计基类上追加 `@Version private Integer version` (乐观锁) 与 `@TableLogic @JsonIgnore private Integer deleted` (逻辑删除) | `BaseEntityTest` / `SampleAppTest` |
+| **实体体系** | 唯一索引防冲突占位基类 | `BaseDeleteIdEntity` | - | 继承 `BaseFullEntity`，`deleted` 为 `BIGINT` 并在删除时以雪花 ID 占位，彻底杜绝联合唯一索引逻辑删除冲突 | `BaseDeleteIdEntityTest` / `BaseEntityTest` |
 | **实体体系** | 多租户实体标记接口 | `TenantEntity` | `ateng.boot.mybatis-plus.tenant.*` | 声明 `getTenantId()` / `setTenantId(String)` 租户标识契约 | `SampleTenantTest` |
 | **自动填充** | 防御性审计元数据填充 | `DefaultMetaObjectHandler` | `ateng.boot.mybatis-plus.audit.enabled`<br>`ateng.boot.mybatis-plus.audit.default-operator` | 插入/更新自动提取操作人并填充审计字段，若已显式赋值则绝不覆盖覆盖 | `DefaultMetaObjectHandlerTest` / `SampleAppTest` |
 | **审计贯通** | 当前操作人上下文提供者 | `CurrentUserProvider` | - | Core 统一操作人 SPI，驱动 `DefaultMetaObjectHandler` 解析操作人字符串/ID | `DefaultMetaObjectHandlerTest` / `SampleSaTokenIntegrationTest` |
@@ -31,6 +32,9 @@
 | **分页契约** | 分页对象流式解耦与转换 | `PageUtil` | `ateng.boot.mybatis-plus.pagination.max-limit` | `toPage(PageQuery)` / `toPageResult(IPage<T>)` / `toPageResult(IPage<S>, Function<S, T>)`，彻底解耦传输契约与持久实体（Zero-Entity-Leakage） | `PageUtilTest` / `SampleAppTest` |
 | **分页拦截** | 原生分页拦截与防刷守护 | `PaginationInnerInterceptor` | `ateng.boot.mybatis-plus.pagination.enabled`<br>`ateng.boot.mybatis-plus.pagination.max-limit`<br>`ateng.boot.mybatis-plus.pagination.overflow`<br>`ateng.boot.mybatis-plus.pagination.db-type` | 原生分页拦截，注入单页最大条数限制（默认 500）与防刷超限防御，自动识别数据库方言 | `AtengMybatisPlusAutoConfigurationTest` / `SampleAppTest` |
 | **安全阻断** | 防全表更新/删除拦截器 | `BlockAttackInnerInterceptor` | `ateng.boot.mybatis-plus.block-attack.enabled` | 拦截无 `WHERE` 条件的全表更新与删除操作，防止误操作摧毁生产库数据 | `AtengMybatisPlusAutoConfigurationTest` |
+| **性能审计** | 慢 SQL 性能审计拦截器 | `SlowSqlInterceptor` | `ateng.boot.mybatis-plus.slow-sql.enabled`<br>`ateng.boot.mybatis-plus.slow-sql.threshold`<br>`ateng.boot.mybatis-plus.slow-sql.format-sql`<br>`ateng.boot.mybatis-plus.slow-sql.mask-sensitive` | 拦截 `StatementHandler` 执行，基于 `System.nanoTime()` 高精度快速比对放行；超时输出美化 SQL、真实脱敏参数及调用位置；严禁自动 EXPLAIN | `SlowSqlInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **告警通知** | 慢 SQL 告警通知 SPI | `SlowSqlAlertProvider` | - | 函数式 SPI 扩展契约，支持下游无缝对接飞书/钉钉群机器人或外部 APM 平台 | `SlowSqlInterceptorTest` |
+| **审计事件** | 慢 SQL 审计事件模型 | `SlowSqlEvent` | - | 继承 Spring 原生 `ApplicationEvent`，发布执行耗时、格式化 SQL、脱敏参数、线程名与代码调用栈位置 | `SlowSqlInterceptorTest` |
 | **发号器** | 分布式雪花算法发号器 | `DefaultIdentifierGenerator` | `ateng.boot.mybatis-plus.snowflake.enabled`<br>`ateng.boot.mybatis-plus.snowflake.worker-id`<br>`ateng.boot.mybatis-plus.snowflake.datacenter-id` | 提供趋势递增的 64 位全局唯一分布式 ID 发号支持 | `AtengMybatisPlusAutoConfigurationTest` |
 | **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、动态解析与热加载中心，支持运行时动态注册/移除外部 XML 脚本与白名单校验 | `DynamicSqlRegistryTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectList` / `selectOne` / `selectMaps` / `update` / `insert` / `delete`，提供对称完备的外部动态 SQL 执行能力 | `DynamicSqlExecutorTest` / `DynamicSqlIntegrationTest` / `SampleDynamicSqlTest` |
@@ -487,3 +491,110 @@ public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
 ==> Parameters: 100(Long), 1(Integer), Ateng(String), 10(Integer)
 <==      Total: 1
 ```
+
+---
+
+## 11. 慢 SQL 性能审计与告警通知 (`SlowSqlInterceptor`)
+
+### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
+
+在高并发生产环境中，由于缺少索引、数据倾斜或全表扫描引发的慢 SQL 是导致数据库连接池打满甚至服务雪崩的核心诱因。传统做法往往依赖运维晚间巡检或盲目开启 `EXPLAIN` 导致数据库负担雪上加霜。
+
+`ateng-boot-mybatis-plus` 原生交付 `SlowSqlInterceptor` 慢 SQL 性能审计拦截器：
+- 零侵入开箱即用：基于 MyBatis 原生 `StatementHandler` 精准捕获包含底层 JDBC 交互与网络 IO 的真实执行耗时；
+- 零损耗纳秒比对：依托 `System.nanoTime()` 高精度时钟，未超时 SQL 差值比对直接快速放行，零额外对象分配；
+- 真实脱敏与美化：超时慢 SQL 触发时自动进行 SQL 多行缩进美化、参数列表脱敏掩码以及首个业务调用栈行号精准定位；
+- 生产防雪崩铁律：**严禁在生产线上自动执行 `EXPLAIN`**，仅在告警中输出测试库排查指引与防雪崩提示。
+
+#### 核心配置 (`application.yml`)
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      slow-sql:
+        enabled: true           # 是否启用慢 SQL 拦截器，默认 true
+        threshold: 1s           # 慢 SQL 判定耗时阈值（支持 500ms、1s 等强类型 Duration），默认 1s
+        format-sql: true        # 是否对 SQL 文本进行多行缩进美化，默认 true
+        mask-sensitive: true    # 是否对敏感字段与密码凭据进行掩码脱敏，默认 true
+```
+
+#### 真实告警日志输出示例
+当 SQL 执行耗时超过设定阈值时，自动在控制台打印标准审计告警日志（截取自 `SlowSqlInterceptorTest` 真实运行结果）：
+
+```text
+22:42:30.127 [main] WARN  i.g.a.b.m.s.SlowSqlInterceptor - ====== [MyBatis-Plus 慢 SQL 性能审计告警] ======
+MappedStatement : io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptorTest$TestUserMapper.insert
+实际执行耗时   : 1250 ms (判定阈值: 1000 ms)
+代码调用位置   : com.example.service.UserService.createUser(UserService.java:42)
+执行线程       : http-nio-8080-exec-1
+执行 SQL 语句  :
+INSERT INTO t_user ( id, username, password, phone, email ) 
+  VALUES ( ?, ?, ?, ?, ? )
+绑定参数列表   : [2001, developer, ******, ******, dev@company.com]
+排查建议       : 严禁在线上直接执行 EXPLAIN；建议在测试库分析索引命中与扫描行数
+===============================================
+```
+
+---
+
+### 2. 生产扩展与接管 (Customization & Extensibility)
+
+#### 方案一：实现 `SlowSqlAlertProvider` SPI（推荐用于对接企业群机器人/APM）
+下游只需实现 `SlowSqlAlertProvider` 函数式接口并注入为 Spring Bean，即可将慢 SQL 告警事件投递到飞书群机器人、钉钉、企业微信或外部 APM 系统。框架支持注册多个告警提供者并链式遍历通知：
+
+```java
+@Component
+public class FeishuSlowSqlAlertProvider implements SlowSqlAlertProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(FeishuSlowSqlAlertProvider.class);
+
+    @Override
+    public void onSlowSql(SlowSqlEvent event) {
+        log.warn("发送飞书慢 SQL 告警通知: StatementId={}, 耗时={}ms, 线程={}",
+                event.getStatementId(),
+                event.getExecutionTime().toMillis(),
+                event.getThreadName());
+        // 调用企业飞书机器人 Webhook 投递卡片消息...
+    }
+}
+```
+
+#### 方案二：监听 `SlowSqlEvent` Spring 原生事件（解耦异步分析）
+`SlowSqlEvent` 继承 Spring 原生 `ApplicationEvent`，可直接利用 Spring 事件机制进行异步消费与指标统计：
+
+```java
+@Component
+public class SlowSqlMetricsListener {
+
+    @Async
+    @EventListener(SlowSqlEvent.class)
+    public void onSlowSqlEvent(SlowSqlEvent event) {
+        // 记录 PromQL / Micrometer 慢查询指标计数器或上报数据仓库
+        String sql = event.getSql();
+        Duration elapsed = event.getExecutionTime();
+        String callLocation = event.getCallLocation();
+    }
+}
+```
+
+#### 方案三：完全接管 `SlowSqlInterceptor` Bean
+装配类标配 `@ConditionalOnMissingBean(SlowSqlInterceptor.class)`，下游若有特殊代理或深度包装需求，可自由声明自定义 `SlowSqlInterceptor` 实例实现 100% 接管覆盖。
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **高精度纳秒时钟与零额外对象损耗**：
+   拦截器在 `intercept` 方法内部采用 `System.nanoTime()` 计算纳秒级耗时。正常执行未超时的 SQL 仅在 `finally` 块执行纳秒差值与阈值的原子长整型比较（`elapsedNanos >= thresholdNanos`），**未超时请求绝不触发任何参数提取、正则美化、反射解析与对象分配**，保障高并发交易链路毫秒级放行零开销。
+2. **敏感数据自动掩码防线**：
+   - 凡实体属性标注持久层加密注解 `@FieldEncrypt`；
+   - 参数 TypeHandler 声明为 `EncryptTypeHandler`；
+   - 或参数名包含敏感关键字（`password`、`pwd`、`secret`、`token`、`credential`、`privatekey` 等）；
+   参数列表一律自动脱敏为 `******`，从源头彻底杜绝明文凭据外泄至日志或告警卡片。
+3. **恪守防雪崩铁律严禁自动 `EXPLAIN`**：
+   拦截器绝不在慢 SQL 发生时向数据库盲目自动发起 `EXPLAIN ...`。当数据库已处于高负载或死锁排队时，自动 `EXPLAIN` 会加剧连接池衰竭；框架仅以结构化日志给出清晰的测试库分析建议。
+4. **业务调用栈精准穿透**：
+   内置智能框架类过滤逻辑，主动穿透过滤 JDK 内部、MyBatis 驱动、Tomcat 容器、Spring 代理及测试执行器，精准定位到首个业务 Service 或 Controller 代码行号。
+5. **异常容错与弹性降级**：
+   告警提供者 SPI 与 Spring 事件发布均处于独立的防卫 `try-catch` 沙箱中。若第三方 Webhook 超时或网络异常，绝不向上抛出异常或阻断业务事务的正常提交。
+

@@ -36,7 +36,11 @@ import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.io.support.ResourcePatternResolver;
+import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
+import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
+import java.util.List;
 
 
 /**
@@ -285,5 +289,29 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
     public SmartInitializingSingleton dynamicSqlInitializer(DynamicSqlRegistry dynamicSqlRegistry) {
         return dynamicSqlRegistry::loadAndRegisterAll;
+    }
+
+    /**
+     * 注册慢 SQL 性能审计与告警拦截器
+     *
+     * @param alertProvidersProvider 可选的慢 SQL 告警通知提供者 SPI 实现集合
+     * @param eventPublisher Spring 事件发布器
+     * @return 慢 SQL 拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SlowSqlInterceptor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.slow-sql", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SlowSqlInterceptor slowSqlInterceptor(
+            ObjectProvider<List<SlowSqlAlertProvider>> alertProvidersProvider,
+            ApplicationEventPublisher eventPublisher) {
+        MybatisPlusProperties.SlowSqlProperties slowSql = properties.getSlowSql();
+        List<SlowSqlAlertProvider> providers = alertProvidersProvider.getIfAvailable(List::of);
+        return new SlowSqlInterceptor(
+                slowSql.getThreshold(),
+                slowSql.isFormatSql(),
+                slowSql.isMaskSensitive(),
+                providers,
+                eventPublisher
+        );
     }
 }

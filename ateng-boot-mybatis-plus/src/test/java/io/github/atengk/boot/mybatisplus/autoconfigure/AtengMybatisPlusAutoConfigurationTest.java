@@ -293,5 +293,60 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader.class)).isSameAs(customLoader);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下成功装配 SlowSqlInterceptor 慢 SQL 审计拦截器")
+    void shouldAutoConfigureSlowSqlInterceptorByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+            io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor interceptor = context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+            assertThat(interceptor.getThreshold()).isEqualTo(java.time.Duration.ofSeconds(1));
+            assertThat(interceptor.isFormatSql()).isTrue();
+            assertThat(interceptor.isMaskSensitive()).isTrue();
+            assertThat(interceptor.getAlertProviders()).isEmpty();
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.slow-sql.enabled=false 时禁用 SlowSqlInterceptor")
+    void shouldDisableSlowSqlInterceptorWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.slow-sql.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("配置自定义 slow-sql 属性与自定义 SlowSqlAlertProvider 时正确生效")
+    void shouldConfigureSlowSqlWithCustomPropertiesAndAlertProvider() {
+        io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider customAlert = event -> {};
+
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.slow-sql.threshold=500ms",
+                "ateng.boot.mybatis-plus.slow-sql.format-sql=false",
+                "ateng.boot.mybatis-plus.slow-sql.mask-sensitive=false"
+        ).withBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider.class, () -> customAlert)
+        .run(context -> {
+            assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+            io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor interceptor = context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+            assertThat(interceptor.getThreshold()).isEqualTo(java.time.Duration.ofMillis(500));
+            assertThat(interceptor.isFormatSql()).isFalse();
+            assertThat(interceptor.isMaskSensitive()).isFalse();
+            assertThat(interceptor.getAlertProviders()).containsExactly(customAlert);
+            assertThat(interceptor.getAlertProvider()).isSameAs(customAlert);
+        });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 SlowSqlInterceptor 时优先使用业务自定义 Bean")
+    void shouldPreferCustomSlowSqlInterceptorBean() {
+        io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor customInterceptor = new io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor();
+
+        contextRunner.withBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class, () -> customInterceptor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor.class)).isSameAs(customInterceptor);
+                });
+    }
 }
 

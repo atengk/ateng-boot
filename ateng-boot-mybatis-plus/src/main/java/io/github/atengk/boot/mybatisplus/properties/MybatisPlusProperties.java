@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.DbType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -21,6 +22,12 @@ public class MybatisPlusProperties {
      * 是否启用 MyBatis-Plus 模块自动装配（默认 true）
      */
     private boolean enabled = true;
+
+    /**
+     * 慢 SQL 性能审计与告警拦截器配置
+     */
+    @NestedConfigurationProperty
+    private SlowSqlProperties slowSql = new SlowSqlProperties();
 
     /**
      * 行级多租户插件配置
@@ -88,6 +95,14 @@ public class MybatisPlusProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public SlowSqlProperties getSlowSql() {
+        return slowSql;
+    }
+
+    public void setSlowSql(SlowSqlProperties slowSql) {
+        this.slowSql = slowSql;
     }
 
     public AuditProperties getAudit() {
@@ -435,6 +450,63 @@ public class MybatisPlusProperties {
 
         public void setDefaultSize(int defaultSize) {
             this.defaultSize = defaultSize;
+        }
+    }
+
+    /**
+     * 慢 SQL 性能审计与告警拦截器属性配置
+     */
+    public static class SlowSqlProperties {
+        /**
+         * 是否启用慢 SQL 拦截器，默认 true
+         */
+        private boolean enabled = true;
+
+        /**
+         * 慢 SQL 判定执行耗时阈值，默认 1s
+         */
+        private Duration threshold = Duration.ofSeconds(1);
+
+        /**
+         * 是否对 SQL 进行多行缩进美化，默认 true
+         */
+        private boolean formatSql = true;
+
+        /**
+         * 是否对敏感数据（@FieldEncrypt 字段及密码密钥）进行脱敏掩码，默认 true
+         */
+        private boolean maskSensitive = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public Duration getThreshold() {
+            return threshold;
+        }
+
+        public void setThreshold(Duration threshold) {
+            this.threshold = threshold;
+        }
+
+        public boolean isFormatSql() {
+            return formatSql;
+        }
+
+        public void setFormatSql(boolean formatSql) {
+            this.formatSql = formatSql;
+        }
+
+        public boolean isMaskSensitive() {
+            return maskSensitive;
+        }
+
+        public void setMaskSensitive(boolean maskSensitive) {
+            this.maskSensitive = maskSensitive;
         }
     }
 }
