@@ -6,6 +6,7 @@ import io.github.atengk.boot.web.aspect.WebLogAspect;
 import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
+import io.github.atengk.boot.web.filter.SlowRequestFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
@@ -82,6 +83,27 @@ public class AtengWebAutoConfiguration {
         ContentCachingFilter filter = new ContentCachingFilter(maxBodySize);
         FilterRegistrationBean<ContentCachingFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(ContentCachingFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 注册慢请求性能主动告警过滤器
+     * 位于链路追踪与可重读过滤器之后，在请求出口处统计总耗时，超过阈值时输出告警日志
+     *
+     * @param webProperties Web 配置属性
+     * @param slowRequestFilterProvider 自定义 SlowRequestFilter 提供者
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.slow-request", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(name = "slowRequestFilterRegistration")
+    public FilterRegistrationBean<SlowRequestFilter> slowRequestFilterRegistration(
+            WebProperties webProperties,
+            ObjectProvider<SlowRequestFilter> slowRequestFilterProvider) {
+        SlowRequestFilter filter = slowRequestFilterProvider.getIfAvailable(() ->
+                new SlowRequestFilter(webProperties.getSlowRequest()));
+        FilterRegistrationBean<SlowRequestFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(SlowRequestFilter.ORDER);
         return registration;
     }
 

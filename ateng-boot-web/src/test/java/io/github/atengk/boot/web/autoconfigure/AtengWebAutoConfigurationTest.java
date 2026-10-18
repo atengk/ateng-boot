@@ -80,4 +80,39 @@ class AtengWebAutoConfigurationTest {
                     assertThat(context).hasSingleBean(io.github.atengk.boot.web.aspect.WebLogAspect.class);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下成功装配 SlowRequestFilter 注册器且优先级正确")
+    void shouldAutoConfigureSlowRequestFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasBean("slowRequestFilterRegistration");
+            org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                    context.getBean("slowRequestFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.filter.SlowRequestFilter.ORDER);
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.slow-request.enabled=false 时禁用 SlowRequestFilter 注册器")
+    void shouldDisableSlowRequestFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.slow-request.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("slowRequestFilterRegistration");
+                });
+    }
+
+    @Test
+    @DisplayName("当容器声明自定义 SlowRequestFilter Bean 时自动绑定至 FilterRegistrationBean")
+    void shouldRespectCustomSlowRequestFilter() {
+        io.github.atengk.boot.web.filter.SlowRequestFilter customFilter =
+                new io.github.atengk.boot.web.filter.SlowRequestFilter(java.time.Duration.ofSeconds(10));
+        contextRunner.withBean(io.github.atengk.boot.web.filter.SlowRequestFilter.class, () -> customFilter)
+                .run(context -> {
+                    assertThat(context).hasBean("slowRequestFilterRegistration");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("slowRequestFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getFilter()).isSameAs(customFilter);
+                });
+    }
 }
+

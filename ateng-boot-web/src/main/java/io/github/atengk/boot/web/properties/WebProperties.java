@@ -389,5 +389,53 @@ public class WebProperties {
          */
         private String mvcEndpointPath = "/pre-stop";
     }
+
+    /**
+     * 长耗时慢请求性能告警配置
+     */
+    @NestedConfigurationProperty
+    private SlowRequestProperties slowRequest = new SlowRequestProperties();
+
+    /**
+     * 慢请求监控属性配置
+     */
+    @Getter
+    @Setter
+    public static class SlowRequestProperties {
+
+        /**
+         * 是否启用慢请求性能告警过滤器（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 慢请求判定阈值（强类型 Duration，默认 3 秒）
+         */
+        private Duration threshold = Duration.ofSeconds(3);
+
+        /**
+         * 慢请求监控排除路径白名单（Ant 风格匹配，如 /actuator/**）
+         */
+        private List<String> excludeUrls = new ArrayList<>();
+
+        /**
+         * 获取判定阈值毫秒数（向后兼容）
+         *
+         * @return 毫秒数
+         */
+        public long getThresholdMillis() {
+            return threshold != null ? threshold.toMillis() : 3000L;
+        }
+
+        /**
+         * 设置判定阈值毫秒数（向后兼容）
+         *
+         * @param thresholdMillis 毫秒数
+         */
+        public void setThresholdMillis(long thresholdMillis) {
+            this.threshold = Duration.ofMillis(thresholdMillis);
+        }
+    }
 }
+
 

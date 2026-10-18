@@ -27,6 +27,7 @@
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `SampleApplicationIntegrationTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户多维限流防刷 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `SampleRateLimiterIntegrationTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java` |
+| **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java` |
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称与 RSA 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `SampleApiSignIntegrationTest.java` |
@@ -299,7 +300,55 @@ spec:
 
 ---
 
-## 13. 模块配置属性参考 (`application.yml`)
+## 13. 长耗时慢请求性能主动告警 (`SlowRequestFilter`)
+
+### 场景痛点
+在高并发微服务与 Web 应用中，部分接口可能因慢 SQL、第三方外部 RPC 延迟或计算密集导致响应时间劣化。若缺乏主动监控手段，运维人员往往只能等到客户端报超时或系统负载飙升时才后知后觉。同时，若无脑拦截所有长耗时请求，极易对本就需要长时间保持的长连接（如 WebSocket、Server-Sent Events、大文件下载分块）产生大量无意义误报。
+
+### 核心机制
+- **出口统一耗时统计**：过滤器注册于 `TraceFilter.ORDER + 3`，在请求出口 `finally` 阶段精确统计处理耗时；
+- **强类型阈值判定**：耗时达到或超过配置阈值（`threshold: 3s`，支持 `Duration` 格式如 `500ms`, `3s` 等）时，输出格式化 WARN 告警日志；
+- **全链路四维元数据**：告警日志完整携带 MDC 全链路 `traceId`、HTTP 方法、请求 URI、耗时（ms）、阈值（ms）与真实客户端 IP；
+- **智能长连接免打扰放行**：
+  - 自动识别并放行请求/响应中的 `Upgrade` 握手标头（WebSocket 升级）；
+  - 自动识别并放行 `text/event-stream`（SSE 事件流）；
+  - 自动识别并放行 `application/octet-stream`（二进制流与文件分块下载）；
+  - 自动识别并放行 `request.isAsyncStarted()` 异步调度与挂起任务；
+- **白名单精准排除**：支持通过 `exclude-urls`（Ant 风格路径匹配，如 `/actuator/**`）自由排除运维或特殊业务路径；
+- **因果异常链透明**：若下游控制器或过滤器抛出异常，在 `finally` 记录慢请求告警后 100% 原样重抛原始异常，绝不吞咽污染。
+
+### 全真控制台日志呈现
+```log
+2026-10-18 20:29:14.888 WARN  [http-nio-8080-exec-1] [traceId: trace-mock-888] i.g.a.b.w.f.SlowRequestFilter : [SLOW_REQUEST] 检测到慢 HTTP 请求: method=[POST], uri=[/mock/slow], cost=[82ms], threshold=[50ms], clientIp=[127.0.0.1], traceId=[trace-mock-888]
+```
+
+### 生产配置与扩展范式
+```yaml
+ateng:
+  boot:
+    web:
+      slow-request:
+        # 是否启用慢请求性能告警过滤器（默认 true）
+        enabled: true
+        # 慢请求判定阈值（强类型 Duration，默认 3s，支持 500ms、3s 等）
+        threshold: 3s
+        # 慢请求监控排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/actuator/**"
+          - "/mock/slow-excluded"
+```
+
+当框架默认行为无法满足需要时，可通过覆盖 `@Bean` 自定义扩展接管：
+```java
+@Bean
+public SlowRequestFilter customSlowRequestFilter() {
+    return new SlowRequestFilter(Duration.ofSeconds(5), List.of("/actuator/**", "/special/**"));
+}
+```
+
+---
+
+## 14. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -314,6 +363,14 @@ ateng:
         enabled: true
         # 链路追踪头名称（默认 X-Trace-Id；属性别名亦兼容 header）
         header-name: "X-Trace-Id"
+      slow-request:
+        # 是否启用慢请求性能告警过滤器（默认 true）
+        enabled: true
+        # 慢请求判定阈值（强类型 Duration，默认 3s）
+        threshold: 3s
+        # 慢请求监控排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/actuator/**"
       shutdown:
         # 是否启用云原生流量排空与生命周期治理（默认 true）
         enabled: true
