@@ -132,4 +132,24 @@ _Avoid_: StatementManager, DynamicSqlManager, SqlRegistry
 通用编程式动态 SQL 执行门面组件，依托 `SqlSession` 与已注册的 `MappedStatement`，提供免建 Mapper 接口的增删改查以及符合 ADR-0010 规范的标准分页执行能力。
 _Avoid_: UniversalSqlExecutor, CommonDao, DynamicSqlDao
 
+**BaseDeleteIdEntity**:
+针对高频逻辑删除复合唯一索引冲突表设计的受管业务实体抽象基类，继承 BaseEntity，追加乐观锁版本号与以 Snowflake ID 占位删除的 Long 型删除标记（未删除为 0，删除时 `deleted = id`）。
+_Avoid_: BaseDeleteTimeEntity, SoftDeleteEntity, DeleteModel, TimestampEntity
+
+**StreamingQueryTemplate**:
+受管游标流式查询模板门面，结合 MyBatis Cursor 与声明式只读事务，提供逐条流式或分批遍历消费能力，彻底防御堆内存 OOM 与数据库连接池句柄悬挂泄漏。
+_Avoid_: CursorHelper, StreamUtil, BatchQueryUtil
+
+**SlowSqlInterceptor**:
+慢 SQL 性能审计拦截器，基于 MyBatis Statement 拦截器精确统计包含网络 IO 的真实执行耗时，捕获美化 SQL、真实绑定参数与调用栈行号，预留告警 SPI。
+_Avoid_: SqlMonitor, QueryProfiler, PerformanceInterceptor
+
+**SlowSqlAlertProvider**:
+慢 SQL 告警通知 SPI 契约，支持下游自由扩展推送到钉钉、飞书、企业微信或外部 APM 系统。
+_Avoid_: SqlNotifier, SlowSqlHandler, SlowSqlConsumer
+
+**DynamicDatasourceGuard**:
+多数据源环境协同守卫探针，校验与防御跨数据源切换时租户与数据权限上下文的隔离有效性。
+_Avoid_: MultiDataSourceHelper, RoutingGuard
+
 
