@@ -153,5 +153,10 @@ _Avoid_: Groups, ValidateGroup, CheckGroup
 支持 JSR-303 级联校验的轻量级泛型 List 包装容器，彻底解决 Spring MVC 中 Controller 接收 `@RequestBody @Valid List<DTO>` 时默认忽略列表元素内字段校验的缺陷。
 _Avoid_: ValidatedList, ValidationList, DTOList
 
+**TransactionUtil**:
+基于 Spring 事务同步器（TransactionSynchronization）实现的事务生命周期全局静态门面，支持在数据库物理事务提交后执行同步/异步任务或发布领域事件，在事务回滚后执行补偿清理逻辑；具备类探测与无事务判定机制，无活跃事务或缺依赖时平滑降级就地同步执行，异步调度自动透传四维上下文快照（MDC、User、TenantId、IgnoreTenant）并隔离次生异常。
+_Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
+
+
 
 

@@ -41,7 +41,8 @@
 | **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java` |
 | **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java` |
 | **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java` |
-| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java` |
+| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java` |
+| **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java` |
 
 ---
 
@@ -680,6 +681,41 @@ public class UserController {
         return Result.success();
     }
 }
+```
+
+### 11. 事务生命周期同步门面 (`TransactionUtil`)
+
+#### 场景痛点与特性
+在业务开发中，持久化事务提交后常常需要触发外部副作用（如发布 MQ 消息、发送通知、写入审计日志或异步刷新缓存），而在事务回滚后需执行清理或补偿逻辑。
+如果直接在事务代码块内执行异步调度或事件发布，极易引发**“事务尚未提交，外部消费者已读取到旧数据或脏读”**的严重并发时序缺陷；同时若回调任务抛出次生异常，可能逆向导致主事务异常回滚。
+`TransactionUtil` 基于 Spring 事务同步器（`TransactionSynchronization`）提供显式门面：
+- **双向生命周期完备性**：显式提供 `executeAfterCommit` 与 `executeAfterRollback` 对称钩子；
+- **四维上下文无损穿透**：`executeAfterCommitAsync` 自动抓取当前线程四维上下文快照（MDC 链路、User 身份、Tenant 租户与 IgnoreTenant 标志位），在异步工作线程中还原并在任务完成后严格恢复，杜绝线程池污染与跨租户越权；
+- **异常受控隔离**：回调任务发生的任何异常均被受控捕获并记录 WARN 日志，绝对不会逆向阻断外部事务提交或 HTTP 响应；
+- **平滑自适应降级**：具备运行时类探测与非事务自适应能力，当处于非事务上下文或未引入 `spring-tx` 依赖时，`executeAfterCommit` 自动降级为就地同步执行，`executeAfterRollback` 安全跳过，`executeAfterCommitAsync` 就地提交线程池，实现 100% 宿主中立与环境弹性。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.TransactionUtil;
+
+// 1. 事务提交后同步执行（例如清理本地二级缓存）
+TransactionUtil.executeAfterCommit(() -> localCache.invalidate(userId));
+
+// 2. 事务回滚后补偿清理（例如删除本地预生成的临时导出文件）
+TransactionUtil.executeAfterRollback(() -> tempFile.delete());
+
+// 3. 事务提交后异步调度（自动调度受管 taskExecutor 线程池，无损透传 MDC、User 与租户快照）
+TransactionUtil.executeAfterCommitAsync(() -> mqProducer.sendOrderCreatedMessage(orderId));
+
+// 4. 事务提交后异步调度（允许显式指定特定线程池）
+TransactionUtil.executeAfterCommitAsync(() -> syncTask.run(), customExecutor);
+
+// 5. 事务提交后通过 Spring 容器发布领域事件（支持 POJO 载荷事件）
+TransactionUtil.publishAfterCommit(new OrderPaidEvent(orderId));
+
+// 6. 事务与同步器状态判定
+boolean hasActualTx = TransactionUtil.isActualTransactionActive();
+boolean hasSync = TransactionUtil.isSynchronizationActive();
 ```
 
 ---

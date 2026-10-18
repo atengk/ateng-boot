@@ -51,6 +51,15 @@ public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProce
     }
 
     /**
+     * 检查 Spring 容器是否已初始化并注入 SpringUtil
+     *
+     * @return 若已初始化则返回 true，否则返回 false
+     */
+    public static boolean isInitialized() {
+        return applicationContext != null;
+    }
+
+    /**
      * 获取 ApplicationContext 上下文实例
      *
      * @return ApplicationContext
