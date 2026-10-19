@@ -45,7 +45,7 @@
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `AtengBaseServiceStreamTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `AtengBaseServiceStreamTest` |
-| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系与单表/多表动态查询及存在性判断（`existsDynamic`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `SampleBatchInsertTest` |
+| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系、单表/多表动态查询及存在性判断（`existsDynamic`），以及乐观锁高并发自旋重试（`updateWithOptimisticRetry`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `AtengBaseServiceOptimisticLockTest` / `SampleBatchInsertTest` |
 | **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count` / `exists`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询与单页物理短路直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic` / `listDynamic` / `getOneDynamic` / `countDynamic` / `existsDynamic`，支持基于方法引用（`mapper::method`）或短方法名执行多表联表极速直出与单页 `Page(1, 1, false)` 物理短路判定 | `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `SampleDynamicQueryIntegrationTest` |
@@ -374,6 +374,33 @@ Account updated = OptimisticLockTemplate.execute(
         Duration.ofMillis(100)      // 初始退避 100ms
 );
 ```
+
+### 服务层开箱即用门面 (`AtengBaseService.updateWithOptimisticRetry`)
+业务 Service 继承 `AtengServiceImpl` 即可直接调用 `updateWithOptimisticRetry`，由实体主键与修改函数驱动，无需手动拼装 `selectById` 与 `updateById`：
+```java
+@Service
+public class AccountServiceImpl extends AtengServiceImpl<AccountMapper, Account> implements AccountService {
+
+    public void deductBalance(Long accountId, int amount) {
+        // 1. 默认自旋重试（最多 3 次，初始退避 50ms）
+        Account updated = updateWithOptimisticRetry(accountId, account -> {
+            if (account.getBalance() < amount) {
+                throw new BusinessException(400, "账户余额不足");
+            }
+            account.setBalance(account.getBalance() - amount);
+        });
+
+        // 2. 自定义重试策略（支持自定义最大尝试次数与退避时长）
+        Account custom = updateWithOptimisticRetry(accountId, account -> {
+            account.setStatus("ACTIVE");
+        }, 5, Duration.ofMillis(100));
+    }
+}
+```
+
+> [!IMPORTANT]
+> **关键架构约束 (非全局事务编排 + 独立单条更新事务)**：
+> `updateWithOptimisticRetry` 方法本身**严禁标注全局 `@Transactional`**。在 MySQL `REPEATABLE READ` 默认隔离级别下，若由外层开启全局事务，事务内多次查询默认使用首个快照视图（MVCC Snapshot Read），导致循环重试中 `getById(id)` 永远读不到其他已提交事务修改的新版本号，陷入死循环冲突；本门面采用无全局事务编排，每次自旋重试独立调用 `getById(id)` 读取最新已提交快照，由单次 `updateById(entity)` 承载独立原子更新，彻底消除旧读陷阱。
 
 ---
 

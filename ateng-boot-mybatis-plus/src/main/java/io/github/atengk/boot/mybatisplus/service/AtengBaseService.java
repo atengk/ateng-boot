@@ -14,10 +14,12 @@ import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperPageMethod;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
+import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -1267,4 +1269,37 @@ public interface AtengBaseService<T> extends IService<T> {
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         streamWhile(wrapper, voClass, predicate);
     }
+
+    // ==========================================
+    // 6. 乐观锁高并发自旋重试服务层门面 (Optimistic Lock Spin-Retry Facade)
+    // ==========================================
+
+    /**
+     * 执行带乐观锁自旋重试的实体加载与更新操作（采用默认重试配置）
+     * 针对高并发场景下的数据版本冲突（@Version 版本号不一致导致更新影响行数为 0），自动重新加载最新数据库快照并重新应用更新
+     *
+     * @param id      实体主键 ID
+     * @param updater 实体状态修改器（入参为最新已提交实体，在函数内执行业务状态修改）
+     * @return 更新成功后的最新实体对象
+     * @throws io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate.OptimisticLockConflictException 当重试达到上限仍未成功时抛出
+     */
+    default T updateWithOptimisticRetry(Serializable id, Consumer<T> updater) {
+        return updateWithOptimisticRetry(id, updater, OptimisticLockTemplate.DEFAULT_MAX_ATTEMPTS, OptimisticLockTemplate.DEFAULT_INITIAL_DELAY);
+    }
+
+    /**
+     * 执行带乐观锁自旋重试的实体加载与更新操作（支持自定义最大重试次数与退避时长）
+     * <p>
+     * <b>关键架构约束</b>：该方法严禁标注全局 {@code @Transactional}，以确保每次重试时 {@code getById(id)} 能够读取
+     * 数据库最新已提交数据，避开 MySQL {@code REPEATABLE READ} 隔离级别下的 MVCC 快照旧读陷阱；内部单次 {@code updateById(entity)} 自带独立原子更新事务。
+     * </p>
+     *
+     * @param id          实体主键 ID（不能为 null）
+     * @param updater     实体状态修改器（不能为 null，入参为最新已提交实体，在函数内执行业务状态修改）
+     * @param maxAttempts 最大尝试次数（必须大于等于 1）
+     * @param delay       初始退避等待时长（若为 null 则缺省使用默认退避时长）
+     * @return 更新成功后的最新实体对象
+     * @throws io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate.OptimisticLockConflictException 当重试达到上限仍未成功时抛出
+     */
+    T updateWithOptimisticRetry(Serializable id, Consumer<T> updater, int maxAttempts, Duration delay);
 }

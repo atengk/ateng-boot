@@ -7,12 +7,16 @@ import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
 import io.github.atengk.boot.mybatisplus.service.AtengBaseService;
 import io.github.atengk.boot.mybatisplus.util.BatchUtil;
+import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.Serializable;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -173,5 +177,25 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
             throw new IllegalStateException("当前 Service 未注入 StreamingQueryTemplate 组件，无法执行流式游标查询");
         }
         return this.streamingQueryTemplate;
+    }
+
+    @Override
+    public T updateWithOptimisticRetry(Serializable id, Consumer<T> updater) {
+        return updateWithOptimisticRetry(id, updater, OptimisticLockTemplate.DEFAULT_MAX_ATTEMPTS, OptimisticLockTemplate.DEFAULT_INITIAL_DELAY);
+    }
+
+    @Override
+    public T updateWithOptimisticRetry(Serializable id, Consumer<T> updater, int maxAttempts, Duration delay) {
+        Objects.requireNonNull(id, "实体主键 id 不能为 null");
+        Objects.requireNonNull(updater, "实体修改函数 updater 不能为 null");
+        return OptimisticLockTemplate.execute(
+                () -> getById(id),
+                entity -> {
+                    updater.accept(entity);
+                    return updateById(entity);
+                },
+                maxAttempts,
+                delay
+        );
     }
 }
