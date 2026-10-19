@@ -20,8 +20,8 @@
 | **身份模拟** | 会话持久模拟与还原 | `LoginHelper` | - | `switchTo(String)` / `switchTo(Long)` / `endSwitch()` 会话级模拟，保留原始运维人链路 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **身份模拟** | 瞬态代码块安全模拟 | `LoginHelper` | - | `runAs(String, Supplier<T>)` / `runAs(String, Runnable)` / `runAs(Long, ...)` 栈式保护与 `finally` 可靠清理 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **双维审计** | 模拟感知与原始人追踪 | `LoginHelper`<br>`SaTokenCurrentUserProvider` | - | `isRunAs()` / `getOriginalUserId()`，自动贯通 Core/Web `@OperateLog` 切面双维操作审计 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`LoginHelper` | - | `checkSelf(String/Long)` / `isSelf(String/Long)` / `checkBelongsToTenant(String)` / `@CheckDataOwner(expr, provider)` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **公开访问** | 声明式公开与动态白名单 | `@Anonymous`<br>`SaTokenWhitelistProvider` | `ateng.boot.satoken.white-list` | 类/方法级 `@Anonymous` 动态转译 AntPath，聚合 SPI 动态白名单与 YAML 配置统一放行 | `AnonymousUrlProcessorTest` / `SampleSaTokenIntegrationTest` |
+| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`DataOwnerProvider`<br>`LoginHelper` | - | `@CheckDataOwner(expr, provider)` / `DataOwnerProvider.check` / `checkSelf(String/Long)` / `isSelf(String/Long)` / `checkBelongsToTenant(String)` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **公开访问** | 声明式公开与动态白名单 | `@Anonymous`<br>`SaTokenWhitelistProvider`<br>`AnonymousUrlProcessor` | `ateng.boot.satoken.white-list` | 类/方法级 `@Anonymous`，`SaTokenWhitelistProvider.getWhitelist()`，动态扫描转译 AntPath，多源白名单聚合放行 | `AnonymousUrlProcessorTest` / `SampleSaTokenIntegrationTest` |
 | **权限断言** | 角色与特权判定 | `LoginHelper` | - | `getRoles()` / `getPermissions()` / `hasRole(String)` / `hasPermission(String)` / `isSuperAdmin()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **用户载荷** | 工业级强类型载荷 | `LoginUser` | - | 标配 `@SaJsonType`、链式 setter 与 `extraData` 扩展字典 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **路由拦截** | 双轨路由拦截与白名单 | `AtengSaTokenInterceptor` / `SaTokenWebMvcConfigurer` | `ateng.boot.satoken.interceptor.*`<br>`ateng.boot.satoken.white-list` | `isAnnotation(false)` 专精路径白名单防漏，`preHandle` 注入上下文，`afterCompletion` 强制清空 | `AtengSaTokenInterceptorTest` / `SampleSaTokenIntegrationTest` |
@@ -985,8 +985,8 @@ public class AsyncSecurityAuditConsumer {
 
 ## 17. 架构决策与设计参考
 
-- [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
-- [ADR-0002: 显式统一响应契约](../../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)
-- [ADR-0012: 生命周期分离的数据安全模型与内存真明文原则](../../docs/adr/0012-lifecycle-separated-data-security.md)
-- [ADR-0022: 双核驱动 Redis 基础设施与分布式协同架构](../../docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
+- [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
+- [ADR-0002: 显式统一响应契约](../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)
+- [ADR-0012: 生命周期分离的数据安全模型与内存真明文原则](../docs/adr/0012-lifecycle-separated-data-security.md)
+- [ADR-0022: 双核驱动 Redis 基础设施与分布式协同架构](../docs/adr/0022-dual-core-redis-and-distributed-coordination-architecture.md)
 

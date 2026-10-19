@@ -16,11 +16,11 @@
 - **自适应存储降级**：无 Redis 环境下自动平滑降级为基于内存的高速会话存储，配合 H2 内存数据库秒级启动；
 - **全域双轨安全防御**：兼顾双轨路由拦截白名单与 Controller/Service 全域 AOP 注解鉴权（`@SaCheckRole`、`@SaCheckPermission`、`@SaCheckSafe`）；
 - **全链路审计流转**：通过 Core 模块的 `CurrentUserProvider` SPI 自动对接 MyBatis-Plus 审计处理器，插入实体自动回填当前登录人；
-- **100% 离线自洽测试**：配套 17 项端到端集成测试，涵盖登录注销、二级认证、多端踢人/顶替、权限缓存热刷新、Same-Token 零信任等全部企业级特性。
+- **100% 离线自洽测试**：配套 31 项端到端集成测试（27 项综合业务鉴权自验 + 4 项全局严格路由校验），涵盖登录注销、二级认证、多端踢人/顶替、权限缓存热刷新、Same-Token 零信任、水平越权防御、声明式动态白名单、双维身份模拟审计、集群即时同步与登录防暴力破解等全部企业级特性。
 
 ---
 
-## 2. 17 项端到端自验场景全景表
+## 2. 27 项综合业务自验场景全景表
 
 | 序号 | 自验场景 | 覆盖核心机制 / API | 验证端点 / 动作 | 预期响应 / 校验点 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -41,6 +41,16 @@
 | **15** | 多端设备登录与按设备精准踢下线 | `LoginHelper.login(user, "PC")` / `kickout(userId, "PC")` | `POST /api/auth/login?device=PC`<br>`POST /api/auth/kickout` | 精准踢掉 PC 设备会话，被踢后访问返回 401 提示 `当前账号已被踢下线` |
 | **16** | Sa-Token 防火墙非法路径穿越拦截 | `SaTokenFirewall` 规范化校验 | `GET /api/auth/test/..%2F..%2Fetc%2Fpasswd` | 路径穿越请求直接被防火墙拦截，统一返回 HTTP 200 + Result 400 契约 |
 | **17** | 多端设备顶替下线与会话隔离 | `LoginHelper.replaced` 顶人机制 | `POST /api/auth/login`<br>`LoginHelper.replaced` | 账号被顶替后携带原 Token 访问返回 401 提示 `当前账号已在其他设备登录，您已被顶下线` |
+| **18** | 水平越权防御（入参直接归属人） | `@CheckDataOwner(expr = "#dto.userId")` | `POST /api/auth/user/profile` | 自身 ID 放行 200；篡改他人 ID 立即被 AOP 切面拦截返回 403 契约 |
+| **19** | 水平越权防御（间接资源反查 SPI） | `@CheckDataOwner(provider = SampleOrderDataOwnerProvider.class)` | `POST /api/auth/order/{orderId}/cancel` | 归属自身订单放行 200；他人订单经由 SPI 反查归属判定不匹配拦截 403 |
+| **20** | 编程式数据归属前置断言 | `LoginHelper.checkSelf` / `checkBelongsToTenant` | `POST /api/auth/assert/self-tenant` | 自身与归属租户校验放行 200；跨租户或非本人抛出业务异常快速失败 403 |
+| **21** | 声明式方法级匿名公开访问 | `@Anonymous` 方法注解 | `GET /api/auth/public/article/{id}` | 免 Token 携带直接放行 200，Spring MVC `{id}` 自适应转译 AntPath 匹配 |
+| **22** | 声明式类级整类端点匿名访问 | `@Anonymous` 类注解 | `GET /api/anonymous/hello` | 控制器所有公共端点统一免鉴权放行 200 |
+| **23** | SPI 动态白名单路由扩展 | `SaTokenWhitelistProvider` SPI 注入 | `GET /api/custom-spi/data` | 外部插件动态扩展的白名单端点免 Token 访问直接放行 200 |
+| **24** | 跨请求会话模拟与双维审计贯通 | `LoginHelper.switchTo` / `endSwitch` | `POST /api/auth/impersonate/switch`<br>`GET /api/auth/impersonate/status` | 切换后 `getUserId()` 返回被模拟人，`originalUserId` 保持管理员，审计日志双维对齐 |
+| **25** | 瞬态代码块安全模拟与栈式恢复 | `LoginHelper.runAs(userId, ...)` | `POST /api/auth/order/compensate` | 块内生效为目标用户并自动回填订单审计人，`finally` 确定性恢复现场 |
+| **26** | 集群广播即时同步与自消费防卫 | `SaTokenClusterBroadcaster` + `SaTokenClusterSyncListener` | `GET /api/auth/cluster/instance-id`<br>`POST /api/auth/cluster/refresh-user` | 全网广播集群同步载荷，本机自消费静默丢弃防重入，异地广播精准失效本地缓存 |
+| **27** | 登录防暴力破解失败惩罚与封禁 | `LoginFailureLockService` + `LoginHelper.disable` | `POST /api/auth/login-with-defense`<br>`GET /api/auth/defense/status` | 输错原子累计并返回剩余次数，达到上限联动原生封禁 403，登录成功对称清零 |
 
 ---
 
@@ -148,7 +158,14 @@ mvn test -pl ateng-boot-samples/ateng-boot-sample-satoken -am -T 1C -nsu -B
 
 **实测结果**：
 ```text
+[INFO] Running io.github.atengk.boot.sample.satoken.SampleSaTokenCheckLoginIntegrationTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.450 s -- in io.github.atengk.boot.sample.satoken.SampleSaTokenCheckLoginIntegrationTest
 [INFO] Running io.github.atengk.boot.sample.satoken.SampleSaTokenIntegrationTest
-[INFO] Tests run: 17, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 12.75 s -- in io.github.atengk.boot.sample.satoken.SampleSaTokenIntegrationTest
+[INFO] Tests run: 27, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.994 s -- in io.github.atengk.boot.sample.satoken.SampleSaTokenIntegrationTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 31, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
 [INFO] BUILD SUCCESS
 ```
