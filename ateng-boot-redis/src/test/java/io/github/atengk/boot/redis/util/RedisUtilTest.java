@@ -112,9 +112,15 @@ class RedisUtilTest {
         when(redisTemplate.scan(any(ScanOptions.class))).thenReturn(cursor);
 
         Set<String> keys = RedisUtil.scan("order:*", 500L);
-
         assertThat(keys).containsExactlyInAnyOrder("order:1001", "order:1002");
-        verify(redisTemplate).scan(any(ScanOptions.class));
+
+        Cursor<String> cursor2 = mock(Cursor.class);
+        when(cursor2.hasNext()).thenReturn(true, false);
+        when(cursor2.next()).thenReturn("order:1003");
+        when(redisTemplate.scan(any(ScanOptions.class))).thenReturn(cursor2);
+
+        Set<String> aliasKeys = RedisUtil.scanKeys("order:*", 500L);
+        assertThat(aliasKeys).containsExactly("order:1003");
     }
 
     @Test

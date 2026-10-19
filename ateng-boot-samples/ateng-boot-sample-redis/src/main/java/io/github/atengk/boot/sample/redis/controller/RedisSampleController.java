@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.redis.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.redis.service.OrderDelayQueueService;
 import io.github.atengk.boot.sample.redis.service.RedisSampleService;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
@@ -11,9 +12,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
+import java.util.Set;
+
 /**
  * Redis 场景样例控制器
- * 演示声明式分布式锁、接口限流防刷与幂等防重（零数据库依赖）
+ * 演示声明式分布式锁、接口限流防刷、幂等防重、延时队列投递与原子发号（零数据库依赖）
  *
  * @author Ateng
  * @since 2026-10-17
@@ -24,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class RedisSampleController {
 
     private final RedisSampleService redisSampleService;
+    private final OrderDelayQueueService orderDelayQueueService;
 
     /**
      * 扣减商品库存（受 Redisson 分布式锁严格并发保护）
@@ -60,5 +65,45 @@ public class RedisSampleController {
     @Idempotent(key = "'sample_idempotent:' + #token", timeout = 10)
     public Result<String> idempotentApi(@RequestParam("token") String token) {
         return Result.success("幂等提交成功: token=" + token);
+    }
+
+    /**
+     * 投递订单延时取消任务
+     *
+     * @param orderId      订单标识
+     * @param delaySeconds 延迟秒数
+     * @return 投递成功响应
+     */
+    @PostMapping("/delay-order")
+    public Result<String> sendDelayOrder(@RequestParam("orderId") String orderId,
+                                         @RequestParam(value = "delaySeconds", defaultValue = "30") Long delaySeconds) {
+        orderDelayQueueService.sendOrderCancelTask(orderId, Duration.ofSeconds(delaySeconds));
+        return Result.success("延时取消订单任务投递成功: " + orderId);
+    }
+
+    /**
+     * 安全游标扫描匹配的 Key 集合
+     *
+     * @param pattern 模糊匹配模式
+     * @param count   单次批次数量
+     * @return 匹配结果
+     */
+    @GetMapping("/scan-keys")
+    public Result<Set<String>> scanKeys(@RequestParam("pattern") String pattern,
+                                        @RequestParam(value = "count", defaultValue = "100") Long count) {
+        return Result.success(redisSampleService.scanKeys(pattern, count));
+    }
+
+    /**
+     * 生成按日自重置的结构化原子订单号
+     *
+     * @param prefix 前缀
+     * @param length 位宽
+     * @return 生成的流水号
+     */
+    @GetMapping("/daily-seq")
+    public Result<String> dailySeq(@RequestParam(value = "prefix", defaultValue = "ORD") String prefix,
+                                   @RequestParam(value = "length", defaultValue = "6") Integer length) {
+        return Result.success(redisSampleService.generateDailyOrderNo(prefix, length));
     }
 }

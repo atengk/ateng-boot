@@ -8,21 +8,21 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **基础运维** | 自动装配与主配置 | `RedisProperties` / `RedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix` | 统管双核装配开关与全局统一 Key 命名前缀隔离 | `RedisAutoConfigurationTest` |
-| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `hScan` / `executePipelined` | `RedisUtilTest` |
+| **基础运维** | 自动装配与主配置 | `RedisProperties` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.enabled`<br>`ateng.boot.redis.key-prefix` | 统管双核装配开关与全局统一 Key 命名前缀隔离 | `AtengRedisAutoConfigurationTest` |
+| **数据操作** | 全能操作门面 | `RedisUtil` | `ateng.boot.redis.key-prefix` | `hasKey(key)` / `expire(key, duration)` / `scanKeys(pattern, count)` / `get(key, clazz)` / `set(key, val, duration)` / `hScan` / `executePipelined` | `RedisUtilTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 声明式分布式锁 | `@DistributedLock` / `DistributedLockAspect` | `ateng.boot.redis.lock.enabled`<br>`ateng.boot.redis.lock.prefix`<br>`ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `@DistributedLock(key, keys, mode, waitTime, leaseTime, timeUnit, message)`：支持 SpEL、四阶锁模式、看门狗自动续期、防误删释放与慢锁审计 | `DistributedLockAspectTest`<br>`SampleRedisIntegrationTest` |
-| **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest` |
+| **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 静态锁操作门面 | `RedisLockUtil` | `ateng.boot.redis.lock.*` | `RedisLockUtil.execute(key, supplier)` / `RedisLockUtil.tryExecute(key, action)`：静态上下文无需注入 Spring Bean 一键安全加锁 | `RedisLockUtilTest`<br>`SampleRedisIntegrationTest` |
-| **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest` |
-| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`：基于 Redisson 原生轻量延迟队列封装 | `RedisDelayedQueueTest` |
-| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：自动注册消费线程、指数/固定退避重试、上下文隔离与平滑优雅停机 | `DelayedQueueBootstrapTest` |
+| **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`：基于 Redisson 原生轻量延迟队列封装 | `RedisDelayedQueueTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：自动注册消费线程、指数/固定退避重试、上下文隔离与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
 | **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topic)`：自动装配 Spring Data Redis `MessageListener`，反序列化载荷推送至目标方法 | `RedisMessagePublisherTest` |
-| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest` |
-| **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest` |
-| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest` |
-| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `RedisCacheAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `RedisCacheAutoConfigurationTest` |
-| **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `RedisCacheAutoConfigurationTest` |
+| **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
+| **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
+| **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
+| **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
+| **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `JitterTtlFunctionTest`<br>`AtengRedisAutoConfigurationTest` |
 | **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `jsonSerializer(clazz)` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
 
 ---
@@ -115,6 +115,10 @@ public class ProductCacheService {
 ```
 
 ### 预期控制台与 Redis 存储呈现
+```text
+2026-10-19 16:11:55.158 INFO  [main] [ea52411c7e479cd39e04bbf3f0f9317e] i.g.a.b.s.r.service.RedisSampleService   : RedisUtil 游标模糊扫描完成: pattern=sample:user:*, count=50, matchedSize=2
+```
+
 ```json
 // Redis 中实际存储的 Value（无 @class 冗余字段）:
 {
@@ -222,9 +226,29 @@ public class OrderPaymentService {
 
 ### 预期日志呈现
 ```text
-2026-10-16 18:20:10.123 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 加锁成功: keys=[lock:order:pay:ORD_888], mode=REENTRANT
-2026-10-16 18:20:13.567 WARN  [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 检测到慢分布式锁持锁: keys=[lock:order:pay:ORD_888], mode=REENTRANT, holdCost=3444ms, slowThreshold=3000ms
-2026-10-16 18:20:13.568 DEBUG [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 释放分布式锁成功: keys=[lock:order:pay:ORD_888]
+// 1. 标准加锁与持锁审计：
+2026-10-19 16:11:55.029 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:order:ORD_9999], mode=REENTRANT
+2026-10-19 16:11:55.031 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 获得分布式锁，开始处理订单业务: orderId=ORD_9999
+2026-10-19 16:11:55.032 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:order:ORD_9999]
+
+// 2. 看门狗自动续期长事务执行（leaseTime = -1）：
+2026-10-19 16:11:54.319 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:watchdog:TASK_LONG_RUNNING], mode=REENTRANT
+2026-10-19 16:11:54.321 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 激活 Redisson 看门狗持锁执行长事务: taskId=TASK_LONG_RUNNING
+2026-10-19 16:11:54.321 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:watchdog:TASK_LONG_RUNNING]
+
+// 3. 同一线程锁安全可重入（外层注解加锁，内层模板重入加锁）：
+2026-10-19 16:11:55.017 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:reentrant:ORD_REENTRANT_888], mode=REENTRANT
+2026-10-19 16:11:55.018 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 外层方法获取分布式锁成功: orderId=ORD_REENTRANT_888
+2026-10-19 16:11:55.018 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 加锁成功: keys=[lock:reentrant:ORD_REENTRANT_888], mode=REENTRANT
+2026-10-19 16:11:55.018 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 内层闭包同一线程重入同一锁成功: orderId=ORD_REENTRANT_888
+2026-10-19 16:11:55.020 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:reentrant:ORD_REENTRANT_888]
+2026-10-19 16:11:55.021 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 释放分布式锁成功: keys=[lock:reentrant:ORD_REENTRANT_888]
+
+// 4. 争锁超时平滑触发 fallback 降级闭包：
+2026-10-19 16:11:55.195 DEBUG [main] [NO-TRACE] i.g.a.b.r.l.t.DistributedLockTemplate    : [DistributedLock] 获取分布式锁超时，执行降级逻辑: keys=[lock:resource:fallback_res_1]
+
+// 5. 慢锁告警网关（持锁耗时超出阈值）：
+2026-10-19 16:20:13.567 WARN  [http-nio-8080-exec-1] [X-Trace-Id: 104523...] i.g.a.b.r.l.t.DistributedLockTemplate : [DistributedLock] 检测到慢分布式锁持锁: keys=[lock:order:pay:ORD_888], mode=REENTRANT, holdCost=3444ms, slowThreshold=3000ms
 ```
 
 ---
@@ -263,9 +287,9 @@ public class OrderDelayService {
 
 ### 预期控制台呈现
 ```text
-2026-10-16 18:00:00.000 INFO [main] OrderDelayService : 发送订单延时取消任务: orderId=1001, 延迟 30m
-... (30 分钟后) ...
-2026-10-16 18:30:00.012 INFO [delayed-queue-order_cancel_queue-1] OrderDelayService : 收到超时订单取消通知: orderId=1001
+2026-10-19 16:11:54.074 INFO  [main] [NO-TRACE] i.g.a.b.r.d.b.DelayedQueueBootstrap      : 已成功注册 Redis 延时队列消费者 [queue=sample:order:cancel, concurrency=1, method=OrderDelayQueueService#onOrderCancel]
+2026-10-19 16:11:54.499 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.OrderDelayQueueService     : 编程式投递延时取消任务: queue=sample:order:cancel, orderId=ORD_DELAY_999, delay=PT1S
+2026-10-19 16:11:54.513 INFO  [:order:cancel-1] [cff82f2353553ebd092601e87767de84] i.g.a.b.s.r.s.OrderDelayQueueService     : 声明式监听到期消费: orderId=ORD_DELAY_999, reason=订单未支付超时自动取消
 ```
 
 ---
@@ -345,6 +369,12 @@ public class OrderNumberService {
         return redisAtomicUtil.isAllowedBySlidingWindow("sms:limit:" + phone, 5, Duration.ofSeconds(60));
     }
 }
+```
+
+### 预期控制台呈现
+```text
+2026-10-19 16:11:54.643 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 生成结构化原子流水号成功: prefix=ORD, length=6, seq=ORD20261019000001
+2026-10-19 16:11:54.670 INFO  [main] [NO-TRACE] i.g.a.b.s.r.service.RedisSampleService   : 滑动窗口频控校验: key=sms:user:1001, maxRequests=5, window=PT1M, allowed=true
 ```
 
 ---

@@ -7,7 +7,7 @@ ateng:
     redis:
       enabled: true
       delay-queue:
-        enabled: false
+        enabled: true
     web:
       trace:
         enabled: true

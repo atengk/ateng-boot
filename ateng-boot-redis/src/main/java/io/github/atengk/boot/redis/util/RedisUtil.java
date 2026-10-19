@@ -192,6 +192,17 @@ public class RedisUtil {
     }
 
     /**
+     * 生产级安全游标扫描（scanKeys 别名方法，严格替代 keys *，分批安全迭代）
+     *
+     * @param pattern 匹配模式串（如 order:*）
+     * @param count 每次游标拉取批次数量
+     * @return 匹配的键集合
+     */
+    public static Set<String> scanKeys(String pattern, long count) {
+        return scan(pattern, count);
+    }
+
+    /**
      * 流式游标扫描（调用方自行 try-with-resources 遍历）
      *
      * @param pattern 匹配模式串
