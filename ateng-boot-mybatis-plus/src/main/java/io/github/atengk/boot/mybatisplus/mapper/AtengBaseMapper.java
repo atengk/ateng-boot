@@ -26,4 +26,20 @@ public interface AtengBaseMapper<T> extends BaseMapper<T> {
      * @return 成功插入影响的行数
      */
     int insertBatchSomeColumn(@Param("list") Collection<T> entityList);
+
+    /**
+     * 原生双方言单条多值批量插入或原地冲突更新（Upsert）
+     * <p>
+     * 底层自适应适配主流数据库方言：
+     * <ul>
+     *   <li>MySQL: 编译生成 {@code INSERT INTO ... ON DUPLICATE KEY UPDATE col1=VALUES(col1), ...}</li>
+     *   <li>PostgreSQL: 编译生成 {@code INSERT INTO ... ON CONFLICT (conflict_cols) DO UPDATE SET col1=EXCLUDED.col1, ...}</li>
+     * </ul>
+     * 自动跳过主键 ID、创建时间与逻辑删除列。PostgreSQL 默认使用 {@code @TableId} 主键作为冲突键，支持通过 {@code @ConflictKeys} 实体注解自定义复合唯一键。
+     * </p>
+     *
+     * @param entityList 实体集合
+     * @return 成功操作影响的行数
+     */
+    int upsertBatchSomeColumn(@Param("list") Collection<T> entityList);
 }

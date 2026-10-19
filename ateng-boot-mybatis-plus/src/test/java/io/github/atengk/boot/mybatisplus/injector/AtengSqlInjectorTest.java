@@ -12,11 +12,14 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import com.baomidou.mybatisplus.annotation.DbType;
+import io.github.atengk.boot.mybatisplus.injector.methods.UpsertBatchSomeColumn;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * AtengSqlInjector 全局 SQL 注入器单元测试
- * 验证 InsertBatchSomeColumn 原生批量插入方法被正确追加至默认方法列表
+ * 验证 InsertBatchSomeColumn 与 UpsertBatchSomeColumn 原生批量操作方法被正确追加至方法列表
  *
  * @author Ateng
  * @since 2026-10-16
@@ -33,8 +36,8 @@ class AtengSqlInjectorTest {
     interface SampleMapper {}
 
     @Test
-    @DisplayName("1. 挂载验证：getMethodList 返回的注入方法列表中包含 InsertBatchSomeColumn")
-    void shouldIncludeInsertBatchSomeColumnInMethodList() {
+    @DisplayName("1. 挂载验证：getMethodList 返回的注入方法列表中包含 InsertBatchSomeColumn 与 UpsertBatchSomeColumn")
+    void shouldIncludeInsertAndUpsertBatchInMethodList() {
         Configuration configuration = new Configuration();
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "resource");
         assistant.setCurrentNamespace(SampleMapper.class.getName());
@@ -45,5 +48,24 @@ class AtengSqlInjectorTest {
 
         assertThat(methodList).isNotNull();
         assertThat(methodList).anyMatch(m -> m instanceof InsertBatchSomeColumn);
+        assertThat(methodList).anyMatch(m -> m instanceof UpsertBatchSomeColumn);
+    }
+
+    @Test
+    @DisplayName("2. 方言透传验证：显式指定 DbType 时正确透传至 UpsertBatchSomeColumn")
+    void shouldPassExplicitDbTypeToUpsertBatchSomeColumn() {
+        Configuration configuration = new Configuration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "resource");
+        assistant.setCurrentNamespace(SampleMapper.class.getName());
+        TableInfo tableInfo = TableInfoHelper.initTableInfo(assistant, SampleEntity.class);
+
+        AtengSqlInjector injector = new AtengSqlInjector(DbType.POSTGRE_SQL);
+        List<AbstractMethod> methodList = injector.getMethodList(configuration, SampleMapper.class, tableInfo);
+
+        UpsertBatchSomeColumn upsertMethod = (UpsertBatchSomeColumn) methodList.stream()
+                .filter(m -> m instanceof UpsertBatchSomeColumn)
+                .findFirst()
+                .orElseThrow();
+        assertThat(upsertMethod.getDbType()).isEqualTo(DbType.POSTGRE_SQL);
     }
 }

@@ -147,6 +147,77 @@ public final class BatchUtil {
     }
 
     /**
+     * 原生分批批量 Upsert（采用默认分批大小 1000）
+     * 执行前自动对实体集合执行自愈补偿处理，底层自适应根据数据库方言生成 ON DUPLICATE KEY UPDATE 或 ON CONFLICT
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param <T>        实体类型
+     * @return 累计成功操作影响的总行数
+     */
+    public static <T> int upsertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
+        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 原生分批批量 Upsert（支持自定义切片批次大小）
+     * 在切片分批执行前执行自愈补偿处理，随后将集合按 batchSize 切片并逐批执行 upsertBatchSomeColumn 原生多值 SQL Upsert
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param <T>        实体类型
+     * @return 累计成功操作影响的总行数
+     */
+    public static <T> int upsertBatch(AtengBaseMapper<T> mapper, Collection<T> entityList, int batchSize) {
+        if (entityList == null || entityList.isEmpty()) {
+            return 0;
+        }
+        if (mapper == null) {
+            throw new IllegalArgumentException("Mapper must not be null");
+        }
+
+        // 1. 前置轻量自愈补偿处理
+        autoHealAll(entityList);
+
+        // 2. 切片分批执行
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        List<T> list = (entityList instanceof List) ? (List<T>) entityList : new ArrayList<>(entityList);
+
+        int affectedRows = 0;
+        for (List<T> subList : CollectionUtil.partition(list, effectiveBatchSize)) {
+            affectedRows += mapper.upsertBatchSomeColumn(subList);
+        }
+
+        return affectedRows;
+    }
+
+    /**
+     * 原生分批批量 Upsert 别名方法（采用默认分批大小 1000）
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param <T>        实体类型
+     * @return 累计成功操作影响的总行数
+     */
+    public static <T> int upsertBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
+        return upsertBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 原生分批批量 Upsert 别名方法（支持自定义切片批次大小）
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param <T>        实体类型
+     * @return 累计成功操作影响的总行数
+     */
+    public static <T> int upsertBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList, int batchSize) {
+        return upsertBatch(mapper, entityList, batchSize);
+    }
+
+    /**
      * 对实体集合全量执行轻量自愈补偿处理
      *
      * @param entityList 待自愈实体集合
