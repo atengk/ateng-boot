@@ -6,9 +6,9 @@ spring:
 
 ateng:
   boot:
-    core:
-      async:
-        core-pool-size: 4
-        max-pool-size: 8
-        queue-capacity: 100
-        thread-name-prefix: sample-core-async-
+    async:
+      enabled: true
+      core-pool-size: 4
+      max-pool-size: 8
+      queue-capacity: 100
+      thread-name-prefix: sample-core-async-

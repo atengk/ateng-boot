@@ -21,31 +21,31 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `SampleApiResponseTest.java` |
-| **标准状态码** | 统一状态码契约与预置枚举 | `IResultCode`, `CommonResultCode` | - | `CommonResultCode.SUCCESS(200)`, `BAD_REQUEST(400)`, `UNAUTHORIZED(401)`, `FORBIDDEN(403)`, `NOT_FOUND(404)`, `INTERNAL_SERVER_ERROR(500)` | `CommonResultCodeTest.java` |
-| **分页传输契约** | 防越界分页入参、强类型排序与纯净出参模型 | `PageQuery`, `SortItem`, `PageResult<T>` | - | `PageQuery.getCurrent()`, `PageQuery.getSize()`, `PageQuery.addAsc/Desc()`, `SortItem.asc/desc()`, `PageResult.of(list, total, current, size)`, `PageResult.map(mapper)` | `PageQueryTest.java`, `SortItemTest.java`, `PageResultTest.java` |
-| **因果异常体系** | 业务受控异常与因果堆栈双模 | `BusinessException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留堆栈）, `BusinessException(..., writableStackTrace)` | `BusinessExceptionTest.java`, `SampleCoreIntegrationTest.java` |
-| **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)` | `BusinessAssertTest.java` |
-| **分布式发号器** | 2026 纪元雪花发号器与无锁短 ID | `IdUtil`, `Snowflake` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java` |
-| **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java` |
-| **异步受管配置** | 自适应平台与虚拟线程池自动装配 | `AsyncProperties`, `AtengAsyncAutoConfiguration` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `wait-for-tasks-to-complete-on-shutdown`, `await-termination` | `AtengAsyncAutoConfiguration` 初始化上下文感知线程池并提供优雅停机钩子 | `AtengAsyncAutoConfigurationTest.java` |
-| **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java` |
-| **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java` |
-| **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `SampleTenantTest.java` |
-| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)` | `JsonUtilTest.java` |
-| **敏感数据脱敏** | 12 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.desensitize(str, type)`, `mobilePhone(str)`, `idCard(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java` |
-| **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java` |
-| **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java` |
-| **加解密与摘要** | 原生安全加解密与摘要算法门面 | `CryptoUtil`, `DigestUtil` | - | `CryptoUtil.aesEncrypt/Decrypt`, `sm4Encrypt/Decrypt`, `DigestUtil.md5`, `sha256`, `sm3` | `CryptoUtilTest.java`, `DigestUtilTest.java` |
-| **安全文件处理** | 路径穿越防御与扩展名容量格式化 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `getExtName(name)`, `getBaseName(name)`, `formatSize(bytes)` | `FileUtilTest.java` |
-| **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java` |
-| **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java` |
-| **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java` |
-| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java` |
-| **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java` |
-| **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java` |
-| **日期时间门面** | 原生日期时间互转与跨度计算 | `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(t1, t2)`, `format(ldt)`, `parseDateTime(str)` | `DateTimeUtilTest.java` |
-| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java` |
+| **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **标准状态码** | 统一状态码契约与预置枚举 | `IResultCode`, `CommonResultCode` | - | `CommonResultCode.SUCCESS(200)`, `BAD_REQUEST(400)`, `UNAUTHORIZED(401)`, `FORBIDDEN(403)`, `NOT_FOUND(404)`, `INTERNAL_SERVER_ERROR(500)` | `CommonResultCodeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **分页传输契约** | 防越界分页入参、强类型排序与纯净出参模型 | `PageQuery`, `SortItem`, `PageResult<T>` | - | `PageQuery.getCurrent()`, `PageQuery.getSize()`, `PageQuery.addAsc/Desc()`, `SortItem.asc/desc()`, `PageResult.of(list, total, current, size)`, `PageResult.map(mapper)` | `PageQueryTest.java`, `SortItemTest.java`, `PageResultTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **因果异常体系** | 业务受控异常与因果堆栈双模 | `BusinessException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留堆栈）, `BusinessException(..., writableStackTrace)` | `BusinessExceptionTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)` | `BusinessAssertTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **分布式发号器** | 2026 纪元雪花发号器与无锁短 ID | `IdUtil`, `Snowflake` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `CoreContextScenarioServiceTest.java` |
+| **异步受管配置** | 自适应平台与虚拟线程池自动装配 | `AsyncProperties`, `AtengAsyncAutoConfiguration` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `wait-for-tasks-to-complete-on-shutdown`, `await-termination` | `AtengAsyncAutoConfiguration` 初始化上下文感知线程池并提供优雅停机钩子 | `AtengAsyncAutoConfigurationTest.java`, `CoreContextScenarioServiceTest.java` |
+| **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
+| **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
+| **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
+| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)` | `JsonUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **敏感数据脱敏** | 12 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.desensitize(str, type)`, `mobilePhone(str)`, `idCard(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **加解密与摘要** | 原生安全加解密与摘要算法门面 | `CryptoUtil`, `DigestUtil` | - | `CryptoUtil.aesEncrypt/Decrypt`, `sm4Encrypt/Decrypt`, `DigestUtil.md5`, `sha256`, `sm3` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **安全文件处理** | 路径穿越防御与扩展名容量格式化 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `getExtName(name)`, `getBaseName(name)`, `formatSize(bytes)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java` |
+| **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **日期时间门面** | 原生日期时间互转与跨度计算 | `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(t1, t2)`, `format(ldt)`, `parseDateTime(str)` | `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 
 ---
 
@@ -114,12 +114,12 @@ UserDTO requiredUser = dtoResult.orElseThrow(CustomException::new);
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 
-// 1. 接收分页入参（自动进行边界防护：pageNum < 1 转为 1，pageSize > 500 转为 500）
+// 1. 接收分页入参（标配 JSR-303 格式校验：current >= 1，size >= 1 且 <= 1000）
 @GetMapping("/page")
 public Result<PageResult<UserVO>> queryPage(PageQuery pageQuery) {
     // 2. 构造或转换分页结果
     List<UserVO> list = List.of(new UserVO("张三"), new UserVO("李四"));
-    PageResult<UserVO> pageResult = PageResult.of(list, 100L, pageQuery.getPageNum(), pageQuery.getPageSize());
+    PageResult<UserVO> pageResult = PageResult.of(list, 100L, pageQuery.getCurrent(), pageQuery.getSize());
     return Result.success(pageResult);
 }
 ```

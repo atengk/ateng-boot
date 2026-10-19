@@ -1,0 +1,197 @@
+package io.github.atengk.boot.sample.core;
+
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.ValidatorUtil;
+import io.github.atengk.boot.core.validation.ValidList;
+import io.github.atengk.boot.core.validation.ValidationGroups;
+import io.github.atengk.boot.sample.core.model.SampleMenuNodeDTO;
+import io.github.atengk.boot.sample.core.model.SampleUserDTO;
+import io.github.atengk.boot.sample.core.service.CoreDataProcessingScenarioService;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Core 数据处理、校验、树形与工具原语端到端集成测试
+ *
+ * @author Ateng
+ * @since 2026-10-19
+ */
+@SpringBootTest
+class CoreDataProcessingScenarioServiceTest {
+
+    @Autowired
+    private CoreDataProcessingScenarioService dataProcessingService;
+
+    @Test
+    @DisplayName("测试JsonUtil对象序列化与反序列化还原")
+    void testProcessJson() {
+        SampleUserDTO user = SampleUserDTO.builder()
+                .id(1L)
+                .name("李四")
+                .phone("13900001111")
+                .status(0)
+                .createTime(LocalDateTime.of(2026, 10, 19, 10, 30, 0))
+                .build();
+
+        Pair<String, SampleUserDTO> pair = dataProcessingService.processJson(user);
+        assertThat(pair.left()).contains("\"id\":1");
+        assertThat(pair.right().getId()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("测试CollectionUtil安全切分分批")
+    void testPartitionList() {
+        List<Integer> list = List.of(1, 2, 3, 4, 5, 6, 7);
+        List<List<Integer>> batches = dataProcessingService.partitionList(list, 3);
+
+        assertThat(batches).hasSize(3);
+        assertThat(batches.get(0)).containsExactly(1, 2, 3);
+        assertThat(batches.get(1)).containsExactly(4, 5, 6);
+        assertThat(batches.get(2)).containsExactly(7);
+    }
+
+    @Test
+    @DisplayName("测试MoreCollectors.toSafeMap空值容忍安全收集")
+    void testCollectToSafeMap() {
+        List<SampleUserDTO> users = List.of(
+                SampleUserDTO.builder().id(1L).email("user1@example.com").build(),
+                SampleUserDTO.builder().id(2L).email(null).build() // Value 为 null
+        );
+
+        Map<Long, String> safeMap = dataProcessingService.collectToSafeMap(users);
+        assertThat(safeMap).hasSize(2)
+                .containsEntry(1L, "user1@example.com")
+                .containsEntry(2L, null);
+    }
+
+    @Test
+    @DisplayName("测试TreeUtil线性组装与递归剪枝过滤")
+    void testAssembleAndFilterTree() {
+        List<SampleMenuNodeDTO> flatList = new ArrayList<>();
+        flatList.add(new SampleMenuNodeDTO(1L, 0L, "系统管理", "/sys", 1));
+        flatList.add(new SampleMenuNodeDTO(2L, 1L, "用户管理", "/sys/user", 1));
+        flatList.add(new SampleMenuNodeDTO(3L, 2L, "用户导出", "/sys/user/export", 1));
+        flatList.add(new SampleMenuNodeDTO(4L, 1L, "角色管理", "/sys/role", 2));
+
+        // 1. 组装完整树结构
+        List<SampleMenuNodeDTO> fullTree = dataProcessingService.assembleTree(flatList);
+        assertThat(fullTree).hasSize(1);
+        assertThat(fullTree.get(0).getChildren()).hasSize(2);
+
+        // 2. 剪枝过滤树：仅保留包含“导出”的链路（系统管理 -> 用户管理 -> 用户导出），角色管理被剪除
+        List<SampleMenuNodeDTO> filteredTree = dataProcessingService.filterTree(fullTree, "导出");
+        assertThat(filteredTree).hasSize(1);
+        assertThat(filteredTree.get(0).getName()).isEqualTo("系统管理");
+        assertThat(filteredTree.get(0).getChildren()).hasSize(1);
+        assertThat(filteredTree.get(0).getChildren().get(0).getName()).isEqualTo("用户管理");
+        assertThat(filteredTree.get(0).getChildren().get(0).getChildren().get(0).getName()).isEqualTo("用户导出");
+    }
+
+    @Test
+    @DisplayName("测试ValidatorUtil高频正则与对象校验")
+    void testValidatorUtil() {
+        assertThat(ValidatorUtil.isMobile("13812345678")).isTrue();
+        assertThat(ValidatorUtil.isIdCard("11010519491231002X")).isTrue();
+        assertThat(ValidatorUtil.isEmail("admin@atengk.org")).isTrue();
+        assertThat(ValidatorUtil.isIpv4("192.168.1.1")).isTrue();
+        assertThat(ValidatorUtil.isCarLicense("京A88888")).isTrue();
+
+        // 合法对象校验
+        SampleUserDTO validUser = SampleUserDTO.builder()
+                .id(1L)
+                .name("王五")
+                .phone("13800000000")
+                .status(1)
+                .build();
+        dataProcessingService.validateUser(validUser);
+
+        // 非法对象快速失败校验并抛出 BusinessException
+        SampleUserDTO invalidUser = SampleUserDTO.builder()
+                .name("")
+                .phone("13800000000")
+                .build();
+        assertThatThrownBy(() -> dataProcessingService.validateUser(invalidUser))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("姓名不能为空");
+
+        // 分组校验：Update 分组要求 id 必填
+        SampleUserDTO missingIdUser = SampleUserDTO.builder()
+                .name("张三")
+                .phone("13800000000")
+                .status(1)
+                .build();
+        assertThatThrownBy(() -> dataProcessingService.validateUser(missingIdUser, ValidationGroups.Update.class))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("修改时用户ID不能为空");
+    }
+
+    @Test
+    @DisplayName("测试ValidList批量包装级联校验")
+    void testValidList() {
+        ValidList<SampleUserDTO> validList = new ValidList<>();
+        validList.add(SampleUserDTO.builder().id(1L).name("测试1").phone("13800001111").status(0).build());
+        dataProcessingService.validateBatchUsers(validList);
+
+        // 包含非法元素触发级联校验失败
+        ValidList<SampleUserDTO> invalidList = new ValidList<>();
+        invalidList.add(SampleUserDTO.builder().id(2L).name("").phone("13800002222").status(0).build());
+        assertThatThrownBy(() -> dataProcessingService.validateBatchUsers(invalidList))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("姓名不能为空");
+    }
+
+    @Test
+    @DisplayName("测试BeanUtil对象属性拷贝")
+    void testCopyUser() {
+        SampleUserDTO source = SampleUserDTO.builder().id(999L).name("拷贝测试").build();
+        SampleUserDTO target = dataProcessingService.copyUser(source);
+
+        assertThat(target).isNotNull();
+        assertThat(target.getId()).isEqualTo(999L);
+        assertThat(target.getName()).isEqualTo("拷贝测试");
+    }
+
+    @Test
+    @DisplayName("测试LambdaUtil方法引用解析推导属性名")
+    void testResolveFieldName() {
+        String fieldName = dataProcessingService.resolveFieldName();
+        assertThat(fieldName).isEqualTo("name");
+    }
+
+    @Test
+    @DisplayName("测试FileUtil路径穿越防御与容量格式化")
+    void testProcessFileMetadata() {
+        Triple<String, String, String> triple = dataProcessingService.processFileMetadata(
+                "../../etc/secret.PDF",
+                10485760L
+        );
+        // 防御 ../ 路径穿越
+        assertThat(triple.left()).isEqualTo("secret.PDF");
+        // 扩展名小写
+        assertThat(triple.middle()).isEqualTo("pdf");
+        // 格式化容量
+        assertThat(triple.right()).isEqualTo("10.00 MB");
+    }
+
+    @Test
+    @DisplayName("测试DateTimeUtil与RandomUtil")
+    void testProcessDateTimeAndRandom() {
+        LocalDateTime ldt = LocalDateTime.of(2026, 10, 19, 14, 30, 0);
+        Pair<String, String> pair = dataProcessingService.processDateTimeAndRandom(ldt);
+
+        assertThat(pair.left()).isEqualTo("2026-10-19 14:30:00");
+        assertThat(pair.right()).hasSize(6).containsOnlyDigits();
+    }
+}
