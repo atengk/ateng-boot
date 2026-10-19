@@ -6,10 +6,12 @@ import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
+import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import org.apache.poi.ss.usermodel.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,18 +23,22 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Excel Starter 全栈端到端自动化验收集成测试
- * 覆盖流式导出、动态脱敏、防呆模板下载、JSR-303 导入校验与错题集标红批注回写全场景
+ * 覆盖流式导出、多 Sheet 编排、单元格合并、动态脱敏、防呆模板下载、JSR-303 导入校验与错题集标红批注回写全场景
  *
  * @author Ateng
  * @since 2026-10-17
@@ -47,6 +53,9 @@ class SampleExcelIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @TempDir
+    Path tempDir;
 
     @Test
     @DisplayName("测试流式导出用户列表：验证 HTTP 响应头、动态脱敏掩码与枚举/字典转义")
@@ -95,16 +104,79 @@ class SampleExcelIntegrationTest {
     }
 
     private void saveTempExcel(String fileName, byte[] bytes) throws Exception {
-        java.nio.file.Path tempDir = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "ateng-excel-test");
-        java.nio.file.Files.createDirectories(tempDir);
-        java.io.File tempFile = tempDir.resolve(fileName).toFile();
-        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(tempFile)) {
-            fos.write(bytes);
-        }
+        Path target = tempDir.resolve(fileName);
+        Files.write(target, bytes);
     }
 
     @Test
-    @DisplayName("测试下载防呆导入模板：验证表头批注指南与下拉选单数据约束")
+    @DisplayName("测试 Fluent 多 Sheet 复杂流式导出：验证工作表数量、各表名称与数据流式写出")
+    void testExportMultiSheetViaController() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-multi-sheet"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
+        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("综合多工作表报表.xlsx");
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(2);
+
+            // Sheet 0: 用户清单
+            Sheet sheet1 = workbook.getSheetAt(0);
+            assertThat(sheet1.getSheetName()).isEqualTo("用户清单");
+            assertThat(sheet1.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
+
+            // Sheet 1: 销售汇总
+            Sheet sheet2 = workbook.getSheetAt(1);
+            assertThat(sheet2.getSheetName()).isEqualTo("销售汇总");
+            assertThat(sheet2.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 行数据
+            Row head2 = sheet2.getRow(0);
+            assertThat(head2.getCell(0).getStringCellValue()).isEqualTo("销售大区");
+            assertThat(head2.getCell(1).getStringCellValue()).isEqualTo("季度目标");
+        }
+
+        saveTempExcel("sample-multi-sheet.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("测试纵向相邻单元格合并导出：验证 @ExcelMerge 区域与合并单元格数量")
+    void testExportMergeViaController() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-merge"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
+        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("部门员工合并报表.xlsx");
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // 验证存在纵向合并区域
+            assertThat(sheet.getNumMergedRegions()).isGreaterThan(0);
+            // 部门列第 0 列发生相邻行纵向合并（研发部 2 行、市场部 2 行）
+            boolean foundCol0Merge = false;
+            for (int i = 0; i < sheet.getNumMergedRegions(); i++) {
+                var range = sheet.getMergedRegion(i);
+                if (range.getFirstColumn() == 0 && range.getLastColumn() == 0 && range.getFirstRow() < range.getLastRow()) {
+                    foundCol0Merge = true;
+                    break;
+                }
+            }
+            assertThat(foundCol0Merge).isTrue();
+        }
+
+        saveTempExcel("sample-merge.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("测试下载防呆导入模板：验证表头批注指南与静态及动态下拉选单数据约束")
     void testDownloadTemplate() throws Exception {
         MvcResult mvcResult = mockMvc.perform(get("/api/excel/template"))
                 .andExpect(status().isOk())
@@ -131,7 +203,7 @@ class SampleExcelIntegrationTest {
             assertThat(deptComment).isNotNull();
             assertThat(deptComment.getString().getString()).contains("请从下拉列表中选择所属部门");
 
-            // 验证下拉数据约束
+            // 验证下拉数据约束（包含性别静态下拉与部门动态下拉）
             List<? extends DataValidation> validations = sheet.getDataValidations();
             assertThat(validations).isNotEmpty();
         }
@@ -162,6 +234,36 @@ class SampleExcelIntegrationTest {
         assertThat(root.get("data").isArray()).isTrue();
         assertThat(root.get("data").size()).isEqualTo(1);
         assertThat(root.get("data").get(0).get("username").asText()).isEqualTo("赵六");
+    }
+
+    @Test
+    @DisplayName("测试双向业务枚举与字典 SPI 反向解析：表格中文字面量精确还原为枚举与业务代码")
+    void testImportEnumAndDictReverseMapping() throws Exception {
+        // 构建带有中文展示字面量的用户列表：性别="女"、状态="停用"
+        List<UserExcelVO> inputList = List.of(
+                new UserExcelVO(2002L, "孙俪", "13700137000", "sunli@example.com",
+                        SampleGenderEnum.FEMALE, "财务部", "1")
+        );
+
+        byte[] rawExcelBytes = createRawExcel(inputList);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "reverse_mapping.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                rawExcelBytes
+        );
+
+        MvcResult mvcResult = mockMvc.perform(multipart("/api/excel/import").file(file))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode root = objectMapper.readTree(responseBody);
+        assertThat(root.get("code").asInt()).isEqualTo(200);
+        JsonNode firstUser = root.get("data").get(0);
+        // 断言反向解析结果：枚举还原为 FEMALE，状态还原为 "1"
+        assertThat(firstUser.get("gender").asText()).isEqualTo("FEMALE");
+        assertThat(firstUser.get("status").asText()).isEqualTo("1");
     }
 
     @Test
@@ -344,36 +446,40 @@ class SampleExcelIntegrationTest {
         }
     }
 
-    @Autowired(required = false)
-    private io.github.atengk.boot.excel.async.AsyncExportTaskService asyncExportTaskService;
-
     @Test
-    @DisplayName("测试 Spring 上下文中异步导出任务中心受管 Bean 调度与执行")
-    void testAsyncExportCenterBean() throws Exception {
-        assertThat(asyncExportTaskService).isNotNull();
+    @DisplayName("测试异步导出任务中心 Controller 端点：提交任务、查询进度并验证文件落盘")
+    void testAsyncExportControllerWorkflow() throws Exception {
+        MvcResult submitResult = mockMvc.perform(post("/api/excel/async-export")
+                        .param("taskName", "全量用户异步导出测试"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
 
-        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        String taskId = asyncExportTaskService.submit("全量用户异步导出", out -> {
-            List<UserExcelVO> sampleUsers = List.of(
-                    new UserExcelVO(101L, "张三丰", "13800000001", "zhang@example.com", SampleGenderEnum.MALE, "研发部", "0")
-            );
-            ExcelUtil.export(out, sampleUsers, UserExcelVO.class);
-            latch.countDown();
-        });
+        String body = submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode root = objectMapper.readTree(body);
+        String taskId = root.get("data").asText();
+        assertThat(taskId).isNotBlank();
 
-        assertThat(taskId).isNotNull();
-        assertThat(latch.await(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-
-        long deadline = System.currentTimeMillis() + 5000;
-        io.github.atengk.boot.excel.async.ExportTask task = asyncExportTaskService.getTask(taskId);
-        while ((task == null || task.getStatus() == io.github.atengk.boot.excel.async.ExportTaskStatus.PENDING || task.getStatus() == io.github.atengk.boot.excel.async.ExportTaskStatus.PROCESSING) && System.currentTimeMillis() < deadline) {
-            Thread.sleep(50);
-            task = asyncExportTaskService.getTask(taskId);
+        // 轮询查询任务状态
+        long deadline = System.currentTimeMillis() + 8000;
+        JsonNode taskNode = null;
+        while (System.currentTimeMillis() < deadline) {
+            MvcResult queryResult = mockMvc.perform(get("/api/excel/async-task/" + taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode queryRoot = objectMapper.readTree(queryResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            taskNode = queryRoot.get("data");
+            String status = taskNode.get("status").asText();
+            if ("SUCCESS".equals(status)) {
+                break;
+            }
+            Thread.sleep(100);
         }
 
-        assertThat(task).isNotNull();
-        assertThat(task.getStatus()).isEqualTo(io.github.atengk.boot.excel.async.ExportTaskStatus.SUCCESS);
-        assertThat(new java.io.File(task.getFilePath())).exists();
+        assertThat(taskNode).isNotNull();
+        assertThat(taskNode.get("status").asText()).isEqualTo("SUCCESS");
+        String filePath = taskNode.get("filePath").asText();
+        assertThat(new java.io.File(filePath)).exists();
     }
 
     @Test

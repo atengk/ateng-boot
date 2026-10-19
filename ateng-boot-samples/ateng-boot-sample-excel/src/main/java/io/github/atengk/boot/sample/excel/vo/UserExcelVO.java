@@ -68,7 +68,7 @@ public class UserExcelVO implements Serializable {
     /**
      * 所属部门
      */
-    @ExcelDropdown({"研发部", "市场部", "财务部"})
+    @ExcelDropdown(source = io.github.atengk.boot.sample.excel.provider.SampleDepartmentDropdownProvider.class)
     @ExcelPrompt("请从下拉列表中选择所属部门")
     @ExcelProperty(value = "所属部门", index = 5)
     private String department;
