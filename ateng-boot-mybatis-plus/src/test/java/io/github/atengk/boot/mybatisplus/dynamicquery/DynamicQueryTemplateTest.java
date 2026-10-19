@@ -334,4 +334,77 @@ class DynamicQueryTemplateTest {
         assertNotNull(stmtEmptyList);
         assertTrue(stmtEmptyList.isEmpty());
     }
+
+    @Test
+    @DisplayName("测试基于 StatementId 执行存在性判断：exists(statementName, request / queryDto)")
+    void testExistsStatement() {
+        // 1. 命中存在记录 (Request)
+        DynamicQueryRequest hitRequest = new DynamicQueryRequest();
+        hitRequest.addCondition(QueryCondition.eq("username", "alice"));
+        boolean exists1 = dynamicQueryTemplate.exists("selectActiveUsers", hitRequest);
+        assertTrue(exists1);
+
+        // 2. 未命中记录 (Request)
+        DynamicQueryRequest missRequest = new DynamicQueryRequest();
+        missRequest.addCondition(QueryCondition.eq("username", "non_existent_user"));
+        boolean exists2 = dynamicQueryTemplate.exists("selectActiveUsers", missRequest);
+        assertFalse(exists2);
+
+        // 3. 空入参保底 (Request 为 null 返回 false)
+        assertFalse(dynamicQueryTemplate.exists("selectActiveUsers", (DynamicQueryRequest) null));
+
+        // 4. 命中存在记录 (DTO)
+        TemplateUserQueryDTO hitDto = new TemplateUserQueryDTO();
+        hitDto.setUsername("bob");
+        hitDto.setStatus("ACTIVE");
+        boolean exists3 = dynamicQueryTemplate.exists("selectActiveUsers", hitDto);
+        assertTrue(exists3);
+
+        // 5. 未命中记录 (DTO)
+        TemplateUserQueryDTO missDto = new TemplateUserQueryDTO();
+        missDto.setUsername("ghost");
+        boolean exists4 = dynamicQueryTemplate.exists("selectActiveUsers", missDto);
+        assertFalse(exists4);
+
+        // 6. 空入参保底 (DTO 为 null 返回 false)
+        assertFalse(dynamicQueryTemplate.exists("selectActiveUsers", (Object) null));
+    }
+
+    @Test
+    @DisplayName("测试基于单表实体类型执行存在性判断：exists(request / queryDto, entityClass)")
+    void testExistsEntity() {
+        // 1. 命中存在记录 (Request)
+        DynamicQueryRequest hitRequest = new DynamicQueryRequest();
+        hitRequest.addCondition(QueryCondition.eq("username", "david"));
+        hitRequest.addCondition(QueryCondition.ge("age", 30));
+        boolean exists1 = dynamicQueryTemplate.exists(hitRequest, TemplateUserEntity.class);
+        assertTrue(exists1);
+
+        // 2. 未命中记录 (Request)
+        DynamicQueryRequest missRequest = new DynamicQueryRequest();
+        missRequest.addCondition(QueryCondition.eq("username", "david"));
+        missRequest.addCondition(QueryCondition.gt("age", 50));
+        boolean exists2 = dynamicQueryTemplate.exists(missRequest, TemplateUserEntity.class);
+        assertFalse(exists2);
+
+        // 3. 空入参保底
+        assertFalse(dynamicQueryTemplate.exists((DynamicQueryRequest) null, TemplateUserEntity.class));
+
+        // 4. 命中存在记录 (DTO)
+        TemplateUserQueryDTO hitDto = new TemplateUserQueryDTO();
+        hitDto.setUsername("charlie");
+        hitDto.setAge(25);
+        boolean exists3 = dynamicQueryTemplate.exists(hitDto, TemplateUserEntity.class);
+        assertTrue(exists3);
+
+        // 5. 未命中记录 (DTO)
+        TemplateUserQueryDTO missDto = new TemplateUserQueryDTO();
+        missDto.setUsername("charlie");
+        missDto.setAge(50);
+        boolean exists4 = dynamicQueryTemplate.exists(missDto, TemplateUserEntity.class);
+        assertFalse(exists4);
+
+        // 6. 空入参保底
+        assertFalse(dynamicQueryTemplate.exists((Object) null, TemplateUserEntity.class));
+    }
 }

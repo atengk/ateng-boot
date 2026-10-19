@@ -318,4 +318,40 @@ class AtengBaseServiceDynamicTest {
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("voClass 不能为 null");
     }
+
+    @Test
+    @DisplayName("9. existsDynamic 存在性判断：物理短路 LIMIT 1 判定命中与未命中")
+    void shouldExistsDynamicCorrectly() {
+        // 1. 基于 Request 存在性判断：命中记录
+        DynamicQueryRequest hitRequest = new DynamicQueryRequest();
+        hitRequest.setConditions(List.of(
+                new QueryCondition("username", QueryOperator.EQ, "admin"),
+                new QueryCondition("status", QueryOperator.EQ, 1)
+        ));
+        assertThat(userService.existsDynamic(hitRequest)).isTrue();
+
+        // 2. 基于 Request 存在性判断：未命中记录
+        DynamicQueryRequest missRequest = new DynamicQueryRequest();
+        missRequest.setConditions(List.of(
+                new QueryCondition("username", QueryOperator.EQ, "ghost_user")
+        ));
+        assertThat(userService.existsDynamic(missRequest)).isFalse();
+
+        // 3. 基于 Request 为 null 返回 false
+        assertThat(userService.existsDynamic((DynamicQueryRequest) null)).isFalse();
+
+        // 4. 基于 DTO 存在性判断：命中记录
+        TestUserSearchDTO hitDto = new TestUserSearchDTO();
+        hitDto.setUsername("al"); // LIKE %al% -> alice, alex
+        hitDto.setMinAge(30);     // alex(35)
+        assertThat(userService.existsDynamic(hitDto)).isTrue();
+
+        // 5. 基于 DTO 存在性判断：未命中记录
+        TestUserSearchDTO missDto = new TestUserSearchDTO();
+        missDto.setUsername("ghost");
+        assertThat(userService.existsDynamic(missDto)).isFalse();
+
+        // 6. 基于 DTO 为 null 返回 false
+        assertThat(userService.existsDynamic((Object) null)).isFalse();
+    }
 }

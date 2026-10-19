@@ -40,7 +40,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * AtengBaseService 多表联表方法引用与短方法名动态直出全真 H2 测试
@@ -280,5 +282,84 @@ class AtengBaseServiceMultiTableDynamicTest {
     public static class TestUserDeptDTO extends io.github.atengk.boot.core.model.PageQuery {
         @io.github.atengk.boot.mybatisplus.dynamicquery.annotation.QueryField(operator = QueryOperator.LIKE)
         private String deptName;
+    }
+
+    @Test
+    @DisplayName("测试基于短方法名与全限定 StatementId 执行多表联表存在性判断：existsDynamic(statementName, ...)")
+    void testExistsDynamicWithStatementName() {
+        // 1. 基于短方法名与 Request：命中记录
+        DynamicQueryRequest hitRequest = new DynamicQueryRequest();
+        hitRequest.addCondition(QueryCondition.eq("username", "alice"));
+        hitRequest.addCondition(QueryCondition.eq("deptName", "研发中心"));
+        boolean exists1 = userService.existsDynamic("selectUserDeptPage", hitRequest);
+        assertTrue(exists1);
+
+        // 2. 基于短方法名与 Request：未命中记录
+        DynamicQueryRequest missRequest = new DynamicQueryRequest();
+        missRequest.addCondition(QueryCondition.eq("username", "alice"));
+        missRequest.addCondition(QueryCondition.eq("deptName", "财务中心"));
+        boolean exists2 = userService.existsDynamic("selectUserDeptPage", missRequest);
+        assertFalse(exists2);
+
+        // 3. 基于全限定 StatementId 与 DTO：命中记录
+        TestUserDeptDTO hitDto = new TestUserDeptDTO();
+        hitDto.setDeptName("运营");
+        boolean exists3 = userService.existsDynamic("TestUserMapper.selectUserDeptPage", hitDto);
+        assertTrue(exists3);
+
+        // 4. 基于全限定 StatementId 与 DTO：未命中记录
+        TestUserDeptDTO missDto = new TestUserDeptDTO();
+        missDto.setDeptName("不存在的部门");
+        boolean exists4 = userService.existsDynamic("TestUserMapper.selectUserDeptPage", missDto);
+        assertFalse(exists4);
+    }
+
+    @Test
+    @DisplayName("测试基于自定义 Mapper 分页方法引用执行多表联表存在性判断：existsDynamic(mapperMethod, ...)")
+    void testExistsDynamicWithMapperMethod() {
+        TestUserMapper mapper = sqlSessionTemplate.getMapper(TestUserMapper.class);
+
+        // 1. 基于方法引用与 Request：命中
+        DynamicQueryRequest hitRequest = new DynamicQueryRequest();
+        hitRequest.addCondition(QueryCondition.eq("username", "bob"));
+        boolean exists1 = userService.existsDynamic(mapper::selectUserDeptPage, hitRequest);
+        assertTrue(exists1);
+
+        // 2. 基于方法引用与 Request：未命中
+        DynamicQueryRequest missRequest = new DynamicQueryRequest();
+        missRequest.addCondition(QueryCondition.eq("username", "ghost_user"));
+        boolean exists2 = userService.existsDynamic(mapper::selectUserDeptPage, missRequest);
+        assertFalse(exists2);
+
+        // 3. 基于方法引用与 DTO：命中
+        TestUserDeptDTO hitDto = new TestUserDeptDTO();
+        hitDto.setDeptName("研发");
+        boolean exists3 = userService.existsDynamic(mapper::selectUserDeptPage, hitDto);
+        assertTrue(exists3);
+
+        // 4. 基于方法引用与 DTO：未命中
+        TestUserDeptDTO missDto = new TestUserDeptDTO();
+        missDto.setDeptName("人力资源");
+        boolean exists4 = userService.existsDynamic(mapper::selectUserDeptPage, missDto);
+        assertFalse(exists4);
+
+        // 5. 空入参防卫
+        assertFalse(userService.existsDynamic(mapper::selectUserDeptPage, (DynamicQueryRequest) null));
+        assertFalse(userService.existsDynamic(mapper::selectUserDeptPage, (Object) null));
+    }
+
+    @Test
+    @DisplayName("测试未注入 DynamicQueryTemplate 时调用多表语句存在性判断抛出明确的 IllegalStateException")
+    void testExistsDynamicWithoutTemplateThrowsException() {
+        TestUserServiceImpl serviceWithoutTemplate = new TestUserServiceImpl(null);
+        DynamicQueryRequest request = new DynamicQueryRequest();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> serviceWithoutTemplate.existsDynamic("selectUserDeptPage", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未注入 DynamicQueryTemplate 组件");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> serviceWithoutTemplate.existsDynamic("selectUserDeptPage", new TestUserDeptDTO()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未注入 DynamicQueryTemplate 组件");
     }
 }

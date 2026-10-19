@@ -253,6 +253,39 @@ public interface AtengBaseService<T> extends IService<T> {
     }
 
     /**
+     * 基于结构化动态查询请求执行单表存在性判断（物理短路 LIMIT 1）
+     *
+     * @param request 动态查询请求
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default boolean existsDynamic(DynamicQueryRequest request) {
+        if (request == null) {
+            return false;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        return getBaseMapper().exists(wrapper);
+    }
+
+    /**
+     * 基于普通查询 DTO 对象执行单表存在性判断（物理短路 LIMIT 1）
+     *
+     * @param queryDto 查询 DTO 对象
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default boolean existsDynamic(Object queryDto) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return existsDynamic(request);
+        }
+        if (queryDto == null) {
+            return false;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        return getBaseMapper().exists(wrapper);
+    }
+
+    /**
      * 获取受管动态查询模板组件（子类实现可按需注入）
      *
      * @return 动态查询执行模板，未注入时返回 null
@@ -406,6 +439,67 @@ public interface AtengBaseService<T> extends IService<T> {
     }
 
     /**
+     * 基于自定义 Mapper 分页方法引用执行联表存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param mapperMethod Mapper 分页方法引用（如 baseMapper::selectUserDeptPage）
+     * @param request      动态查询请求
+     * @param <V>          目标视图或实体泛型
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default <V> boolean existsDynamic(DynamicMapperPageMethod<V> mapperMethod, DynamicQueryRequest request) {
+        Objects.requireNonNull(mapperMethod, "mapperMethod 不能为 null");
+        if (request == null) {
+            return false;
+        }
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        Map<String, String> mapping = null;
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                mapping = template.resolveProjections(methodName);
+            }
+        }
+        QueryWrapper<V> wrapper = (mapping != null)
+                ? DynamicQueryHelper.buildWrapper(request, mapping)
+                : DynamicQueryHelper.buildWrapper(request, Collections.emptyMap());
+        Page<V> page = new Page<>(1, 1, false);
+        IPage<V> resultPage = mapperMethod.select(page, wrapper);
+        return resultPage != null && resultPage.getRecords() != null && !resultPage.getRecords().isEmpty();
+    }
+
+    /**
+     * 基于自定义 Mapper 分页方法引用与普通 DTO 执行联表存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param mapperMethod Mapper 分页方法引用
+     * @param queryDto     业务查询 DTO
+     * @param <V>          目标视图或实体泛型
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default <V> boolean existsDynamic(DynamicMapperPageMethod<V> mapperMethod, Object queryDto) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return existsDynamic(mapperMethod, request);
+        }
+        Objects.requireNonNull(mapperMethod, "mapperMethod 不能为 null");
+        if (queryDto == null) {
+            return false;
+        }
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        Map<String, String> mapping = null;
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                mapping = template.resolveProjections(methodName);
+            }
+        }
+        QueryWrapper<V> wrapper = (mapping != null)
+                ? DynamicQueryHelper.buildWrapper(queryDto, mapping)
+                : DynamicQueryHelper.buildWrapper(queryDto, Collections.emptyMap());
+        Page<V> page = new Page<>(1, 1, false);
+        IPage<V> resultPage = mapperMethod.select(page, wrapper);
+        return resultPage != null && resultPage.getRecords() != null && !resultPage.getRecords().isEmpty();
+    }
+
+    /**
      * 基于短方法名或全限定 StatementId 执行多表联表分页查询并投影为 VO
      *
      * @param statementName 语句名称（支持短方法名如 "selectUserDeptPage"）
@@ -535,6 +629,36 @@ public interface AtengBaseService<T> extends IService<T> {
             throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
         }
         return template.count(statementName, queryDto);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 执行多表联表存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param statementName 语句名称（支持短方法名如 "selectUserDeptPage"）
+     * @param request       动态查询请求
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default boolean existsDynamic(String statementName, DynamicQueryRequest request) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.exists(statementName, request);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 与普通 DTO 执行多表联表存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    default boolean existsDynamic(String statementName, Object queryDto) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.exists(statementName, queryDto);
     }
 
     /**

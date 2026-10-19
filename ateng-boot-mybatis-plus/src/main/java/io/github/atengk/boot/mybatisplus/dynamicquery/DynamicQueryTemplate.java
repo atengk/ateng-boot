@@ -311,6 +311,63 @@ public class DynamicQueryTemplate {
         return list != null ? list.size() : 0L;
     }
 
+    /**
+     * 基于 StatementId 与结构化请求执行存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param statementName 语句名称（支持短方法名或全限定 statementId）
+     * @param request       动态查询请求
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, DynamicQueryRequest request) {
+        Objects.requireNonNull(statementName, "statementName 不能为 null");
+        if (request == null) {
+            return false;
+        }
+        String statementId = findStatementId(statementName);
+        Map<String, String> mapping = resolveProjections(statementId);
+        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
+
+        Page<?> page = new Page<>(1, 1, false);
+        Map<String, Object> paramMap = new HashMap<>();
+        paramMap.put("page", page);
+        paramMap.put(Constants.WRAPPER, wrapper);
+        paramMap.put("ew", wrapper);
+
+        String targetStatementId = prepareTargetStatement(statementId);
+        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
+        return list != null && !list.isEmpty();
+    }
+
+    /**
+     * 基于 StatementId 与普通查询 DTO 执行存在性判断（基于单页 Page(1, 1, false) 实施物理短路）
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    public boolean exists(String statementName, Object queryDto) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return exists(statementName, request);
+        }
+        Objects.requireNonNull(statementName, "statementName 不能为 null");
+        if (queryDto == null) {
+            return false;
+        }
+        String statementId = findStatementId(statementName);
+        Map<String, String> mapping = resolveProjections(statementId);
+        QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
+
+        Page<?> page = new Page<>(1, 1, false);
+        Map<String, Object> paramMap = new HashMap<>();
+        paramMap.put("page", page);
+        paramMap.put(Constants.WRAPPER, wrapper);
+        paramMap.put("ew", wrapper);
+
+        String targetStatementId = prepareTargetStatement(statementId);
+        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
+        return list != null && !list.isEmpty();
+    }
+
     // ==========================================
     // 2. 基于单表实体类型的直出查询
     // ==========================================
@@ -586,6 +643,45 @@ public class DynamicQueryTemplate {
         QueryWrapper wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class) entityClass);
         Long count = mapper.selectCount((Wrapper) wrapper);
         return count != null ? count : 0L;
+    }
+
+    /**
+     * 基于单表实体类型与结构化请求执行存在性判断（物理短路 LIMIT 1）
+     *
+     * @param request     动态查询请求
+     * @param entityClass 目标实体类型
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public boolean exists(DynamicQueryRequest request, Class<?> entityClass) {
+        Objects.requireNonNull(entityClass, "entityClass 不能为 null");
+        if (request == null) {
+            return false;
+        }
+        BaseMapper mapper = getEntityMapper(entityClass);
+        QueryWrapper wrapper = DynamicQueryHelper.buildWrapper(request, (Class) entityClass);
+        return mapper.exists((Wrapper) wrapper);
+    }
+
+    /**
+     * 基于单表实体类型与普通查询 DTO 执行存在性判断（物理短路 LIMIT 1）
+     *
+     * @param queryDto    业务查询 DTO
+     * @param entityClass 目标实体类型
+     * @return 若存在至少一条满足条件的记录则返回 true，否则返回 false
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public boolean exists(Object queryDto, Class<?> entityClass) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return exists(request, entityClass);
+        }
+        Objects.requireNonNull(entityClass, "entityClass 不能为 null");
+        if (queryDto == null) {
+            return false;
+        }
+        BaseMapper mapper = getEntityMapper(entityClass);
+        QueryWrapper wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class) entityClass);
+        return mapper.exists((Wrapper) wrapper);
     }
 
     // ==========================================

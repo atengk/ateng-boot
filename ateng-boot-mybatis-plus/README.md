@@ -45,9 +45,9 @@
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `AtengBaseServiceStreamTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `AtengBaseServiceStreamTest` |
-| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量写入与受管流式查询体系（`stream` / `streamBatch` / `streamWhile` / `streamDynamic*`），支持分批切片、短路退出与强类型 VO 投影直出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `SampleBatchInsertTest` |
-| **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
-| **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic(mapper::method, request, voClass)` / `pageDynamic(statementName, request, voClass)` / `listDynamic` / `getOneDynamic`，基于方法引用或短方法名实现多表联表极速直出 | `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
+| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量写入、受管流式查询体系与单表/多表动态查询及存在性判断（`existsDynamic`），支持分批切片、短路退出与强类型 VO 投影直出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `SampleBatchInsertTest` |
+| **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count` / `exists`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询与单页物理短路直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
+| **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic` / `listDynamic` / `getOneDynamic` / `countDynamic` / `existsDynamic`，支持基于方法引用（`mapper::method`）或短方法名执行多表联表极速直出与单页 `Page(1, 1, false)` 物理短路判定 | `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | 联表方法引用契约与解析辅助 | `DynamicMapperPageMethod`, `DynamicMapperListMethod`, `DynamicLambdaHelper` | - | 原生 `SerializedLambda` 纳秒级提取 Mapper 联表方法名与所属类，函数式强类型接口规范 | `DynamicLambdaHelperTest` / `AtengBaseServiceMultiTableDynamicTest` |
 | **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` |
@@ -1062,9 +1062,47 @@ PageResult<UserVO> pageByDto = dynamicQueryTemplate.selectPage(searchDto, UserEn
 // 3. 基于 StatementId 的外部/XML SQL 统计与单条查询
 UserDeptVO vo = dynamicQueryTemplate.selectOne("selectUserDeptList", request, UserDeptVO.class);
 long activeCount = dynamicQueryTemplate.count("selectUserDeptList", request);
+
+// 4. 基于 StatementId 与单表实体的物理短路存在性判断
+boolean hasUser = dynamicQueryTemplate.exists("selectUserDeptList", request);
+boolean hasAdmin = dynamicQueryTemplate.exists(request, UserEntity.class);
 ```
 
-#### 场景四：Mapper XML 占位符原生绑定与 JSqlParser AST 自适应兼容
+#### 场景四：动态查询存在性判断与单页物理短路 (`existsDynamic`)
+
+在很多业务前置校验中（如注册排重、状态流转校验、关联引用前置探测），只需知道是否存在满足条件的记录，传统 `count > 0` 会迫使数据库全表扫描执行高昂的 `COUNT(*)`。
+
+`ateng-boot-mybatis-plus` 原生提供单表与多表复杂联表的物理短路判定：
+1. **单表存在性 (`existsDynamic`)**：底层安全编译为 `QueryWrapper` 并调用 `baseMapper.exists`，生成原生 `SELECT 1 ... LIMIT 1` 物理短路；
+2. **多表复杂联表存在性 (`existsDynamic`)**：支持基于方法引用（`baseMapper::selectUserDeptPage`）或短方法名（`"selectUserDeptPage"`），通过单页 `Page(1, 1, false)`（关闭 count 查询并追加物理 `LIMIT 1`）瞬间判定是否存在匹配记录，零多余 IO。
+
+```java
+@Service
+public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
+
+    // 1. 单表动态请求存在性判断（SELECT 1 FROM t_user WHERE status = 1 LIMIT 1）
+    public boolean checkUserActive(DynamicQueryRequest request) {
+        return existsDynamic(request);
+    }
+
+    // 2. 单表业务 DTO 驱动存在性判断
+    public boolean checkUserExists(UserSearchDTO dto) {
+        return existsDynamic(dto);
+    }
+
+    // 3. 多表联表方法引用存在性判断（单页物理短路 LIMIT 1，免除 COUNT(*) 慢查询）
+    public boolean checkUserDeptExists(DynamicQueryRequest request) {
+        return existsDynamic(baseMapper::selectUserDeptPage, request);
+    }
+
+    // 4. 多表短方法名与 DTO 驱动存在性判断
+    public boolean checkUserDeptExistsByDto(UserSearchDTO dto) {
+        return existsDynamic("selectUserDeptPage", dto);
+    }
+}
+```
+
+#### 场景五：Mapper XML 占位符原生绑定与 JSqlParser AST 自适应兼容
 
 1. **显式占位符（推荐）**：在 Mapper XML 中声明 `${ew.customSqlSegment}`，框架自动完成安全的参数化绑定：
    ```xml
