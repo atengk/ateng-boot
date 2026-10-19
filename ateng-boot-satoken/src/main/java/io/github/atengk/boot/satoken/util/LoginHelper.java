@@ -3,6 +3,8 @@ package io.github.atengk.boot.satoken.util;
 import cn.dev33.satoken.session.SaSession;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
@@ -656,4 +658,104 @@ public final class LoginHelper {
         }
         return userId.trim();
     }
+
+    /**
+     * 断言目标用户标识为当前登录用户（非本人且非管理员时立即抛出 BusinessException 403 异常）
+     *
+     * @param targetUserId 目标用户标识
+     */
+    public static void checkSelf(String targetUserId) {
+        checkSelf(targetUserId, "无权访问该资源");
+    }
+
+    /**
+     * 断言目标用户标识为当前登录用户（带自定义提示消息）
+     *
+     * @param targetUserId 目标用户标识
+     * @param message      越权提示消息
+     */
+    public static void checkSelf(String targetUserId, String message) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "无权访问该资源");
+        }
+        if (isSuperAdmin()) {
+            return;
+        }
+        String currentUserId = getUserId();
+        if (currentUserId == null || !currentUserId.trim().equals(targetUserId.trim())) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "无权访问该资源");
+        }
+    }
+
+    /**
+     * 断言目标用户 Long 标识为当前登录用户（非本人且非管理员时立即抛出 BusinessException 403 异常）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     */
+    public static void checkSelf(Long targetUserId) {
+        checkSelf(targetUserId != null ? String.valueOf(targetUserId) : null);
+    }
+
+    /**
+     * 断言目标用户 Long 标识为当前登录用户（带自定义提示消息）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     * @param message      越权提示消息
+     */
+    public static void checkSelf(Long targetUserId, String message) {
+        checkSelf(targetUserId != null ? String.valueOf(targetUserId) : null, message);
+    }
+
+    /**
+     * 判断目标用户标识是否为当前登录用户（或拥有超级管理员特权）
+     *
+     * @param targetUserId 目标用户标识
+     * @return true 表示为本人或具备超级管理员特权
+     */
+    public static boolean isSelf(String targetUserId) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            return false;
+        }
+        if (isSuperAdmin()) {
+            return true;
+        }
+        String currentUserId = getUserId();
+        return currentUserId != null && currentUserId.trim().equals(targetUserId.trim());
+    }
+
+    /**
+     * 判断目标用户 Long 标识是否为当前登录用户（或拥有超级管理员特权）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     * @return true 表示为本人或具备超级管理员特权
+     */
+    public static boolean isSelf(Long targetUserId) {
+        return targetUserId != null && isSelf(String.valueOf(targetUserId));
+    }
+
+    /**
+     * 校验目标租户标识是否为当前登录用户的归属租户
+     *
+     * @param targetTenantId 目标租户标识
+     */
+    public static void checkBelongsToTenant(String targetTenantId) {
+        checkBelongsToTenant(targetTenantId, "非法跨租户数据访问");
+    }
+
+    /**
+     * 校验目标租户标识是否为当前登录用户的归属租户（带自定义提示消息）
+     *
+     * @param targetTenantId 目标租户标识
+     * @param message        越权提示消息
+     */
+    public static void checkBelongsToTenant(String targetTenantId, String message) {
+        if (targetTenantId == null || targetTenantId.isBlank()) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
+        }
+        String currentTenantId = getTenantId();
+        if (currentTenantId == null || !currentTenantId.trim().equals(targetTenantId.trim())) {
+            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
+        }
+    }
 }
+

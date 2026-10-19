@@ -13,6 +13,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.spi.CurrentTenantProvider;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.aspect.SaCheckDataOwnerAspect;
 import io.github.atengk.boot.satoken.aspect.SaCheckSameTokenAspect;
 import io.github.atengk.boot.satoken.cache.CachedStpInterface;
 import io.github.atengk.boot.satoken.cache.DefaultUserRolePermissionLoader;
@@ -32,6 +33,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -256,6 +258,19 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaCheckSameTokenAspect saCheckSameTokenAspect(SaTokenProperties properties) {
         return new SaCheckSameTokenAspect(properties);
+    }
+
+    /**
+     * 注册水平越权防御 (IDOR) 数据所有权校验切面
+     *
+     * @param applicationContext Spring 上下文容器
+     * @return SaCheckDataOwnerAspect 切面实例
+     */
+    @Bean
+    @ConditionalOnClass(org.aspectj.lang.annotation.Aspect.class)
+    @ConditionalOnMissingBean(SaCheckDataOwnerAspect.class)
+    public SaCheckDataOwnerAspect saCheckDataOwnerAspect(ApplicationContext applicationContext) {
+        return new SaCheckDataOwnerAspect(applicationContext);
     }
 
     /**

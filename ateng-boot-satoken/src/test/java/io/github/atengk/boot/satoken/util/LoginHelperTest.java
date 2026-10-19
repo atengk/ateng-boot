@@ -2,6 +2,7 @@ package io.github.atengk.boot.satoken.util;
 
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import org.junit.jupiter.api.DisplayName;
@@ -249,4 +250,80 @@ class LoginHelperTest {
             assertThat(LoginHelper.getSessionTimeout()).isEqualTo(14400L);
         }
     }
+
+    @Test
+    @DisplayName("13. checkSelf 与 isSelf: 数据所有权断言与管理员豁免")
+    void testCheckSelfAndIsSelf() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            cn.dev33.satoken.session.SaSession mockSession = mock(cn.dev33.satoken.session.SaSession.class);
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(mockSession);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("1001");
+
+            // 1. 本人访问：匹配放行
+            LoginHelper.checkSelf("1001");
+            LoginHelper.checkSelf(1001L);
+            assertThat(LoginHelper.isSelf("1001")).isTrue();
+            assertThat(LoginHelper.isSelf(1001L)).isTrue();
+
+            // 2. 他人访问（非管理员）：抛出 403 异常
+            assertThatThrownBy(() -> LoginHelper.checkSelf("2002"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("无权访问该资源");
+            assertThatThrownBy(() -> LoginHelper.checkSelf(2002L, "自定义越权错误"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("自定义越权错误");
+            assertThat(LoginHelper.isSelf("2002")).isFalse();
+            assertThat(LoginHelper.isSelf(2002L)).isFalse();
+
+            // 3. 空值防卫
+            assertThatThrownBy(() -> LoginHelper.checkSelf((String) null))
+                    .isInstanceOf(BusinessException.class);
+            assertThatThrownBy(() -> LoginHelper.checkSelf((Long) null))
+                    .isInstanceOf(BusinessException.class);
+            assertThat(LoginHelper.isSelf((String) null)).isFalse();
+            assertThat(LoginHelper.isSelf((Long) null)).isFalse();
+
+            // 4. 管理员特权：豁免放行
+            LoginUser adminUser = LoginUser.builder()
+                    .userId("1001")
+                    .roles(Set.of("admin"))
+                    .build();
+            when(mockSession.get(SaTokenConstant.LOGIN_USER_KEY)).thenReturn(io.github.atengk.boot.core.util.JsonUtil.toJsonString(adminUser));
+
+            LoginHelper.checkSelf("2002");
+            LoginHelper.checkSelf(2002L);
+            assertThat(LoginHelper.isSelf("2002")).isTrue();
+            assertThat(LoginHelper.isSelf(2002L)).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("14. checkBelongsToTenant: 多租户隔离断言")
+    void testCheckBelongsToTenant() {
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(null);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("tenant-01_1001");
+
+            // 1. 本租户匹配：放行
+            LoginHelper.checkBelongsToTenant("tenant-01");
+
+            // 2. 跨租户篡改：抛出 403 异常
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant("tenant-02"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("非法跨租户数据访问");
+
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant("tenant-02", "跨租户阻止"))
+                    .isInstanceOf(BusinessException.class)
+                    .hasMessageContaining("跨租户阻止");
+
+            // 3. 空值防卫
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant(null))
+                    .isInstanceOf(BusinessException.class);
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant("  "))
+                    .isInstanceOf(BusinessException.class);
+        }
+    }
 }
+

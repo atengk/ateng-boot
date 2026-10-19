@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.satoken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.satoken.mapper.TenantOrderMapper;
 import io.github.atengk.boot.satoken.model.LoginUser;
@@ -667,4 +668,125 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(jsonPath("$.code").value(401))
                 .andExpect(jsonPath("$.msg").value("当前账号已在其他设备登录，您已被顶下线"));
     }
+
+    @Test
+    @DisplayName("22. 水平越权防御端到端：直接参数 @CheckDataOwner 本人放行，越权拦截返回 403")
+    void testDataOwnerDefenseDirectParam() throws Exception {
+        // 1. 登录普通用户 10086
+        LoginUser user = LoginUser.builder()
+                .userId("10086")
+                .tenantId("tenant_sz")
+                .userAccount("user10086")
+                .userName("普通用户10086")
+                .build();
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 本人修改资料：放行
+        UserProfileDTO selfDto = new UserProfileDTO("10086", "小明", "ming@example.com");
+        mockMvc.perform(post("/api/auth/user/profile")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(selfDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("个人资料更新成功: 10086"));
+
+        // 3. 越权篡改他人资料 (20001)：拦截返回 HTTP 200 + 403
+        UserProfileDTO othersDto = new UserProfileDTO("20001", "黑客篡改", "hacker@example.com");
+        mockMvc.perform(post("/api/auth/user/profile")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(othersDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问该资源"));
+    }
+
+    @Test
+    @DisplayName("23. 水平越权防御端到端：间接资源 SPI 反查订单归属，本人订单放行，他人订单拦截 403")
+    void testDataOwnerDefenseIndirectResourceSpi() throws Exception {
+        // 1. 登录普通用户 10086
+        LoginUser user = LoginUser.builder()
+                .userId("10086")
+                .tenantId("tenant_sz")
+                .userAccount("user10086")
+                .userName("普通用户10086")
+                .build();
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 取消归属于自己的订单 88001：放行
+        mockMvc.perform(post("/api/auth/order/88001/cancel")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单取消成功: 88001"));
+
+        // 3. 越权取消归属于用户 20001 的订单 88002：拦截返回 HTTP 200 + 403 定制提示
+        mockMvc.perform(post("/api/auth/order/88002/cancel")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权取消该订单"));
+    }
+
+    @Test
+    @DisplayName("24. 编程式断言门面端到端：LoginHelper.checkSelf 与 checkBelongsToTenant 正常放行与越权 403")
+    void testProgrammaticAssertSelfAndTenant() throws Exception {
+        // 1. 登录用户 10086（租户 tenant_sz）
+        LoginUser user = LoginUser.builder()
+                .userId("10086")
+                .tenantId("tenant_sz")
+                .userAccount("user10086")
+                .userName("普通用户10086")
+                .build();
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 本人校验放行
+        mockMvc.perform(post("/api/auth/assert/self")
+                        .header("satoken", token)
+                        .param("targetUserId", "10086"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("本人校验通过: 10086"));
+
+        // 3. 非本人校验拦截 403
+        mockMvc.perform(post("/api/auth/assert/self")
+                        .header("satoken", token)
+                        .param("targetUserId", "20001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问该资源"));
+
+        // 4. 同租户校验放行
+        mockMvc.perform(post("/api/auth/assert/tenant")
+                        .header("satoken", token)
+                        .param("targetTenantId", "tenant_sz"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("租户归属校验通过: tenant_sz"));
+
+        // 5. 跨租户校验拦截 403
+        mockMvc.perform(post("/api/auth/assert/tenant")
+                        .header("satoken", token)
+                        .param("targetTenantId", "tenant_bj"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("非法跨租户数据访问"));
+    }
 }
+

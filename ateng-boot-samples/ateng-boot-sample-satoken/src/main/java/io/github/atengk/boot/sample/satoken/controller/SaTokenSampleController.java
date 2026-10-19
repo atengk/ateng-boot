@@ -5,16 +5,21 @@ import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
+import io.github.atengk.boot.sample.satoken.provider.SampleOrderDataOwnerProvider;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
+import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
@@ -332,4 +337,53 @@ public class SaTokenSampleController {
     public Result<String> getInternalData() {
         return Result.success("内部机密数据访问成功");
     }
+
+    /**
+     * 修改个人资料接口（直接通过 SpEL 校验 userId 数据所有权）
+     *
+     * @param dto 个人资料
+     * @return 响应结果
+     */
+    @PostMapping("/user/profile")
+    @CheckDataOwner(expr = "#dto.userId")
+    public Result<String> updateProfile(@RequestBody UserProfileDTO dto) {
+        return Result.success("个人资料更新成功: " + dto.getUserId());
+    }
+
+    /**
+     * 订单取消接口（间接通过 SPI 反查 orderId 数据所有权）
+     *
+     * @param orderId 订单标识
+     * @return 响应结果
+     */
+    @PostMapping("/order/{orderId}/cancel")
+    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class, message = "无权取消该订单")
+    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
+        return Result.success("订单取消成功: " + orderId);
+    }
+
+    /**
+     * 编程式本人校验断言
+     *
+     * @param targetUserId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/assert/self")
+    public Result<String> assertSelf(@RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.checkSelf(targetUserId);
+        return Result.success("本人校验通过: " + targetUserId);
+    }
+
+    /**
+     * 编程式租户归属校验断言
+     *
+     * @param targetTenantId 目标租户标识
+     * @return 响应结果
+     */
+    @PostMapping("/assert/tenant")
+    public Result<String> assertTenant(@RequestParam("targetTenantId") String targetTenantId) {
+        LoginHelper.checkBelongsToTenant(targetTenantId);
+        return Result.success("租户归属校验通过: " + targetTenantId);
+    }
 }
+
