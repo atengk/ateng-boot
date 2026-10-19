@@ -26,6 +26,10 @@
 | **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
 | **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
 | **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz, batchLoader)`：批量 MGET 探测 + 字典序排序锁 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面 | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
+| **两级缓存** | 两级缓存核心门面 | `TwoLevelCache` / `DefaultTwoLevelCache` | `ateng.boot.redis.two-level.*`<br>`ateng.boot.redis.key-prefix` | `getName()` / `get(key)` / `get(key, clazz)` / `get(key, loader)` / `put(key, val, ttl)` / `putIfAbsent` / `evict(key)` / `evictLocal(key)` / `clear()` / `clearLocal()`：纳秒级 L1 本地命中、分布式 L2 兜底、空哨兵防穿透与游标安全 scan 清理 | `TwoLevelCacheTest`<br>`SampleRedisIntegrationTest` |
+| **两级缓存** | Spring Cache 适配器 | `TwoLevelCacheManager` | `ateng.boot.redis.two-level.enabled`<br>`ateng.boot.redis.two-level.topic`<br>`ateng.boot.redis.two-level.l1.*`<br>`ateng.boot.redis.two-level.l2.*` | `@Cacheable` / `@CacheEvict` 无缝注解驱动、动态按需创建缓存空间、`instanceId` 唯一标识防环、`ateng:cache:evict:topic` 跨节点集中广播协同失效 | `TwoLevelCacheManagerTest`<br>`SampleRedisIntegrationTest` |
+| **两级缓存** | L1 内存缓存与退化工厂 | `L1MemoryCacheFactory` / `L1MemoryCache` / `ConcurrentLruMemoryCache` | `ateng.boot.redis.two-level.l1.default-max-size`<br>`ateng.boot.redis.two-level.l1.default-ttl` | 自动探测 Caffeine，存在时启用 W-TinyLFU 高性能缓存，缺失时自动退化为内置 LRU 内存结构并受 `default-max-size` 严格限制防 OOM | `ConcurrentLruMemoryCacheTest`<br>`L1MemoryCacheFactoryTest` |
+| **两级缓存** | 跨节点广播失效载荷 | `CacheEvictMessage` | `ateng.boot.redis.two-level.topic` | `cacheName` / `key` / `instanceId` / `clearAll`：跨实例失效广播数据契约 | `TwoLevelCacheTest`<br>`TwoLevelCacheManagerTest` |
 | **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `JitterTtlFunctionTest`<br>`AtengRedisAutoConfigurationTest` |
 | **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `jsonSerializer(clazz)` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
 
@@ -707,7 +711,223 @@ boolean exists = redisCacheTemplate.hasKey("product:1001");
 
 ---
 
-## 11. 完整 YAML 配置属性清单
+## 11. 生产级内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)
+
+### 场景痛点
+在高并发与读多写少的核心业务场景中，传统的单一缓存方案各有利弊与硬伤：
+1. **单一分布式 Redis 性能瓶颈**：尽管 Redis 响应极快，但在超高并发场景下，每次网络 I/O 往返延迟（毫秒级）和反序列化开销依然会成为瓶颈，且极易引发 Redis 单节点或集群网络带宽打满；
+2. **纯本地 JVM 内存缓存的多实例脏读**：本地堆缓存性能极致（纳秒级读取），但在微服务多节点集群部署时，节点 A 变更了数据，节点 B 无法感知，造成严重的多实例数据不一致与脏读；
+3. **跨节点广播失效的自重入死循环**：节点 A 淘汰缓存后向 Pub/Sub 广播失效消息，自身监听器若不加鉴别重新触发淘汰，会导致自重入死循环广播或不必要的内部锁竞争；
+4. **强依赖与 OOM 风险**：业界部分两级缓存方案强制依赖第三方重型类库或没有严格的本地内存上限控制，在无 Caffeine 依赖时直接启动失败，或在突发海量缓存写入时引发 JVM 堆内存 OOM 崩溃。
+
+### 两级协同与分层架构设计
+`ateng-boot-redis` 提供了生产级轻量立体两级缓存体系：
+- **L1 本地高性能堆内存**：纳秒级直读。支持编译期可选（`<optional>true</optional>`）的 **Caffeine（W-TinyLFU 高命中淘汰算法）**；若环境未引入 Caffeine 依赖，`L1MemoryCacheFactory` 自动平滑退化为内置的 **`ConcurrentLruMemoryCache`**，基于原生 `LinkedHashMap` 实现读写安全锁与严格容量限制（`l1.default-max-size`），彻底杜绝内存无界膨胀与 OOM；
+- **L2 分布式 Redis**：集中式持久缓存。支持个性化 TTL、随机抖动防雪崩（Jitter）、空哨兵防穿透（`__ATENG_CACHE_NULL__`）与全局前缀（`key-prefix`）安全隔离；
+- **集中式 Pub/Sub 跨节点广播失效与反自重入**：统一接入集中频道 `ateng:cache:evict:topic` 广播携带 `instanceId`（无锁原子自增）的 `CacheEvictMessage`。本地节点更新/删除时优先清除自身 L1 与 L2 并广播消息；各节点监听到广播时比对 `instanceId`，**自动忽略自身发出的失效消息**，仅清除其他节点的 L1 本地缓存，杜绝重复擦除与死循环；
+- **Spring Cache 声明式无缝接管**：`TwoLevelCacheManager` 标配 `@Primary` 并继承 `AbstractCacheManager`，当 `ateng.boot.redis.two-level.enabled=true` 时无缝接管 `@Cacheable`、`@CachePut` 与 `@CacheEvict` 注解驱动，同时对外暴露强类型 `getTwoLevelCache(cacheName)` 编程式门面。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as 业务调用方 (Service / Controller)
+    participant Cache as TwoLevelCache 门面
+    participant L1 as L1 本地内存 (Caffeine / LRU)
+    participant L2 as L2 分布式 Redis
+    participant PubSub as Redis Pub/Sub (ateng:cache:evict:topic)
+    participant DB as 数据库 (Database)
+    participant NodeB as 集群其他节点 (Instance B)
+
+    Note over Client, DB: 1. 读操作流程 (Read Path)
+    Client->>Cache: get("user-profile", "2001")
+    Cache->>L1: 查询本地内存
+    alt L1 命中 (Hit)
+        L1-->>Cache: 纳秒级返回业务对象
+        Cache-->>Client: 立即返回
+    else L1 未命中 (Miss)
+        Cache->>L2: 查询 Redis 缓存
+        alt L2 命中 (Hit)
+            L2-->>Cache: 返回对象 / 空哨兵
+            Cache->>L1: 自动反向回填 L1 内存
+            Cache-->>Client: 返回业务对象
+        else L2 未命中 (Miss)
+            Cache->>DB: DCL 互斥加载 / 回源查库
+            DB-->>Cache: 返回真实数据库对象
+            Cache->>L2: 回填 Redis (带独立 L2 TTL 与随机抖动防雪崩)
+            Cache->>L1: 回填本地 L1 (带独立 L1 TTL)
+            Cache-->>Client: 返回业务对象
+        end
+    end
+
+    Note over Client, NodeB: 2. 写 / 淘汰操作流程 (Evict / Write Path)
+    Client->>Cache: evict("user-profile", "2001")
+    Cache->>L2: 删除 Redis 缓存 (L2 evict)
+    Cache->>L1: 清理本地 L1 缓存 (evictLocal)
+    Cache->>PubSub: 广播 CacheEvictMessage (带 instanceId)
+    PubSub-->>Cache: 接收广播 (instanceId 相同 ➔ 忽略自身，防死循环)
+    PubSub-->>NodeB: 接收广播 (instanceId 不同 ➔ 清理 NodeB 本地 L1)
+    NodeB->>NodeB: evictLocal("user-profile", "2001")
+```
+
+### 核心配置与使用示例
+
+#### 1. YAML 配置（对齐 `ateng-boot-sample-redis`）
+```yaml
+ateng:
+  boot:
+    redis:
+      two-level:
+        enabled: true                     # 开启两级缓存基础设施 (默认 false)
+        topic: "ateng:cache:evict:topic"  # 跨节点失效广播主题 (默认 "ateng:cache:evict:topic")
+        l1:
+          default-ttl: 5m                 # L1 本地堆内存默认过期时间 (默认 5m)
+          default-max-size: 10000         # L1 本地缓存最大元素容量，严格防 OOM (默认 10000)
+          expires:                        # 针对特定 CacheName 的独立 L1 TTL
+            user-profile: 2m
+        l2:
+          default-ttl: 30m                # L2 Redis 默认过期时间 (默认 30m)
+          jitter-enabled: true            # L2 是否启用随机抖动防雪崩 (默认 true)
+          max-jitter: 60s                 # L2 随机抖动最大时间跨度 (默认 60s)
+          cache-null-values: true         # L2 是否缓存空哨兵防穿透 (默认 true)
+          null-ttl: 5m                    # L2 空对象防穿透独立短过期时间 (默认 5m)
+          expires:                        # 针对特定 CacheName 的独立 L2 TTL
+            user-profile: 1h
+```
+
+#### 2. Service 声明式注解调用（锚定 `RedisSampleService`）
+```java
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class RedisSampleService {
+
+    private final AtomicInteger dbQueryCount = new AtomicInteger(0);
+
+    /**
+     * Spring Cache 声明式两级缓存查询（@Cacheable）
+     * 首次调用进入方法体查库并自动回填 L1 内存与 L2 Redis，后续调用直接从 L1 纳秒级极速返回
+     */
+    @Cacheable(cacheNames = "user-profile", key = "#userId")
+    public String getUserProfile(Long userId) {
+        dbQueryCount.incrementAndGet();
+        log.info("[RedisSampleService] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
+        return "Role_VIP_" + userId;
+    }
+
+    /**
+     * Spring Cache 声明式定向淘汰（@CacheEvict）
+     * 清除本地 L1 与 L2 Redis，并通过 Pub/Sub 广播协同淘汰集群其他节点的本地 L1
+     */
+    @CacheEvict(cacheNames = "user-profile", key = "#userId")
+    public void evictUserProfile(Long userId) {
+        log.info("[RedisSampleService] 淘汰用户档案两级缓存: userId={}", userId);
+    }
+
+    /**
+     * Spring Cache 声明式全量清空（@CacheEvict allEntries = true）
+     */
+    @CacheEvict(cacheNames = "user-profile", allEntries = true)
+    public void clearUserProfileCache() {
+        log.info("[RedisSampleService] 清空用户档案全量两级缓存");
+    }
+}
+```
+
+#### 3. Controller 接口接入（锚定 `RedisSampleController`）
+```java
+@RestController
+@RequestMapping("/api/redis-sample")
+@RequiredArgsConstructor
+public class RedisSampleController {
+
+    private final RedisSampleService redisSampleService;
+
+    @GetMapping("/cache/user-profile")
+    public Result<String> getUserProfile(@RequestParam("userId") Long userId) {
+        return Result.success(redisSampleService.getUserProfile(userId));
+    }
+
+    @PostMapping("/cache/user-profile/evict")
+    public Result<Void> evictUserProfile(@RequestParam("userId") Long userId) {
+        redisSampleService.evictUserProfile(userId);
+        return Result.success();
+    }
+
+    @PostMapping("/cache/user-profile/clear")
+    public Result<Void> clearUserProfile() {
+        redisSampleService.clearUserProfileCache();
+        return Result.success();
+    }
+}
+```
+
+#### 4. 编程式门面调用（锚定 `TwoLevelCacheManager` 与 `TwoLevelCache`）
+当需要在非 Web/非注解场景下（如 MQ 消费、定时调度、底层算法）进行两级缓存细粒度操作或本地定向清除时，直接注入 `TwoLevelCacheManager`：
+```java
+@Autowired
+private TwoLevelCacheManager twoLevelCacheManager;
+
+public void programmaticUsage() {
+    // 1. 获取强类型两级缓存门面
+    TwoLevelCache cache = twoLevelCacheManager.getTwoLevelCache("custom-space");
+
+    // 2. 写入两级缓存（支持显式指定 L2 TTL）
+    cache.put("cfg:1", "Active", Duration.ofMinutes(10));
+
+    // 3. 读取缓存（L1 未命中自动探测 L2 并反向回填 L1）
+    String value = cache.get("cfg:1", String.class);
+
+    // 4. 定向仅清除本地 L1（不删除 L2，亦不向集群广播）
+    cache.evictLocal("cfg:1");
+
+    // 5. 本地全量清空 L1 空间
+    cache.clearLocal();
+}
+```
+
+### 真实控制台与响应（锚定 `SampleRedisIntegrationTest`）
+1. 首次查询用户档案（`userId=2001`），两级缓存均未命中，执行回源查库（DB count = 1）：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "Role_VIP_2001",
+  "success": true
+}
+```
+真实控制台日志：
+```text
+INFO  [RedisSampleService] 两级缓存未命中，执行模拟数据库查询: userId=2001
+```
+
+2. 第二次查询相同用户档案（`userId=2001`），**0 次 DB 访问**（DB count 维持为 1），直接自 L1 堆内存纳秒级返回：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "Role_VIP_2001",
+  "success": true
+}
+```
+
+3. 触发定向淘汰接口 `/cache/user-profile/evict?userId=2001` 后，再次查询重新回源查库（DB count 递增至 2）：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": "Role_VIP_2001",
+  "success": true
+}
+```
+真实控制台日志：
+```text
+INFO  [RedisSampleService] 淘汰用户档案两级缓存: userId=2001
+INFO  [RedisSampleService] 两级缓存未命中，执行模拟数据库查询: userId=2001
+```
+
+---
+
+## 12. 完整 YAML 配置属性清单
 
 ```yaml
 spring:
@@ -744,7 +964,7 @@ ateng:
           expected-insertions: 50000    # 预估元素插入总量 (默认 100,000)
           false-probability: 0.01       # 期望误判率 (默认 0.01 即 1%，取值区间 (0, 1))
       cache:
-        enabled: true                   # 是否启用增强缓存基础设施 (默认 true)
+        enabled: true                   # 是否启用增强单级 Redis 缓存基础设施 (默认 true)
         default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
         jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
         max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
@@ -754,6 +974,22 @@ ateng:
         expires:                        # 针对不同 CacheName 的个性化 TTL (`Map<String, Duration>`)
           short_cache: 10m
           long_cache: 24h
+      two-level:
+        enabled: false                  # 是否启用生产级两级缓存 (L1 JVM + L2 Redis，默认 false)
+        topic: "ateng:cache:evict:topic"# 跨节点两级缓存失效广播主题 (默认 "ateng:cache:evict:topic")
+        l1:
+          default-ttl: 5m               # L1 堆内存本地缓存默认过期时间 (默认 5m)
+          default-max-size: 10000       # L1 堆内存最大元素容量，严格防 OOM (默认 10000)
+          expires:                      # 针对特定 CacheName 的 L1 独立 TTL (`Map<String, Duration>`)
+            user-profile: 2m
+        l2:
+          default-ttl: 30m              # L2 集中式 Redis 缓存默认过期时间 (默认 30m)
+          jitter-enabled: true          # L2 写入是否启用随机抖动防雪崩 (默认 true)
+          max-jitter: 60s               # L2 随机抖动最大时间跨度 (默认 60s)
+          cache-null-values: true       # L2 是否缓存空哨兵防穿透 (默认 true)
+          null-ttl: 5m                  # L2 空对象防穿透独立短过期时间 (默认 5m)
+          expires:                      # 针对特定 CacheName 的 L2 独立 TTL (`Map<String, Duration>`)
+            user-profile: 1h
       redisson:
         config: ""                      # 可选自定义 Redisson 外部配置文件路径 (如 classpath:redisson.yaml)
         threads: 0                      # Redisson 通用线程池大小 (默认 0，表示采用 Redisson 核心数*2 默认值)
@@ -762,11 +998,11 @@ ateng:
 
 ---
 
-## 12. 生产扩展与高阶定制 (Customization & Extensibility)
+## 13. 生产扩展与高阶定制 (Customization & Extensibility)
 
 `ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
 
-### 12.1 自定义 RedissonClient 接管
+### 13.1 自定义 RedissonClient 接管
 当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
 
 ```java
@@ -785,7 +1021,7 @@ public class CustomRedissonConfiguration {
 }
 ```
 
-### 12.2 编程式延时队列平滑接管
+### 13.2 编程式延时队列平滑接管
 `RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
 
 ```java
@@ -793,7 +1029,7 @@ RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMap
 delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
 ```
 
-### 12.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
+### 13.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
 框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
 
 ```java
@@ -808,7 +1044,7 @@ public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandl
 }
 ```
 
-### 12.4 编程式动态布隆过滤器与原生 Redisson 句柄扩展
+### 13.4 编程式动态布隆过滤器与原生 Redisson 句柄扩展
 除了在 YAML 中静态声明，`RedisBloomFilter` 亦完全支持在动态业务运行时按需初始化与底层句柄扩展：
 
 ```java
@@ -820,28 +1056,40 @@ RBloomFilter<String> nativeFilter = RedisBloomFilter.getFilter("dynamic_promo_us
 RFuture<Boolean> future = nativeFilter.containsAsync("user_10086");
 ```
 
+### 13.5 两级缓存 L1 内存引擎平滑退化与 SPI 适配
+`ateng-boot-redis` 在设计两级缓存 L1 抽象时恪守零臃肿与底座优先原则：
+- **编译期可选依赖 (Optional Dependency)**：`com.github.ben-manes.caffeine:caffeine` 标配 `<optional>true</optional>`，下游可按需引入享受 Caffeine 的 W-TinyLFU 高命中淘汰算法；
+- **纯原生 JVM 零依赖平滑退化**：若下游未引入 Caffeine，`L1MemoryCacheFactory` 在类加载期通过 `ClassUtils.isPresent` 与私有静态内部类完成隔离探测，自动退化为内置的 `ConcurrentLruMemoryCache`，基于原生 `LinkedHashMap`（写锁防护、`accessOrder = true`）与 `l1.default-max-size` 严格容量控制，保障生产环境无外部重依赖下平稳运行且绝不 OOM。
+
 ---
 
-## 13. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 14. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
-### 13.1 分布式锁防御性释放与防误删不变量
+### 14.1 分布式锁防御性释放与防误删不变量
 - **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
 - **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
 
-### 13.2 看门狗自动续期与固定租期选择策略
+### 14.2 看门狗自动续期与固定租期选择策略
 - **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
 - **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
 
-### 13.3 延时队列生命周期消费、受管线程池与死信流转
+### 14.3 延时队列生命周期消费、受管线程池与死信流转
 - **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
 - **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
 - **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
 
-### 13.4 布隆过滤器容量 80% 安全预警与生命周期清理
+### 14.4 布隆过滤器容量 80% 安全预警与生命周期清理
 - **元素填充率实时预警**：布隆过滤器的误判率由预估容量与已插入元素数决定。当实际元素数超过预估容量的 80%（`getUsageRate() >= 0.8`）时，`RedisBloomFilter` 在添加操作后自动记录 WARN 日志告警，提示运维及时扩容或重建双过滤器平滑迁移；
 - **对称物理销毁**：通过 `RedisBloomFilter.delete(filterName)` 可一键原子销毁底层 Redis 位图，释放内存占用。
 
-### 13.5 RedisCacheTemplate 争锁超时容灾与死锁防御
+### 14.5 RedisCacheTemplate 争锁超时容灾与死锁防御
 - **争锁超时平滑降级（Resilience Pass-Through）**：当极端高并发争抢热点 Key 时，若等待互斥锁超时（超出 `lockWaitTime`，默认 3s），模板记录 WARN 日志后平滑降级穿透查库，并将查库结果异步尝试回填 Redis，严禁向外抛出异常阻断正常业务流；
 - **批量缺失键字典序排序加锁**：在 `batchGetOrLoad` 处理并发缺失多键时，所有物理锁 Key 严格执行字典序升序排序（`Collections.sort(lockKeys)`）后再申请 MultiLock，从数学机制上杜绝并发请求中不同顺序加锁引发的死锁悬挂隐患。
+
+### 14.6 两级缓存广播失效、反自重入与雪崩/穿透防御语义
+- **全局唯一实例 ID 与自重入防环机制**：`TwoLevelCacheManager` 在初始化时分配全局递增无锁 `instanceId`。当业务线程执行 `@CacheEvict` 或 `cache.evict(...)` 时，本地优先清除 L1 与 L2 并向 Redis 集中频道（默认 `ateng:cache:evict:topic`）广播 `CacheEvictMessage`。各实例的消息监听器收到消息后比对 `instanceId`，若等于当前实例 ID 则立即判定为本地自身触发的广播并主动丢弃，仅对其他实例的本地 L1 触发清除，**从拓扑机制上 100% 杜绝自身二次淘汰、广播回环与自重入死锁**；
+- **防穿透空哨兵机制**：当查库为空时，`DefaultTwoLevelCache` 向 Redis 写入专用空哨兵标识符 `__ATENG_CACHE_NULL__`（带有独立短过期时间 `l2.null-ttl`，默认 5m），并发请求命中空哨兵时立即返回 `null`，严防恶意不存在 Key 击穿底层存储；
+- **防雪崩随机抖动 (Jitter)**：回填 L2 Redis 缓存时，系统自动在基准 TTL 基础上叠加 0 ~ `max-jitter` 的随机动态偏移，打散相同批次热点数据的集中过期时间；
+- **安全键前缀隔离**：两级缓存与广播消息全面遵从全局 `ateng.boot.redis.key-prefix`，杜绝多服务多环境共用单 Redis 实例时的键冲突污染。
+
 

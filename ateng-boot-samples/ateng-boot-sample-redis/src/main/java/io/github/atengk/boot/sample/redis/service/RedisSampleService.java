@@ -9,6 +9,8 @@ import io.github.atengk.boot.redis.util.RedisUtil;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -218,5 +220,38 @@ public class RedisSampleService {
      */
     public void resetDbQueryCount() {
         dbQueryCount.set(0);
+    }
+
+    /**
+     * Spring Cache 声明式两级缓存查询（@Cacheable）
+     * 首次调用进入方法体查库并自动回填 L1 内存与 L2 Redis，后续调用直接从 L1 纳秒级极速返回
+     *
+     * @param userId 用户 ID
+     * @return 用户档案角色
+     */
+    @Cacheable(cacheNames = "user-profile", key = "#userId")
+    public String getUserProfile(Long userId) {
+        dbQueryCount.incrementAndGet();
+        log.info("[RedisSampleService] 两级缓存未命中，执行模拟数据库查询: userId={}", userId);
+        return "Role_VIP_" + userId;
+    }
+
+    /**
+     * Spring Cache 声明式定向淘汰（@CacheEvict）
+     * 清除本地 L1 与 L2 Redis，并通过 Pub/Sub 广播协同淘汰集群其他节点的本地 L1
+     *
+     * @param userId 用户 ID
+     */
+    @CacheEvict(cacheNames = "user-profile", key = "#userId")
+    public void evictUserProfile(Long userId) {
+        log.info("[RedisSampleService] 淘汰用户档案两级缓存: userId={}", userId);
+    }
+
+    /**
+     * Spring Cache 声明式全量清空（@CacheEvict allEntries = true）
+     */
+    @CacheEvict(cacheNames = "user-profile", allEntries = true)
+    public void clearUserProfileCache() {
+        log.info("[RedisSampleService] 清空用户档案全量两级缓存");
     }
 }

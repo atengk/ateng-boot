@@ -5,6 +5,7 @@ import io.github.atengk.boot.redis.bloom.BloomFilterBootstrap;
 import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
@@ -33,6 +34,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
@@ -356,6 +358,25 @@ public class AtengRedisAutoConfiguration {
                                                  RedissonClient redissonClient,
                                                  RedisProperties redisProperties) {
         return new RedisCacheTemplate(redisTemplate, redissonClient, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配内存+Redis 生产级两级缓存管理器 TwoLevelCacheManager
+     * 具备 L1 内存极速读取与 L2 Redis 跨节点共享能力，支持跨实例 Pub/Sub 广播淘汰协同
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
+     * @param containerProvider Redis 消息监听容器提供者
+     * @return TwoLevelCacheManager 实例
+     */
+    @Bean
+    @Primary
+    @ConditionalOnMissingBean(TwoLevelCacheManager.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.two-level", name = "enabled", havingValue = "true")
+    public TwoLevelCacheManager twoLevelCacheManager(RedisTemplate<String, Object> redisTemplate,
+                                                     RedisProperties redisProperties,
+                                                     ObjectProvider<RedisMessageListenerContainer> containerProvider) {
+        return new TwoLevelCacheManager(redisTemplate, redisProperties, containerProvider.getIfAvailable());
     }
 
     /**

@@ -72,6 +72,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("redisAtomicUtil");
                     assertThat(context).doesNotHaveBean("redisCacheManager");
                     assertThat(context).doesNotHaveBean("redisCacheTemplate");
+                    assertThat(context).doesNotHaveBean("twoLevelCacheManager");
                 });
     }
 

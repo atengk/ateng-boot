@@ -65,6 +65,12 @@ public class RedisProperties {
     private Map<String, BloomFilterConfig> bloomFilters = new HashMap<>();
 
     /**
+     * 内存+Redis 两级缓存配置属性
+     */
+    @NestedConfigurationProperty
+    private TwoLevelCacheProperties twoLevel = new TwoLevelCacheProperties();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -304,4 +310,114 @@ public class RedisProperties {
          */
         private double falseProbability = 0.01;
     }
+
+    /**
+     * 构建受管全局键名前缀
+     *
+     * @param rawKey 原始键名
+     * @return 附加 keyPrefix 后的最终键名
+     */
+    public String buildKey(String rawKey) {
+        if (rawKey == null) {
+            return null;
+        }
+        if (org.springframework.util.StringUtils.hasText(keyPrefix) && !rawKey.startsWith(keyPrefix)) {
+            return keyPrefix + rawKey;
+        }
+        return rawKey;
+    }
+
+    /**
+     * 内存+Redis 两级缓存配置详情
+     */
+    @Data
+    public static class TwoLevelCacheProperties {
+
+        /**
+         * 是否启用两级缓存 (L1 Caffeine/LRU + L2 Redis)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 跨节点缓存失效广播主题（默认 "ateng:cache:evict:topic"）
+         */
+        private String topic = "ateng:cache:evict:topic";
+
+        /**
+         * L1 本地内存缓存配置
+         */
+        @NestedConfigurationProperty
+        private L1Properties l1 = new L1Properties();
+
+        /**
+         * L2 分布式 Redis 缓存配置
+         */
+        @NestedConfigurationProperty
+        private L2Properties l2 = new L2Properties();
+
+        /**
+         * L1 本地内存缓存配置详情
+         */
+        @Data
+        public static class L1Properties {
+
+            /**
+             * L1 本地内存缓存默认最大条数（默认 10,000 条，严格防 OOM）
+             */
+            private long defaultMaxSize = 10_000L;
+
+            /**
+             * L1 本地内存缓存默认写入后过期时长（默认 5 分钟）
+             */
+            private Duration defaultTtl = Duration.ofMinutes(5);
+
+            /**
+             * 针对特定 cacheName 的 L1 最大条数映射
+             */
+            private Map<String, Long> maxSizes = new HashMap<>();
+
+            /**
+             * 针对特定 cacheName 的 L1 写入后过期时长映射
+             */
+            private Map<String, Duration> ttls = new HashMap<>();
+        }
+
+        /**
+         * L2 分布式 Redis 缓存配置详情
+         */
+        @Data
+        public static class L2Properties {
+
+            /**
+             * L2 分布式缓存默认过期时长（默认 30 分钟）
+             */
+            private Duration defaultTtl = Duration.ofMinutes(30);
+
+            /**
+             * 是否缓存空对象防穿透（默认 true）
+             */
+            private boolean cacheNullValues = true;
+
+            /**
+             * 空对象防穿透独立短过期时间（默认 5 分钟）
+             */
+            private Duration nullTtl = Duration.ofMinutes(5);
+
+            /**
+             * 是否启用 TTL 随机抖动防雪崩（默认 true）
+             */
+            private boolean jitterEnabled = true;
+
+            /**
+             * 随机抖动最大时长（默认 60 秒）
+             */
+            private Duration maxJitter = Duration.ofSeconds(60);
+
+            /**
+             * 针对特定 cacheName 的 L2 独立过期时间映射
+             */
+            private Map<String, Duration> ttls = new HashMap<>();
+        }
+    }
 }
+

@@ -235,4 +235,38 @@ public class RedisSampleController {
         redisSampleService.evictProduct(productId);
         return Result.success();
     }
+
+    /**
+     * 查询用户档案（基于 Spring Cache @Cacheable 两级缓存）
+     *
+     * @param userId 用户 ID
+     * @return 角色档案
+     */
+    @GetMapping("/cache/user-profile")
+    public Result<String> getUserProfile(@RequestParam("userId") Long userId) {
+        return Result.success(redisSampleService.getUserProfile(userId));
+    }
+
+    /**
+     * 淘汰指定用户档案两级缓存（基于 Spring Cache @CacheEvict）
+     *
+     * @param userId 用户 ID
+     * @return 成功响应
+     */
+    @PostMapping("/cache/user-profile/evict")
+    public Result<Void> evictUserProfile(@RequestParam("userId") Long userId) {
+        redisSampleService.evictUserProfile(userId);
+        return Result.success();
+    }
+
+    /**
+     * 清空用户档案全量两级缓存（基于 Spring Cache @CacheEvict allEntries = true）
+     *
+     * @return 成功响应
+     */
+    @PostMapping("/cache/user-profile/clear")
+    public Result<Void> clearUserProfile() {
+        redisSampleService.clearUserProfileCache();
+        return Result.success();
+    }
 }

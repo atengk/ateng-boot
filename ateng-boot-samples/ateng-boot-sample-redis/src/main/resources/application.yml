@@ -6,6 +6,8 @@ ateng:
   boot:
     redis:
       enabled: true
+      two-level:
+        enabled: true
       delay-queue:
         enabled: true
       bloom-filters:

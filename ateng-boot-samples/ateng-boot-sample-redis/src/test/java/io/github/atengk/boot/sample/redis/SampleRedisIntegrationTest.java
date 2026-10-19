@@ -83,6 +83,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {
         "ateng.boot.redis.enabled=true",
+        "ateng.boot.redis.two-level.enabled=true",
         "ateng.boot.redis.delay-queue.enabled=true"
 })
 @AutoConfigureMockMvc
@@ -341,6 +342,39 @@ class SampleRedisIntegrationTest {
                 return cursor;
             });
 
+            // 支持基于 RedisCallback 的安全游标 scan 与批量 del
+            when(template.execute(any(org.springframework.data.redis.core.RedisCallback.class))).thenAnswer(inv -> {
+                org.springframework.data.redis.core.RedisCallback<?> callback = inv.getArgument(0);
+                org.springframework.data.redis.connection.RedisConnection conn = mock(org.springframework.data.redis.connection.RedisConnection.class);
+                org.springframework.data.redis.connection.RedisKeyCommands keyCommands = mock(org.springframework.data.redis.connection.RedisKeyCommands.class);
+                when(conn.keyCommands()).thenReturn(keyCommands);
+
+                List<byte[]> matchedKeys = new java.util.ArrayList<>();
+                cacheStore.keySet().forEach(k -> matchedKeys.add(k.getBytes(StandardCharsets.UTF_8)));
+                java.util.Iterator<byte[]> it = matchedKeys.iterator();
+
+                Cursor<byte[]> cursor = mock(Cursor.class);
+                when(cursor.hasNext()).thenAnswer(i -> it.hasNext());
+                when(cursor.next()).thenAnswer(i -> it.next());
+                when(keyCommands.scan(any(ScanOptions.class))).thenReturn(cursor);
+
+                doAnswer(delInv -> {
+                    Object[] args = delInv.getArguments();
+                    for (Object arg : args) {
+                        if (arg instanceof byte[] b) {
+                            cacheStore.remove(new String(b, StandardCharsets.UTF_8));
+                        } else if (arg instanceof byte[][] bArr) {
+                            for (byte[] b : bArr) {
+                                cacheStore.remove(new String(b, StandardCharsets.UTF_8));
+                            }
+                        }
+                    }
+                    return (long) args.length;
+                }).when(keyCommands).del(any(byte[][].class));
+
+                return callback.doInRedis(conn);
+            });
+
             // RedisAtomicUtil Lua 脚本模拟（单入参与多入参滑动窗口）
             when(template.execute(
                     any(RedisScript.class),
@@ -414,6 +448,9 @@ class SampleRedisIntegrationTest {
 
     @Autowired(required = false)
     private io.github.atengk.boot.redis.cache.template.RedisCacheTemplate redisCacheTemplate;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager twoLevelCacheManager;
 
     @Test
     @DisplayName("端到端验证：@DistributedLock 声明式分布式锁切面拦截、SpEL 动态解析与加解锁协同")
@@ -768,5 +805,78 @@ class SampleRedisIntegrationTest {
                 .andExpect(jsonPath("$.data['1002'].name").value("MacBook Pro M4"));
 
         assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("端到端验证：Spring Cache @Cacheable 两级缓存冷启动查库、二次极速命中 L1 与 @CacheEvict 失效")
+    void shouldSupportTwoLevelCacheWithSpringCacheAnnotations() throws Exception {
+        redisSampleService.resetDbQueryCount();
+
+        // 1. 初次查询用户档案 (userId=2001)，两级缓存均未命中，执行模拟数据库查询 (DB count = 1)
+        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
+                        .param("userId", "2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 2. 第二次查询相同用户档案，直接命中 L1 本地内存缓存，0 次 DB 查询 (DB count 依然为 1)
+        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
+                        .param("userId", "2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 3. 执行定向淘汰 @CacheEvict (userId=2001)
+        mockMvc.perform(post("/api/redis-sample/cache/user-profile/evict")
+                        .param("userId", "2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 4. 再次查询用户档案，由于本地与分布式均已淘汰，重新回源查库 (DB count 递增至 2)
+        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
+                        .param("userId", "2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(2);
+
+        // 5. 执行全量清空 @CacheEvict(allEntries = true)
+        mockMvc.perform(post("/api/redis-sample/cache/user-profile/clear"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 6. 再次查询，重新回源查库 (DB count 递增至 3)
+        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
+                        .param("userId", "2001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("端到端验证：TwoLevelCacheManager 自动装配、Primary 契约与编程式门面调用")
+    void shouldAutoConfigureTwoLevelCacheManagerAndSupportProgrammaticFacade() {
+        assertThat(twoLevelCacheManager).isNotNull();
+
+        io.github.atengk.boot.redis.cache.spi.TwoLevelCache twoLevelCache =
+                twoLevelCacheManager.getTwoLevelCache("custom-space");
+        assertThat(twoLevelCache).isNotNull();
+
+        // 写入并读取
+        twoLevelCache.put("cfg:1", "Active");
+        assertThat(twoLevelCache.get("cfg:1", String.class)).isEqualTo("Active");
+
+        // 本地定向失效验证
+        twoLevelCache.evictLocal("cfg:1");
+        io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache defaultTwoLevelCache =
+                (io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache) twoLevelCache;
+        assertThat(defaultTwoLevelCache.getL1Cache().get("cfg:1")).isNull();
     }
 }
