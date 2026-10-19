@@ -6,7 +6,7 @@
 
 ## 1. 模块定位与 Maven 坐标
 
-`ateng-boot-all` 是纯依赖聚合模块。只需引入这一个依赖，即可自动传递引入 `ateng-boot-core`、`ateng-boot-web`、`ateng-boot-mybatis-plus`、`ateng-boot-redis`、`ateng-boot-excel` 与 `ateng-boot-satoken` 全部六大核心 Starter 构件，无需手动分别声明各个模块。
+`ateng-boot-all` 是纯依赖聚合模块。只需引入这一个依赖，即可自动传递引入 `ateng-boot-core`、`ateng-boot-web`、`ateng-boot-mybatis-plus`、`ateng-boot-redis`、`ateng-boot-excel`、`ateng-boot-satoken` 与 `ateng-boot-storage` 全部七大核心 Starter 构件，无需手动分别声明各个模块。
 
 ```xml
 <dependency>
@@ -26,7 +26,8 @@ ateng-boot-all
   ├── ateng-boot-mybatis-plus  (实体继承体系、审计填充、多租户隔离、数据权限、分批批量插入)
   ├── ateng-boot-redis         (双核融合装配、安全 JSON 序列化、四阶分布式锁、延时队列、发布订阅、增强缓存)
   ├── ateng-boot-excel         (流式防 OOM 读写、导出动态脱敏、悬浮批注回写、防呆模板、双向转义、链式构建)
-  └── ateng-boot-satoken       (安全鉴权、强类型 LoginUser 会话、两级权限缓存、零信任保护、Knife4j 弹窗)
+  ├── ateng-boot-satoken       (安全鉴权、强类型 LoginUser 会话、两级权限缓存、零信任保护、Knife4j 弹窗)
+  └── ateng-boot-storage       (多源对象存储、Local/S3双驱动、大文件分片状态机、文件魔数嗅探、ZIP流式打包)
 ```
 
 ---
