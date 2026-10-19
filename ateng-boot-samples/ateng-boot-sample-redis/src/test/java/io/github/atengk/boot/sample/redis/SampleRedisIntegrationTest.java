@@ -26,6 +26,8 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.data.redis.connection.DefaultMessage;
+import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -33,12 +35,21 @@ import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.PatternTopic;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.data.redis.listener.Topic;
+import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -167,6 +178,39 @@ class SampleRedisIntegrationTest {
             return client;
         }
 
+        private final Map<MessageListener, Collection<? extends Topic>> internalListeners = new ConcurrentHashMap<>();
+
+        @Bean
+        @Primary
+        public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
+            RedisMessageListenerContainer container = mock(RedisMessageListenerContainer.class);
+            doAnswer(inv -> {
+                MessageListener listener = inv.getArgument(0);
+                Object topicArg = inv.getArgument(1);
+                if (topicArg instanceof Topic topic) {
+                    internalListeners.put(listener, List.of(topic));
+                } else if (topicArg instanceof Collection<?> topics) {
+                    internalListeners.put(listener, (Collection<? extends Topic>) topics);
+                }
+                return null;
+            }).when(container).addMessageListener(any(MessageListener.class), any(Collection.class));
+
+            doAnswer(inv -> {
+                MessageListener listener = inv.getArgument(0);
+                Topic topic = inv.getArgument(1);
+                internalListeners.put(listener, List.of(topic));
+                return null;
+            }).when(container).addMessageListener(any(MessageListener.class), any(Topic.class));
+
+            doAnswer(inv -> {
+                MessageListener listener = inv.getArgument(0);
+                internalListeners.remove(listener);
+                return null;
+            }).when(container).removeMessageListener(any(MessageListener.class), any(Collection.class));
+
+            return container;
+        }
+
         @Bean
         @Primary
         public RedisConnectionFactory redisConnectionFactory() {
@@ -184,6 +228,38 @@ class SampleRedisIntegrationTest {
             when(template.getConnectionFactory()).thenReturn(connectionFactory);
             when(template.opsForValue()).thenReturn(valOps);
             when(template.opsForZSet()).thenReturn(zSetOps);
+
+            // Pub/Sub 广播发送模拟与内存分发
+            when(template.convertAndSend(anyString(), any())).thenAnswer(inv -> {
+                String ch = inv.getArgument(0);
+                Object msg = inv.getArgument(1);
+                byte[] bodyBytes;
+                if (msg instanceof String str) {
+                    bodyBytes = str.getBytes(StandardCharsets.UTF_8);
+                } else if (msg instanceof byte[] bytes) {
+                    bodyBytes = bytes;
+                } else {
+                    bodyBytes = RedisSerializerFactory.createSafeObjectMapper().writeValueAsBytes(msg);
+                }
+                byte[] chBytes = ch.getBytes(StandardCharsets.UTF_8);
+                DefaultMessage redisMsg = new DefaultMessage(chBytes, bodyBytes);
+
+                internalListeners.forEach((listener, topics) -> {
+                    for (Topic topic : topics) {
+                        if (topic instanceof ChannelTopic ct && ct.getTopic().equals(ch)) {
+                            listener.onMessage(redisMsg, null);
+                            break;
+                        } else if (topic instanceof PatternTopic pt) {
+                            String pattern = pt.getTopic();
+                            if (matchesPattern(ch, pattern)) {
+                                listener.onMessage(redisMsg, pattern.getBytes(StandardCharsets.UTF_8));
+                                break;
+                            }
+                        }
+                    }
+                });
+                return 1L;
+            });
 
             // 安全游标模糊扫描模拟
             when(template.scan(any(ScanOptions.class))).thenAnswer(inv -> {
@@ -212,6 +288,14 @@ class SampleRedisIntegrationTest {
 
             return template;
         }
+
+        private boolean matchesPattern(String ch, String pattern) {
+            if (pattern.endsWith("*")) {
+                String prefix = pattern.substring(0, pattern.length() - 1);
+                return ch.startsWith(prefix);
+            }
+            return ch.equals(pattern);
+        }
     }
 
     @org.junit.jupiter.api.BeforeEach
@@ -227,6 +311,9 @@ class SampleRedisIntegrationTest {
 
     @Autowired
     private OrderDelayQueueService orderDelayQueueService;
+
+    @Autowired
+    private io.github.atengk.boot.sample.redis.service.NoticeBroadcastService noticeBroadcastService;
 
     @Autowired
     private RLock sampleRLock;
@@ -433,5 +520,47 @@ class SampleRedisIntegrationTest {
         assertThat(idempotentKeyStore)
                 .isNotNull()
                 .isInstanceOf(RedissonIdempotentKeyStore.class);
+    }
+
+    @Test
+    @DisplayName("端到端验证：声明式 @ChannelTopicListener 主题监听与强类型反序列化")
+    void shouldBroadcastNoticeAndConsumeViaAnnotation() throws Exception {
+        mockMvc.perform(post("/api/redis-sample/broadcast-notice")
+                        .param("noticeId", "NOTICE_20261019")
+                        .param("title", "系统升级维护公告")
+                        .param("content", "系统将于今晚24点停服维护30分钟"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 异步等待受管线程池消费完成
+        Thread.sleep(300);
+
+        mockMvc.perform(get("/api/redis-sample/received-notices"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[?(@.noticeId == 'NOTICE_20261019')].title").value("系统升级维护公告"));
+
+        assertThat(noticeBroadcastService.getReceivedNotices())
+                .anyMatch(n -> "NOTICE_20261019".equals(n.getNoticeId()) && "系统升级维护公告".equals(n.getTitle()));
+    }
+
+    @Test
+    @DisplayName("端到端验证：声明式 @ChannelTopicListener 通配模式监听与多参数消费")
+    void shouldBroadcastPatternSystemEventAndConsumeViaAnnotation() throws Exception {
+        mockMvc.perform(post("/api/redis-sample/broadcast-system-event")
+                        .param("eventType", "config_reload")
+                        .param("data", "cluster_mode=true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        Thread.sleep(300);
+
+        mockMvc.perform(get("/api/redis-sample/received-system-events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        assertThat(noticeBroadcastService.getReceivedSystemEvents())
+                .contains("sample:system:config_reload=cluster_mode=true");
     }
 }

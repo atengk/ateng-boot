@@ -29,6 +29,7 @@ public class RedisSampleController {
 
     private final RedisSampleService redisSampleService;
     private final OrderDelayQueueService orderDelayQueueService;
+    private final io.github.atengk.boot.sample.redis.service.NoticeBroadcastService noticeBroadcastService;
 
     /**
      * 扣减商品库存（受 Redisson 分布式锁严格并发保护）
@@ -105,5 +106,55 @@ public class RedisSampleController {
     public Result<String> dailySeq(@RequestParam(value = "prefix", defaultValue = "ORD") String prefix,
                                    @RequestParam(value = "length", defaultValue = "6") Integer length) {
         return Result.success(redisSampleService.generateDailyOrderNo(prefix, length));
+    }
+
+    /**
+     * 广播发布系统公告
+     *
+     * @param noticeId 公告 ID
+     * @param title    公告标题
+     * @param content  公告内容
+     * @return 接收订阅数
+     */
+    @PostMapping("/broadcast-notice")
+    public Result<Long> broadcastNotice(@RequestParam("noticeId") String noticeId,
+                                        @RequestParam("title") String title,
+                                        @RequestParam("content") String content) {
+        io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload payload =
+                new io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload(noticeId, title, content, System.currentTimeMillis());
+        return Result.success(noticeBroadcastService.publishNotice(payload));
+    }
+
+    /**
+     * 获取已接收的公告列表
+     *
+     * @return 公告列表
+     */
+    @GetMapping("/received-notices")
+    public Result<java.util.List<io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload>> getReceivedNotices() {
+        return Result.success(noticeBroadcastService.getReceivedNotices());
+    }
+
+    /**
+     * 广播发布系统通配事件
+     *
+     * @param eventType 事件类型
+     * @param data      事件数据
+     * @return 接收订阅数
+     */
+    @PostMapping("/broadcast-system-event")
+    public Result<Long> broadcastSystemEvent(@RequestParam("eventType") String eventType,
+                                            @RequestParam("data") String data) {
+        return Result.success(noticeBroadcastService.publishSystemEvent(eventType, data));
+    }
+
+    /**
+     * 获取已接收的系统事件列表
+     *
+     * @return 事件列表
+     */
+    @GetMapping("/received-system-events")
+    public Result<java.util.List<String>> getReceivedSystemEvents() {
+        return Result.success(noticeBroadcastService.getReceivedSystemEvents());
     }
 }

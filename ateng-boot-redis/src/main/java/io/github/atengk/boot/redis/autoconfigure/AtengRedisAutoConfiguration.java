@@ -11,6 +11,7 @@ import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
+import io.github.atengk.boot.redis.pubsub.bootstrap.ChannelTopicBootstrap;
 import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
@@ -217,6 +218,21 @@ public class AtengRedisAutoConfiguration {
     public RedisMessagePublisher redisMessagePublisher(RedisTemplate<String, Object> redisTemplate,
                                                        ObjectProvider<RedisMessageListenerContainer> containerProvider) {
         return new RedisMessagePublisher(redisTemplate, containerProvider.getIfAvailable());
+    }
+
+    /**
+     * 装配声明式 Redis Pub/Sub 广播主题生命周期调度器 ChannelTopicBootstrap
+     *
+     * @param containerProvider 监听容器提供者
+     * @param redisProperties 属性配置
+     * @return 广播主题调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChannelTopicBootstrap.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChannelTopicBootstrap channelTopicBootstrap(ObjectProvider<RedisMessageListenerContainer> containerProvider,
+                                                       RedisProperties redisProperties) {
+        return new ChannelTopicBootstrap(containerProvider, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
     }
 
     /**

@@ -48,12 +48,33 @@ class RedisDelayedQueueTest {
     private ObjectMapper objectMapper;
     private RedisDelayedQueue redisDelayedQueue;
 
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     static class OrderMessage {
         private String orderNo;
         private Double amount;
+
+        public OrderMessage() {
+        }
+
+        public OrderMessage(String orderNo, Double amount) {
+            this.orderNo = orderNo;
+            this.amount = amount;
+        }
+
+        public String getOrderNo() {
+            return orderNo;
+        }
+
+        public void setOrderNo(String orderNo) {
+            this.orderNo = orderNo;
+        }
+
+        public Double getAmount() {
+            return amount;
+        }
+
+        public void setAmount(Double amount) {
+            this.amount = amount;
+        }
     }
 
     @BeforeEach

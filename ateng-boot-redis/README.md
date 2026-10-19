@@ -18,7 +18,7 @@
 | **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：受管 `ThreadPoolTaskExecutor` 并发驱动、`ContextCopyingTaskDecorator` 上下文透传、指数/固定退避重试与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **延时队列** | 死信流转与失败 SPI | `DeadLetterMessage<T>` / `DelayedQueueFailureHandler` | `ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `onFailure(message, throwable)`：重试耗尽后封装完整因果堆栈转入死信队列，默认 `LoggingDelayedQueueFailureHandler` 告警，支持自定义 SPI 无缝接管 | `DelayedQueueBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
 | **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
-| **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topic)`：自动装配 Spring Data Redis `MessageListener`，反序列化载荷推送至目标方法 | `RedisMessagePublisherTest` |
+| **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` / `ChannelTopicBootstrap` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topics, patterns, concurrency)`：支持 `${...}` 占位符、精确主题与通配模式，支持单参 POJO/String/byte[]/Message、双参及三参多态安全反序列化，受管 `ThreadPoolTaskExecutor` 并发驱动与 MDC `traceId` 透传 | `ChannelTopicBootstrapTest`<br>`SampleRedisIntegrationTest` |
 | **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
@@ -309,30 +309,65 @@ public class OrderDelayService {
 ## 6. 广播发布与订阅引擎 (Pub/Sub)
 
 ### 场景痛点
-在单体集群部署中，某个节点更新了本地 JVM 缓存或配置后，需要即时同步给所有其他集群节点刷新内存，避免数据不一致。
+在单体集群部署中，某个节点更新了本地 JVM 缓存或系统配置后，需要即时同步给所有集群节点刷新内存。传统手写 Spring Data Redis `MessageListener` 配置繁琐、缺乏统一类型反序列化，且在监听回调线程中直接执行阻塞业务容易导致监听连接假死与链路 Trace 丢失。
 
-### 核心代码示例
+### 声明式监听契约与特性
+- **注解声明式订阅**：在任意 Spring Bean 方法上标注 `@ChannelTopicListener` 即可完成主题注册；
+- **动态占位符与通配模式**：
+  - `topics` / `topic` / `value`：精确主题订阅，支持 `${app.topic.notice:default-topic}` 配置属性解析；
+  - `patterns`：模糊模式匹配（如 `sample:system:*`），对应底层 `PatternTopic`；
+- **多态形参智能适配**：
+  - **单参数**：`onMessage(T payload)`（自动反序列化为目标 POJO，或直接接收 `String`、`byte[]`、`Message`）；
+  - **双参数**：`onMessage(T payload, String channel)`（同时获取解包数据与当前接收频道）；
+  - **三参数**：`onMessage(T payload, String channel, String pattern)`（通配模式下额外获取匹配模式字符串）；
+- **受管线程池与全链路追踪**：每个监听方法独享受管 `ThreadPoolTaskExecutor` 异步消费队列，避免阻塞 Redis 监听底层长连接；统一挂载 `ContextCopyingTaskDecorator`，自动注入并透传 MDC `traceId`。
+
+### 核心代码示例（源自 `ateng-boot-sample-redis`）
 ```java
+@Slf4j
 @Service
-public class SystemConfigPublisher {
+@RequiredArgsConstructor
+public class NoticeBroadcastService {
 
-    @Autowired
-    private RedisMessagePublisher messagePublisher;
+    public static final String TOPIC_NOTICE_BROADCAST = "sample:notice:broadcast";
+    public static final String PATTERN_SYSTEM_EVENT = "sample:system:*";
 
-    public void notifyConfigReload(String configKey) {
-        messagePublisher.publish("sys_config_channel", new ConfigReloadEvent(configKey));
+    private final RedisMessagePublisher redisMessagePublisher;
+
+    /**
+     * 广播发布系统通知
+     */
+    public Long publishNotice(NoticeBroadcastPayload notice) {
+        log.info("广播发布系统通知: topic={}, noticeId={}", TOPIC_NOTICE_BROADCAST, notice.getNoticeId());
+        return redisMessagePublisher.publish(TOPIC_NOTICE_BROADCAST, notice);
+    }
+
+    /**
+     * 声明式精确主题监听：自动反序列化为强类型 POJO
+     */
+    @ChannelTopicListener(topics = TOPIC_NOTICE_BROADCAST, concurrency = 1)
+    public void onNoticeBroadcast(NoticeBroadcastPayload notice) {
+        log.info("声明式接收系统公告广播: noticeId={}, title={}", notice.getNoticeId(), notice.getTitle());
+    }
+
+    /**
+     * 声明式通配模式监听：多参数获取 payload 与触发频道
+     */
+    @ChannelTopicListener(patterns = PATTERN_SYSTEM_EVENT, concurrency = 1)
+    public void onSystemEvent(String eventData, String channel) {
+        log.info("声明式通配监听到系统事件: channel={}, data={}", channel, eventData);
     }
 }
+```
 
-@Component
-public class SystemConfigSubscriber {
-
-    @ChannelTopicListener(topic = "sys_config_channel")
-    public void onConfigReload(ConfigReloadEvent event) {
-        log.info("收到配置广播刷新通知: key={}", event.getConfigKey());
-        LocalCache.invalidate(event.getConfigKey());
-    }
-}
+### 真实控制台执行日志（锚定 `SampleRedisIntegrationTest`）
+```text
+2026-10-19 20:12:50.151 INFO  [           main] [a0a5afbd98fbb70e8d19891762163654] i.g.a.b.s.r.s.NoticeBroadcastService     : 广播发布系统事件: channel=sample:system:config_reload, data=cluster_mode=true
+2026-10-19 20:12:50.152 DEBUG [           main] [a0a5afbd98fbb70e8d19891762163654] i.g.a.b.r.pubsub.RedisMessagePublisher   : 向 Redis 频道 [sample:system:config_reload] 发布广播消息
+2026-10-19 20:12:50.168 INFO  [mple_system__-1] [a0a5afbd98fbb70e8d19891762163654] i.g.a.b.s.r.s.NoticeBroadcastService     : 声明式通配监听到系统事件: channel=sample:system:config_reload, data=cluster_mode=true
+2026-10-19 20:12:50.506 INFO  [           main] [a812f66e9b35f8547b0945b7f127703e] i.g.a.b.s.r.s.NoticeBroadcastService     : 广播发布系统通知: topic=sample:notice:broadcast, noticeId=NOTICE_20261019, title=系统升级维护公告
+2026-10-19 20:12:50.506 DEBUG [           main] [a812f66e9b35f8547b0945b7f127703e] i.g.a.b.r.pubsub.RedisMessagePublisher   : 向 Redis 频道 [sample:notice:broadcast] 发布广播消息
+2026-10-19 20:12:50.560 INFO  [ice_broadcast-1] [a812f66e9b35f8547b0945b7f127703e] i.g.a.b.s.r.s.NoticeBroadcastService     : 声明式接收系统公告广播: noticeId=NOTICE_20261019, title=系统升级维护公告
 ```
 
 ---

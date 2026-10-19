@@ -55,12 +55,33 @@ class DelayedQueueBootstrapTest {
     private ObjectMapper objectMapper;
     private DelayedQueueBootstrap bootstrap;
 
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     static class TaskPayload {
         private String taskId;
         private String status;
+
+        public TaskPayload() {
+        }
+
+        public TaskPayload(String taskId, String status) {
+            this.taskId = taskId;
+            this.status = status;
+        }
+
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public void setTaskId(String taskId) {
+            this.taskId = taskId;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+
+        public void setStatus(String status) {
+            this.status = status;
+        }
     }
 
     static class SingleParamService {
