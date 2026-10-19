@@ -61,6 +61,12 @@ public class SaTokenProperties {
     private ClusterSyncProperties clusterSync = new ClusterSyncProperties();
 
     /**
+     * 登录防暴力破解策略配置
+     */
+    @NestedConfigurationProperty
+    private LoginDefenseProperties loginDefense = new LoginDefenseProperties();
+
+    /**
      * 路由拦截器详细配置属性
      */
     @Data
@@ -216,5 +222,32 @@ public class SaTokenProperties {
          * Redis Pub/Sub 广播频道名称
          */
         private String channel = "ateng:satoken:cluster-sync";
+    }
+
+    /**
+     * 登录防暴力破解与防撞库策略配置属性
+     */
+    @Data
+    public static class LoginDefenseProperties {
+
+        /**
+         * 是否启用登录防暴力破解策略（默认 false，生产按需开启）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 最大允许连续输错密码上限次数，达到后自动触发封禁（默认: 5）
+         */
+        private int maxRetryCount = 5;
+
+        /**
+         * 触发连续失败阈值后的账号锁定时间（默认: 15m）
+         */
+        private Duration lockTime = Duration.ofMinutes(15);
+
+        /**
+         * 失败计数统计时间窗口，在该窗口内未输错将自然过期重置计数（默认: 15m）
+         */
+        private Duration windowTime = Duration.ofMinutes(15);
     }
 }

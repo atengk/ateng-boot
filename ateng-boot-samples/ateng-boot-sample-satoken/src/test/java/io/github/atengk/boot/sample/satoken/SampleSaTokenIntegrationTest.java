@@ -63,6 +63,9 @@ class SampleSaTokenIntegrationTest {
     @Autowired(required = false)
     private io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener clusterSyncListener;
 
+    @Autowired(required = false)
+    private io.github.atengk.boot.satoken.defense.LoginFailureLockService loginDefenseService;
+
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
     void shouldInterceptWhenNotLogin() throws Exception {
@@ -1038,6 +1041,85 @@ class SampleSaTokenIntegrationTest {
         // 缓存已被精准清理
         assertThat(permissionCacheService.get(userRolesKey)).isNull();
         assertThat(permissionCacheService.get(userPermsKey)).isNull();
+    }
+
+    @Test
+    @DisplayName("22. 登录防暴力破解：连续输错密码触发账号锁定与解封全生命周期")
+    void testLoginDefenseLockAndUnlockLifecycle() throws Exception {
+        assertThat(loginDefenseService).isNotNull();
+
+        String testUsername = "brute_force_user";
+        try {
+            // 0. 初始状态自检
+            mockMvc.perform(get("/api/auth/defense/status")
+                            .param("username", testUsername))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isLocked").value(false))
+                    .andExpect(jsonPath("$.data.remainRetryCount").value(5))
+                    .andExpect(jsonPath("$.data.failureCount").value(0));
+
+            // 1. 模拟连续 4 次输错密码（剩余次数从 4 递减至 1）
+            for (int i = 1; i <= 4; i++) {
+                int expectedRemain = 5 - i;
+                io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest failReq =
+                        new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "wrong-password-" + i);
+                mockMvc.perform(post("/api/auth/login-with-defense")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(failReq)))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.code").value(401))
+                        .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("剩余重试机会: " + expectedRemain + " 次")));
+
+                assertThat(loginDefenseService.getFailureCount(testUsername)).isEqualTo(i);
+                assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(expectedRemain);
+                assertThat(loginDefenseService.isLocked(testUsername)).isFalse();
+            }
+
+            // 2. 第 5 次输错密码：达到阈值，触发账号锁定封禁（返回 403 锁定提示）
+            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest lockReq =
+                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "wrong-password-5");
+            mockMvc.perform(post("/api/auth/login-with-defense")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(lockReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403))
+                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("登录失败次数过多，账号已被锁定")));
+
+            // 验证防爆破状态
+            assertThat(loginDefenseService.isLocked(testUsername)).isTrue();
+            assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(0);
+            assertThat(loginDefenseService.getDisableTime(testUsername)).isGreaterThan(0);
+
+            // 3. 第 6 次尝试：即便输入正确密码，也在前置被锁定拦截
+            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest correctReq =
+                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(testUsername, "correct-pass-123");
+            mockMvc.perform(post("/api/auth/login-with-defense")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(correctReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // 4. 手动解除封禁并清空失败计数
+            LoginHelper.untieDisable(testUsername);
+            loginDefenseService.clearFailure(testUsername);
+
+            assertThat(loginDefenseService.isLocked(testUsername)).isFalse();
+            assertThat(loginDefenseService.getRemainRetryCount(testUsername)).isEqualTo(5);
+            assertThat(loginDefenseService.getFailureCount(testUsername)).isEqualTo(0);
+
+            // 5. 解封后使用正确密码登录成功
+            mockMvc.perform(post("/api/auth/login-with-defense")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(correctReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").isString());
+        } finally {
+            // 上下文零污染清理
+            LoginHelper.untieDisable(testUsername);
+            loginDefenseService.clearFailure(testUsername);
+        }
     }
 }
 

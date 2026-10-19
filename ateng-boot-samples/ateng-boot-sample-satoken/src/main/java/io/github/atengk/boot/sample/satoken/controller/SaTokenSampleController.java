@@ -3,21 +3,26 @@ package io.github.atengk.boot.sample.satoken.controller;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest;
 import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.provider.SampleOrderDataOwnerProvider;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
+import io.github.atengk.boot.sample.satoken.vo.DefenseStatusVO;
 import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -520,6 +525,30 @@ public class SaTokenSampleController {
     public Result<String> clusterClearAll() {
         permissionCacheService.clearAll();
         return Result.success("全量权限缓存已清空并广播");
+    }
+
+    /**
+     * 带防暴力破解防护的模拟登录接口
+     *
+     * @param request 登录传输对象（挂载 JSR-303 格式校验）
+     * @return 签发的访问凭据 Token
+     */
+    @PostMapping("/login-with-defense")
+    public Result<String> loginWithDefense(@Valid @RequestBody LoginDefenseRequest request) {
+        String token = sampleService.loginWithDefense(request);
+        return Result.success(token);
+    }
+
+    /**
+     * 查询账号防暴力破解安全状态
+     *
+     * @param username 账号名称
+     * @return 状态详情视图展示对象
+     */
+    @GetMapping("/defense/status")
+    public Result<DefenseStatusVO> getDefenseStatus(@NotBlank(message = "账号标识不能为空") @RequestParam("username") String username) {
+        DefenseStatusVO vo = sampleService.getDefenseStatus(username);
+        return Result.success(vo);
     }
 }
 

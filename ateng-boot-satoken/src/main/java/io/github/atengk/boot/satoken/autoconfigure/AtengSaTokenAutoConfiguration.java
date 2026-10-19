@@ -21,6 +21,7 @@ import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.cache.UserRolePermissionLoader;
 import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.dao.SaTokenRedisDao;
+import io.github.atengk.boot.satoken.defense.LoginFailureLockService;
 import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
@@ -176,6 +177,19 @@ public class AtengSaTokenAutoConfiguration {
             SaTokenClusterBroadcaster broadcaster,
             PermissionCacheService cacheService) {
         return new SaTokenClusterSyncListener(broadcaster, cacheService);
+    }
+
+    /**
+     * 注册登录防暴力破解策略门面服务
+     *
+     * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @return LoginFailureLockService 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.login-defense", name = "enabled", havingValue = "true", matchIfMissing = false)
+    public LoginFailureLockService loginFailureLockService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new LoginFailureLockService(redisTemplateProvider, properties);
     }
 
     /**

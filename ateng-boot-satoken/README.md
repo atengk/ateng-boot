@@ -34,6 +34,7 @@
 | **OpenAPI 适配** | Knife4j 鉴权弹窗自动化 | `SaTokenOpenApiCustomizer` | `ateng.boot.satoken.openapi.enabled`<br>`ateng.boot.satoken.openapi.token-name` | 自动在 `/v3/api-docs` 与 Knife4j 界面右上角挂载 Authorize 鉴权弹窗 | `SaTokenOpenApiCustomizerTest` / `SampleSaTokenIntegrationTest` |
 | **分布式存储** | 纯净 JSON 会话存储驱动 | `SaTokenRedisDao` | - | 基于 `StringRedisTemplate` 存储，杜绝 `@class` 反序列化白名单漏洞，无 Redis 自动平滑降级 | `SaTokenRedisDaoTest` / `SampleSaTokenIntegrationTest` |
 | **集群同步** | 分布式集群即时同步与广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `ateng.boot.satoken.cluster-sync.enabled`<br>`ateng.boot.satoken.cluster-sync.channel` | `broadcast(eventType, targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)` / 自消费防卫丢弃与异地本地缓存精准失效 | `SaTokenClusterSyncTest` / `SampleSaTokenIntegrationTest` |
+| **防暴力破解** | 登录防暴力破解策略器 | `LoginFailureLockService` | `ateng.boot.satoken.login-defense.enabled`<br>`ateng.boot.satoken.login-defense.max-retry-count`<br>`ateng.boot.satoken.login-defense.lock-time`<br>`ateng.boot.satoken.login-defense.window-time` | `recordFailure(account)` / `clearFailure(account)` / `getRemainRetryCount(account)` / `isLocked(account)` / `checkLocked(account)` / `getDisableTime(account)` / `getLockTime(account)`，Redis/内存双模自适应与 `LoginHelper.disable` 联动 | `LoginFailureLockServiceTest` / `SampleSaTokenIntegrationTest` |
 | **异常转译** | 统一显式 Result 响应 | `SaTokenExceptionHandler` | - | 将未登录 (401)、权限不足 (403)、服务封禁 (403) 等转译为 HTTP 200 + `Result<Void>` 显式契约 | `SampleSaTokenIntegrationTest` |
 
 ---
@@ -75,6 +76,7 @@
 ├────────────────────────────────┬─────────────────────────────────────────────────┤
 │ • LoginHelper (强类型会话门面)   │ • CachedStpInterface (L1微缓存 + L2 Redis两级缓存) │
 │ • LoginUser (工业级用户载荷模型) │ • PermissionCacheService (多租户权限热刷新与驱逐) │
+│ • LoginFailureLockService 防爆破│ • SaTokenClusterBroadcaster (集群即时同步广播)   │
 │ • SaTokenCurrentUserProvider   │ • SaTokenEventPublisher (桥接 Spring 原生事件)  │
 │ • @CheckSameToken (内部零信任)  │ • SaTokenOpenApiCustomizer (Knife4j 弹窗自动化) │
 └────────────────┬───────────────┴───────────────────────────────┬─────────────────┘
@@ -721,7 +723,93 @@ public class SaTokenClusterSampleController {
 
 ---
 
-## 13. 配置项全景表（application.yml）
+## 13. 登录防暴力破解策略器 (LoginFailureLockService)
+
+### 场景痛点
+在互联网开放接入环境下，恶意攻击者常利用撞库、字典攻击等自动化爆破手段频繁试错用户密码。若系统缺乏登录失败惩罚与防御机制，攻击者可无限制持续探测凭据，极易造成账号失窃或拖垮认证鉴权基础设施。而很多业务自建防爆破逻辑时，往往存在四大缺陷：
+1. **与安全框架脱节**：仅在业务层简单记录失败，却未联动底层框架的账号封禁体系，未能实现真正的会话阻断与快速失败；
+2. **外部组件强耦合**：硬编码强依赖 Redis，在本地开发或无 Redis 纯单机/单测环境下启动即报错；
+3. **内存泄露与脏数据堆积**：内存降级模式缺乏确定性过期机制，字典无限膨胀导致内存泄露；
+4. **重试惩罚单向**：登录成功后未提供确定性计数清零闭环，导致合法用户后续因偶发手误被连坐误封。
+
+### 核心架构与自适应存储拓扑
+`LoginFailureLockService` 采用双模自适应存储架构，深度联动 Sa-Token 原生 `LoginHelper.disable(account, lockTime)` 账号封禁体系：
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│               登录防暴力破解协同拓扑 (Login Defense Topology)            │
+└────────────────────────────────────────────────────────────────────────┘
+                   用户登录请求 (POST /login)
+                             │
+                             ▼
+                 [LoginFailureLockService.checkLocked(account)]
+                             │
+             ┌───────────────┴───────────────┐
+      已封禁 (isLocked)                未封禁 (Normal)
+             │                               │
+             ▼                               ▼
+       快速失败 (Fail-Fast)             校验用户名/密码
+       HTTP 200 + code: 403                  │
+                                 ┌───────────┴───────────┐
+                            密码错误 (Failure)       密码正确 (Success)
+                                 │                       │
+                                 ▼                       ▼
+            [lockService.recordFailure(account)]   [lockService.clearFailure(account)]
+                                 │                       │
+                    ┌────────────┴────────────┐          ▼
+           未达阈值 (remain > 0)    达到上限 (remain == 0) [LoginHelper.login(...)]
+                    │                         │
+                    ▼                         ▼
+            返回错误及剩余机会       联动 [LoginHelper.disable(account, lockTime)]
+            HTTP 200 + code: 401     触发账号封禁 + 清空失败计数器 + 广播安全事件
+```
+
+#### 存储双模自适应：
+- **Redis 模式（分布式集群推荐）**：自动基于 Redis 键 `ateng:satoken:login-fail:{account}` 执行原子递增（`INCR`）并设定时间窗口滑动 TTL（`windowTime`，默认 `15m`）。达到连续失败上限阈值（`maxRetryCount`，默认 `5`）后原子删除计数并调用 `LoginHelper.disable`；
+- **内存降级模式（单机开发与离线单测免配）**：在未装配 Redis 依赖时自动平滑回退至 `ConcurrentHashMap<String, FailItem>`。`FailItem` 携带 `AtomicInteger count` 与 `long expireAt` 时间戳，在状态读取与递增计算时执行**惰性剔除与安全淘汰**，天然防内存泄露，离线单测与本地开发零阻力。
+
+### 核心代码示例（源自 `SaTokenSampleController` 与 `SampleSaTokenIntegrationTest`）
+
+#### 1. Controller 与 Service 规范接入防暴力破解模拟登录
+```java
+    /**
+     * 带防暴力破解防护的模拟登录接口
+     *
+     * @param request 登录传输对象（挂载 JSR-303 格式校验）
+     * @return 签发的访问凭据 Token
+     */
+    @PostMapping("/login-with-defense")
+    public Result<String> loginWithDefense(@Valid @RequestBody LoginDefenseRequest request) {
+        String token = sampleService.loginWithDefense(request);
+        return Result.success(token);
+    }
+
+    /**
+     * 查询账号防暴力破解安全状态
+     *
+     * @param username 账号名称
+     * @return 状态详情视图展示对象
+     */
+    @GetMapping("/defense/status")
+    public Result<DefenseStatusVO> getDefenseStatus(@NotBlank(message = "账号标识不能为空") @RequestParam("username") String username) {
+        DefenseStatusVO vo = sampleService.getDefenseStatus(username);
+        return Result.success(vo);
+    }
+```
+
+#### 2. 防爆破联动封禁与解封实测输出（控制台真实输出）
+```text
+2026-10-20 07:32:08.508 WARN  i.g.a.b.s.d.LoginFailureLockService      : 【防暴力破解/内存模式】账号连续密码错误达到上限，已触发账号锁定: account=brute_force_user, count=5, lockDuration=PT15M
+2026-10-20 07:32:08.514 DEBUG i.g.a.b.s.event.SaTokenEventPublisher    : Sa-Token 账号封禁事件: loginType=login, loginId=brute_force_user, service=login, disableTime=900
+2026-10-20 07:32:08.516 WARN  i.g.a.b.s.h.SaTokenExceptionHandler      : 鉴权拦截 - 服务已被封禁: service=login, disableTime=899
+2026-10-20 07:32:08.518 DEBUG i.g.a.b.s.event.SaTokenEventPublisher    : Sa-Token 账号解封事件: loginType=login, loginId=brute_force_user, service=login
+2026-10-20 07:32:08.519 DEBUG i.g.a.b.s.d.LoginFailureLockService      : 已清空账号登录失败计数器: account=brute_force_user
+2026-10-20 07:32:08.525 DEBUG i.g.a.b.s.event.SaTokenEventPublisher    : Sa-Token 账号登录事件: loginType=login, loginId=user-brute_force_user
+```
+
+---
+
+## 14. 配置项全景表（application.yml）
 
 ```yaml
 # Sa-Token 官方原生核心配置
@@ -771,6 +859,11 @@ ateng:
       cluster-sync:               # 分布式集群即时同步与广播作废配置
         enabled: true             # 是否开启分布式集群即时同步与广播作废 (默认: true)
         channel: ateng:satoken:cluster-sync # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
+      login-defense:              # 登录防暴力破解策略器配置
+        enabled: true             # 是否开启登录防暴力破解防护 (默认: false)
+        max-retry-count: 5        # 允许最大连续登录失败重试次数 (默认: 5)
+        lock-time: 15m            # 达到失败上限后的账号封禁锁定时间，强类型 Duration (默认: 15m)
+        window-time: 15m          # 失败计数滑动统计时间窗口，强类型 Duration (默认: 15m)
       openapi:                    # OpenAPI / Knife4j 鉴权弹窗配置
         enabled: true             # 是否自动为 Knife4j / Swagger 注入鉴权弹窗 (默认: true)
         token-name: satoken       # 鉴权组件名称与请求头 Key (默认: satoken)
@@ -778,7 +871,7 @@ ateng:
 
 ---
 
-## 14. 生产扩展与接管实践 (Customization & Extensibility)
+## 15. 生产扩展与接管实践 (Customization & Extensibility)
 
 ### 1. 自定义权限与角色业务数据源 (`UserRolePermissionLoader`)
 框架默认提供 `DefaultUserRolePermissionLoader` 从当前会话直接读取角色与权限集合。当需要在鉴权时从数据库持久层动态拉取最新权限并接入两级缓存时，业务只需声明自定义 Bean 即可平滑接管：
@@ -851,7 +944,7 @@ public class AsyncSecurityAuditConsumer {
 
 ---
 
-## 15. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 16. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
 ### 1. 严格无状态会话与零状态泄漏防线
 - **单例无状态**：所有安全组件（`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`SaTokenRedisDao`）均保持严格无状态，无任何成员变量共享可变业务数据；
@@ -883,9 +976,14 @@ public class AsyncSecurityAuditConsumer {
 - **自消费丢弃防重入**：异构或同构节点接收 Redis Pub/Sub 广播时，比对 `broadcaster.getInstanceId().equals(message.getInstanceId())`，若为本机节点外发消息则直接静默丢弃（Self-Consumption Guard），彻底杜绝本地已清理缓存因异步广播再度触发的二次处理与递归风暴；
 - **无 Redis 安全静默降级**：广播发送与消息监听底层均配置缺省与存在性探测，在纯单机内存环境或 Redis 服务不可用时自动安全静默降级，异常就地隔离告警，严禁广播异常阻断业务主链路。
 
+### 8. 登录防暴力破解双模自适应与封禁联动不变量 (Brute-Force Defense & Adaptive Fallback)
+- **原子递增与对称清零**：密码错误时通过原子操作累计失败计数，登录成功后对称清空对应计数，杜绝因偶发输错导致后续正常访问受阻；
+- **原生封禁复用与快速失败**：达到失败阈值后自动调用 `LoginHelper.disable(account, lockTime)` 接入原生封禁底座，并发布 `SaDisableEvent` 事件；处于锁定期间调用 `checkLocked` / `checkDisable` 快速失败抛出 `DisableServiceException` 并由全局异常处理器转译为 HTTP 200 + code: 403；
+- **内存惰性剔除防膨胀**：内存降级模式下严格记录过期时间戳，读取与累计时执行确定性惰性淘汰，无需常驻守护线程即可保障高并发下内存绝对可控。
+
 ---
 
-## 16. 架构决策与设计参考
+## 17. 架构决策与设计参考
 
 - [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
 - [ADR-0002: 显式统一响应契约](../../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)
