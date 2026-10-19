@@ -97,4 +97,26 @@ class DynamicSqlDefinitionTest {
         assertEquals(SqlCommandType.SELECT, def.getCommandType());
         assertEquals(Map.class, def.getResultType(), "未指定 resultType 时默认推导为 Map.class");
     }
+
+    @Test
+    @DisplayName("验证 projections 投影字典挂载与不可变防御")
+    void testProjections() {
+        Map<String, String> map = Map.of("userName", "u.user_name", "deptName", "d.dept_name");
+        DynamicSqlDefinition def = DynamicSqlDefinition.builder()
+                .id("test.projections")
+                .sqlScript("SELECT u.user_name, d.dept_name FROM u JOIN d")
+                .projections(map)
+                .build();
+
+        assertNotNull(def.getProjections());
+        assertEquals("u.user_name", def.getProjections().get("userName"));
+
+        // 验证 withProjections 衍生新实例
+        DynamicSqlDefinition updated = def.withProjections(Map.of("userName", "custom_name"));
+        assertEquals("custom_name", updated.getProjections().get("userName"));
+        assertEquals(def.getId(), updated.getId());
+
+        // 验证不可变性
+        assertThrows(UnsupportedOperationException.class, () -> def.getProjections().put("k", "v"));
+    }
 }

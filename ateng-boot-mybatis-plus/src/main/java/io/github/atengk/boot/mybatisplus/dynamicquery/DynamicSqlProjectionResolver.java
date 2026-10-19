@@ -63,6 +63,33 @@ public final class DynamicSqlProjectionResolver {
     }
 
     /**
+     * 刷新或更新目标 StatementId 的投影映射缓存（供动态 SQL 热替换即时生效）
+     *
+     * @param statementId 语句唯一标识
+     * @param sql         最新的 SQL 脚本文本
+     * @return 刷新后的投影映射字典
+     */
+    public static Map<String, String> refreshProjections(String statementId, String sql) {
+        if (statementId == null || statementId.trim().isEmpty()) {
+            return resolveProjections(sql);
+        }
+        Map<String, String> mapping = parseSelectProjections(sql);
+        PROJECTION_CACHE.put(statementId.trim(), mapping);
+        return mapping;
+    }
+
+    /**
+     * 从全局缓存中精准移除指定 StatementId 的投影映射条目
+     *
+     * @param statementId 语句唯一标识
+     */
+    public static void invalidate(String statementId) {
+        if (statementId != null && !statementId.trim().isEmpty()) {
+            PROJECTION_CACHE.remove(statementId.trim());
+        }
+    }
+
+    /**
      * 清空投影映射字典解析缓存（供动态脚本热加载或单元测试隔离）
      */
     public static void clearCache() {
@@ -119,6 +146,26 @@ public final class DynamicSqlProjectionResolver {
     }
 
     /**
+     * 清洗待解析 SQL 中的 XML 标签、MyBatis 动态标签及 #{...} / ${...} 占位符，以供 JSqlParser 纯粹语法解析
+     *
+     * @param sql 原始 SQL 或包含动态标签的脚本
+     * @return 适合 JSqlParser 解析的纯净 SQL
+     */
+    public static String cleanSqlForAstParsing(String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return "";
+        }
+        String cleaned = sql;
+        // 1. 去除 XML / MyBatis 标签（如 <script>, </script>, <where>, <if test="..."> 等）
+        cleaned = cleaned.replaceAll("<[^>]+>", " ");
+        // 2. 替换 #{...} 参数占位符为 0，使语法合法
+        cleaned = cleaned.replaceAll("#\\{[^}]+\\}", "0");
+        // 3. 移除 ${...} 动态拼接占位符（如 ${ew.customSqlSegment}）
+        cleaned = cleaned.replaceAll("\\$\\{[^}]+\\}", " ");
+        return cleaned.trim();
+    }
+
+    /**
      * 依托 JSqlParser 深度分析 SQL 的 SELECT 投影
      */
     private static Map<String, String> parseSelectProjections(String sql) {
@@ -126,7 +173,8 @@ public final class DynamicSqlProjectionResolver {
             return Collections.emptyMap();
         }
         try {
-            Statement statement = CCJSqlParserUtil.parse(sql);
+            String sanitizedSql = cleanSqlForAstParsing(sql);
+            Statement statement = CCJSqlParserUtil.parse(sanitizedSql);
             if (!(statement instanceof Select select)) {
                 log.debug("SQL 语句不是 SELECT 查询，跳过投影解析: {}", sql);
                 return Collections.emptyMap();

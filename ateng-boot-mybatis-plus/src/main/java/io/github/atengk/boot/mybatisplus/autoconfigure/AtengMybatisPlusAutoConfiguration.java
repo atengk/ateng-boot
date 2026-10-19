@@ -299,6 +299,7 @@ public class AtengMybatisPlusAutoConfiguration {
      * @param sqlSessionTemplateProvider 可选的 SqlSessionTemplate 提供者
      * @param sqlSessionFactoryProvider 可选的 SqlSessionFactory 提供者
      * @param dynamicSqlRegistry 动态 SQL 注册中心
+     * @param dynamicQueryTemplateProvider 可选的动态查询执行模板提供者
      * @return 编程式动态 SQL 执行器实例
      */
     @Bean
@@ -307,7 +308,8 @@ public class AtengMybatisPlusAutoConfiguration {
     public DynamicSqlExecutor dynamicSqlExecutor(
             ObjectProvider<SqlSessionTemplate> sqlSessionTemplateProvider,
             ObjectProvider<SqlSessionFactory> sqlSessionFactoryProvider,
-            DynamicSqlRegistry dynamicSqlRegistry) {
+            DynamicSqlRegistry dynamicSqlRegistry,
+            ObjectProvider<DynamicQueryTemplate> dynamicQueryTemplateProvider) {
         SqlSessionTemplate sqlSessionTemplate = sqlSessionTemplateProvider.getIfAvailable(() -> {
             SqlSessionFactory sqlSessionFactory = sqlSessionFactoryProvider.getIfAvailable();
             if (sqlSessionFactory != null) {
@@ -315,7 +317,7 @@ public class AtengMybatisPlusAutoConfiguration {
             }
             throw new IllegalStateException("未能找到 SqlSessionTemplate 或 SqlSessionFactory 实例，无法初始化 DynamicSqlExecutor");
         });
-        return new DynamicSqlExecutor(sqlSessionTemplate, dynamicSqlRegistry);
+        return new DynamicSqlExecutor(sqlSessionTemplate, dynamicSqlRegistry, dynamicQueryTemplateProvider.getIfAvailable());
     }
 
     /**

@@ -53,6 +53,11 @@ public class DynamicSqlDefinition {
      */
     private final boolean autoScriptWrap;
 
+    /**
+     * SQL SELECT AST 投影映射字典（归一化属性名 -> 物理表别名/列名）
+     */
+    private final Map<String, String> projections;
+
     private DynamicSqlDefinition(Builder builder) {
         Assert.hasText(builder.id, "Dynamic SQL id must not be blank");
         Assert.hasText(builder.sqlScript, "Dynamic SQL script must not be blank");
@@ -63,6 +68,7 @@ public class DynamicSqlDefinition {
         this.description = builder.description;
         this.autoScriptWrap = builder.autoScriptWrap;
         this.sqlScript = wrapScriptIfNecessary(builder.sqlScript, builder.autoScriptWrap);
+        this.projections = (builder.projections != null) ? Map.copyOf(builder.projections) : java.util.Collections.emptyMap();
     }
 
     /**
@@ -120,6 +126,28 @@ public class DynamicSqlDefinition {
         return autoScriptWrap;
     }
 
+    public Map<String, String> getProjections() {
+        return projections != null ? projections : java.util.Collections.emptyMap();
+    }
+
+    /**
+     * 衍生绑定了 AST 投影字典的新 Definition 实例
+     *
+     * @param projections 归一化 AST 投影映射字典
+     * @return 挂载了投影字典的全新不可变实例
+     */
+    public DynamicSqlDefinition withProjections(Map<String, String> projections) {
+        return builder()
+                .id(this.id)
+                .sqlScript(this.sqlScript)
+                .commandType(this.commandType)
+                .resultType(this.resultType)
+                .description(this.description)
+                .autoScriptWrap(false)
+                .projections(projections)
+                .build();
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -141,6 +169,7 @@ public class DynamicSqlDefinition {
                 ", resultType=" + (resultType != null ? resultType.getName() : "null") +
                 ", description='" + description + '\'' +
                 ", autoScriptWrap=" + autoScriptWrap +
+                ", projectionsCount=" + (projections != null ? projections.size() : 0) +
                 '}';
     }
 
@@ -154,6 +183,7 @@ public class DynamicSqlDefinition {
         private Class<?> resultType;
         private String description;
         private boolean autoScriptWrap = true;
+        private Map<String, String> projections;
 
         public Builder id(String id) {
             this.id = id;
@@ -182,6 +212,11 @@ public class DynamicSqlDefinition {
 
         public Builder autoScriptWrap(boolean autoScriptWrap) {
             this.autoScriptWrap = autoScriptWrap;
+            return this;
+        }
+
+        public Builder projections(Map<String, String> projections) {
+            this.projections = projections;
             return this;
         }
 

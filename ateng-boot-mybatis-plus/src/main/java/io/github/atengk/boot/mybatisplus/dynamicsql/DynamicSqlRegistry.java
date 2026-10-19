@@ -9,9 +9,13 @@ import org.apache.ibatis.session.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicSqlProjectionResolver;
+
 import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * 外部动态 SQL 注册与热替换中心
@@ -29,6 +33,7 @@ public class DynamicSqlRegistry {
     private final Map<String, DynamicSqlDefinition> definitions = new ConcurrentHashMap<>();
     private final Field mappedStatementsField;
     private final boolean defaultAutoScriptWrap;
+    private final List<Consumer<String>> statementChangeListeners = new CopyOnWriteArrayList<>();
 
     public DynamicSqlRegistry(Configuration configuration) {
         this(configuration, null, true);
@@ -43,6 +48,27 @@ public class DynamicSqlRegistry {
         this.loader = loader;
         this.defaultAutoScriptWrap = defaultAutoScriptWrap;
         this.mappedStatementsField = resolveMappedStatementsField(configuration);
+    }
+
+    /**
+     * 注册语句变更监听器（供二级缓存如 DynamicQueryTemplate 联动更新）
+     *
+     * @param listener 变更回调函数（入参为 statementId）
+     */
+    public void addStatementChangeListener(Consumer<String> listener) {
+        if (listener != null) {
+            statementChangeListeners.add(listener);
+        }
+    }
+
+    private void notifyStatementChanged(String statementId) {
+        for (Consumer<String> listener : statementChangeListeners) {
+            try {
+                listener.accept(statementId);
+            } catch (Throwable e) {
+                log.debug("语句变更监听器通知失败 [{}]: {}", statementId, e.getMessage());
+            }
+        }
     }
 
     /**
@@ -63,8 +89,15 @@ public class DynamicSqlRegistry {
             // 2. 原子注入或热覆盖进 MyBatis Configuration 容器（彻底消除 StrictMap 冲突与读并发瞬态空隙）
             safelyPutStatement(id, ms);
 
-            // 3. 更新本地元数据快照
+            // 3. 若为 SELECT 查询，提取 SQL AST 投影字典并挂载至元数据快照中，同时刷新全局投影缓存
+            if (definition.getCommandType() == SqlCommandType.SELECT) {
+                Map<String, String> projections = DynamicSqlProjectionResolver.refreshProjections(id, definition.getSqlScript());
+                definition = definition.withProjections(projections);
+            }
+
+            // 4. 更新本地元数据快照并通知外部监听器
             definitions.put(id, definition);
+            notifyStatementChanged(id);
             log.info("外部动态 SQL [{}] 成功注册/热更新至持久层容器", id);
             return true;
         } catch (Exception e) {
@@ -89,6 +122,8 @@ public class DynamicSqlRegistry {
         }
         removeStatementFromConfiguration(id);
         definitions.remove(id);
+        DynamicSqlProjectionResolver.invalidate(id);
+        notifyStatementChanged(id);
         log.info("外部动态 SQL [{}] 已成功从持久层容器中注销", id);
         return true;
     }
@@ -257,9 +292,11 @@ public class DynamicSqlRegistry {
             Map<String, ?> map = (Map<String, ?>) mappedStatementsField.get(configuration);
             if (map != null) {
                 map.remove(id);
+                map.remove(id + "$dynamicAdaptive");
                 if (id.contains(".")) {
                     String shortName = id.substring(id.lastIndexOf('.') + 1);
                     map.remove(shortName);
+                    map.remove(shortName + "$dynamicAdaptive");
                 }
             }
         } catch (Exception e) {

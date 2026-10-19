@@ -70,6 +70,9 @@ public class DynamicQueryTemplate {
         this.sqlSessionTemplate = Objects.requireNonNull(sqlSessionTemplate, "SqlSessionTemplate 不能为 null");
         this.dynamicSqlRegistry = dynamicSqlRegistry;
         this.mappedStatementsField = resolveMappedStatementsField(sqlSessionTemplate.getConfiguration());
+        if (dynamicSqlRegistry != null) {
+            dynamicSqlRegistry.addStatementChangeListener(this::invalidateCache);
+        }
     }
 
     public SqlSessionTemplate getSqlSessionTemplate() {
@@ -583,12 +586,56 @@ public class DynamicQueryTemplate {
             return Collections.emptyMap();
         }
         return projectionCache.computeIfAbsent(statementId.trim(), id -> {
+            if (dynamicSqlRegistry != null) {
+                io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition def = dynamicSqlRegistry.getDefinition(id);
+                if (def != null && def.getProjections() != null && !def.getProjections().isEmpty()) {
+                    return def.getProjections();
+                }
+            }
             String sql = resolveStatementSql(id);
             if (sql == null || sql.trim().isEmpty()) {
                 return Collections.emptyMap();
             }
             return DynamicSqlProjectionResolver.resolveProjections(id, sql);
         });
+    }
+
+    /**
+     * 清理目标 StatementId 的本地 AST 投影与 SQL 文本缓存（供动态脚本热加载或卸载联动）
+     *
+     * @param statementId 语句唯一标识
+     */
+    public void invalidateCache(String statementId) {
+        if (statementId != null && !statementId.trim().isEmpty()) {
+            String key = statementId.trim();
+            projectionCache.remove(key);
+            statementSqlCache.remove(key);
+            safelyRemoveStatement(key + "$dynamicAdaptive");
+            if (key.contains(".")) {
+                String shortKey = key.substring(key.lastIndexOf('.') + 1);
+                projectionCache.remove(shortKey);
+                statementSqlCache.remove(shortKey);
+                safelyRemoveStatement(shortKey + "$dynamicAdaptive");
+            }
+        }
+    }
+
+    private void safelyRemoveStatement(String id) {
+        if (mappedStatementsField != null) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, ?> map = (Map<String, ?>) mappedStatementsField.get(sqlSessionTemplate.getConfiguration());
+                if (map != null) {
+                    map.remove(id);
+                    if (id.contains(".")) {
+                        String shortName = id.substring(id.lastIndexOf('.') + 1);
+                        map.remove(shortName);
+                    }
+                }
+            } catch (Throwable e) {
+                log.debug("反射移除 Statement [{}] 跳过: {}", id, e.getMessage());
+            }
+        }
     }
 
     /**
@@ -684,7 +731,7 @@ public class DynamicQueryTemplate {
             if (hasWhere) {
                 adaptiveSql = "<script>" + originalSql +
                         "<choose>" +
-                        "<when test=\"ew != null and !ew.emptyOfWhere\"> AND (${ew.sqlSegment})</when>" +
+                        "<when test=\"ew != null and !ew.emptyOfWhere\"> AND ${ew.sqlSegment}</when>" +
                         "<when test=\"ew != null and ew.emptyOfWhere and !ew.emptyOfNormal\"> ${ew.sqlSegment}</when>" +
                         "</choose></script>";
             } else {
@@ -717,7 +764,8 @@ public class DynamicQueryTemplate {
             return false;
         }
         try {
-            net.sf.jsqlparser.statement.Statement statement = net.sf.jsqlparser.parser.CCJSqlParserUtil.parse(sql);
+            String sanitizedSql = DynamicSqlProjectionResolver.cleanSqlForAstParsing(sql);
+            net.sf.jsqlparser.statement.Statement statement = net.sf.jsqlparser.parser.CCJSqlParserUtil.parse(sanitizedSql);
             if (statement instanceof net.sf.jsqlparser.statement.select.Select select) {
                 net.sf.jsqlparser.statement.select.PlainSelect plainSelect = select.getPlainSelect();
                 if (plainSelect != null) {
@@ -824,12 +872,36 @@ public class DynamicQueryTemplate {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private <V> List<V> convertList(List<?> rawList, Class<V> voClass) {
         if (rawList == null || rawList.isEmpty()) {
             return Collections.emptyList();
         }
+        if (voClass == null || voClass == Object.class) {
+            return (List<V>) rawList;
+        }
         return rawList.stream()
-                .map(item -> JsonUtil.convertValue(item, voClass))
+                .map(item -> {
+                    if (item == null) {
+                        return null;
+                    }
+                    if (voClass.isInstance(item)) {
+                        return (V) item;
+                    }
+                    if (item instanceof Map<?, ?> map && voClass != Map.class) {
+                        Map<String, Object> camelMap = new HashMap<>();
+                        map.forEach((k, v) -> {
+                            if (k != null) {
+                                String keyStr = k.toString();
+                                camelMap.put(keyStr, v);
+                                String camelKey = DynamicSqlProjectionResolver.underlineToCamel(keyStr);
+                                camelMap.putIfAbsent(camelKey, v);
+                            }
+                        });
+                        return JsonUtil.convertValue(camelMap, voClass);
+                    }
+                    return JsonUtil.convertValue(item, voClass);
+                })
                 .toList();
     }
 }

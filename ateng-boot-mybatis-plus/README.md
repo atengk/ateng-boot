@@ -38,8 +38,8 @@
 | **告警通知** | 慢 SQL 告警通知 SPI | `SlowSqlAlertProvider` | - | 函数式 SPI 扩展契约，支持下游无缝对接飞书/钉钉群机器人或外部 APM 平台 | `SlowSqlInterceptorTest` |
 | **审计事件** | 慢 SQL 审计事件模型 | `SlowSqlEvent` | - | 继承 Spring 原生 `ApplicationEvent`，发布执行耗时、格式化 SQL、脱敏参数、线程名与代码调用栈位置 | `SlowSqlInterceptorTest` |
 | **发号器** | 分布式雪花算法发号器 | `DefaultIdentifierGenerator` | `ateng.boot.mybatis-plus.snowflake.enabled`<br>`ateng.boot.mybatis-plus.snowflake.worker-id`<br>`ateng.boot.mybatis-plus.snowflake.datacenter-id` | 提供趋势递增的 64 位全局唯一分布式 ID 发号支持 | `AtengMybatisPlusAutoConfigurationTest` |
-| **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、动态解析与热加载中心，支持运行时动态注册/移除外部 XML 脚本与白名单校验 | `DynamicSqlRegistryTest` / `SampleDynamicSqlTest` |
-| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectList` / `selectOne` / `selectMaps` / `update` / `insert` / `delete`，提供对称完备的外部动态 SQL 执行能力 | `DynamicSqlExecutorTest` / `DynamicSqlIntegrationTest` / `SampleDynamicSqlTest` |
+| **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、AST 投影字典解析提取与热加载中心，支持运行时动态注册/移除外部 XML 脚本，联动缓存失效通知 | `DynamicSqlRegistryTest` / `DynamicSqlExecutorDynamicTest` / `SampleDynamicSqlTest` |
+| **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest` 及业务 DTO，多表 AST 投影自愈与 ADR-0010 强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlExecutorDynamicTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
@@ -432,14 +432,38 @@ public class DynamicReportService {
     private DynamicSqlExecutor dynamicSqlExecutor;
 
     public void executeReports() {
-        // 1. 查询单行记录并自动映射为强类型 VO 或 Map
-        UserVO user = dynamicSqlExecutor.selectOne(
-                "user.findActiveUsers",
-                Map.of("keyword", "Ateng"),
-                UserVO.class
+        // 1. 结构化动态条件分页查询（原生融合 DynamicQueryRequest，AST 别名自愈与强类型 VO 映射）
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.setCurrent(1L);
+        request.setSize(10L);
+        request.addCondition(QueryCondition.like("userName", "Ateng"));
+        request.addCondition(QueryCondition.ge("age", 20));
+        request.addSort(SortItem.desc("age"));
+
+        PageResult<UserDeptVO> dynamicPage = dynamicSqlExecutor.selectPage(
+                "exec.userWithDept",
+                request,
+                UserDeptVO.class
         );
 
-        // 2. 深度融合 ADR-0010 分页契约：物理方言分页并流式转换为前端标准 PageResult<VO>
+        // 2. 业务查询 DTO 驱动分页查询（支持 @QueryField 或继承 PageQuery）
+        UserQueryDTO dto = new UserQueryDTO();
+        dto.setCurrent(1L);
+        dto.setSize(10L);
+        dto.setUserName("Ateng");
+        dto.setDeptName("研发部");
+
+        PageResult<UserDeptVO> dtoPage = dynamicSqlExecutor.selectPage(
+                "exec.userWithDept",
+                dto,
+                UserDeptVO.class
+        );
+
+        // 3. 动态列表与记录数统计
+        List<UserDeptVO> list = dynamicSqlExecutor.selectList("exec.userWithDept", request, UserDeptVO.class);
+        long totalCount = dynamicSqlExecutor.count("exec.userWithDept", request);
+
+        // 4. 深度融合 ADR-0010 传统入参分页：物理方言分页并流式转换为前端标准 PageResult<VO>
         PageQuery query = new PageQuery(1L, 10L);
         PageResult<UserVO> pageResult = dynamicSqlExecutor.selectPage(
                 "user.findActiveUsers",
@@ -448,7 +472,7 @@ public class DynamicReportService {
                 UserVO.class
         );
 
-        // 3. 动态 INSERT / UPDATE / DELETE 编程式执行
+        // 5. 动态 INSERT / UPDATE / DELETE 编程式执行
         int affected = dynamicSqlExecutor.update(
                 "user.updateDynamicStatus",
                 Map.of("id", 1001L, "status", 2)
@@ -457,7 +481,7 @@ public class DynamicReportService {
 }
 ```
 
-### 3. 运行时零缝隙原子热更新 (`DynamicSqlRegistry`)
+### 3. 运行时零缝隙原子热更新与 AST 投影自愈 (`DynamicSqlRegistry`)
 ```java
 @Component
 public class SqlHotReloadManager {
@@ -474,7 +498,9 @@ public class SqlHotReloadManager {
                 .autoScriptWrap(true) // 自动容错包裹 <script>
                 .build();
 
-        // 沙箱语法检验与原子覆盖：语法错误时返回 false 并自动保留旧版 SQL，成功则瞬间无感生效
+        // 1. 预编译语法校验与 AST 投影字典解析：自动从 SQL 中提取别名字典挂载至 definition.getProjections()
+        // 2. 原子覆盖：语法错误时返回 false 并自动保留旧版 SQL，成功则瞬间无感生效
+        // 3. 缓存多级协同失效：自动联动清空 DynamicSqlProjectionResolver 与 DynamicQueryTemplate 本地缓存
         boolean success = dynamicSqlRegistry.register(definition);
         if (!success) {
             throw new BusinessException("SQL 语法校验失败，热更新已自动回滚");
