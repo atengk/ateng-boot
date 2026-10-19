@@ -87,6 +87,26 @@ public class RedisSampleController {
     }
 
     /**
+     * 查询订单延时队列的死信消息数量
+     *
+     * @return 死信数量
+     */
+    @GetMapping("/delay-order/dead-letter/size")
+    public Result<Integer> getDeadLetterSize() {
+        return Result.success(orderDelayQueueService.getCancelOrderDeadLetterSize());
+    }
+
+    /**
+     * 拉取一条订单延时队列的死信消息
+     *
+     * @return 死信消息（无消息时 data 返回 null）
+     */
+    @GetMapping("/delay-order/dead-letter/poll")
+    public Result<io.github.atengk.boot.redis.delay.model.DeadLetterMessage<io.github.atengk.boot.sample.redis.model.OrderDelayPayload>> pollDeadLetter() {
+        return Result.success(orderDelayQueueService.pollCancelOrderDeadLetter());
+    }
+
+    /**
      * 安全游标扫描匹配的 Key 集合
      *
      * @param pattern 模糊匹配模式

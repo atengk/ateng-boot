@@ -536,12 +536,24 @@ class SampleRedisIntegrationTest {
 
     @Test
     @DisplayName("端到端验证：延时队列死信队列（DLQ）状态查询与空安全拉取")
-    void shouldQueryDeadLetterQueueStatusSafely() {
+    void shouldQueryDeadLetterQueueStatusSafely() throws Exception {
         int deadLetterSize = orderDelayQueueService.getCancelOrderDeadLetterSize();
         assertThat(deadLetterSize).isGreaterThanOrEqualTo(0);
 
         var deadLetterMessage = orderDelayQueueService.pollCancelOrderDeadLetter();
         assertThat(deadLetterMessage).isNull();
+
+        // 验证 Controller 端点：查询死信队列大小
+        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(0));
+
+        // 验证 Controller 端点：空安全拉取死信消息（空时返回 null）
+        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/poll"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").doesNotExist());
     }
 
     @Test

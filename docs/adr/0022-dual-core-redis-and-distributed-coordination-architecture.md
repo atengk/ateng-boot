@@ -129,3 +129,18 @@ flowchart TD
 1. **轻微的内存与连接开销**：双核共存模式下，Lettuce 与 Redisson 会各自维护一套连接池。但在生产环境下，通过合理设置两者连接池最小空闲与最大连接数，其开销对现代服务器几乎微乎其微；
 2. **两级缓存最终一致性窗口**：L1 本地缓存与 L2 Redis 之间存在极短暂的 Pub/Sub 广播网络传播时延（通常 < 10ms），适用于高频读、容忍微小延迟的准实时业务场景。
 
+---
+
+## 8. 演进落地状态与交付审计 (Delivery & Verification Audit)
+
+- **当前状态**：`Accepted & Implemented (已全面落地交付)`
+- **工单切片闭环**：
+  - **#142**：延时队列死信保障 (DLQ)、受管线程池合规、`DeadLetterMessage<T>` 与 `DelayedQueueFailureHandler` SPI；
+  - **#143**：声明式 Pub/Sub 广播订阅注解 (`@ChannelTopicListener`)、动态占位符与通配模式支持、强类型多态反序列化；
+  - **#144**：分布式布隆过滤器 (`RedisBloomFilter`)、声明式预热配置 (`bloom-filters.*`)、80% 容量预警与 KeyPrefix 隔离；
+  - **#145**：`RedisCacheTemplate` 泛型防卫模板、单键与批量 MGET 防击穿、短 TTL 空哨兵防穿透、Jitter 随机抖动防雪崩与争锁超时平滑查库容灾；
+  - **#146**：内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)、L1 Caffeine 探测与内置 LRU 严格防 OOM 退化、`ateng:cache:evict:topic` 集中广播失效与 `instanceId` 防自重入死循环；
+  - **#147**：`ateng-boot-sample-redis` 全场景自验工程闭关、26 项端到端离线自洽集成测试 100% 绿灯准出、全景速查矩阵五维文档与 ADR 归档。
+- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标。
+
+
