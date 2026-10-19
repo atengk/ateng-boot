@@ -472,15 +472,7 @@ public interface AtengBaseService<T> extends IService<T> {
         if (request == null) {
             return PageResult.empty();
         }
-        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
-        Map<String, String> mapping = null;
-        if (methodName != null && !methodName.isEmpty()) {
-            DynamicQueryTemplate template = getDynamicQueryTemplate();
-            if (template != null) {
-                mapping = template.resolveProjections(methodName);
-            }
-        }
-
+        Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
         Page<V> page = PageUtil.toPage(request);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
@@ -516,15 +508,7 @@ public interface AtengBaseService<T> extends IService<T> {
         if (queryDto == null) {
             return PageResult.empty();
         }
-        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
-        Map<String, String> mapping = null;
-        if (methodName != null && !methodName.isEmpty()) {
-            DynamicQueryTemplate template = getDynamicQueryTemplate();
-            if (template != null) {
-                mapping = template.resolveProjections(methodName);
-            }
-        }
-
+        Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = (voClass != null)
                 ? DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping)
                 : DynamicQueryHelper.buildWrapper(queryDto, mapping);
@@ -561,15 +545,7 @@ public interface AtengBaseService<T> extends IService<T> {
         if (request == null) {
             return Collections.emptyList();
         }
-        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
-        Map<String, String> mapping = null;
-        if (methodName != null && !methodName.isEmpty()) {
-            DynamicQueryTemplate template = getDynamicQueryTemplate();
-            if (template != null) {
-                mapping = template.resolveProjections(methodName);
-            }
-        }
-
+        Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = (voClass != null)
                 ? DynamicQueryHelper.buildWrapper(request, voClass, mapping)
                 : (mapping != null ? DynamicQueryHelper.buildWrapper(request, mapping) : new QueryWrapper<>());
@@ -602,20 +578,11 @@ public interface AtengBaseService<T> extends IService<T> {
         if (request == null) {
             return false;
         }
-        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
-        Map<String, String> mapping = null;
-        if (methodName != null && !methodName.isEmpty()) {
-            DynamicQueryTemplate template = getDynamicQueryTemplate();
-            if (template != null) {
-                mapping = template.resolveProjections(methodName);
-            }
-        }
+        Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = (mapping != null)
                 ? DynamicQueryHelper.buildWrapper(request, mapping)
                 : DynamicQueryHelper.buildWrapper(request, Collections.emptyMap());
-        Page<V> page = new Page<>(1, 1, false);
-        IPage<V> resultPage = mapperMethod.select(page, wrapper);
-        return resultPage != null && resultPage.getRecords() != null && !resultPage.getRecords().isEmpty();
+        return executeExistsShortCircuit(mapperMethod, wrapper);
     }
 
     /**
@@ -634,17 +601,25 @@ public interface AtengBaseService<T> extends IService<T> {
         if (queryDto == null) {
             return false;
         }
-        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
-        Map<String, String> mapping = null;
-        if (methodName != null && !methodName.isEmpty()) {
-            DynamicQueryTemplate template = getDynamicQueryTemplate();
-            if (template != null) {
-                mapping = template.resolveProjections(methodName);
-            }
-        }
+        Map<String, String> mapping = resolveMethodMapping(mapperMethod);
         QueryWrapper<V> wrapper = (mapping != null)
                 ? DynamicQueryHelper.buildWrapper(queryDto, mapping)
                 : DynamicQueryHelper.buildWrapper(queryDto, Collections.emptyMap());
+        return executeExistsShortCircuit(mapperMethod, wrapper);
+    }
+
+    private Map<String, String> resolveMethodMapping(Serializable mapperMethod) {
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                return template.resolveProjections(methodName);
+            }
+        }
+        return null;
+    }
+
+    private <V> boolean executeExistsShortCircuit(DynamicMapperPageMethod<V> mapperMethod, QueryWrapper<V> wrapper) {
         Page<V> page = new Page<>(1, 1, false);
         IPage<V> resultPage = mapperMethod.select(page, wrapper);
         return resultPage != null && resultPage.getRecords() != null && !resultPage.getRecords().isEmpty();

@@ -263,19 +263,7 @@ public class DynamicQueryTemplate {
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
-
-        Page<?> page = new Page<>(1, 1);
-        Map<String, Object> paramMap = new HashMap<>();
-        paramMap.put("page", page);
-        paramMap.put(Constants.WRAPPER, wrapper);
-        paramMap.put("ew", wrapper);
-
-        String targetStatementId = prepareTargetStatement(statementId);
-        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
-        if (page.getTotal() > 0) {
-            return page.getTotal();
-        }
-        return list != null ? list.size() : 0L;
+        return executeCountWithWrapper(statementId, wrapper);
     }
 
     /**
@@ -296,19 +284,7 @@ public class DynamicQueryTemplate {
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
-
-        Page<?> page = new Page<>(1, 1);
-        Map<String, Object> paramMap = new HashMap<>();
-        paramMap.put("page", page);
-        paramMap.put(Constants.WRAPPER, wrapper);
-        paramMap.put("ew", wrapper);
-
-        String targetStatementId = prepareTargetStatement(statementId);
-        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
-        if (page.getTotal() > 0) {
-            return page.getTotal();
-        }
-        return list != null ? list.size() : 0L;
+        return executeCountWithWrapper(statementId, wrapper);
     }
 
     /**
@@ -326,16 +302,7 @@ public class DynamicQueryTemplate {
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
-
-        Page<?> page = new Page<>(1, 1, false);
-        Map<String, Object> paramMap = new HashMap<>();
-        paramMap.put("page", page);
-        paramMap.put(Constants.WRAPPER, wrapper);
-        paramMap.put("ew", wrapper);
-
-        String targetStatementId = prepareTargetStatement(statementId);
-        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
-        return list != null && !list.isEmpty();
+        return executeExistsWithWrapper(statementId, wrapper);
     }
 
     /**
@@ -356,7 +323,25 @@ public class DynamicQueryTemplate {
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
+        return executeExistsWithWrapper(statementId, wrapper);
+    }
 
+    private long executeCountWithWrapper(String statementId, QueryWrapper<?> wrapper) {
+        Page<?> page = new Page<>(1, 1);
+        Map<String, Object> paramMap = new HashMap<>();
+        paramMap.put("page", page);
+        paramMap.put(Constants.WRAPPER, wrapper);
+        paramMap.put("ew", wrapper);
+
+        String targetStatementId = prepareTargetStatement(statementId);
+        List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
+        if (page.getTotal() > 0) {
+            return page.getTotal();
+        }
+        return list != null ? list.size() : 0L;
+    }
+
+    private boolean executeExistsWithWrapper(String statementId, QueryWrapper<?> wrapper) {
         Page<?> page = new Page<>(1, 1, false);
         Map<String, Object> paramMap = new HashMap<>();
         paramMap.put("page", page);
