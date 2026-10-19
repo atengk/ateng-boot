@@ -28,6 +28,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import io.github.atengk.boot.redis.properties.RedisProperties;
+
 /**
  * 全能 Redis 统一操作门面与生产级防呆工具类
  * 支持 Spring Bean 依赖注入与全局静态门面双重调用范式，
@@ -39,6 +41,7 @@ import java.util.function.Consumer;
 public class RedisUtil {
 
     private static volatile RedisTemplate<String, Object> staticTemplate;
+    private static volatile RedisProperties staticProperties;
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
 
     /**
@@ -47,7 +50,59 @@ public class RedisUtil {
      * @param template RedisTemplate
      */
     public RedisUtil(RedisTemplate<String, Object> template) {
+        this(template, null);
+    }
+
+    /**
+     * 容器实例化构造器，同时注入配置属性以支持受管全局 KeyPrefix
+     *
+     * @param template RedisTemplate
+     * @param properties RedisProperties
+     */
+    public RedisUtil(RedisTemplate<String, Object> template, RedisProperties properties) {
         RedisUtil.staticTemplate = template;
+        RedisUtil.staticProperties = properties;
+    }
+
+    /**
+     * 基于全局配置前缀 (ateng.boot.redis.key-prefix) 构建受管完整键名
+     *
+     * @param rawKey 业务原始键名
+     * @return 附加前缀后的规范键名
+     */
+    public static String buildKey(String rawKey) {
+        if (rawKey == null) {
+            return null;
+        }
+        if (staticProperties != null) {
+            return staticProperties.buildKey(rawKey);
+        }
+        return rawKey;
+    }
+
+    /**
+     * 拼接模块前缀与子键并结合全局前缀构建完整键名
+     *
+     * @param modulePrefix 模块前缀
+     * @param keys 子键片段
+     * @return 拼接后的规范键名
+     */
+    public static String buildKey(String modulePrefix, String... keys) {
+        StringBuilder sb = new StringBuilder();
+        if (modulePrefix != null && !modulePrefix.isEmpty()) {
+            sb.append(modulePrefix);
+        }
+        if (keys != null) {
+            for (String k : keys) {
+                if (k != null) {
+                    if (sb.length() > 0 && !sb.toString().endsWith(":")) {
+                        sb.append(":");
+                    }
+                    sb.append(k);
+                }
+            }
+        }
+        return buildKey(sb.toString());
     }
 
     /**

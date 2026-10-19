@@ -123,6 +123,22 @@ class TwoLevelCacheManagerTest {
         assertThat(defaultCache.getL1Cache().get("ord-4")).isNull();
     }
 
+    @Test
+    @DisplayName("跨节点定向失效：数值型 Key 反序列化类型漂移（Long 变 Integer）仍能精准淘汰本地 L1 缓存")
+    void testHandleEvictMessageNumericKeyTypeNormalization() {
+        TwoLevelCache cache = cacheManager.getTwoLevelCache("users");
+        // 本地以 Long 类型写入
+        cache.put(2001L, "Alice");
+        assertThat(cache.get(2001L, String.class)).isEqualTo("Alice");
+
+        // 模拟远端广播经 JSON 反序列化后 key 变为 Integer
+        CacheEvictMessage remoteMessage = new CacheEvictMessage("users", 2001, "node-bravo", false);
+        cacheManager.handleEvictMessage(remoteMessage);
+
+        // 本地 L1 缓存被成功淘汰
+        assertThat(cache.get(2001L)).isNull();
+    }
+
     // ==================== 条件装配测试 ====================
 
     @Configuration

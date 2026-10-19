@@ -78,4 +78,32 @@ public class OrderDelayQueueService {
     public DeadLetterMessage<OrderDelayPayload> pollCancelOrderDeadLetter() {
         return redisDelayedQueue.pollDeadLetter(QUEUE_ORDER_CANCEL, OrderDelayPayload.class);
     }
+
+    /**
+     * 手动将异常订单流转至死信队列（模拟消费重试耗尽场景）
+     *
+     * @param orderId 订单 ID
+     * @param retryCount 重试次数
+     * @param errorMessage 失败原因
+     */
+    public void sendOrderToDeadLetter(String orderId, int retryCount, String errorMessage) {
+        OrderDelayPayload payload = new OrderDelayPayload(orderId, "模拟重试耗尽死信订单", System.currentTimeMillis());
+        DeadLetterMessage<OrderDelayPayload> deadLetter = new DeadLetterMessage<>(
+                QUEUE_ORDER_CANCEL,
+                payload,
+                retryCount,
+                errorMessage,
+                "BusinessRetryExhaustedException",
+                java.time.LocalDateTime.now()
+        );
+        redisDelayedQueue.sendToDeadLetter(QUEUE_ORDER_CANCEL, deadLetter);
+        log.info("订单重试耗尽转入死信队列: orderId={}, retryCount={}, error={}", orderId, retryCount, errorMessage);
+    }
+
+    /**
+     * 清理已消费记录（供测试环境隔离使用）
+     */
+    public void clearConsumedOrders() {
+        consumedOrders.clear();
+    }
 }

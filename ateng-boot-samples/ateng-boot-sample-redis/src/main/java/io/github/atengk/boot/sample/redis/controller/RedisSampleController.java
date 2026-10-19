@@ -1,7 +1,13 @@
 package io.github.atengk.boot.sample.redis.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.redis.util.RedisUtil;
+import io.github.atengk.boot.sample.redis.model.BloomFilterMetricsVO;
+import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import io.github.atengk.boot.sample.redis.model.ProductVO;
+import io.github.atengk.boot.sample.redis.service.NoticeBroadcastService;
 import io.github.atengk.boot.sample.redis.service.OrderDelayQueueService;
 import io.github.atengk.boot.sample.redis.service.RedisSampleService;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
@@ -35,8 +41,8 @@ public class RedisSampleController {
 
     private final RedisSampleService redisSampleService;
     private final OrderDelayQueueService orderDelayQueueService;
-    private final io.github.atengk.boot.sample.redis.service.NoticeBroadcastService noticeBroadcastService;
-    private final io.github.atengk.boot.redis.bloom.RedisBloomFilter redisBloomFilter;
+    private final NoticeBroadcastService noticeBroadcastService;
+    private final RedisBloomFilter redisBloomFilter;
 
     /**
      * 扣减商品库存（受 Redisson 分布式锁严格并发保护）
@@ -105,8 +111,24 @@ public class RedisSampleController {
      * @return 死信消息（无消息时 data 返回 null）
      */
     @GetMapping("/delay-order/dead-letter/poll")
-    public Result<io.github.atengk.boot.redis.delay.model.DeadLetterMessage<io.github.atengk.boot.sample.redis.model.OrderDelayPayload>> pollDeadLetter() {
+    public Result<DeadLetterMessage<OrderDelayPayload>> pollDeadLetter() {
         return Result.success(orderDelayQueueService.pollCancelOrderDeadLetter());
+    }
+
+    /**
+     * 手动流转订单至死信队列（模拟重试耗尽死信流转场景）
+     *
+     * @param orderId 订单 ID
+     * @param retryCount 重试次数
+     * @param errorMessage 错误原因
+     * @return 成功响应
+     */
+    @PostMapping("/delay-order/dead-letter/send")
+    public Result<String> sendDeadLetterOrder(@RequestParam("orderId") String orderId,
+                                              @RequestParam(value = "retryCount", defaultValue = "3") Integer retryCount,
+                                              @RequestParam(value = "errorMessage", defaultValue = "重试3次超时失败") String errorMessage) {
+        orderDelayQueueService.sendOrderToDeadLetter(orderId, retryCount, errorMessage);
+        return Result.success("订单已成功流转至死信队列: " + orderId);
     }
 
     /**
@@ -181,7 +203,7 @@ public class RedisSampleController {
      * @return 事件列表
      */
     @GetMapping("/received-system-events")
-    public Result<java.util.List<String>> getReceivedSystemEvents() {
+    public Result<List<String>> getReceivedSystemEvents() {
         return Result.success(noticeBroadcastService.getReceivedSystemEvents());
     }
 
@@ -210,19 +232,20 @@ public class RedisSampleController {
     }
 
     /**
-     * 查询黑名单布隆过滤器的监控指标
+     * 查询黑名单布隆过滤器的监控指标（强类型 BloomFilterMetricsVO）
      *
      * @return 监控指标
      */
     @GetMapping("/bloom/blacklist/metrics")
-    public Result<java.util.Map<String, Object>> getBlacklistMetrics() {
-        java.util.Map<String, Object> metrics = new java.util.HashMap<>();
-        metrics.put("filterName", "user-blacklist");
-        metrics.put("count", redisBloomFilter.count("user-blacklist"));
-        metrics.put("expectedInsertions", redisBloomFilter.getExpectedInsertions("user-blacklist"));
-        metrics.put("usageRate", redisBloomFilter.getUsageRate("user-blacklist"));
-        metrics.put("falseProbability", redisBloomFilter.getFalseProbability("user-blacklist"));
-        return Result.success(metrics);
+    public Result<BloomFilterMetricsVO> getBlacklistMetrics() {
+        BloomFilterMetricsVO vo = BloomFilterMetricsVO.builder()
+                .filterName("user-blacklist")
+                .count(redisBloomFilter.count("user-blacklist"))
+                .expectedInsertions(redisBloomFilter.getExpectedInsertions("user-blacklist"))
+                .usageRate(redisBloomFilter.getUsageRate("user-blacklist"))
+                .falseProbability(redisBloomFilter.getFalseProbability("user-blacklist"))
+                .build();
+        return Result.success(vo);
     }
 
     /**
@@ -291,5 +314,16 @@ public class RedisSampleController {
     public Result<Void> clearUserProfile() {
         redisSampleService.clearUserProfileCache();
         return Result.success();
+    }
+
+    /**
+     * 演示全局前缀辅助键名构建（基于 RedisUtil.buildKey 门面）
+     *
+     * @param key 业务原始键名
+     * @return 最终构建的完整键名
+     */
+    @GetMapping("/key/build")
+    public Result<String> buildKey(@RequestParam("key") String key) {
+        return Result.success(RedisUtil.buildKey(key));
     }
 }

@@ -21,8 +21,10 @@ import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -231,6 +233,50 @@ class TwoLevelCacheTest {
 
         verify(redisTemplate, never()).delete(anyString());
         verify(redisTemplate, never()).convertAndSend(anyString(), any());
+    }
+
+    @Test
+    @DisplayName("全局清空操作：清空本地 L1、基于游标安全扫描删除 Redis 键并广播全量清理通知")
+    @SuppressWarnings("unchecked")
+    void testClear() {
+        l1Cache.put("1008", "Tablet");
+        l1Cache.put("1009", "Laptop");
+
+        org.springframework.data.redis.core.Cursor<String> cursor = mock(org.springframework.data.redis.core.Cursor.class);
+        lenient().when(redisTemplate.scan(any(org.springframework.data.redis.core.ScanOptions.class))).thenReturn(cursor);
+        lenient().when(cursor.hasNext()).thenReturn(true, true, false);
+        lenient().when(cursor.next()).thenReturn("product:1008", "product:1009");
+
+        cache.clear();
+
+        // 1. 本地 L1 已清空
+        assertThat(l1Cache.get("1008")).isNull();
+        assertThat(l1Cache.get("1009")).isNull();
+
+        // 2. 批量删除 Redis 扫描出来的键
+        verify(redisTemplate).delete(java.util.List.of("product:1008", "product:1009"));
+
+        // 3. 广播全量清空通知
+        verify(redisTemplate).convertAndSend(eq(TOPIC), argThat((CacheEvictMessage msg) ->
+                msg.isClearAll() && CACHE_NAME.equals(msg.getCacheName()) && INSTANCE_ID.equals(msg.getInstanceId())));
+    }
+
+    @Test
+    @DisplayName("键规范化契约：数值与字符键统一规范化为 String，保障跨节点一致性与防死锁")
+    void testKeyNormalization() {
+        // 以 Long 写入
+        cache.put(2001L, "Keyboard");
+        assertThat(l1Cache.get("2001")).isEqualTo("Keyboard");
+
+        // 本地定向以 String 淘汰
+        cache.evictLocal("2001");
+        assertThat(l1Cache.get("2001")).isNull();
+
+        // 以 Integer 写入，以 Long 淘汰
+        cache.put(3001, "Mouse");
+        assertThat(l1Cache.get("3001")).isEqualTo("Mouse");
+        cache.evict(3001L);
+        assertThat(l1Cache.get("3001")).isNull();
     }
 
     @Test

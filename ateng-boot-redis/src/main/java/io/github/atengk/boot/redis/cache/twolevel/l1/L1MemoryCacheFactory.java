@@ -39,7 +39,17 @@ public final class L1MemoryCacheFactory {
      * @return true 表示存在 Caffeine
      */
     public static boolean isCaffeinePresent() {
-        return CAFFEINE_PRESENT;
+        return isCaffeinePresent(L1MemoryCacheFactory.class.getClassLoader());
+    }
+
+    /**
+     * 判断指定类加载器上下文中是否包含 Caffeine
+     *
+     * @param classLoader 类加载器
+     * @return true 表示存在 Caffeine
+     */
+    public static boolean isCaffeinePresent(ClassLoader classLoader) {
+        return ClassUtils.isPresent("com.github.benmanes.caffeine.cache.Caffeine", classLoader);
     }
 
     /**
@@ -50,7 +60,19 @@ public final class L1MemoryCacheFactory {
      * @return L1 内存缓存实例
      */
     public static L1MemoryCache create(long maxSize, Duration ttl) {
-        if (CAFFEINE_PRESENT) {
+        return create(maxSize, ttl, CAFFEINE_PRESENT);
+    }
+
+    /**
+     * 创建 L1 本地内存缓存实例（支持指定依赖探测状态，便于单测覆盖平滑退化路径）
+     *
+     * @param maxSize 最大条数
+     * @param ttl 写入后过期时长
+     * @param caffeinePresent 是否存在 Caffeine 运行时依赖
+     * @return L1 内存缓存实例
+     */
+    public static L1MemoryCache create(long maxSize, Duration ttl, boolean caffeinePresent) {
+        if (caffeinePresent) {
             return CaffeineHelper.create(maxSize, ttl);
         }
         return new ConcurrentLruMemoryCache(maxSize, ttl);

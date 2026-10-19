@@ -15,8 +15,6 @@ import java.time.Duration;
  */
 public class CaffeineL1MemoryCache implements L1MemoryCache {
 
-    private static final Object NULL_HOLDER = new Object();
-
     private final Cache<Object, Object> cache;
 
     public CaffeineL1MemoryCache(long maxSize, Duration ttl) {
@@ -34,8 +32,7 @@ public class CaffeineL1MemoryCache implements L1MemoryCache {
         if (key == null) {
             return null;
         }
-        Object val = cache.getIfPresent(key);
-        return val == NULL_HOLDER ? null : val;
+        return cache.getIfPresent(key);
     }
 
     @Override
@@ -43,7 +40,11 @@ public class CaffeineL1MemoryCache implements L1MemoryCache {
         if (key == null) {
             return;
         }
-        cache.put(key, value != null ? value : NULL_HOLDER);
+        if (value != null) {
+            cache.put(key, value);
+        } else {
+            cache.invalidate(key);
+        }
     }
 
     @Override

@@ -113,12 +113,13 @@ public class AtengRedisAutoConfiguration {
      * 装配全能 Redis 操作门面工具 RedisUtil
      *
      * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties Redis 核心配置属性
      * @return RedisUtil 门面实例
      */
     @Bean
     @ConditionalOnMissingBean(RedisUtil.class)
-    public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate) {
-        return new RedisUtil(redisTemplate);
+    public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        return new RedisUtil(redisTemplate, redisProperties);
     }
 
     /**

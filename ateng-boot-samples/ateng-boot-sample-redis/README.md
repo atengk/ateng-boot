@@ -29,7 +29,7 @@
 | **锁重入与看门狗** | `@DistributedLock`<br>`RedisLockUtil` | `RedisSampleService.executeReentrantBusiness`<br>`RedisSampleService.executeWithWatchdog` | 外层注解内层模板同一线程安全重入；看门狗 30s 自动续期 |
 | **争锁超时降级** | `DistributedLockTemplate` | `RedisSampleService.executeWithFallback` | 争锁失败执行兜底 fallback 闭包，不抛出异常 |
 | **双模延时队列** | `RedisDelayedQueue`<br>`@DelayedQueueListener` | `POST /api/redis-sample/delay-order`<br>`OrderDelayQueueService.onOrderCancel` | 编程式投递延迟关单任务，后台受管线程池声明式自动反序列化消费 |
-| **延时队列死信保障** | `RedisDelayedQueue.getDeadLetterSize`<br>`RedisDelayedQueue.pollDeadLetter` | `GET /api/redis-sample/delay-order/dead-letter/size`<br>`GET /api/redis-sample/delay-order/dead-letter/poll` | 重试耗尽自动流转死信队列，支持死信数量监控与空安全拉取 |
+| **延时队列死信保障** | `RedisDelayedQueue.sendToDeadLetter`<br>`RedisDelayedQueue.getDeadLetterSize`<br>`RedisDelayedQueue.pollDeadLetter` | `POST /api/redis-sample/delay-order/dead-letter/send`<br>`GET /api/redis-sample/delay-order/dead-letter/size`<br>`GET /api/redis-sample/delay-order/dead-letter/poll` | 模拟重试耗尽主动转入死信队列，支持死信数量监控、空安全拉取与真实流转出队 |
 | **广播通知精确订阅** | `@ChannelTopicListener`<br>`RedisMessagePublisher` | `POST /api/redis-sample/broadcast-notice`<br>`GET /api/redis-sample/received-notices` | 跨实例广播系统公告，强类型 POJO 自动反序列化与多线程安全收集 |
 | **广播事件通配订阅** | `@ChannelTopicListener(patterns = "...")`<br>`RedisMessagePublisher` | `POST /api/redis-sample/broadcast-system-event`<br>`GET /api/redis-sample/received-system-events` | 通配模式广播监听（`sample:system:*`），多参数双参/三参消费 |
 | **分布式布隆过滤器** | `RedisBloomFilter`<br>`BloomFilterBootstrap` | `POST /api/redis-sample/bloom/blacklist/add`<br>`GET /api/redis-sample/bloom/blacklist/check`<br>`GET /api/redis-sample/bloom/blacklist/metrics` | 声明式预热配置映射、静态与 Bean 双重操作范式、80% 填充率容量告警 |
@@ -42,6 +42,7 @@
 | **接口限流防刷** | `@RateLimiter` | `GET /api/redis-sample/limited-api` | 纯净分布式令牌桶，超限自动返回 HTTP 200 + 429 契约 |
 | **接口幂等防重** | `@Idempotent` | `POST /api/redis-sample/idempotent` | 分布式 Key 锁防表单短时间内重复提交 |
 | **安全游标扫描** | `RedisUtil.scanKeys` | `GET /api/redis-sample/scan-keys` | 底层基于 SCAN 游标分批扫描匹配 Key，杜绝 `KEYS *` 阻塞生产 |
+| **键名前缀隔离** | `RedisUtil.buildKey` | `GET /api/redis-sample/key/build` | 基于全局配置前缀 `ateng.boot.redis.key-prefix` 规范化拼接完整键名，杜绝模块间键名冲突 |
 | **原子流水号发号** | `RedisAtomicUtil` | `GET /api/redis-sample/daily-seq` | 前缀 + yyyyMMdd + 6位递增流水号，跨天自重置且带 48h TTL 防泄露 |
 
 ---
@@ -104,10 +105,13 @@ curl -X POST "http://localhost:8080/api/redis-sample/idempotent?token=TOKEN_IDEM
 # 1. 投递延时订单
 curl -X POST "http://localhost:8080/api/redis-sample/delay-order?orderId=ORD_999&delaySeconds=10"
 
-# 2. 查询死信队列消息数
+# 2. 模拟重试耗尽流转至死信队列
+curl -X POST "http://localhost:8080/api/redis-sample/delay-order/dead-letter/send?orderId=ORD_DEAD_999&retryCount=3&errorMessage=重试3次超时失败"
+
+# 3. 查询死信队列消息数
 curl "http://localhost:8080/api/redis-sample/delay-order/dead-letter/size"
 
-# 3. 空安全拉取死信消息
+# 4. 拉取死信消息（消费出队）
 curl "http://localhost:8080/api/redis-sample/delay-order/dead-letter/poll"
 ```
 **后台到期消费日志**：
@@ -250,29 +254,32 @@ curl "http://localhost:8080/api/redis-sample/daily-seq?prefix=ORD&length=6"
 mvn test -pl ateng-boot-samples/ateng-boot-sample-redis -am -T 1C -nsu -B
 ```
 
-**实测测试用例集（26 项端到端全场景 100% 覆盖）**：
+**实测测试用例集（28 项端到端全场景 100% 覆盖）**：
 1. `@DistributedLock` 声明式切面拦截与 SpEL 动态解析
-2. `DistributedLockTemplate` 与 `RedisLockUtil` 编程式模板加锁与静态门面加锁
-3. 分布式锁同一线程跨方法可重入性（外层注解、内层闭包）
-4. 分布式锁争锁超时降级闭包（`fallback`）
-5. 分布式锁看门狗自动续期长事务执行（`leaseTime = -1`）
-6. Redisson 双模延时队列投递与 `@DelayedQueueListener` 声明式异步消费
-7. 延时队列死信队列（DLQ）状态查询、空安全拉取与 Controller 端点闭环
-8. `RedisUtil` 游标分批模糊扫描（`scanKeys`）
-9. `RedisAtomicUtil` 跨天原子自重置流水号发号
-10. `RedisAtomicUtil` 基于 ZSet 毫秒滑动窗口频控校验
-11. `RedisSampleController` 接口限流 `@RateLimiter` 正常放行与统一契约
-12. `RedisSampleController` 接口幂等 `@Idempotent` 正常放行与统一契约
-13. `RedisSampleController` 延时订单接口投递
-14. `RedisSampleController` 游标扫描与流水号接口
-15. `RedisUtil` 与 `RedisAtomicUtil` 门面 Bean 成功注入 Spring 上下文
-16. Web 模块自适应检测到 `RedissonClient` 自动切换 Tier 1 存储引擎（`RedissonRateLimiterStore` 与 `RedissonIdempotentKeyStore`）
-17. 声明式 `@ChannelTopicListener` 主题监听与强类型反序列化
-18. 声明式 `@ChannelTopicListener` 通配模式监听（`patterns = "sample:system:*"`）与多参数消费
-19. 分布式布隆过滤器声明式预热、黑名单判定与容量指标查询
-20. `RedisCacheTemplate` 统一装配与上下文契约验证
-21. 单商品查询冷启动回源、二次命中缓存不查库与主动驱逐
-22. 非存在商品查询回填短 TTL 空值哨兵，杜绝缓存穿透
-23. 批量商品查询 MGET 探测 + 字典序排序分布式锁 + 单次批量回源 + Pipeline 批量回填，彻底消除 N+1
-24. Spring Cache `@Cacheable` 两级缓存冷启动查库、二次极速命中 L1（0 次 DB 访问）与 `@CacheEvict` 定向与全量失效
-25. `TwoLevelCacheManager` 自动装配、Primary 契约与编程式门面调用
+2. 通过 Controller 端点调用扣减库存接口，验证分布式排他锁生效
+3. `DistributedLockTemplate` 与 `RedisLockUtil` 编程式模板加锁与静态门面加锁
+4. 分布式锁同一线程跨方法可重入性（外层注解加锁，内层模板重入加锁）
+5. 分布式锁争锁超时降级闭包（`fallback` 兜底闭包顺利执行）
+6. 分布式锁看门狗自动续期长事务执行（`leaseTime = -1`）
+7. Redisson 双模延时队列投递与 `@DelayedQueueListener` 声明式异步消费
+8. 延时队列死信队列（DLQ）状态查询、空安全拉取与 Controller 端点闭环
+9. 延时队列死信队列（DLQ）真实流转、积压监控与拉取消费出队
+10. `RedisUtil` 游标分批模糊扫描（`scanKeys`）与非阻塞迭代
+11. `RedisAtomicUtil` 跨天原子自重置流水号发号
+12. `RedisAtomicUtil` 基于 ZSet 毫秒滑动窗口高频请求限流
+13. `RedisSampleController` 接口限流 `@RateLimiter` 正常放行与统一契约
+14. `RedisSampleController` 接口幂等 `@Idempotent` 正常放行与统一契约
+15. `RedisSampleController` 延时订单接口投递
+16. `RedisSampleController` 游标扫描与流水号接口
+17. `RedisUtil` 与 `RedisAtomicUtil` 门面 Bean 成功注入 Spring 上下文
+18. Web 模块自适应检测到 `RedissonClient` 自动切换 Tier 1 存储引擎（`RedissonRateLimiterStore` 与 `RedissonIdempotentKeyStore`）
+19. 声明式 `@ChannelTopicListener` 主题监听与强类型反序列化
+20. 声明式 `@ChannelTopicListener` 通配模式监听（`patterns = "sample:system:*"`）与多参数消费
+21. 分布式布隆过滤器声明式预热、黑名单判定与强类型容量指标查询（`BloomFilterMetricsVO`）
+22. `RedisCacheTemplate` 统一装配与上下文契约验证
+23. 单商品查询冷启动回源、二次命中缓存不查库与主动驱逐
+24. 非存在商品查询回填短 TTL 空值哨兵，杜绝缓存穿透
+25. 批量商品查询 MGET 探测 + 字典序排序分布式锁 + 单次批量回源 + Pipeline 批量回填，彻底消除 N+1
+26. Spring Cache `@Cacheable` 两级缓存冷启动查库、二次极速命中 L1（0 次 DB 访问）与 `@CacheEvict` 定向与全量失效
+27. `TwoLevelCacheManager` 自动装配、Primary 契约与编程式门面调用
+28. 全局 KeyPrefix 隔离与 `RedisUtil.buildKey` 辅助门面构建

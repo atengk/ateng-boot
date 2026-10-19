@@ -91,34 +91,36 @@ class ConcurrentLruMemoryCacheTest {
         ConcurrentLruMemoryCache cache = new ConcurrentLruMemoryCache(100, Duration.ofMinutes(1));
 
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
-        CountDownLatch latch = new CountDownLatch(threadCount);
-        AtomicInteger errorCount = new AtomicInteger(0);
+        try {
+            CountDownLatch latch = new CountDownLatch(threadCount);
+            AtomicInteger errorCount = new AtomicInteger(0);
 
-        for (int i = 0; i < threadCount; i++) {
-            final int threadId = i;
-            executor.submit(() -> {
-                try {
-                    for (int j = 0; j < operationsPerThread; j++) {
-                        String key = "key-" + (j % 50);
-                        cache.put(key, "val-" + threadId + "-" + j);
-                        cache.get(key);
-                        if (j % 10 == 0) {
-                            cache.evict(key);
+            for (int i = 0; i < threadCount; i++) {
+                final int threadId = i;
+                executor.submit(() -> {
+                    try {
+                        for (int j = 0; j < operationsPerThread; j++) {
+                            String key = "key-" + (j % 50);
+                            cache.put(key, "val-" + threadId + "-" + j);
+                            cache.get(key);
+                            if (j % 10 == 0) {
+                                cache.evict(key);
+                            }
                         }
+                    } catch (Exception e) {
+                        errorCount.incrementAndGet();
+                    } finally {
+                        latch.countDown();
                     }
-                } catch (Exception e) {
-                    errorCount.incrementAndGet();
-                } finally {
-                    latch.countDown();
-                }
-            });
+                });
+            }
+
+            boolean completed = latch.await(10, TimeUnit.SECONDS);
+            assertThat(completed).isTrue();
+            assertThat(errorCount.get()).isEqualTo(0);
+            assertThat(cache.size()).isLessThanOrEqualTo(100);
+        } finally {
+            executor.shutdownNow();
         }
-
-        boolean completed = latch.await(10, TimeUnit.SECONDS);
-        executor.shutdown();
-
-        assertThat(completed).isTrue();
-        assertThat(errorCount.get()).isEqualTo(0);
-        assertThat(cache.size()).isLessThanOrEqualTo(100);
     }
 }

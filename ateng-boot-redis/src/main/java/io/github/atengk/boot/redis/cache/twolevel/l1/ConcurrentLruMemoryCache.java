@@ -5,7 +5,7 @@ import org.springframework.util.Assert;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 原生 JVM 内存 LRU 缓存实现（缺省降级兜底）
@@ -19,8 +19,7 @@ public class ConcurrentLruMemoryCache implements L1MemoryCache {
     private final long maxSize;
     private final long ttlMillis;
     private final Map<Object, CacheEntry> map;
-    private final ReentrantReadWriteLock rwl = new ReentrantReadWriteLock();
-    private final ReentrantReadWriteLock.WriteLock writeLock = rwl.writeLock();
+    private final ReentrantLock lock = new ReentrantLock();
 
     public ConcurrentLruMemoryCache(long maxSize, Duration ttl) {
         Assert.isTrue(maxSize > 0, "maxSize 必须大于 0");
@@ -40,7 +39,7 @@ public class ConcurrentLruMemoryCache implements L1MemoryCache {
         if (key == null) {
             return null;
         }
-        writeLock.lock();
+        lock.lock();
         try {
             CacheEntry entry = map.get(key);
             if (entry == null) {
@@ -52,7 +51,7 @@ public class ConcurrentLruMemoryCache implements L1MemoryCache {
             }
             return entry.value;
         } finally {
-            writeLock.unlock();
+            lock.unlock();
         }
     }
 
@@ -62,11 +61,11 @@ public class ConcurrentLruMemoryCache implements L1MemoryCache {
             return;
         }
         long expireAt = ttlMillis > 0 ? System.currentTimeMillis() + ttlMillis : Long.MAX_VALUE;
-        writeLock.lock();
+        lock.lock();
         try {
             map.put(key, new CacheEntry(value, expireAt));
         } finally {
-            writeLock.unlock();
+            lock.unlock();
         }
     }
 
@@ -75,31 +74,31 @@ public class ConcurrentLruMemoryCache implements L1MemoryCache {
         if (key == null) {
             return;
         }
-        writeLock.lock();
+        lock.lock();
         try {
             map.remove(key);
         } finally {
-            writeLock.unlock();
+            lock.unlock();
         }
     }
 
     @Override
     public void clear() {
-        writeLock.lock();
+        lock.lock();
         try {
             map.clear();
         } finally {
-            writeLock.unlock();
+            lock.unlock();
         }
     }
 
     @Override
     public long size() {
-        writeLock.lock();
+        lock.lock();
         try {
             return map.size();
         } finally {
-            writeLock.unlock();
+            lock.unlock();
         }
     }
 

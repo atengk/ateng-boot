@@ -95,8 +95,17 @@ class SampleRedisIntegrationTest {
     static class TestRedisConfig {
 
         private final ReentrantLock jvmLock = new ReentrantLock();
-        private final BlockingQueue<Object> internalDelayQueue = new LinkedBlockingQueue<>();
+        private static final Map<String, BlockingQueue<Object>> internalQueues = new ConcurrentHashMap<>();
         private static final Map<String, Object> cacheStore = new ConcurrentHashMap<>();
+
+        private static BlockingQueue<Object> getOrCreateQueue(String name) {
+            return internalQueues.computeIfAbsent(name, k -> new LinkedBlockingQueue<>());
+        }
+
+        public static void clearAll() {
+            internalQueues.values().forEach(Collection::clear);
+            cacheStore.clear();
+        }
 
         @Bean
         @Primary
@@ -182,29 +191,40 @@ class SampleRedisIntegrationTest {
             when(bucket.setIfAbsent(any(), any())).thenReturn(true);
             when(client.getBucket(anyString())).thenReturn(bucket);
 
-            // 延时队列模拟
-            RBlockingQueue<Object> blockingQueue = mock(RBlockingQueue.class);
-            try {
-                when(blockingQueue.poll(anyLong(), any(TimeUnit.class))).thenAnswer(inv -> {
-                    long timeout = inv.getArgument(0);
-                    TimeUnit unit = inv.getArgument(1);
-                    return internalDelayQueue.poll(timeout, unit);
-                });
-            } catch (InterruptedException ignored) {
-            }
-            when(blockingQueue.poll()).thenAnswer(inv -> internalDelayQueue.poll());
-            when(blockingQueue.size()).thenAnswer(inv -> internalDelayQueue.size());
+            // 延时队列与阻塞队列模拟（按队列名独立路由隔离）
+            when(client.getBlockingQueue(anyString())).thenAnswer(inv -> {
+                String queueName = inv.getArgument(0);
+                BlockingQueue<Object> queue = getOrCreateQueue(queueName);
+                RBlockingQueue<Object> mockQueue = mock(RBlockingQueue.class);
+                when(mockQueue.getName()).thenReturn(queueName);
+                try {
+                    when(mockQueue.poll(anyLong(), any(TimeUnit.class))).thenAnswer(pollInv -> {
+                        long timeout = pollInv.getArgument(0);
+                        TimeUnit unit = pollInv.getArgument(1);
+                        return queue.poll(timeout, unit);
+                    });
+                } catch (InterruptedException ignored) {
+                }
+                when(mockQueue.poll()).thenAnswer(pollInv -> queue.poll());
+                when(mockQueue.peek()).thenAnswer(peekInv -> queue.peek());
+                when(mockQueue.size()).thenAnswer(sizeInv -> queue.size());
+                when(mockQueue.offer(any())).thenAnswer(offerInv -> queue.offer(offerInv.getArgument(0)));
+                return mockQueue;
+            });
 
-            RDelayedQueue<Object> delayedQueue = mock(RDelayedQueue.class);
-            doAnswer(inv -> {
-                Object msg = inv.getArgument(0);
-                internalDelayQueue.offer(msg);
-                return null;
-            }).when(delayedQueue).offer(any(), anyLong(), any(TimeUnit.class));
-            when(delayedQueue.size()).thenAnswer(inv -> internalDelayQueue.size());
-
-            when(client.getBlockingQueue(anyString())).thenReturn(blockingQueue);
-            when(client.getDelayedQueue(any())).thenReturn(delayedQueue);
+            when(client.getDelayedQueue(any())).thenAnswer(inv -> {
+                RBlockingQueue<?> destQueue = inv.getArgument(0);
+                String destName = destQueue != null ? destQueue.getName() : null;
+                BlockingQueue<Object> queue = (destName != null) ? getOrCreateQueue(destName) : getOrCreateQueue("default");
+                RDelayedQueue<Object> delayedQueue = mock(RDelayedQueue.class);
+                doAnswer(offerInv -> {
+                    Object msg = offerInv.getArgument(0);
+                    queue.offer(msg);
+                    return null;
+                }).when(delayedQueue).offer(any(), anyLong(), any(TimeUnit.class));
+                when(delayedQueue.size()).thenAnswer(sizeInv -> queue.size());
+                return delayedQueue;
+            });
 
             // 分布式布隆过滤器模拟
             when(client.getBloomFilter(anyString())).thenReturn(sampleRBloomFilter);
@@ -336,9 +356,24 @@ class SampleRedisIntegrationTest {
 
             // 安全游标模糊扫描模拟
             when(template.scan(any(ScanOptions.class))).thenAnswer(inv -> {
+                ScanOptions options = inv.getArgument(0);
+                List<String> matchedKeys = new java.util.ArrayList<>();
+                if (options != null && options.getPattern() != null) {
+                    String pattern = options.getPattern();
+                    for (String k : cacheStore.keySet()) {
+                        if (matchesPattern(k, pattern)) {
+                            matchedKeys.add(k);
+                        }
+                    }
+                }
+                if (matchedKeys.isEmpty()) {
+                    matchedKeys.add("sample:user:1001");
+                    matchedKeys.add("sample:user:1002");
+                }
+                java.util.Iterator<String> it = matchedKeys.iterator();
                 Cursor<String> cursor = mock(Cursor.class);
-                when(cursor.hasNext()).thenReturn(true, true, false);
-                when(cursor.next()).thenReturn("sample:user:1001", "sample:user:1002");
+                when(cursor.hasNext()).thenAnswer(i -> it.hasNext());
+                when(cursor.next()).thenAnswer(i -> it.next());
                 return cursor;
             });
 
@@ -407,9 +442,12 @@ class SampleRedisIntegrationTest {
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         org.mockito.Mockito.clearInvocations(sampleRLock, redissonClient);
-        TestRedisConfig.cacheStore.clear();
+        TestRedisConfig.clearAll();
         if (redisSampleService != null) {
             redisSampleService.resetDbQueryCount();
+        }
+        if (orderDelayQueueService != null) {
+            orderDelayQueueService.clearConsumedOrders();
         }
     }
 
@@ -554,6 +592,40 @@ class SampleRedisIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("端到端验证：延时队列死信队列（DLQ）真实流转与拉取消费")
+    void shouldSupportDeadLetterQueueFlowAndPolling() throws Exception {
+        // 1. 模拟重试耗尽流转订单至死信队列
+        mockMvc.perform(post("/api/redis-sample/delay-order/dead-letter/send")
+                        .param("orderId", "ORD_DEAD_999")
+                        .param("retryCount", "3")
+                        .param("errorMessage", "重试3次超时失败"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("订单已成功流转至死信队列: ORD_DEAD_999"));
+
+        // 2. 验证死信队列积压大小为 1
+        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(1));
+
+        // 3. 拉取死信队列消息，验证反序列化载荷与元数据
+        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/poll"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.originalQueue").value(OrderDelayQueueService.QUEUE_ORDER_CANCEL))
+                .andExpect(jsonPath("$.data.payload.orderId").value("ORD_DEAD_999"))
+                .andExpect(jsonPath("$.data.retryTimes").value(3))
+                .andExpect(jsonPath("$.data.errorMessage").value("重试3次超时失败"));
+
+        // 4. 再次查询死信队列大小，验证消息已出队消费归零
+        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(0));
     }
 
     @Test
@@ -890,5 +962,26 @@ class SampleRedisIntegrationTest {
         io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache defaultTwoLevelCache =
                 (io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache) twoLevelCache;
         assertThat(defaultTwoLevelCache.getL1Cache().get("cfg:1")).isNull();
+    }
+
+    @Test
+    @DisplayName("端到端验证：全局 KeyPrefix 隔离与 RedisUtil.buildKey 辅助门面构建")
+    void shouldSupportKeyPrefixIsolationAndRedisUtilBuildKey() throws Exception {
+        // 1. 验证 Web 控制台通过 RedisUtil.buildKey 构建
+        mockMvc.perform(get("/api/redis-sample/key/build")
+                        .param("key", "order:20261019"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("order:20261019"));
+
+        // 2. 验证 RedisUtil 静态多参数分段拼接门面
+        String multiKey = io.github.atengk.boot.redis.util.RedisUtil.buildKey("order", "pay", "1001");
+        assertThat(multiKey).isEqualTo("order:pay:1001");
+
+        // 3. 验证独立属性前缀附加行为
+        io.github.atengk.boot.redis.properties.RedisProperties customProps = new io.github.atengk.boot.redis.properties.RedisProperties();
+        customProps.setKeyPrefix("dev:");
+        assertThat(customProps.buildKey("order:1001")).isEqualTo("dev:order:1001");
+        assertThat(customProps.buildKey("dev:order:1001")).isEqualTo("dev:order:1001");
     }
 }

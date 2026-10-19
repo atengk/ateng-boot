@@ -140,7 +140,7 @@ flowchart TD
   - **#144**：分布式布隆过滤器 (`RedisBloomFilter`)、声明式预热配置 (`bloom-filters.*`)、80% 容量预警与 KeyPrefix 隔离；
   - **#145**：`RedisCacheTemplate` 泛型防卫模板、单键与批量 MGET 防击穿、短 TTL 空哨兵防穿透、Jitter 随机抖动防雪崩与争锁超时平滑查库容灾；
   - **#146**：内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)、L1 Caffeine 探测与内置 LRU 严格防 OOM 退化、`ateng:cache:evict:topic` 集中广播失效与 `instanceId` 防自重入死循环；
-  - **#147**：`ateng-boot-sample-redis` 全场景自验工程闭关、26 项端到端离线自洽集成测试 100% 绿灯准出、全景速查矩阵五维文档与 ADR 归档。
+  - **#147**：`ateng-boot-sample-redis` 全场景自验工程闭环、28 项端到端离线自洽集成测试 100% 绿灯准出、全景速查矩阵五维文档与 ADR 归档。
 - **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标。
 
 

@@ -8,7 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.support.SimpleValueWrapper;
 import org.springframework.data.redis.core.Cursor;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.util.Assert;
@@ -18,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 工业级生产就绪两级缓存默认实现 (DefaultTwoLevelCache)
@@ -40,6 +40,11 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
      */
     public static final String NULL_SENTINEL = "__ATENG_CACHE_NULL__";
 
+    /**
+     * 分段并发条带锁槽位数量（消除实例级全局锁引发的队头阻塞）
+     */
+    private static final int STRIPE_COUNT = 64;
+
     private final String name;
     private final L1MemoryCache l1Cache;
     private final RedisTemplate<String, Object> redisTemplate;
@@ -50,6 +55,7 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
     private final Duration defaultL2Ttl;
     private final boolean cacheNullValues;
     private final Duration nullTtl;
+    private final ReentrantLock[] stripeLocks;
 
     public DefaultTwoLevelCache(String name,
                                L1MemoryCache l1Cache,
@@ -78,6 +84,11 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
         this.defaultL2Ttl = defaultL2Ttl != null ? defaultL2Ttl : Duration.ofMinutes(30);
         this.cacheNullValues = cacheNullValues;
         this.nullTtl = nullTtl != null ? nullTtl : Duration.ofMinutes(5);
+
+        this.stripeLocks = new ReentrantLock[STRIPE_COUNT];
+        for (int i = 0; i < STRIPE_COUNT; i++) {
+            this.stripeLocks[i] = new ReentrantLock();
+        }
     }
 
     @Override
@@ -93,14 +104,12 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
     @Override
     public ValueWrapper get(Object key) {
         Assert.notNull(key, "key 不能为空");
+        Object l1Key = toL1Key(key);
 
         // 1. 优先探测本地 L1 内存缓存
-        Object l1Val = l1Cache.get(key);
+        Object l1Val = l1Cache.get(l1Key);
         if (l1Val != null) {
-            if (NULL_SENTINEL.equals(l1Val)) {
-                return new SimpleValueWrapper(null);
-            }
-            return new SimpleValueWrapper(l1Val);
+            return toValueWrapper(l1Val);
         }
 
         // 2. 本地未命中，穿透查询 L2 Redis
@@ -108,11 +117,8 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
         Object l2Val = redisTemplate.opsForValue().get(redisKey);
         if (l2Val != null) {
             // 回填本地 L1 内存
-            l1Cache.put(key, l2Val);
-            if (NULL_SENTINEL.equals(l2Val)) {
-                return new SimpleValueWrapper(null);
-            }
-            return new SimpleValueWrapper(l2Val);
+            l1Cache.put(l1Key, l2Val);
+            return toValueWrapper(l2Val);
         }
 
         // 3. 两级均未命中
@@ -144,8 +150,10 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
             return (T) wrapper.get();
         }
 
-        // 针对单节点的双重检查加锁（DCL）
-        synchronized (this) {
+        // 针对单节点的条带化双重检查加锁（DCL），杜绝实例级全局锁引发的排队阻塞
+        ReentrantLock lock = getStripeLock(key);
+        lock.lock();
+        try {
             wrapper = get(key);
             if (wrapper != null) {
                 return (T) wrapper.get();
@@ -160,6 +168,8 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
 
             put(key, value);
             return value;
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -171,14 +181,15 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
     @Override
     public void put(Object key, Object value, Duration ttl) {
         Assert.notNull(key, "key 不能为空");
+        Object l1Key = toL1Key(key);
         String redisKey = buildRedisKey(key);
 
         if (value == null) {
             if (this.cacheNullValues) {
-                l1Cache.put(key, NULL_SENTINEL);
+                l1Cache.put(l1Key, NULL_SENTINEL);
                 Duration effectiveNullTtl = this.nullTtl != null ? this.nullTtl : Duration.ofMinutes(5);
                 redisTemplate.opsForValue().set(redisKey, NULL_SENTINEL, effectiveNullTtl);
-                publishEvictMessage(key, false);
+                publishEvictMessage(l1Key, false);
             } else {
                 evict(key);
             }
@@ -186,7 +197,7 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
         }
 
         // 1. 写入本地 L1 缓存
-        l1Cache.put(key, value);
+        l1Cache.put(l1Key, value);
 
         // 2. 写入分布式 L2 Redis 缓存（计算随机 Jitter 抖动）
         Duration actualTtl = calculateTtl(ttl);
@@ -197,35 +208,43 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
         }
 
         // 3. 广播跨节点失效通知
-        publishEvictMessage(key, false);
+        publishEvictMessage(l1Key, false);
     }
 
     @Override
     public ValueWrapper putIfAbsent(Object key, Object value) {
         Assert.notNull(key, "key 不能为空");
-        synchronized (this) {
+        ReentrantLock lock = getStripeLock(key);
+        lock.lock();
+        try {
             ValueWrapper existing = get(key);
             if (existing != null) {
                 return existing;
             }
             put(key, value);
             return null;
+        } finally {
+            lock.unlock();
         }
     }
 
     @Override
     public void evict(Object key) {
         Assert.notNull(key, "key 不能为空");
+        Object l1Key = toL1Key(key);
 
-        // 1. 淘汰本地 L1 内存
-        l1Cache.evict(key);
+        // 1. 淘汰本地 L1 内存（同时防御原始 key 与规范化 key）
+        l1Cache.evict(l1Key);
+        if (!key.equals(l1Key)) {
+            l1Cache.evict(key);
+        }
 
         // 2. 删除分布式 L2 Redis 键
         String redisKey = buildRedisKey(key);
         redisTemplate.delete(redisKey);
 
         // 3. 广播跨节点失效通知
-        publishEvictMessage(key, false);
+        publishEvictMessage(l1Key, false);
     }
 
     @Override
@@ -258,13 +277,56 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
     @Override
     public void evictLocal(Object key) {
         if (key != null) {
-            l1Cache.evict(key);
+            Object l1Key = toL1Key(key);
+            l1Cache.evict(l1Key);
+            if (!key.equals(l1Key)) {
+                l1Cache.evict(key);
+            }
         }
     }
 
     @Override
     public void clearLocal() {
         l1Cache.clear();
+    }
+
+    /**
+     * 将 L1 原始值包装为统一的 Spring Cache ValueWrapper
+     */
+    private ValueWrapper toValueWrapper(Object val) {
+        if (val == null) {
+            return null;
+        }
+        if (NULL_SENTINEL.equals(val)) {
+            return new SimpleValueWrapper(null);
+        }
+        return new SimpleValueWrapper(val);
+    }
+
+    /**
+     * 将泛型缓存键规范化（基本类型与数值转为统一 String），消除跨节点 JSON 反序列化类型漂移隐患
+     *
+     * @param key 原始缓存键
+     * @return 规范化后的 L1 键对象
+     */
+    protected Object toL1Key(Object key) {
+        if (key == null) {
+            return null;
+        }
+        if (key instanceof String || key instanceof Number || key instanceof Boolean || key instanceof Character) {
+            return String.valueOf(key);
+        }
+        return key;
+    }
+
+    /**
+     * 根据缓存键获取分段条带锁
+     */
+    private ReentrantLock getStripeLock(Object key) {
+        int hash = key != null ? key.hashCode() : 0;
+        hash = hash ^ (hash >>> 16);
+        int index = (hash & 0x7fffffff) % STRIPE_COUNT;
+        return stripeLocks[index];
     }
 
     /**
@@ -290,27 +352,24 @@ public class DefaultTwoLevelCache implements TwoLevelCache {
     }
 
     /**
-     * 基于游标 scan 安全分批删除 Redis 键
+     * 基于游标 scan 安全分批删除 Redis 键（兼容 Standalone 与 Redis Cluster 集群模式）
      */
     private void deleteKeysByPattern(String pattern) {
         try {
-            redisTemplate.execute((RedisCallback<Void>) connection -> {
-                ScanOptions options = ScanOptions.scanOptions().match(pattern).count(100).build();
-                try (Cursor<byte[]> cursor = connection.keyCommands().scan(options)) {
-                    List<byte[]> keysToDelete = new ArrayList<>();
-                    while (cursor.hasNext()) {
-                        keysToDelete.add(cursor.next());
-                        if (keysToDelete.size() >= 100) {
-                            connection.keyCommands().del(keysToDelete.toArray(new byte[0][]));
-                            keysToDelete.clear();
-                        }
-                    }
-                    if (!keysToDelete.isEmpty()) {
-                        connection.keyCommands().del(keysToDelete.toArray(new byte[0][]));
+            ScanOptions options = ScanOptions.scanOptions().match(pattern).count(100).build();
+            try (Cursor<String> cursor = redisTemplate.scan(options)) {
+                List<String> keysToDelete = new ArrayList<>();
+                while (cursor.hasNext()) {
+                    keysToDelete.add(cursor.next());
+                    if (keysToDelete.size() >= 100) {
+                        redisTemplate.delete(keysToDelete);
+                        keysToDelete.clear();
                     }
                 }
-                return null;
-            });
+                if (!keysToDelete.isEmpty()) {
+                    redisTemplate.delete(keysToDelete);
+                }
+            }
         } catch (Exception ex) {
             log.warn("两级缓存按模式清理 Redis 键失败 [pattern={}]", pattern, ex);
         }
