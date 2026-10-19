@@ -9,7 +9,7 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **文件上传** | 流式/字节/文件上传 | `StorageTemplate` | `ateng.boot.storage.enabled` | `upload(String, InputStream)` / `upload(String, byte[])` / `upload(String, File)` / `upload(String, StorageObject)`，自动推导 MIME 与安全创建父目录 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **分片上传** | 大文件分片流式上传 | `StorageTemplate` | - | `uploadChunk(String, InputStream, long, int, int)` / `completeChunkUpload(String, int)`，受控内存占用与异常自动补偿清理 | `StorageTemplateChunkedTest` |
+| **分片上传** | 大文件分片流式上传 | `StorageTemplate` | - | `uploadChunk(String, InputStream, long, int, int)` / `completeChunkUpload(String, int)`，受控内存占用与异常自动补偿清理 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
 | **文件下载** | 流式/字节/落盘下载 | `StorageTemplate` | - | `download(String)` (返回 `InputStream`) / `downloadBytes(String)` (返回 `byte[]`) / `download(String, File)`，严格遵循 try-with-resources 资源确定性释放 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **文件存在与元数据** | 存在性与属性探测 | `StorageTemplate` | - | `exists(String)` / `getMetadata(String)` / `getUrl(String)` / `list(String)`，统一轻量返回 `StorageObject` 强类型元数据 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate` | - | `delete(String)` / `delete(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑成功 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
@@ -17,16 +17,16 @@
 | **声明式多源** | 声明式数据源路由注解 | `@Storage` / `StorageAspect` | `ateng.boot.storage.sources.*` | 可声明于类或方法上，AOP 自动解析并绑定当前线程存储源上下文 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
 | **多源上下文** | 存储数据源上下文保持器 | `StorageContextHolder` | - | `set(String)` / `get()` / `clear()`，依托 ThreadLocal 保证多源切换无状态与确定性现场清理 | `StorageRoutingTest` |
 | **上下文透传** | 存储多源异步上下文装饰器 | `StorageTaskDecorator` | - | 将当前线程存储源标识快照透传至受管线程池异步任务中，执行完毕后无条件清理 | `StorageRoutingTest` |
-| **打包归档** | 多文件流式 ZIP 打包下载 | `StorageTemplate` | - | `downloadZip(List<String>, OutputStream)` / `downloadZip(List<String>, File)`，内存受控流式压缩打成 ZIP 包 | `StorageTemplateZipTest` |
+| **打包归档** | 多文件流式 ZIP 打包下载 | `StorageTemplate` | - | `downloadZip(List<String>, OutputStream)` / `downloadZip(List<String>, File)`，内存受控流式压缩打成 ZIP 包 | `StorageTemplateZipTest` / `SampleStorageIntegrationTest` |
 | **预签名只读** | 安全只读防盗链预签名 URL | `StorageTemplate` | `ateng.boot.storage.local.secret-key`<br>`ateng.boot.storage.local.download-endpoint` | `getPresignedUrl(String, Duration)`，返回带有效期的强类型 `PresignedUrl`，Local 驱动基于 HMAC-SHA256 签名，S3 驱动原生对接云端凭据 | `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
 | **预签名直传** | 安全上传预签名授权 URL | `StorageTemplate` | - | `getPresignedUploadUrl(String, Duration)`，为前端直传提供带有效期的强类型 `PresignedUrl`（S3 驱动原生支持） | `S3DriverTest` |
 | **本地端点** | 本地文件安全受控下载端点 | `LocalStorageDownloadController` | `ateng.boot.storage.local.download-endpoint` | 提供 `/storage/local/download` 端点，对 URL 时间戳与 HMAC 签名防篡改校验，过期与非法签名 Fail-Fast | `LocalStorageDownloadControllerTest` / `SampleStorageIntegrationTest` |
 | **本地驱动** | 本地文件系统存储驱动 | `LocalDriver` | `ateng.boot.storage.local.base-path`<br>`ateng.boot.storage.local.domain` | 本地存储驱动，封装文件读写、父目录创建、路径穿越清洗与基于 HMAC 签名的安全外链 | `LocalDriverTest` / `SampleStorageIntegrationTest` |
 | **S3 协议驱动** | 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain` | 统一抽象 MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与虚拟主机域名无缝切换 | `S3DriverTest` |
 | **Spring 原生集成** | 原生 WritableResource 契约 | `StorageResource` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源 | `StorageResourceTest` / `SampleStorageIntegrationTest` |
-| **安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别二进制魔数特征，严厉阻断可执行文件或恶意脚本伪装成文档/图片上传，支持白名单拦截 | `StorageGuardTest` / `StorageTemplateGuardTest` |
+| **安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别二进制魔数特征，严厉阻断可执行文件或恶意脚本伪装成文档/图片上传，支持白名单拦截 | `StorageGuardTest` / `SampleStorageIntegrationTest` |
 | **路径清洗** | 路径穿越防御清洗工具 | `StorageSecurityUtil` | - | 清洗清理 `../`、`./`、非法特殊字符与宿主系统特定隐藏文件，杜绝路径穿越与越权漏洞 | `StorageSecurityUtilTest` |
-| **事件通知** | 存储生命周期事件总线 | `StorageEvent`<br>`StorageUploadedEvent`<br>`StorageDeletedEvent` | - | 文件上传与删除成功后通过 Spring 原生事件广播通知，便于业务解耦监听 | `StorageTemplateEventTest` |
+| **事件通知** | 存储生命周期事件总线 | `StorageEvent`<br>`StorageUploadedEvent`<br>`StorageDeletedEvent` | - | 文件上传与删除成功后通过 Spring 原生事件广播通知，便于业务解耦监听 | `StorageTemplateEventTest` / `SampleStorageIntegrationTest` |
 | **因果异常体系** | 语义化异常与统一错误码 | `StorageException`<br>`StorageResultCode` | - | 将底层驱动抛出的各种 IO/网络/SDK 异常转译为语义化 `StorageException` 并保留因果堆栈链 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 
 ---
@@ -446,10 +446,10 @@ public class StorageEventListener {
 ```
 
 ### 预期呈现契约
-控制台日志输出：
+控制台日志输出（真实实测记录）：
 ```text
-文件上传成功: 源=primary, 路径=documents/2026/report.pdf, 大小=1048576 字节, MIME=application/pdf
-文件删除成功: 源=primary, 路径=temp/cache-123.bin
+2026-10-19T16:44:48.871+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件上传事件: source=default, path=hello.txt, size=32, contentType=text/plain
+2026-10-19T16:44:49.290+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件删除事件: source=default, path=backup/target.txt
 ```
 - **全链路感知**：`upload`、`uploadBytes`、`uploadString`、`uploadJson`、`copy`、`move` 均会自动触发 `StorageUploadedEvent`；`delete`、`deleteBatch` 与 `move` 源文件均会自动触发 `StorageDeletedEvent`；
 - **Fail-Safe 异常隔离**：事件发布内部包裹异常防御，任何外部监听器抛出的未捕获异常均仅记录 Warn 告警日志，绝不阻断文件核心上传/删除的成功返回。
@@ -486,7 +486,10 @@ public void generateDownloadUrl() {
 
 外部 HTTP 客户端（浏览器或移动端）直接请求该 URL 时，内置的 `LocalStorageDownloadController` 端点自动拦截校验：
 - **时效过期**：返回 HTTP 403 Forbidden；
-- **签名不符或参数被篡改**：返回 HTTP 403 Forbidden；
+- **签名不符或参数被篡改**：返回 HTTP 403 Forbidden，控制台真实输出告警：
+  ```text
+  2026-10-19T16:44:49.570+08:00  WARN 33988 --- [ateng-boot-sample-storage] [           main] g.a.b.s.c.LocalStorageDownloadController : 预签名下载外链签名校验失败或已被篡改: path=secure/data.txt, expires=1792399549
+  ```
 - **路径穿越攻击**（如注入 `..`）：返回 HTTP 400 Bad Request；
 - **校验合法**：以流式响应输出文件内容，并按文件属性设置标准 `Content-Type` 与 `Content-Disposition` 下载响应头。
 
@@ -671,13 +674,20 @@ if (fileType != null) {
 ```
 
 ### 预期呈现契约
-当攻击者尝试将可执行脚本伪装为 `avatar.png` 上传时，系统立即阻断并抛出清晰的业务异常：
+当攻击者尝试将恶意伪装文件上传时（例如文件扩展名为 `.png` 但二进制真实内容为伪装文本），系统立即阻断并记录控制台日志：
 ```text
-io.github.atengk.boot.storage.exception.StorageException: 检测到文件伪装攻击：文件声明扩展名为 [png]，但实际内容特征为高危文件 [sh]
-	at io.github.atengk.boot.storage.guard.StorageGuard.inspect(StorageGuard.java:232)
-	at io.github.atengk.boot.storage.template.StorageTemplate.upload(StorageTemplate.java:185)
+2026-10-19T16:44:49.490+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.w.h.GlobalExceptionHandler       : 业务逻辑中断: code=40010, msg=文件魔数强校验失败：未检测到扩展名 [png] 所需的标准头部特征魔数
 ```
-HTTP 返回状态码 `40010`（`STORAGE_FILE_TYPE_MISMATCH`），恶意文件被彻底拒之门外，零磁盘/S3污染。
+遵循显式统一响应契约（ADR-0002），HTTP 返回 200 + 业务错误码 `40010`（`STORAGE_FILE_TYPE_MISMATCH`）：
+```json
+{
+  "code": 40010,
+  "msg": "文件魔数强校验失败：未检测到扩展名 [png] 所需的标准头部特征魔数",
+  "data": null,
+  "success": false
+}
+```
+恶意伪装文件被彻底拒之门外，零磁盘与 S3 污染。
 
 ---
 
@@ -726,18 +736,24 @@ public void uploadLargeFile() {
 ```
 
 ### 预期呈现契约
-控制台输出：
+控制台日志与事件记录（真实实测记录）：
 ```text
-分片上传会话初始化成功, uploadId=4f5e7a9b0c1d2e3f4a5b6c7d8e9f0a1b
-分片合并落盘成功: path=large/backup.tar.gz, size=31457280, etag=e59ff97941044f85df5297e1c302d260
+2026-10-19T16:44:49.226+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件上传事件: source=default, path=chunks/large-file.bin, size=1000, contentType=application/octet-stream
 ```
-若客户端在上传过程中发生异常，仅上传了第 1 片和第 3 片（遗漏第 2 片）即尝试触发合并，系统立即拦截并快速失败：
+若客户端在上传过程中发生异常，仅上传了第 1 片（遗漏第 2 片，预期总片数: 2）即尝试触发合并，系统立即拦截并快速失败，控制台输出：
 ```text
-io.github.atengk.boot.storage.exception.StorageException: 分片合并失败，缺失第 2 个分片（预期总片数: 3）
-	at io.github.atengk.boot.storage.driver.LocalDriver.completeChunkedUpload(LocalDriver.java:493)
-	at io.github.atengk.boot.storage.template.StorageTemplate.completeChunkedUpload(StorageTemplate.java:569)
+2026-10-19T16:44:49.201+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.w.h.GlobalExceptionHandler       : 业务逻辑中断: code=40012, msg=分片合并失败，缺失第 2 个分片（预期总片数: 2）
 ```
-错误码响应 `40012`（`STORAGE_CHUNK_MISSING`），临时碎片保留在会话中等待重试补传或由客户端调度 `abortChunkedUpload` 安全回收。
+返回标准错误码 `40012`（`STORAGE_CHUNK_MISSING`）：
+```json
+{
+  "code": 40012,
+  "msg": "分片合并失败，缺失第 2 个分片（预期总片数: 2）",
+  "data": null,
+  "success": false
+}
+```
+临时碎片保留在会话中等待重试补传或由客户端调度 `abortChunkedUpload` 安全回收。
 
 ---
 
