@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: ateng-boot-sample-core
+  main:
+    web-application-type: none
+
+ateng:
+  boot:
+    core:
+      async:
+        core-pool-size: 4
+        max-pool-size: 8
+        queue-capacity: 100
+        thread-name-prefix: sample-core-async-

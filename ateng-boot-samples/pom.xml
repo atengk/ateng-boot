@@ -18,6 +18,9 @@
 
     <modules>
         <module>ateng-boot-sample-basic</module>
+        <module>ateng-boot-sample-core</module>
+        <module>ateng-boot-sample-web</module>
+        <module>ateng-boot-sample-mybatis-plus</module>
         <module>ateng-boot-sample-redis</module>
         <module>ateng-boot-sample-excel</module>
         <module>ateng-boot-sample-satoken</module>

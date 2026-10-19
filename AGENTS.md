@@ -97,7 +97,7 @@
      ```bash
      mvn test -pl <changed-module> -am -T 1C -nsu -B
      ```
-  2. **阶梯二：本地提交准出验收（精准端到端集成）**：准备提交前，执行变更模块与对应场景样例工程（`ateng-boot-samples/ateng-boot-sample-<scenario>`，如 `basic`/`redis`/`satoken`/`excel`/`storage`，重大底层重构联动 `smoke-test`）定向联动验证，杜绝无脑全量回归（参见 [ADR-0028](./docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)）：
+  2. **阶梯二：本地提交准出验收（精准端到端集成）**：准备提交前，执行变更模块与对应场景样例工程（`ateng-boot-samples/ateng-boot-sample-<scenario>`，1:1 精确对齐各 Starter，如 `core`/`web`/`mybatis-plus`/`redis`/`satoken`/`excel`/`storage`，重大底层重构联动 `smoke-test`）定向联动验证，杜绝无脑全量回归（参见 [ADR-0028](./docs/adr/0028-samples-modularization-and-incremental-integration-testing.md)）：
      ```bash
      mvn test -pl <changed-module>,ateng-boot-samples/ateng-boot-sample-<scenario> -am -T 1C -nsu -B
      ```
@@ -122,8 +122,12 @@
   4. **维度三：核心生产边界与非功能语义 (Production Boundary & Failure Modes)**：显式声明该模块在极端、高并发或复杂事务场景下的底层行为机制（如持久层事务可见性与会话共享、MQ 消息幂等与重试死信、Redis 锁可重入与续期策略、网络超时熔断、内存防 OOM 等，杜绝非功能黑盒）；
   5. **维度四：物理排版与代码全真验证 (Evergreen & Zero-Glitch)**：示例代码必跑通并锚定单测、YAML 配置逐字对齐属性类、Markdown 代码块严格闭合无破损，严禁格式事故与伪数据。
 
-- **“先测后文、文必有源”与排版防裂守卫 (Zero-Hallucination & Markdown Integrity)**：
-  - **代码源头锚定**：文档中展示的 Java 示例必须且只能直接提取自已跑通的单测类（`*Test.java`）或场景样例工程（`ateng-boot-sample-*`），严禁脱离代码在 Markdown 里凭空手敲；若某功能尚无现成范式，必须先在测试用例中写出并跑通后再提取至文档；
+- **“Sample-First 研发闭环与 100% 场景实测铁律” (Sample-Before-Docs & 100% Feature Coverage Invariant)**：
+  - **功能 100% 场景对齐刚性铁律**：模块实现的每一个对外公开功能（包括所有公开门面类及 Public 方法、声明式核心注解 `@*` 及其关键属性、配置属性类 `@ConfigurationProperties` 的配置项、扩展点 SPI），**必须 100% 在归属的 `ateng-boot-sample-<scenario>` 中提供真实、自洽、端到端可运行的演示用例**，严禁只在子模块局部单测写 Mock 而在 Sample 中缺位！
+    - **Web 契约层特性**（统一响应、参数校验、异常处理、签名防重放、Trace 追踪等）：必须在 Sample 中编写对应的 `@RestController` 接口，并在 `src/test` 配套 `MockMvc` / `TestRestTemplate` 真实端到端集成测试；
+    - **非 Web/组件级底座特性**（Core 通用工具/上下文透传/重试分批、MyBatis-Plus 动态查询/批处理/租户拦截等）：在 Sample 中编写专职的 `ScenarioService` 或业务场景组件，并在 `src/test` 配套 `@SpringBootTest` 端到端集成测试跑通真实业务流程，杜绝为了演示纯后台算法或 Mapper 强行生造不合理的 Controller。
+  - **Sample-First 流程不变量（绝对前置工序）**：在编写或更新子模块 `README.md` 前，**必须先完成对应 Sample 场景用例的编写与实测验证并确保测试全绿**。严禁在尚未写出可运行 Sample 时凭空手敲文档！
+  - **代码源头全真逆向提取**：`README.md` 中展示的 Java 示例代码、YAML 配置片段及执行结果，**必须 100% 直接从已跑通的 Sample 源码、配置及实测日志/响应中 1:1 逆向提取**。若某特性未在 Sample 中跑通，一律严禁写入文档！
   - **配置源头锚定**：YAML/Properties 配置片段必须 100% 与当前模块的 `@ConfigurationProperties` 字段逐字对齐；
   - **预期呈现源头锚定**：控制台输出、实际 SQL 与响应结果必须直接截取自本地实际执行 `mvn test` 的真实控制台输出，严禁脑补拼接伪数据；
   - **文档排版防裂守卫 (Markdown Integrity Guard)**：
@@ -131,7 +135,16 @@
     2. 嵌套代码块严格遵循反引号阶梯（外四反引号 ```` 嵌套内三反引号 ```）；
     3. 文档互链 100% 使用相对路径，严禁包含本地绝对路径（如 `D:/...`、`file:///`）与死链。
 
-- **子模块与样例工程职责正交 (Submodule & Samples Decoupling)**：
+- **子模块与样例工程职责正交与 1:1 矩阵 (Submodule & Samples 1:1 Alignment)**：
+  - **全模块 1:1 独立场景沙箱**：彻底废除 `ateng-boot-sample-basic` 混合大杂烩，建立业务 Starter 与场景样例工程绝对的 1:1 映射关系：
+    - `ateng-boot-core` ↔ `ateng-boot-sample-core`（纯内存极速运行演示脱敏、序列化、上下文、重试分批等）
+    - `ateng-boot-web` ↔ `ateng-boot-sample-web`（演示统一契约、分层校验、异常转译、Trace MDC、加签验签、虚拟线程等，零 DB 依赖）
+    - `ateng-boot-mybatis-plus` ↔ `ateng-boot-sample-mybatis-plus`（演示实体阶梯、多租户、数据权限、字段加解密、动态查询、分批批量操作等，配对 H2 内存库）
+    - `ateng-boot-redis` ↔ `ateng-boot-sample-redis`（演示分布式锁、限流、防重幂等、延时队列，零 DB 依赖）
+    - `ateng-boot-excel` ↔ `ateng-boot-sample-excel`（演示流式导出、脱敏导出、行校验回写、智能模板，零 DB 依赖）
+    - `ateng-boot-satoken` ↔ `ateng-boot-sample-satoken`（演示登录注销、路由拦截、权限校验、审计打通，内存降级/H2 库）
+    - `ateng-boot-storage` ↔ `ateng-boot-sample-storage`（演示本地/S3对象存储、断点续传、文件清洗、ZIP打包等）
+    - `ateng-boot-all` ↔ `ateng-boot-sample-smoke-test`（全家桶全 Starter 装配秒级冒烟门禁）
   - 子模块 `README.md` 是该模块唯一权威的**“全功能契约真理源”**，承载完备的全景矩阵与五维交付规范；
   - 场景样例工程（`ateng-boot-samples/ateng-boot-sample-*`）是面向开发者的**“最小可运行沙箱与开箱体验工程”**，其代码专职作为文档代码片段的真实测试源头，两者代码 1:1 锚定；样例工程自身的 README 仅需保持轻量（聚焦启动步骤与体验验证）。
 
@@ -162,16 +175,21 @@
 - **官方 CLI 与工单生命周期闭环 (CLI & Ticket Lifecycle)**：
   GitHub Issues、PR 审阅与 CI 交互一律通过官方 `gh` 命令行闭环。工单生命周期严格遵循五阶段状态机：
   1. **认领**：查阅工单并指派当前开发者（`gh issue edit <n> --add-assignee "@me"`）；
-  2. **TDD 与文档同步实现**：测试驱动编码，全面遵循第 3 节“工业级代码成熟度九道防线”；同步在所属子模块 `README.md` 中按“五维生产就绪交付模型”补齐全景矩阵、开箱代码、扩展定制接入、核心生产边界与实测输出契约；
+  2. **TDD 与 Sample-First 逆向闭环实现**：
+     - **2.1 核心驱动与白盒单测**：测试驱动编码，全面遵循第 3 节“工业级代码成熟度九道防线”，在模块内部编写完善的白盒与对抗性单元测试；
+     - **2.2 Sample 端到端实测补全（Hard Gate）**：在归属的 `ateng-boot-sample-<scenario>` 中编写真实端到端场景用例，100% 覆盖新增/修改的公开 API、核心注解、配置项与扩展 SPI，执行定向测试确保端到端全绿；
+     - **2.3 全真逆向提取生成 `README.md`**：从已跑通的 Sample 源码、配置与实测输出中 1:1 逆向提取示例与结果，在所属子模块 `README.md` 中按“五维生产就绪交付模型”补齐全景矩阵、开箱代码、扩展定制接入、核心生产边界与实测输出契约；
   3. **准出、自检与双轴审查**：
      - 执行第 4 节阶梯二准出测试（纯文档改动免测）；
      - **《交付前成熟度与文档双向对齐清单 (Audit Checklist)》强制自检卡点**：
+       - [ ] **Sample 100% 场景对齐**：模块新增/修改的所有公共 API 方法、核心注解、配置项与 SPI，是否已 100% 在归属的 Sample 工程中提供端到端真实可运行用例？
+       - [ ] **Sample-First 逆向闭环**：README.md 中的所有 Java 示例代码、YAML 配置与输出结果，是否 100% 提取自上述已验证跑通的 Sample 工程？
        - [ ] **全景速查矩阵**：模块新增/修改的所有公共 API 方法、配置项、核心注解与 SPI 是否 100% 入表？
        - [ ] **代码-文档真理一致性**：文档中展示的代码与 YAML 是否直接截取自已跑通的单测/Sample？方法名与参数签名是否完全对齐？
        - [ ] **九道成熟度防线自检**：是否通过对称门面、边界 Fail-Fast、确定性清理、超时防悬挂、驱动异常转译等全部 9 项检查？
        - [ ] **单测环境隔离**：是否使用 `@TempDir`、在 `@AfterEach` 中清理上下文、100% 离线自洽？
        - [ ] **传输契约隔离**：Controller 传输边界是否 100% 杜绝持久层实体（Entity）泄露？
-     - **审查红牌阻断 (Red Card Gate)**：调用 `/code-review` 开展双轴审查；若审查发现文档漏写公开功能、文档代码与源码签名不符，或触碰成熟度红线，一律出具红牌阻断，强制返修直至双绿；
+     - **审查红牌阻断 (Red Card Gate)**：调用 `/code-review` 开展双轴审查；若审查发现模块公开功能在 Sample 中缺位、文档示例未经 Sample 真实跑通、文档漏写公开功能，或触碰成熟度红线，一律出具红牌阻断，强制返修直至双绿；
   4. **受控提交**：按第 5 节执行受控提交并推送（代码与文档同工单同提交原子交付）；
   5. **闭环**：守护 CI 监控至全绿，通过文件回写验收清单与提交哈希（`gh issue comment <n> -F <file>`），关闭工单（`gh issue close <n>`）。
 - **工单操作与 CLI 避坑 (Issue Tracker & CLI)**：操作 GitHub Issues / PR 或编写 PowerShell 交互命令时，遵循 [docs/agents/issue-tracker.md](./docs/agents/issue-tracker.md)（含特殊字符引号包裹、`-F` 文件回写防截断及 Wayfinding 映射）。

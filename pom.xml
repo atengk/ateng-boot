@@ -319,9 +319,13 @@
                             <excludeArtifacts>
                                 <excludeArtifact>ateng-boot-samples</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-basic</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-core</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-web</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-mybatis-plus</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-redis</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-storage</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>

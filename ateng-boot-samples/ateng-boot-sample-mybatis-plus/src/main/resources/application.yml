@@ -1,0 +1,36 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: ateng-boot-sample-mybatis-plus
+  datasource:
+    url: jdbc:h2:mem:sample_mp_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+ateng:
+  boot:
+    mybatis-plus:
+      pagination:
+        max-limit: 500
+        overflow: false
+      block-attack:
+        enabled: true
+      optimistic-locker:
+        enabled: true
+      audit:
+        enabled: true
+        default-operator: SYSTEM
+      dynamic-sql:
+        enabled: true
