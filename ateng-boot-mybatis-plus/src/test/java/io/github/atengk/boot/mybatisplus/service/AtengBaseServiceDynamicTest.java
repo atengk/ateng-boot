@@ -354,4 +354,133 @@ class AtengBaseServiceDynamicTest {
         // 6. 基于 DTO 为 null 返回 false
         assertThat(userService.existsDynamic((Object) null)).isFalse();
     }
+
+    @Test
+    @DisplayName("10. getById(id, voClass) 强类型 VO 一步直出：存在映射 VO，不存在返回 null")
+    void shouldGetByIdVoCorrectly() {
+        // 1. 命中记录
+        TestUserVO vo = userService.getById(1L, TestUserVO.class);
+        assertThat(vo).isNotNull();
+        assertThat(vo.getId()).isEqualTo(1L);
+        assertThat(vo.getUsername()).isEqualTo("admin");
+        assertThat(vo.getEmail()).isEqualTo("admin@example.com");
+        assertThat(vo.getAge()).isEqualTo(30);
+
+        // 2. 不存在记录安全返回 null
+        assertThat(userService.getById(999L, TestUserVO.class)).isNull();
+
+        // 3. id 为 null 安全返回 null
+        assertThat(userService.getById(null, TestUserVO.class)).isNull();
+
+        // 4. voClass 为 null 抛出 NPE
+        assertThatThrownBy(() -> userService.getById(1L, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("voClass 不能为 null");
+    }
+
+    @Test
+    @DisplayName("11. listByIds(idList, voClass) 批量 VO 投影：保底返回空列表，严禁返回 null")
+    void shouldListByIdsVoCorrectly() {
+        // 1. 批量命中
+        List<TestUserVO> voList = userService.listByIds(List.of(1L, 2L, 4L), TestUserVO.class);
+        assertThat(voList).hasSize(3);
+        assertThat(voList.stream().map(TestUserVO::getUsername).toList())
+                .containsExactlyInAnyOrder("admin", "alice", "alex");
+
+        // 2. 查无匹配记录保底返回空列表
+        List<TestUserVO> emptyResult = userService.listByIds(List.of(998L, 999L), TestUserVO.class);
+        assertThat(emptyResult).isNotNull().isEmpty();
+
+        // 3. 入参为空集合保底返回空列表
+        assertThat(userService.listByIds(List.of(), TestUserVO.class)).isNotNull().isEmpty();
+
+        // 4. 入参为 null 保底返回空列表
+        assertThat(userService.listByIds(null, TestUserVO.class)).isNotNull().isEmpty();
+
+        // 5. voClass 为 null 抛出 NPE
+        assertThatThrownBy(() -> userService.listByIds(List.of(1L), null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("voClass 不能为 null");
+    }
+
+    @Test
+    @DisplayName("12. list / getOne Wrapper 扩展 VO 投影与单条控制")
+    void shouldListAndGetOneWrapperVoCorrectly() {
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<TestUserEntity> wrapper =
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<TestUserEntity>lambdaQuery()
+                        .eq(TestUserEntity::getStatus, 1);
+
+        // 1. list(wrapper, voClass)
+        List<TestUserVO> activeList = userService.list(wrapper, TestUserVO.class);
+        assertThat(activeList).hasSize(4);
+
+        // 2. getOne(wrapper, voClass, false) 宽容模式（多条返回首条）
+        TestUserVO firstVo = userService.getOne(wrapper, TestUserVO.class, false);
+        assertThat(firstVo).isNotNull();
+
+        // 3. getOne(wrapper, voClass, true) 严格模式（多条严正抛出 TooManyResultsException）
+        assertThatThrownBy(() -> userService.getOne(wrapper, TestUserVO.class, true))
+                .isInstanceOf(org.apache.ibatis.exceptions.TooManyResultsException.class);
+
+        // 4. getOne 唯一匹配成功返回
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<TestUserEntity> singleWrapper =
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<TestUserEntity>lambdaQuery()
+                        .eq(TestUserEntity::getUsername, "charlie");
+        TestUserVO charlieVo = userService.getOne(singleWrapper, TestUserVO.class, true);
+        assertThat(charlieVo).isNotNull();
+        assertThat(charlieVo.getUsername()).isEqualTo("charlie");
+    }
+
+    @Test
+    @DisplayName("13. getOneDynamic 支持 throwEx 开关：严格快速失败与宽容返回首条")
+    void shouldHandleGetOneDynamicWithThrowExSwitch() {
+        // 条件匹配多条 (status = 1)
+        DynamicQueryRequest multiRequest = new DynamicQueryRequest();
+        multiRequest.setConditions(List.of(
+                new QueryCondition("status", QueryOperator.EQ, 1)
+        ));
+
+        // 1. Request + throwEx = true 严正抛出异常
+        assertThatThrownBy(() -> userService.getOneDynamic(multiRequest, true))
+                .isInstanceOf(org.apache.ibatis.exceptions.TooManyResultsException.class);
+        assertThatThrownBy(() -> userService.getOneDynamic(multiRequest, TestUserVO.class, true))
+                .isInstanceOf(org.apache.ibatis.exceptions.TooManyResultsException.class);
+
+        // 2. Request + throwEx = false 宽松返回首条
+        TestUserEntity firstEntity = userService.getOneDynamic(multiRequest, false);
+        assertThat(firstEntity).isNotNull();
+        TestUserVO firstVo = userService.getOneDynamic(multiRequest, TestUserVO.class, false);
+        assertThat(firstVo).isNotNull();
+
+        // 3. DTO + throwEx = true 匹配多条抛出异常
+        TestUserSearchDTO multiDto = new TestUserSearchDTO();
+        multiDto.setMinAge(20); // admin(30), alice(22), bob(28), alex(35) -> 4条
+        assertThatThrownBy(() -> userService.getOneDynamic(multiDto, true))
+                .isInstanceOf(org.apache.ibatis.exceptions.TooManyResultsException.class);
+        assertThatThrownBy(() -> userService.getOneDynamic(multiDto, TestUserVO.class, true))
+                .isInstanceOf(org.apache.ibatis.exceptions.TooManyResultsException.class);
+
+        // 4. DTO + throwEx = false 宽松返回首条
+        assertThat(userService.getOneDynamic(multiDto, false)).isNotNull();
+        assertThat(userService.getOneDynamic(multiDto, TestUserVO.class, false)).isNotNull();
+
+        // 5. 单条匹配成功
+        DynamicQueryRequest singleRequest = new DynamicQueryRequest();
+        singleRequest.setConditions(List.of(
+                new QueryCondition("username", QueryOperator.EQ, "admin")
+        ));
+        TestUserVO adminVo = userService.getOneDynamic(singleRequest, TestUserVO.class, true);
+        assertThat(adminVo).isNotNull();
+        assertThat(adminVo.getUsername()).isEqualTo("admin");
+
+        // 6. 无匹配记录返回 null
+        DynamicQueryRequest notFoundRequest = new DynamicQueryRequest();
+        notFoundRequest.setConditions(List.of(
+                new QueryCondition("username", QueryOperator.EQ, "ghost")
+        ));
+        assertThat(userService.getOneDynamic(notFoundRequest, true)).isNull();
+        assertThat(userService.getOneDynamic(notFoundRequest, TestUserVO.class, true)).isNull();
+        assertThat(userService.getOneDynamic(notFoundRequest, false)).isNull();
+        assertThat(userService.getOneDynamic(notFoundRequest, TestUserVO.class, false)).isNull();
+    }
 }

@@ -17,6 +17,7 @@ import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 
+import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -34,6 +35,100 @@ import java.util.function.Predicate;
  * @since 2026-10-16
  */
 public interface AtengBaseService<T> extends IService<T> {
+
+    // ==========================================
+    // 0. 零实体泄露基础查询 VO 投影门面 (ADR-0010)
+    // ==========================================
+
+    /**
+     * 根据主键 ID 查询实体并一步到位投影转换为目标强类型 VO（零持久层实体泄露）
+     *
+     * @param id      主键 ID
+     * @param voClass 目标 VO 类型
+     * @param <V>     目标 VO 泛型
+     * @return 映射后的强类型 VO 对象，当 id 为 null 或无匹配数据时返回 null
+     */
+    default <V> V getById(Serializable id, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        if (id == null) {
+            return null;
+        }
+        T entity = getById(id);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    /**
+     * 根据主键 ID 集合批量查询实体并投影转换为目标强类型 VO 列表（零持久层实体泄露）
+     * 遵循健壮性与空安全契约：当入参为空或查询无匹配数据时保底返回空集合，严禁返回 null
+     *
+     * @param idList  主键 ID 集合
+     * @param voClass 目标 VO 类型
+     * @param <V>     目标 VO 泛型
+     * @return 映射后的强类型 VO 列表（保底空集合，严禁返回 null）
+     */
+    default <V> List<V> listByIds(Collection<? extends Serializable> idList, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        if (idList == null || idList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<T> entityList = listByIds(idList);
+        if (entityList == null || entityList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return entityList.stream()
+                .map(item -> JsonUtil.convertValue(item, voClass))
+                .toList();
+    }
+
+    /**
+     * 根据查询条件 Wrapper 列表查询实体并投影转换为目标强类型 VO 列表（零持久层实体泄露）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 映射后的强类型 VO 列表（保底空集合，严禁返回 null）
+     */
+    default <V> List<V> list(Wrapper<T> queryWrapper, Class<V> voClass) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        List<T> entityList = list(queryWrapper);
+        if (entityList == null || entityList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return entityList.stream()
+                .map(item -> JsonUtil.convertValue(item, voClass))
+                .toList();
+    }
+
+    /**
+     * 根据查询条件 Wrapper 查询单条记录并投影转换为目标强类型 VO（默认宽松模式，匹配多条返回首条）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 强类型 VO 对象，无记录时返回 null
+     */
+    default <V> V getOne(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return getOne(queryWrapper, voClass, false);
+    }
+
+    /**
+     * 根据查询条件 Wrapper 查询单条记录并投影转换为目标强类型 VO（支持严格多记录快速失败控制）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @param voClass      目标 VO 类型
+     * @param throwEx      若匹配到多条记录是否抛出 TooManyResultsException 异常
+     * @param <V>          目标 VO 泛型
+     * @return 强类型 VO 对象，无记录时返回 null
+     */
+    default <V> V getOne(Wrapper<T> queryWrapper, Class<V> voClass, boolean throwEx) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        T entity = getOne(queryWrapper, throwEx);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    // ==========================================
+    // 1. 动态查询与分页投影直出门面
+    // ==========================================
 
     /**
      * 基于结构化动态查询请求执行单表分页查询，并直接返回强类型实体分页结果
@@ -168,19 +263,48 @@ public interface AtengBaseService<T> extends IService<T> {
     }
 
     /**
-     * 基于结构化动态查询请求执行单表单条查询并返回实体
+     * 基于结构化动态查询请求执行单表单条查询并返回实体（支持严格多记录快速失败控制）
+     *
+     * @param request 动态查询请求
+     * @param throwEx 若匹配到多条记录是否抛出 TooManyResultsException 异常（true: 抛出异常; false: 宽容返回首条并警告）
+     * @return 实体对象，无匹配记录时返回 null（调用方需前置卫语句防卫）
+     */
+    default T getOneDynamic(DynamicQueryRequest request, boolean throwEx) {
+        if (request == null) {
+            return null;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        return getOne(wrapper, throwEx);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行单表单条查询并返回实体（默认宽松模式，匹配多条返回首条）
      *
      * @param request 动态查询请求
      * @return 实体对象，无匹配记录时返回 null（调用方需前置卫语句防卫）
      */
     default T getOneDynamic(DynamicQueryRequest request) {
-        Class<T> entityClass = getEntityClass();
-        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
-        return getOne(wrapper, false);
+        return getOneDynamic(request, false);
     }
 
     /**
-     * 基于结构化动态查询请求执行单表单条查询并投影为目标 VO
+     * 基于结构化动态查询请求执行单表单条查询并投影为目标 VO（支持严格多记录快速失败控制）
+     *
+     * @param request 动态查询请求
+     * @param voClass 目标 VO 类型
+     * @param throwEx 若匹配到多条记录是否抛出 TooManyResultsException 异常
+     * @param <V>     目标 VO 泛型
+     * @return 强类型 VO 对象，无记录时返回 null
+     */
+    default <V> V getOneDynamic(DynamicQueryRequest request, Class<V> voClass, boolean throwEx) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        T entity = getOneDynamic(request, throwEx);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    /**
+     * 基于结构化动态查询请求执行单表单条查询并投影为目标 VO（默认宽松模式，匹配多条返回首条）
      *
      * @param request 动态查询请求
      * @param voClass 目标 VO 类型
@@ -188,28 +312,58 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return 强类型 VO 对象，无记录时返回 null
      */
     default <V> V getOneDynamic(DynamicQueryRequest request, Class<V> voClass) {
-        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
-        T entity = getOneDynamic(request);
-        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+        return getOneDynamic(request, voClass, false);
     }
 
     /**
-     * 基于普通查询 DTO 对象执行单表单条查询并返回实体
+     * 基于普通查询 DTO 对象执行单表单条查询并返回实体（支持严格多记录快速失败控制）
+     *
+     * @param queryDto 查询 DTO 对象
+     * @param throwEx  若匹配到多条记录是否抛出 TooManyResultsException 异常
+     * @return 实体对象
+     */
+    default T getOneDynamic(Object queryDto, boolean throwEx) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return getOneDynamic(request, throwEx);
+        }
+        if (queryDto == null) {
+            return null;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        return getOne(wrapper, throwEx);
+    }
+
+    /**
+     * 基于普通查询 DTO 对象执行单表单条查询并返回实体（默认宽松模式，匹配多条返回首条）
      *
      * @param queryDto 查询 DTO 对象
      * @return 实体对象
      */
     default T getOneDynamic(Object queryDto) {
-        if (queryDto instanceof DynamicQueryRequest request) {
-            return getOneDynamic(request);
-        }
-        Class<T> entityClass = getEntityClass();
-        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
-        return getOne(wrapper, false);
+        return getOneDynamic(queryDto, false);
     }
 
     /**
-     * 基于普通查询 DTO 对象执行单表单条查询并投影为目标 VO
+     * 基于普通查询 DTO 对象执行单表单条查询并投影为目标 VO（支持严格多记录快速失败控制）
+     *
+     * @param queryDto 查询 DTO 对象
+     * @param voClass  目标 VO 类型
+     * @param throwEx  若匹配到多条记录是否抛出 TooManyResultsException 异常
+     * @param <V>      目标 VO 泛型
+     * @return 强类型 VO 对象
+     */
+    default <V> V getOneDynamic(Object queryDto, Class<V> voClass, boolean throwEx) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return getOneDynamic(request, voClass, throwEx);
+        }
+        T entity = getOneDynamic(queryDto, throwEx);
+        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+    }
+
+    /**
+     * 基于普通查询 DTO 对象执行单表单条查询并投影为目标 VO（默认宽松模式，匹配多条返回首条）
      *
      * @param queryDto 查询 DTO 对象
      * @param voClass  目标 VO 类型
@@ -217,12 +371,7 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return 强类型 VO 对象
      */
     default <V> V getOneDynamic(Object queryDto, Class<V> voClass) {
-        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
-        if (queryDto instanceof DynamicQueryRequest request) {
-            return getOneDynamic(request, voClass);
-        }
-        T entity = getOneDynamic(queryDto);
-        return entity != null ? JsonUtil.convertValue(entity, voClass) : null;
+        return getOneDynamic(queryDto, voClass, false);
     }
 
     /**
