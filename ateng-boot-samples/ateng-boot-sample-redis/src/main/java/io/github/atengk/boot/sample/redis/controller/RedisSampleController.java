@@ -30,6 +30,7 @@ public class RedisSampleController {
     private final RedisSampleService redisSampleService;
     private final OrderDelayQueueService orderDelayQueueService;
     private final io.github.atengk.boot.sample.redis.service.NoticeBroadcastService noticeBroadcastService;
+    private final io.github.atengk.boot.redis.bloom.RedisBloomFilter redisBloomFilter;
 
     /**
      * 扣减商品库存（受 Redisson 分布式锁严格并发保护）
@@ -156,5 +157,45 @@ public class RedisSampleController {
     @GetMapping("/received-system-events")
     public Result<java.util.List<String>> getReceivedSystemEvents() {
         return Result.success(noticeBroadcastService.getReceivedSystemEvents());
+    }
+
+    /**
+     * 将用户添加至黑名单布隆过滤器
+     *
+     * @param userId 用户 ID
+     * @return 是否添加成功
+     */
+    @PostMapping("/bloom/blacklist/add")
+    public Result<Boolean> addBlacklist(@RequestParam("userId") String userId) {
+        boolean added = io.github.atengk.boot.redis.bloom.RedisBloomFilter.add("user-blacklist", userId);
+        return Result.success(added);
+    }
+
+    /**
+     * 判定用户是否可能处于黑名单中
+     *
+     * @param userId 用户 ID
+     * @return 是否处于黑名单
+     */
+    @GetMapping("/bloom/blacklist/check")
+    public Result<Boolean> checkBlacklist(@RequestParam("userId") String userId) {
+        boolean inBlacklist = io.github.atengk.boot.redis.bloom.RedisBloomFilter.contains("user-blacklist", userId);
+        return Result.success(inBlacklist);
+    }
+
+    /**
+     * 查询黑名单布隆过滤器的监控指标
+     *
+     * @return 监控指标
+     */
+    @GetMapping("/bloom/blacklist/metrics")
+    public Result<java.util.Map<String, Object>> getBlacklistMetrics() {
+        java.util.Map<String, Object> metrics = new java.util.HashMap<>();
+        metrics.put("filterName", "user-blacklist");
+        metrics.put("count", io.github.atengk.boot.redis.bloom.RedisBloomFilter.count("user-blacklist"));
+        metrics.put("expectedInsertions", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getExpectedInsertions("user-blacklist"));
+        metrics.put("usageRate", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getUsageRate("user-blacklist"));
+        metrics.put("falseProbability", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getFalseProbability("user-blacklist"));
+        return Result.success(metrics);
     }
 }

@@ -1,6 +1,8 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
+import io.github.atengk.boot.redis.bloom.BloomFilterBootstrap;
+import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
@@ -257,6 +259,32 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnMissingBean(RedisAtomicUtil.class)
     public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
         return new RedisAtomicUtil(redisTemplate);
+    }
+
+    /**
+     * 装配分布式布隆过滤器操作门面 RedisBloomFilter
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return RedisBloomFilter 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisBloomFilter.class)
+    public RedisBloomFilter redisBloomFilter(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisBloomFilter(redissonClient, redisProperties);
+    }
+
+    /**
+     * 装配分布式布隆过滤器声明式预热调度器 BloomFilterBootstrap
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 布隆过滤器预热调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(BloomFilterBootstrap.class)
+    public BloomFilterBootstrap bloomFilterBootstrap(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new BloomFilterBootstrap(redissonClient, redisProperties);
     }
 
     /**

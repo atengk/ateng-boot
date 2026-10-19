@@ -57,6 +57,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -126,7 +127,27 @@ class SampleRedisIntegrationTest {
         @Bean
         @Primary
         @SuppressWarnings("unchecked")
-        public RedissonClient redissonClient(RLock sampleRLock) {
+        public org.redisson.api.RBloomFilter<Object> sampleRBloomFilter() {
+            org.redisson.api.RBloomFilter<Object> filter = mock(org.redisson.api.RBloomFilter.class);
+            Set<Object> set = ConcurrentHashMap.newKeySet();
+            when(filter.tryInit(anyLong(), anyDouble())).thenReturn(true);
+            when(filter.add((Object) any())).thenAnswer(addInv -> set.add(addInv.getArgument(0)));
+            when(filter.contains((Object) any())).thenAnswer(containsInv -> set.contains(containsInv.getArgument(0)));
+            when(filter.count()).thenAnswer(countInv -> (long) set.size());
+            when(filter.getExpectedInsertions()).thenReturn(50_000L);
+            when(filter.getFalseProbability()).thenReturn(0.01);
+            when(filter.isExists()).thenReturn(true);
+            when(filter.delete()).thenAnswer(delInv -> {
+                set.clear();
+                return true;
+            });
+            return filter;
+        }
+
+        @Bean
+        @Primary
+        @SuppressWarnings("unchecked")
+        public RedissonClient redissonClient(RLock sampleRLock, org.redisson.api.RBloomFilter<Object> sampleRBloomFilter) {
             RedissonClient client = mock(RedissonClient.class);
 
             // 分布式锁模拟：对于包含 timeout/fallback 的 Key 模拟争锁超时失败
@@ -174,6 +195,9 @@ class SampleRedisIntegrationTest {
 
             when(client.getBlockingQueue(anyString())).thenReturn(blockingQueue);
             when(client.getDelayedQueue(any())).thenReturn(delayedQueue);
+
+            // 分布式布隆过滤器模拟
+            when(client.getBloomFilter(anyString())).thenReturn(sampleRBloomFilter);
 
             return client;
         }
@@ -562,5 +586,40 @@ class SampleRedisIntegrationTest {
 
         assertThat(noticeBroadcastService.getReceivedSystemEvents())
                 .contains("sample:system:config_reload=cluster_mode=true");
+    }
+
+    @Test
+    @DisplayName("端到端验证：分布式布隆过滤器声明式预热、黑名单判定与容量指标查询")
+    void shouldManageBloomFilterBlacklistEndToEnd() throws Exception {
+        String testUser = "user_danger_999";
+
+        // 1. 初次查询，不在黑名单中
+        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/check")
+                        .param("userId", testUser))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(false));
+
+        // 2. 添加到黑名单
+        mockMvc.perform(post("/api/redis-sample/bloom/blacklist/add")
+                        .param("userId", testUser))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 再次查询，判定在黑名单中
+        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/check")
+                        .param("userId", testUser))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 4. 查询布隆过滤器容量与监控指标
+        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.filterName").value("user-blacklist"))
+                .andExpect(jsonPath("$.data.count").value("1"))
+                .andExpect(jsonPath("$.data.expectedInsertions").value("50000"));
     }
 }

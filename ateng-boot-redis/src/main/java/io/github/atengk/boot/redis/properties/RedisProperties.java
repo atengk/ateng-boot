@@ -60,6 +60,11 @@ public class RedisProperties {
     private RedissonProperties redisson = new RedissonProperties();
 
     /**
+     * 分布式布隆过滤器配置映射（key 为过滤器名称，如 blacklist、orderFilter 等）
+     */
+    private Map<String, BloomFilterConfig> bloomFilters = new HashMap<>();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -276,5 +281,22 @@ public class RedisProperties {
          * Redisson Netty 线程池大小（0 表示采用 Redisson 默认值 2 * CPU 核心数）
          */
         private int nettyThreads = 0;
+    }
+
+    /**
+     * 分布式布隆过滤器配置详情
+     */
+    @Data
+    public static class BloomFilterConfig {
+
+        /**
+         * 预计插入元素总量（默认 100,000）
+         */
+        private long expectedInsertions = 100_000L;
+
+        /**
+         * 期望误判率（默认 0.01 即 1%，取值范围 (0, 1)）
+         */
+        private double falseProbability = 0.01;
     }
 }

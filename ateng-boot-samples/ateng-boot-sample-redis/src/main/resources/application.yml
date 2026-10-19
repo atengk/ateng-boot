@@ -8,6 +8,10 @@ ateng:
       enabled: true
       delay-queue:
         enabled: true
+      bloom-filters:
+        user-blacklist:
+          expected-insertions: 50000
+          false-probability: 0.01
     web:
       trace:
         enabled: true

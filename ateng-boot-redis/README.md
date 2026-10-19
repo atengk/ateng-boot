@@ -19,6 +19,8 @@
 | **延时队列** | 死信流转与失败 SPI | `DeadLetterMessage<T>` / `DelayedQueueFailureHandler` | `ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `onFailure(message, throwable)`：重试耗尽后封装完整因果堆栈转入死信队列，默认 `LoggingDelayedQueueFailureHandler` 告警，支持自定义 SPI 无缝接管 | `DelayedQueueBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
 | **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
 | **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` / `ChannelTopicBootstrap` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topics, patterns, concurrency)`：支持 `${...}` 占位符、精确主题与通配模式，支持单参 POJO/String/byte[]/Message、双参及三参多态安全反序列化，受管 `ThreadPoolTaskExecutor` 并发驱动与 MDC `traceId` 透传 | `ChannelTopicBootstrapTest`<br>`SampleRedisIntegrationTest` |
+| **布隆过滤** | 分布式布隆过滤器 | `RedisBloomFilter` | `ateng.boot.redis.key-prefix`<br>`ateng.boot.redis.bloom-filters.<name>.expected-insertions`<br>`ateng.boot.redis.bloom-filters.<name>.false-probability` | `tryInit(name, expected, prob)` / `add(name, val)` / `addAll(name, coll)` / `contains(name, val)` / `containsAll(name, coll)` / `count(name)` / `getUsageRate(name)` / `isOverCapacity(name, threshold)` / `delete(name)`：支持静态与 Bean 双重操作范式、80% 容量安全预警与全局 KeyPrefix 隔离 | `RedisBloomFilterTest`<br>`SampleRedisIntegrationTest` |
+| **布隆过滤** | 声明式自动预热调度器 | `BloomFilterBootstrap` | `ateng.boot.redis.bloom-filters.*` | 容器就绪后自动遍历 YAML 中声明的规则，原子幂等调用 `tryInit` 完成预热 | `RedisBloomFilterTest`<br>`AtengRedisAutoConfigurationTest` |
 | **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
@@ -426,7 +428,98 @@ public class OrderNumberService {
 
 ---
 
-## 8. 工业级增强缓存管理器 (`RedisCacheManager`)
+## 8. 分布式布隆过滤器 (`RedisBloomFilter`) 开箱即用支持
+
+### 场景痛点
+- **海量数据判重内存膨胀**：爬虫 IP 过滤、黑名单或海量唯一流水判重在 Redis Set 中存储占用巨大内存；
+- **缓存穿透威胁数据库**：不存在的 Key 直接击穿到数据库，缺乏毫秒级位图过滤器进行前置拦截；
+- **缺乏配置化预热与容量超限告警**：Redisson 原生布隆过滤器需要手写命令初始化，缺乏启动预热机制与容量逼近 80% 安全告警，一旦容量溢出导致误判率急剧恶化。
+
+### 增强解决方案
+1. **配置化声明式预热 (`BloomFilterBootstrap`)**：在 YAML 中配置预期容量与容错率，启动时原子幂等预热，多实例集群安全；
+2. **双重操作范式 (`RedisBloomFilter`)**：同时支持 Spring Bean 依赖注入与静态门面调用，支持单元素、多元素批量判定与增删；
+3. **80% 容量安全预警防线**：实时监测填充率，当元素填充率达到 80% 时自动记录 WARN 级别审计告警日志；
+4. **全局 KeyPrefix 隔离**：自动前置拼接全局 `keyPrefix` 与 `bloom:` 前缀分层纳管。
+
+### 核心配置与使用示例（1:1 逆向自 `ateng-boot-sample-redis`）
+
+#### 1. YAML 声明式预热配置
+```yaml
+ateng:
+  boot:
+    redis:
+      bloom-filters:
+        user-blacklist:
+          expected-insertions: 50000     # 预估元素容量
+          false-probability: 0.01        # 期望误判率 1%
+```
+
+#### 2. Controller 业务调用代码
+```java
+@RestController
+@RequestMapping("/api/redis-sample")
+@RequiredArgsConstructor
+public class RedisSampleController {
+
+    private final RedisBloomFilter redisBloomFilter;
+
+    /**
+     * 将用户添加至黑名单布隆过滤器
+     */
+    @PostMapping("/bloom/blacklist/add")
+    public Result<Boolean> addBlacklist(@RequestParam("userId") String userId) {
+        boolean added = RedisBloomFilter.add("user-blacklist", userId);
+        return Result.success(added);
+    }
+
+    /**
+     * 判定用户是否可能处于黑名单中
+     */
+    @GetMapping("/bloom/blacklist/check")
+    public Result<Boolean> checkBlacklist(@RequestParam("userId") String userId) {
+        boolean inBlacklist = RedisBloomFilter.contains("user-blacklist", userId);
+        return Result.success(inBlacklist);
+    }
+
+    /**
+     * 查询黑名单布隆过滤器的监控指标
+     */
+    @GetMapping("/bloom/blacklist/metrics")
+    public Result<Map<String, Object>> getBlacklistMetrics() {
+        Map<String, Object> metrics = new HashMap<>();
+        metrics.put("filterName", "user-blacklist");
+        metrics.put("count", RedisBloomFilter.count("user-blacklist"));
+        metrics.put("expectedInsertions", RedisBloomFilter.getExpectedInsertions("user-blacklist"));
+        metrics.put("usageRate", RedisBloomFilter.getUsageRate("user-blacklist"));
+        metrics.put("falseProbability", RedisBloomFilter.getFalseProbability("user-blacklist"));
+        return Result.success(metrics);
+    }
+}
+```
+
+### 真实控制台与响应（锚定 `SampleRedisIntegrationTest`）
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "filterName": "user-blacklist",
+    "count": "1",
+    "expectedInsertions": "50000",
+    "falseProbability": 0.01,
+    "usageRate": 0.00002
+  },
+  "success": true
+}
+```
+当填充率达到 80% 时的告警日志呈现：
+```text
+WARN io.github.atengk.boot.redis.bloom.RedisBloomFilter -- 分布式布隆过滤器 [user-blacklist] 容量逼近告警: 当前估计元素数 40000，预估容量 50000，填充率 80.00%（建议规划扩容或重建新过滤器以防误判率恶化）
+```
+
+---
+
+## 9. 工业级增强缓存管理器 (`RedisCacheManager`)
 
 ### 场景痛点
 - 默认 Spring Cache 对所有缓存统配相同过期时间，无法针对基础字典（长缓存）与动态状态（短缓存）差异化配置；
@@ -469,7 +562,7 @@ public class DictService {
 
 ---
 
-## 9. 完整 YAML 配置属性清单
+## 10. 完整 YAML 配置属性清单
 
 ```yaml
 spring:
@@ -501,6 +594,10 @@ ateng:
         dead-letter-suffix: ":dlq"      # 死信队列统配名称后缀 (默认 ":dlq")
       pub-sub:
         enabled: true                   # 是否启用 Pub/Sub 广播引擎 (默认 true)
+      bloom-filters:                    # 分布式布隆过滤器声明式预热配置映射 (`Map<String, BloomFilterConfig>`)
+        user-blacklist:
+          expected-insertions: 50000    # 预估元素插入总量 (默认 100,000)
+          false-probability: 0.01       # 期望误判率 (默认 0.01 即 1%，取值区间 (0, 1))
       cache:
         enabled: true                   # 是否启用增强缓存管理器 (默认 true)
         default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
@@ -519,11 +616,11 @@ ateng:
 
 ---
 
-## 10. 生产扩展与高阶定制 (Customization & Extensibility)
+## 11. 生产扩展与高阶定制 (Customization & Extensibility)
 
 `ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
 
-### 10.1 自定义 RedissonClient 接管
+### 11.1 自定义 RedissonClient 接管
 当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
 
 ```java
@@ -542,7 +639,7 @@ public class CustomRedissonConfiguration {
 }
 ```
 
-### 10.2 编程式延时队列平滑接管
+### 11.2 编程式延时队列平滑接管
 `RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
 
 ```java
@@ -550,7 +647,7 @@ RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMap
 delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
 ```
 
-### 10.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
+### 11.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
 框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
 
 ```java
@@ -565,20 +662,36 @@ public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandl
 }
 ```
 
+### 11.4 编程式动态布隆过滤器与原生 Redisson 句柄扩展
+除了在 YAML 中静态声明，`RedisBloomFilter` 亦完全支持在动态业务运行时按需初始化与底层句柄扩展：
+
+```java
+// 1. 动态按需原子初始化
+boolean initialized = RedisBloomFilter.tryInit("dynamic_promo_users", 200_000L, 0.005);
+
+// 2. 获取原生 Redisson 句柄以进行异步操作或高级监听
+RBloomFilter<String> nativeFilter = RedisBloomFilter.getFilter("dynamic_promo_users");
+RFuture<Boolean> future = nativeFilter.containsAsync("user_10086");
+```
+
 ---
 
-## 11. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 12. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
-### 11.1 分布式锁防御性释放与防误删不变量
+### 12.1 分布式锁防御性释放与防误删不变量
 - **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
 - **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
 
-### 11.2 看门狗自动续期与固定租期选择策略
+### 12.2 看门狗自动续期与固定租期选择策略
 - **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
 - **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
 
-### 11.3 延时队列生命周期消费、受管线程池与死信流转
+### 12.3 延时队列生命周期消费、受管线程池与死信流转
 - **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
 - **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
 - **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
+
+### 12.4 布隆过滤器容量 80% 安全预警与生命周期清理
+- **元素填充率实时预警**：布隆过滤器的误判率由预估容量与已插入元素数决定。当实际元素数超过预估容量的 80%（`getUsageRate() >= 0.8`）时，`RedisBloomFilter` 在添加操作后自动记录 WARN 日志告警，提示运维及时扩容或重建双过滤器平滑迁移；
+- **对称物理销毁**：通过 `RedisBloomFilter.delete(filterName)` 可一键原子销毁底层 Redis 位图，释放内存占用。
 

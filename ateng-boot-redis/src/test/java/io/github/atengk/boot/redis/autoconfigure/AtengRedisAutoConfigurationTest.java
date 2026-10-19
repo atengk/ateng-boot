@@ -117,6 +117,8 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("channelTopicBootstrap");
                     assertThat(context).hasBean("redisRateLimiterClient");
                     assertThat(context).hasBean("redisAtomicUtil");
+                    assertThat(context).hasBean("redisBloomFilter");
+                    assertThat(context).hasBean("bloomFilterBootstrap");
                     assertThat(context).hasBean("redisCacheManager");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
