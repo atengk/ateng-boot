@@ -325,9 +325,17 @@ class RedisCacheTemplateTest {
     @Test
     @DisplayName("11. 对称运维操作测试 (get, put, evict, batchEvict, hasKey)")
     void testSymmetricOperations() {
-        // hasKey
-        when(redisTemplate.hasKey("app:user:1")).thenReturn(true);
+        // hasKey: 存在真实数据时返回 true
+        when(valueOperations.get("app:user:1")).thenReturn("validData");
         assertThat(cacheTemplate.hasKey("user:1")).isTrue();
+
+        // hasKey: 命中华丽空哨兵 __ATENG_CACHE_NULL__ 时返回 false（逻辑不存在）
+        when(valueOperations.get("app:user:null")).thenReturn(RedisCacheTemplate.NULL_SENTINEL);
+        assertThat(cacheTemplate.hasKey("user:null")).isFalse();
+
+        // hasKey: 为 null 时返回 false
+        when(valueOperations.get("app:user:miss")).thenReturn(null);
+        assertThat(cacheTemplate.hasKey("user:miss")).isFalse();
 
         // put
         cacheTemplate.put("user:2", "data", Duration.ofMinutes(5));
@@ -340,5 +348,63 @@ class RedisCacheTemplateTest {
         // batchEvict
         when(redisTemplate.delete(Arrays.asList("app:u1", "app:u2"))).thenReturn(2L);
         assertThat(cacheTemplate.batchEvict(Arrays.asList("u1", "u2"))).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("12. 批量 batchGetOrLoad 支持 TypeReference 复杂泛型重载")
+    void testBatchGetOrLoadWithTypeReference() {
+        List<String> keys = Arrays.asList("list:1", "list:2");
+        when(valueOperations.multiGet(Arrays.asList("app:list:1", "app:list:2")))
+                .thenReturn(Arrays.asList(null, null));
+
+        // 模拟 Pipeline 执行回调
+        doAnswer(inv -> {
+            SessionCallback<?> callback = inv.getArgument(0);
+            RedisOperations ops = mock(RedisOperations.class);
+            ValueOperations vOps = mock(ValueOperations.class);
+            when(ops.opsForValue()).thenReturn(vOps);
+            return callback.execute(ops);
+        }).when(redisTemplate).executePipelined(any(SessionCallback.class));
+
+        TypeReference<List<String>> typeRef = new TypeReference<>() {};
+        Map<String, List<String>> result = cacheTemplate.batchGetOrLoad(keys, typeRef, missingKeys -> {
+            Map<String, List<String>> dbData = new HashMap<>();
+            dbData.put("list:1", Arrays.asList("a", "b"));
+            dbData.put("list:2", Collections.singletonList("c"));
+            return dbData;
+        });
+
+        assertThat(result).hasSize(2);
+        assertThat(result.get("list:1")).containsExactly("a", "b");
+        assertThat(result.get("list:2")).containsExactly("c");
+    }
+
+    @Test
+    @DisplayName("13. 批量争锁超时降级并执行自愈批量回填")
+    void testBatchGetOrLoadLockTimeoutFallback() throws Exception {
+        List<String> keys = Arrays.asList("t1", "t2");
+        when(valueOperations.multiGet(Arrays.asList("app:t1", "app:t2")))
+                .thenReturn(Arrays.asList(null, null));
+
+        // 模拟争抢 MultiLock 超时失败
+        when(rLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(false);
+
+        // 模拟 Pipeline 回写
+        doAnswer(inv -> {
+            SessionCallback<?> callback = inv.getArgument(0);
+            RedisOperations ops = mock(RedisOperations.class);
+            ValueOperations vOps = mock(ValueOperations.class);
+            when(ops.opsForValue()).thenReturn(vOps);
+            return callback.execute(ops);
+        }).when(redisTemplate).executePipelined(any(SessionCallback.class));
+
+        Map<String, String> result = cacheTemplate.batchGetOrLoad(keys, String.class, missingKeys -> {
+            Map<String, String> db = new HashMap<>();
+            db.put("t1", "ValT1");
+            return db;
+        });
+
+        assertThat(result).containsEntry("t1", "ValT1");
+        verify(redisTemplate).executePipelined(any(SessionCallback.class));
     }
 }

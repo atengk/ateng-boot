@@ -28,8 +28,6 @@ public class RedisBloomFilter {
     private static final Logger log = LoggerFactory.getLogger(RedisBloomFilter.class);
 
     private static volatile RedisBloomFilter instance;
-    private static volatile RedissonClient staticClient;
-    private static volatile RedisProperties staticProperties;
 
     private final RedissonClient redissonClient;
     private final RedisProperties redisProperties;
@@ -44,7 +42,6 @@ public class RedisBloomFilter {
         Assert.notNull(redissonClient, "RedissonClient 不能为空");
         this.redissonClient = redissonClient;
         this.redisProperties = redisProperties != null ? redisProperties : new RedisProperties();
-        init(redissonClient, this.redisProperties);
         instance = this;
     }
 
@@ -55,10 +52,10 @@ public class RedisBloomFilter {
      * @param properties 全局配置
      */
     public static void init(RedissonClient client, RedisProperties properties) {
-        RedisBloomFilter.staticClient = client;
-        RedisBloomFilter.staticProperties = properties != null ? properties : new RedisProperties();
         if (client == null) {
-            RedisBloomFilter.instance = null;
+            instance = null;
+        } else {
+            instance = new RedisBloomFilter(client, properties);
         }
     }
 
@@ -68,18 +65,14 @@ public class RedisBloomFilter {
      * @return RedisBloomFilter 实例
      */
     public static RedisBloomFilter getInstance() {
-        if (instance == null) {
+        RedisBloomFilter inst = instance;
+        if (inst == null) {
             throw new IllegalStateException("RedisBloomFilter 尚未完成初始化，请确认 Spring 上下文已启动且 RedissonClient 已装配。");
         }
-        return instance;
+        return inst;
     }
 
-    private static RedissonClient getClient() {
-        if (staticClient == null) {
-            throw new IllegalStateException("RedisBloomFilter 尚未完成初始化，请确认 Spring 上下文已启动且 RedissonClient 已装配。");
-        }
-        return staticClient;
-    }
+    // ==================== 1. 实例方法 (Spring Bean 依赖注入范式) ====================
 
     /**
      * 构建受管布隆过滤器在 Redis 中的完整物理键名，统一应用全局 keyPrefix
@@ -87,9 +80,9 @@ public class RedisBloomFilter {
      * @param filterName 业务过滤器名称
      * @return 完整 Redis Key
      */
-    public static String buildKey(String filterName) {
+    public String buildKey(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
-        String prefix = staticProperties != null ? staticProperties.getKeyPrefix() : "";
+        String prefix = redisProperties != null ? redisProperties.getKeyPrefix() : "";
         String baseName = filterName.startsWith("bloom:") ? filterName : "bloom:" + filterName;
         if (StringUtils.hasText(prefix) && !baseName.startsWith(prefix)) {
             return prefix + baseName;
@@ -104,9 +97,9 @@ public class RedisBloomFilter {
      * @param <T> 元素类型
      * @return RBloomFilter 句柄
      */
-    public static <T> RBloomFilter<T> getFilter(String filterName) {
+    public <T> RBloomFilter<T> getFilter(String filterName) {
         String realKey = buildKey(filterName);
-        return getClient().getBloomFilter(realKey);
+        return redissonClient.getBloomFilter(realKey);
     }
 
     /**
@@ -117,7 +110,7 @@ public class RedisBloomFilter {
      * @param falseProbability 期望误判率（必须在 (0, 1) 区间，如 0.01）
      * @return 若初次创建并初始化成功返回 true；若已存在返回 false
      */
-    public static boolean tryInit(String filterName, long expectedInsertions, double falseProbability) {
+    public boolean tryInit(String filterName, long expectedInsertions, double falseProbability) {
         Assert.hasText(filterName, "filterName 不能为空");
         Assert.isTrue(expectedInsertions > 0, "expectedInsertions 必须大于 0");
         Assert.isTrue(falseProbability > 0.0 && falseProbability < 1.0, "falseProbability 必须处于 (0, 1) 区间");
@@ -134,7 +127,7 @@ public class RedisBloomFilter {
      * @param <T> 元素类型
      * @return 若元素添加前可能不存在（位图产生变化）返回 true；若已存在返回 false
      */
-    public static <T> boolean add(String filterName, T value) {
+    public <T> boolean add(String filterName, T value) {
         Assert.hasText(filterName, "filterName 不能为空");
         if (value == null) {
             return false;
@@ -153,7 +146,7 @@ public class RedisBloomFilter {
      * @param <T> 元素类型
      * @return 实际新添加成功的元素近似数量
      */
-    public static <T> long addAll(String filterName, Collection<T> values) {
+    public <T> long addAll(String filterName, Collection<T> values) {
         Assert.hasText(filterName, "filterName 不能为空");
         if (CollectionUtils.isEmpty(values)) {
             return 0L;
@@ -177,7 +170,7 @@ public class RedisBloomFilter {
      * @param <T> 元素类型
      * @return true 可能存在；false 一定不存在
      */
-    public static <T> boolean contains(String filterName, T value) {
+    public <T> boolean contains(String filterName, T value) {
         Assert.hasText(filterName, "filterName 不能为空");
         if (value == null) {
             return false;
@@ -194,7 +187,7 @@ public class RedisBloomFilter {
      * @param <T> 元素类型
      * @return 判定结果列表（保持与入参集合相同的迭代顺序）
      */
-    public static <T> List<Boolean> containsAll(String filterName, Collection<T> values) {
+    public <T> List<Boolean> containsAll(String filterName, Collection<T> values) {
         Assert.hasText(filterName, "filterName 不能为空");
         if (CollectionUtils.isEmpty(values)) {
             return Collections.emptyList();
@@ -217,7 +210,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 近似元素计数
      */
-    public static long count(String filterName) {
+    public long count(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         return getFilter(filterName).count();
     }
@@ -228,7 +221,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 预估容量
      */
-    public static long getExpectedInsertions(String filterName) {
+    public long getExpectedInsertions(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         return getFilter(filterName).getExpectedInsertions();
     }
@@ -239,7 +232,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 误判率
      */
-    public static double getFalseProbability(String filterName) {
+    public double getFalseProbability(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         return getFilter(filterName).getFalseProbability();
     }
@@ -250,7 +243,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 容量填充率（0.0 ~ 1.0+）
      */
-    public static double getUsageRate(String filterName) {
+    public double getUsageRate(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         RBloomFilter<?> filter = getFilter(filterName);
         long expected = filter.getExpectedInsertions();
@@ -267,7 +260,7 @@ public class RedisBloomFilter {
      * @param thresholdRate 阈值比例（如 0.8 表示 80%）
      * @return 是否超过阈值
      */
-    public static boolean isOverCapacity(String filterName, double thresholdRate) {
+    public boolean isOverCapacity(String filterName, double thresholdRate) {
         return getUsageRate(filterName) >= thresholdRate;
     }
 
@@ -277,7 +270,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 是否存在
      */
-    public static boolean isExists(String filterName) {
+    public boolean isExists(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         return getFilter(filterName).isExists();
     }
@@ -288,7 +281,7 @@ public class RedisBloomFilter {
      * @param filterName 过滤器名称
      * @return 是否删除成功
      */
-    public static boolean delete(String filterName) {
+    public boolean delete(String filterName) {
         Assert.hasText(filterName, "filterName 不能为空");
         return getFilter(filterName).delete();
     }
@@ -296,7 +289,7 @@ public class RedisBloomFilter {
     /**
      * 元素填充率 80% 安全告警防线
      */
-    private static void checkCapacityWarn(String filterName, RBloomFilter<?> filter) {
+    private void checkCapacityWarn(String filterName, RBloomFilter<?> filter) {
         try {
             long expected = filter.getExpectedInsertions();
             if (expected <= 0) {
@@ -305,8 +298,9 @@ public class RedisBloomFilter {
             long currentCount = filter.count();
             double usage = (double) currentCount / expected;
             if (usage >= 0.8) {
-                log.warn("分布式布隆过滤器 [{}] 容量逼近告警: 当前估计元素数 {}，预估容量 {}，填充率 {:.2f}%（建议规划扩容或重建新过滤器以防误判率恶化）",
-                        filterName, currentCount, expected, usage * 100);
+                String usagePercent = String.format("%.2f%%", usage * 100);
+                log.warn("分布式布隆过滤器 [{}] 容量逼近告警: 当前估计元素数 {}，预估容量 {}，填充率 {}（建议规划扩容或重建新过滤器以防误判率恶化）",
+                        filterName, currentCount, expected, usagePercent);
             }
         } catch (Exception e) {
             log.debug("布隆过滤器 [{}] 容量检查异常（忽略）: {}", filterName, e.getMessage());

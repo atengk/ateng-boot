@@ -6,7 +6,9 @@ import io.github.atengk.boot.sample.redis.service.OrderDelayQueueService;
 import io.github.atengk.boot.sample.redis.service.RedisSampleService;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
 import io.github.atengk.boot.web.ratelimit.annotation.RateLimiter;
+import jakarta.validation.constraints.NotEmpty;
 import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -25,6 +27,7 @@ import java.util.Set;
  * @author Ateng
  * @since 2026-10-17
  */
+@Validated
 @RestController
 @RequestMapping("/api/redis-sample")
 @RequiredArgsConstructor
@@ -190,7 +193,7 @@ public class RedisSampleController {
      */
     @PostMapping("/bloom/blacklist/add")
     public Result<Boolean> addBlacklist(@RequestParam("userId") String userId) {
-        boolean added = io.github.atengk.boot.redis.bloom.RedisBloomFilter.add("user-blacklist", userId);
+        boolean added = redisBloomFilter.add("user-blacklist", userId);
         return Result.success(added);
     }
 
@@ -202,7 +205,7 @@ public class RedisSampleController {
      */
     @GetMapping("/bloom/blacklist/check")
     public Result<Boolean> checkBlacklist(@RequestParam("userId") String userId) {
-        boolean inBlacklist = io.github.atengk.boot.redis.bloom.RedisBloomFilter.contains("user-blacklist", userId);
+        boolean inBlacklist = redisBloomFilter.contains("user-blacklist", userId);
         return Result.success(inBlacklist);
     }
 
@@ -215,10 +218,10 @@ public class RedisSampleController {
     public Result<java.util.Map<String, Object>> getBlacklistMetrics() {
         java.util.Map<String, Object> metrics = new java.util.HashMap<>();
         metrics.put("filterName", "user-blacklist");
-        metrics.put("count", io.github.atengk.boot.redis.bloom.RedisBloomFilter.count("user-blacklist"));
-        metrics.put("expectedInsertions", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getExpectedInsertions("user-blacklist"));
-        metrics.put("usageRate", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getUsageRate("user-blacklist"));
-        metrics.put("falseProbability", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getFalseProbability("user-blacklist"));
+        metrics.put("count", redisBloomFilter.count("user-blacklist"));
+        metrics.put("expectedInsertions", redisBloomFilter.getExpectedInsertions("user-blacklist"));
+        metrics.put("usageRate", redisBloomFilter.getUsageRate("user-blacklist"));
+        metrics.put("falseProbability", redisBloomFilter.getFalseProbability("user-blacklist"));
         return Result.success(metrics);
     }
 
@@ -240,7 +243,7 @@ public class RedisSampleController {
      * @return 商品映射 Map 统一响应
      */
     @GetMapping("/cache/products")
-    public Result<Map<Long, ProductVO>> batchGetProducts(@RequestParam("productIds") List<Long> productIds) {
+    public Result<Map<Long, ProductVO>> batchGetProducts(@RequestParam("productIds") @NotEmpty(message = "商品ID列表不能为空") List<Long> productIds) {
         return Result.success(redisSampleService.batchGetProducts(productIds));
     }
 

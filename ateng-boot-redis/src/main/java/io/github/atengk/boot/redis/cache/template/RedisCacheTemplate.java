@@ -77,19 +77,14 @@ public class RedisCacheTemplate {
     // ==================== 1. 单键防卫门面 (getOrLoad) ====================
 
     /**
-     * 单键防击穿、防穿透、防雪崩安全读取与回源
-     *
-     * @param key 缓存键
-     * @param clazz 目标返回类型 Class
-     * @param loader 回源查库加载器
-     * @param ttl 缓存生存时间（传 null 则使用全局 defaultTtl）
-     * @param nullTtl 空值防穿透生存时间（传 null 则使用全局 nullTtl）
-     * @param <T> 数据类型
-     * @return 缓存或数据库中的数据对象（未查到返回 null）
+     * 单键防击穿、防穿透、防雪崩安全读取与回源底层核心模板
      */
-    public <T> T getOrLoad(String key, Class<T> clazz, Function<String, T> loader, Duration ttl, Duration nullTtl) {
+    private <T> T doGetOrLoad(String key,
+                              Function<Object, T> converter,
+                              Function<String, T> loader,
+                              Duration ttl,
+                              Duration nullTtl) {
         Assert.hasText(key, "缓存 key 不能为空");
-        Assert.notNull(clazz, "目标类型 clazz 不能为空");
         Assert.notNull(loader, "回源 loader 不能为空");
 
         String realKey = buildKey(key);
@@ -101,7 +96,7 @@ public class RedisCacheTemplate {
             return null;
         }
         if (rawVal != null) {
-            return convertValue(rawVal, clazz);
+            return converter.apply(rawVal);
         }
 
         // 2. 缓存未命中（Cache Miss），获取分布式互斥锁防击穿
@@ -125,7 +120,7 @@ public class RedisCacheTemplate {
                     return null;
                 }
                 if (dclVal != null) {
-                    return convertValue(dclVal, clazz);
+                    return converter.apply(dclVal);
                 }
 
                 // 4. 回源查库
@@ -165,6 +160,22 @@ public class RedisCacheTemplate {
     }
 
     /**
+     * 单键防击穿、防穿透、防雪崩安全读取与回源
+     *
+     * @param key 缓存键
+     * @param clazz 目标返回类型 Class
+     * @param loader 回源查库加载器
+     * @param ttl 缓存生存时间（传 null 则使用全局 defaultTtl）
+     * @param nullTtl 空值防穿透生存时间（传 null 则使用全局 nullTtl）
+     * @param <T> 数据类型
+     * @return 缓存或数据库中的数据对象（未查到返回 null）
+     */
+    public <T> T getOrLoad(String key, Class<T> clazz, Function<String, T> loader, Duration ttl, Duration nullTtl) {
+        Assert.notNull(clazz, "目标类型 clazz 不能为空");
+        return doGetOrLoad(key, rawVal -> convertValue(rawVal, clazz), loader, ttl, nullTtl);
+    }
+
+    /**
      * 单键读取与回源（采用配置默认 TTL 与 nullTtl）
      */
     public <T> T getOrLoad(String key, Class<T> clazz, Function<String, T> loader) {
@@ -175,77 +186,8 @@ public class RedisCacheTemplate {
      * 单键读取与回源（支持复杂泛型 TypeReference）
      */
     public <T> T getOrLoad(String key, TypeReference<T> typeRef, Function<String, T> loader, Duration ttl, Duration nullTtl) {
-        Assert.hasText(key, "缓存 key 不能为空");
         Assert.notNull(typeRef, "目标类型 typeRef 不能为空");
-        Assert.notNull(loader, "回源 loader 不能为空");
-
-        String realKey = buildKey(key);
-
-        // 1. 第一重检查
-        Object rawVal = redisTemplate.opsForValue().get(realKey);
-        if (NULL_SENTINEL.equals(rawVal)) {
-            return null;
-        }
-        if (rawVal != null) {
-            return convertValue(rawVal, typeRef);
-        }
-
-        // 2. 互斥争锁防击穿
-        String lockKey = buildLockKey(key);
-        RLock lock = redissonClient.getLock(lockKey);
-        Duration waitTime = getLockWaitTime();
-
-        boolean locked = false;
-        try {
-            locked = lock.tryLock(waitTime.toMillis(), -1L, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("[RedisCacheTemplate] 争抢防击穿锁被中断，平滑降级查库: key={}", key);
-        }
-
-        if (locked) {
-            try {
-                // 3. DCL 第二重检查
-                Object dclVal = redisTemplate.opsForValue().get(realKey);
-                if (NULL_SENTINEL.equals(dclVal)) {
-                    return null;
-                }
-                if (dclVal != null) {
-                    return convertValue(dclVal, typeRef);
-                }
-
-                // 4. 回源查库
-                T loaded = loader.apply(key);
-                if (loaded == null) {
-                    if (isCacheNullValues()) {
-                        Duration actualNullTtl = calculateTtl(nullTtl, true);
-                        redisTemplate.opsForValue().set(realKey, NULL_SENTINEL, actualNullTtl);
-                    }
-                    return null;
-                } else {
-                    Duration actualTtl = calculateTtl(ttl, false);
-                    redisTemplate.opsForValue().set(realKey, loaded, actualTtl);
-                    return loaded;
-                }
-            } finally {
-                if (lock.isHeldByCurrentThread()) {
-                    lock.unlock();
-                }
-            }
-        } else {
-            // 5. 争锁超时降级
-            log.warn("[RedisCacheTemplate] 争抢防击穿分布式锁超时，平滑降级直接穿透查库: key={}, waitTime={}", key, waitTime);
-            T fallbackLoaded = loader.apply(key);
-            if (fallbackLoaded != null) {
-                try {
-                    Duration actualTtl = calculateTtl(ttl, false);
-                    redisTemplate.opsForValue().set(realKey, fallbackLoaded, actualTtl);
-                } catch (Exception e) {
-                    log.debug("[RedisCacheTemplate] 容灾回填缓存异常（忽略）: key={}", key, e);
-                }
-            }
-            return fallbackLoaded;
-        }
+        return doGetOrLoad(key, rawVal -> convertValue(rawVal, typeRef), loader, ttl, nullTtl);
     }
 
     /**
@@ -258,29 +200,18 @@ public class RedisCacheTemplate {
     // ==================== 2. 批量防 N+1 门面 (batchGetOrLoad) ====================
 
     /**
-     * 批量防 N+1 击穿、防穿透、防雪崩安全读取与回源
-     *
-     * @param keys 原始键列表
-     * @param keyMapper 原始键到业务缓存字符串键的映射器
-     * @param valueClass 目标值类型 Class
-     * @param batchLoader 批量回源加载器（仅接收缺失的键，单次批量加载并返回 Map）
-     * @param ttl 缓存生存时间
-     * @param nullTtl 空值防穿透生存时间
-     * @param <K> 键类型
-     * @param <V> 值类型
-     * @return 映射结果 Map（空安全，保底返回非 null Map）
+     * 批量防 N+1 击穿、防穿透、防雪崩安全读取与回源通用底层模板
      */
-    public <K, V> Map<K, V> batchGetOrLoad(List<K> keys,
-                                           Function<K, String> keyMapper,
-                                           Class<V> valueClass,
-                                           Function<List<K>, Map<K, V>> batchLoader,
-                                           Duration ttl,
-                                           Duration nullTtl) {
+    private <K, V> Map<K, V> doBatchGetOrLoad(List<K> keys,
+                                              Function<K, String> keyMapper,
+                                              Function<Object, V> converter,
+                                              Function<List<K>, Map<K, V>> batchLoader,
+                                              Duration ttl,
+                                              Duration nullTtl) {
         if (CollectionUtils.isEmpty(keys)) {
             return Collections.emptyMap();
         }
         Assert.notNull(keyMapper, "keyMapper 不能为空");
-        Assert.notNull(valueClass, "valueClass 不能为空");
         Assert.notNull(batchLoader, "batchLoader 不能为空");
 
         // 1. 去重并保持顺序
@@ -304,7 +235,7 @@ public class RedisCacheTemplate {
             if (NULL_SENTINEL.equals(rawVal)) {
                 // 空值哨兵，说明已知不存在，防穿透生效，跳过不查库
             } else if (rawVal != null) {
-                resultMap.put(k, convertValue(rawVal, valueClass));
+                resultMap.put(k, converter.apply(rawVal));
             } else {
                 missingKeys.add(k);
             }
@@ -315,9 +246,10 @@ public class RedisCacheTemplate {
             return resultMap;
         }
 
-        // 5. 存在缺失键，批量争锁防击穿（针对缺失键统一排序后加锁，杜绝分布式死锁）
+        // 5. 存在缺失键，批量争锁防击穿（针对缺失键统一去重并排序后加锁，彻底杜绝死锁与重复锁）
         List<String> sortedLockKeys = missingKeys.stream()
                 .map(k -> buildLockKey(keyMapper.apply(k)))
+                .distinct()
                 .sorted()
                 .toList();
 
@@ -352,7 +284,7 @@ public class RedisCacheTemplate {
                     if (NULL_SENTINEL.equals(dclVal)) {
                         // 已被其他并发线程置为空哨兵
                     } else if (dclVal != null) {
-                        resultMap.put(k, convertValue(dclVal, valueClass));
+                        resultMap.put(k, converter.apply(dclVal));
                     } else {
                         stillMissingKeys.add(k);
                     }
@@ -400,12 +332,63 @@ public class RedisCacheTemplate {
             // 10. 批量争锁超时容灾降级：平滑调用 batchLoader，不阻断业务
             log.warn("[RedisCacheTemplate] 批量防击穿加锁超时，平滑降级批量查库: size={}", missingKeys.size());
             Map<K, V> fallbackMap = batchLoader.apply(missingKeys);
-            if (fallbackMap != null) {
-                resultMap.putAll(fallbackMap);
+            if (fallbackMap == null) {
+                fallbackMap = Collections.emptyMap();
+            }
+            resultMap.putAll(fallbackMap);
+
+            // 批量降级自愈回填（尽力而为，保障后续并发请求命中有序自愈）
+            try {
+                Duration actualTtl = calculateTtl(ttl, false);
+                Duration actualNullTtl = calculateTtl(nullTtl, true);
+                boolean cacheNull = isCacheNullValues();
+                Map<K, V> finalFallbackMap = fallbackMap;
+
+                redisTemplate.executePipelined(new SessionCallback<Object>() {
+                    @Override
+                    @SuppressWarnings("unchecked")
+                    public Object execute(RedisOperations operations) throws DataAccessException {
+                        for (K k : missingKeys) {
+                            String rKey = buildKey(keyMapper.apply(k));
+                            V val = finalFallbackMap.get(k);
+                            if (val != null) {
+                                operations.opsForValue().set(rKey, val, actualTtl);
+                            } else if (cacheNull) {
+                                operations.opsForValue().set(rKey, NULL_SENTINEL, actualNullTtl);
+                            }
+                        }
+                        return null;
+                    }
+                });
+            } catch (Exception e) {
+                log.debug("[RedisCacheTemplate] 批量降级回填缓存异常（忽略）: size={}", missingKeys.size(), e);
             }
         }
 
         return resultMap;
+    }
+
+    /**
+     * 批量防 N+1 击穿、防穿透、防雪崩安全读取与回源
+     *
+     * @param keys 原始键列表
+     * @param keyMapper 原始键到业务缓存字符串键的映射器
+     * @param valueClass 目标值类型 Class
+     * @param batchLoader 批量回源加载器（仅接收缺失的键，单次批量加载并返回 Map）
+     * @param ttl 缓存生存时间
+     * @param nullTtl 空值防穿透生存时间
+     * @param <K> 键类型
+     * @param <V> 值类型
+     * @return 映射结果 Map（空安全，保底返回非 null Map）
+     */
+    public <K, V> Map<K, V> batchGetOrLoad(List<K> keys,
+                                           Function<K, String> keyMapper,
+                                           Class<V> valueClass,
+                                           Function<List<K>, Map<K, V>> batchLoader,
+                                           Duration ttl,
+                                           Duration nullTtl) {
+        Assert.notNull(valueClass, "valueClass 不能为空");
+        return doBatchGetOrLoad(keys, keyMapper, rawVal -> convertValue(rawVal, valueClass), batchLoader, ttl, nullTtl);
     }
 
     /**
@@ -436,6 +419,59 @@ public class RedisCacheTemplate {
                                              Class<V> valueClass,
                                              Function<List<String>, Map<String, V>> batchLoader) {
         return batchGetOrLoad(keys, Function.identity(), valueClass, batchLoader, null, null);
+    }
+
+    /**
+     * 批量防 N+1 击穿、防穿透、防雪崩安全读取与回源（支持复杂泛型 TypeReference）
+     *
+     * @param keys 原始键列表
+     * @param keyMapper 原始键到业务缓存字符串键的映射器
+     * @param typeRef 目标值复杂泛型 TypeReference
+     * @param batchLoader 批量回源加载器
+     * @param ttl 缓存生存时间
+     * @param nullTtl 空值防穿透生存时间
+     * @param <K> 键类型
+     * @param <V> 值类型
+     * @return 映射结果 Map
+     */
+    public <K, V> Map<K, V> batchGetOrLoad(List<K> keys,
+                                           Function<K, String> keyMapper,
+                                           TypeReference<V> typeRef,
+                                           Function<List<K>, Map<K, V>> batchLoader,
+                                           Duration ttl,
+                                           Duration nullTtl) {
+        Assert.notNull(typeRef, "typeRef 不能为空");
+        return doBatchGetOrLoad(keys, keyMapper, rawVal -> convertValue(rawVal, typeRef), batchLoader, ttl, nullTtl);
+    }
+
+    /**
+     * 批量读取与回源（支持复杂泛型 TypeReference，采用配置默认 TTL）
+     */
+    public <K, V> Map<K, V> batchGetOrLoad(List<K> keys,
+                                           Function<K, String> keyMapper,
+                                           TypeReference<V> typeRef,
+                                           Function<List<K>, Map<K, V>> batchLoader) {
+        return batchGetOrLoad(keys, keyMapper, typeRef, batchLoader, null, null);
+    }
+
+    /**
+     * 批量读取与回源（原始键为 String，支持复杂泛型 TypeReference）
+     */
+    public <V> Map<String, V> batchGetOrLoad(List<String> keys,
+                                             TypeReference<V> typeRef,
+                                             Function<List<String>, Map<String, V>> batchLoader,
+                                             Duration ttl,
+                                             Duration nullTtl) {
+        return batchGetOrLoad(keys, Function.identity(), typeRef, batchLoader, ttl, nullTtl);
+    }
+
+    /**
+     * 批量读取与回源（原始键为 String，支持复杂泛型 TypeReference，采用配置默认 TTL）
+     */
+    public <V> Map<String, V> batchGetOrLoad(List<String> keys,
+                                             TypeReference<V> typeRef,
+                                             Function<List<String>, Map<String, V>> batchLoader) {
+        return batchGetOrLoad(keys, Function.identity(), typeRef, batchLoader, null, null);
     }
 
     // ==================== 3. 对称基础运维门面 (防线 1) ====================
@@ -512,12 +548,15 @@ public class RedisCacheTemplate {
     }
 
     /**
-     * 判断缓存键是否存在
+     * 判断缓存键是否存在且包含真实有效业务数据（防穿透空哨兵视为不存在）
+     *
+     * @param key 缓存键
+     * @return 若物理存在且不为空哨兵返回 true；否则返回 false
      */
     public boolean hasKey(String key) {
         Assert.hasText(key, "缓存 key 不能为空");
-        Boolean exists = redisTemplate.hasKey(buildKey(key));
-        return Boolean.TRUE.equals(exists);
+        Object val = redisTemplate.opsForValue().get(buildKey(key));
+        return val != null && !NULL_SENTINEL.equals(val);
     }
 
     // ==================== 4. 辅助与工具方法 ====================

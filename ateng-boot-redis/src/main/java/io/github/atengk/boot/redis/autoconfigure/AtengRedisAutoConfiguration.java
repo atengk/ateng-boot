@@ -281,14 +281,14 @@ public class AtengRedisAutoConfiguration {
     /**
      * 装配分布式布隆过滤器声明式预热调度器 BloomFilterBootstrap
      *
-     * @param redissonClient Redisson 客户端
+     * @param redisBloomFilter 分布式布隆过滤器门面
      * @param redisProperties 属性配置
      * @return 布隆过滤器预热调度器
      */
     @Bean
     @ConditionalOnMissingBean(BloomFilterBootstrap.class)
-    public BloomFilterBootstrap bloomFilterBootstrap(RedissonClient redissonClient, RedisProperties redisProperties) {
-        return new BloomFilterBootstrap(redissonClient, redisProperties);
+    public BloomFilterBootstrap bloomFilterBootstrap(RedisBloomFilter redisBloomFilter, RedisProperties redisProperties) {
+        return new BloomFilterBootstrap(redisBloomFilter, redisProperties);
     }
 
     /**

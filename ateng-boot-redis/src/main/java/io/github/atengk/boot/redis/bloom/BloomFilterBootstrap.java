@@ -22,18 +22,18 @@ public class BloomFilterBootstrap implements SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(BloomFilterBootstrap.class);
 
-    private final RedissonClient redissonClient;
+    private final RedisBloomFilter redisBloomFilter;
     private final RedisProperties redisProperties;
 
     /**
      * 构造函数注入依赖
      *
-     * @param redissonClient Redisson 客户端
+     * @param redisBloomFilter 布隆过滤器门面
      * @param redisProperties 配置属性
      */
-    public BloomFilterBootstrap(RedissonClient redissonClient, RedisProperties redisProperties) {
-        Assert.notNull(redissonClient, "RedissonClient 不能为空");
-        this.redissonClient = redissonClient;
+    public BloomFilterBootstrap(RedisBloomFilter redisBloomFilter, RedisProperties redisProperties) {
+        Assert.notNull(redisBloomFilter, "RedisBloomFilter 不能为空");
+        this.redisBloomFilter = redisBloomFilter;
         this.redisProperties = redisProperties != null ? redisProperties : new RedisProperties();
     }
 
@@ -57,7 +57,7 @@ public class BloomFilterBootstrap implements SmartInitializingSingleton {
                     ? config.getFalseProbability() : 0.01;
 
             try {
-                boolean created = RedisBloomFilter.tryInit(filterName, expectedInsertions, falseProbability);
+                boolean created = redisBloomFilter.tryInit(filterName, expectedInsertions, falseProbability);
                 if (created) {
                     log.info("分布式布隆过滤器 [{}] 声明式预热初始化成功: expectedInsertions={}, falseProbability={}",
                             filterName, expectedInsertions, falseProbability);

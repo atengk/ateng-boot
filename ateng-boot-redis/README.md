@@ -25,7 +25,7 @@
 | **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
 | **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
-| **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz, batchLoader)`：批量 MGET 探测 + 字典序排序锁 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面 | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
+| **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz/typeRef, batchLoader)`：批量 MGET 探测 + 字典序排序锁去重 + 降级自愈回填 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面（空哨兵语义自洽） | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **两级缓存** | 两级缓存核心门面 | `TwoLevelCache` / `DefaultTwoLevelCache` | `ateng.boot.redis.two-level.*`<br>`ateng.boot.redis.key-prefix` | `getName()` / `get(key)` / `get(key, clazz)` / `get(key, loader)` / `put(key, val, ttl)` / `putIfAbsent` / `evict(key)` / `evictLocal(key)` / `clear()` / `clearLocal()`：纳秒级 L1 本地命中、分布式 L2 兜底、空哨兵防穿透与游标安全 scan 清理 | `TwoLevelCacheTest`<br>`SampleRedisIntegrationTest` |
 | **两级缓存** | Spring Cache 适配器 | `TwoLevelCacheManager` | `ateng.boot.redis.two-level.enabled`<br>`ateng.boot.redis.two-level.topic`<br>`ateng.boot.redis.two-level.l1.*`<br>`ateng.boot.redis.two-level.l2.*` | `@Cacheable` / `@CacheEvict` 无缝注解驱动、动态按需创建缓存空间、`instanceId` 唯一标识防环、`ateng:cache:evict:topic` 跨节点集中广播协同失效 | `TwoLevelCacheManagerTest`<br>`SampleRedisIntegrationTest` |
 | **两级缓存** | L1 内存缓存与退化工厂 | `L1MemoryCacheFactory` / `L1MemoryCache` / `ConcurrentLruMemoryCache` | `ateng.boot.redis.two-level.l1.default-max-size`<br>`ateng.boot.redis.two-level.l1.default-ttl` | 自动探测 Caffeine，存在时启用 W-TinyLFU 高性能缓存，缺失时自动退化为内置 LRU 内存结构并受 `default-max-size` 严格限制防 OOM | `ConcurrentLruMemoryCacheTest`<br>`L1MemoryCacheFactoryTest` |
@@ -469,11 +469,11 @@ public class RedisSampleController {
     private final RedisBloomFilter redisBloomFilter;
 
     /**
-     * 将用户添加至黑名单布隆过滤器
+     * 将用户添加至黑名单布隆过滤器（同时支持 redisBloomFilter.add 或 RedisBloomFilter.add 静态门面）
      */
     @PostMapping("/bloom/blacklist/add")
     public Result<Boolean> addBlacklist(@RequestParam("userId") String userId) {
-        boolean added = RedisBloomFilter.add("user-blacklist", userId);
+        boolean added = redisBloomFilter.add("user-blacklist", userId);
         return Result.success(added);
     }
 
@@ -482,7 +482,7 @@ public class RedisSampleController {
      */
     @GetMapping("/bloom/blacklist/check")
     public Result<Boolean> checkBlacklist(@RequestParam("userId") String userId) {
-        boolean inBlacklist = RedisBloomFilter.contains("user-blacklist", userId);
+        boolean inBlacklist = redisBloomFilter.contains("user-blacklist", userId);
         return Result.success(inBlacklist);
     }
 
@@ -493,10 +493,10 @@ public class RedisSampleController {
     public Result<Map<String, Object>> getBlacklistMetrics() {
         Map<String, Object> metrics = new HashMap<>();
         metrics.put("filterName", "user-blacklist");
-        metrics.put("count", RedisBloomFilter.count("user-blacklist"));
-        metrics.put("expectedInsertions", RedisBloomFilter.getExpectedInsertions("user-blacklist"));
-        metrics.put("usageRate", RedisBloomFilter.getUsageRate("user-blacklist"));
-        metrics.put("falseProbability", RedisBloomFilter.getFalseProbability("user-blacklist"));
+        metrics.put("count", redisBloomFilter.count("user-blacklist"));
+        metrics.put("expectedInsertions", redisBloomFilter.getExpectedInsertions("user-blacklist"));
+        metrics.put("usageRate", redisBloomFilter.getUsageRate("user-blacklist"));
+        metrics.put("falseProbability", redisBloomFilter.getFalseProbability("user-blacklist"));
         return Result.success(metrics);
     }
 }

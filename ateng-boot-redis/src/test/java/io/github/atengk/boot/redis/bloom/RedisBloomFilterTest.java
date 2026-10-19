@@ -71,25 +71,29 @@ class RedisBloomFilterTest {
     @DisplayName("1. 参数防卫与快速失败测试")
     void testValidationAndDefensiveGuard() {
         // filterName 为空拦截
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("", 1000, 0.01))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("", 1000, 0.01))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RedisBloomFilter.contains("  ", "item"))
+        assertThatThrownBy(() -> redisBloomFilter.contains("  ", "item"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RedisBloomFilter.add(null, "item"))
+        assertThatThrownBy(() -> redisBloomFilter.add(null, "item"))
                 .isInstanceOf(IllegalArgumentException.class);
 
         // expectedInsertions 非法拦截
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("test", 0, 0.01))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("test", 0, 0.01))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("test", -10, 0.01))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("test", -10, 0.01))
                 .isInstanceOf(IllegalArgumentException.class);
 
         // falseProbability 越界拦截
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("test", 1000, 0.0))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("test", 1000, 0.0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("test", 1000, 1.0))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("test", 1000, 1.0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> RedisBloomFilter.tryInit("test", 1000, -0.05))
+        assertThatThrownBy(() -> redisBloomFilter.tryInit("test", 1000, -0.05))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 静态工具 RedisBloomUtil 同样拦截
+        assertThatThrownBy(() -> RedisBloomUtil.tryInit("", 1000, 0.01))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -97,15 +101,16 @@ class RedisBloomFilterTest {
     @DisplayName("2. 全局 KeyPrefix 统一分层纳管验证")
     void testBuildKeyPrefix() {
         // 全局前缀为 "test:" 时，"blacklist" -> "test:bloom:blacklist"
-        assertThat(RedisBloomFilter.buildKey("blacklist")).isEqualTo("test:bloom:blacklist");
+        assertThat(redisBloomFilter.buildKey("blacklist")).isEqualTo("test:bloom:blacklist");
+        assertThat(RedisBloomUtil.buildKey("blacklist")).isEqualTo("test:bloom:blacklist");
 
         // 若已携带 bloom: 则不重复添加
-        assertThat(RedisBloomFilter.buildKey("bloom:user")).isEqualTo("test:bloom:user");
+        assertThat(redisBloomFilter.buildKey("bloom:user")).isEqualTo("test:bloom:user");
 
         // 若前缀为空时
         redisProperties.setKeyPrefix("");
-        RedisBloomFilter.init(redissonClient, redisProperties);
-        assertThat(RedisBloomFilter.buildKey("blacklist")).isEqualTo("bloom:blacklist");
+        RedisBloomFilter filterWithoutPrefix = new RedisBloomFilter(redissonClient, redisProperties);
+        assertThat(filterWithoutPrefix.buildKey("blacklist")).isEqualTo("bloom:blacklist");
     }
 
     @Test
@@ -113,13 +118,13 @@ class RedisBloomFilterTest {
     @SuppressWarnings("unchecked")
     void testTryInit() {
         when(bloomFilterMock.tryInit(100_000L, 0.01)).thenReturn(true);
-        boolean firstInit = RedisBloomFilter.tryInit("order-filter", 100_000L, 0.01);
+        boolean firstInit = redisBloomFilter.tryInit("order-filter", 100_000L, 0.01);
         assertThat(firstInit).isTrue();
         verify(bloomFilterMock).tryInit(100_000L, 0.01);
 
         // 二次初始化返回 false（已存在）
         when(bloomFilterMock.tryInit(100_000L, 0.01)).thenReturn(false);
-        boolean secondInit = RedisBloomFilter.tryInit("order-filter", 100_000L, 0.01);
+        boolean secondInit = RedisBloomUtil.tryInit("order-filter", 100_000L, 0.01);
         assertThat(secondInit).isFalse();
     }
 
@@ -131,15 +136,15 @@ class RedisBloomFilterTest {
         when(bloomFilterMock.contains("user_1001")).thenReturn(true);
         when(bloomFilterMock.contains("user_9999")).thenReturn(false);
 
-        boolean added = RedisBloomFilter.add("user_filter", "user_1001");
+        boolean added = redisBloomFilter.add("user_filter", "user_1001");
         assertThat(added).isTrue();
 
-        assertThat(RedisBloomFilter.contains("user_filter", "user_1001")).isTrue();
-        assertThat(RedisBloomFilter.contains("user_filter", "user_9999")).isFalse();
+        assertThat(redisBloomFilter.contains("user_filter", "user_1001")).isTrue();
+        assertThat(RedisBloomUtil.contains("user_filter", "user_9999")).isFalse();
 
         // null 元素空安全验证
-        assertThat(RedisBloomFilter.add("user_filter", null)).isFalse();
-        assertThat(RedisBloomFilter.contains("user_filter", null)).isFalse();
+        assertThat(redisBloomFilter.add("user_filter", null)).isFalse();
+        assertThat(redisBloomFilter.contains("user_filter", null)).isFalse();
     }
 
     @Test
@@ -151,19 +156,19 @@ class RedisBloomFilterTest {
         when(bloomFilterMock.add("b")).thenReturn(true);
         when(bloomFilterMock.add("c")).thenReturn(false); // 已存在
 
-        long addedCount = RedisBloomFilter.addAll("batch_filter", items);
+        long addedCount = redisBloomFilter.addAll("batch_filter", items);
         assertThat(addedCount).isEqualTo(2L);
 
         when(bloomFilterMock.contains("a")).thenReturn(true);
         when(bloomFilterMock.contains("b")).thenReturn(true);
         when(bloomFilterMock.contains("c")).thenReturn(false);
 
-        List<Boolean> results = RedisBloomFilter.containsAll("batch_filter", items);
+        List<Boolean> results = RedisBloomUtil.containsAll("batch_filter", items);
         assertThat(results).containsExactly(true, true, false, false);
 
         // 空集合空安全
-        assertThat(RedisBloomFilter.addAll("batch_filter", Collections.emptyList())).isEqualTo(0L);
-        assertThat(RedisBloomFilter.containsAll("batch_filter", Collections.emptyList())).isEmpty();
+        assertThat(redisBloomFilter.addAll("batch_filter", Collections.emptyList())).isEqualTo(0L);
+        assertThat(redisBloomFilter.containsAll("batch_filter", Collections.emptyList())).isEmpty();
     }
 
     @Test
@@ -174,21 +179,21 @@ class RedisBloomFilterTest {
         when(bloomFilterMock.count()).thenReturn(8_000L);
         when(bloomFilterMock.getFalseProbability()).thenReturn(0.01);
 
-        assertThat(RedisBloomFilter.getExpectedInsertions("monitor_filter")).isEqualTo(10_000L);
-        assertThat(RedisBloomFilter.count("monitor_filter")).isEqualTo(8_000L);
-        assertThat(RedisBloomFilter.getFalseProbability("monitor_filter")).isEqualTo(0.01);
+        assertThat(redisBloomFilter.getExpectedInsertions("monitor_filter")).isEqualTo(10_000L);
+        assertThat(redisBloomFilter.count("monitor_filter")).isEqualTo(8_000L);
+        assertThat(redisBloomFilter.getFalseProbability("monitor_filter")).isEqualTo(0.01);
 
         // 填充率 8000 / 10000 = 0.8
-        double usageRate = RedisBloomFilter.getUsageRate("monitor_filter");
+        double usageRate = RedisBloomUtil.getUsageRate("monitor_filter");
         assertThat(usageRate).isEqualTo(0.80);
 
         // 超过 80% 判定
-        assertThat(RedisBloomFilter.isOverCapacity("monitor_filter", 0.80)).isTrue();
-        assertThat(RedisBloomFilter.isOverCapacity("monitor_filter", 0.90)).isFalse();
+        assertThat(redisBloomFilter.isOverCapacity("monitor_filter", 0.80)).isTrue();
+        assertThat(redisBloomFilter.isOverCapacity("monitor_filter", 0.90)).isFalse();
 
         // 当触发 add 时自动检查容量预警
         when(bloomFilterMock.add("item_new")).thenReturn(true);
-        boolean added = RedisBloomFilter.add("monitor_filter", "item_new");
+        boolean added = redisBloomFilter.add("monitor_filter", "item_new");
         assertThat(added).isTrue();
     }
 
@@ -199,8 +204,8 @@ class RedisBloomFilterTest {
         when(bloomFilterMock.isExists()).thenReturn(true);
         when(bloomFilterMock.delete()).thenReturn(true);
 
-        assertThat(RedisBloomFilter.isExists("temp_filter")).isTrue();
-        assertThat(RedisBloomFilter.delete("temp_filter")).isTrue();
+        assertThat(redisBloomFilter.isExists("temp_filter")).isTrue();
+        assertThat(RedisBloomUtil.delete("temp_filter")).isTrue();
 
         verify(bloomFilterMock).delete();
     }
@@ -210,7 +215,7 @@ class RedisBloomFilterTest {
     void testUninitializedException() {
         RedisBloomFilter.init(null, null);
 
-        assertThatThrownBy(() -> RedisBloomFilter.contains("test", "item"))
+        assertThatThrownBy(() -> RedisBloomUtil.contains("test", "item"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("RedisBloomFilter 尚未完成初始化");
 
@@ -236,7 +241,7 @@ class RedisBloomFilterTest {
 
         when(bloomFilterMock.tryInit(anyLong(), anyDouble())).thenReturn(true);
 
-        BloomFilterBootstrap bootstrap = new BloomFilterBootstrap(redissonClient, redisProperties);
+        BloomFilterBootstrap bootstrap = new BloomFilterBootstrap(redisBloomFilter, redisProperties);
         bootstrap.afterSingletonsInstantiated();
 
         verify(bloomFilterMock).tryInit(eq(500_000L), eq(0.001));
