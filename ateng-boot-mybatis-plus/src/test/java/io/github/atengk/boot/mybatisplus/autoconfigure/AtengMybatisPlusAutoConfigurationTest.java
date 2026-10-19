@@ -427,5 +427,65 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class)).isSameAs(customInterceptor);
                 });
     }
+
+    @Test
+    @DisplayName("当缺少 SqlSessionFactory 时平滑跳过 DynamicQueryTemplate 装配而不会导致启动崩溃")
+    void shouldNotAutoConfigureDynamicQueryTemplateWhenSqlSessionFactoryMissing() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class);
+        });
+    }
+
+    @Test
+    @DisplayName("当容器中存在 SqlSessionFactory 时默认成功装配 DynamicQueryTemplate")
+    void shouldAutoConfigureDynamicQueryTemplateWhenSqlSessionFactoryPresent() {
+        org.apache.ibatis.session.SqlSessionFactory mockFactory = org.mockito.Mockito.mock(org.apache.ibatis.session.SqlSessionFactory.class);
+        org.apache.ibatis.session.Configuration mockConfig = new org.apache.ibatis.session.Configuration();
+        javax.sql.DataSource mockDataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+        mockConfig.setEnvironment(new org.apache.ibatis.mapping.Environment("test", new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), mockDataSource));
+        org.mockito.Mockito.when(mockFactory.getConfiguration()).thenReturn(mockConfig);
+
+        contextRunner.withBean(org.apache.ibatis.session.SqlSessionFactory.class, () -> mockFactory)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.dynamic-query.enabled=false 时禁用 DynamicQueryTemplate")
+    void shouldDisableDynamicQueryTemplateWhenConfigured() {
+        org.apache.ibatis.session.SqlSessionFactory mockFactory = org.mockito.Mockito.mock(org.apache.ibatis.session.SqlSessionFactory.class);
+        org.apache.ibatis.session.Configuration mockConfig = new org.apache.ibatis.session.Configuration();
+        javax.sql.DataSource mockDataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+        mockConfig.setEnvironment(new org.apache.ibatis.mapping.Environment("test", new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), mockDataSource));
+        org.mockito.Mockito.when(mockFactory.getConfiguration()).thenReturn(mockConfig);
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.dynamic-query.enabled=false")
+                .withBean(org.apache.ibatis.session.SqlSessionFactory.class, () -> mockFactory)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 DynamicQueryTemplate 时优先使用业务自定义 Bean")
+    void shouldPreferCustomDynamicQueryTemplateBean() {
+        org.apache.ibatis.session.SqlSessionFactory mockFactory = org.mockito.Mockito.mock(org.apache.ibatis.session.SqlSessionFactory.class);
+        org.apache.ibatis.session.Configuration mockConfig = new org.apache.ibatis.session.Configuration();
+        javax.sql.DataSource mockDataSource = org.mockito.Mockito.mock(javax.sql.DataSource.class);
+        mockConfig.setEnvironment(new org.apache.ibatis.mapping.Environment("test", new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), mockDataSource));
+        org.mockito.Mockito.when(mockFactory.getConfiguration()).thenReturn(mockConfig);
+
+        org.mybatis.spring.SqlSessionTemplate mockSession = new org.mybatis.spring.SqlSessionTemplate(mockFactory);
+        io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate customTemplate =
+                new io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate(mockSession);
+
+        contextRunner.withBean(org.apache.ibatis.session.SqlSessionFactory.class, () -> mockFactory)
+                .withBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class, () -> customTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class)).isSameAs(customTemplate);
+                });
+    }
 }
 

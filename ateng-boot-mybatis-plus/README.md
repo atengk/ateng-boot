@@ -45,6 +45,9 @@
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn`、`upsertBatchSomeColumn` 与 `updateBatchSomeColumn` 原生批量扩展 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `SampleBatchInsertTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
+| **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` |
+| **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic(mapper::method, request, voClass)` / `pageDynamic(statementName, request, voClass)` / `listDynamic` / `getOneDynamic`，基于方法引用或短方法名实现多表联表极速直出 | `AtengBaseServiceMultiTableDynamicTest` |
+| **动态查询** | 联表方法引用契约与解析辅助 | `DynamicMapperPageMethod`, `DynamicMapperListMethod`, `DynamicLambdaHelper` | - | 原生 `SerializedLambda` 纳秒级提取 Mapper 联表方法名与所属类，函数式强类型接口规范 | `DynamicLambdaHelperTest` / `AtengBaseServiceMultiTableDynamicTest` |
 | **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` |
 | **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` |
 | **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符与流式链式构建，支持 `or(orGroup, condition)` 独立嵌套 OR 逻辑块 | `DynamicQueryHelperTest` / `DynamicQueryParserTest` |
@@ -901,14 +904,91 @@ QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, User
 
 ---
 
-### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+---
 
-1. **纳秒级元数据缓存与零反射损耗**：
-   目标实体的白名单字段、`@DynamicQueryIgnore` 忽略标记、`@TableField(exist = false)` 与加密注解，在首次反射解析后永久驻留于 `ConcurrentHashMap` 高性能只读快照缓存中，后续每一次高并发请求均为纳秒级只读检索，避免反射性能损耗。
-2. **零次生异常保证 (Zero-Secondary-Exception)**：
-   `DynamicQueryParser` 作为 Web 接入层最外围解析器，遇到任何非法操作符名称、畸形语法字符或非法的 Between 格式，均由前置卫语句记录 DEBUG/WARN 日志后平滑丢弃该条件，绝不向外抛出未捕获异常导致 HTTP 500。
-3. **波浪线 `~` 语法防错保障**：
-   针对时间字符串范围查询（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），传统逗号 `,` 或冒号 `:` 分隔符极易与时间文本中的时分秒冒号产生歧义导致解析错乱；本框架原生支持并推行波浪线 `~` 作为 Between 边界切分符。
+### 3. 通用受管执行门面与 Mapper XML 联表方法引用直出 (`DynamicQueryTemplate` & Method References)
+
+在实际企业级业务中，查询往往涉及多表联表（如用户关联部门、角色、机构）或既有历史 Mapper XML。传统方式需要开发者手写 Wrapper 并手动调用 `PageUtil.toPageResult` 逐条转换 VO。
+
+`ateng-boot-mybatis-plus` 原生提供 **通用受管执行门面 `DynamicQueryTemplate`** 并深度赋能 `AtengBaseService`，支持方法引用强类型直出与 AST 别名自愈：
+
+#### 场景一：基于自定义 Mapper 联表方法引用极速直出 (强烈推荐)
+
+```java
+// 1. Mapper 接口定义多表联表分页方法（支持在 XML 中编写多表 JOIN）
+public interface UserMapper extends AtengBaseMapper<UserEntity> {
+    IPage<UserDeptVO> selectUserDeptPage(IPage<UserDeptVO> page, @Param(Constants.WRAPPER) Wrapper<UserDeptVO> wrapper);
+    List<UserDeptVO> selectUserDeptList(@Param(Constants.WRAPPER) Wrapper<UserDeptVO> wrapper);
+}
+
+// 2. Service 业务层通过方法引用一行直出（纯 POJO 零注解 VO 投影与物理分页）
+@Service
+public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
+
+    public PageResult<UserDeptVO> queryUserDeptPage(DynamicQueryRequest request) {
+        // 自动完成：AST 投影别名自愈（如 deptName -> d.name） + 物理分页 + VO 强类型投影返回
+        return pageDynamic(baseMapper::selectUserDeptPage, request, UserDeptVO.class);
+    }
+
+    public List<UserDeptVO> queryUserDeptList(DynamicQueryRequest request) {
+        return listDynamic(baseMapper::selectUserDeptList, request, UserDeptVO.class);
+    }
+}
+```
+
+#### 场景二：基于短方法名直接调用
+
+```java
+// 支持直接通过短方法名执行动态分页/列表查询
+PageResult<UserDeptVO> page = userService.pageDynamic("selectUserDeptPage", request, UserDeptVO.class);
+List<UserDeptVO> list = userService.listDynamic("selectUserDeptList", request, UserDeptVO.class);
+UserDeptVO one = userService.getOneDynamic("selectUserDeptList", request, UserDeptVO.class);
+```
+
+#### 场景三：注入 `DynamicQueryTemplate` 编程式门面调用
+
+```java
+@Autowired
+private DynamicQueryTemplate dynamicQueryTemplate;
+
+// 1. 单表实体分页直出并投影为 VO
+PageResult<UserVO> page = dynamicQueryTemplate.selectPage(request, UserEntity.class, UserVO.class);
+
+// 2. 业务 DTO 驱动的单表实体分页
+PageResult<UserVO> pageByDto = dynamicQueryTemplate.selectPage(searchDto, UserEntity.class, UserVO.class);
+
+// 3. 基于 StatementId 的外部/XML SQL 统计与单条查询
+UserDeptVO vo = dynamicQueryTemplate.selectOne("selectUserDeptList", request, UserDeptVO.class);
+long activeCount = dynamicQueryTemplate.count("selectUserDeptList", request);
+```
+
+#### 场景四：Mapper XML 占位符原生绑定与 JSqlParser AST 自适应兼容
+
+1. **显式占位符（推荐）**：在 Mapper XML 中声明 `${ew.customSqlSegment}`，框架自动完成安全的参数化绑定：
+   ```xml
+   <select id="selectUserDeptPage" resultType="io.github.atengk.boot.sample.vo.UserDeptVO">
+       SELECT u.id, u.username, u.age, d.name AS dept_name, d.code AS dept_code
+       FROM t_user u
+       LEFT JOIN t_dept d ON u.dept_id = d.id
+       ${ew.customSqlSegment}
+   </select>
+   ```
+2. **零改动自适应兼容**：对于未声明 `${ew.customSqlSegment}` 的既有普通 XML SQL，框架通过 JSqlParser AST 自适应改写动态注册，无需修改历史 XML 即可享受动态查询与表别名自愈。
+
+---
+
+### 4. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **纳秒级元数据与 AST 投影双缓存**：
+   - 目标实体的白名单字段、`@DynamicQueryIgnore` 忽略标记、加密注解解析结果永久驻留于 `ConcurrentHashMap`；
+   - Mapper XML SQL 语句经 JSqlParser 解析生成的物理列映射字典（`DynamicSqlProjectionResolver`）以 StatementId 为主键进行纳秒级缓存，彻底杜绝重复 AST 语法树解析开销。
+2. **纯 POJO 零注解与“零实体泄露”铁律 (Zero-Entity-Leakage)**：
+   传输层请求（`DynamicQueryRequest` / DTO）与目标 VO 均为 100% 纯 POJO，无需在 VO 上堆砌任何 `@TableField` 或别名映射注解；底层通过 AST 解析自动抹平表别名差异，出参严格返回 `PageResult<VO>`，严禁 ORM 实体越界穿透至 Controller。
+3. **零次生异常与空安全保底契约 (Null Safety & Defensive Return)**：
+   - `DynamicQueryParser` 对任何畸形语法字符、非法操作符均由前置卫语句安全忽略，绝不触发未捕获异常导致 HTTP 500；
+   - 查询列表或无匹配记录时统一返回保底空集合（`Collections.emptyList()`）或空分页（`PageResult.empty()`），严禁返回 `null`。
+4. **波浪线 `~` 语法防错保障**：
+   针对时间字符串范围查询（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），推行波浪线 `~` 作为 Between 边界切分符，彻底消除时分秒空格与冒号歧义。
 
 ---
 

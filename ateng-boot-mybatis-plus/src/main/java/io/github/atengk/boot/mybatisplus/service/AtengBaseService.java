@@ -1,18 +1,24 @@
 package io.github.atengk.boot.mybatisplus.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.IService;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicLambdaHelper;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperListMethod;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperPageMethod;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -240,6 +246,282 @@ public interface AtengBaseService<T> extends IService<T> {
         Class<T> entityClass = getEntityClass();
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         return count(wrapper);
+    }
+
+    /**
+     * 获取受管动态查询模板组件（子类实现可按需注入）
+     *
+     * @return 动态查询执行模板，未注入时返回 null
+     */
+    default DynamicQueryTemplate getDynamicQueryTemplate() {
+        return null;
+    }
+
+    // ==========================================
+    // 3. 多表联表方法引用与短方法名动态直出
+    // ==========================================
+
+    /**
+     * 基于自定义 Mapper 分页方法引用执行联表查询，自动自愈 AST 投影表别名并返回强类型 VO 分页结果
+     *
+     * @param mapperMethod Mapper 分页方法引用（如 baseMapper::selectUserDeptPage）
+     * @param request      动态查询请求
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(DynamicMapperPageMethod<V> mapperMethod, DynamicQueryRequest request, Class<V> voClass) {
+        Objects.requireNonNull(mapperMethod, "mapperMethod 不能为 null");
+        if (request == null) {
+            return PageResult.empty();
+        }
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        Map<String, String> mapping = null;
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                mapping = template.resolveProjections(methodName);
+            }
+        }
+
+        QueryWrapper<V> wrapper = DynamicQueryHelper.buildWrapper(request, voClass, mapping);
+        Page<V> page = PageUtil.toPage(request);
+        IPage<V> resultPage = mapperMethod.select(page, wrapper);
+        return PageUtil.toPageResult(resultPage);
+    }
+
+    /**
+     * 基于自定义 Mapper 分页方法引用执行联表查询（泛型自动推断）
+     *
+     * @param mapperMethod Mapper 分页方法引用（如 baseMapper::selectUserDeptPage）
+     * @param request      动态查询请求
+     * @param <V>          目标视图或实体泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(DynamicMapperPageMethod<V> mapperMethod, DynamicQueryRequest request) {
+        return pageDynamic(mapperMethod, request, null);
+    }
+
+    /**
+     * 基于自定义 Mapper 分页方法引用与普通查询 DTO 执行联表查询
+     *
+     * @param mapperMethod Mapper 分页方法引用
+     * @param queryDto     业务查询 DTO
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(DynamicMapperPageMethod<V> mapperMethod, Object queryDto, Class<V> voClass) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            return pageDynamic(mapperMethod, request, voClass);
+        }
+        Objects.requireNonNull(mapperMethod, "mapperMethod 不能为 null");
+        if (queryDto == null) {
+            return PageResult.empty();
+        }
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        Map<String, String> mapping = null;
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                mapping = template.resolveProjections(methodName);
+            }
+        }
+
+        QueryWrapper<V> wrapper = (voClass != null)
+                ? DynamicQueryHelper.buildWrapper(queryDto, voClass, mapping)
+                : DynamicQueryHelper.buildWrapper(queryDto, mapping);
+        Page<V> page = (queryDto instanceof PageQuery pq)
+                ? PageUtil.toPage(pq)
+                : new Page<>(1, 10);
+        IPage<V> resultPage = mapperMethod.select(page, wrapper);
+        return PageUtil.toPageResult(resultPage);
+    }
+
+    /**
+     * 基于自定义 Mapper 分页方法引用与普通查询 DTO 执行联表查询（泛型推断）
+     *
+     * @param mapperMethod Mapper 分页方法引用
+     * @param queryDto     业务查询 DTO
+     * @param <V>          目标泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(DynamicMapperPageMethod<V> mapperMethod, Object queryDto) {
+        return pageDynamic(mapperMethod, queryDto, null);
+    }
+
+    /**
+     * 基于自定义 Mapper 列表方法引用执行联表查询并返回 VO 集合
+     *
+     * @param mapperMethod Mapper 列表方法引用
+     * @param request      动态查询请求
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return 列表结果集合
+     */
+    default <V> List<V> listDynamic(DynamicMapperListMethod<V> mapperMethod, DynamicQueryRequest request, Class<V> voClass) {
+        Objects.requireNonNull(mapperMethod, "mapperMethod 不能为 null");
+        if (request == null) {
+            return Collections.emptyList();
+        }
+        String methodName = DynamicLambdaHelper.resolveMethodName(mapperMethod);
+        Map<String, String> mapping = null;
+        if (methodName != null && !methodName.isEmpty()) {
+            DynamicQueryTemplate template = getDynamicQueryTemplate();
+            if (template != null) {
+                mapping = template.resolveProjections(methodName);
+            }
+        }
+
+        QueryWrapper<V> wrapper = (voClass != null)
+                ? DynamicQueryHelper.buildWrapper(request, voClass, mapping)
+                : (mapping != null ? DynamicQueryHelper.buildWrapper(request, mapping) : new QueryWrapper<>());
+        List<V> list = mapperMethod.select(wrapper);
+        return list != null ? list : Collections.emptyList();
+    }
+
+    /**
+     * 基于自定义 Mapper 列表方法引用执行联表查询
+     *
+     * @param mapperMethod Mapper 列表方法引用
+     * @param request      动态查询请求
+     * @param <V>          目标泛型
+     * @return 列表结果集合
+     */
+    default <V> List<V> listDynamic(DynamicMapperListMethod<V> mapperMethod, DynamicQueryRequest request) {
+        return listDynamic(mapperMethod, request, null);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 执行多表联表分页查询并投影为 VO
+     *
+     * @param statementName 语句名称（支持短方法名如 "selectUserDeptPage"）
+     * @param request       动态查询请求
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(String statementName, DynamicQueryRequest request, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectPage(statementName, request, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 与普通 DTO 执行多表联表分页查询并投影为 VO
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return 分页结果 PageResult<V>
+     */
+    default <V> PageResult<V> pageDynamic(String statementName, Object queryDto, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectPage(statementName, queryDto, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 执行多表联表列表查询并投影为 VO
+     *
+     * @param statementName 语句名称
+     * @param request       动态查询请求
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return 列表结果集合
+     */
+    default <V> List<V> listDynamic(String statementName, DynamicQueryRequest request, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectList(statementName, request, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 与普通 DTO 执行多表联表列表查询并投影为 VO
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return 列表结果集合
+     */
+    default <V> List<V> listDynamic(String statementName, Object queryDto, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectList(statementName, queryDto, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 执行单条查询并投影为 VO
+     *
+     * @param statementName 语句名称
+     * @param request       动态查询请求
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return VO 实例，无记录时返回 null
+     */
+    default <V> V getOneDynamic(String statementName, DynamicQueryRequest request, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectOne(statementName, request, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 与普通 DTO 执行单条查询并投影为 VO
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @param voClass       目标 VO 类型
+     * @param <V>           目标 VO 泛型
+     * @return VO 实例，无记录时返回 null
+     */
+    default <V> V getOneDynamic(String statementName, Object queryDto, Class<V> voClass) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.selectOne(statementName, queryDto, voClass);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 执行记录数统计
+     *
+     * @param statementName 语句名称
+     * @param request       动态查询请求
+     * @return 匹配记录总数
+     */
+    default long countDynamic(String statementName, DynamicQueryRequest request) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.count(statementName, request);
+    }
+
+    /**
+     * 基于短方法名或全限定 StatementId 与普通 DTO 执行记录数统计
+     *
+     * @param statementName 语句名称
+     * @param queryDto      业务查询 DTO
+     * @return 匹配记录总数
+     */
+    default long countDynamic(String statementName, Object queryDto) {
+        DynamicQueryTemplate template = getDynamicQueryTemplate();
+        if (template == null) {
+            throw new IllegalStateException("当前 Service 未注入 DynamicQueryTemplate 组件，无法通过语句名称执行动态查询");
+        }
+        return template.count(statementName, queryDto);
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mybatisplus.service.impl;
 
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
 import io.github.atengk.boot.mybatisplus.service.AtengBaseService;
@@ -12,7 +13,7 @@ import java.util.Collection;
 
 /**
  * 增强型通用业务 Service 实现基类
- * 继承 MyBatis-Plus ServiceImpl 并实现 AtengBaseService，提供声明式事务守护的分片多值原生批量插入
+ * 继承 MyBatis-Plus ServiceImpl 并实现 AtengBaseService，提供声明式事务守护的分片多值原生批量插入与动态查询直出能力
  *
  * @param <M> 扩展了 AtengBaseMapper 的持久层 Mapper 类型
  * @param <T> 实体类型
@@ -22,6 +23,7 @@ import java.util.Collection;
 public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceImpl<M, T> implements AtengBaseService<T> {
 
     private MybatisPlusProperties properties;
+    private DynamicQueryTemplate dynamicQueryTemplate;
 
     /**
      * 注入持久层配置属性（Setter 注入规避字段反射注入）
@@ -31,6 +33,21 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     @Autowired(required = false)
     public void setProperties(MybatisPlusProperties properties) {
         this.properties = properties;
+    }
+
+    /**
+     * 注入动态查询模板组件
+     *
+     * @param dynamicQueryTemplate 动态查询模板
+     */
+    @Autowired(required = false)
+    public void setDynamicQueryTemplate(DynamicQueryTemplate dynamicQueryTemplate) {
+        this.dynamicQueryTemplate = dynamicQueryTemplate;
+    }
+
+    @Override
+    public DynamicQueryTemplate getDynamicQueryTemplate() {
+        return this.dynamicQueryTemplate;
     }
 
     @Transactional(rollbackFor = Exception.class)
