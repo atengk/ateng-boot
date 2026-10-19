@@ -95,14 +95,37 @@ flowchart TD
 - 定制 `RedisCacheManager`：支持 `@Cacheable` 为不同 cacheName 配置独立 TTL、自动缓存空对象防穿透、自动加入随机抖动防雪崩；
 - 预留 `TwoLevelCache` SPI 契约扩展点，保证主模块轻量，不强制捆绑 Caffeine 内存包。
 
+### 7. Phase 2 生产级深度演进 (Two-Level Cache, Cache Defense & Queue Hardening)
+经由 `/grill-with-docs` 双轮推演，确立以下深化增量决策：
+1. **两级缓存体系 (TwoLevelCache & TwoLevelCacheManager)**：
+   - **双模驱动**：同时提供底层编程式 `TwoLevelCache` 门面与 Spring 原生 `TwoLevelCacheManager` 适配器，无缝支持 `@Cacheable` / `@CacheEvict`；
+   - **依赖解耦与退化**：Caffeine 设为编译期 `<optional>true</optional>`；存在 Caffeine 时发挥 W-TinyLFU 顶级性能；缺类时自动平滑退化为基于原生 JVM `LinkedHashMap` 的软容量 LRU 内存缓存，严格限定最大条数防 OOM；
+   - **单集中广播与防环**：全系统多 CacheName 共用单一集中 Redis 广播频道（`ateng:cache:evict:topic`），载荷封装 `CacheEvictMessage(cacheName, key, instanceId, clearAll)`；各实例根据唯一 `instanceId` 防自重入消除网络延迟竞争。
+2. **工业级缓存防卫模板 (RedisCacheTemplate)**：
+   - **单键与批量防击穿**：同时支持单 Key `getOrLoad` 与批量 `batchGetOrLoad`（结合 MGET + 缺失键 DCL + 分布式锁原子批量查库 + Pipeline 批量回填，彻底杜绝 N+1 穿透）；
+   - **三防合一**：分布式锁防击穿、短 TTL 空值缓存防穿透、Jitter 随机偏移防雪崩；
+   - **容灾穿透兜底**：争抢分布式锁超时后自动打 WARN 告警并平滑穿透查库，保证极端高并发或网络抖动下的可用性优先。
+3. **分布式布隆过滤器 (RedisBloomFilter)**：
+   - 基于 Redisson `RBloomFilter` 封装；支持 YAML 声明式配置启动预热（`ateng.boot.redis.bloom-filters.<name>`）与编程式动态双轨；内置容量逼近（80%）监控告警。
+4. **延时队列生产级死信与受管线程治理**：
+   - **受管线程合规**：全面取缔内部 `Executors.newFixedThreadPool` 野线程，接入 Core 受管线程池设施与 MDC 上下文装饰；
+   - **死信队列 (DLQ)**：重试耗尽后自动将消息包装为 `DeadLetterMessage` 存入 `{queueName}:dlq`，并回调 `DelayedQueueFailureHandler` SPI（支持业务定制钉钉/飞书告警或持久化补偿）。
+5. **声明式 Pub/Sub 订阅 (@ChannelTopicListener)**：
+   - 补齐声明式订阅切面，支持 `${...}` 动态占位符与通配模式，根据方法入参类型完成安全 JSON 智能自动反序列化。
+6. **全局 KeyPrefix 分层治理契约**：
+   - 高级受管语义组件（锁、缓存模板、两级缓存、布隆、延时队列）统一自动前置拼接 `keyPrefix`；底层 `RedisUtil` 保持原生透传，提供 `buildKey()` 辅助，分层清晰透明。
+
 ---
 
 ## 权衡与收益考量 (Consequences)
 
 ### 正向收益
 1. **兼收并蓄**：既享有 Spring Data Redis 原生生态红利，又坐拥 Redisson 强大的分布式协调能力；
-2. **生产安全等级最高**：彻底屏蔽 `keys *` 生产事故隐患、屏蔽 `@class` 反序列化 CVE 隐患、屏蔽非法持锁人释放异常导致的故障掩盖；
-3. **极佳的开发体验**：开箱即用的注解驱动延时队列、声明式分布式锁与全能 `RedisUtil` 极大幅度削减业务胶水代码。
+2. **生产安全等级最高**：彻底屏蔽 `keys *` 生产事故隐患、屏蔽 `@class` 反序列化 CVE 隐患、屏蔽非法持锁人释放异常导致的故障掩盖、杜绝延时任务失败静默丢数据；
+3. **极佳的开发体验**：开箱即用的两级缓存、批量防击穿模板、死信队列、注解驱动广播与声明式分布式锁，极大幅度削减业务胶水代码；
+4. **零臃肿与弹性伸缩**：Caffeine 可选依赖不绑架底座体积，缺依赖平滑降级，单集中频道节省连接句柄。
 
 ### 妥协与成本
-1. **轻微的内存与连接开销**：双核共存模式下，Lettuce 与 Redisson 会各自维护一套连接池。但在生产环境下，通过合理设置两者连接池最小空闲与最大连接数，其开销对现代服务器几乎微乎其微。
+1. **轻微的内存与连接开销**：双核共存模式下，Lettuce 与 Redisson 会各自维护一套连接池。但在生产环境下，通过合理设置两者连接池最小空闲与最大连接数，其开销对现代服务器几乎微乎其微；
+2. **两级缓存最终一致性窗口**：L1 本地缓存与 L2 Redis 之间存在极短暂的 Pub/Sub 广播网络传播时延（通常 < 10ms），适用于高频读、容忍微小延迟的准实时业务场景。
+

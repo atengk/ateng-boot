@@ -332,6 +332,16 @@ class SampleRedisIntegrationTest {
     }
 
     @Test
+    @DisplayName("端到端验证：延时队列死信队列（DLQ）状态查询与空安全拉取")
+    void shouldQueryDeadLetterQueueStatusSafely() {
+        int deadLetterSize = orderDelayQueueService.getCancelOrderDeadLetterSize();
+        assertThat(deadLetterSize).isGreaterThanOrEqualTo(0);
+
+        var deadLetterMessage = orderDelayQueueService.pollCancelOrderDeadLetter();
+        assertThat(deadLetterMessage).isNull();
+    }
+
+    @Test
     @DisplayName("端到端验证：RedisUtil 安全游标扫描（scanKeys）与非阻塞迭代")
     void shouldScanKeysUsingRedisUtil() {
         Set<String> keys = redisSampleService.scanKeys("sample:user:*", 100);

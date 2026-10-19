@@ -19,6 +19,7 @@ import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.support.GenericApplicationContext;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -241,7 +242,9 @@ class DelayedQueueBootstrapTest {
 
         RetryConsumer retryService = new RetryConsumer();
 
+        RBlockingQueue<Object> dlqQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
         when(redissonClient.getBlockingQueue("retry-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getBlockingQueue("retry-queue:dlq")).thenReturn(dlqQueue);
         when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
         when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
                 .thenReturn("MSG-RETRY")
@@ -292,4 +295,158 @@ class DelayedQueueBootstrapTest {
         assertThat(completed).isTrue();
         assertThat(capturedTraceId.get()).isNotBlank().hasSize(32);
     }
+
+    @Test
+    @DisplayName("测试延时队列重试耗尽后完整投递结构化死信消息到 DLQ")
+    void testDeadLetterQueueDeliveryWhenRetriesExhausted() throws Exception {
+        CountDownLatch doneLatch = new CountDownLatch(1);
+        AtomicReference<io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?>> capturedDeadLetter = new AtomicReference<>();
+
+        class FailingConsumer {
+            @DelayedQueueListener(queue = "dlq-test-queue")
+            public void handle(String msg) {
+                throw new IllegalStateException("模拟业务终态不可恢复异常: " + msg);
+            }
+        }
+
+        RBlockingQueue<Object> dlqQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            capturedDeadLetter.set(invocation.getArgument(0));
+            doneLatch.countDown();
+            return true;
+        }).when(dlqQueue).offer(any());
+
+        when(redissonClient.getBlockingQueue("dlq-test-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getBlockingQueue("dlq-test-queue:dlq")).thenReturn(dlqQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("BAD-ORDER-100")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("failingConsumer", new FailingConsumer());
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        boolean reached = doneLatch.await(5, TimeUnit.SECONDS);
+        assertThat(reached).isTrue();
+
+        io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?> dlMessage = capturedDeadLetter.get();
+        assertThat(dlMessage).isNotNull();
+        assertThat(dlMessage.originalQueue()).isEqualTo("dlq-test-queue");
+        assertThat(dlMessage.payload()).isEqualTo("BAD-ORDER-100");
+        assertThat(dlMessage.retryTimes()).isEqualTo(2);
+        assertThat(dlMessage.errorMessage()).contains("模拟业务终态不可恢复异常: BAD-ORDER-100");
+        assertThat(dlMessage.exceptionClass()).isEqualTo(IllegalStateException.class.getName());
+        assertThat(dlMessage.failedTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试自定义 DelayedQueueFailureHandler SPI 回调正常触发")
+    void testCustomFailureHandlerInvocation() throws Exception {
+        CountDownLatch handlerLatch = new CountDownLatch(1);
+        AtomicReference<io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?>> handlerMessage = new AtomicReference<>();
+        AtomicReference<Throwable> handlerCause = new AtomicReference<>();
+
+        io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler customHandler = (msg, cause) -> {
+            handlerMessage.set(msg);
+            handlerCause.set(cause);
+            handlerLatch.countDown();
+        };
+
+        io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
+        properties.getDelayQueue().setRetryTimes(1);
+        properties.getDelayQueue().setRetryDelay(Duration.ofMillis(20));
+
+        DelayedQueueBootstrap customBootstrap = new DelayedQueueBootstrap(
+                redisDelayedQueue, objectMapper, properties, customHandler
+        );
+
+        class AlwaysFails {
+            @DelayedQueueListener(queue = "custom-handler-queue")
+            public void handle(String msg) {
+                throw new IllegalArgumentException("自定义 SPI 异常: " + msg);
+            }
+        }
+
+        RBlockingQueue<Object> dlqQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        when(redissonClient.getBlockingQueue("custom-handler-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getBlockingQueue("custom-handler-queue:dlq")).thenReturn(dlqQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("TEST-CUSTOM-SPI")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("alwaysFails", new AlwaysFails());
+        context.refresh();
+
+        customBootstrap.setApplicationContext(context);
+        customBootstrap.afterSingletonsInstantiated();
+
+        try {
+            boolean reached = handlerLatch.await(5, TimeUnit.SECONDS);
+            assertThat(reached).isTrue();
+            assertThat(handlerMessage.get()).isNotNull();
+            assertThat(handlerMessage.get().originalQueue()).isEqualTo("custom-handler-queue");
+            assertThat(handlerMessage.get().payload()).isEqualTo("TEST-CUSTOM-SPI");
+            assertThat(handlerCause.get()).isInstanceOf(IllegalArgumentException.class);
+        } finally {
+            customBootstrap.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试当 deadLetterEnabled 为 false 时跳过 DLQ 写入但依然触发 SPI 回调")
+    void testDeadLetterDisabled() throws Exception {
+        CountDownLatch handlerLatch = new CountDownLatch(1);
+        AtomicReference<io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?>> handlerMessage = new AtomicReference<>();
+
+        io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler customHandler = (msg, cause) -> {
+            handlerMessage.set(msg);
+            handlerLatch.countDown();
+        };
+
+        io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
+        properties.getDelayQueue().setRetryTimes(1);
+        properties.getDelayQueue().setRetryDelay(Duration.ofMillis(20));
+        properties.getDelayQueue().setDeadLetterEnabled(false);
+
+        DelayedQueueBootstrap noDlqBootstrap = new DelayedQueueBootstrap(
+                redisDelayedQueue, objectMapper, properties, customHandler
+        );
+
+        class SkipDlqConsumer {
+            @DelayedQueueListener(queue = "skip-dlq-queue")
+            public void handle(String msg) {
+                throw new RuntimeException("跳过写入死信队列测试");
+            }
+        }
+
+        when(redissonClient.getBlockingQueue("skip-dlq-queue")).thenReturn(blockingQueue);
+        when(redissonClient.getDelayedQueue(blockingQueue)).thenReturn(delayedQueue);
+        when(blockingQueue.poll(anyLong(), any(TimeUnit.class)))
+                .thenReturn("SKIP-DLQ-MSG")
+                .thenReturn(null);
+
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.getBeanFactory().registerSingleton("skipDlqConsumer", new SkipDlqConsumer());
+        context.refresh();
+
+        noDlqBootstrap.setApplicationContext(context);
+        noDlqBootstrap.afterSingletonsInstantiated();
+
+        try {
+            boolean reached = handlerLatch.await(5, TimeUnit.SECONDS);
+            assertThat(reached).isTrue();
+            assertThat(handlerMessage.get()).isNotNull();
+            // 验证未调用死信队列
+            verify(redissonClient, org.mockito.Mockito.never()).getBlockingQueue("skip-dlq-queue:dlq");
+        } finally {
+            noDlqBootstrap.destroy();
+        }
+    }
 }
+

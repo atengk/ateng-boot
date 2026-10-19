@@ -190,6 +190,16 @@ public class RedisProperties {
          * 延时消费失败重试等待间隔（默认 3 秒）
          */
         private Duration retryDelay = Duration.ofSeconds(3);
+
+        /**
+         * 是否在消费重试耗尽后自动投递至死信队列（默认 true）
+         */
+        private boolean deadLetterEnabled = true;
+
+        /**
+         * 死信队列名称后缀（默认 ":dlq"）
+         */
+        private String deadLetterSuffix = ":dlq";
     }
 
     /**

@@ -110,6 +110,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("distributedLockTemplate");
                     assertThat(context).hasBean("redisDelayedQueue");
                     assertThat(context).hasBean("delayedQueueBootstrap");
+                    assertThat(context).hasBean("delayedQueueFailureHandler");
                     assertThat(context).hasBean("redisMessageListenerContainer");
                     assertThat(context).hasBean("redisMessagePublisher");
                     assertThat(context).hasBean("redisRateLimiterClient");
@@ -126,6 +127,31 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(template.getValueSerializer()).isEqualTo(valueSerializer);
                     assertThat(template.getHashValueSerializer()).isEqualTo(valueSerializer);
                 });
+    }
+
+    @Test
+    @DisplayName("支持自定义 DelayedQueueFailureHandler 覆盖默认处理器")
+    void shouldAllowCustomDelayedQueueFailureHandler() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class, CustomHandlerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler.class);
+                    assertThat(context.getBean(io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler.class))
+                            .isInstanceOf(CustomHandler.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomHandlerConfiguration {
+        @Bean
+        public io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler customFailureHandler() {
+            return new CustomHandler();
+        }
+    }
+
+    static class CustomHandler implements io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler {
+        @Override
+        public void onFailed(io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?> deadLetterMessage, Throwable cause) {
+        }
     }
 
     @Test

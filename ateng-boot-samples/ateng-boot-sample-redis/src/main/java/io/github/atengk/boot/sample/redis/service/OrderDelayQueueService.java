@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.redis.service;
 
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
 import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -58,5 +59,23 @@ public class OrderDelayQueueService {
      */
     public List<OrderDelayPayload> getConsumedOrders() {
         return consumedOrders;
+    }
+
+    /**
+     * 查询取消订单队列的死信消息数量
+     *
+     * @return 死信队列大小
+     */
+    public int getCancelOrderDeadLetterSize() {
+        return redisDelayedQueue.getDeadLetterSize(QUEUE_ORDER_CANCEL);
+    }
+
+    /**
+     * 拉取一条取消订单队列的死信消息
+     *
+     * @return 死信消息（无消息返回 null）
+     */
+    public DeadLetterMessage<OrderDelayPayload> pollCancelOrderDeadLetter() {
+        return redisDelayedQueue.pollDeadLetter(QUEUE_ORDER_CANCEL, OrderDelayPayload.class);
     }
 }

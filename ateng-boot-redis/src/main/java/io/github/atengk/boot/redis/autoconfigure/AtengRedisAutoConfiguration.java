@@ -4,6 +4,8 @@ import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
+import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
+import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
@@ -147,13 +149,25 @@ public class AtengRedisAutoConfiguration {
      * 装配编程式延时队列门面 RedisDelayedQueue
      *
      * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
      * @return RedisDelayedQueue 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisDelayedQueue.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public RedisDelayedQueue redisDelayedQueue(RedissonClient redissonClient) {
-        return new RedisDelayedQueue(redissonClient, RedisSerializerFactory.createSafeObjectMapper());
+    public RedisDelayedQueue redisDelayedQueue(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisDelayedQueue(redissonClient, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配延时队列默认消费失败处理器 LoggingDelayedQueueFailureHandler
+     *
+     * @return 默认延时队列失败处理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(DelayedQueueFailureHandler.class)
+    public DelayedQueueFailureHandler delayedQueueFailureHandler() {
+        return new LoggingDelayedQueueFailureHandler();
     }
 
     /**
@@ -161,14 +175,17 @@ public class AtengRedisAutoConfiguration {
      *
      * @param redisDelayedQueue 延时队列门面
      * @param redisProperties 属性配置
+     * @param failureHandlerProvider 失败处理器提供者（可选）
      * @return 延时队列生命周期调度器
      */
     @Bean
     @ConditionalOnMissingBean(DelayedQueueBootstrap.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DelayedQueueBootstrap delayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
-                                                       RedisProperties redisProperties) {
-        return new DelayedQueueBootstrap(redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+                                                       RedisProperties redisProperties,
+                                                       ObjectProvider<DelayedQueueFailureHandler> failureHandlerProvider) {
+        return new DelayedQueueBootstrap(redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(),
+                redisProperties, failureHandlerProvider.getIfAvailable());
     }
 
     /**

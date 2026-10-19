@@ -14,8 +14,9 @@
 | **分布式锁** | 编程式锁受管模板 | `DistributedLockTemplate` | `ateng.boot.redis.lock.wait-time`<br>`ateng.boot.redis.lock.lease-time`<br>`ateng.boot.redis.lock.slow-threshold` | `execute(key, supplier)` / `execute(keys, mode, wait, lease, unit, supplier, fallback)` / `tryExecute(key, action)`：闭包内业务异常无损透传 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 静态锁操作门面 | `RedisLockUtil` | `ateng.boot.redis.lock.*` | `RedisLockUtil.execute(key, supplier)` / `RedisLockUtil.tryExecute(key, action)`：静态上下文无需注入 Spring Bean 一键安全加锁 | `RedisLockUtilTest`<br>`SampleRedisIntegrationTest` |
 | **分布式锁** | 锁模式枚举与闭包 | `LockMode` / `LockSupplier<T, E>` / `LockAction<E>` | - | `REENTRANT`, `FAIR`, `READ`, `WRITE`；支持受检与非受检异常穿透声明 | `DistributedLockTemplateTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`：基于 Redisson 原生轻量延迟队列封装 | `RedisDelayedQueueTest`<br>`SampleRedisIntegrationTest` |
-| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：自动注册消费线程、指数/固定退避重试、上下文隔离与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 编程式延时任务 | `RedisDelayedQueue` | `ateng.boot.redis.delay-queue.enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `offer(queue, msg, delay)` / `poll(queue, clazz)` / `take(queue, clazz)` / `remove(queue, msg)` / `destroy()`<br>DLQ 运维：`peekDeadLetter` / `pollDeadLetter` / `getDeadLetterSize` / `clearDeadLetter` / `sendToDeadLetter` | `RedisDelayedQueueTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 声明式消费监听 | `@DelayedQueueListener` / `DelayedQueueBootstrap` | `ateng.boot.redis.delay-queue.retry-times`<br>`ateng.boot.redis.delay-queue.retry-delay` | `@DelayedQueueListener(queue, concurrency)`：受管 `ThreadPoolTaskExecutor` 并发驱动、`ContextCopyingTaskDecorator` 上下文透传、指数/固定退避重试与平滑优雅停机 | `DelayedQueueBootstrapTest`<br>`SampleRedisIntegrationTest` |
+| **延时队列** | 死信流转与失败 SPI | `DeadLetterMessage<T>` / `DelayedQueueFailureHandler` | `ateng.boot.redis.delay-queue.dead-letter-enabled`<br>`ateng.boot.redis.delay-queue.dead-letter-suffix` | `onFailure(message, throwable)`：重试耗尽后封装完整因果堆栈转入死信队列，默认 `LoggingDelayedQueueFailureHandler` 告警，支持自定义 SPI 无缝接管 | `DelayedQueueBootstrapTest`<br>`AtengRedisAutoConfigurationTest` |
 | **广播订阅** | 主题广播发布者 | `RedisMessagePublisher` | `ateng.boot.redis.pub-sub.enabled` | `publish(channel, message)` / `subscribe(listener, channel)` / `unsubscribe(listener, channel)`：跨节点广播通知与动态订阅 | `RedisMessagePublisherTest` |
 | **广播订阅** | 声明式频道监听 | `@ChannelTopicListener` | `ateng.boot.redis.pub-sub.enabled` | `@ChannelTopicListener(topic)`：自动装配 Spring Data Redis `MessageListener`，反序列化载荷推送至目标方法 | `RedisMessagePublisherTest` |
 | **原子发号** | 结构化发号与自增 | `RedisAtomicUtil` | `ateng.boot.redis.key-prefix` | `generateDailySeq(bizPrefix, length)`：跨天自重置且带 48h TTL 防泄露流水号；`incrWithExpire(key, delta, duration)` | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
@@ -258,9 +259,11 @@ public class OrderPaymentService {
 ### 场景痛点
 在超时自动取消订单、订单未支付催付提醒等延时场景中，直接轮询数据库性能低下，而为了几分钟的轻量延时任务专门引入 RocketMQ、RabbitMQ 或 Kafka 又极大增加了运维复杂度与架构成本。
 
-### 双模驱动范式
+### 双模驱动与死信兜底范式
 1. **编程式发送**：调用 `RedisDelayedQueue.offer(queueName, payload, delay)` 发送延时消息；
-2. **声明式消费**：在 Spring Bean 方法上标记 `@DelayedQueueListener(queueName)` 自动启动后台线程消费，支持并发线程数与类型自动反序列化。
+2. **声明式消费**：在 Spring Bean 方法上标记 `@DelayedQueueListener(queueName)` 自动启动由 Spring 受管线程池管理的并发消费循环，支持自动反序列化与多维上下文透传；
+3. **死信兜底与失败 SPI**：消费失败并在重试耗尽后，自动封装包含原始载荷、异常因果链与失败时间的 `DeadLetterMessage<T>` 流转至目标死信队列（默认 `${queueName}:dlq`），同时触发 `DelayedQueueFailureHandler` 告警或业务降级；
+4. **对称运维门面**：通过 `peekDeadLetter` / `pollDeadLetter` / `getDeadLetterSize` / `clearDeadLetter` 对死信队列实施全生命周期对称运维。
 
 ### 核心代码示例
 ```java
@@ -276,11 +279,18 @@ public class OrderDelayService {
         delayedQueue.offer("order_cancel_queue", payload, Duration.ofMinutes(30));
     }
 
-    // 2. 声明式监听延时队列到期消费
+    // 2. 声明式监听延时队列到期消费（支持受管线程并发）
     @DelayedQueueListener(queue = "order_cancel_queue", concurrency = 2)
     public void handleOrderTimeout(OrderDelayPayload payload) {
         log.info("收到超时订单取消通知: orderId={}", payload.getOrderId());
         // 执行关单退库存逻辑...
+    }
+
+    // 3. 死信队列运维与排查拉取
+    public DeadLetterMessage<OrderDelayPayload> inspectDeadLetter() {
+        int dlqSize = delayedQueue.getDeadLetterSize("order_cancel_queue");
+        log.info("当前死信队列积压数量: {}", dlqSize);
+        return delayedQueue.pollDeadLetter("order_cancel_queue", OrderDelayPayload.class);
     }
 }
 ```
@@ -290,6 +300,8 @@ public class OrderDelayService {
 2026-10-19 16:11:54.074 INFO  [main] [NO-TRACE] i.g.a.b.r.d.b.DelayedQueueBootstrap      : 已成功注册 Redis 延时队列消费者 [queue=sample:order:cancel, concurrency=1, method=OrderDelayQueueService#onOrderCancel]
 2026-10-19 16:11:54.499 INFO  [main] [NO-TRACE] i.g.a.b.s.r.s.OrderDelayQueueService     : 编程式投递延时取消任务: queue=sample:order:cancel, orderId=ORD_DELAY_999, delay=PT1S
 2026-10-19 16:11:54.513 INFO  [:order:cancel-1] [cff82f2353553ebd092601e87767de84] i.g.a.b.s.r.s.OrderDelayQueueService     : 声明式监听到期消费: orderId=ORD_DELAY_999, reason=订单未支付超时自动取消
+2026-10-19 19:41:00.415 [redis-delay-queue-retry-queue-1] INFO i.g.a.b.r.d.b.DelayedQueueBootstrap : Redis 延时队列 [retry-queue] 消费失败且重试耗尽，已转入死信队列 [retry-queue:dlq]
+2026-10-19 19:41:00.415 [redis-delay-queue-retry-queue-1] ERROR i.g.a.b.r.d.s.LoggingDelayedQueueFailureHandler : Redis 延时队列任务消费失败并已转入死信队列: originalQueue=retry-queue, retryTimes=2, failedTime=2026-10-19T19:41:00.412, error=扣款超时
 ```
 
 ---
@@ -450,6 +462,8 @@ ateng:
         enabled: true                   # 是否启用延时队列支持 (默认 true)
         retry-times: 3                  # 延时消费失败最大重试次数 (默认 3)
         retry-delay: 3s                 # 延时消费失败重试间隔 (默认 3s)
+        dead-letter-enabled: true       # 是否启用消费重试耗尽转入死信队列 (默认 true)
+        dead-letter-suffix: ":dlq"      # 死信队列统配名称后缀 (默认 ":dlq")
       pub-sub:
         enabled: true                   # 是否启用 Pub/Sub 广播引擎 (默认 true)
       cache:
@@ -501,6 +515,21 @@ RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMap
 delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
 ```
 
+### 10.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
+框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
+
+```java
+@Component
+public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandler {
+
+    @Override
+    public void onFailure(DeadLetterMessage<?> message, Throwable throwable) {
+        log.error("延时队列死信告警触发: queue={}, retryTimes={}", message.originalQueue(), message.retryTimes());
+        // 发送钉钉机器人告警通知...
+    }
+}
+```
+
 ---
 
 ## 11. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
@@ -513,7 +542,8 @@ delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10
 - **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
 - **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
 
-### 11.3 延时队列生命周期消费与重试策略
-- **弹性重试与错误隔离**：`DelayedQueueBootstrap` 内置异常受控重试（默认最多重试 3 次，间隔 3s）；若达到重试上限仍未成功，将打印 ERROR 日志并受控丢弃，杜绝因单条毒药消息死循环阻塞整个队列消费。
-- **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环，保障零消息悬挂。
+### 11.3 延时队列生命周期消费、受管线程池与死信流转
+- **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
+- **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
+- **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
 

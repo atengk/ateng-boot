@@ -1,10 +1,13 @@
 package io.github.atengk.boot.redis.delay.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
+import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.annotation.DelayedQueueListener;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
+import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBlockingQueue;
@@ -21,21 +24,22 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.EmbeddedValueResolverAware;
 import org.springframework.core.MethodIntrospector;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.util.StringValueResolver;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -56,23 +60,32 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     private final RedisDelayedQueue redisDelayedQueue;
     private final ObjectMapper objectMapper;
     private final io.github.atengk.boot.redis.properties.RedisProperties redisProperties;
+    private final DelayedQueueFailureHandler failureHandler;
 
     private ApplicationContext applicationContext;
     private StringValueResolver embeddedValueResolver;
     private volatile boolean running = true;
-    private final List<ExecutorService> executors = new CopyOnWriteArrayList<>();
+    private final List<ThreadPoolTaskExecutor> executors = new CopyOnWriteArrayList<>();
 
     public DelayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
                                  ObjectMapper objectMapper) {
-        this(redisDelayedQueue, objectMapper, null);
+        this(redisDelayedQueue, objectMapper, null, null);
     }
 
     public DelayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
                                  ObjectMapper objectMapper,
                                  io.github.atengk.boot.redis.properties.RedisProperties redisProperties) {
+        this(redisDelayedQueue, objectMapper, redisProperties, null);
+    }
+
+    public DelayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
+                                 ObjectMapper objectMapper,
+                                 io.github.atengk.boot.redis.properties.RedisProperties redisProperties,
+                                 DelayedQueueFailureHandler failureHandler) {
         this.redisDelayedQueue = Objects.requireNonNull(redisDelayedQueue, "redisDelayedQueue must not be null");
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
         this.redisProperties = redisProperties;
+        this.failureHandler = failureHandler != null ? failureHandler : new LoggingDelayedQueueFailureHandler();
     }
 
     @Deprecated
@@ -87,6 +100,7 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
         this.applicationContext = applicationContext;
     }
+
 
     @Override
     public void setEmbeddedValueResolver(StringValueResolver resolver) {
@@ -162,8 +176,16 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
         RBlockingQueue<Object> blockingQueue = redisDelayedQueue.getBlockingQueue(queueName);
 
         final String finalQueueName = queueName;
-        NamedThreadFactory threadFactory = new NamedThreadFactory("redis-delay-queue-" + finalQueueName, true);
-        ExecutorService executor = Executors.newFixedThreadPool(concurrency, threadFactory);
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("redis-delay-queue-" + finalQueueName + "-");
+        executor.setCorePoolSize(concurrency);
+        executor.setMaxPoolSize(concurrency);
+        executor.setQueueCapacity(0);
+        executor.setDaemon(true);
+        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(5);
+        executor.initialize();
         executors.add(executor);
 
         for (int i = 0; i < concurrency; i++) {
@@ -218,14 +240,16 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
                 ? redisProperties.getDelayQueue().getRetryDelay() : Duration.ofSeconds(3);
 
         int attempt = 0;
+        Throwable lastError = null;
         while (running && !Thread.currentThread().isInterrupted()) {
             try {
                 invokeListener(bean, method, rawMessage, queueName);
                 return;
             } catch (Throwable e) {
+                lastError = e instanceof InvocationTargetException ite ? ite.getTargetException() : e;
                 attempt++;
                 if (attempt <= maxRetries) {
-                    log.warn("Redis 延时队列 [{}] 消费异常，准备执行第 {}/{} 次重试: {}", queueName, attempt, maxRetries, e.getMessage());
+                    log.warn("Redis 延时队列 [{}] 消费异常，准备执行第 {}/{} 次重试: {}", queueName, attempt, maxRetries, lastError.getMessage());
                     try {
                         TimeUnit.MILLISECONDS.sleep(retryDelay.toMillis());
                     } catch (InterruptedException ie) {
@@ -233,9 +257,43 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
                         return;
                     }
                 } else {
-                    log.error("Redis 延时队列 [{}] 消费失败且达到最大重试次数 ({} 次)，消息已丢弃: {}", queueName, maxRetries, e.getMessage(), e);
+                    handleDeadLetter(rawMessage, queueName, attempt - 1, lastError);
                     return;
                 }
+            }
+        }
+    }
+
+    /**
+     * 重试耗尽处理死信流转与 SPI 回调
+     */
+    private void handleDeadLetter(Object rawMessage, String queueName, int retryCount, Throwable cause) {
+        DeadLetterMessage<Object> deadLetter = new DeadLetterMessage<>(
+                queueName,
+                rawMessage,
+                retryCount,
+                cause != null ? cause.getMessage() : "Unknown error",
+                cause != null ? cause.getClass().getName() : "UnknownException",
+                LocalDateTime.now()
+        );
+
+        boolean dlqEnabled = (redisProperties == null || redisProperties.getDelayQueue() == null)
+                || redisProperties.getDelayQueue().isDeadLetterEnabled();
+        if (dlqEnabled) {
+            try {
+                redisDelayedQueue.sendToDeadLetterQueue(queueName, deadLetter);
+                log.info("Redis 延时队列 [{}] 消费失败且重试耗尽，已转入死信队列 [{}]",
+                        queueName, redisDelayedQueue.resolveDeadLetterQueueName(queueName));
+            } catch (Exception e) {
+                log.error("Redis 延时队列 [{}] 消息转入死信队列异常: {}", queueName, e.getMessage(), e);
+            }
+        }
+
+        if (failureHandler != null) {
+            try {
+                failureHandler.onFailed(deadLetter, cause);
+            } catch (Exception e) {
+                log.error("Redis 延时队列 [{}] 执行 DelayedQueueFailureHandler 异常: {}", queueName, e.getMessage(), e);
             }
         }
     }
@@ -294,20 +352,12 @@ public class DelayedQueueBootstrap implements SmartInitializingSingleton, Dispos
     @Override
     public void destroy() {
         running = false;
-        // 1. 第一阶段：平滑停止接收新轮询任务，允许正在处理的业务执行完成
-        for (ExecutorService executor : executors) {
-            executor.shutdown();
-        }
-        // 2. 第二阶段：等待终止，超时后再强制中断
-        for (ExecutorService executor : executors) {
+        // 平滑销毁受管线程执行器
+        for (ThreadPoolTaskExecutor executor : executors) {
             try {
-                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    log.warn("Redis 延时队列线程池未能在 5 秒内平滑终止，执行强制打断");
-                    executor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executor.shutdownNow();
-                Thread.currentThread().interrupt();
+                executor.shutdown();
+            } catch (Exception e) {
+                log.warn("销毁 Redis 延时队列线程池异常: {}", e.getMessage());
             }
         }
         executors.clear();
