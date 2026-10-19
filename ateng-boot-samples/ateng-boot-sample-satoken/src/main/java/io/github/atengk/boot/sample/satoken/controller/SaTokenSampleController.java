@@ -12,9 +12,13 @@ import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import jakarta.validation.constraints.NotBlank;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,6 +38,7 @@ import java.util.Map;
  * @since 2026-10-17
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
@@ -41,6 +46,7 @@ public class SaTokenSampleController {
 
     private final SaTokenSampleService sampleService;
     private final PermissionCacheService permissionCacheService;
+    private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
 
     /**
      * 用户登录接口
@@ -467,6 +473,53 @@ public class SaTokenSampleController {
             return map;
         });
         return Result.success(innerResult);
+    }
+
+    /**
+     * 获取当前节点集群广播实例标识
+     *
+     * @return 节点 instanceId
+     */
+    @GetMapping("/cluster/instance-id")
+    public Result<String> getClusterInstanceId() {
+        SaTokenClusterBroadcaster broadcaster = broadcasterProvider.getIfAvailable();
+        String instanceId = broadcaster != null ? broadcaster.getInstanceId() : "standalone";
+        return Result.success(instanceId);
+    }
+
+    /**
+     * 触发指定用户权限即时刷新与集群广播
+     *
+     * @param userId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/refresh-user")
+    public Result<String> refreshUser(@NotBlank(message = "用户标识不能为空") @RequestParam("userId") String userId) {
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success("用户权限缓存已刷新并广播: userId=" + userId);
+    }
+
+    /**
+     * 触发指定角色权限即时刷新与集群广播
+     *
+     * @param roleCode 目标角色编码
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/refresh-role")
+    public Result<String> refreshRole(@NotBlank(message = "角色编码不能为空") @RequestParam("roleCode") String roleCode) {
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success("角色权限缓存已刷新并广播: roleCode=" + roleCode);
+    }
+
+    /**
+     * 触发全量缓存清空与集群广播
+     *
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/clear-all")
+    public Result<String> clusterClearAll() {
+        permissionCacheService.clearAll();
+        return Result.success("全量权限缓存已清空并广播");
     }
 }
 

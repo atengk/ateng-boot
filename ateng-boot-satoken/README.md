@@ -33,6 +33,7 @@
 | **事件总线** | 原生安全事件广播 | `SaTokenEventPublisher` | - | 桥接广播 `SaLoginEvent`、`SaLogoutEvent`、`SaKickoutEvent`、`SaReplacedEvent`、`SaDisableEvent` 等 Spring 原生事件 | `SaTokenEventPublisherTest` / `SampleSaTokenIntegrationTest` |
 | **OpenAPI 适配** | Knife4j 鉴权弹窗自动化 | `SaTokenOpenApiCustomizer` | `ateng.boot.satoken.openapi.enabled`<br>`ateng.boot.satoken.openapi.token-name` | 自动在 `/v3/api-docs` 与 Knife4j 界面右上角挂载 Authorize 鉴权弹窗 | `SaTokenOpenApiCustomizerTest` / `SampleSaTokenIntegrationTest` |
 | **分布式存储** | 纯净 JSON 会话存储驱动 | `SaTokenRedisDao` | - | 基于 `StringRedisTemplate` 存储，杜绝 `@class` 反序列化白名单漏洞，无 Redis 自动平滑降级 | `SaTokenRedisDaoTest` / `SampleSaTokenIntegrationTest` |
+| **集群同步** | 分布式集群即时同步与广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `ateng.boot.satoken.cluster-sync.enabled`<br>`ateng.boot.satoken.cluster-sync.channel` | `broadcast(eventType, targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)` / 自消费防卫丢弃与异地本地缓存精准失效 | `SaTokenClusterSyncTest` / `SampleSaTokenIntegrationTest` |
 | **异常转译** | 统一显式 Result 响应 | `SaTokenExceptionHandler` | - | 将未登录 (401)、权限不足 (403)、服务封禁 (403) 等转译为 HTTP 200 + `Result<Void>` 显式契约 | `SampleSaTokenIntegrationTest` |
 
 ---
@@ -622,7 +623,105 @@ public class OrderCompensationService {
 
 ---
 
-## 12. 配置项全景表（application.yml）
+## 12. 分布式集群即时同步与广播作废 (Cluster Sync via Redis Pub/Sub)
+
+### 场景痛点
+在微服务多副本或多节点集群部署场景下，各节点通常会在本地内存或一级缓存（如 `PermissionCacheService` 本地降级缓存、应用级权限快照）维护用户/角色权限数据以保障极速响应。当运维人员或管理员在 Node A 修改了角色菜单权限、触发了踢人下线或全域缓存刷新时，若仅清理 Node A 自身和 Redis 中心存储，Node B、Node C 等异地节点依然会因为持有陈旧本地缓存而产生数据脏读，造成“权限已改但在某节点仍可越权访问”的严重安全不一致。
+
+### 核心架构与广播拓扑
+`ateng-boot-satoken` 依托轻量 Redis Pub/Sub 广播机制，构建去中心化的集群状态即时同步体系：
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│               分布式集群节点协同拓扑 (Cluster Sync Topology)             │
+└────────────────────────────────────────────────────────────────────────┘
+          Node A (广播发起方)                     Node B / C (异地消费节点)
+        [instanceId: node-alpha]                [instanceId: node-beta]
+                   │                                       ▲
+  1. 触发用户/角色权限热刷新                                  │
+  2. 监听 Spring 安全注销/踢人事件                            │
+                   │                                       │
+                   ▼                                       │
+        SaTokenClusterBroadcaster                          │
+   (生成 SaTokenClusterMessage 强类型载荷)                    │
+                   │                                       │
+                   ▼                                       │ 4. Redis Pub/Sub 广播推送
+   ┌───────────────────────────────────────────────────────┴─────────────┐
+   │         Redis Topic: ateng:satoken:cluster-sync                     │
+   └───────────────────────────────────────────────────────┬─────────────┘
+                   │ (本机收到广播)                           │
+                   ▼                                       ▼
+        SaTokenClusterSyncListener              SaTokenClusterSyncListener
+       [Self-Consumption Guard]                 [Remote Message Dispatch]
+   (比对 instanceId 一致 ──> 丢弃)          (比对 instanceId 不一致 ──> 精准清除本地缓存)
+```
+
+### 核心代码与使用示例
+
+#### 1. 触发端点与集群广播
+在业务层直接调用 `PermissionCacheService` 提供的热刷新门面，底层全自动联动 `SaTokenClusterBroadcaster` 向全网广播：
+
+```java
+@RestController
+@RequestMapping("/api/auth/cluster")
+@RequiredArgsConstructor
+public class SaTokenClusterSampleController {
+
+    private final PermissionCacheService permissionCacheService;
+    private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
+
+    /**
+     * 获取当前节点唯一实例标识
+     */
+    @GetMapping("/instance-id")
+    public Result<String> getClusterInstanceId() {
+        SaTokenClusterBroadcaster broadcaster = broadcasterProvider.getIfAvailable();
+        return Result.success(broadcaster != null ? broadcaster.getInstanceId() : "standalone");
+    }
+
+    /**
+     * 触发指定用户权限即时刷新并向全集群广播
+     */
+    @PostMapping("/refresh-user")
+    public Result<String> refreshUser(@RequestParam("userId") String userId) {
+        // 底层自动清理本地/分布式缓存并触发集群 Pub/Sub 广播
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success("用户权限缓存已刷新并广播: userId=" + userId);
+    }
+
+    /**
+     * 触发指定角色权限即时刷新并向全集群广播
+     */
+    @PostMapping("/refresh-role")
+    public Result<String> refreshRole(@RequestParam("roleCode") String roleCode) {
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success("角色权限缓存已刷新并广播: roleCode=" + roleCode);
+    }
+
+    /**
+     * 触发全量缓存清空并向全集群广播
+     */
+    @PostMapping("/clear-all")
+    public Result<String> clearAllCache() {
+        permissionCacheService.clearAll();
+        return Result.success("全量权限缓存已清空并广播");
+    }
+}
+```
+
+#### 2. Spring 原生安全生命周期事件全自动广播联动
+`SaTokenClusterSyncListener` 监听 Spring 原生安全事件（`SaLogoutEvent`、`SaKickoutEvent`、`SaReplacedEvent`、`SaDisableEvent`、`SaUntieDisableEvent`），全自动转换为对应 `SaTokenClusterEventType` 进行广播，异地节点监听到后秒级失效对应目标用户的本地权限缓存：
+
+```text
+2026-10-20 07:08:58.661 INFO  i.g.a.b.s.cache.PermissionCacheService   : 即时清理用户权限缓存完成: userId=10086
+2026-10-20 07:08:58.666 INFO  i.g.a.b.s.cache.PermissionCacheService   : 即时清理角色权限缓存完成: roleCode=admin
+2026-10-20 07:08:58.670 INFO  i.g.a.b.s.cache.PermissionCacheService   : 全域两级权限缓存已全部清空
+2026-10-20 07:08:58.689 INFO  .g.a.b.s.s.l.SampleSecurityEventListener : 【安全事件监听】收到用户登录事件: userId=50001, token=2842d308-ba47-4a28-b5aa-650fc74f19f9
+```
+
+---
+
+## 13. 配置项全景表（application.yml）
 
 ```yaml
 # Sa-Token 官方原生核心配置
@@ -669,6 +768,9 @@ ateng:
         enabled: true             # 是否开启权限码与角色缓存 (默认: true)
         timeout: 5m               # 权限与角色缓存有效期，强类型 Duration (默认: 5m，兼容旧版 timeout-seconds)
         empty-ttl: 60s            # 空权限/空角色防穿透哨兵缓存有效期，强类型 Duration (默认: 60s，兼容旧版 empty-ttl-seconds)
+      cluster-sync:               # 分布式集群即时同步与广播作废配置
+        enabled: true             # 是否开启分布式集群即时同步与广播作废 (默认: true)
+        channel: ateng:satoken:cluster-sync # Redis Pub/Sub 广播频道名称 (默认: ateng:satoken:cluster-sync)
       openapi:                    # OpenAPI / Knife4j 鉴权弹窗配置
         enabled: true             # 是否自动为 Knife4j / Swagger 注入鉴权弹窗 (默认: true)
         token-name: satoken       # 鉴权组件名称与请求头 Key (默认: satoken)
@@ -676,7 +778,7 @@ ateng:
 
 ---
 
-## 13. 生产扩展与接管实践 (Customization & Extensibility)
+## 14. 生产扩展与接管实践 (Customization & Extensibility)
 
 ### 1. 自定义权限与角色业务数据源 (`UserRolePermissionLoader`)
 框架默认提供 `DefaultUserRolePermissionLoader` 从当前会话直接读取角色与权限集合。当需要在鉴权时从数据库持久层动态拉取最新权限并接入两级缓存时，业务只需声明自定义 Bean 即可平滑接管：
@@ -749,7 +851,7 @@ public class AsyncSecurityAuditConsumer {
 
 ---
 
-## 14. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 15. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
 ### 1. 严格无状态会话与零状态泄漏防线
 - **单例无状态**：所有安全组件（`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`SaTokenRedisDao`）均保持严格无状态，无任何成员变量共享可变业务数据；
@@ -776,9 +878,14 @@ public class AsyncSecurityAuditConsumer {
 - **瞬态栈式保护与清理**：`runAs` 基于 ThreadLocal 栈式管理，在 `finally` 块中严格恢复前序现场或彻底清理，杜绝在工作线程池中残留污染；
 - **双维审计贯通**：在模拟态下，`LoginHelper.getUserId()` 返回被模拟人 ID，确保业务校验、持久层 `create_by` / `update_by` 与数据权限自然对齐被模拟人；同时底层通过 `CurrentUserProvider` SPI 向 `@OperateLog` 切面提供 `getOriginalUser()`，在操作审计日志中同时结构化记录 `originalUserId` 与 `targetUserId`。
 
+### 7. 分布式集群广播防风暴与自消费丢弃不变量 (Self-Consumption Guard & Storm Defense)
+- **不可变实例标识**：每个节点启动时通过 `IdUtil.fastSimpleUUID()` 生成不可变 `instanceId`，并在所有外发消息载荷 `SaTokenClusterMessage` 中固化打标；
+- **自消费丢弃防重入**：异构或同构节点接收 Redis Pub/Sub 广播时，比对 `broadcaster.getInstanceId().equals(message.getInstanceId())`，若为本机节点外发消息则直接静默丢弃（Self-Consumption Guard），彻底杜绝本地已清理缓存因异步广播再度触发的二次处理与递归风暴；
+- **无 Redis 安全静默降级**：广播发送与消息监听底层均配置缺省与存在性探测，在纯单机内存环境或 Redis 服务不可用时自动安全静默降级，异常就地隔离告警，严禁广播异常阻断业务主链路。
+
 ---
 
-## 15. 架构决策与设计参考
+## 16. 架构决策与设计参考
 
 - [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
 - [ADR-0002: 显式统一响应契约](../../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)

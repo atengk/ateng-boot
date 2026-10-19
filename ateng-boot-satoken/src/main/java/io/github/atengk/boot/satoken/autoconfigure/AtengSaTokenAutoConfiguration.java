@@ -49,7 +49,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
+import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterRedisMessageSubscriber;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -62,6 +68,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @AutoConfiguration
 @AutoConfigureAfter(name = {
         "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "io.github.atengk.boot.redis.autoconfigure.AtengRedisAutoConfiguration",
         "io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration"
 })
 @ConditionalOnClass(StpUtil.class)
@@ -131,12 +138,44 @@ public class AtengSaTokenAutoConfiguration {
      * 注册两级权限与角色缓存管理门面服务
      *
      * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @param broadcasterProvider   集群同步广播器可选提供者
      * @return 缓存管理服务实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public PermissionCacheService permissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        return new PermissionCacheService(redisTemplateProvider);
+    public PermissionCacheService permissionCacheService(
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+            ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+        return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+    }
+
+    /**
+     * 注册 Sa-Token 分布式集群广播器门面
+     *
+     * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @return SaTokenClusterBroadcaster 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new SaTokenClusterBroadcaster(redisTemplateProvider, properties);
+    }
+
+    /**
+     * 注册 Sa-Token 分布式集群同步监听器（监听 Spring 原生安全事件）
+     *
+     * @param broadcaster    集群广播器
+     * @param cacheService   缓存管理服务
+     * @return SaTokenClusterSyncListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenClusterSyncListener saTokenClusterSyncListener(
+            SaTokenClusterBroadcaster broadcaster,
+            PermissionCacheService cacheService) {
+        return new SaTokenClusterSyncListener(broadcaster, cacheService);
     }
 
     /**
@@ -333,6 +372,56 @@ public class AtengSaTokenAutoConfiguration {
         @ConditionalOnProperty(prefix = "ateng.boot.satoken.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
         public SaTokenOpenApiCustomizer saTokenOpenApiCustomizer(SaTokenProperties properties) {
             return new SaTokenOpenApiCustomizer(properties);
+        }
+    }
+
+    /**
+     * Redis Pub/Sub 集群同步消息订阅嵌套配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass({StringRedisTemplate.class, RedisMessageListenerContainer.class})
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class ClusterSyncRedisConfiguration {
+
+        /**
+         * 注册 Sa-Token 集群广播 Redis Pub/Sub 订阅适配器
+         *
+         * @param listener 集群同步监听器
+         * @return SaTokenClusterRedisMessageSubscriber 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public SaTokenClusterRedisMessageSubscriber saTokenClusterRedisMessageSubscriber(SaTokenClusterSyncListener listener) {
+            return new SaTokenClusterRedisMessageSubscriber(listener);
+        }
+
+        /**
+         * 注册 Sa-Token 集群消息订阅监听容器
+         *
+         * @param connectionFactory    Redis 连接工厂
+         * @param subscriber           集群广播订阅适配器
+         * @param properties           配置属性
+         * @param taskExecutorProvider Core 受管异步任务线程池可选提供者
+         * @return RedisMessageListenerContainer 实例
+         */
+        @Bean
+        @ConditionalOnBean(RedisConnectionFactory.class)
+        @ConditionalOnMissingBean(name = "saTokenClusterRedisMessageListenerContainer")
+        public RedisMessageListenerContainer saTokenClusterRedisMessageListenerContainer(
+                RedisConnectionFactory connectionFactory,
+                SaTokenClusterRedisMessageSubscriber subscriber,
+                SaTokenProperties properties,
+                ObjectProvider<org.springframework.core.task.TaskExecutor> taskExecutorProvider) {
+            RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+            container.setConnectionFactory(connectionFactory);
+            org.springframework.core.task.TaskExecutor taskExecutor = taskExecutorProvider.getIfAvailable();
+            if (taskExecutor != null) {
+                container.setTaskExecutor(taskExecutor);
+            }
+            String channel = properties.getClusterSync().getChannel();
+            container.addMessageListener(subscriber, new ChannelTopic(channel));
+            log.info("Sa-Token 检测到 Redis 连接工厂，已激活分布式集群即时同步 Pub/Sub 订阅: channel={}", channel);
+            return container;
         }
     }
 }

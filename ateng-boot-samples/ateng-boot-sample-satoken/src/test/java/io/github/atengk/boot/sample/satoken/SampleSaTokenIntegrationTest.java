@@ -57,6 +57,12 @@ class SampleSaTokenIntegrationTest {
     @Autowired
     private io.github.atengk.boot.sample.satoken.listener.SampleSecurityEventListener securityEventListener;
 
+    @Autowired(required = false)
+    private io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster broadcaster;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener clusterSyncListener;
+
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
     void shouldInterceptWhenNotLogin() throws Exception {
@@ -956,6 +962,82 @@ class SampleSaTokenIntegrationTest {
         assertThat(orderInDb2).isNotNull();
         assertThat(orderInDb2.getCreateBy()).isEqualTo("90001");
         assertThat(orderInDb2.getUpdateBy()).isEqualTo("90001");
+    }
+
+    @Test
+    @DisplayName("20. 分布式集群同步：验证广播器实例生成、单机静默降级与触发接口端到端")
+    void testClusterSyncEndpointsAndInstanceId() throws Exception {
+        // 1. 验证广播器与监听器 Bean 正确装配
+        assertThat(broadcaster).isNotNull();
+        assertThat(broadcaster.getInstanceId()).isNotBlank();
+        assertThat(clusterSyncListener).isNotNull();
+
+        // 2. 调用 /api/auth/cluster/instance-id 端点验证返回的 instanceId
+        mockMvc.perform(get("/api/auth/cluster/instance-id"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(broadcaster.getInstanceId()));
+
+        // 3. 调用 /api/auth/cluster/refresh-user 端点
+        mockMvc.perform(post("/api/auth/cluster/refresh-user")
+                        .param("userId", "10086"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("用户权限缓存已刷新并广播: userId=10086"));
+
+        // 4. 调用 /api/auth/cluster/refresh-role 端点
+        mockMvc.perform(post("/api/auth/cluster/refresh-role")
+                        .param("roleCode", "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("角色权限缓存已刷新并广播: roleCode=admin"));
+
+        // 5. 调用 /api/auth/cluster/clear-all 端点
+        mockMvc.perform(post("/api/auth/cluster/clear-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("全量权限缓存已清空并广播"));
+    }
+
+    @Test
+    @DisplayName("21. 分布式集群同步：异地广播消息精准失效本地缓存与自消费防重入")
+    void testClusterRemoteMessageConsumptionAndSelfGuard() {
+        assertThat(clusterSyncListener).isNotNull();
+        assertThat(broadcaster).isNotNull();
+
+        String testUserId = "cluster_user_888";
+        String userRolesKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_ROLES_PREFIX + testUserId;
+        String userPermsKey = io.github.atengk.boot.satoken.cache.PermissionCacheService.USER_PERMS_PREFIX + testUserId;
+
+        // 1. 预置本地缓存
+        permissionCacheService.set(userRolesKey, "[\"role_sample\"]", 300);
+        permissionCacheService.set(userPermsKey, "[\"user:sample\"]", 300);
+        assertThat(permissionCacheService.get(userRolesKey)).isEqualTo("[\"role_sample\"]");
+        assertThat(permissionCacheService.get(userPermsKey)).isEqualTo("[\"user:sample\"]");
+
+        // 2. 模拟本机消息（相同 instanceId），验证自消费防卫丢弃，缓存不被清理
+        io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage selfMsg =
+                io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage.of(
+                        broadcaster.getInstanceId(),
+                        io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType.USER_PERMISSION_REFRESH,
+                        testUserId);
+        clusterSyncListener.onClusterMessage(io.github.atengk.boot.core.util.JsonUtil.toJsonString(selfMsg));
+
+        // 缓存依然存在
+        assertThat(permissionCacheService.get(userRolesKey)).isEqualTo("[\"role_sample\"]");
+        assertThat(permissionCacheService.get(userPermsKey)).isEqualTo("[\"user:sample\"]");
+
+        // 3. 模拟异地节点广播消息（不同 instanceId），精准触发本地用户缓存失效
+        io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage remoteMsg =
+                io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage.of(
+                        "remote-node-xyz",
+                        io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType.USER_PERMISSION_REFRESH,
+                        testUserId);
+        clusterSyncListener.onClusterMessage(io.github.atengk.boot.core.util.JsonUtil.toJsonString(remoteMsg));
+
+        // 缓存已被精准清理
+        assertThat(permissionCacheService.get(userRolesKey)).isNull();
+        assertThat(permissionCacheService.get(userPermsKey)).isNull();
     }
 }
 

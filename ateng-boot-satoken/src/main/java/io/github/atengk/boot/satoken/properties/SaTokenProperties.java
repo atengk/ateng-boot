@@ -55,6 +55,12 @@ public class SaTokenProperties {
     private PermissionCacheProperties permissionCache = new PermissionCacheProperties();
 
     /**
+     * 分布式集群即时同步与广播作废配置
+     */
+    @NestedConfigurationProperty
+    private ClusterSyncProperties clusterSync = new ClusterSyncProperties();
+
+    /**
      * 路由拦截器详细配置属性
      */
     @Data
@@ -193,5 +199,22 @@ public class SaTokenProperties {
          * 鉴权 Header 名称（默认回退使用 Sa-Token 全局配置中的 tokenName，兜底 satoken）
          */
         private String tokenName;
+    }
+
+    /**
+     * 集群同步配置属性
+     */
+    @Data
+    public static class ClusterSyncProperties {
+
+        /**
+         * 是否开启分布式集群即时同步与广播作废
+         */
+        private boolean enabled = true;
+
+        /**
+         * Redis Pub/Sub 广播频道名称
+         */
+        private String channel = "ateng:satoken:cluster-sync";
     }
 }
