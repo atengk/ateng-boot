@@ -354,19 +354,7 @@ public class RedisDelayedQueue implements DisposableBean {
      * @return 类型安全的死信消息对象，不存在返回 null
      */
     public <T> DeadLetterMessage<T> peekDeadLetter(String queueName, Class<T> payloadClass) {
-        DeadLetterMessage<?> rawMessage = peekDeadLetter(queueName);
-        if (rawMessage == null) {
-            return null;
-        }
-        T typedPayload = convertValue(rawMessage.payload(), payloadClass);
-        return new DeadLetterMessage<>(
-                rawMessage.originalQueue(),
-                typedPayload,
-                rawMessage.retryTimes(),
-                rawMessage.errorMessage(),
-                rawMessage.exceptionClass(),
-                rawMessage.failedTime()
-        );
+        return convertDeadLetterPayload(peekDeadLetter(queueName), payloadClass);
     }
 
     /**
@@ -394,7 +382,10 @@ public class RedisDelayedQueue implements DisposableBean {
      * @return 类型安全的死信消息对象，不存在返回 null
      */
     public <T> DeadLetterMessage<T> pollDeadLetter(String queueName, Class<T> payloadClass) {
-        DeadLetterMessage<?> rawMessage = pollDeadLetter(queueName);
+        return convertDeadLetterPayload(pollDeadLetter(queueName), payloadClass);
+    }
+
+    private <T> DeadLetterMessage<T> convertDeadLetterPayload(DeadLetterMessage<?> rawMessage, Class<T> payloadClass) {
         if (rawMessage == null) {
             return null;
         }

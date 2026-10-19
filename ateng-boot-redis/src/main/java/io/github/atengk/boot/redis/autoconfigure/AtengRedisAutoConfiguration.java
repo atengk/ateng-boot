@@ -172,6 +172,7 @@ public class AtengRedisAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(DelayedQueueFailureHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DelayedQueueFailureHandler delayedQueueFailureHandler() {
         return new LoggingDelayedQueueFailureHandler();
     }

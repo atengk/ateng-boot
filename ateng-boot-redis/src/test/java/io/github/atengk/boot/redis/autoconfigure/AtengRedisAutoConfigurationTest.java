@@ -65,6 +65,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("distributedLockTemplate");
                     assertThat(context).doesNotHaveBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).doesNotHaveBean("delayedQueueFailureHandler");
                     assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
                     assertThat(context).doesNotHaveBean("redisMessagePublisher");
                     assertThat(context).doesNotHaveBean("channelTopicBootstrap");
@@ -170,6 +171,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).doesNotHaveBean("delayedQueueFailureHandler");
                     assertThat(context).hasBean("redisMessagePublisher");
                 });
     }

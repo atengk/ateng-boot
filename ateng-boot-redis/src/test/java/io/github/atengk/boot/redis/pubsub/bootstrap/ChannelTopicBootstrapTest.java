@@ -428,4 +428,64 @@ class ChannelTopicBootstrapTest {
         assertThat(finished).isTrue();
         assertThat(service.receivedMessage.get()).isEqualTo("Hello Alias Topic");
     }
+
+    static class DuplicateTopicService {
+        @ChannelTopicListener(topics = {"topic:dup", "topic:dup"}, topic = "topic:dup")
+        public void onMessage(String msg) {
+        }
+    }
+
+    static class NativeMessageParamService {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final AtomicReference<Message> receivedMessage = new AtomicReference<>();
+
+        @ChannelTopicListener(topic = "topic:empty:body")
+        public void onMessage(Message message) {
+            receivedMessage.set(message);
+            latch.countDown();
+        }
+    }
+
+    @Test
+    @DisplayName("测试相同主题重复配置时自动去重注册")
+    void testDuplicateTopicsDeduplication() {
+        DuplicateTopicService service = new DuplicateTopicService();
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("dupService", DuplicateTopicService.class, () -> service);
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        ArgumentCaptor<Collection<Topic>> topicsCaptor = ArgumentCaptor.forClass(Collection.class);
+        verify(listenerContainer, atLeastOnce()).addMessageListener(any(MessageListener.class), topicsCaptor.capture());
+
+        Collection<Topic> registeredTopics = topicsCaptor.getValue();
+        long dupCount = registeredTopics.stream().filter(t -> "topic:dup".equals(t.getTopic())).count();
+        assertThat(dupCount).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("测试消息体为空时首参为 Message 能够正常接收对象")
+    void testEmptyBodyWithMessageParameter() throws Exception {
+        NativeMessageParamService service = new NativeMessageParamService();
+        GenericApplicationContext context = new GenericApplicationContext();
+        context.registerBean("nativeMsgService", NativeMessageParamService.class, () -> service);
+        context.refresh();
+
+        bootstrap.setApplicationContext(context);
+        bootstrap.afterSingletonsInstantiated();
+
+        ArgumentCaptor<MessageListener> listenerCaptor = ArgumentCaptor.forClass(MessageListener.class);
+        verify(listenerContainer, atLeastOnce()).addMessageListener(listenerCaptor.capture(), any(Collection.class));
+
+        MessageListener listener = listenerCaptor.getValue();
+        DefaultMessage emptyMsg = new DefaultMessage("topic:empty:body".getBytes(StandardCharsets.UTF_8), new byte[0]);
+        listener.onMessage(emptyMsg, null);
+
+        boolean finished = service.latch.await(3, TimeUnit.SECONDS);
+        assertThat(finished).isTrue();
+        assertThat(service.receivedMessage.get()).isNotNull();
+        assertThat(service.receivedMessage.get()).isSameAs(emptyMsg);
+    }
 }

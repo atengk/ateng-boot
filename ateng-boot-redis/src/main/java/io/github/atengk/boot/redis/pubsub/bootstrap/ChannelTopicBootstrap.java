@@ -39,9 +39,11 @@ import java.lang.reflect.Parameter;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -259,10 +261,16 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
 
         // 解析参数 0 (Payload)
         byte[] body = (message != null) ? message.getBody() : null;
-        if (body == null || body.length == 0) {
-            args[0] = null;
-        } else if (Message.class.isAssignableFrom(param0Type)) {
+        if (Message.class.isAssignableFrom(param0Type)) {
             args[0] = message;
+        } else if (body == null || body.length == 0) {
+            if (byte[].class.equals(param0Type)) {
+                args[0] = new byte[0];
+            } else if (String.class.equals(param0Type)) {
+                args[0] = "";
+            } else {
+                args[0] = null;
+            }
         } else if (byte[].class.equals(param0Type)) {
             args[0] = body;
         } else if (String.class.equals(param0Type)) {
@@ -286,43 +294,46 @@ public class ChannelTopicBootstrap implements SmartInitializingSingleton, Dispos
     }
 
     private List<Topic> resolveTopics(ChannelTopicListener listener) {
-        List<Topic> topics = new ArrayList<>();
+        Set<String> channelNames = new LinkedHashSet<>();
+        Set<String> patternNames = new LinkedHashSet<>();
 
-        // 解析精确主题 (topics / value)
+        // 1. 解析精确主题 (topics / value)
         String[] directTopics = listener.topics().length > 0 ? listener.topics() : listener.value();
-        if (directTopics != null) {
-            for (String topic : directTopics) {
-                if (StringUtils.hasText(topic)) {
-                    String resolved = resolveString(topic);
-                    if (StringUtils.hasText(resolved)) {
-                        topics.add(new ChannelTopic(resolved.trim()));
-                    }
-                }
-            }
-        }
+        addResolvedTopics(directTopics, channelNames);
 
-        // 解析单个主题别名 (topic)
+        // 2. 解析单个主题别名 (topic)
         if (StringUtils.hasText(listener.topic())) {
-            String resolved = resolveString(listener.topic());
-            if (StringUtils.hasText(resolved)) {
-                topics.add(new ChannelTopic(resolved.trim()));
-            }
+            addResolvedTopic(listener.topic(), channelNames);
         }
 
-        // 解析通配模式 (patterns)
-        String[] patterns = listener.patterns();
-        if (patterns != null) {
-            for (String pattern : patterns) {
-                if (StringUtils.hasText(pattern)) {
-                    String resolved = resolveString(pattern);
-                    if (StringUtils.hasText(resolved)) {
-                        topics.add(new PatternTopic(resolved.trim()));
-                    }
-                }
-            }
-        }
+        // 3. 解析通配模式 (patterns)
+        addResolvedTopics(listener.patterns(), patternNames);
 
+        List<Topic> topics = new ArrayList<>(channelNames.size() + patternNames.size());
+        for (String ch : channelNames) {
+            topics.add(new ChannelTopic(ch));
+        }
+        for (String pt : patternNames) {
+            topics.add(new PatternTopic(pt));
+        }
         return topics;
+    }
+
+    private void addResolvedTopics(String[] rawTopics, Set<String> targetSet) {
+        if (rawTopics != null) {
+            for (String raw : rawTopics) {
+                addResolvedTopic(raw, targetSet);
+            }
+        }
+    }
+
+    private void addResolvedTopic(String rawTopic, Set<String> targetSet) {
+        if (StringUtils.hasText(rawTopic)) {
+            String resolved = resolveString(rawTopic);
+            if (StringUtils.hasText(resolved)) {
+                targetSet.add(resolved.trim());
+            }
+        }
     }
 
     private String resolveString(String value) {
