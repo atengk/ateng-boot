@@ -195,5 +195,10 @@ _Avoid_: BatchUpdater, CaseWhenUpdater, FastBatchUpdate
 **DataChangeAuditInterceptor**:
 MyBatis 原生 Executor 拦截器，捕获 UPDATE/DELETE 前置快照并计算字段级 Diff 增量，集成超限熔断降级与事务提交后异步分发。
 _Avoid_: AuditInterceptor, ChangeTracker, DiffInterceptor
+**DynamicQueryTemplate**:
+通用受管动态查询执行模板组件，作为 Spring 单例 Bean 注入持久层容器，提供跨实体单表与多表外部/XML SQL 的强类型转译执行与 VO 投影转换能力。
+_Avoid_: UniversalQueryExecutor, DynamicQueryManager, QueryRunner
 
-
+**DynamicSqlProjectionResolver**:
+外部/XML 动态 SQL 的 AST 投影解析引擎，依托 JSqlParser 提取 SELECT 列别名与底层物理表别名/表达式映射字典并纳秒级缓存，实现多表查询表别名自愈抹平。
+_Avoid_: SqlAliasParser, ColumnExtractor, ProjectionMapper
