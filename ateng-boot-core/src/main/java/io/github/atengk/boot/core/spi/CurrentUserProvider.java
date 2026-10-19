@@ -16,4 +16,22 @@ public interface CurrentUserProvider {
      * @return 当前操作人标识，未登录或未识别时可返回 null
      */
     String getCurrentUser();
+
+    /**
+     * 获取真实原始操作人唯一标识（仅在处于身份模拟 RunAs 时非空）
+     *
+     * @return 原始操作人标识，非模拟态返回 null
+     */
+    default String getOriginalUser() {
+        return null;
+    }
+
+    /**
+     * 判断当前是否处于身份模拟态 (RunAs)
+     *
+     * @return true 表示处于身份模拟态
+     */
+    default boolean isRunAs() {
+        return false;
+    }
 }

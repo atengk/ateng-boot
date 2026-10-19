@@ -39,9 +39,14 @@ public class OperateLogModel implements Serializable {
     private String tenantId;
 
     /**
-     * 操作人唯一标识
+     * 操作人唯一标识（处于身份模拟态时为被模拟人 ID）
      */
     private String userId;
+
+    /**
+     * 真实原始操作人唯一标识（仅在处于身份模拟 RunAs 态时非空）
+     */
+    private String originalUserId;
 
     /**
      * 操作人姓名或账号

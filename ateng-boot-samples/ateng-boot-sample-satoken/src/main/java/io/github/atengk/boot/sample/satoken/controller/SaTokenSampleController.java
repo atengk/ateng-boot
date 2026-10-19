@@ -399,5 +399,74 @@ public class SaTokenSampleController {
         LoginHelper.checkBelongsToTenant(targetTenantId);
         return Result.success("租户归属校验通过: " + targetTenantId);
     }
+
+    /**
+     * 切换身份模拟指定目标用户
+     *
+     * @param targetUserId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/impersonate/switch")
+    public Result<String> impersonateSwitch(@RequestParam("targetUserId") String targetUserId) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new io.github.atengk.boot.core.exception.BusinessException(
+                    io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "目标用户标识不能为空");
+        }
+        LoginHelper.checkLogin();
+        LoginHelper.switchTo(targetUserId);
+        return Result.success("成功切换身份至: " + targetUserId);
+    }
+
+    /**
+     * 结束身份模拟，恢复真实登录人
+     *
+     * @return 响应结果
+     */
+    @PostMapping("/impersonate/end")
+    public Result<String> impersonateEnd() {
+        LoginHelper.checkLogin();
+        LoginHelper.endSwitch();
+        return Result.success("身份模拟已结束，已恢复原始身份");
+    }
+
+    /**
+     * 获取当前身份模拟状态与双维审计快照
+     *
+     * @return 状态映射
+     */
+    @GetMapping("/impersonate/status")
+    public Result<Map<String, Object>> impersonateStatus() {
+        LoginHelper.checkLogin();
+        Map<String, Object> map = new java.util.LinkedHashMap<>();
+        map.put("isRunAs", LoginHelper.isRunAs());
+        map.put("currentUserId", LoginHelper.getUserId());
+        map.put("realUserId", LoginHelper.getRealUserId());
+        map.put("originalUserId", LoginHelper.getOriginalUserId());
+        return Result.success(map);
+    }
+
+    /**
+     * 瞬态代码块 RunAs 执行
+     *
+     * @param targetUserId 目标用户标识
+     * @return 闭包内执行快照
+     */
+    @PostMapping("/impersonate/run-as")
+    public Result<Map<String, Object>> impersonateRunAs(@RequestParam("targetUserId") String targetUserId) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new io.github.atengk.boot.core.exception.BusinessException(
+                    io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "目标用户标识不能为空");
+        }
+        LoginHelper.checkLogin();
+        Map<String, Object> innerResult = LoginHelper.runAs(targetUserId, () -> {
+            Map<String, Object> map = new java.util.LinkedHashMap<>();
+            map.put("isRunAs", LoginHelper.isRunAs());
+            map.put("currentUserId", LoginHelper.getUserId());
+            map.put("realUserId", LoginHelper.getRealUserId());
+            map.put("originalUserId", LoginHelper.getOriginalUserId());
+            return map;
+        });
+        return Result.success(innerResult);
+    }
 }
 

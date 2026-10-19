@@ -129,6 +129,8 @@ public class OperateLogAspect {
         String tenantId = TenantContextHolder.getTenantId();
         String userId = UserContextHolder.getUserId();
         String userName = UserContextHolder.get();
+        boolean isRunAsPre = UserContextHolder.isRunAs();
+        String originalUserIdPre = UserContextHolder.getOriginalUserId();
         String requestMethod = request != null ? request.getMethod() : "";
         String requestUrl = request != null ? request.getRequestURI() : "";
         String clientIp = IpUtil.getClientIp(request);
@@ -155,11 +157,17 @@ public class OperateLogAspect {
             throw ex;
         } finally {
             long costTime = System.currentTimeMillis() - startTime;
+            // 协调执行后的最终上下文身份（兼顾方法内切换身份或正常模拟请求）
+            boolean isRunAs = isRunAsPre || UserContextHolder.isRunAs();
+            String originalUserId = originalUserIdPre != null ? originalUserIdPre : UserContextHolder.getOriginalUserId();
+            String finalUserId = isRunAs && UserContextHolder.getUserId() != null ? UserContextHolder.getUserId() : userId;
+            String finalUserName = isRunAs && UserContextHolder.get() != null ? UserContextHolder.get() : userName;
+
             OperateLogModel logModel = new OperateLogModel();
             logModel.setTraceId(traceId);
             logModel.setTenantId(tenantId);
-            logModel.setUserId(userId);
-            logModel.setUserName(userName);
+            logModel.setUserId(finalUserId);
+            logModel.setUserName(finalUserName);
             logModel.setModule(module);
             logModel.setOperateType(operateLog.type());
             logModel.setDescription(operateLog.description());
@@ -169,6 +177,17 @@ public class OperateLogAspect {
             logModel.setRequestParams(paramsJson);
             logModel.setCostTime(costTime);
             logModel.setOperateTime(LocalDateTime.now());
+
+            if (isRunAs) {
+                logModel.setOriginalUserId(originalUserId);
+                logModel.addExtra("isRunAs", true);
+                if (originalUserId != null) {
+                    logModel.addExtra("originalUserId", originalUserId);
+                }
+                if (finalUserId != null) {
+                    logModel.addExtra("targetUserId", finalUserId);
+                }
+            }
 
             if (caughtException != null) {
                 logModel.setStatus(1); // 1-失败

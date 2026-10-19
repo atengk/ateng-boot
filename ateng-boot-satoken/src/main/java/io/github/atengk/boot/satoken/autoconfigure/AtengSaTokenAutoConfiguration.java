@@ -78,7 +78,7 @@ public class AtengSaTokenAutoConfiguration {
     @PostConstruct
     public void initFirewallStrategy() {
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
-        UserContextHolder.setUserProvider(LoginHelper::getUserId);
+        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider());
         TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
 
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {

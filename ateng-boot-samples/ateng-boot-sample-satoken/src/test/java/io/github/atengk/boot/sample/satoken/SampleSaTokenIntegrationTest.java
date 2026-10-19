@@ -829,5 +829,133 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("SPI白名单访问成功"));
     }
+
+    @Test
+    @DisplayName("28. 身份模拟 (RunAs / Impersonate) 全栈端到端：会话切换、所有权对齐、持久层审计绑定与还原全流程")
+    void testImpersonateLifecycleAndAuditIntegration() throws Exception {
+        // 1. 管理员登录
+        LoginUser adminUser = LoginUser.builder()
+                .userId("90001")
+                .userName("系统运维管理员")
+                .tenantId("tenant_sz")
+                .build();
+        MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(adminUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 验证初始状态：未开启模拟
+        mockMvc.perform(get("/api/auth/impersonate/status")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.isRunAs").value(false))
+                .andExpect(jsonPath("$.data.currentUserId").value("90001"))
+                .andExpect(jsonPath("$.data.realUserId").value("90001"))
+                .andExpect(jsonPath("$.data.originalUserId").doesNotExist());
+
+        // 3. 执行身份模拟切换为用户 66002
+        mockMvc.perform(post("/api/auth/impersonate/switch")
+                        .header("satoken", token)
+                        .param("targetUserId", "66002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 4. 验证模拟状态：currentUserId 被替换为 66002，同时保留 originalUserId 为 90001
+        mockMvc.perform(get("/api/auth/impersonate/status")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.isRunAs").value(true))
+                .andExpect(jsonPath("$.data.currentUserId").value("66002"))
+                .andExpect(jsonPath("$.data.realUserId").value("90001"))
+                .andExpect(jsonPath("$.data.originalUserId").value("90001"));
+
+        // 5. 验证业务防越权与数据所有权对齐：当前身份为 66002
+        mockMvc.perform(post("/api/auth/assert/self")
+                        .header("satoken", token)
+                        .param("targetUserId", "66002"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("本人校验通过: 66002"));
+
+        mockMvc.perform(post("/api/auth/assert/self")
+                        .header("satoken", token)
+                        .param("targetUserId", "99999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.msg").value("无权访问该资源"));
+
+        // 6. 验证持久层审计自动填充对齐被模拟人 66002
+        Map<String, Object> orderReq1 = Map.of(
+                "orderNo", "ORD-RUNAS-66002",
+                "amount", 128.00
+        );
+        MvcResult orderResult1 = mockMvc.perform(post("/api/auth/order")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(orderReq1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Long orderId1 = objectMapper.readTree(orderResult1.getResponse().getContentAsString()).get("data").asLong();
+        TenantOrderEntity orderInDb1 = orderMapper.selectById(orderId1);
+        assertThat(orderInDb1).isNotNull();
+        // 自动审计字段填入被模拟人 66002
+        assertThat(orderInDb1.getCreateBy()).isEqualTo("66002");
+        assertThat(orderInDb1.getUpdateBy()).isEqualTo("66002");
+
+        // 7. 验证瞬态代码块 RunAs
+        mockMvc.perform(post("/api/auth/impersonate/run-as")
+                        .header("satoken", token)
+                        .param("targetUserId", "77003"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.isRunAs").value(true))
+                .andExpect(jsonPath("$.data.currentUserId").value("77003"))
+                .andExpect(jsonPath("$.data.realUserId").value("90001"))
+                .andExpect(jsonPath("$.data.originalUserId").value("90001"));
+
+        // 瞬态执行完毕后，当前会话仍保持在 66002
+        mockMvc.perform(get("/api/auth/impersonate/status")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.currentUserId").value("66002"));
+
+        // 8. 结束身份模拟，恢复真实登录人 90001
+        mockMvc.perform(post("/api/auth/impersonate/end")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 验证状态已恢复
+        mockMvc.perform(get("/api/auth/impersonate/status")
+                        .header("satoken", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.isRunAs").value(false))
+                .andExpect(jsonPath("$.data.currentUserId").value("90001"))
+                .andExpect(jsonPath("$.data.originalUserId").doesNotExist());
+
+        // 9. 恢复后创建订单，持久层审计恢复为 90001
+        Map<String, Object> orderReq2 = Map.of(
+                "orderNo", "ORD-RESTORE-90001",
+                "amount", 256.00
+        );
+        MvcResult orderResult2 = mockMvc.perform(post("/api/auth/order")
+                        .header("satoken", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(orderReq2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        Long orderId2 = objectMapper.readTree(orderResult2.getResponse().getContentAsString()).get("data").asLong();
+        TenantOrderEntity orderInDb2 = orderMapper.selectById(orderId2);
+        assertThat(orderInDb2).isNotNull();
+        assertThat(orderInDb2.getCreateBy()).isEqualTo("90001");
+        assertThat(orderInDb2.getUpdateBy()).isEqualTo("90001");
+    }
 }
 

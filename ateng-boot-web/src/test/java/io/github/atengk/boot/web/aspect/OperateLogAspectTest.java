@@ -100,6 +100,7 @@ class OperateLogAspectTest {
     @AfterEach
     void tearDown() {
         UserContextHolder.clear();
+        UserContextHolder.setUserProvider(null);
         TenantContextHolder.clear();
         TraceUtil.clear();
     }
@@ -200,5 +201,42 @@ class OperateLogAspectTest {
         Result<String> result = disabledService.createUser("test", "pwd");
         assertThat(result.getCode()).isEqualTo(200);
         assertThat(capturedModel.get()).isNull();
+    }
+
+    @Test
+    @DisplayName("处于身份模拟态时，OperateLog 切面自动结构化记录操作人与被模拟人双维身份")
+    void shouldCaptureOriginalUserIdAndRunAsFlagWhenImpersonating() {
+        // 注册模拟态 SPI
+        UserContextHolder.setUserProvider(new io.github.atengk.boot.core.spi.CurrentUserProvider() {
+            @Override
+            public String getCurrentUser() {
+                return "target-user-66002";
+            }
+
+            @Override
+            public String getOriginalUser() {
+                return "admin-90001";
+            }
+
+            @Override
+            public boolean isRunAs() {
+                return true;
+            }
+        });
+
+        Result<String> result = targetService.createUser("demo", "pwd");
+        assertThat(result.getCode()).isEqualTo(200);
+
+        OperateLogModel model = capturedModel.get();
+        assertThat(model).isNotNull();
+        // 业务被操作人
+        assertThat(model.getUserId()).isEqualTo("target-user-66002");
+        // 原始管理员
+        assertThat(model.getOriginalUserId()).isEqualTo("admin-90001");
+        // extra 扩展字典结构化记录
+        assertThat(model.getExtra()).isNotNull();
+        assertThat(model.getExtra().get("isRunAs")).isEqualTo(true);
+        assertThat(model.getExtra().get("originalUserId")).isEqualTo("admin-90001");
+        assertThat(model.getExtra().get("targetUserId")).isEqualTo("target-user-66002");
     }
 }

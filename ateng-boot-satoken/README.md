@@ -16,7 +16,12 @@
 | **二级认证** | 编程式二级安全认证 | `LoginHelper` | - | `openSafe(Duration)` / `openSafe(int)` / `openSafe(String, Duration)` / `isSafe()` / `checkSafe()` / `closeSafe()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **状态查询** | 登录状态与令牌查询 | `LoginHelper` | - | `isLogin()` / `checkLogin()` / `getTokenValue()` / `getTokenValueByLoginId(Object)` / `getTokenValueByLoginId(Object, String)` / `getTokenTimeout()` / `getSessionTimeout()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **载荷存取** | 强类型实体存取 | `LoginHelper` | - | `setLoginUser(LoginUser)` / `getLoginUser()` / `getLoginUser(Class<T>)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **身份感知** | 用户/租户身份提取 | `LoginHelper` | - | `getUserId()` / `getUserIdAsLong()` / `getUserAccount()` / `getUserName()` / `getTenantId()` / `getDeptId()` / `buildCompositeLoginId` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **身份感知** | 用户/租户身份提取 | `LoginHelper` | - | `getUserId()` / `getUserIdAsLong()` / `getRealUserId()` / `getRealUserIdAsLong()` / `getUserAccount()` / `getUserName()` / `getTenantId()` / `getDeptId()` / `buildCompositeLoginId` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **身份模拟** | 会话持久模拟与还原 | `LoginHelper` | - | `switchTo(String)` / `switchTo(Long)` / `endSwitch()` 会话级模拟，保留原始运维人链路 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **身份模拟** | 瞬态代码块安全模拟 | `LoginHelper` | - | `runAs(String, Supplier<T>)` / `runAs(String, Runnable)` / `runAs(Long, ...)` 栈式保护与 `finally` 可靠清理 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **双维审计** | 模拟感知与原始人追踪 | `LoginHelper`<br>`SaTokenCurrentUserProvider` | - | `isRunAs()` / `getOriginalUserId()`，自动贯通 Core/Web `@OperateLog` 切面双维操作审计 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`LoginHelper` | - | `checkSelf(String/Long)` / `isSelf(String/Long)` / `checkBelongsToTenant(String)` / `@CheckDataOwner(expr, provider)` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **公开访问** | 声明式公开与动态白名单 | `@Anonymous`<br>`SaTokenWhitelistProvider` | `ateng.boot.satoken.white-list` | 类/方法级 `@Anonymous` 动态转译 AntPath，聚合 SPI 动态白名单与 YAML 配置统一放行 | `AnonymousUrlProcessorTest` / `SampleSaTokenIntegrationTest` |
 | **权限断言** | 角色与特权判定 | `LoginHelper` | - | `getRoles()` / `getPermissions()` / `hasRole(String)` / `hasPermission(String)` / `isSuperAdmin()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **用户载荷** | 工业级强类型载荷 | `LoginUser` | - | 标配 `@SaJsonType`、链式 setter 与 `extraData` 扩展字典 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **路由拦截** | 双轨路由拦截与白名单 | `AtengSaTokenInterceptor` / `SaTokenWebMvcConfigurer` | `ateng.boot.satoken.interceptor.*`<br>`ateng.boot.satoken.white-list` | `isAnnotation(false)` 专精路径白名单防漏，`preHandle` 注入上下文，`afterCompletion` 强制清空 | `AtengSaTokenInterceptorTest` / `SampleSaTokenIntegrationTest` |
@@ -414,7 +419,210 @@ public class FeignClientConfig {
 
 ---
 
-## 9. 配置项全景表（application.yml）
+## 9. 水平越权防御与数据所有权校验体系 (@CheckDataOwner & LoginHelper.checkSelf)
+
+### 场景痛点
+传统 RBAC 权限体系通常仅校验接口“操作权限”（例如判断当前用户是否具备 `user:update` 权限），但无法防范恶意用户通过篡改请求路径参数或请求体中的 `userId`、`orderId` 来修改他人数据的**水平越权漏洞（BOLA / IDOR）**。若在每个业务 Service 中重复编写 `if (!userId.equals(currentUserId))`，极易出现漏检。
+
+### 核心代码示例
+
+#### 1. 声明式 SpEL 数据所有权校验
+通过在 Controller 方法上标注 `@CheckDataOwner`，支持直接通过 SpEL 表达式提取当前请求入参的目标归属人：
+
+```java
+@RestController
+@RequestMapping("/api/auth")
+public class UserProfileController {
+
+    /**
+     * 修改个人资料接口（直接通过 SpEL 校验 userId 数据所有权）
+     */
+    @PostMapping("/user/profile")
+    @CheckDataOwner(expr = "#dto.userId")
+    public Result<String> updateProfile(@RequestBody UserProfileDTO dto) {
+        return Result.success("个人资料更新成功: " + dto.getUserId());
+    }
+
+    /**
+     * 订单取消接口（间接通过 SPI 反查 orderId 数据所有权）
+     */
+    @PostMapping("/order/{orderId}/cancel")
+    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class, message = "无权取消该订单")
+    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
+        return Result.success("订单取消成功: " + orderId);
+    }
+}
+```
+
+#### 2. 编程式极简防卫断言
+在后台逻辑或批量操作中，可直接调用 `LoginHelper.checkSelf` 或 `LoginHelper.checkBelongsToTenant` 实施前置卫语句快速失败：
+
+```java
+@Service
+public class OrderService {
+
+    public void processUserOrder(String targetUserId, String targetTenantId) {
+        // 1. 断言当前操作人是否为本人（超级管理员自动豁免放行）
+        LoginHelper.checkSelf(targetUserId, "无权访问他人订单数据");
+
+        // 2. 断言当前操作人是否归属于目标租户
+        LoginHelper.checkBelongsToTenant(targetTenantId, "非法跨租户数据访问");
+    }
+}
+```
+
+### 预期拦截呈现
+若普通用户试图篡改他人 ID 访问，切面将 Fail-Fast 拦截并返回标准的统一响应：
+```json
+{
+  "code": 403,
+  "msg": "无权访问该资源",
+  "data": null,
+  "success": false
+}
+```
+
+---
+
+## 10. 声明式公开访问与动态白名单 (@Anonymous & SaTokenWhitelistProvider)
+
+### 场景痛点
+在微服务或单体架构中，很多接口（如登录、验证码、对外静态公文、健康检查）无需鉴权放行。传统做法是在 `application.yml` 的 `white-list` 中硬编码长路径，这不仅繁琐，而且一旦接口重命名或迁移极易引发 401 漏检事故；此外，业务插件或第三方 Starter 无法在运行时动态扩充白名单。
+
+### 核心代码示例
+
+#### 1. 声明式 `@Anonymous` 注解放行
+支持在 Controller 方法或类级别直接标注 `@Anonymous`，启动时 `AnonymousUrlProcessor` 会自动扫描并将 Spring MVC 路径变量占位符（如 `{id}`）自适应转译为 AntPath 通配符（如 `*`）：
+
+```java
+@RestController
+@RequestMapping("/api/auth/public")
+public class PublicArticleController {
+
+    // 方法级匿名放行
+    @GetMapping("/article/{id}")
+    @Anonymous
+    public Result<String> getPublicArticle(@PathVariable("id") Long id) {
+        return Result.success("公开文章详情: " + id);
+    }
+}
+
+// 类级匿名放行：整类所有端点均免鉴权放行
+@RestController
+@RequestMapping("/api/anonymous")
+@Anonymous
+public class OpenApiController {
+
+    @GetMapping("/hello")
+    public Result<String> hello() {
+        return Result.success("类级匿名访问成功");
+    }
+}
+```
+
+#### 2. SPI 动态白名单扩展 (`SaTokenWhitelistProvider`)
+业务模块或插件 Starter 可声明实现 `SaTokenWhitelistProvider` SPI 接口，在运行时向鉴权拦截器动态注入自定义白名单路径：
+
+```java
+@Component
+public class CustomPluginWhitelistProvider implements SaTokenWhitelistProvider {
+
+    @Override
+    public Set<String> getWhitelist() {
+        return Set.of("/api/custom-spi/**", "/public/third-party/**");
+    }
+}
+```
+
+---
+
+## 11. 身份模拟与双维运维审计体系 (RunAs / Impersonate)
+
+### 场景痛点
+在大型企业系统中，客服代客下单、技术运维排障、故障复现等场景下，管理员需要临时以特定用户的身份调用业务接口。如果直接篡改当前会话，会导致真实操作人丢失引发重大审计盲区；若手工在 Service 层层透传 `impersonateUserId`，则持久层审计（`create_by` / `update_by`）与数据权限断言无法透明生效。
+
+### 核心代码示例
+
+#### 1. 跨请求会话模拟 (`switchTo` / `endSwitch`)
+适用于客服会话模拟与运维后台代客操作，模拟态信息跨 HTTP 请求持久维护于会话 Session 中：
+
+```java
+@RestController
+@RequestMapping("/api/auth/impersonate")
+public class ImpersonateController {
+
+    /**
+     * 运维管理员切换为目标用户身份
+     */
+    @PostMapping("/switch")
+    public Result<String> impersonateSwitch(@RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.checkLogin();
+        // 切换身份（自动记录原始登录管理员为 originalUserId，即便多次连续切换也不丢失最初源头）
+        LoginHelper.switchTo(targetUserId);
+        return Result.success("成功切换身份至: " + targetUserId);
+    }
+
+    /**
+     * 结束身份模拟，恢复真实登录人
+     */
+    @PostMapping("/end")
+    public Result<String> impersonateEnd() {
+        LoginHelper.checkLogin();
+        // 结束模拟并彻底清理会话模拟元数据
+        LoginHelper.endSwitch();
+        return Result.success("身份模拟已结束，已恢复原始身份");
+    }
+
+    /**
+     * 查询双维身份状态
+     */
+    @GetMapping("/status")
+    public Result<Map<String, Object>> impersonateStatus() {
+        LoginHelper.checkLogin();
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("isRunAs", LoginHelper.isRunAs());                 // 是否处于模拟态
+        map.put("currentUserId", LoginHelper.getUserId());         // 当前生效用户（被模拟人）
+        map.put("realUserId", LoginHelper.getRealUserId());        // 真实底层登录人
+        map.put("originalUserId", LoginHelper.getOriginalUserId());// 原始操作人
+        return Result.success(map);
+    }
+}
+```
+
+#### 2. 瞬态代码块安全模拟 (`runAs`)
+适用于在特定业务方法或异步任务内部瞬态以目标用户身份运行，基于 ThreadLocal 栈式暂存现场与 `finally` 可靠清理：
+
+```java
+@Service
+public class OrderCompensationService {
+
+    public void compensateUserOrder(String targetUserId) {
+        // 瞬态切换为 targetUserId 执行，异常或正常退出均确定性恢复现场
+        LoginHelper.runAs(targetUserId, () -> {
+            log.info("当前临时生效用户: {}, 发起人: {}", LoginHelper.getUserId(), LoginHelper.getOriginalUserId());
+            // 此时调用业务方法，MyBatis-Plus 审计自动填入 targetUserId
+            doCreateOrder();
+        });
+    }
+}
+```
+
+#### 3. 双维运维操作审计生态贯通
+处于模拟态时，`ateng-boot-web` 的 `@OperateLog` 切面自动通过 Core 模块的 `UserContextHolder.isRunAs()` 与 `getOriginalUserId()` 感知身份模拟状态，在操作审计日志中结构化记录双维身份：
+- `logModel.setOriginalUserId(originalUserId)`
+- `extra: {"isRunAs": true, "originalUserId": "90001", "targetUserId": "66002"}`
+
+数据库实体落盘全真验证（控制台真实输出）：
+```text
+2026-10-20 06:37:12.002 INFO  i.g.a.boot.satoken.util.LoginHelper : 会话身份模拟切换: originalUserId=90001, targetUserId=66002
+2026-10-20 06:37:12.036 DEBUG i.g.a.b.s.s.m.TenantOrderMapper.insert : ==> Parameters: 105796419592769536(Long), ORD-RUNAS-66002(String), 128.0(BigDecimal), 66002(String), 66002(String)
+2026-10-20 06:37:12.066 INFO  i.g.a.boot.satoken.util.LoginHelper : 会话身份模拟结束，已恢复原始身份: originalUserId=90001
+2026-10-20 06:37:12.078 DEBUG i.g.a.b.s.s.m.TenantOrderMapper.insert : ==> Parameters: 105796419777318912(Long), ORD-RESTORE-90001(String), 256.0(BigDecimal), 90001(String), 90001(String)
+```
+
+---
+
+## 12. 配置项全景表（application.yml）
 
 ```yaml
 # Sa-Token 官方原生核心配置
@@ -468,7 +676,7 @@ ateng:
 
 ---
 
-## 10. 生产扩展与接管实践 (Customization & Extensibility)
+## 13. 生产扩展与接管实践 (Customization & Extensibility)
 
 ### 1. 自定义权限与角色业务数据源 (`UserRolePermissionLoader`)
 框架默认提供 `DefaultUserRolePermissionLoader` 从当前会话直接读取角色与权限集合。当需要在鉴权时从数据库持久层动态拉取最新权限并接入两级缓存时，业务只需声明自定义 Bean 即可平滑接管：
@@ -541,7 +749,7 @@ public class AsyncSecurityAuditConsumer {
 
 ---
 
-## 11. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 14. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
 ### 1. 严格无状态会话与零状态泄漏防线
 - **单例无状态**：所有安全组件（`LoginHelper`、`PermissionCacheService`、`AtengSaTokenInterceptor`、`SaTokenRedisDao`）均保持严格无状态，无任何成员变量共享可变业务数据；
@@ -563,9 +771,14 @@ public class AsyncSecurityAuditConsumer {
 - **防穿透**：当用户无角色或角色无权限时，写入 `__EMPTY__` 哨兵并赋予短 TTL（默认 60s），阻断空值对数据库的频繁击穿；
 - **防雪崩**：缓存写入时对超时时间附加 0%~10% 的动态 Jitter 随机抖动，杜绝海量用户集中登录后缓存同一秒失效引发数据库瞬间雪崩。
 
+### 6. 身份模拟状态隔离与双维审计不变量
+- **会话持久与链条保持**：`switchTo` 记录最初真实登录人为 `originalUserId`，即便多次连续切换目标，`originalUserId` 严格保持最初源头，彻底杜绝审计责任链路漂移；
+- **瞬态栈式保护与清理**：`runAs` 基于 ThreadLocal 栈式管理，在 `finally` 块中严格恢复前序现场或彻底清理，杜绝在工作线程池中残留污染；
+- **双维审计贯通**：在模拟态下，`LoginHelper.getUserId()` 返回被模拟人 ID，确保业务校验、持久层 `create_by` / `update_by` 与数据权限自然对齐被模拟人；同时底层通过 `CurrentUserProvider` SPI 向 `@OperateLog` 切面提供 `getOriginalUser()`，在操作审计日志中同时结构化记录 `originalUserId` 与 `targetUserId`。
+
 ---
 
-## 12. 架构决策与设计参考
+## 15. 架构决策与设计参考
 
 - [ADR-0024: 企业级 Sa-Token 安全鉴权与分布式会话治理架构](../../docs/adr/0024-enterprise-satoken-authentication-and-security-architecture.md)
 - [ADR-0002: 显式统一响应契约](../../docs/adr/0002-explicit-result-contract-no-response-body-advice.md)

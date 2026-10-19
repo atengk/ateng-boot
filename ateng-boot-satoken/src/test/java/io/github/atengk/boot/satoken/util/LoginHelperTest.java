@@ -325,5 +325,139 @@ class LoginHelperTest {
                     .isInstanceOf(BusinessException.class);
         }
     }
+
+    @Test
+    @DisplayName("15. switchTo & endSwitch: 会话级身份模拟与原始操作人链路保持")
+    void testSwitchToAndEndSwitch() {
+        // 1. 入参防卫
+        assertThatThrownBy(() -> LoginHelper.switchTo((String) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("目标用户唯一标识不能为空");
+        assertThatThrownBy(() -> LoginHelper.switchTo("  "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.switchTo((Long) null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            java.util.Map<String, Object> sessionData = new java.util.HashMap<>();
+            cn.dev33.satoken.session.SaSession mockSession = mock(cn.dev33.satoken.session.SaSession.class);
+            when(mockSession.get(anyString())).thenAnswer(inv -> sessionData.get(inv.getArgument(0)));
+            doAnswer(inv -> {
+                sessionData.put(inv.getArgument(0), inv.getArgument(1));
+                return mockSession;
+            }).when(mockSession).set(anyString(), any());
+            doAnswer(inv -> {
+                sessionData.remove(inv.getArgument(0));
+                return mockSession;
+            }).when(mockSession).delete(anyString());
+
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(StpUtil::getSession).thenReturn(mockSession);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(mockSession);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("1001");
+
+            // 初始登录态
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getRealUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getOriginalUserId()).isNull();
+
+            // 首次切换身份至 2002
+            LoginHelper.switchTo("2002");
+            assertThat(LoginHelper.isRunAs()).isTrue();
+            assertThat(LoginHelper.getUserId()).isEqualTo("2002");
+            assertThat(LoginHelper.getRealUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getOriginalUserId()).isEqualTo("1001");
+
+            // 连续切换身份至 3003：originalUserId 保持最初的 1001 杜绝链路漂移
+            LoginHelper.switchTo(3003L);
+            assertThat(LoginHelper.isRunAs()).isTrue();
+            assertThat(LoginHelper.getUserId()).isEqualTo("3003");
+            assertThat(LoginHelper.getUserIdAsLong()).isEqualTo(3003L);
+            assertThat(LoginHelper.getRealUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getOriginalUserId()).isEqualTo("1001");
+
+            // 结束模拟恢复真实身份
+            LoginHelper.endSwitch();
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getRealUserId()).isEqualTo("1001");
+            assertThat(LoginHelper.getOriginalUserId()).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("16. runAs: 瞬态代码块切换、嵌套栈式保护与异常清理不变量")
+    void testRunAsTransientContext() {
+        // 1. 入参防卫
+        assertThatThrownBy(() -> LoginHelper.runAs((String) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.runAs("1001", (Runnable) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.runAs("1001", (java.util.function.Supplier<String>) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LoginHelper.runAs((Long) null, () -> {}))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
+            stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
+            stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(null);
+            stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("admin-1");
+
+            // 初始真实登录环境
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("admin-1");
+
+            // 2. 瞬态执行带返回值
+            String result = LoginHelper.runAs("target-user-2", () -> {
+                assertThat(LoginHelper.isRunAs()).isTrue();
+                assertThat(LoginHelper.getUserId()).isEqualTo("target-user-2");
+                assertThat(LoginHelper.getOriginalUserId()).isEqualTo("admin-1");
+                return "success-result";
+            });
+            assertThat(result).isEqualTo("success-result");
+
+            // 执行完毕后现场恢复
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("admin-1");
+            assertThat(LoginHelper.getOriginalUserId()).isNull();
+
+            // 3. 嵌套 RunAs 闭包
+            LoginHelper.runAs(8888L, () -> {
+                assertThat(LoginHelper.isRunAs()).isTrue();
+                assertThat(LoginHelper.getUserId()).isEqualTo("8888");
+                assertThat(LoginHelper.getOriginalUserId()).isEqualTo("admin-1");
+
+                // 内层嵌套
+                LoginHelper.runAs(9999L, () -> {
+                    assertThat(LoginHelper.isRunAs()).isTrue();
+                    assertThat(LoginHelper.getUserId()).isEqualTo("9999");
+                    // 原始操作人依然锚定为最初的 admin-1
+                    assertThat(LoginHelper.getOriginalUserId()).isEqualTo("admin-1");
+                });
+
+                // 内层退出后恢复外层模拟现场
+                assertThat(LoginHelper.isRunAs()).isTrue();
+                assertThat(LoginHelper.getUserId()).isEqualTo("8888");
+                assertThat(LoginHelper.getOriginalUserId()).isEqualTo("admin-1");
+            });
+
+            // 外层退出后恢复真实登录人
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("admin-1");
+            assertThat(LoginHelper.getOriginalUserId()).isNull();
+
+            // 4. 异常分支现场可靠清理防御
+            assertThatThrownBy(() -> LoginHelper.runAs("temp-user", () -> {
+                assertThat(LoginHelper.isRunAs()).isTrue();
+                throw new RuntimeException("业务异常中断");
+            })).isInstanceOf(RuntimeException.class).hasMessage("业务异常中断");
+
+            // 发生异常后 ThreadLocal 现场依然确定性清理
+            assertThat(LoginHelper.isRunAs()).isFalse();
+            assertThat(LoginHelper.getUserId()).isEqualTo("admin-1");
+            assertThat(LoginHelper.getOriginalUserId()).isNull();
+        }
+    }
 }
 

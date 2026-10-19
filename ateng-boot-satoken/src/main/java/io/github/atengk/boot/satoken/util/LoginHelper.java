@@ -8,11 +8,14 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.satoken.constant.SaTokenConstant;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * 强类型登录会话操作静态门面
@@ -23,6 +26,15 @@ import java.util.Set;
  */
 @Slf4j
 public final class LoginHelper {
+
+    @Getter
+    @AllArgsConstructor
+    private static class RunAsContext {
+        private final String targetUserId;
+        private final String originalUserId;
+    }
+
+    private static final ThreadLocal<RunAsContext> RUN_AS_CONTEXT = new ThreadLocal<>();
 
     private LoginHelper() {
     }
@@ -222,11 +234,47 @@ public final class LoginHelper {
     }
 
     /**
-     * 获取当前操作人原始唯一标识（透明剥离多租户前缀）
+     * 获取当前操作人用户唯一标识（支持 RunAs 身份模拟，透明剥离多租户前缀）
+     * 优先级：
+     * 1. 瞬态代码块 RunAs (ThreadLocal)
+     * 2. 会话 Session 模拟 (switch_target_user_id)
+     * 3. 真实登录用户 ID
      *
-     * @return 原始用户唯一标识，未登录时返回 null
+     * @return 当前生效的用户唯一标识，未登录时返回 null
      */
     public static String getUserId() {
+        // 1. 检查瞬态 RunAs 代码块
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null && runAsCtx.getTargetUserId() != null && !runAsCtx.getTargetUserId().isBlank()) {
+            return runAsCtx.getTargetUserId();
+        }
+
+        if (!isLogin()) {
+            return null;
+        }
+
+        // 2. 检查跨请求 Session 模拟
+        SaSession session = StpUtil.getSession(false);
+        if (session != null) {
+            Object switchTarget = session.get(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+            if (switchTarget != null) {
+                String targetId = String.valueOf(switchTarget).trim();
+                if (!targetId.isEmpty()) {
+                    return targetId;
+                }
+            }
+        }
+
+        // 3. 返回底层真实登录用户
+        return getRealUserId();
+    }
+
+    /**
+     * 获取底层真实登录用户唯一标识（忽略 RunAs 模拟状态，透明剥离多租户前缀）
+     *
+     * @return 真实登录用户唯一标识，未登录时返回 null
+     */
+    public static String getRealUserId() {
         if (!isLogin()) {
             return null;
         }
@@ -246,9 +294,75 @@ public final class LoginHelper {
     }
 
     /**
-     * 获取当前操作人原始唯一标识并转换为 Long 类型
+     * 获取底层真实登录用户 Long 唯一标识（忽略 RunAs 模拟状态）
      *
-     * @return 原始用户 Long 唯一标识，未登录或非数字格式时返回 null
+     * @return 真实登录用户 Long 唯一标识，未登录或非数字格式时返回 null
+     */
+    public static Long getRealUserIdAsLong() {
+        String userId = getRealUserId();
+        if (userId == null || userId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId.trim());
+        } catch (NumberFormatException e) {
+            log.warn("真实用户唯一标识无法转换为 Long 数值: userId={}", userId);
+            return null;
+        }
+    }
+
+    /**
+     * 判断当前会话或当前执行线程是否处于身份模拟态 (RunAs)
+     *
+     * @return true 表示处于身份模拟态
+     */
+    public static boolean isRunAs() {
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null) {
+            return true;
+        }
+        if (!isLogin()) {
+            return false;
+        }
+        SaSession session = StpUtil.getSession(false);
+        if (session == null) {
+            return false;
+        }
+        Object target = session.get(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+        return target != null && !String.valueOf(target).isBlank();
+    }
+
+    /**
+     * 获取身份模拟下的原始操作人唯一标识 (Original User ID)
+     * 仅在处于身份模拟态时非空，未处于模拟态时返回 null
+     *
+     * @return 原始操作人标识，未模拟或未登录返回 null
+     */
+    public static String getOriginalUserId() {
+        RunAsContext runAsCtx = RUN_AS_CONTEXT.get();
+        if (runAsCtx != null) {
+            return runAsCtx.getOriginalUserId();
+        }
+        if (!isLogin()) {
+            return null;
+        }
+        SaSession session = StpUtil.getSession(false);
+        if (session != null) {
+            Object orig = session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            if (orig != null) {
+                String origStr = String.valueOf(orig).trim();
+                if (!origStr.isEmpty()) {
+                    return origStr;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 获取当前生效操作人唯一标识并转换为 Long 类型
+     *
+     * @return 当前生效用户 Long 唯一标识，未登录或非数字格式时返回 null
      */
     public static Long getUserIdAsLong() {
         String userId = getUserId();
@@ -756,6 +870,138 @@ public final class LoginHelper {
         if (currentTenantId == null || !currentTenantId.trim().equals(targetTenantId.trim())) {
             throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
         }
+    }
+
+    /**
+     * 切换当前会话为指定目标用户的身份（跨请求持久于 Session）
+     * 适用于运维支撑、客服代客操作、技术排障等场景
+     * 若已处于模拟态，则继续切换目标用户，但保留最初的 originalUserId，防止审计链路漂移
+     *
+     * @param targetUserId 目标用户唯一标识
+     */
+    public static void switchTo(String targetUserId) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new IllegalArgumentException("切换身份失败：目标用户唯一标识不能为空");
+        }
+        checkLogin();
+        SaSession session = StpUtil.getSession();
+        if (session == null) {
+            throw new IllegalStateException("切换身份失败：无法获取当前会话 Session");
+        }
+        // 如果当前尚未处于会话模拟态，则记录底层真实登录用户为 originalUserId
+        if (session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY) == null) {
+            String realUserId = getRealUserId();
+            if (realUserId != null && !realUserId.isBlank()) {
+                session.set(SaTokenConstant.ORIGINAL_USER_ID_KEY, realUserId.trim());
+            }
+        }
+        session.set(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY, targetUserId.trim());
+        log.info("会话身份模拟切换: originalUserId={}, targetUserId={}",
+                session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY), targetUserId.trim());
+    }
+
+    /**
+     * 切换当前会话为指定目标 Long 用户标识的身份
+     *
+     * @param targetUserId 目标用户 Long 标识
+     */
+    public static void switchTo(Long targetUserId) {
+        if (targetUserId == null) {
+            throw new IllegalArgumentException("切换身份失败：目标用户唯一标识不能为空");
+        }
+        switchTo(String.valueOf(targetUserId));
+    }
+
+    /**
+     * 结束当前会话的身份模拟，还原为真实登录用户身份
+     */
+    public static void endSwitch() {
+        if (!isLogin()) {
+            return;
+        }
+        SaSession session = StpUtil.getSession(false);
+        if (session != null) {
+            Object originalUserId = session.get(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            session.delete(SaTokenConstant.ORIGINAL_USER_ID_KEY);
+            session.delete(SaTokenConstant.SWITCH_TARGET_USER_ID_KEY);
+            log.info("会话身份模拟结束，已恢复原始身份: originalUserId={}", originalUserId);
+        }
+    }
+
+    /**
+     * 在当前线程瞬态切换为指定目标用户身份执行逻辑（带返回值）
+     * 采用 ThreadLocal 栈式暂存现场，finally 严格恢复，杜绝线程污染与嵌套失效
+     *
+     * @param targetUserId 目标用户唯一标识
+     * @param supplier     待执行业务代码块
+     * @param <T>          返回值泛型
+     * @return 执行结果
+     */
+    public static <T> T runAs(String targetUserId, Supplier<T> supplier) {
+        if (targetUserId == null || targetUserId.isBlank()) {
+            throw new IllegalArgumentException("RunAs 执行失败：目标用户标识不能为空");
+        }
+        if (supplier == null) {
+            throw new IllegalArgumentException("RunAs 执行失败：执行体 supplier 不能为空");
+        }
+        RunAsContext previous = RUN_AS_CONTEXT.get();
+        // 原始用户：若已有上一层 RunAsContext 则沿用其 originalUserId；否则若处于模拟态则取 getOriginalUserId()；否则取真实用户 ID
+        String originalUserId = previous != null ? previous.getOriginalUserId()
+                : (isRunAs() ? getOriginalUserId() : (getRealUserId() != null ? getRealUserId() : getUserId()));
+        try {
+            RUN_AS_CONTEXT.set(new RunAsContext(targetUserId.trim(), originalUserId));
+            return supplier.get();
+        } finally {
+            if (previous != null) {
+                RUN_AS_CONTEXT.set(previous);
+            } else {
+                RUN_AS_CONTEXT.remove();
+            }
+        }
+    }
+
+    /**
+     * 在当前线程瞬态切换为指定目标用户身份执行逻辑（无返回值）
+     *
+     * @param targetUserId 目标用户唯一标识
+     * @param runnable     待执行业务代码块
+     */
+    public static void runAs(String targetUserId, Runnable runnable) {
+        if (runnable == null) {
+            throw new IllegalArgumentException("RunAs 执行失败：执行体 runnable 不能为空");
+        }
+        runAs(targetUserId, () -> {
+            runnable.run();
+            return null;
+        });
+    }
+
+    /**
+     * 在当前线程瞬态切换为指定目标 Long 用户标识的身份执行逻辑（带返回值）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     * @param supplier     待执行业务代码块
+     * @param <T>          返回值泛型
+     * @return 执行结果
+     */
+    public static <T> T runAs(Long targetUserId, Supplier<T> supplier) {
+        if (targetUserId == null) {
+            throw new IllegalArgumentException("RunAs 执行失败：目标用户标识不能为空");
+        }
+        return runAs(String.valueOf(targetUserId), supplier);
+    }
+
+    /**
+     * 在当前线程瞬态切换为指定目标 Long 用户标识的身份执行逻辑（无返回值）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     * @param runnable     待执行业务代码块
+     */
+    public static void runAs(Long targetUserId, Runnable runnable) {
+        if (targetUserId == null) {
+            throw new IllegalArgumentException("RunAs 执行失败：目标用户标识不能为空");
+        }
+        runAs(String.valueOf(targetUserId), runnable);
     }
 }
 
