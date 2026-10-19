@@ -485,4 +485,79 @@ class DynamicQueryHelperTest {
 
         assertThrows(IllegalArgumentException.class, () -> QueryOperator.fromString("DROP_TABLE"));
     }
+
+    // ==========================================
+    // 5. URL Query 字符串与作用域 OR 嵌套真实 H2 执行
+    // ==========================================
+
+    @Test
+    @DisplayName("URL Query 冒号语法真实 H2 执行：username:like=li 查出 alice 与 charlie")
+    void shouldExecuteUrlQueryString() {
+        String query = "username:like=li";
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(query, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactlyInAnyOrder("alice", "charlie");
+        }
+    }
+
+    @Test
+    @DisplayName("URL Query 波浪线 between 语法真实 H2 执行：score:between=80.0~95.0")
+    void shouldExecuteUrlQueryBetweenWithTilde() {
+        String query = "score:between=80.0~95.0";
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(query, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactlyInAnyOrder("alice", "bob");
+        }
+    }
+
+    @Test
+    @DisplayName("作用域 OR 分组真实 H2 执行：or_1:username:like=li&or_1:email:like=org")
+    void shouldExecuteOrGroupInH2() {
+        // (username LIKE '%li%' OR email LIKE '%org%') -> alice, charlie, david
+        String query = "or_1:username:like=li&or_1:email:like=org";
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(query, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactlyInAnyOrder("alice", "charlie", "david");
+        }
+    }
+
+    @Test
+    @DisplayName("复合嵌套查询真实 H2 执行：常规 AND + 作用域 OR 嵌套")
+    void shouldExecuteCombinedAndWithOrGroupInH2() {
+        // age > 20 AND (username LIKE '%li%' OR email LIKE '%org%')
+        // alice(20) 虽满足 username LIKE '%li%' 但不满足 age > 20，故排除
+        // 最终仅查出 charlie(30) 与 david(35)
+        String query = "age:gt=20&or_1:username:like=li&or_1:email:like=org";
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(query, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactlyInAnyOrder("charlie", "david");
+        }
+    }
+
+    @Test
+    @DisplayName("多组作用域 OR 分组真实 H2 执行：or_1 与 or_2 逻辑交叉")
+    void shouldExecuteMultipleOrGroupsInH2() {
+        // (username = 'alice' OR username = 'bob') AND (age = 20 OR age = 30)
+        // 只有 alice 满足 age=20
+        String query = "or_1:username:eq=alice&or_1:username:eq=bob&or_2:age:eq=20&or_2:age:eq=30";
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(query, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactly("alice");
+        }
+    }
 }

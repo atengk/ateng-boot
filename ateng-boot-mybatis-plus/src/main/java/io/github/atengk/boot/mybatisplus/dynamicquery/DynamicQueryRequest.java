@@ -251,6 +251,45 @@ public class DynamicQueryRequest extends PageQuery {
     }
 
     /**
+     * 添加指定 OR 分组的作用域条件
+     *
+     * @param orGroup   OR 作用域分组标识（如 "1", "groupA"）
+     * @param condition 条件实例
+     * @return 当前 DynamicQueryRequest 实例
+     */
+    public DynamicQueryRequest or(String orGroup, QueryCondition condition) {
+        if (condition != null) {
+            condition.setOrGroup(orGroup);
+            getConditions().add(condition);
+        }
+        return this;
+    }
+
+    /**
+     * 快捷添加指定 OR 分组的等于条件
+     *
+     * @param orGroup OR 作用域分组标识
+     * @param field   属性名称
+     * @param value   参数值
+     * @return 当前 DynamicQueryRequest 实例
+     */
+    public DynamicQueryRequest orEq(String orGroup, String field, Object value) {
+        return or(orGroup, QueryCondition.eq(field, value));
+    }
+
+    /**
+     * 快捷添加指定 OR 分组的模糊匹配条件
+     *
+     * @param orGroup OR 作用域分组标识
+     * @param field   属性名称
+     * @param value   参数值
+     * @return 当前 DynamicQueryRequest 实例
+     */
+    public DynamicQueryRequest orLike(String orGroup, String field, Object value) {
+        return or(orGroup, QueryCondition.like(field, value));
+    }
+
+    /**
      * 清空全部过滤条件
      *
      * @return 当前 DynamicQueryRequest 实例

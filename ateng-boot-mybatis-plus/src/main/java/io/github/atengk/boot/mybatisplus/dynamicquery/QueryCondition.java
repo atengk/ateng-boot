@@ -53,9 +53,29 @@ public class QueryCondition implements Serializable {
     private List<Object> values = new ArrayList<>();
 
     /**
+     * OR 作用域分组标识（为 null 表示普通顶层 AND 条件；若指定如 "1" 则同组条件以 OR 逻辑嵌套）
+     */
+    private String orGroup;
+
+    /**
      * 默认无参构造（供序列化与框架反射使用）
      */
     public QueryCondition() {
+    }
+
+    /**
+     * 构造指定分组的单值比较条件
+     *
+     * @param orGroup  OR 分组标识
+     * @param field    属性名称
+     * @param operator 查询操作符
+     * @param value    参数值
+     */
+    public QueryCondition(String orGroup, String field, QueryOperator operator, Object value) {
+        this.orGroup = (orGroup != null && !orGroup.trim().isEmpty()) ? orGroup.trim() : null;
+        this.field = (field != null) ? field.trim() : null;
+        this.operator = (operator != null) ? operator : QueryOperator.EQ;
+        setValue(value);
     }
 
     /**

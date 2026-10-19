@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -100,8 +101,11 @@ public final class DynamicQueryHelper {
 
         EntityMetaInfo metaInfo = getOrCreateEntityMeta(entityClass);
 
-        // 1. 过滤并应用动态条件
+        // 1. 过滤并应用动态条件（区分常规 AND 条件与 or_组号 作用域嵌套分组）
         if (request.getConditions() != null && !request.getConditions().isEmpty()) {
+            List<ValidConditionItem> andItems = new ArrayList<>();
+            Map<String, List<ValidConditionItem>> orGroupMap = new LinkedHashMap<>();
+
             for (QueryCondition condition : request.getConditions()) {
                 if (condition == null) {
                     continue;
@@ -121,7 +125,38 @@ public final class DynamicQueryHelper {
                     log.warn("动态查询字段未在目标实体白名单中声明，已安全忽略: {}", field);
                     continue;
                 }
-                applyCondition(wrapper, fieldMeta.getColumn(), condition.getOperator(), condition.getValue(), condition.getValues());
+
+                ValidConditionItem item = new ValidConditionItem(fieldMeta.getColumn(), condition);
+                if (condition.getOrGroup() != null && !condition.getOrGroup().trim().isEmpty()) {
+                    orGroupMap.computeIfAbsent(condition.getOrGroup().trim(), k -> new ArrayList<>()).add(item);
+                } else {
+                    andItems.add(item);
+                }
+            }
+
+            // 应用常规顶层 AND 条件
+            for (ValidConditionItem item : andItems) {
+                applyCondition(wrapper, item.column(), item.condition().getOperator(),
+                        item.condition().getValue(), item.condition().getValues());
+            }
+
+            // 应用 or_组号 作用域嵌套 OR 逻辑块
+            for (Map.Entry<String, List<ValidConditionItem>> groupEntry : orGroupMap.entrySet()) {
+                List<ValidConditionItem> groupItems = groupEntry.getValue();
+                if (groupItems.isEmpty()) {
+                    continue;
+                }
+                wrapper.and(orWrapper -> {
+                    boolean first = true;
+                    for (ValidConditionItem groupItem : groupItems) {
+                        if (!first) {
+                            orWrapper.or();
+                        }
+                        applyCondition(orWrapper, groupItem.column(), groupItem.condition().getOperator(),
+                                groupItem.condition().getValue(), groupItem.condition().getValues());
+                        first = false;
+                    }
+                });
             }
         }
 
@@ -129,6 +164,33 @@ public final class DynamicQueryHelper {
         applySorts(wrapper, request, metaInfo);
 
         return wrapper;
+    }
+
+    /**
+     * 基于 URL 查询字符串与实体类型构建安全 QueryWrapper
+     * 自动解析冒号语法、波浪线 between 语法与 or_组号 作用域嵌套分组
+     *
+     * @param queryString URL 查询字符串（如 "name:like=admin&or_1:status=1&or_1:role=admin"）
+     * @param entityClass 目标实体类型
+     * @param <T>         实体泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(String queryString, Class<T> entityClass) {
+        DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
+        return buildWrapper(request, entityClass);
+    }
+
+    /**
+     * 基于请求参数 Map 与实体类型构建安全 QueryWrapper
+     *
+     * @param parameterMap 请求参数 Map（支持 Map<String, String[]>、Map<String, List<String>> 或 Map<String, Object>）
+     * @param entityClass  目标实体类型
+     * @param <T>          实体泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(Map<String, ?> parameterMap, Class<T> entityClass) {
+        DynamicQueryRequest request = DynamicQueryParser.parse(parameterMap);
+        return buildWrapper(request, entityClass);
     }
 
     /**
@@ -483,5 +545,11 @@ public final class DynamicQueryHelper {
         public FieldMetaInfo getField(String normalizedProp) {
             return propertyMap.get(normalizedProp);
         }
+    }
+
+    /**
+     * 校验合法的单项条件元数据绑定
+     */
+    private record ValidConditionItem(String column, QueryCondition condition) {
     }
 }

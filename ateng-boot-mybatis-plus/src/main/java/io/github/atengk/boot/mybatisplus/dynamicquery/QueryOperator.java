@@ -90,9 +90,10 @@ public enum QueryOperator {
         if (value == null || value.trim().isEmpty()) {
             return EQ;
         }
-        String normalized = value.trim().replace('-', '_').toUpperCase();
+        String clean = value.trim().replace("-", "").replace("_", "").toUpperCase(java.util.Locale.ROOT);
         for (QueryOperator operator : values()) {
-            if (operator.name().equals(normalized)) {
+            String opClean = operator.name().replace("_", "");
+            if (opClean.equals(clean)) {
                 return operator;
             }
         }

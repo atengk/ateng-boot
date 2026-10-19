@@ -43,8 +43,9 @@
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn` 原生批量插入扩展 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
-| **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` |
-| **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符（EQ, NE, GT, GE, LT, LE, LIKE, LIKE_LEFT/RIGHT, IN, NOT_IN, BETWEEN, IS_NULL, IS_NOT_NULL）与流式链式构建 | `DynamicQueryHelperTest` |
+| **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` |
+| **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` |
+| **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符与流式链式构建，支持 `or(orGroup, condition)` 独立嵌套 OR 逻辑块 | `DynamicQueryHelperTest` / `DynamicQueryParserTest` |
 | **动态查询** | 字段映射与敏感防卫注解 | `@QueryField`, `@DynamicQueryIgnore` | - | `@QueryField(property, operator, ignoreNull)` 声明式 DTO 驱动转译；`@DynamicQueryIgnore` 实体敏感列防越权探测 | `DynamicQueryHelperTest` |
 
 ---
@@ -786,6 +787,110 @@ public class DynamicDataSourceAspect {
    若当前线程残留有 `DataPermissionContextHolder.isSuperAdmin() == true` 或 `isIgnore() == true`（通常是前置任务异常且未在 `finally` 块清理导致），在跨数据源操作时立即触发阻断，防御越权风险。
 4. **显式污染标记与安全恢复**：
    支持通过 `DynamicDatasourceGuard.markContextTainted(reason)` 与 `clearTaintedContext()` 对线程上下文实施受控标记与恢复，方便在分布式链路或拦截器管道中传递上下文异常状态。
+
+---
+
+## 14. 动态查询安全转译引擎与 URL 冒号高阶语法解析器 (`DynamicQueryHelper` & `DynamicQueryParser`)
+
+### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
+
+在后台管理系统与数据检索场景中，前端检索表单往往高度动态（多字段组合、范围筛选、模糊匹配、多列 OR 联合过滤、排序定制）。传统开发面临两难困境：
+1. **XML / 硬编码冗长脆弱**：手写海量 `<if test="...">` 或在 Service 层不断 `wrapper.eq().like()`，不仅样板代码泛滥，且字段增减极易引发遗漏；
+2. **SQL 注入与敏感探测漏洞**：若直接透传前端拼接的 SQL 片段，极易产生 SQL 注入；若直接通过未经白名单校验的反射，前端可通过遍历字段试探系统内存与敏感字段（如 `password`、`secretKey` 等）。
+
+`ateng-boot-mybatis-plus` 原生提供 **工业级动态查询安全转译引擎与 URL Query 冒号高阶语法解析器**：
+- **六重安全防卫 (The 6-Layer Security Guard)**：
+  1. 字段白名单强校验：仅允许目标实体显式声明的持久化属性，未声明属性直接安全忽略并记录警告；
+  2. 敏感黑名单拦截：严格阻断 `@DynamicQueryIgnore` 标注字段、`@FieldEncrypt` 加密字段、`password` / `secret` 等敏感列及基类逻辑删除字段；
+  3. 13 种受控操作符收敛：仅开放 `EQ`、`NE`、`GT`、`GE`、`LT`、`LE`、`LIKE`、`LIKE_LEFT`、`LIKE_RIGHT`、`IN`、`NOT_IN`、`BETWEEN`、`IS_NULL`、`IS_NOT_NULL` 白名单操作符；
+  4. 语法字符与 SQL 注入过滤：字段名必须完全符合 `[a-zA-Z0-9_]+` 安全标识符规范，坚决拦截 `;`、`--`、`'`、`()`、空格等非法注入字符；
+  5. 数组与范围边界深度防穿透：`BETWEEN` 强制校验双边界有效性（优先采用 `~` 波浪线防错切分，避免时间格式空格冒号歧义），`IN` 自动过滤空元素与非法字符；
+  6. 空值安全保底：单实体或无匹配查询严格保底，杜绝产生畸形 SQL。
+- **作用域 OR 嵌套分组**：支持 `or_组号` 语法前缀，同组条件自动聚合为独立嵌套的 `AND (col1 = ? OR col2 = ?)` 块，多组间自然以 `AND` 并列；
+- **纯原生无第三方依赖**：100% 依托 JDK 17 与 MyBatis-Plus 原生条件构造器，零臃肿依赖。
+
+#### 场景一：直接解析 HTTP URL Query 冒号高阶语法 (Controller 极速体验)
+
+```java
+@GetMapping("/search")
+public Result<List<UserVO>> search(HttpServletRequest request) {
+    // 1. 传入 URL Query 字符串（如 "name:like=张&status:eq=1&age:between=20~30"）
+    QueryWrapper<UserEntity> wrapper = DynamicQueryParser.parseToWrapper(
+            request.getQueryString(), 
+            UserEntity.class
+    );
+
+    // 2. 传递给 Mapper / Service 执行原生安全查询
+    List<UserEntity> list = userMapper.selectList(wrapper);
+    return Result.success(UserVO.fromList(list));
+}
+```
+
+#### 场景二：Map 参数驱动构建
+
+```java
+Map<String, String[]> parameterMap = request.getParameterMap();
+DynamicQueryRequest queryRequest = DynamicQueryParser.parse(parameterMap);
+QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(queryRequest, UserEntity.class);
+```
+
+#### 场景三：作用域 OR 分组语法 (`or_组号:`)
+
+当前端需要跨字段关键字检索时（例如：同时匹配姓名或邮箱，且必须满足账户处于激活状态）：
+- 请求参数：`or_1:name:like=张&or_1:email:like=zhang&status:eq=1`
+- 自动编译生成的标准 SQL：
+  ```sql
+  WHERE (name LIKE ? OR email LIKE ?) AND status = ?
+  ```
+
+---
+
+### 2. 生产扩展与接管 (Customization & Extensibility)
+
+#### 方案一：业务 DTO 声明式驱动 (`@QueryField`)
+
+除了直接解析 URL Query 外，系统支持通过业务 DTO 挂载 `@QueryField` 声明式转译：
+
+```java
+@Data
+public class UserSearchDTO {
+
+    @QueryField(operator = QueryOperator.LIKE)
+    private String name;
+
+    @QueryField(property = "userAge", operator = QueryOperator.GE)
+    private Integer minAge;
+
+    @QueryField(operator = QueryOperator.IN)
+    private List<Integer> status;
+}
+
+// Service 层一行代码安全转译：
+QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(dto, UserEntity.class);
+```
+
+#### 方案二：编程式链式与作用域 OR 构建
+
+```java
+DynamicQueryRequest request = new DynamicQueryRequest()
+        .eq("status", 1)
+        .or("g1", "name", QueryOperator.LIKE, "张")
+        .or("g1", "email", QueryOperator.LIKE, "zhang");
+
+QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, UserEntity.class);
+```
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **纳秒级元数据缓存与零反射损耗**：
+   目标实体的白名单字段、`@DynamicQueryIgnore` 忽略标记、`@TableField(exist = false)` 与加密注解，在首次反射解析后永久驻留于 `ConcurrentHashMap` 高性能只读快照缓存中，后续每一次高并发请求均为纳秒级只读检索，避免反射性能损耗。
+2. **零次生异常保证 (Zero-Secondary-Exception)**：
+   `DynamicQueryParser` 作为 Web 接入层最外围解析器，遇到任何非法操作符名称、畸形语法字符或非法的 Between 格式，均由前置卫语句记录 DEBUG/WARN 日志后平滑丢弃该条件，绝不向外抛出未捕获异常导致 HTTP 500。
+3. **波浪线 `~` 语法防错保障**：
+   针对时间字符串范围查询（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），传统逗号 `,` 或冒号 `:` 分隔符极易与时间文本中的时分秒冒号产生歧义导致解析错乱；本框架原生支持并推行波浪线 `~` 作为 Between 边界切分符。
+
 
 
 
