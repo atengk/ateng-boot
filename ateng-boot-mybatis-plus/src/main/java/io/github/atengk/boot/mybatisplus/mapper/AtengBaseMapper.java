@@ -42,4 +42,16 @@ public interface AtengBaseMapper<T> extends BaseMapper<T> {
      * @return 成功操作影响的行数
      */
     int upsertBatchSomeColumn(@Param("list") Collection<T> entityList);
+
+    /**
+     * 原生单条多值 CASE WHEN 批量更新
+     * <p>
+     * 自动编译生成标准 ANSI SQL {@code UPDATE table SET col1 = CASE id WHEN ... ELSE col1 END WHERE id IN (...)} 单条高效 SQL，
+     * 自动排除主键列、逻辑删除标记列与仅插入填充审计列，并在执行前无条件强制按主键升序排列以物理杜绝并发死锁。
+     * </p>
+     *
+     * @param entityList 实体集合
+     * @return 成功更新影响的行数
+     */
+    int updateBatchSomeColumn(@Param("list") Collection<T> entityList);
 }

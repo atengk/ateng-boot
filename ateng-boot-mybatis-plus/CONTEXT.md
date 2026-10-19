@@ -93,7 +93,7 @@ _Avoid_: DataScopeContextHolder, PermissionContext
 _Avoid_: CustomDataPermissionInterceptor, DataScopeInterceptor
 
 **AtengBaseMapper**:
-继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值高性能批量插入（`insertBatchSomeColumn`）方法。
+继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量 Upsert（`upsertBatchSomeColumn`）与单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）方法。
 _Avoid_: SuperMapper, EnhancedMapper, CustomBaseMapper
 
 **AtengBaseService**:
@@ -187,5 +187,9 @@ _Avoid_: ConflictColumn, UniqueConflict, UpsertKeys
 **DataChangeAuditContextHolder**:
 数据变更审计上下文持有者，提供编程式闭包（`runWithoutAudit`）用于临时绕过变更快照抓取与 Diff 计算。
 _Avoid_: AuditContext, ChangeSession, AuditHolder
+
+**UpdateBatchSomeColumn**:
+原生单条 ANSI CASE WHEN 批量更新 SQL 注入器节点，具备并发防死锁（AntiDeadlockSqlSource 内存主键正序重排）与动态列空值回退保护能力。
+_Avoid_: BatchUpdater, CaseWhenUpdater, FastBatchUpdate
 
 

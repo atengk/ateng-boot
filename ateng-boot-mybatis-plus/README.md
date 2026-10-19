@@ -24,8 +24,10 @@
 | **数据权限** | 动态数据权限处理器 | `DataPermissionHandler` / `DefaultDataPermissionHandler` | - | 数据权限 SPI 与默认处理器，结合上下文提取注入数据过滤 SQL 片段 | `AtengDataPermissionInnerInterceptorTest` / `SampleDataPermissionTest` |
 | **数据权限** | 声明式数据权限范围注解 | `@DataScope` | - | 细粒度声明式数据权限注解，支持按用户、部门或自定义表达式进行数据范围收敛 | `AtengDataPermissionInnerInterceptorTest` / `SampleDataPermissionTest` |
 | **数据权限** | 数据权限上下文保持器 | `DataPermissionContextHolder` | - | 线程安全透传数据权限上下文与过滤表达式，支持链式构建与自动现场清理 | `DataPermissionContextHolderTest` / `SampleDataPermissionTest` |
-| **原生批量操作** | 原生多值批量插入门面 | `BatchUtil` | `ateng.boot.mybatis-plus.batch.default-size` | `insertBatchSomeColumn(List<T>)` / `insertBatchSomeColumn(List<T>, int batchSize)`，生成原生多值 `INSERT INTO ... VALUES` 高性能 SQL | `BatchUtilTest` / `SampleBatchInsertTest` |
-| **原生批量操作** | 原生批量 SQL 注入器 | `AtengSqlInjector` | - | 自动向 MyBatis-Plus 注入 `InsertBatchSomeColumn` 原生批量插入方法 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
+| **原生批量操作** | 原生分批操作通用门面 | `BatchUtil` | `ateng.boot.mybatis-plus.batch.default-size` | `insertBatch` / `upsertBatch` / `updateBatch`（含 `*SomeColumn` 别名），内置切片分批（默认 1000）、内存防死锁升序排序与六要素轻量自愈补偿 | `BatchUtilTest` / `BatchUpsertTest` / `BatchUpdateTest` / `SampleBatchInsertTest` |
+| **原生批量操作** | 双方言批量 Upsert 注入器 | `UpsertBatchSomeColumn` | - | 原生单条多值 Upsert SQL 注入器（MySQL `ON DUPLICATE KEY UPDATE` / PostgreSQL `ON CONFLICT DO UPDATE`），支持 `@ConflictKeys` 复合主键 | `BatchUpsertTest` |
+| **原生批量操作** | 原生单条批量更新注入器 | `UpdateBatchSomeColumn` | - | 原生 ANSI CASE WHEN 多值更新 SQL 注入器，内置 `AntiDeadlockSqlSource` 强制按主键 ID 升序防死锁，动态回退保护未提供字段 | `BatchUpdateTest` |
+| **原生批量操作** | 全局增强 SQL 注入器 | `AtengSqlInjector` | - | 自动向 MyBatis-Plus 注入 `InsertBatchSomeColumn`、`UpsertBatchSomeColumn` 与 `UpdateBatchSomeColumn` 原生批量操作方法 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
 | **存储加解密** | 字段级透明存储加密注解 | `@FieldEncrypt` | `ateng.boot.mybatis-plus.crypto.secret-key` | 标注于实体属性上，声明该字段由 `EncryptTypeHandler` 执行持久化透明加解密 | `EncryptTypeHandlerTest` / `SampleCoreIntegrationTest` |
 | **存储加解密** | 存储透明加解密类型转换器 | `EncryptTypeHandler` | `ateng.boot.mybatis-plus.crypto.secret-key` | 持久化时入库 AES 密文，查询出库解密为真实明文，严格坚守“内存真明文”铁律 | `EncryptTypeHandlerTest` / `SampleCoreIntegrationTest` |
 | **乐观锁重试** | 乐观锁防冲突重试模板 | `OptimisticLockTemplate` | `ateng.boot.mybatis-plus.optimistic-locker.enabled` | `executeWithRetry(Supplier<Boolean>)` / `executeWithRetry(Supplier<Boolean>, int, Duration)`，高并发更新冲突自动退避重试 | `OptimisticLockTemplateTest` |
@@ -41,7 +43,7 @@
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
-| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn` 原生批量插入扩展 | `AtengSqlInjectorTest` / `SampleBatchInsertTest` |
+| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn`、`upsertBatchSomeColumn` 与 `updateBatchSomeColumn` 原生批量扩展 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `SampleBatchInsertTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
 | **动态查询** | 动态查询安全转译引擎门面 | `DynamicQueryHelper` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `buildWrapper(DynamicQueryRequest, Class<T>)` / `buildWrapper(String, Class<T>)` / `buildWrapper(Map, Class<T>)` / `buildWrapper(Object, Class<T>)`，纳秒级元数据白名单缓存与六重安全防卫编译 | `DynamicQueryHelperTest` |
 | **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` |
@@ -212,18 +214,22 @@ DataPermissionContextHolder.runWithoutPermission(() -> {
 
 ---
 
-## 7. 原生高性能分批批量插入引擎 (`AtengBaseMapper` & `AtengBaseService`)
+## 7. 原生高性能批量操作引擎 (批量 Insert / Upsert / Update)
 
 ### 场景痛点
-MyBatis-Plus 原生 `saveBatch` 底层使用 `SqlSession` 循环遍历逐条单发 Insert 语句，网络通信 RTT 极高。
+MyBatis-Plus 原生 `saveBatch` 或 `updateBatchById` 底层使用 `SqlSession` 循环遍历逐条单发预编译语句，网络通信 RTT 极高且在并发更新时容易因行锁顺序不一致引发数据库死锁。
 
-### 解决方案
-- 挂载 `insertBatchSomeColumn` 单条多值 SQL（形如 `INSERT INTO t (a,b) VALUES (1,2),(3,4)...`）；
-- 自动过滤逻辑删除列，支持全字段批量写入；
-- `BatchUtil` 自动切片分批（默认 1000 批次），避免数据库网络包溢出与占位符数量打爆；
-- `AtengBaseService` 强事务守护，任一批次失败全量回滚。
+`ateng-boot-mybatis-plus` 提供纯原生单条 SQL 批量操作三剑客（`insertBatch`、`upsertBatch`、`updateBatch`），配合 `BatchUtil` 智能切片分批与防死锁排序守护。
 
-### 核心代码范式
+---
+
+### 7.1 原生多值批量插入 (`insertBatch`)
+
+- **底层 SQL**：原生单条多值 `INSERT INTO t (col1, col2) VALUES (1, 2), (3, 4)...`；
+- **智能过滤**：自动过滤逻辑删除列，支持全字段批量写入；
+- **智能分批**：`BatchUtil` 自动切片分批（默认 1000 批次），避免数据库网络包溢出与占位符数量超限；
+- **自愈补偿**：插入前自动补齐雪花主键 ID、创建时间、创建人、多租户 ID 等。
+
 ```java
 // 1. Mapper 继承 AtengBaseMapper
 @Mapper
@@ -240,7 +246,58 @@ public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> im
 
 // 3. 业务层极速批量插入（万级数据秒级入库）
 List<UserEntity> users = generateBatchUsers(20000);
-userService.insertBatch(users); // 自动按 1000 条分批切片插入
+// 方式一：通过 BatchUtil 门面分批插入（推荐）
+BatchUtil.insertBatch(userMapper, users); // 自动按 1000 条切片
+
+// 方式二：通过 AtengBaseService 注入执行（带事务保障）
+userService.insertBatch(users);
+```
+
+---
+
+### 7.2 双方言原生批量 Upsert 增强 (`upsertBatch` & `@ConflictKeys`)
+
+- **双方言适配**：MySQL 生成 `ON DUPLICATE KEY UPDATE`，PostgreSQL 生成 `ON CONFLICT (...) DO UPDATE SET`；
+- **复合唯一键声明**：支持实体上标注 `@ConflictKeys({"user_id", "role_code"})` 指定 PostgreSQL 冲突目标列；
+- **审计安全**：自动排除主键列与创建审计列（`create_time` / `create_by`），更新时不冲刷创建信息。
+
+```java
+// 批量 Upsert：冲突时原地更新非主键字段，保持 create_time 与 create_by 不变
+BatchUtil.upsertBatch(userMapper, users);
+```
+
+---
+
+### 7.3 原生批量更新与主键排序防死锁引擎 (`updateBatch` & Anti-Deadlock)
+
+- **ANSI SQL 标准**：生成单条 `UPDATE table SET col = CASE id WHEN ? THEN ? ELSE col END WHERE id IN (?)`，100% 兼容 MySQL、PostgreSQL 与 H2；
+- **并发防死锁铁律（Anti-Deadlock Invariant）**：
+  在执行批量更新 SQL 前，强制在内存中对实体集合按照主键 ID 升序（Ascending）排序，确保不同并发事务获取行锁的顺序绝对一致，从物理源头彻底杜绝行级锁交叉死锁；双轨制保障：即使用户绕过 `BatchUtil` 直接调用 `mapper.updateBatchSomeColumn`，底层挂载的 `AntiDeadlockSqlSource` 也会在预编译阶段强制重排；
+- **选择性更新与空值保护**：
+  每列内嵌动态 `<trim prefix="col = CASE id " suffix="ELSE col END,">`，仅针对非 null 属性生成 `WHEN` 判定；若某行未设置该列则命中 `ELSE col` 保护已有值不被覆盖；若整个批次全为 null 则整列从 `SET` 剔除；
+- **更新审计自愈**：
+  前置自动执行 `autoHealForUpdate`，为缺失的 `updateTime` 填充当前系统时间、为缺失的 `updateBy` 填充当前上下文操作人，且绝对不覆盖 `createTime` 与 `createBy`。
+
+```java
+// 1. 构造待批量更新的实体数据（支持乱序传入）
+UserUpdateEntity u1 = new UserUpdateEntity();
+u1.setId(1L);
+u1.setUsername("Alice_Updated");
+u1.setAge(21);
+u1.setEmail(null); // 留空为 null，自动命中 ELSE email 保护数据库原值
+
+UserUpdateEntity u2 = new UserUpdateEntity();
+u2.setId(2L);
+u2.setEmail("bob_new@test.com"); // 仅更新 email，其余字段自动保留
+
+UserUpdateEntity u3 = new UserUpdateEntity();
+u3.setId(3L);
+u3.setUsername("Charlie_Updated");
+u3.setEmail("charlie_new@test.com");
+u3.setAge(35);
+
+// 2. 乱序传入执行批量更新：自动按 ID 升序重排 [1, 2, 3] 并执行 ANSI CASE WHEN 单条 SQL
+int affectedRows = BatchUtil.updateBatch(userMapper, List.of(u3, u1, u2));
 ```
 
 ---

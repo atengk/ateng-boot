@@ -19,6 +19,7 @@ import java.lang.reflect.Field;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -218,6 +219,78 @@ public final class BatchUtil {
     }
 
     /**
+     * 原生分批批量更新（采用默认分批大小 1000）
+     * 执行前自动对实体集合执行更新审计自愈补偿，并在内存中无条件按主键升序排序以落实防死锁铁律
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量更新的实体数据集合
+     * @param <T>        实体类型
+     * @return 累计成功更新影响的总行数
+     */
+    public static <T> int updateBatch(AtengBaseMapper<T> mapper, Collection<T> entityList) {
+        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 原生分批批量更新（支持自定义切片批次大小）
+     * 在切片分批执行前执行更新审计自愈补偿与主键正序排列，随后将集合按 batchSize 切片并逐批执行 updateBatchSomeColumn 原生 CASE WHEN 批量更新
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量更新的实体数据集合
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param <T>        实体类型
+     * @return 累计成功更新影响的总行数
+     */
+    public static <T> int updateBatch(AtengBaseMapper<T> mapper, Collection<T> entityList, int batchSize) {
+        if (entityList == null || entityList.isEmpty()) {
+            return 0;
+        }
+        if (mapper == null) {
+            throw new IllegalArgumentException("Mapper must not be null");
+        }
+
+        // 1. 前置更新审计自愈补偿 (updateTime / updateBy)
+        autoHealForUpdateAll(entityList);
+
+        // 2. 内存主键正序排列（并发防死锁铁律 Anti-Deadlock Invariant）
+        List<T> sortedList = sortByIdAscending(entityList);
+
+        // 3. 切片分批执行
+        int effectiveBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int affectedRows = 0;
+        for (List<T> subList : CollectionUtil.partition(sortedList, effectiveBatchSize)) {
+            affectedRows += mapper.updateBatchSomeColumn(subList);
+        }
+
+        return affectedRows;
+    }
+
+    /**
+     * 原生分批批量更新别名方法（采用默认分批大小 1000）
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量更新的实体数据集合
+     * @param <T>        实体类型
+     * @return 累计成功更新影响的总行数
+     */
+    public static <T> int updateBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList) {
+        return updateBatch(mapper, entityList, DEFAULT_BATCH_SIZE);
+    }
+
+    /**
+     * 原生分批批量更新别名方法（支持自定义切片批次大小）
+     *
+     * @param mapper     实现了 AtengBaseMapper 的持久层 Mapper
+     * @param entityList 待批量更新的实体数据集合
+     * @param batchSize  单批次最大切片数量（小于等于 0 时自动采用默认值 1000）
+     * @param <T>        实体类型
+     * @return 累计成功更新影响的总行数
+     */
+    public static <T> int updateBatchSomeColumn(AtengBaseMapper<T> mapper, Collection<T> entityList, int batchSize) {
+        return updateBatch(mapper, entityList, batchSize);
+    }
+
+    /**
      * 对实体集合全量执行轻量自愈补偿处理
      *
      * @param entityList 待自愈实体集合
@@ -345,25 +418,101 @@ public final class BatchUtil {
             for (Field field : current.getDeclaredFields()) {
                 TableId tableId = field.getAnnotation(TableId.class);
                 if (tableId != null) {
+                    field.setAccessible(true);
+                    Class<?> fieldType = field.getType();
+                    boolean isLong = Long.class.equals(fieldType) || long.class.equals(fieldType);
+                    boolean isString = String.class.equals(fieldType);
                     IdType type = tableId.type();
-                    if (type == IdType.AUTO || type == IdType.INPUT) {
-                        return TableIdMetadata.NON_ASSIGNABLE;
-                    }
-                    if (type == IdType.ASSIGN_ID || type == IdType.NONE) {
-                        field.setAccessible(true);
-                        Class<?> fieldType = field.getType();
-                        boolean isLong = Long.class.equals(fieldType) || long.class.equals(fieldType);
-                        boolean isString = String.class.equals(fieldType);
-                        if (isLong || isString) {
-                            return new TableIdMetadata(field, true, isLong, isString);
-                        }
-                    }
-                    return TableIdMetadata.NON_ASSIGNABLE;
+                    boolean assignable = (type == IdType.ASSIGN_ID || type == IdType.NONE) && (isLong || isString);
+                    return new TableIdMetadata(field, assignable, isLong, isString);
                 }
             }
             current = current.getSuperclass();
         }
         return TableIdMetadata.NON_ASSIGNABLE;
+    }
+
+    /**
+     * 获取实体的唯一主键 ID（支持继承 BaseIdEntity 与标注 @TableId 的普通实体）
+     *
+     * @param item 实体对象
+     * @return 主键 ID（实现 Comparable 接口），获取失败或不存在时返回 null
+     */
+    public static Comparable<?> getEntityId(Object item) {
+        if (item == null) {
+            return null;
+        }
+        if (item instanceof BaseIdEntity idEntity) {
+            return idEntity.getId();
+        }
+        TableIdMetadata metadata = TABLE_ID_METADATA_CACHE.computeIfAbsent(item.getClass(), BatchUtil::resolveTableIdMetadata);
+        return metadata.getId(item);
+    }
+
+    /**
+     * 对实体集合按主键 ID 正序排列（并发防死锁铁律 Anti-Deadlock Invariant）
+     * 确保不同并发事务执行批量更新时获取行锁的顺序绝对一致，从源头杜绝行级锁死锁
+     *
+     * @param entityList 待排序实体集合
+     * @param <T>        实体类型
+     * @return 按主键升序排列的新实体列表
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public static <T> List<T> sortByIdAscending(Collection<T> entityList) {
+        if (entityList == null || entityList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<T> list = new ArrayList<>(entityList);
+        list.sort((a, b) -> {
+            Comparable idA = getEntityId(a);
+            Comparable idB = getEntityId(b);
+            if (idA == null && idB == null) return 0;
+            if (idA == null) return -1;
+            if (idB == null) return 1;
+            try {
+                return idA.compareTo(idB);
+            } catch (ClassCastException ignored) {
+                return idA.toString().compareTo(idB.toString());
+            }
+        });
+        return list;
+    }
+
+    /**
+     * 对实体集合全量执行更新前审计自愈补偿处理（仅填充 updateTime 与 updateBy）
+     *
+     * @param entityList 待自愈实体集合
+     * @param <T>        实体类型
+     */
+    public static <T> void autoHealForUpdateAll(Collection<T> entityList) {
+        if (entityList == null || entityList.isEmpty()) {
+            return;
+        }
+        for (T item : entityList) {
+            autoHealForUpdate(item);
+        }
+    }
+
+    /**
+     * 对单个实体对象执行更新前轻量自愈补偿处理（仅在 updateTime / updateBy 为空时注入当前系统时钟与操作人）
+     *
+     * @param item 待自愈的实体对象
+     * @param <T>  实体类型
+     */
+    public static <T> void autoHealForUpdate(T item) {
+        if (item == null) {
+            return;
+        }
+        if (item instanceof BaseTimeEntity timeEntity) {
+            if (timeEntity.getUpdateTime() == null) {
+                timeEntity.setUpdateTime(LocalDateTime.now());
+            }
+        }
+        if (item instanceof BaseEntity baseEntity) {
+            if (baseEntity.getUpdateBy() == null || baseEntity.getUpdateBy().isBlank()) {
+                baseEntity.setUpdateBy(resolveCurrentUser());
+            }
+        }
     }
 
     /**
@@ -409,6 +558,21 @@ public final class BatchUtil {
 
         boolean isAssignable() {
             return assignable;
+        }
+
+        Comparable<?> getId(Object target) {
+            if (field == null || target == null) {
+                return null;
+            }
+            try {
+                Object currentVal = field.get(target);
+                if (currentVal instanceof Comparable<?> comp) {
+                    return comp;
+                }
+                return currentVal != null ? currentVal.toString() : null;
+            } catch (IllegalAccessException ignored) {
+                return null;
+            }
         }
 
         void assignIdIfNull(Object target) {
