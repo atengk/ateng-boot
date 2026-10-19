@@ -301,6 +301,7 @@ class SampleMybatisPlusPhase23IntegrationTest {
         assertThat(records).hasSize(1);
         DataChangeRecord record = records.get(0);
         assertThat(record.getTableName()).isEqualTo("sys_batch_item");
+        assertThat(record.getEntityClass()).isEqualTo(BatchItemEntity.class.getName());
         assertThat(record.getEntityId()).isEqualTo(8888L);
         assertThat(record.getChangeType()).isEqualTo(ChangeType.UPDATE);
         assertThat(record.getDiffs()).isNotEmpty();

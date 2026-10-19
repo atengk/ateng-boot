@@ -202,6 +202,7 @@ class DataChangeAuditInterceptorTest {
         DataChangeRecord record = receivedRecords.get(0);
 
         assertThat(record.getTableName()).isEqualTo("t_audit_user");
+        assertThat(record.getEntityClass()).isEqualTo(AuditUserEntity.class.getName());
         assertThat(record.getEntityId()).isEqualTo(1L);
         assertThat(record.getChangeType()).isEqualTo(ChangeType.UPDATE);
         assertThat(record.getOperator()).isEqualTo("admin_ateng");
@@ -258,6 +259,7 @@ class DataChangeAuditInterceptorTest {
         assertThat(receivedRecords).hasSize(1);
         DataChangeRecord record = receivedRecords.get(0);
         assertThat(record.getTableName()).isEqualTo("t_audit_user");
+        assertThat(record.getEntityClass()).isEqualTo(AuditUserEntity.class.getName());
         assertThat(record.getEntityId()).isEqualTo(2L);
         assertThat(record.getChangeType()).isEqualTo(ChangeType.DELETE);
         assertThat(record.getOperator()).isEqualTo("deleter_bob");

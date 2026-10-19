@@ -10,8 +10,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.SortItem;
+import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
+import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -27,6 +31,13 @@ public final class PageUtil {
      * 默认单页最大允许查询记录数（500 条），防御恶意构造超大 size 引发全表内存加载与 OOM
      */
     public static final long DEFAULT_MAX_LIMIT = 500L;
+
+    /**
+     * 启发式敏感排序属性黑名单，禁止通过排序泄露信息
+     */
+    private static final Set<String> SENSITIVE_PROPERTIES = Set.of(
+            "password", "pwd", "secret", "token", "credential"
+    );
 
     private PageUtil() {
     }
@@ -141,6 +152,13 @@ public final class PageUtil {
      * @return 映射后的物理列名；若存在实体元数据且属性未在白名单中则返回 null（平滑忽略）
      */
     private static String resolveColumn(String property, TableInfo tableInfo) {
+        if (property == null || property.isBlank()) {
+            return null;
+        }
+        String normalized = property.toLowerCase(Locale.ROOT);
+        if (SENSITIVE_PROPERTIES.contains(normalized)) {
+            return null;
+        }
         if (tableInfo != null) {
             // 1. 匹配主键字段
             if (tableInfo.getKeyProperty() != null && tableInfo.getKeyProperty().equalsIgnoreCase(property)) {
@@ -153,6 +171,12 @@ public final class PageUtil {
             if (tableInfo.getFieldList() != null) {
                 for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
                     if (fieldInfo.getProperty().equalsIgnoreCase(property) || fieldInfo.getColumn().equalsIgnoreCase(property)) {
+                        if (fieldInfo.getField() != null) {
+                            if (fieldInfo.getField().isAnnotationPresent(DynamicQueryIgnore.class)
+                                    || fieldInfo.getField().isAnnotationPresent(FieldEncrypt.class)) {
+                                return null;
+                            }
+                        }
                         return fieldInfo.getColumn();
                     }
                 }

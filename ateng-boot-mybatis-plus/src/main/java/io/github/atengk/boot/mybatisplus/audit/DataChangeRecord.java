@@ -30,6 +30,11 @@ public class DataChangeRecord implements Serializable {
     private String tableName;
 
     /**
+     * 变更实体类全限定名
+     */
+    private String entityClass;
+
+    /**
      * 业务主键 ID
      */
     private Object entityId;

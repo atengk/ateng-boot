@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.core.toolkit.sql.SqlInjectionUtils;
 import com.baomidou.mybatisplus.core.toolkit.sql.SqlScriptUtils;
 import com.baomidou.mybatisplus.extension.toolkit.JdbcUtils;
 import io.github.atengk.boot.mybatisplus.annotation.ConflictKeys;
+import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -268,11 +269,7 @@ public class UpsertBatchSomeColumn extends AbstractMethod {
      * 判断是否为仅插入填充字段（如 create_time / create_by），冲突更新时不应覆盖
      */
     private boolean isCreateOnlyField(TableFieldInfo field) {
-        if (field.getFieldFill() == FieldFill.INSERT) {
-            return true;
-        }
-        String prop = field.getProperty();
-        return "createTime".equalsIgnoreCase(prop) || "createBy".equalsIgnoreCase(prop) || "gmtCreate".equalsIgnoreCase(prop);
+        return AtengSqlInjector.isCreateOnlyField(field);
     }
 
     /**

@@ -222,9 +222,14 @@ public final class DynamicQueryHelper {
                 continue;
             }
             QueryField queryField = field.getAnnotation(QueryField.class);
-            String property = (queryField != null && !queryField.property().trim().isEmpty())
-                    ? queryField.property().trim()
-                    : field.getName();
+            String property;
+            if (queryField != null && !queryField.column().trim().isEmpty()) {
+                property = queryField.column().trim();
+            } else if (queryField != null && !queryField.property().trim().isEmpty()) {
+                property = queryField.property().trim();
+            } else {
+                property = field.getName();
+            }
 
             if (!SortItem.isValidProperty(property)) {
                 continue;
@@ -426,48 +431,79 @@ public final class DynamicQueryHelper {
         // 1. 扫描黑名单注解与非物理字段
         for (Field field : allFields) {
             String propName = field.getName().toLowerCase(Locale.ROOT);
+            String colName = com.baomidou.mybatisplus.core.toolkit.StringUtils.camelToUnderline(field.getName()).toLowerCase(Locale.ROOT);
 
+            boolean ignored = false;
             // 标注 @DynamicQueryIgnore
             if (field.isAnnotationPresent(DynamicQueryIgnore.class)) {
-                ignoredProperties.add(propName);
+                ignored = true;
             }
             // 标注 @FieldEncrypt 存储加密字段
             if (field.isAnnotationPresent(FieldEncrypt.class)) {
-                ignoredProperties.add(propName);
+                ignored = true;
             }
             // 标注 @TableField(exist = false)
             TableField tf = field.getAnnotation(TableField.class);
-            if (tf != null && !tf.exist()) {
-                ignoredProperties.add(propName);
+            if (tf != null) {
+                if (!tf.exist()) {
+                    ignored = true;
+                }
+                if (!tf.value().trim().isEmpty()) {
+                    colName = tf.value().trim().toLowerCase(Locale.ROOT);
+                }
             }
             // 启发式敏感字段拦截
-            if (HEURISTIC_SENSITIVE_PROPERTIES.contains(propName)) {
+            if (HEURISTIC_SENSITIVE_PROPERTIES.contains(propName) || HEURISTIC_SENSITIVE_PROPERTIES.contains(colName)) {
+                ignored = true;
+            }
+
+            if (ignored) {
                 ignoredProperties.add(propName);
+                ignoredProperties.add(colName);
             }
         }
 
-        // 2. 扫描逻辑删除字段
-        if (tableInfo != null && tableInfo.isLogicDelete() && tableInfo.getLogicDeleteFieldInfo() != null) {
-            ignoredProperties.add(tableInfo.getLogicDeleteFieldInfo().getProperty().toLowerCase(Locale.ROOT));
-            ignoredProperties.add(tableInfo.getLogicDeleteFieldInfo().getColumn().toLowerCase(Locale.ROOT));
+        // 2. 扫描逻辑删除字段与物理列名映射
+        if (tableInfo != null) {
+            if (tableInfo.isLogicDelete() && tableInfo.getLogicDeleteFieldInfo() != null) {
+                ignoredProperties.add(tableInfo.getLogicDeleteFieldInfo().getProperty().toLowerCase(Locale.ROOT));
+                ignoredProperties.add(tableInfo.getLogicDeleteFieldInfo().getColumn().toLowerCase(Locale.ROOT));
+            }
+            // 确保 tableInfo 中标注了黑名单的列名也被双向收录
+            if (tableInfo.getFieldList() != null) {
+                for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
+                    String prop = fieldInfo.getProperty().toLowerCase(Locale.ROOT);
+                    String col = fieldInfo.getColumn().toLowerCase(Locale.ROOT);
+                    if (ignoredProperties.contains(prop) || ignoredProperties.contains(col)) {
+                        ignoredProperties.add(prop);
+                        ignoredProperties.add(col);
+                    }
+                }
+            }
         }
 
-        // 3. 构建实体物理字段白名单
+        // 3. 构建实体物理字段白名单（被忽略的属性严格禁止注册入白名单）
         if (tableInfo != null) {
             // 主键
             if (tableInfo.getKeyProperty() != null && tableInfo.getKeyColumn() != null) {
                 String keyProp = tableInfo.getKeyProperty();
                 String keyCol = tableInfo.getKeyColumn();
-                FieldMetaInfo meta = new FieldMetaInfo(keyProp, keyCol, tableInfo.getKeyType());
-                registerFieldMeta(propertyMap, keyProp, keyCol, meta);
+                if (!ignoredProperties.contains(keyProp.toLowerCase(Locale.ROOT))
+                        && !ignoredProperties.contains(keyCol.toLowerCase(Locale.ROOT))) {
+                    FieldMetaInfo meta = new FieldMetaInfo(keyProp, keyCol, tableInfo.getKeyType());
+                    registerFieldMeta(propertyMap, keyProp, keyCol, meta);
+                }
             }
             // 普通列
             if (tableInfo.getFieldList() != null) {
                 for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
                     String prop = fieldInfo.getProperty();
                     String col = fieldInfo.getColumn();
-                    FieldMetaInfo meta = new FieldMetaInfo(prop, col, fieldInfo.getPropertyType());
-                    registerFieldMeta(propertyMap, prop, col, meta);
+                    if (!ignoredProperties.contains(prop.toLowerCase(Locale.ROOT))
+                            && !ignoredProperties.contains(col.toLowerCase(Locale.ROOT))) {
+                        FieldMetaInfo meta = new FieldMetaInfo(prop, col, fieldInfo.getPropertyType());
+                        registerFieldMeta(propertyMap, prop, col, meta);
+                    }
                 }
             }
         } else {
@@ -482,8 +518,11 @@ public final class DynamicQueryHelper {
                 if (tf != null && !tf.value().trim().isEmpty()) {
                     col = tf.value().trim();
                 }
-                FieldMetaInfo meta = new FieldMetaInfo(prop, col, field.getType());
-                registerFieldMeta(propertyMap, prop, col, meta);
+                if (!ignoredProperties.contains(prop.toLowerCase(Locale.ROOT))
+                        && !ignoredProperties.contains(col.toLowerCase(Locale.ROOT))) {
+                    FieldMetaInfo meta = new FieldMetaInfo(prop, col, field.getType());
+                    registerFieldMeta(propertyMap, prop, col, meta);
+                }
             }
         }
 
@@ -539,7 +578,15 @@ public final class DynamicQueryHelper {
         }
 
         public boolean isIgnored(String normalizedProp) {
-            return ignoredProperties.contains(normalizedProp);
+            if (ignoredProperties.contains(normalizedProp)) {
+                return true;
+            }
+            FieldMetaInfo meta = propertyMap.get(normalizedProp);
+            if (meta != null) {
+                return ignoredProperties.contains(meta.getProperty().toLowerCase(Locale.ROOT))
+                        || ignoredProperties.contains(meta.getColumn().toLowerCase(Locale.ROOT));
+            }
+            return false;
         }
 
         public FieldMetaInfo getField(String normalizedProp) {

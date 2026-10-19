@@ -28,6 +28,13 @@ public @interface QueryField {
     String property() default "";
 
     /**
+     * 目标实体数据库物理列名（若显式指定则优先使用列名映射，否则采用 property 属性名）
+     *
+     * @return 目标数据库物理列名
+     */
+    String column() default "";
+
+    /**
      * 查询操作符（默认为 EQ 等于）
      *
      * @return 受控操作符

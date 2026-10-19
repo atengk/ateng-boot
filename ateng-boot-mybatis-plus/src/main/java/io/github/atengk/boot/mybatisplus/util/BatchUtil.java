@@ -457,24 +457,39 @@ public final class BatchUtil {
      * @param <T>        实体类型
      * @return 按主键升序排列的新实体列表
      */
+    /**
+     * 主键 ID 升序比较规则（支持 null 保底排前、Comparable 接口比较以及类型不兼容时字符串字典序降级）
+     *
+     * @param idA 标识 A
+     * @param idB 标识 B
+     * @return 比较结果
+     */
     @SuppressWarnings({"rawtypes", "unchecked"})
+    public static int compareIds(Comparable idA, Comparable idB) {
+        if (idA == null && idB == null) return 0;
+        if (idA == null) return -1;
+        if (idB == null) return 1;
+        try {
+            return idA.compareTo(idB);
+        } catch (ClassCastException ignored) {
+            return idA.toString().compareTo(idB.toString());
+        }
+    }
+
+    /**
+     * 在内存中强制对批量更新实体集合按主键升序排序
+     * 用于物理防御并发事务更新相同记录集不同行顺序导致的死锁（Deadlock）
+     *
+     * @param entityList 待排序实体集合
+     * @param <T>        实体类型
+     * @return 按主键升序排列的新集合
+     */
     public static <T> List<T> sortByIdAscending(Collection<T> entityList) {
         if (entityList == null || entityList.isEmpty()) {
             return Collections.emptyList();
         }
         List<T> list = new ArrayList<>(entityList);
-        list.sort((a, b) -> {
-            Comparable idA = getEntityId(a);
-            Comparable idB = getEntityId(b);
-            if (idA == null && idB == null) return 0;
-            if (idA == null) return -1;
-            if (idB == null) return 1;
-            try {
-                return idA.compareTo(idB);
-            } catch (ClassCastException ignored) {
-                return idA.toString().compareTo(idB.toString());
-            }
-        });
+        list.sort((a, b) -> compareIds(getEntityId(a), getEntityId(b)));
         return list;
     }
 

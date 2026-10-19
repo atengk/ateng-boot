@@ -193,7 +193,8 @@ class PageUtilTest {
                 .addDesc("nickName")     // 实体字段驼峰映射
                 .addAsc("userAge")      // 实体字段驼峰映射
                 .addAsc("notExistField") // 不存在的非法/未授权字段 -> 必须被平滑忽略
-                .addDesc("passwordHash"); // 敏感列未声明探测 -> 必须被平滑忽略
+                .addDesc("passwordHash") // 敏感列未声明探测 -> 必须被平滑忽略
+                .addDesc("password");    // 启发式敏感词 -> 必须被平滑忽略
 
         Page<TestUserEntity> page = PageUtil.toPage(query, TestUserEntity.class);
 

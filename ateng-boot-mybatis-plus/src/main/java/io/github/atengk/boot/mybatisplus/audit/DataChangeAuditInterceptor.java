@@ -159,7 +159,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
                     Object result = invocation.proceed();
                     int affectedRows = result instanceof Integer ? (Integer) result : 0;
                     if (affectedRows > 0) {
-                        scheduleRecord(buildDegradedRecord(tableInfo.getTableName(), ChangeType.UPDATE, affectedRows, meta.getDescription(), maxDiffRows));
+                        scheduleRecord(buildDegradedRecord(tableInfo.getTableName(), meta.getEntityClass(), ChangeType.UPDATE, affectedRows, meta.getDescription(), maxDiffRows));
                     }
                     return result;
                 }
@@ -186,7 +186,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
                         if (before != null) {
                             List<FieldDiff> diffs = computeDiffs(before, entity, tableInfo, meta);
                             if (!diffs.isEmpty()) {
-                                records.add(buildRecord(tableInfo.getTableName(), id, ChangeType.UPDATE, 1, false, meta.getDescription(), diffs,
+                                records.add(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.UPDATE, 1, false, meta.getDescription(), diffs,
                                         snapshot(before, tableInfo, meta), snapshot(entity, tableInfo, meta)));
                             }
                         }
@@ -205,11 +205,17 @@ public class DataChangeAuditInterceptor implements Interceptor {
                 Object result = invocation.proceed();
                 int affectedRows = result instanceof Integer ? (Integer) result : 0;
 
-                if (affectedRows > 0 && beforeEntity != null) {
-                    List<FieldDiff> diffs = computeDiffs(beforeEntity, entity, tableInfo, meta);
-                    if (!diffs.isEmpty()) {
-                        scheduleRecord(buildRecord(tableInfo.getTableName(), id, ChangeType.UPDATE, affectedRows, false, meta.getDescription(), diffs,
-                                snapshot(beforeEntity, tableInfo, meta), snapshot(entity, tableInfo, meta)));
+                if (affectedRows > 0) {
+                    if (beforeEntity != null) {
+                        List<FieldDiff> diffs = computeDiffs(beforeEntity, entity, tableInfo, meta);
+                        if (!diffs.isEmpty()) {
+                            scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.UPDATE, affectedRows, false, meta.getDescription(), diffs,
+                                    snapshot(beforeEntity, tableInfo, meta), snapshot(entity, tableInfo, meta)));
+                        }
+                    } else {
+                        // 未获取到前置快照（如主键为 null 或快照未命中），但更新成功影响了行数：记录降级审计记录，防止无主键实体更新发生审计漏检
+                        scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.UPDATE, affectedRows, true,
+                                meta.getDescription(), Collections.emptyList(), null, snapshot(entity, tableInfo, meta)));
                     }
                 }
                 return result;
@@ -220,7 +226,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
             int affectedRows = result instanceof Integer ? (Integer) result : 0;
             if (affectedRows > 0) {
                 boolean degraded = affectedRows > maxDiffRows;
-                scheduleRecord(buildRecord(tableInfo.getTableName(), null, ChangeType.UPDATE, affectedRows, degraded,
+                scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), null, ChangeType.UPDATE, affectedRows, degraded,
                         meta.getDescription(), Collections.emptyList(), null, null));
             }
             return result;
@@ -237,7 +243,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
             if (affectedRows > 0) {
                 boolean degraded = affectedRows > maxDiffRows;
                 Map<String, Object> beforeSnap = (!degraded && beforeEntity != null) ? snapshot(beforeEntity, tableInfo, meta) : null;
-                scheduleRecord(buildRecord(tableInfo.getTableName(), id, ChangeType.DELETE, affectedRows, degraded,
+                scheduleRecord(buildRecord(tableInfo.getTableName(), meta.getEntityClass(), id, ChangeType.DELETE, affectedRows, degraded,
                         meta.getDescription(), Collections.emptyList(), beforeSnap, null));
             }
             return result;
@@ -329,6 +335,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
      * 构建标准变更审计记录
      */
     private DataChangeRecord buildRecord(String tableName,
+                                         Class<?> entityClass,
                                          Object entityId,
                                          ChangeType changeType,
                                          Integer affectedRows,
@@ -339,6 +346,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
                                          Map<String, Object> afterSnapshot) {
         return DataChangeRecord.builder()
                 .tableName(tableName)
+                .entityClass(entityClass != null ? entityClass.getName() : null)
                 .entityId(entityId)
                 .changeType(changeType)
                 .operator(resolveCurrentUser())
@@ -358,6 +366,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
      * 构建超限熔断降级摘要记录
      */
     private DataChangeRecord buildDegradedRecord(String tableName,
+                                                 Class<?> entityClass,
                                                  ChangeType changeType,
                                                  Integer affectedRows,
                                                  String description,
@@ -365,7 +374,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
         String msg = (description != null && !description.isBlank()) ? description : "";
         msg = msg.isEmpty() ? "批量更新影响行数 (" + affectedRows + ") 超出阈值 (" + maxDiffRows + ")，自动熔断降级为摘要记录"
                 : msg + " [超限熔断降级: " + affectedRows + " > " + maxDiffRows + "]";
-        return buildRecord(tableName, null, changeType, affectedRows, true, msg, Collections.emptyList(), null, null);
+        return buildRecord(tableName, entityClass, null, changeType, affectedRows, true, msg, Collections.emptyList(), null, null);
     }
 
     /**
@@ -420,7 +429,8 @@ public class DataChangeAuditInterceptor implements Interceptor {
             if (taskExecutor != null) {
                 taskExecutor.execute(task);
             } else {
-                CompletableFuture.runAsync(task);
+                log.warn("未检测到受管 TaskExecutor 异步线程池，降级为同步分发数据变更审计事件");
+                task.run();
             }
         } else {
             task.run();

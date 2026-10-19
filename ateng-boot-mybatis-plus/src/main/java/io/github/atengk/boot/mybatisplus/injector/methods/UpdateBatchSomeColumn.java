@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.injector.AbstractMethod;
 import com.baomidou.mybatisplus.core.metadata.TableFieldInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.toolkit.sql.SqlScriptUtils;
+import io.github.atengk.boot.mybatisplus.injector.AtengSqlInjector;
+import io.github.atengk.boot.mybatisplus.util.BatchUtil;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
@@ -133,11 +135,7 @@ public class UpdateBatchSomeColumn extends AbstractMethod {
      * 判断是否为仅插入填充字段（如 create_time / create_by），批量更新时不应覆盖
      */
     private boolean isCreateOnlyField(TableFieldInfo field) {
-        if (field.getFieldFill() == FieldFill.INSERT) {
-            return true;
-        }
-        String prop = field.getProperty();
-        return "createTime".equalsIgnoreCase(prop) || "createBy".equalsIgnoreCase(prop) || "gmtCreate".equalsIgnoreCase(prop);
+        return AtengSqlInjector.isCreateOnlyField(field);
     }
 
     /**
@@ -164,18 +162,7 @@ public class UpdateBatchSomeColumn extends AbstractMethod {
                 Object rawList = map.get("list");
                 if (rawList instanceof Collection<?> col && col.size() > 1) {
                     List sortedList = new ArrayList(col);
-                    sortedList.sort((a, b) -> {
-                        Comparable idA = extractId(a, tableInfo);
-                        Comparable idB = extractId(b, tableInfo);
-                        if (idA == null && idB == null) return 0;
-                        if (idA == null) return -1;
-                        if (idB == null) return 1;
-                        try {
-                            return idA.compareTo(idB);
-                        } catch (ClassCastException ignored) {
-                            return idA.toString().compareTo(idB.toString());
-                        }
-                    });
+                    sortedList.sort((a, b) -> BatchUtil.compareIds(extractId(a, tableInfo), extractId(b, tableInfo)));
                     map.put("list", sortedList);
                     if (map.containsKey("collection")) {
                         map.put("collection", sortedList);

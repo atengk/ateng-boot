@@ -409,6 +409,34 @@ class DynamicQueryHelperTest {
         }
     }
 
+    @Test
+    @DisplayName("DTO 声明式驱动：支持 @QueryField(column = \"...\") 直接指定物理列名")
+    void shouldSupportQueryFieldWithColumnAttribute() {
+        class ColumnDto {
+            @QueryField(column = "username", operator = QueryOperator.EQ)
+            private String directUser;
+
+            public String getDirectUser() {
+                return directUser;
+            }
+
+            public void setDirectUser(String directUser) {
+                this.directUser = directUser;
+            }
+        }
+
+        ColumnDto dto = new ColumnDto();
+        dto.setDirectUser("alice");
+
+        QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(dto, DynamicTestUserEntity.class);
+
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            DynamicTestUserMapper mapper = session.getMapper(DynamicTestUserMapper.class);
+            List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
+            assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactly("alice");
+        }
+    }
+
     // ==========================================
     // 4. 六重安全防卫与对抗性测试
     // ==========================================
@@ -451,14 +479,15 @@ class DynamicQueryHelperTest {
     @DisplayName("防线五：敏感字段拦截（@DynamicQueryIgnore、@FieldEncrypt、逻辑删除与启发式 password）")
     void shouldBlockSensitiveColumns() {
         DynamicQueryRequest request = new DynamicQueryRequest()
-                .eq("secretToken", "secret") // @DynamicQueryIgnore
-                .eq("phone", "13800000000")   // @FieldEncrypt 密文
-                .eq("password", "123456")     // 启发式 password 拦截
-                .eq("deleted", 1);           // 逻辑删除托管列拦截
+                .eq("secretToken", "secret")   // @DynamicQueryIgnore 属性名
+                .eq("secret_token", "secret")  // @DynamicQueryIgnore 对应物理列名（防御绕过）
+                .eq("phone", "13800000000")     // @FieldEncrypt 密文
+                .eq("password", "123456")       // 启发式 password 拦截
+                .eq("deleted", 1);             // 逻辑删除托管列拦截
 
         QueryWrapper<DynamicTestUserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, DynamicTestUserEntity.class);
 
-        // 所有 4 个敏感列全部被安全拦截，生成的 SQL 条件必须为空
+        // 所有 5 个敏感列/属性全部被安全拦截，生成的 SQL 条件必须为空
         assertTrue(wrapper.getSqlSegment().isEmpty());
     }
 

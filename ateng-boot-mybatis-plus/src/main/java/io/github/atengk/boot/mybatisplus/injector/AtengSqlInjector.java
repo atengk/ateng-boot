@@ -43,4 +43,22 @@ public class AtengSqlInjector extends DefaultSqlInjector {
         methodList.add(new UpdateBatchSomeColumn(field -> !field.isLogicDelete()));
         return methodList;
     }
+
+    /**
+     * 判断字段是否为仅插入填充字段（如 create_time / create_by 或 FieldFill.INSERT）
+     * 批量更新或冲突更新时不应覆盖此类审计字段
+     *
+     * @param field MyBatis-Plus 字段元数据信息
+     * @return true 若为仅插入字段；否则 false
+     */
+    public static boolean isCreateOnlyField(com.baomidou.mybatisplus.core.metadata.TableFieldInfo field) {
+        if (field == null) {
+            return false;
+        }
+        if (field.getFieldFill() == com.baomidou.mybatisplus.annotation.FieldFill.INSERT) {
+            return true;
+        }
+        String prop = field.getProperty();
+        return "createTime".equalsIgnoreCase(prop) || "createBy".equalsIgnoreCase(prop) || "gmtCreate".equalsIgnoreCase(prop);
+    }
 }
