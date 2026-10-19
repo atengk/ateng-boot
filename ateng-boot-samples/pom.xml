@@ -17,7 +17,6 @@
     <description>ateng-boot 自验集成样例与自动化测试聚合套件（禁止部署发布）</description>
 
     <modules>
-        <module>ateng-boot-sample-basic</module>
         <module>ateng-boot-sample-core</module>
         <module>ateng-boot-sample-web</module>
         <module>ateng-boot-sample-mybatis-plus</module>

@@ -318,7 +318,6 @@
                             <waitUntil>validated</waitUntil>
                             <excludeArtifacts>
                                 <excludeArtifact>ateng-boot-samples</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-basic</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-core</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-web</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-mybatis-plus</excludeArtifact>
