@@ -163,6 +163,11 @@ public class AtengDataPermissionInnerInterceptor extends DataPermissionIntercept
             methodName = methodName.substring(0, methodName.length() - "_mpCount".length());
         }
 
+        // 如果是动态查询自适应生成的改写语句（如 selectPage$dynamicAdaptive），剥离后缀还原原方法名
+        if (methodName.contains("$dynamicAdaptive")) {
+            methodName = methodName.replace("$dynamicAdaptive", "");
+        }
+
         try {
             Class<?> mapperClass = Class.forName(className);
 

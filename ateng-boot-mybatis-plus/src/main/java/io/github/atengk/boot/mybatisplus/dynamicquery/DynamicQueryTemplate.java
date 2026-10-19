@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -55,7 +56,7 @@ public class DynamicQueryTemplate {
     /**
      * 实体类型对应的 Mapper 实例缓存
      */
-    private final Map<Class<?>, AtengBaseMapper<?>> entityMapperCache = new ConcurrentHashMap<>();
+    private final Map<Class<?>, BaseMapper<?>> entityMapperCache = new ConcurrentHashMap<>();
 
     /**
      * MappedStatements 反射字段句柄（用于解除 StrictMap 冲突安全注入自适应 Statement）
@@ -314,7 +315,7 @@ public class DynamicQueryTemplate {
         if (request == null) {
             return PageResult.empty();
         }
-        AtengBaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
+        BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(request, (Class<Object>) entityClass);
         Page<Object> page = PageUtil.toPage(request);
         IPage<Object> resultPage = mapper.selectPage(page, wrapper);
@@ -334,7 +335,7 @@ public class DynamicQueryTemplate {
         if (request == null) {
             return PageResult.empty();
         }
-        AtengBaseMapper<T> mapper = getEntityMapper(entityClass);
+        BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
         Page<T> page = PageUtil.toPage(request);
         IPage<T> resultPage = mapper.selectPage(page, wrapper);
@@ -360,7 +361,7 @@ public class DynamicQueryTemplate {
         if (queryDto == null) {
             return PageResult.empty();
         }
-        AtengBaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
+        BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class<Object>) entityClass);
         Page<Object> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
                 ? PageUtil.toPage(pq)
@@ -385,7 +386,7 @@ public class DynamicQueryTemplate {
         if (queryDto == null) {
             return PageResult.empty();
         }
-        AtengBaseMapper<T> mapper = getEntityMapper(entityClass);
+        BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         Page<T> page = (queryDto instanceof io.github.atengk.boot.core.model.PageQuery pq)
                 ? PageUtil.toPage(pq)
@@ -410,7 +411,7 @@ public class DynamicQueryTemplate {
         if (request == null) {
             return Collections.emptyList();
         }
-        AtengBaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
+        BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(request, (Class<Object>) entityClass);
         List<Object> list = mapper.selectList(wrapper);
         return convertList(list, voClass);
@@ -429,7 +430,7 @@ public class DynamicQueryTemplate {
         if (request == null) {
             return Collections.emptyList();
         }
-        AtengBaseMapper<T> mapper = getEntityMapper(entityClass);
+        BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
         List<T> list = mapper.selectList(wrapper);
         return list != null ? list : Collections.emptyList();
@@ -454,7 +455,7 @@ public class DynamicQueryTemplate {
         if (queryDto == null) {
             return Collections.emptyList();
         }
-        AtengBaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
+        BaseMapper<Object> mapper = getEntityMapper((Class<Object>) entityClass);
         QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class<Object>) entityClass);
         List<Object> list = mapper.selectList(wrapper);
         return convertList(list, voClass);
@@ -476,7 +477,7 @@ public class DynamicQueryTemplate {
         if (queryDto == null) {
             return Collections.emptyList();
         }
-        AtengBaseMapper<T> mapper = getEntityMapper(entityClass);
+        BaseMapper<T> mapper = getEntityMapper(entityClass);
         QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
         List<T> list = mapper.selectList(wrapper);
         return list != null ? list : Collections.emptyList();
@@ -546,7 +547,7 @@ public class DynamicQueryTemplate {
     @SuppressWarnings({"rawtypes", "unchecked"})
     public long count(DynamicQueryRequest request, Class<?> entityClass) {
         Objects.requireNonNull(entityClass, "entityClass 不能为 null");
-        AtengBaseMapper mapper = getEntityMapper(entityClass);
+        BaseMapper mapper = getEntityMapper(entityClass);
         QueryWrapper wrapper = DynamicQueryHelper.buildWrapper(request, (Class) entityClass);
         Long count = mapper.selectCount((Wrapper) wrapper);
         return count != null ? count : 0L;
@@ -565,7 +566,7 @@ public class DynamicQueryTemplate {
             return count(request, entityClass);
         }
         Objects.requireNonNull(entityClass, "entityClass 不能为 null");
-        AtengBaseMapper mapper = getEntityMapper(entityClass);
+        BaseMapper mapper = getEntityMapper(entityClass);
         QueryWrapper wrapper = DynamicQueryHelper.buildWrapper(queryDto, (Class) entityClass);
         Long count = mapper.selectCount((Wrapper) wrapper);
         return count != null ? count : 0L;
@@ -841,10 +842,10 @@ public class DynamicQueryTemplate {
     }
 
     @SuppressWarnings("unchecked")
-    private <T> AtengBaseMapper<T> getEntityMapper(Class<T> entityClass) {
-        AtengBaseMapper<?> cached = entityMapperCache.get(entityClass);
+    private <T> BaseMapper<T> getEntityMapper(Class<T> entityClass) {
+        BaseMapper<?> cached = entityMapperCache.get(entityClass);
         if (cached != null) {
-            return (AtengBaseMapper<T>) cached;
+            return (BaseMapper<T>) cached;
         }
         // 遍历所有 Mapper 接口匹配其实体泛型
         for (Class<?> mapperClass : sqlSessionTemplate.getConfiguration().getMapperRegistry().getMappers()) {
@@ -852,7 +853,7 @@ public class DynamicQueryTemplate {
                 if (type instanceof ParameterizedType pt) {
                     for (Type actual : pt.getActualTypeArguments()) {
                         if (actual.equals(entityClass)) {
-                            AtengBaseMapper<T> mapper = (AtengBaseMapper<T>) sqlSessionTemplate.getMapper(mapperClass);
+                            BaseMapper<T> mapper = (BaseMapper<T>) sqlSessionTemplate.getMapper(mapperClass);
                             entityMapperCache.put(entityClass, mapper);
                             return mapper;
                         }
@@ -864,7 +865,7 @@ public class DynamicQueryTemplate {
         try {
             String mapperName = entityClass.getName().replace(".entity.", ".mapper.") + "Mapper";
             Class<?> mapperClass = Class.forName(mapperName);
-            AtengBaseMapper<T> mapper = (AtengBaseMapper<T>) sqlSessionTemplate.getMapper(mapperClass);
+            BaseMapper<T> mapper = (BaseMapper<T>) sqlSessionTemplate.getMapper(mapperClass);
             entityMapperCache.put(entityClass, mapper);
             return mapper;
         } catch (Throwable e) {

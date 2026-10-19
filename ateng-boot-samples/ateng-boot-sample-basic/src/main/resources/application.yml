@@ -12,6 +12,7 @@ spring:
       schema-locations: classpath:schema.sql
 
 mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
   configuration:
     map-underscore-to-camel-case: true
 
@@ -36,3 +37,5 @@ ateng:
       audit:
         enabled: true
         default-operator: SYSTEM
+      dynamic-sql:
+        enabled: true

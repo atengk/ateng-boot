@@ -14,7 +14,10 @@
    - 此外，多值批量更新若缺乏类似 CASE WHEN 的空值保护机制，实体中未显式赋值的 `null` 属性会直接将数据库存量数据静默覆盖抹去；
 4. **数据变更 Diff 审计黑盒与 OOM 内存雪崩风险**：
    - 金融交易与核心业务系统强依赖“数据变更 Diff 审计”，追踪关键数据的历史演变。传统应用层手写比对侵入严重；而数据库 CDC（Canal / Debezium）又脱离应用上下文，丢失了当前登录操作人、租户 ID 与 TraceId；
-   - 若盲目在拦截器中对所有批量更新执行全量深层 Diff，遇到成千上万行大批量更新时会抓取海量快照并进行反射比对，瞬间打爆 JVM 堆内存诱发 FullGC 或 OOM；同时若在事务回滚时未废弃记录，将向审计下游广播“幻影脏数据”。
+   - 若盲目在拦截器中对所有批量更新执行全量深层 Diff，遇到成千上万行大批量更新时会抓取海量快照并进行反射比对，瞬间打爆 JVM 堆内存诱发 FullGC 或 OOM；同时若在事务回滚时未废弃记录，将向审计下游广播“幻影脏数据”；
+5. **动态查询无感直出样板代码与多表联表别名歧义困境 (Dynamic Query Direct-Output & Multi-Table Join Alias Dilemma)**：
+   - 即使有了条件构造器，业务 Service 层依然充斥着“手动调用 buildWrapper -> 组装 Page -> 调 Mapper -> 手写循环转换为 VO”的大量冗余胶水代码；
+   - 多表关联（JOIN）查询时，前端只传递平铺的 VO 字段名（如 `name`、`deptCode`），而底层 SQL 位于不同物理表与别名下（如 `u.name`、`d.dept_code`）。若要求 VO 挂载大量侵入性注解破坏了 VO 纯 POJO 传输契约；若不加注解直接组装条件，则必然引发数据库 `Column 'dept_code' in where clause is ambiguous` 歧义报错；同时外部动态 SQL 体系与持久层统一执行门面缺乏无缝协同。
 
 ---
 
@@ -25,13 +28,20 @@
 ```mermaid
 flowchart TD
     subgraph QueryPipeline["1. 动态查询转译与六重安全防卫 (DynamicQueryHelper)"]
-        UrlParser["DynamicQueryParser\n- 冒号操作符 (col:op=val)\n- 波浪线范围 (~ 分隔符)\n- or_组号 嵌套作用域"]
-        SecurityGuard["六重安全防卫体系\n- 实体属性白名单缓存\n- 敏感列/加密列黑名单拦截\n- 13 种受控操作符收敛\n- 注入字符与范围防穿透"]
+        UrlParser["DynamicQueryParser / DynamicQueryRequest\n- 冒号操作符 (col:op=val)\n- 波浪线范围 (~ 分隔符)\n- or_组号 嵌套作用域"]
+        SecurityGuard["六重安全防卫体系\n- 实体/VO 属性白名单缓存\n- 敏感列/加密列黑名单拦截\n- 13 种受控操作符收敛\n- 注入字符与范围防穿透"]
         ASTCompiler["AST-like 编译生成 QueryWrapper\n- 顶层 AND 条件\n- 独立嵌套 AND (A OR B) 逻辑块"]
         UrlParser --> SecurityGuard --> ASTCompiler
     end
 
-    subgraph BatchEngine["2. 双方言原生 Upsert 与批量更新防死锁 (BatchUtil)"]
+    subgraph DirectEngine["2. 多表别名推导与无感直出门面 (DynamicQueryTemplate & Resolver)"]
+        ASTResolver["DynamicSqlProjectionResolver\n- JSqlParser 静态分析 SELECT 投影\n- 自动推导 VO字段 -> 表别名.列名\n- 全向自愈归一化双重缓存"]
+        AdaptiveStmt["自适应条件改写与动态注册\n- 探测 ${ew.customSqlSegment}\n- AST 自适应追加 WHERE/ORDER BY\n- 规避 StrictMap 冲突安全注册"]
+        ServiceFacade["AtengBaseService 极简门面\n- pageDynamic / listDynamic\n- SerializedLambda 方法引用提取\n- Controller -> Service -> VO 一步直出"]
+        ASTResolver --> AdaptiveStmt --> ServiceFacade
+    end
+
+    subgraph BatchEngine["3. 双方言原生 Upsert 与批量更新防死锁 (BatchUtil)"]
         UpsertDialect["UpsertBatchSomeColumn 注入器\n- 动态推导 MySQL DUPLICATE KEY\n- 动态推导 PG ON CONFLICT (@ConflictKeys)\n- 排除主键与仅插入列"]
         UpdateAntiDeadlock["UpdateBatchSomeColumn 注入器\n- ANSI CASE WHEN 原生单条多值 SQL\n- AntiDeadlockSqlSource 主键升序重排\n- ELSE column 原值空值保护"]
         BatchFacade["BatchUtil 高性能切片门面\n- 默认 1000 条切片防包溢出\n- 内存 ID 预排重与六要素自愈"]
@@ -39,13 +49,15 @@ flowchart TD
         UpdateAntiDeadlock --> BatchFacade
     end
 
-    subgraph AuditPipeline["3. 数据变更 Diff 审计与防爆熔断 (DataChangeAuditInterceptor)"]
+    subgraph AuditPipeline["4. 数据变更 Diff 审计与防爆熔断 (DataChangeAuditInterceptor)"]
         ThreeTierSwitch["三级立体开关治理\n- 全局配置开关 (enabled)\n- 缺 Provider 自动休眠\n- ContextHolder 编程式闭包"]
         SnapshotDiff["前置快照抓取与字段级 Diff 比对\n- @AuditChange 声明式粒度控制\n- includeFields / excludeFields 过滤"]
         CircuitBreaker["防爆熔断守卫 (max-diff-rows)\n- 超限自动降级为摘要记录\n- 彻底防御 JVM 堆内存 OOM"]
         TxCommitDispatch["事务提交后异步投递 (Commit-Only)\n- afterCommit 保证数据一致性\n- DataChangeAuditProvider SPI\n- Spring 原生 DataChangeEvent 广播"]
         ThreeTierSwitch --> SnapshotDiff --> CircuitBreaker --> TxCommitDispatch
     end
+
+    QueryPipeline --> DirectEngine
 ```
 
 ### 1. 动态查询条件转译引擎与 URL 冒号高阶语法解析器 (`DynamicQueryHelper` & `DynamicQueryParser`)
@@ -99,6 +111,26 @@ flowchart TD
   - 依托 Spring 原生 `TransactionSynchronizationManager.registerSynchronization`，变更记录仅在事务 `afterCommit` 后才投递至 `DataChangeAuditProvider` SPI 与 `DataChangeEvent` 事件；
   - 事务回滚（Rollback）时现场作废销毁，坚决杜绝幻影审计数据外泄。
 
+### 5. 动态查询无感直出引擎与多表 AST 别名智能推导 (`DynamicQueryTemplate`, `DynamicSqlProjectionResolver` & `AtengBaseService`)
+- **多表 AST 投影分析与别名自愈引擎 (`DynamicSqlProjectionResolver`)**：
+  - *纯 POJO 零注解愿景*：传输层 VO 保持 100% 纯净（零 ORM 与别名侵入），前端直接传递平铺字段（如 `name`、`deptCode`）；
+  - *JSqlParser 静态语法树推导*：深度解析目标 SQL 的 `SELECT` 投影项（`SelectExpressionItem`），自动识别 `d.dept_code AS deptCode` 或 `u.name AS name` 等字段别名绑定关系，并在快照中建立全向自愈归一化字典（支持驼峰、下划线、去下划线纯小写等双向自愈匹配）；
+  - *四道防卫判定树*：敏感列/未授权字段拦截 -> AST 投影别名自愈（`deptCode` -> `d.dept_code`） -> VO 字段 `@QueryField` 显式逃生通道 -> 实体白名单回退；
+  - *排序字段表别名同步补齐*：`SortItem` 同样基于 AST 字典自动补全所属表别名（如 `ORDER BY d.dept_code DESC`），彻底消除联表排序列歧义。
+- **通用受管执行门面与双模自适应 (`DynamicQueryTemplate`)**：
+  - *完备对称门面 API*：覆盖单表实体、DTO 驱动、Mapper XML 语句及外部动态 SQL 的 `selectPage`、`selectList`、`selectOne`、`count` 对称操作；
+  - *原生 Wrapper 与 AST 自适应改写双模共存*：自动探测 SQL 是否声明 `${ew.customSqlSegment}` 占位符。若包含占位符，由 MyBatis 原生 Wrapper 高性能参数绑定；若未声明占位符，通过 JSqlParser AST 自适应追加 `WHERE` 条件与 `ORDER BY` 子句，并解除 MyBatis StrictMap 冲突安全注册 `$dynamicAdaptive` 运行时 MappedStatement；
+  - *智能语句模糊定位*：支持通过纯方法名（如 `selectUserDeptPage`）、短类名或全限定 StatementId 自动匹配并解析。
+- **服务层无感直出极简门面 (`AtengBaseService` & `AtengServiceImpl`)**：
+  - *高阶函数式方法引用*：支持 `pageDynamic(baseMapper::selectUserDeptPage, request, UserDeptVO.class)`，依托 `SerializedLambda` 纳秒级推导定位 Mapper 类与方法名；
+  - *Controller -> Service -> VO 一步直出*：Controller 仅需调用 `userService.pageUsersDynamic(request)`，彻底省去手动调用 `buildWrapper`、创建 `Page` 对象与逐条循环转换的样板代码。
+- **外部动态 SQL 统一集成与版本一致性 (`DynamicSqlRegistry` & `DynamicSqlExecutor`)**：
+  - *预编译挂载 AST 字典*：`DynamicSqlRegistry.register(definition)` 在注册阶段即完成 AST SELECT 投影字典的预解析并固化在不可变快照中；
+  - *生命周期监听与版本一致性*：引入 `StatementChangeListener` 回调机制，在动态 SQL 注册、热替换与注销时，实时通知 `DynamicQueryTemplate` 级联清理本地投影解析缓存与 `$dynamicAdaptive` 改写语句，规避并发读脏与悬挂版本。
+- **持久层拦截器链正交协同 (Interceptor Orthogonal Co-existence)**：
+  - *与 `@DataScope` 细粒度数据权限协同*：`AtengDataPermissionInnerInterceptor` 兼容 `$dynamicAdaptive` 自适应改写后缀与 `_mpCount` 分页后缀，自动剥离还原物理 Mapper 方法名与类级注解；数据权限 AST 表达式与动态查询条件通过 JSqlParser 安全包裹为独立括号并以 `AND` 正交叠加，无语法冲突；
+  - *与 `TenantLineInnerInterceptor` 多租户行级隔离协同*：多租户行级隔离条件（`tenant_id = ?`）与动态查询条件正交叠加，动态切换租户上下文与 `@IgnoreTenant` 放行时均能稳定自洽。
+
 ---
 
 ## 影响与后果分析 (Consequences)
@@ -107,11 +139,14 @@ flowchart TD
 1. **极致安全与防护完备**：彻底阻断通过动态查询接口探测密码、加密列与越权探测数据的黑客行为；
 2. **极速性能与网络包收敛**：原生多值 Upsert 与 CASE WHEN 批量更新将网络往返次数由 $O(N)$ 降低为 $O(1)$，实测批量场景吞吐量提升 5~10 倍；
 3. **高并发生产零死锁**：强制主键升序重排机制在框架底层透明兜底，开发人员无需关注复杂的数据库锁排队逻辑即可远离 MySQL 锁冲突；
-4. **全链路审计透传与内存自愈**：审计记录自动关联用户与全链路 TraceId，结合 `max-diff-rows` 防爆熔断，兼顾业务可追溯性与系统高可用韧性。
+4. **全链路审计透传与内存自愈**：审计记录自动关联用户与全链路 TraceId，结合 `max-diff-rows` 防爆熔断，兼顾业务可追溯性与系统高可用韧性；
+5. **极致极简与传输模型纯净**：多表联表 VO 实现 100% 纯 POJO 零注解，通过 JSqlParser 静态 AST 推导自动完成 `VO属性 -> 表别名.列名` 映射并自愈排序字段，Service 门面一步直出 `PageResult<VO>`，研发效率大幅提升；
+6. **持久层全体系无缝协同**：统一单表直出、Mapper XML 方法引用与外部动态 SQL 三大通路，且与 `@DataScope` 数据权限和多租户行级隔离拦截器链 100% 正交共存无冲突。
 
 ### 权衡与取舍 (Trade-offs)
 1. **SQL 长度限制与数据库包大小**：单条多值 Upsert 与批量更新 SQL 依赖数据库网络包限制（如 MySQL 的 `max_allowed_packet`）；因此 `BatchUtil` 强制默认按 1000 条进行安全切片分批，兼顾效率与安全；
-2. **前置快照性能折衷**：变更审计需要在更新前执行一次按主键的快照查询，存在微小的数据读取开销；框架通过三级立体开关与缺 Provider 自动休眠守卫，确保未启用审计时性能损耗严格为零。
+2. **前置快照性能折衷**：变更审计需要在更新前执行一次按主键的快照查询，存在微小的数据读取开销；框架通过三级立体开关与缺 Provider 自动休眠守卫，确保未启用审计时性能损耗严格为零；
+3. **AST 静态推导与逃生通道**：对于极少数使用 `SELECT *` 且无别名，或包含超复杂深层多重嵌套子查询的场景，JSqlParser 无法静态推断无别名投影的归属表；针对此类边缘场景，框架保留 `@QueryField("d.dept_code")` 属性注解作为显式指定别名的逃生通道。
 
 ---
 
