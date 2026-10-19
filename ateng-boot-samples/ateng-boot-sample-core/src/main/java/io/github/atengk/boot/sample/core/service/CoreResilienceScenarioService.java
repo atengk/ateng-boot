@@ -66,16 +66,45 @@ public class CoreResilienceScenarioService {
     }
 
     /**
+     * 1.1 验证 RetryUtil 线性固定间隔重试机制 (multiplier = 1.0, jitter = false)
+     *
+     * @param failAttempts 模拟失败次数
+     * @return 执行成功标识
+     */
+    public String executeWithLinearRetry(int failAttempts) {
+        AtomicInteger counter = new AtomicInteger(0);
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(10))
+                .multiplier(1.0)
+                .jitter(false)
+                .retryPredicate(ex -> ex instanceof IllegalStateException)
+                .build();
+
+        return RetryUtil.execute(() -> {
+            int current = counter.incrementAndGet();
+            if (current <= failAttempts) {
+                throw new IllegalStateException("线性重试尝试序号: " + current);
+            }
+            return "LINEAR_SUCCESS_AT_" + current;
+        }, config);
+    }
+
+    /**
      * 2. 验证 IdUtil 2026 纪元雪花发号器与无锁短 ID
      *
      * @return Triple<Long(雪花ID), String(32位无横线UUID), String(21位NanoId)>
      */
     public Triple<Long, String, String> generateDistributedIds() {
         long snowflakeId = IdUtil.nextId();
+        // 显式校验单例 Snowflake 实例与独立指定节点 Snowflake 实例
+        long defaultSnowflakeId = IdUtil.getSnowflake().nextId();
+        long customSnowflakeId = IdUtil.createSnowflake(1, 1).nextId();
         String simpleUuid = IdUtil.fastSimpleUUID();
         String nanoId = IdUtil.nanoId();
 
-        log.info("IdUtil 发号验证: snowflakeId={}, simpleUuid={}, nanoId={}", snowflakeId, simpleUuid, nanoId);
+        log.info("IdUtil 发号验证: snowflakeId={}, defaultId={}, customId={}, simpleUuid={}, nanoId={}",
+                snowflakeId, defaultSnowflakeId, customSnowflakeId, simpleUuid, nanoId);
         return Triple.of(snowflakeId, simpleUuid, nanoId);
     }
 

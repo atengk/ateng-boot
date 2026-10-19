@@ -54,7 +54,8 @@ public class TenantOrderEntity extends BaseEntity implements TenantEntity {
 // Mapper 声明 @IgnoreTenant 豁免或通过编程式闭包放行
 public interface TenantOrderMapper extends AtengBaseMapper<TenantOrderEntity> {
     @IgnoreTenant
-    List<TenantOrderEntity> selectGlobalOrders(Wrapper<TenantOrderEntity> queryWrapper);
+    @Select("SELECT * FROM tenant_order")
+    List<TenantOrderEntity> selectAllOrdersIgnoreTenant();
 }
 ```
 - **日常业务查询**：当上下文设定 `TenantContextHolder.setTenantId("tenant_A")` 时，所有 CRUD 自动注入 `WHERE tenant_id = 'tenant_A'`；

@@ -36,8 +36,8 @@
 ### 1. 显式契约与批量校验 (`ValidList` & `Result<T>`)
 ```java
 @PostMapping("/users/batch")
-public Result<String> createUsersBatch(@Validated @RequestBody ValidList<UserRegisterDTO> list) {
-    return Result.success("成功批量注册 " + list.size() + " 个用户");
+public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<UserRegisterDTO> users) {
+    return Result.success(users.size());
 }
 ```
 当集合中任意元素的手机号格式不合规时，快速失败并返回友好提示：
@@ -54,10 +54,9 @@ public Result<String> createUsersBatch(@Validated @RequestBody ValidList<UserReg
 ### 2. 双向 API 加签验签与防重放 (`@ApiSign`)
 ```java
 @PostMapping("/orders")
-@ApiSign(expireSeconds = 60, signResponse = true)
-public Result<OrderSignDTO> createOrder(@RequestBody OrderSignDTO dto) {
-    dto.setStatus("CREATED");
-    return Result.success(dto);
+@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+public Result<String> createOrder(@Valid @RequestBody OrderSignDTO dto) {
+    return Result.success("ORD_SIGNED_" + dto.getOrderNo());
 }
 ```
 客户端携带 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 发送请求；服务端验签通过后，在响应头回传 `X-Signature`。若重复提交同一 Nonce 或报文被篡改，立即拦截阻断：
@@ -73,21 +72,26 @@ public Result<OrderSignDTO> createOrder(@RequestBody OrderSignDTO dto) {
 
 ### 3. 操作审计与出参动态脱敏 (`@OperateLog` & SPI)
 ```java
-@PostMapping("/users")
+@PostMapping("/user")
 @OperateLog(
-    module = "用户中心",
+    module = "用户管理",
     type = OperateTypeEnum.INSERT,
-    description = "创建系统用户",
+    description = "新增系统用户",
     excludeParams = {"password"}
 )
 public Result<UserRegisterVO> createUser(@RequestBody AuditUserDTO dto) {
-    // 业务创建用户，返回包含 @FieldSensitive 敏感手机号的视图
-    UserRegisterVO vo = new UserRegisterVO(10001L, dto.getUsername(), "13812345678");
+    UserRegisterVO vo = UserRegisterVO.builder()
+            .id(1846182948192841920L)
+            .name(dto.getUsername())
+            .age(25)
+            .email(dto.getEmail() != null ? dto.getEmail() : "user@example.com")
+            .phone(dto.getPhone() != null ? dto.getPhone() : "13812345678")
+            .build();
     return Result.success(vo);
 }
 ```
 - **入参敏感字段自动排除**：`operParams` 记录为 `{"username":"ateng","password":"[EXCLUDED]"}`；
-- **出参安全动态掩码**：`jsonResult` 记录为 `{"id":"10001","username":"ateng","mobilePhone":"138****5678"}`；
+- **出参安全动态掩码**：`jsonResult` 记录为 `{"id":"1846182948192841920","name":"ateng","age":25,"email":"user@example.com","phone":"138****5678"}`；
 - **内存真明文守护**：Controller 与内存实体中手机号 100% 保持原始明文 `13812345678`。
 
 ---

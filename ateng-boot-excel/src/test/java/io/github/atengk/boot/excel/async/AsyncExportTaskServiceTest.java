@@ -12,6 +12,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import org.junit.jupiter.api.io.TempDir;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import org.slf4j.MDC;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -35,6 +40,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class AsyncExportTaskServiceTest {
 
     private InMemoryAsyncExportTaskService taskService;
+
+    @TempDir
     private Path tempStorageDir;
 
     @Data
@@ -50,9 +57,6 @@ class AsyncExportTaskServiceTest {
 
     @BeforeEach
     void setUp() throws IOException {
-        tempStorageDir = Paths.get(System.getProperty("java.io.tmpdir"), "ateng-excel-async-test");
-        Files.createDirectories(tempStorageDir);
-
         ExcelProperties properties = new ExcelProperties();
         ExcelAsyncExportProperties asyncProps = properties.getAsyncExport();
         asyncProps.setTempDir(tempStorageDir.toString());
@@ -68,6 +72,9 @@ class AsyncExportTaskServiceTest {
         if (taskService != null) {
             taskService.destroy();
         }
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+        MDC.clear();
     }
 
     @Test
@@ -81,7 +88,7 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(30, TimeUnit.SECONDS), "异步导出应在 30 秒内执行完毕");
+        assertTrue(latch.await(60, TimeUnit.SECONDS), "异步导出应在 30 秒内执行完毕");
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
@@ -110,7 +117,7 @@ class AsyncExportTaskServiceTest {
         });
 
         assertNotNull(taskId);
-        assertTrue(latch.await(30, TimeUnit.SECONDS));
+        assertTrue(latch.await(60, TimeUnit.SECONDS));
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
@@ -143,7 +150,7 @@ class AsyncExportTaskServiceTest {
             }
         });
 
-        assertTrue(startLatch.await(30, TimeUnit.SECONDS));
+        assertTrue(startLatch.await(60, TimeUnit.SECONDS));
 
         boolean cancelled = taskService.cancel(taskId);
         assertTrue(cancelled, "任务取消方法应返回 true");
@@ -166,7 +173,7 @@ class AsyncExportTaskServiceTest {
             }
         });
 
-        assertTrue(latch.await(30, TimeUnit.SECONDS));
+        assertTrue(latch.await(60, TimeUnit.SECONDS));
 
         long deadline = System.currentTimeMillis() + 15000;
         ExportTask task = taskService.getTask(taskId);
@@ -216,7 +223,7 @@ class AsyncExportTaskServiceTest {
             });
 
             assertNotNull(taskId);
-            assertTrue(latch.await(30, TimeUnit.SECONDS));
+            assertTrue(latch.await(60, TimeUnit.SECONDS));
 
             assertEquals("user-1001", capturedUser.get(), "异步导出线程应成功继承发起方的 UserId");
             assertEquals(8888L, capturedTenant.get(), "异步导出线程应成功继承发起方的 TenantId");

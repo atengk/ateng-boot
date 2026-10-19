@@ -76,7 +76,7 @@ class WebAuditSampleControllerTest {
                 .andExpect(jsonPath("$.data.phone").value("138****5678")); // 出库动态脱敏
 
         // 验证存储 SPI 接收到的结构化审计模型
-        OperateLogModel lastLog = storageProvider.getLastLog();
+        OperateLogModel lastLog = awaitLastLog();
         assertThat(lastLog).isNotNull();
         assertThat(lastLog.getTraceId()).isEqualTo("trace-audit-001");
         assertThat(lastLog.getUserName()).isEqualTo("admin-operator");
@@ -101,7 +101,7 @@ class WebAuditSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.phone").value("139****5678"));
 
-        OperateLogModel lastLog = storageProvider.getLastLog();
+        OperateLogModel lastLog = awaitLastLog();
         assertThat(lastLog).isNotNull();
         assertThat(lastLog.getModule()).isEqualTo("用户中心");
         assertThat(lastLog.getOperateType()).isEqualTo(OperateTypeEnum.QUERY);
@@ -117,7 +117,7 @@ class WebAuditSampleControllerTest {
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.msg").value("模拟业务操作失败"));
 
-        OperateLogModel lastLog = storageProvider.getLastLog();
+        OperateLogModel lastLog = awaitLastLog();
         assertThat(lastLog).isNotNull();
         assertThat(lastLog.getStatus()).isEqualTo(1); // 失败
         assertThat(lastLog.getErrorMsg()).isEqualTo("模拟业务操作失败");
@@ -137,5 +137,16 @@ class WebAuditSampleControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value("weblog-ok:weblog-tester"));
+    }
+
+    private OperateLogModel awaitLastLog() throws InterruptedException {
+        for (int i = 0; i < 50; i++) {
+            OperateLogModel model = storageProvider.getLastLog();
+            if (model != null) {
+                return model;
+            }
+            Thread.sleep(20);
+        }
+        return storageProvider.getLastLog();
     }
 }

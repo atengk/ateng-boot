@@ -17,7 +17,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 
 /**
@@ -98,11 +100,13 @@ public class ExcelSampleController {
     @PostMapping("/import")
     @WebLog(value = "导入用户数据并校验", printParams = false, printResult = true, printCostTime = true)
     public Result<List<UserExcelVO>> importUsers(@RequestParam("file") MultipartFile file) throws IOException {
-        ExcelReadResult<UserExcelVO> result = excelSampleService.readAndValidate(file.getInputStream());
-        if (!result.isSuccess()) {
-            return Result.fail(CommonResultCode.BAD_REQUEST, "Excel 数据校验不通过，共 " + result.getErrorCount() + " 行错误");
+        try (InputStream in = file.getInputStream()) {
+            ExcelReadResult<UserExcelVO> result = excelSampleService.readAndValidate(in);
+            if (!result.isSuccess()) {
+                return Result.fail(CommonResultCode.BAD_REQUEST, "Excel 数据校验不通过，共 " + result.getErrorCount() + " 行错误");
+            }
+            return Result.success(result.getData());
         }
-        return Result.success(result.getData());
     }
 
     /**
@@ -117,9 +121,12 @@ public class ExcelSampleController {
     @WebLog(value = "导入并生成错误反馈 Excel", printParams = false, printResult = false, printCostTime = true)
     public void importWithFeedback(@RequestParam("file") MultipartFile file, HttpServletResponse response) throws IOException {
         byte[] fileBytes = file.getBytes();
-        ExcelReadResult<UserExcelVO> result = excelSampleService.readAndValidate(file.getInputStream());
+        ExcelReadResult<UserExcelVO> result;
+        try (InputStream in = new ByteArrayInputStream(fileBytes)) {
+            result = excelSampleService.readAndValidate(in);
+        }
         if (!result.isSuccess()) {
-            excelSampleService.renderErrorFeedback(fileBytes, response);
+            excelSampleService.renderErrorFeedback(fileBytes, result.getErrors(), response);
             return;
         }
         response.setContentType("application/json;charset=UTF-8");

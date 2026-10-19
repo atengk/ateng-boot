@@ -10,13 +10,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -134,13 +133,18 @@ public class CoreContextScenarioService {
      */
     public Pair<String, Boolean> demonstrateNamedThreadFactory(String poolName) {
         NamedThreadFactory factory = new NamedThreadFactory(poolName, false);
-        ExecutorService customPool = Executors.newSingleThreadExecutor(factory);
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadFactory(factory);
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(1);
+        executor.initialize();
         try {
-            return customPool.submit(() -> Pair.of(Thread.currentThread().getName(), Thread.currentThread().isDaemon())).get();
+            return executor.submit(() -> Pair.of(Thread.currentThread().getName(), Thread.currentThread().isDaemon())).get();
         } catch (Exception e) {
-            throw new IllegalStateException("自定义线程池执行失败", e);
+            throw new IllegalStateException("受管线程池执行失败", e);
         } finally {
-            customPool.shutdown();
+            executor.shutdown();
         }
     }
 

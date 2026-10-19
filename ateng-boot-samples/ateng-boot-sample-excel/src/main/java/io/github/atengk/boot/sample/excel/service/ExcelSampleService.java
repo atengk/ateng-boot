@@ -7,6 +7,7 @@ import io.github.atengk.boot.excel.async.ExportTask;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
+import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
@@ -155,6 +156,20 @@ public class ExcelSampleService {
      * 校验失败生成带标红单元格与浮动批注的错题集反馈 Excel
      *
      * @param fileBytes 原始文件字节
+     * @param errors    行级校验错误记录
+     * @param response  HTTP 响应
+     * @throws IOException IO 异常
+     */
+    public void renderErrorFeedback(byte[] fileBytes, List<ExcelErrorRow> errors, HttpServletResponse response) throws IOException {
+        try (InputStream templateStream = new ByteArrayInputStream(fileBytes)) {
+            ExcelUtil.exportErrorFeedback(response, "导入错误反馈.xlsx", templateStream, errors);
+        }
+    }
+
+    /**
+     * 校验失败生成带标红单元格与浮动批注的错题集反馈 Excel
+     *
+     * @param fileBytes 原始文件字节
      * @param response  HTTP 响应
      * @throws IOException IO 异常
      */
@@ -164,9 +179,7 @@ public class ExcelSampleService {
             result = readAndValidate(in);
         }
         if (!result.isSuccess()) {
-            try (InputStream templateStream = new ByteArrayInputStream(fileBytes)) {
-                ExcelUtil.exportErrorFeedback(response, "导入错误反馈.xlsx", templateStream, result.getErrors());
-            }
+            renderErrorFeedback(fileBytes, result.getErrors(), response);
         }
     }
 

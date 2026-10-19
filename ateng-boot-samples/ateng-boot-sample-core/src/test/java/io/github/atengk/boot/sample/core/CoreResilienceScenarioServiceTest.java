@@ -47,6 +47,19 @@ class CoreResilienceScenarioServiceTest {
     }
 
     @Test
+    @DisplayName("测试RetryUtil线性固定间隔重试")
+    void testLinearRetrySuccess() {
+        // 模拟前 1 次失败，第 2 次线性重试成功
+        String result = resilienceScenarioService.executeWithLinearRetry(1);
+        assertThat(result).isEqualTo("LINEAR_SUCCESS_AT_2");
+
+        // 模拟连续失败 3 次耗尽重试抛出异常
+        assertThatThrownBy(() -> resilienceScenarioService.executeWithLinearRetry(3))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("线性重试尝试序号: 3");
+    }
+
+    @Test
     @DisplayName("测试IdUtil分布式雪花发号器与无锁短ID")
     void testGenerateDistributedIds() {
         Triple<Long, String, String> ids = resilienceScenarioService.generateDistributedIds();

@@ -2,8 +2,6 @@ package io.github.atengk.boot.sample.mybatisplus.entity;
 
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
-import io.github.atengk.boot.core.annotation.FieldSensitive;
-import io.github.atengk.boot.core.enums.SensitiveType;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.entity.BaseFullEntity;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
@@ -46,11 +44,10 @@ public class UserEntity extends BaseFullEntity {
     private String email;
 
     /**
-     * 手机号码（数据库透明加密存储，视图出库动态脱敏）
+     * 手机号码（数据库透明加密存储）
      */
     @FieldEncrypt
     @TableField(typeHandler = EncryptTypeHandler.class)
-    @FieldSensitive(SensitiveType.MOBILE_PHONE)
     private String phone;
 
     /**

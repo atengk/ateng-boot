@@ -56,41 +56,37 @@ class SlowRequestMockMvcTest {
 
         @PostMapping("/slow")
         public Result<String> slow() throws InterruptedException {
-            Thread.sleep(80);
+            Thread.sleep(150);
             return Result.success("slow-ok");
         }
 
         @GetMapping("/slow-excluded")
         public Result<String> slowExcluded() throws InterruptedException {
-            Thread.sleep(80);
+            Thread.sleep(150);
             return Result.success("excluded-ok");
         }
 
         @GetMapping(value = "/sse", produces = "text/event-stream")
         public String sse(HttpServletResponse response) throws InterruptedException {
             response.setContentType("text/event-stream;charset=UTF-8");
-            Thread.sleep(80);
+            Thread.sleep(150);
             return "data: hello\n\n";
         }
 
         @GetMapping(value = "/download", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
         public byte[] download(HttpServletResponse response) throws InterruptedException {
             response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
-            Thread.sleep(80);
+            Thread.sleep(150);
             return new byte[]{1, 2, 3, 4};
         }
     }
 
     @BeforeEach
     void setUp() {
-        logger = (Logger) LoggerFactory.getLogger(SlowRequestFilter.class);
-        appender = new ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
         MDC.clear();
 
         WebProperties webProperties = new WebProperties();
-        webProperties.getSlowRequest().setThreshold(Duration.ofMillis(50));
+        webProperties.getSlowRequest().setThreshold(Duration.ofMillis(100));
         webProperties.getSlowRequest().setExcludeUrls(List.of("/mock/slow-excluded", "/actuator/**"));
 
         TraceFilter traceFilter = new TraceFilter(webProperties);
@@ -99,6 +95,17 @@ class SlowRequestMockMvcTest {
         mockMvc = MockMvcBuilders.standaloneSetup(new MockSlowController())
                 .addFilters(traceFilter, slowRequestFilter)
                 .build();
+
+        // 预热 MockMvc 分发与反射开销，防御多线程并行构建下的冷启动毛刺
+        try {
+            mockMvc.perform(get("/mock/fast"));
+        } catch (Exception ignored) {
+        }
+
+        logger = (Logger) LoggerFactory.getLogger(SlowRequestFilter.class);
+        appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
     }
 
     @AfterEach
@@ -137,7 +144,7 @@ class SlowRequestMockMvcTest {
         assertThat(msg).contains("[SLOW_REQUEST]");
         assertThat(msg).contains("method=[POST]");
         assertThat(msg).contains("uri=[/mock/slow]");
-        assertThat(msg).contains("threshold=[50ms]");
+        assertThat(msg).contains("threshold=[100ms]");
         assertThat(msg).contains("traceId=[trace-mock-888]");
     }
 

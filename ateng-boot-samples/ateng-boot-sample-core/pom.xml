@@ -17,12 +17,6 @@
     <description>ateng-boot 核心底座原语场景样例（纯内存自验: 序列化 / 脱敏 / 上下文 / 重试 / 分批切片）</description>
 
     <dependencies>
-        <!-- Spring Boot 核心基础 Starter (非 Web) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-        </dependency>
-
         <!-- 参数校验 Starter (Hibernate Validator) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
