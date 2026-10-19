@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -61,15 +62,24 @@ public class WebRuntimePipelineSampleController {
         Executor executor = taskExecutorProvider.getIfAvailable();
         if (executor != null) {
             CompletableFuture<Boolean> future = CompletableFuture.supplyAsync(
-                    () -> Thread.currentThread().isVirtual(),
+                    () -> isVirtualThread(Thread.currentThread()),
                     executor
             );
             data.put("isVirtual", future.get(3, TimeUnit.SECONDS));
         } else {
-            data.put("isVirtual", Thread.currentThread().isVirtual());
+            data.put("isVirtual", isVirtualThread(Thread.currentThread()));
         }
         data.put("threadName", Thread.currentThread().getName());
         return Result.success(data);
+    }
+
+    private static boolean isVirtualThread(Thread thread) {
+        try {
+            Method method = Thread.class.getMethod("isVirtual");
+            return (boolean) method.invoke(thread);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     /**

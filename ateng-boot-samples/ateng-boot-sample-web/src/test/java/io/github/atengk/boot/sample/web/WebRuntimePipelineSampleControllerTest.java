@@ -97,12 +97,13 @@ class WebRuntimePipelineSampleControllerTest {
     }
 
     @Test
-    @DisplayName("3. 虚拟线程调度：验证基于 Java 21+ Virtual Thread 调度执行")
+    @DisplayName("3. 虚拟线程调度：验证基于 Java 21+ Virtual Thread 调度执行（JDK 17 环境下平滑降级）")
     void shouldRunOnVirtualThread() throws Exception {
+        boolean expectedVirtual = Runtime.version().feature() >= 21;
         mockMvc.perform(get("/api/sample/runtime/virtual-thread"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.isVirtual").value(true));
+                .andExpect(jsonPath("$.data.isVirtual").value(expectedVirtual));
     }
 
     @Test
