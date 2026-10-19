@@ -54,4 +54,18 @@ public interface AtengBaseMapper<T> extends BaseMapper<T> {
      * @return 成功更新影响的行数
      */
     int updateBatchSomeColumn(@Param("list") Collection<T> entityList);
+
+    /**
+     * 原生单条冲突更新（Upsert）便捷门面
+     * 自动跳过主键 ID、创建时间与逻辑删除列
+     *
+     * @param entity 实体对象
+     * @return 成功操作影响的行数，实体为 null 时保底返回 0
+     */
+    default int upsertSomeColumn(T entity) {
+        if (entity == null) {
+            return 0;
+        }
+        return upsertBatchSomeColumn(java.util.Collections.singletonList(entity));
+    }
 }

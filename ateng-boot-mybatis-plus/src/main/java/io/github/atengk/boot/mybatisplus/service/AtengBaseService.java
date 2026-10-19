@@ -561,4 +561,95 @@ public interface AtengBaseService<T> extends IService<T> {
     default int insertBatch(Collection<T> entityList, int batchSize) {
         return insertBatchSomeColumn(entityList, batchSize);
     }
+
+    /**
+     * 原生分批批量 Upsert（采用全局默认批次大小，受事务守护）
+     * 底层自适应 MySQL DUPLICATE KEY 与 PostgreSQL ON CONFLICT 方言
+     *
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @return 累计成功操作影响的总行数
+     */
+    int upsertBatch(Collection<T> entityList);
+
+    /**
+     * 原生分批批量 Upsert（支持自定义单批次切片大小，受事务守护）
+     *
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param batchSize  单批次切片大小（小于等于 0 时采用默认配置）
+     * @return 累计成功操作影响的总行数
+     */
+    int upsertBatch(Collection<T> entityList, int batchSize);
+
+    /**
+     * 原生分批批量 Upsert 别名门面（采用全局默认批次大小，受事务守护）
+     *
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @return 累计成功操作影响的总行数
+     */
+    default int upsertBatchSomeColumn(Collection<T> entityList) {
+        return upsertBatch(entityList);
+    }
+
+    /**
+     * 原生分批批量 Upsert 别名门面（支持自定义单批次切片大小，受事务守护）
+     *
+     * @param entityList 待批量 Upsert 的实体数据集合
+     * @param batchSize  单批次切片大小（小于等于 0 时采用默认配置）
+     * @return 累计成功操作影响的总行数
+     */
+    default int upsertBatchSomeColumn(Collection<T> entityList, int batchSize) {
+        return upsertBatch(entityList, batchSize);
+    }
+
+    /**
+     * 原生分批批量更新（采用全局默认批次大小，受事务守护）
+     * 自动生成 ANSI CASE WHEN 单条 SQL，并在内存中强制按主键正序排列以从数学机理上杜绝并发死锁
+     *
+     * @param entityList 待批量更新的实体数据集合
+     * @return 累计成功更新影响的总行数
+     */
+    int updateBatch(Collection<T> entityList);
+
+    /**
+     * 原生分批批量更新（支持自定义单批次切片大小，受事务守护）
+     *
+     * @param entityList 待批量更新的实体数据集合
+     * @param batchSize  单批次切片大小（小于等于 0 时采用默认配置）
+     * @return 累计成功更新影响的总行数
+     */
+    int updateBatch(Collection<T> entityList, int batchSize);
+
+    /**
+     * 原生分批批量更新别名门面（采用全局默认批次大小，受事务守护）
+     *
+     * @param entityList 待批量更新的实体数据集合
+     * @return 累计成功更新影响的总行数
+     */
+    default int updateBatchSomeColumn(Collection<T> entityList) {
+        return updateBatch(entityList);
+    }
+
+    /**
+     * 原生分批批量更新别名门面（支持自定义单批次切片大小，受事务守护）
+     *
+     * @param entityList 待批量更新的实体数据集合
+     * @param batchSize  单批次切片大小（小于等于 0 时采用默认配置）
+     * @return 累计成功更新影响的总行数
+     */
+    default int updateBatchSomeColumn(Collection<T> entityList, int batchSize) {
+        return updateBatch(entityList, batchSize);
+    }
+
+    /**
+     * 原生单实体冲突更新（Upsert）便捷门面（受事务守护）
+     *
+     * @param entity 实体对象
+     * @return true 若操作成功影响行数大于 0；否则 false
+     */
+    default boolean upsert(T entity) {
+        if (entity == null) {
+            return false;
+        }
+        return upsertBatch(Collections.singletonList(entity), 1) > 0;
+    }
 }

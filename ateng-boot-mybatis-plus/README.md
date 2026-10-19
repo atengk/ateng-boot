@@ -43,8 +43,8 @@
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
-| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn`、`upsertBatchSomeColumn` 与 `updateBatchSomeColumn` 原生批量扩展 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `SampleBatchInsertTest` |
-| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量插入与流式事务能力 | `SampleBatchInsertTest` |
+| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn` 与单实体 `upsertSomeColumn` 原生批量扩展 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `AtengBaseServiceBatchTest` |
+| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、受事务守护的原生批量写入（`insertBatch` / `upsertBatch` / `updateBatch` / `upsert`）与动态直出门面 | `AtengBaseServiceBatchTest` / `SampleBatchInsertTest` |
 | **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic(mapper::method, request, voClass)` / `pageDynamic(statementName, request, voClass)` / `listDynamic` / `getOneDynamic`，基于方法引用或短方法名实现多表联表极速直出 | `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `SampleDynamicQueryIntegrationTest` |
@@ -272,7 +272,14 @@ userService.insertBatch(users);
 
 ```java
 // 批量 Upsert：冲突时原地更新非主键字段，保持 create_time 与 create_by 不变
+// 方式一：通过 BatchUtil 门面分批执行
 BatchUtil.upsertBatch(userMapper, users);
+
+// 方式二：通过 AtengBaseService 注入执行（受声明式事务守护）
+userService.upsertBatch(users);
+
+// 方式三：单实体极简 Upsert
+userService.upsert(singleUser); // 或 userMapper.upsertSomeColumn(singleUser);
 ```
 
 ---
@@ -306,7 +313,11 @@ u3.setEmail("charlie_new@test.com");
 u3.setAge(35);
 
 // 2. 乱序传入执行批量更新：自动按 ID 升序重排 [1, 2, 3] 并执行 ANSI CASE WHEN 单条 SQL
+// 方式一：通过 BatchUtil 门面执行
 int affectedRows = BatchUtil.updateBatch(userMapper, List.of(u3, u1, u2));
+
+// 方式二：通过 AtengBaseService 注入执行（受声明式事务守护）
+userService.updateBatch(List.of(u3, u1, u2));
 ```
 
 ---

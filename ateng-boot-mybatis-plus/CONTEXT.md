@@ -93,15 +93,15 @@ _Avoid_: DataScopeContextHolder, PermissionContext
 _Avoid_: CustomDataPermissionInterceptor, DataScopeInterceptor
 
 **AtengBaseMapper**:
-继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量 Upsert（`upsertBatchSomeColumn`）与单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）方法。
+继承 MyBatis-Plus `BaseMapper` 的通用增强持久层接口，扩展原生单条多值批量插入（`insertBatchSomeColumn`）、批量/单条 Upsert（`upsertBatchSomeColumn` / `upsertSomeColumn`）、单条 CASE WHEN 批量更新（`updateBatchSomeColumn`）与受管游标查询（`selectCursor`）方法。
 _Avoid_: SuperMapper, EnhancedMapper, CustomBaseMapper
 
 **AtengBaseService**:
-继承 MyBatis-Plus `IService` 的通用业务增强接口，扩展自定义分片的原生批量插入契约。
+继承 MyBatis-Plus `IService` 的通用业务增强接口，扩展声明式分批写入门面（批量插/更/Upsert）、受管流式防 OOM 游标直出（`stream` / `streamDynamic`）、动态查询完备直出（`pageDynamic` / `existsDynamic`）、VO 强类型安全投影与乐观锁并发自旋重试契约。
 _Avoid_: SuperService, EnhancedService, CustomBaseService
 
 **AtengServiceImpl**:
-继承 MyBatis-Plus `ServiceImpl` 并实现 `AtengBaseService` 的通用实现基类，提供声明式事务守护的分片多值批量插入。
+继承 MyBatis-Plus `ServiceImpl` 并实现 `AtengBaseService` 的通用实现基类，提供声明式事务守护的分片多值批量写入、流式查询调度与动态直出门面。
 _Avoid_: SuperServiceImpl, EnhancedServiceImpl
 
 **BatchUtil**:
@@ -202,3 +202,7 @@ _Avoid_: UniversalQueryExecutor, DynamicQueryManager, QueryRunner
 **DynamicSqlProjectionResolver**:
 外部/XML 动态 SQL 的 AST 投影解析引擎，依托 JSqlParser 提取 SELECT 列别名与底层物理表别名/表达式映射字典并纳秒级缓存，实现多表查询表别名自愈抹平。
 _Avoid_: SqlAliasParser, ColumnExtractor, ProjectionMapper
+
+**SelectCursor**:
+继承 MyBatis-Plus `AbstractMethod` 的受管游标查询 SQL 注入器节点，为 Mapper 动态注入生成原生 `Cursor<T>` 游标的 MappedStatement，显式配置建议 FetchSize（1000），赋予持久层原生分批拉取防 OOM 能力。
+_Avoid_: CursorInjector, StreamMethod, SelectCursorMethod

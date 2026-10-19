@@ -75,6 +75,41 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         return insertBatchSomeColumn(entityList, batchSize);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int upsertBatch(Collection<T> entityList) {
+        return upsertBatch(entityList, getDefaultBatchSize());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int upsertBatch(Collection<T> entityList, int batchSize) {
+        int effectiveSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
+        return BatchUtil.upsertBatch(baseMapper, entityList, effectiveSize);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int updateBatch(Collection<T> entityList) {
+        return updateBatch(entityList, getDefaultBatchSize());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int updateBatch(Collection<T> entityList, int batchSize) {
+        int effectiveSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
+        return BatchUtil.updateBatch(baseMapper, entityList, effectiveSize);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean upsert(T entity) {
+        if (entity == null) {
+            return false;
+        }
+        return upsertBatch(java.util.Collections.singletonList(entity), 1) > 0;
+    }
+
     /**
      * 获取全局默认批量切片大小
      * 优先读取 ateng.boot.mybatis-plus.batch.default-size 配置，未配置时缺省为 1000
