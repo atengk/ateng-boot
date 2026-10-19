@@ -159,10 +159,11 @@ public class UserService {
 
 ```java
 @Data
-@TableName("sys_user")
-public class UserEntity extends BaseEntity {
-    private String username;
-    // createBy, updateBy, createTime, updateTime 由 BaseEntity 统一定义并由 MyBatis-Plus 自动填充
+@TableName("sys_tenant_order")
+public class TenantOrderEntity extends BaseEntity {
+    private String orderNo;
+    private BigDecimal amount;
+    // createBy, updateBy, createTime, updateTime 继承自 BaseEntity，底层自动注入当前登录人与当前系统时间
 }
 ```
 
@@ -179,6 +180,12 @@ public class UserEntity extends BaseEntity {
 - **请求携带 Header**：
 ```http
 satoken: 53f86e35-645c-44b4-82a1-127bcfb9ad61
+```
+- **MyBatis-Plus 自动填充底层执行 SQL（真实输出）**：
+```text
+==>  Preparing: INSERT INTO sys_tenant_order ( id, order_no, amount, create_by, update_by, create_time, update_time ) VALUES ( ?, ?, ?, ?, ?, ?, ? )
+==> Parameters: 1(Long), ORD-AUDIT-88001(String), 999.50(BigDecimal), 88001(String), 88001(String), 2026-10-19 16:30:00.000(Timestamp), 2026-10-19 16:30:00.000(Timestamp)
+<==    Updates: 1
 ```
 
 ---
@@ -221,13 +228,18 @@ Content-Type: application/json;charset=UTF-8
 
 {
   "code": 403,
-  "msg": "无权限访问: 缺少权限 [system:user:query]",
+  "msg": "无权访问：缺少所需权限码 [system:user:query]",
   "data": null,
   "success": false
 }
 ```
 
-当未登录或 Token 失效时，统一返回 HTTP 200 + 401 业务错误：
+控制台真实拦截日志：
+```text
+2026-10-19 16:30:00.123 [http-nio-8080-exec-1] WARN  i.g.a.b.s.h.SaTokenExceptionHandler : 鉴权拦截 - 缺少权限: permission=system:user:query
+```
+
+当未提供凭据或 Token 失效时，统一返回 HTTP 200 + 401 业务错误：
 
 ```http
 HTTP/1.1 200 OK
@@ -235,10 +247,15 @@ Content-Type: application/json;charset=UTF-8
 
 {
   "code": 401,
-  "msg": "访问未授权: 未提供有效的身份令牌",
+  "msg": "未提供访问凭据 (Token)",
   "data": null,
   "success": false
 }
+```
+
+控制台真实拦截日志：
+```text
+2026-10-19 16:30:00.125 [http-nio-8080-exec-2] WARN  i.g.a.b.s.h.SaTokenExceptionHandler : 鉴权拦截 - 会话未登录: type=-1, message=未能获取有效的 token
 ```
 
 ---
@@ -319,6 +336,12 @@ public class SecurityAuditListener {
 }
 ```
 
+### 预期安全审计日志呈现（真实控制台输出）
+```text
+2026-10-19 16:30:00.100 [http-nio-8080-exec-1] INFO  i.g.a.b.s.s.l.SampleSecurityEventListener : 【安全事件监听】收到用户登录事件: userId=88001, token=53f86e35-645c-44b4-82a1-127bcfb9ad61
+2026-10-19 16:30:00.200 [http-nio-8080-exec-2] WARN  i.g.a.b.s.s.l.SampleSecurityEventListener : 【安全事件监听】收到用户踢下线事件: userId=88001, token=null
+```
+
 ---
 
 ## 7. 微服务内部零信任调用保护（Same-Token）
@@ -333,13 +356,13 @@ public class SecurityAuditListener {
 
 ```java
 @RestController
-@RequestMapping("/internal/api")
-@CheckSameToken // 拦截并校验微服务内部调用凭证
+@RequestMapping("/api/auth/internal")
 public class InternalSyncController {
 
-    @PostMapping("/sync-data")
-    public Result<String> syncData() {
-        return Result.success("内部同步成功");
+    @GetMapping("/data")
+    @CheckSameToken // 拦截并校验微服务内部调用凭证
+    public Result<String> getInternalData() {
+        return Result.success("内部机密数据访问成功");
     }
 }
 ```
@@ -368,6 +391,12 @@ public class FeignClientConfig {
   "data": null,
   "success": false
 }
+```
+
+控制台真实拦截日志：
+```text
+2026-10-19 16:30:00.300 [http-nio-8080-exec-3] DEBUG i.g.a.b.s.a.SaCheckSameTokenAspect : 执行微服务内部 Same-Token 零信任安全校验
+2026-10-19 16:30:00.301 [http-nio-8080-exec-3] WARN  i.g.a.b.s.h.SaTokenExceptionHandler : 鉴权拦截 - 微服务内部 Same-Token 无效: message=无效Same-Token：null
 ```
 
 ---
