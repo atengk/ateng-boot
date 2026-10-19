@@ -62,6 +62,22 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 拦截方法参数校验异常 HandlerMethodValidationException (Spring 6.1+)
+     *
+     * @param e 方法参数校验异常
+     * @return 400 校验提示响应结果
+     */
+    @ExceptionHandler(org.springframework.web.method.annotation.HandlerMethodValidationException.class)
+    public Result<Void> handleHandlerMethodValidationException(org.springframework.web.method.annotation.HandlerMethodValidationException e) {
+        String errorMsg = e.getAllErrors().stream()
+                .findFirst()
+                .map(org.springframework.context.MessageSourceResolvable::getDefaultMessage)
+                .orElse(CommonResultCode.BAD_REQUEST.getMsg());
+        log.warn("方法参数校验未通过: {}", errorMsg);
+        return Result.fail(CommonResultCode.BAD_REQUEST.getCode(), errorMsg);
+    }
+
+    /**
      * 拦截表单绑定校验异常 BindException
      *
      * @param e 参数绑定异常

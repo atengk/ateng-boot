@@ -11,12 +11,15 @@ spring:
 ateng:
   boot:
     web:
+      enabled: true
+      long-to-string: true
       trace:
         enabled: true
-      long-to-string: true
+        header-name: "X-Trace-Id"
       log:
         enabled: true
       shutdown:
+        enabled: true
         drain-timeout: 0s
       ratelimit:
         enabled: true
@@ -24,3 +27,16 @@ ateng:
         enabled: true
       sign:
         enabled: true
+        secret-key: "TestSecretKey123"
+        app-id: "test-app"
+        expire: 60s
+      slow-request:
+        enabled: true
+        threshold: 3s
+        exclude-urls:
+          - "/actuator/**"
+          - "/api/sample/runtime/slow-excluded"
+      operate-log:
+        enabled: true
+      body-cache:
+        max-body-size: 2MB
