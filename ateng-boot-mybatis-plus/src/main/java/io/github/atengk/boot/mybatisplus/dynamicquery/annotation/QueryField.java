@@ -21,6 +21,13 @@ import java.lang.annotation.Target;
 public @interface QueryField {
 
     /**
+     * 目标实体数据库物理列名或表别名列名（等价于 column 属性，支持直接简写声明，如 @QueryField("d.dept_name")）
+     *
+     * @return 目标数据库物理列名或表别名列名
+     */
+    String value() default "";
+
+    /**
      * 目标实体属性名称（若为空则默认与当前 DTO 字段名保持一致）
      *
      * @return 目标实体属性名称

@@ -12,6 +12,7 @@ import com.baomidou.mybatisplus.core.incrementer.DefaultIdentifierGenerator;
 import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.PageQuery;
+import io.github.atengk.boot.core.model.SortItem;
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.DynamicQueryIgnore;
 import io.github.atengk.boot.mybatisplus.dynamicquery.annotation.QueryField;
@@ -588,5 +589,145 @@ class DynamicQueryHelperTest {
             List<DynamicTestUserEntity> list = mapper.selectList(wrapper);
             assertThat(list).extracting(DynamicTestUserEntity::getUsername).containsExactly("alice");
         }
+    }
+
+    // ==========================================
+    // 多表 AST 投影解析与别名自愈测试套件 (Ticket #120)
+    // ==========================================
+
+    @Getter
+    @Setter
+    public static class TestUserDeptVO {
+        private Long id;
+        private String username;
+        private String deptName; // 纯 POJO 字段，由 AST 投影推导为 d.name
+
+        @QueryField("d.dept_code")
+        private String deptCode; // 逃生通道字段：通过 @QueryField 显式指定带别名列
+
+        private String password; // 敏感字段黑名单测试
+    }
+
+    @Getter
+    @Setter
+    public static class TestUserDeptQueryDTO extends PageQuery {
+        @QueryField(operator = QueryOperator.LIKE)
+        private String deptName;
+
+        @QueryField(operator = QueryOperator.EQ)
+        private String username;
+    }
+
+    @Test
+    @DisplayName("多表 AST 投影转译：前端传纯平铺 VO 属性 deptName，自动自愈补齐表别名 d.name")
+    void shouldTranslateMultiTableAstProjection() {
+        String sql = "SELECT u.id, u.username, d.name AS dept_name FROM sys_user u LEFT JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.addCondition(QueryCondition.like("deptName", "研发"));
+        request.addSort(SortItem.desc("deptName"));
+        request.addSort(SortItem.asc("username"));
+
+        QueryWrapper<TestUserDeptVO> wrapper = DynamicQueryHelper.buildWrapper(request, TestUserDeptVO.class, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        assertThat(sqlSegment).contains("d.name LIKE");
+        assertThat(sqlSegment).contains("ORDER BY d.name DESC,u.username ASC");
+    }
+
+    @Test
+    @DisplayName("多表 URL 冒号语法转译：deptName:like=研发&username:eq=admin 自动补齐表别名")
+    void shouldTranslateMultiTableUrlQueryString() {
+        String sql = "SELECT u.id, u.username, d.name AS dept_name FROM sys_user u LEFT JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        String queryString = "deptName:like=研发&username:eq=admin&sorts=deptName:desc";
+        QueryWrapper<TestUserDeptVO> wrapper = DynamicQueryHelper.buildWrapper(queryString, TestUserDeptVO.class, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        assertThat(sqlSegment).contains("d.name LIKE");
+        assertThat(sqlSegment).contains("u.username =");
+        assertThat(sqlSegment).contains("ORDER BY d.name DESC");
+    }
+
+    @Test
+    @DisplayName("多表 VO @QueryField 逃生通道：静态 AST 无法推导时（如 SELECT *），由注解显式列名兜底")
+    void shouldFallbackToQueryFieldEscapeHatch() {
+        // SELECT * 无法推导 deptCode，但 TestUserDeptVO 上标注了 @QueryField("d.dept_code")
+        String sql = "SELECT * FROM sys_user u LEFT JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.addCondition(QueryCondition.eq("deptCode", "D001"));
+        request.addSort(SortItem.asc("deptCode"));
+
+        QueryWrapper<TestUserDeptVO> wrapper = DynamicQueryHelper.buildWrapper(request, TestUserDeptVO.class, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        assertThat(sqlSegment).contains("d.dept_code =");
+        assertThat(sqlSegment).contains("ORDER BY d.dept_code ASC");
+    }
+
+    @Test
+    @DisplayName("多表敏感字段黑名单拦截：即使 SQL 投影了 password 别名，查询 password 仍被安全忽略")
+    void shouldBlockSensitiveFieldsInMultiTableQuery() {
+        String sql = "SELECT u.id, u.password AS password, d.name AS dept_name FROM sys_user u JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.addCondition(QueryCondition.eq("password", "123456"));
+        request.addCondition(QueryCondition.like("deptName", "财务"));
+        request.addSort(SortItem.asc("password"));
+
+        QueryWrapper<TestUserDeptVO> wrapper = DynamicQueryHelper.buildWrapper(request, TestUserDeptVO.class, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        // 仅 deptName 生效，password 被彻底防御忽略
+        assertThat(sqlSegment).contains("d.name LIKE");
+        assertThat(sqlSegment).doesNotContain("password");
+    }
+
+    @Test
+    @DisplayName("多表业务 DTO 查询对象支持：自动识别 AST 投影并补充排序表别名")
+    void shouldSupportMultiTableDtoQuery() {
+        String sql = "SELECT u.id, u.username, d.name AS dept_name FROM sys_user u LEFT JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        TestUserDeptQueryDTO dto = new TestUserDeptQueryDTO();
+        dto.setDeptName("技术部");
+        dto.setUsername("ateng");
+        dto.setSorts(List.of(SortItem.desc("deptName")));
+
+        QueryWrapper<TestUserDeptVO> wrapper = DynamicQueryHelper.buildWrapper(dto, TestUserDeptVO.class, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        assertThat(sqlSegment).contains("d.name LIKE");
+        assertThat(sqlSegment).contains("u.username =");
+        assertThat(sqlSegment).contains("ORDER BY d.name DESC");
+    }
+
+    @Test
+    @DisplayName("无 resultClass 仅传投影字典：直接依托 AST 投影白名单进行安全转译")
+    void shouldSupportMultiTableQueryWithoutResultClass() {
+        String sql = "SELECT u.id, u.username, d.name AS dept_name FROM sys_user u LEFT JOIN sys_dept d ON u.dept_id = d.id";
+        java.util.Map<String, String> mapping = DynamicSqlProjectionResolver.resolveProjections(sql);
+
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        request.addCondition(QueryCondition.like("deptName", "运营"));
+        request.addCondition(QueryCondition.eq("unknownField", "invalid")); // 未在投影中的未知字段应被安全忽略
+
+        QueryWrapper<Object> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
+        String sqlSegment = wrapper.getCustomSqlSegment();
+
+        assertThat(sqlSegment).contains("d.name LIKE");
+        assertThat(sqlSegment).doesNotContain("unknownField");
+    }
+
+    @Test
+    @DisplayName("多表查询防御性校验：resultClass 与 projectionMapping 同时为空时快速失败抛出异常")
+    void shouldFailFastWhenBothResultClassAndMappingAreNull() {
+        DynamicQueryRequest request = new DynamicQueryRequest();
+        assertThrows(IllegalArgumentException.class, () -> DynamicQueryHelper.buildWrapper(request, null, null));
     }
 }

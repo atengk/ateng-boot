@@ -26,10 +26,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * 动态查询与排序安全转译引擎门面
- * 基于实体元数据纳秒级白名单缓存将结构化请求安全编译为 MyBatis-Plus QueryWrapper，落实六重安全防卫以杜绝 SQL 注入与未授权数据探测
+ * 基于实体元数据纳秒级白名单缓存与多表 AST 投影解析字典将结构化请求安全编译为 MyBatis-Plus QueryWrapper，
+ * 落实严格安全防卫以杜绝 SQL 注入与未授权数据探测，兼顾单表极速编译与多表联表别名自愈。
  *
  * @author Ateng
  * @since 2026-10-19
@@ -53,6 +55,11 @@ public final class DynamicQueryHelper {
     private static final Set<String> HEURISTIC_SENSITIVE_PROPERTIES = Set.of(
             "password", "secret", "secretkey", "salt", "token", "accesstoken", "refreshtoken"
     );
+
+    /**
+     * 安全属性名或列名白名单正则（允许纯属性名或带表别名的点分列名，如 "deptName" 或 "d.dept_name"，防御 SQL 注入）
+     */
+    private static final Pattern SAFE_PROPERTY_OR_COLUMN_PATTERN = Pattern.compile("^[a-zA-Z0-9_]+(\\.[a-zA-Z0-9_]+)?$");
 
     private DynamicQueryHelper() {
     }
@@ -91,15 +98,43 @@ public final class DynamicQueryHelper {
      * @return 装配完成且安全过滤后的 QueryWrapper 实例
      */
     public static <T> QueryWrapper<T> buildWrapper(DynamicQueryRequest request, Class<T> entityClass) {
-        ensureEnabled();
         Objects.requireNonNull(entityClass, "实体类型 entityClass 不能为 null");
+        return buildWrapper(request, entityClass, null);
+    }
+
+    /**
+     * 基于结构化动态查询请求与投影映射字典构建安全 QueryWrapper（多表联表场景）
+     *
+     * @param request           动态查询请求模型（承载 conditions 与 sorts）
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典（属性名 -> 物理表别名/列名）
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(DynamicQueryRequest request, Map<String, String> projectionMapping) {
+        return buildWrapper(request, null, projectionMapping);
+    }
+
+    /**
+     * 基于结构化动态查询请求、结果类型与投影映射字典构建安全 QueryWrapper（全功能多表联表与逃生通道模式）
+     *
+     * @param request           动态查询请求模型（承载 conditions 与 sorts）
+     * @param resultClass       目标结果类型（Entity 或 VO，支持通过 @QueryField 声明逃生通道）
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典（属性名 -> 物理表别名/列名）
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(DynamicQueryRequest request, Class<T> resultClass, Map<String, String> projectionMapping) {
+        ensureEnabled();
+        if (resultClass == null && (projectionMapping == null || projectionMapping.isEmpty())) {
+            throw new IllegalArgumentException("动态查询必须提供结果类型 resultClass 或有效的投影映射字典 projectionMapping");
+        }
 
         QueryWrapper<T> wrapper = new QueryWrapper<>();
         if (request == null) {
             return wrapper;
         }
 
-        EntityMetaInfo metaInfo = getOrCreateEntityMeta(entityClass);
+        EntityMetaInfo metaInfo = (resultClass != null) ? getOrCreateEntityMeta(resultClass) : null;
 
         // 1. 过滤并应用动态条件（区分常规 AND 条件与 or_组号 作用域嵌套分组）
         if (request.getConditions() != null && !request.getConditions().isEmpty()) {
@@ -111,22 +146,16 @@ public final class DynamicQueryHelper {
                     continue;
                 }
                 String field = condition.getField();
-                if (field == null || field.trim().isEmpty() || !SortItem.isValidProperty(field.trim())) {
+                if (field == null || field.trim().isEmpty() || !isValidFieldOrProperty(field.trim())) {
                     log.warn("动态查询检测到非法字段语法或潜在注入字符，已安全忽略: {}", field);
                     continue;
                 }
-                String normalizedField = field.trim().toLowerCase(Locale.ROOT);
-                if (metaInfo.isIgnored(normalizedField)) {
-                    log.warn("动态查询字段命中安全黑名单或敏感标记，已安全忽略: {}", field);
-                    continue;
-                }
-                FieldMetaInfo fieldMeta = metaInfo.getField(normalizedField);
-                if (fieldMeta == null) {
-                    log.warn("动态查询字段未在目标实体白名单中声明，已安全忽略: {}", field);
+                String column = resolveColumn(field.trim(), projectionMapping, metaInfo);
+                if (column == null) {
                     continue;
                 }
 
-                ValidConditionItem item = new ValidConditionItem(fieldMeta.getColumn(), condition);
+                ValidConditionItem item = new ValidConditionItem(column, condition);
                 if (condition.getOrGroup() != null && !condition.getOrGroup().trim().isEmpty()) {
                     orGroupMap.computeIfAbsent(condition.getOrGroup().trim(), k -> new ArrayList<>()).add(item);
                 } else {
@@ -134,7 +163,7 @@ public final class DynamicQueryHelper {
                 }
             }
 
-            // 应用常规顶层 AND 条件
+            // 应用常规 AND 顶层条件
             for (ValidConditionItem item : andItems) {
                 applyCondition(wrapper, item.column(), item.condition().getOperator(),
                         item.condition().getValue(), item.condition().getValues());
@@ -161,14 +190,13 @@ public final class DynamicQueryHelper {
         }
 
         // 2. 过滤并应用排序规则
-        applySorts(wrapper, request, metaInfo);
+        applySorts(wrapper, request, projectionMapping, metaInfo);
 
         return wrapper;
     }
 
     /**
      * 基于 URL 查询字符串与实体类型构建安全 QueryWrapper
-     * 自动解析冒号语法、波浪线 between 语法与 or_组号 作用域嵌套分组
      *
      * @param queryString URL 查询字符串（如 "name:like=admin&or_1:status=1&or_1:role=admin"）
      * @param entityClass 目标实体类型
@@ -176,8 +204,33 @@ public final class DynamicQueryHelper {
      * @return 装配完成且安全过滤后的 QueryWrapper 实例
      */
     public static <T> QueryWrapper<T> buildWrapper(String queryString, Class<T> entityClass) {
+        return buildWrapper(queryString, entityClass, null);
+    }
+
+    /**
+     * 基于 URL 查询字符串与投影映射字典构建安全 QueryWrapper（多表联表场景）
+     *
+     * @param queryString       URL 查询字符串
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(String queryString, Map<String, String> projectionMapping) {
+        return buildWrapper(queryString, null, projectionMapping);
+    }
+
+    /**
+     * 基于 URL 查询字符串、结果类型与投影映射字典构建安全 QueryWrapper
+     *
+     * @param queryString       URL 查询字符串
+     * @param resultClass       目标结果类型
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(String queryString, Class<T> resultClass, Map<String, String> projectionMapping) {
         DynamicQueryRequest request = DynamicQueryParser.parse(queryString);
-        return buildWrapper(request, entityClass);
+        return buildWrapper(request, resultClass, projectionMapping);
     }
 
     /**
@@ -189,8 +242,33 @@ public final class DynamicQueryHelper {
      * @return 装配完成且安全过滤后的 QueryWrapper 实例
      */
     public static <T> QueryWrapper<T> buildWrapper(Map<String, ?> parameterMap, Class<T> entityClass) {
+        return buildWrapper(parameterMap, entityClass, null);
+    }
+
+    /**
+     * 基于请求参数 Map 与投影映射字典构建安全 QueryWrapper（多表联表场景）
+     *
+     * @param parameterMap      请求参数 Map
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(Map<String, ?> parameterMap, Map<String, String> projectionMapping) {
+        return buildWrapper(parameterMap, null, projectionMapping);
+    }
+
+    /**
+     * 基于请求参数 Map、结果类型与投影映射字典构建安全 QueryWrapper
+     *
+     * @param parameterMap      请求参数 Map
+     * @param resultClass       目标结果类型
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(Map<String, ?> parameterMap, Class<T> resultClass, Map<String, String> projectionMapping) {
         DynamicQueryRequest request = DynamicQueryParser.parse(parameterMap);
-        return buildWrapper(request, entityClass);
+        return buildWrapper(request, resultClass, projectionMapping);
     }
 
     /**
@@ -202,11 +280,38 @@ public final class DynamicQueryHelper {
      * @return 装配完成且安全过滤后的 QueryWrapper 实例
      */
     public static <T> QueryWrapper<T> buildWrapper(Object dto, Class<T> entityClass) {
+        return buildWrapper(dto, entityClass, null);
+    }
+
+    /**
+     * 基于业务查询 DTO 对象与投影映射字典构建安全 QueryWrapper（多表联表场景）
+     *
+     * @param dto               业务查询 DTO
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(Object dto, Map<String, String> projectionMapping) {
+        return buildWrapper(dto, null, projectionMapping);
+    }
+
+    /**
+     * 基于业务查询 DTO 对象、结果类型与投影映射字典构建安全 QueryWrapper（全功能多表联表模式）
+     *
+     * @param dto               业务查询 DTO
+     * @param resultClass       目标结果类型（支持 VO @QueryField 逃生通道）
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param <T>               泛型
+     * @return 装配完成且安全过滤后的 QueryWrapper 实例
+     */
+    public static <T> QueryWrapper<T> buildWrapper(Object dto, Class<T> resultClass, Map<String, String> projectionMapping) {
         ensureEnabled();
-        Objects.requireNonNull(entityClass, "实体类型 entityClass 不能为 null");
+        if (resultClass == null && (projectionMapping == null || projectionMapping.isEmpty())) {
+            throw new IllegalArgumentException("动态查询必须提供结果类型 resultClass 或有效的投影映射字典 projectionMapping");
+        }
 
         if (dto instanceof DynamicQueryRequest request) {
-            return buildWrapper(request, entityClass);
+            return buildWrapper(request, resultClass, projectionMapping);
         }
 
         QueryWrapper<T> wrapper = new QueryWrapper<>();
@@ -214,7 +319,7 @@ public final class DynamicQueryHelper {
             return wrapper;
         }
 
-        EntityMetaInfo metaInfo = getOrCreateEntityMeta(entityClass);
+        EntityMetaInfo metaInfo = (resultClass != null) ? getOrCreateEntityMeta(resultClass) : null;
         List<Field> fields = getAllDeclaredFields(dto.getClass());
 
         for (Field field : fields) {
@@ -223,15 +328,22 @@ public final class DynamicQueryHelper {
             }
             QueryField queryField = field.getAnnotation(QueryField.class);
             String property;
-            if (queryField != null && !queryField.column().trim().isEmpty()) {
-                property = queryField.column().trim();
-            } else if (queryField != null && !queryField.property().trim().isEmpty()) {
-                property = queryField.property().trim();
+            String explicitColumn = null;
+            if (queryField != null) {
+                String val = !queryField.value().trim().isEmpty() ? queryField.value().trim() : queryField.column().trim();
+                if (!val.isEmpty()) {
+                    explicitColumn = val;
+                }
+                if (!queryField.property().trim().isEmpty()) {
+                    property = queryField.property().trim();
+                } else {
+                    property = field.getName();
+                }
             } else {
                 property = field.getName();
             }
 
-            if (!SortItem.isValidProperty(property)) {
+            if (!isValidFieldOrProperty(property)) {
                 continue;
             }
 
@@ -249,14 +361,19 @@ public final class DynamicQueryHelper {
                 continue;
             }
 
-            String normalizedField = property.toLowerCase(Locale.ROOT);
-            if (metaInfo.isIgnored(normalizedField)) {
-                log.warn("DTO 查询属性命中敏感黑名单，已安全忽略: {}", property);
-                continue;
+            String targetColumn;
+            if (explicitColumn != null) {
+                String normCol = explicitColumn.toLowerCase(Locale.ROOT);
+                if (HEURISTIC_SENSITIVE_PROPERTIES.contains(normCol)) {
+                    log.warn("DTO 查询列命中敏感黑名单，已安全忽略: {}", explicitColumn);
+                    continue;
+                }
+                targetColumn = explicitColumn;
+            } else {
+                targetColumn = resolveColumn(property, projectionMapping, metaInfo);
             }
-            FieldMetaInfo fieldMeta = metaInfo.getField(normalizedField);
-            if (fieldMeta == null) {
-                log.warn("DTO 查询属性未在目标实体白名单中，已安全忽略: {}", property);
+
+            if (targetColumn == null) {
                 continue;
             }
 
@@ -265,12 +382,12 @@ public final class DynamicQueryHelper {
             if (value instanceof Collection<?> col) {
                 values = new ArrayList<>(col);
             }
-            applyCondition(wrapper, fieldMeta.getColumn(), operator, value, values);
+            applyCondition(wrapper, targetColumn, operator, value, values);
         }
 
         // 若 DTO 继承了 PageQuery，自动处理其排序规则
         if (dto instanceof PageQuery pageQuery) {
-            applySorts(wrapper, pageQuery, metaInfo);
+            applySorts(wrapper, pageQuery, projectionMapping, metaInfo);
         }
 
         return wrapper;
@@ -283,6 +400,61 @@ public final class DynamicQueryHelper {
         if (!enabled) {
             throw new BusinessException("动态查询引擎已全局禁用 (ateng.boot.mybatis-plus.dynamic-query.enabled=false)");
         }
+    }
+
+    /**
+     * 校验字段名称或列名是否符合安全白名单（仅允许字母、数字、下划线及至多一个点号）
+     */
+    private static boolean isValidFieldOrProperty(String field) {
+        return field != null && SAFE_PROPERTY_OR_COLUMN_PATTERN.matcher(field.trim()).matches();
+    }
+
+    /**
+     * 智能解析动态查询或排序属性对应的目标物理列或表达式
+     * 依次按敏感词黑名单拦截、AST 投影字典自愈推导、实体/VO 元数据白名单（含 @QueryField 逃生通道）匹配
+     *
+     * @param property          前端或调用方传递的属性名称（如 "deptName"）
+     * @param projectionMapping 外部/XML 动态 SQL 的 AST 投影字典
+     * @param metaInfo          实体或 VO 元数据模型
+     * @return 底层真实物理列或表达式（如 "d.name"），无法匹配或命中黑名单时返回 null
+     */
+    private static String resolveColumn(String property, Map<String, String> projectionMapping, EntityMetaInfo metaInfo) {
+        if (property == null || property.trim().isEmpty()) {
+            return null;
+        }
+        String prop = property.trim();
+        String normalized = prop.toLowerCase(Locale.ROOT);
+
+        // 1. 启发式敏感黑名单过滤
+        if (HEURISTIC_SENSITIVE_PROPERTIES.contains(normalized)) {
+            log.warn("动态查询属性命中敏感黑名单，已安全忽略: {}", prop);
+            return null;
+        }
+
+        // 2. 检查实体/VO 元数据中的显式黑名单（如 @DynamicQueryIgnore）
+        if (metaInfo != null && metaInfo.isIgnored(normalized)) {
+            log.warn("动态查询属性命中安全黑名单或敏感标记，已安全忽略: {}", prop);
+            return null;
+        }
+
+        // 3. 第一优先级：AST 投影字典自愈推导
+        if (projectionMapping != null && !projectionMapping.isEmpty()) {
+            String astColumn = DynamicSqlProjectionResolver.findColumn(projectionMapping, prop);
+            if (astColumn != null) {
+                return astColumn;
+            }
+        }
+
+        // 4. 第二优先级：实体/VO 白名单（含 @QueryField("d.dept_name") 逃生通道）
+        if (metaInfo != null) {
+            FieldMetaInfo fieldMeta = metaInfo.getField(normalized);
+            if (fieldMeta != null) {
+                return fieldMeta.getColumn();
+            }
+        }
+
+        log.warn("动态查询属性未在 AST 投影字典或实体白名单中声明，已安全忽略: {}", prop);
+        return null;
     }
 
     /**
@@ -353,7 +525,7 @@ public final class DynamicQueryHelper {
     /**
      * 将 PageQuery 中携带的 sorts 列表安全校验后装配至 QueryWrapper
      */
-    private static <T> void applySorts(QueryWrapper<T> wrapper, PageQuery pageQuery, EntityMetaInfo metaInfo) {
+    private static <T> void applySorts(QueryWrapper<T> wrapper, PageQuery pageQuery, Map<String, String> projectionMapping, EntityMetaInfo metaInfo) {
         if (pageQuery.getSorts() == null || pageQuery.getSorts().isEmpty()) {
             return;
         }
@@ -362,20 +534,15 @@ public final class DynamicQueryHelper {
                 continue;
             }
             String prop = sort.getProperty().trim();
-            if (!SortItem.isValidProperty(prop)) {
+            if (!isValidFieldOrProperty(prop)) {
+                log.warn("排序属性检测到非法语法或特殊字符，已安全忽略: {}", prop);
                 continue;
             }
-            String normalized = prop.toLowerCase(Locale.ROOT);
-            if (metaInfo.isIgnored(normalized)) {
-                log.warn("排序属性命中敏感黑名单，已安全忽略: {}", prop);
+            String sortColumn = resolveColumn(prop, projectionMapping, metaInfo);
+            if (sortColumn == null) {
                 continue;
             }
-            FieldMetaInfo fieldMeta = metaInfo.getField(normalized);
-            if (fieldMeta == null) {
-                log.warn("排序属性未在实体白名单中声明，已安全忽略: {}", prop);
-                continue;
-            }
-            wrapper.orderBy(true, sort.isAsc(), fieldMeta.getColumn());
+            wrapper.orderBy(true, sort.isAsc(), sortColumn);
         }
     }
 
@@ -419,7 +586,7 @@ public final class DynamicQueryHelper {
     }
 
     /**
-     * 解析实体类型的白名单与黑名单元数据
+     * 解析实体类型的白名单与黑名单元数据（支持 VO @QueryField 逃生通道）
      */
     private static EntityMetaInfo resolveEntityMeta(Class<?> entityClass) {
         Map<String, FieldMetaInfo> propertyMap = new ConcurrentHashMap<>();
@@ -431,7 +598,7 @@ public final class DynamicQueryHelper {
         // 1. 扫描黑名单注解与非物理字段
         for (Field field : allFields) {
             String propName = field.getName().toLowerCase(Locale.ROOT);
-            String colName = com.baomidou.mybatisplus.core.toolkit.StringUtils.camelToUnderline(field.getName()).toLowerCase(Locale.ROOT);
+            String colName = DynamicSqlProjectionResolver.camelToUnderline(field.getName()).toLowerCase(Locale.ROOT);
 
             boolean ignored = false;
             // 标注 @DynamicQueryIgnore
@@ -507,17 +674,29 @@ public final class DynamicQueryHelper {
                 }
             }
         } else {
-            // 未初始化 TableInfo 时（如轻量级单测），依托反射构建白名单
+            // 未初始化 TableInfo 时（如轻量级单测或纯 VO），依托反射构建白名单（同时支持 @QueryField 逃生通道）
             for (Field field : allFields) {
                 if (Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
                     continue;
                 }
                 String prop = field.getName();
-                String col = com.baomidou.mybatisplus.core.toolkit.StringUtils.camelToUnderline(prop);
+                String col = DynamicSqlProjectionResolver.camelToUnderline(prop);
+
+                // 检查 @TableField 显式列名
                 TableField tf = field.getAnnotation(TableField.class);
                 if (tf != null && !tf.value().trim().isEmpty()) {
                     col = tf.value().trim();
                 }
+
+                // 检查 @QueryField 逃生通道（支持带表别名列，如 "d.dept_name"）
+                QueryField qf = field.getAnnotation(QueryField.class);
+                if (qf != null) {
+                    String val = !qf.value().trim().isEmpty() ? qf.value().trim() : qf.column().trim();
+                    if (!val.isEmpty()) {
+                        col = val;
+                    }
+                }
+
                 if (!ignoredProperties.contains(prop.toLowerCase(Locale.ROOT))
                         && !ignoredProperties.contains(col.toLowerCase(Locale.ROOT))) {
                     FieldMetaInfo meta = new FieldMetaInfo(prop, col, field.getType());
