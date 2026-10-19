@@ -49,6 +49,11 @@
 | **动态查询** | URL Query 与 Map 高阶语法解析器 | `DynamicQueryParser` | - | `parse(String)` / `parse(Map)` / `parseToWrapper(String, Class<T>)`，支持冒号操作符、波浪线 between 切分与 `or_组号` 作用域分组解析 | `DynamicQueryParserTest` |
 | **动态查询** | 动态查询请求与条件契约 | `DynamicQueryRequest`, `QueryCondition`, `QueryOperator` | - | 13 种受控操作符与流式链式构建，支持 `or(orGroup, condition)` 独立嵌套 OR 逻辑块 | `DynamicQueryHelperTest` / `DynamicQueryParserTest` |
 | **动态查询** | 字段映射与敏感防卫注解 | `@QueryField`, `@DynamicQueryIgnore` | - | `@QueryField(property, operator, ignoreNull)` 声明式 DTO 驱动转译；`@DynamicQueryIgnore` 实体敏感列防越权探测 | `DynamicQueryHelperTest` |
+| **变更审计** | 声明式数据变更审计注解 | `@AuditChange` | - | 声明于实体类或 Mapper 接口/方法上，声明开启字段级 Diff 变更追踪与前后快照捕获，支持属性包含与排除 | `DataChangeAuditInterceptorTest` |
+| **变更审计** | 数据变更 Diff 审计拦截器 | `DataChangeAuditInterceptor` | `ateng.boot.mybatis-plus.audit-change.enabled`<br>`ateng.boot.mybatis-plus.audit-change.max-diff-rows`<br>`ateng.boot.mybatis-plus.audit-change.async`<br>`ateng.boot.mybatis-plus.audit-change.publish-event` | 拦截 MyBatis `Executor.update`，事务提交后（`afterCommit`）异步分发，集成超限熔断降级与缺 Provider 自动休眠 | `DataChangeAuditInterceptorTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **变更审计** | 数据变更审计消费 SPI | `DataChangeAuditProvider` | - | 函数式消费 SPI，供业务自由对接审计日志落盘、Elasticsearch 或消息队列 | `DataChangeAuditInterceptorTest` |
+| **变更审计** | 数据变更审计 Spring 事件 | `DataChangeEvent` | `ateng.boot.mybatis-plus.audit-change.publish-event` | 变更提交后发布 Spring 原生应用事件，供下游声明式 `@EventListener` 解耦监听 | `DataChangeAuditInterceptorTest` |
+| **变更审计** | 数据变更审计上下文持有者 | `DataChangeAuditContextHolder` | - | 提供 `runWithoutAudit` 与 `callWithoutAudit` 编程式闭包，安全短路跳过当前线程的变更审计 | `DataChangeAuditInterceptorTest` |
 
 ---
 
@@ -421,6 +426,11 @@ ateng:
         auto-script-wrap: true    # 是否自动为未包裹 <script> 根标签的动态 SQL 容错包裹（默认 true）
         locations:                # 默认外部 XML 资源扫描路径
           - "classpath*:dynamic-sql/**/*.xml"
+      audit-change:
+        enabled: false            # 是否启用数据变更 Diff 审计拦截器（默认 false，按需开启）
+        max-diff-rows: 100        # 单次更新最大 Diff 计算行数阈值（默认 100 行），超限时自动熔断降级
+        async: true               # 是否在事务提交后异步调度投递审计记录（默认 true）
+        publish-event: true       # 是否发布 Spring DataChangeEvent 事件（默认 true）
 ```
 
 ---
@@ -947,6 +957,111 @@ QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, User
    `DynamicQueryParser` 作为 Web 接入层最外围解析器，遇到任何非法操作符名称、畸形语法字符或非法的 Between 格式，均由前置卫语句记录 DEBUG/WARN 日志后平滑丢弃该条件，绝不向外抛出未捕获异常导致 HTTP 500。
 3. **波浪线 `~` 语法防错保障**：
    针对时间字符串范围查询（如 `2026-01-01 00:00:00~2026-12-31 23:59:59`），传统逗号 `,` 或冒号 `:` 分隔符极易与时间文本中的时分秒冒号产生歧义导致解析错乱；本框架原生支持并推行波浪线 `~` 作为 Between 边界切分符。
+
+---
+
+## 14. 数据变更 Diff 审计拦截器与三级开关治理 (AuditChange & DataChangeAuditProvider)
+
+### 场景痛点
+在金融、电商交易及核心业务系统中，追踪“谁在什么时间把什么数据的哪个字段从什么值改成了什么值”是合规审计的核心诉求。传统方案要么依赖应用层手写比对侵入业务，要么依赖数据库 CDC（Canal/Debezium）无法捕获当前登录操作人、租户 ID 与全链路 TraceId。
+
+`ateng-boot-mybatis-plus` 提供纯原生 MyBatis 拦截器 `DataChangeAuditInterceptor` 与声明式 `@AuditChange` 注解，捕获 UPDATE/DELETE 前置快照并自动生成字段级 Diff 增量记录。
+
+---
+
+### 1. 最小起步体验 (Happy Path & Out-of-the-Box)
+
+#### 步骤一：实体声明 `@AuditChange`
+```java
+@Getter
+@Setter
+@TableName("t_user")
+@AuditChange(description = "用户资料变更")
+public class UserEntity extends BaseEntity {
+    private String name;
+    private String email;
+    private Integer age;
+}
+```
+
+#### 步骤二：启用变更审计配置
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      audit-change:
+        enabled: true             # 启用变更审计拦截器
+        max-diff-rows: 100        # 单次更新最大 Diff 计算行数阈值（默认 100 行）
+```
+
+#### 步骤三：注册审计消费 SPI（或监听 Spring 事件）
+```java
+@Component
+public class ConsoleDataChangeAuditProvider implements DataChangeAuditProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(ConsoleDataChangeAuditProvider.class);
+
+    @Override
+    public void onDataChanged(List<DataChangeRecord> records) {
+        for (DataChangeRecord record : records) {
+            log.info("捕获数据变更: 表名={}, ID={}, 操作人={}, 变动字段数={}",
+                    record.getTableName(), record.getEntityId(), record.getOperator(), record.getDiffs().size());
+            for (FieldDiff diff : record.getDiffs()) {
+                log.info("  字段 [{}] 由 [{}] 变更为 [{}]", diff.getPropertyName(), diff.getOldValue(), diff.getNewValue());
+            }
+        }
+    }
+}
+```
+
+---
+
+### 2. 生产扩展与接管 (Customization & Extensibility)
+
+#### 方案一：字段级包含与排除微调
+对于频繁更新的高频时间戳、操作人或敏感密码凭据，可通过 `includeFields` 与 `excludeFields` 显式控制：
+```java
+@AuditChange(
+    includeFields = {"email", "phone"},  // 仅关心核心联系方式变动
+    excludeFields = {"updateTime", "updateBy"} // 排除审计字段干扰
+)
+public class UserSecurityEntity {
+    private String email;
+    private String phone;
+    private LocalDateTime updateTime;
+    private String updateBy;
+}
+```
+
+#### 方案二：基于 Spring ApplicationEvent 解耦广播
+除了 SPI 接口外，拦截器在变更提交后默认发布 `DataChangeEvent`，下游可在任意 Spring Bean 中通过 `@EventListener` 异步消费：
+```java
+@Component
+public class AuditEventListener {
+
+    @EventListener
+    public void handleDataChange(DataChangeEvent event) {
+        List<DataChangeRecord> records = event.getRecords();
+        // 投递至 Elasticsearch、消息队列或日志审计中心
+    }
+}
+```
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **三级立体开关治理与零开销放行**：
+   - **第一级（全局配置）**：`audit-change.enabled=false` 时拦截器完全不生效；若容器中缺 `DataChangeAuditProvider` 且未开启 `publishEvent` 时自动休眠，绝不发起任何前置快照查询；
+   - **第二级（类与方法注解）**：仅对标注了 `@AuditChange` 的实体或 Mapper 方法生效，普通未标注实体零快照开销直接 `proceed()` 放行；
+   - **第三级（编程式闭包）**：业务批量洗数据、系统数据初始化或系统内部补偿时，可通过 `DataChangeAuditContextHolder.runWithoutAudit(() -> { ... })` 线程安全跳过审计抓取。
+2. **防爆熔断守卫 (Max Diff Rows Circuit Breaker)**：
+   若批量更新或条件更新受影响行数超过配置阈值 `max-diff-rows`（默认 100 行），拦截器立即停止逐行抓取快照与逐行 Diff 比对，自动熔断降级为摘要记录（`degraded = true`，记录表名、影响行数与操作人），从根源杜绝深层复杂 SQL 批量更新导致内存爆表 OOM。
+3. **事务提交后投递不变量 (Commit-Only Dispatch)**：
+   通过 Spring 原生 `TransactionSynchronizationManager` 注册 `afterCommit` 回调，确保变更记录仅在当前数据库事务**真正提交成功后**才投递至 SPI 或发布事件；若业务事务发生异常回滚（Rollback），审计记录自动作废丢弃，绝不向消费端投递“幻影变更数据”。
+4. **旁路容错不扰业务 (Non-Intrusive Isolation)**：
+   变更审计属于系统旁路保障功能，拦截器内部包含严密的前置卫语句与全局异常兜底拦截。即使前置快照因特殊表结构失败，拦截器仅打印告警日志并安全降级，绝不影响主业务事务的正常执行与持久化。
+
 
 
 

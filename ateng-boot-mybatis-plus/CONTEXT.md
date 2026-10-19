@@ -192,4 +192,8 @@ _Avoid_: AuditContext, ChangeSession, AuditHolder
 原生单条 ANSI CASE WHEN 批量更新 SQL 注入器节点，具备并发防死锁（AntiDeadlockSqlSource 内存主键正序重排）与动态列空值回退保护能力。
 _Avoid_: BatchUpdater, CaseWhenUpdater, FastBatchUpdate
 
+**DataChangeAuditInterceptor**:
+MyBatis 原生 Executor 拦截器，捕获 UPDATE/DELETE 前置快照并计算字段级 Diff 增量，集成超限熔断降级与事务提交后异步分发。
+_Avoid_: AuditInterceptor, ChangeTracker, DiffInterceptor
+
 

@@ -45,6 +45,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
+import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor;
+import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditProvider;
+import java.util.concurrent.Executor;
 import java.util.List;
 
 
@@ -348,5 +351,32 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.guard", name = "dynamic-datasource", havingValue = "true", matchIfMissing = true)
     public DynamicDatasourceGuard dynamicDatasourceGuard(ApplicationContext applicationContext) {
         return new DynamicDatasourceGuard(applicationContext, properties);
+    }
+
+    /**
+     * 注册数据变更 Diff 审计拦截器
+     *
+     * @param auditProvider 可选的数据变更审计消费 SPI 提供者
+     * @param taskExecutorProvider 可选的受管异步任务执行器提供者
+     * @param eventPublisher Spring 事件发布器
+     * @param currentUserProvider 可选的当前登录用户提供者
+     * @return 数据变更审计拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DataChangeAuditInterceptor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.audit-change", name = "enabled", havingValue = "true")
+    public DataChangeAuditInterceptor dataChangeAuditInterceptor(
+            ObjectProvider<DataChangeAuditProvider> auditProvider,
+            ObjectProvider<Executor> taskExecutorProvider,
+            ApplicationEventPublisher eventPublisher,
+            ObjectProvider<CurrentUserProvider> currentUserProvider) {
+        return new DataChangeAuditInterceptor(
+                properties.getAuditChange(),
+                auditProvider.getIfAvailable(),
+                taskExecutorProvider.getIfAvailable(),
+                eventPublisher,
+                currentUserProvider.getIfAvailable(),
+                properties.getAudit().getDefaultOperator()
+        );
     }
 }

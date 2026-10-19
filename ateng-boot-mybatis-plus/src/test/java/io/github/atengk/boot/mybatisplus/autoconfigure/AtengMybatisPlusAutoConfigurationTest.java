@@ -395,14 +395,36 @@ class AtengMybatisPlusAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("当业务显式提供自定义 DynamicDatasourceGuard 时优先使用业务自定义 Bean")
-    void shouldPreferCustomDynamicDatasourceGuardBean() {
-        io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard customGuard = new io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard();
+    @DisplayName("默认配置下不自动装配 DataChangeAuditInterceptor（默认 false 按需开启）")
+    void shouldNotAutoConfigureDataChangeAuditInterceptorByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class);
+        });
+    }
 
-        contextRunner.withBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class, () -> customGuard)
+    @Test
+    @DisplayName("当配置 ateng.boot.mybatis-plus.audit-change.enabled=true 时成功装配 DataChangeAuditInterceptor")
+    void shouldAutoConfigureDataChangeAuditInterceptorWhenEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.audit-change.enabled=true")
                 .run(context -> {
-                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class);
-                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard.class)).isSameAs(customGuard);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 DataChangeAuditInterceptor 时优先使用业务自定义 Bean")
+    void shouldPreferCustomDataChangeAuditInterceptorBean() {
+        io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor customInterceptor =
+                new io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor(
+                        new io.github.atengk.boot.mybatisplus.properties.AuditChangeProperties(),
+                        null, null, null, "CUSTOM"
+                );
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.audit-change.enabled=true")
+                .withBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class, () -> customInterceptor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.class)).isSameAs(customInterceptor);
                 });
     }
 }

@@ -101,6 +101,12 @@ public class MybatisPlusProperties {
     @NestedConfigurationProperty
     private GuardProperties guard = new GuardProperties();
 
+    /**
+     * 数据变更 Diff 审计拦截器配置
+     */
+    @NestedConfigurationProperty
+    private AuditChangeProperties auditChange = new AuditChangeProperties();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -211,6 +217,14 @@ public class MybatisPlusProperties {
 
     public void setDynamicQuery(DynamicQueryProperties dynamicQuery) {
         this.dynamicQuery = dynamicQuery;
+    }
+
+    public AuditChangeProperties getAuditChange() {
+        return auditChange;
+    }
+
+    public void setAuditChange(AuditChangeProperties auditChange) {
+        this.auditChange = auditChange;
     }
 
 
