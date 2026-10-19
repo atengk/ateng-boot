@@ -25,6 +25,7 @@
 | **并发流控** | 滑动窗口严格限流 | `RedisAtomicUtil` | - | `isAllowedBySlidingWindow(key, maxLimit, window)`：基于 ZSet 毫秒级时间戳实现精准滑动窗口防突刺 | `RedisAtomicUtilTest`<br>`SampleRedisIntegrationTest` |
 | **并发流控** | 分布式令牌桶流控 | `RedisRateLimiterClient` | - | `tryAcquire(key, rate, interval)` / `tryAcquire(key, rate, interval, permits, timeout)` / `acquire` / `delete`：基于 Redisson 令牌桶平滑流控 | `RedisRateLimiterClientTest`<br>`SampleRedisIntegrationTest` |
 | **缓存增强** | 多级 TTL 缓存管理 | `RedisCacheManager` / `AtengRedisAutoConfiguration` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.expires` | 个性化为不同 `@Cacheable(value = "...")` 声明独立 TTL；支持空值防穿透 | `AtengRedisAutoConfigurationTest` |
+| **缓存防卫** | 统一缓存执行模板 | `RedisCacheTemplate` | `ateng.boot.redis.cache.enabled`<br>`ateng.boot.redis.cache.default-ttl`<br>`ateng.boot.redis.cache.null-ttl`<br>`ateng.boot.redis.cache.max-jitter`<br>`ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.cache-null-values`<br>`ateng.boot.redis.cache.lock-wait-time` | `getOrLoad(key, clazz, loader)` / `getOrLoad(key, typeRef, loader)`：单键 DCL + 互斥锁防击穿 + 短 TTL 空哨兵防穿透 + 随机抖动防雪崩 + 争锁超时降级<br>`batchGetOrLoad(keys, mapper, clazz, batchLoader)`：批量 MGET 探测 + 字典序排序锁 + Pipeline 回写彻底杜绝 N+1<br>`get` / `put` / `evict` / `batchEvict` / `hasKey`：对称运维门面 | `RedisCacheTemplateTest`<br>`SampleRedisIntegrationTest` |
 | **缓存增强** | 随机抖动防雪崩 | `JitterTtlFunction` | `ateng.boot.redis.cache.jitter-enabled`<br>`ateng.boot.redis.cache.max-jitter` | 实现 `RedisCacheWriter.TtlFunction`，在基准 TTL 上叠加 0 ~ `maxJitter` 动态偏移量打散失效时刻 | `JitterTtlFunctionTest`<br>`AtengRedisAutoConfigurationTest` |
 | **序列化** | 纯净安全序列化工厂 | `RedisSerializerFactory` | - | `createSafeObjectMapper()` / `jsonSerializer(clazz)` / `stringSerializer()`：无 `@class` 多态 RCE 漏洞，内置 JSR-310 与 Long 精度保护 | `RedisSerializerFactoryTest` |
 
@@ -562,7 +563,151 @@ public class DictService {
 
 ---
 
-## 10. 完整 YAML 配置属性清单
+## 10. 全景缓存防卫模板 (`RedisCacheTemplate`)
+
+### 场景痛点
+在高并发与海量请求场景下，传统的简单缓存读写存在四大致命缺陷：
+1. **缓存击穿 (Cache Breakdown)**：极高并发热点 Key 失效瞬间，海量请求同时穿透至底层数据库，瞬间打满连接池导致数据库宕机；
+2. **缓存穿透 (Cache Penetration)**：恶意请求查询大量数据库中根本不存在的非法 Key，绕过缓存持续冲击持久层；
+3. **缓存雪崩 (Cache Avalanche)**：大批量热点 Key 设置了完全一致的过期时间，在同一时刻集中过期，DB 瞬间承受暴增压力；
+4. **批量查询 N+1 危机 (Batch N+1 Crisis)**：循环单键调用 `getOrLoad` 导致 $N$ 次 Redis 网络往返和 $N$ 次数据库单条查询，吞吐量断崖式暴跌。
+
+### 全景防卫体系
+`RedisCacheTemplate` 融合 Spring Data Redis 与 Redisson 双核能力，构筑了严密的多维防卫流水线：
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        业务调用方 (Service / Controller)                │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. 第一重快速检查 (Fast Path)                                            │
+│    • MGET / GET 快速探测 Redis 缓存                                    │
+│    • 命中空值哨兵 (__ATENG_CACHE_NULL__) ➔ 防穿透生效，立即返回 null   │
+│    • 命中有效业务对象 ➔ 反序列化安全转换，立即返回                       │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ 缓存未命中 (Cache Miss)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 2. 分布式互斥锁防击穿 (Redisson Lock)                                  │
+│    • 单键：获取防击穿分布式互斥锁 (`lock:cache:{key}`)                 │
+│    • 批量：按缺失键字典序排序加锁，彻底杜绝多键加锁死锁               │
+│    • 争锁超时容灾降级：超时（默认 3s）记录 WARN 平滑穿透查库，不阻断业务│
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ 获取互斥锁成功
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 3. DCL 第二重检查 (Double-Checked Locking)                             │
+│    • 再次 GET / MGET，若并发前序线程已回填，立即返回无需查库           │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ 依然缺失
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 4. 批量/单条回源查库 (Database / Loader)                               │
+│    • 单键：执行 loader.apply(key) 回源查库                             │
+│    • 批量：单次调用 batchLoader.apply(missingKeys) 批量查询，杜绝 N+1   │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ 回源数据
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 5. 回填缓存与防雪崩/防穿透                                              │
+│    • 查库有值：叠加 0 ~ maxJitter 随机抖动打散过期时间，Pipeline 批量回填│
+│    • 查库为空：回写短 TTL（默认 5m）空哨兵，杜绝后续缓存穿透            │
+│    • finally 严密释放分布式锁（当前线程持有才释放）                    │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 核心代码示例（锚定 `RedisSampleService`）
+
+#### 1. 单商品安全查询（防击穿 + 防穿透 + 防雪崩）
+```java
+@Autowired
+private RedisCacheTemplate redisCacheTemplate;
+
+public ProductVO getProduct(Long productId) {
+    return redisCacheTemplate.getOrLoad(
+            "product:" + productId,
+            ProductVO.class,
+            key -> {
+                // 仅在真实未命中时回源查库，查库为空会自动回填短 TTL 空哨兵
+                log.info("[RedisSampleService] 缓存未命中，回源模拟数据库查询: productId={}", productId);
+                return productRepository.selectById(productId);
+            }
+    );
+}
+```
+
+#### 2. 批量商品安全查询（MGET + 字典序排序锁 + Pipeline 批量回写，彻底杜绝 N+1）
+```java
+public Map<Long, ProductVO> batchGetProducts(List<Long> productIds) {
+    return redisCacheTemplate.batchGetOrLoad(
+            productIds,
+            id -> "product:" + id,
+            ProductVO.class,
+            missingIds -> {
+                // 仅对真正缺失的键单次批量查库，100% 杜绝 N+1 查询
+                log.info("[RedisSampleService] 批量缓存未命中，单次批量回源模拟数据库: missingCount={}", missingIds.size());
+                return productRepository.selectBatchIds(missingIds)
+                        .stream().collect(Collectors.toMap(ProductVO::getProductId, Function.identity()));
+            }
+    );
+}
+```
+
+#### 3. 对称运维门面
+```java
+// 主动驱逐单键缓存
+redisCacheTemplate.evict("product:1001");
+
+// 批量驱逐多键缓存
+redisCacheTemplate.batchEvict(List.of("product:1001", "product:1002"));
+
+// 键存在性检查
+boolean exists = redisCacheTemplate.hasKey("product:1001");
+```
+
+### 真实控制台与响应（锚定 `SampleRedisIntegrationTest`）
+单商品冷启动未命中回源后，再次请求直接命中 Redis 缓存（DB 访问计数维持为 1）：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "productId": "1001",
+    "name": "iPhone 16 Pro",
+    "price": 7999.00,
+    "stock": 50
+  },
+  "success": true
+}
+```
+批量查询 `[1001, 1002, 9999]` 一次性批量探测与单次批量回源（非存在商品 9999 被写入短 TTL 空哨兵防穿透）：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "1001": {
+      "productId": "1001",
+      "name": "iPhone 16 Pro",
+      "price": 7999.00,
+      "stock": 50
+    },
+    "1002": {
+      "productId": "1002",
+      "name": "MacBook Pro M4",
+      "price": 12999.00,
+      "stock": 20
+    }
+  },
+  "success": true
+}
+```
+
+---
+
+## 11. 完整 YAML 配置属性清单
 
 ```yaml
 spring:
@@ -599,12 +744,13 @@ ateng:
           expected-insertions: 50000    # 预估元素插入总量 (默认 100,000)
           false-probability: 0.01       # 期望误判率 (默认 0.01 即 1%，取值区间 (0, 1))
       cache:
-        enabled: true                   # 是否启用增强缓存管理器 (默认 true)
+        enabled: true                   # 是否启用增强缓存基础设施 (默认 true)
         default-ttl: 30m                # 缓存默认生存时间 (默认 30m)
         jitter-enabled: true            # 是否启用随机抖动防雪崩 (默认 true)
         max-jitter: 60s                 # 随机抖动最大时间跨度 (默认 60s)
         cache-null-values: true         # 是否缓存 null 防穿透 (默认 true)
         null-ttl: 5m                    # 空对象防穿透独立短过期时间 (默认 5m)
+        lock-wait-time: 3s              # 缓存防击穿互斥锁最大等待时长，超时平滑降级直接查库 (默认 3s)
         expires:                        # 针对不同 CacheName 的个性化 TTL (`Map<String, Duration>`)
           short_cache: 10m
           long_cache: 24h
@@ -616,11 +762,11 @@ ateng:
 
 ---
 
-## 11. 生产扩展与高阶定制 (Customization & Extensibility)
+## 12. 生产扩展与高阶定制 (Customization & Extensibility)
 
 `ateng-boot-redis` 坚持 `@ConditionalOnMissingBean` 缺省守卫铁律，支持企业级生产场景深度定制与平滑无缝接管：
 
-### 11.1 自定义 RedissonClient 接管
+### 12.1 自定义 RedissonClient 接管
 当现有自动化配置无法满足集群特异性参数（如特定 SSL 证书、自定义编解码管道或监控指标导出）时，下游应用仅需声明同类型 Bean 即可 100% 接管 Redisson 装配：
 
 ```java
@@ -639,7 +785,7 @@ public class CustomRedissonConfiguration {
 }
 ```
 
-### 11.2 编程式延时队列平滑接管
+### 12.2 编程式延时队列平滑接管
 `RedisDelayedQueue` 既支持作为 Spring 托管单例由容器注入，也支持在离线测试或轻量客户端中通过构造器原生初始化：
 
 ```java
@@ -647,7 +793,7 @@ RedisDelayedQueue delayedQueue = new RedisDelayedQueue(redissonClient, objectMap
 delayedQueue.offer("custom_queue", new TaskPayload(1001L), Duration.ofMinutes(10));
 ```
 
-### 11.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
+### 12.3 自定义死信失败处理 SPI 接管 (`DelayedQueueFailureHandler`)
 框架默认注入 `LoggingDelayedQueueFailureHandler` 打印 ERROR 堆栈日志。当下游需要对接企业微信/钉钉报警、流转告警中心或落库持久化时，仅需声明同类型 Bean 即可一键接管：
 
 ```java
@@ -662,7 +808,7 @@ public class AlertDelayedQueueFailureHandler implements DelayedQueueFailureHandl
 }
 ```
 
-### 11.4 编程式动态布隆过滤器与原生 Redisson 句柄扩展
+### 12.4 编程式动态布隆过滤器与原生 Redisson 句柄扩展
 除了在 YAML 中静态声明，`RedisBloomFilter` 亦完全支持在动态业务运行时按需初始化与底层句柄扩展：
 
 ```java
@@ -676,22 +822,26 @@ RFuture<Boolean> future = nativeFilter.containsAsync("user_10086");
 
 ---
 
-## 12. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 13. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
-### 12.1 分布式锁防御性释放与防误删不变量
+### 13.1 分布式锁防御性释放与防误删不变量
 - **状态判断释放范式**：在 `DistributedLockTemplate.safeUnlockAndAudit` 释放锁前，强制通过 `rLock.isHeldByCurrentThread()` 校验当前线程是否真正持有锁；若因业务耗时严重超出 `leaseTime` 导致锁已被 Redis 自动过期并由其他节点的线程获取，当前线程会主动跳过 `unlock()` 并记录 WARN 日志，**绝对杜绝误删其他线程持有的锁造成级联并发穿透**。
 - **次生异常彻底隔离**：锁释放逻辑在 `finally` 块中受到全面保护并捕获底层网络断开等偶发异常，确保业务方法本身抛出的原始业务异常（如业务断言失败、校验未通过等）不被次生异常冲刷掩盖。
 
-### 12.2 看门狗自动续期与固定租期选择策略
+### 13.2 看门狗自动续期与固定租期选择策略
 - **`leaseTime <= 0`（推荐）**：默认 `leaseTime = -1ms`，此时 Redisson 会自动激活看门狗（Watchdog，默认每隔 10s 自动续期至 30s）。适合绝大多数长事务与复杂业务逻辑，只要业务节点存活即可确保持锁不中断，进程宕机后 30s 自动失效。
 - **`leaseTime > 0`（显式固定时长）**：一旦显式指定具体租期（例如 `leaseTime = 10`），Redisson 将**彻底禁用看门狗自动延期**。若业务执行耗时超出指定租期，锁将强制自动释放；请确保设置的租期显著大于业务最大可能耗时。
 
-### 12.3 延时队列生命周期消费、受管线程池与死信流转
+### 13.3 延时队列生命周期消费、受管线程池与死信流转
 - **受管线程池与四维上下文透传**：`DelayedQueueBootstrap` 消费轮询彻底淘汰裸 `Executors`，接入 Spring 容器受管的 `ThreadPoolTaskExecutor` 并挂载 `ContextCopyingTaskDecorator`，确保 TraceId、TenantId 等上下文在延时队列消费线程中合规生效；
 - **死信流转与错误隔离**：内置异常受控重试；重试耗尽后若 `deadLetterEnabled=true` 则将包装完整的 `DeadLetterMessage<T>` 投递至 `${queueName}:dlq` 并触发 `DelayedQueueFailureHandler` SPI，杜绝毒药消息阻塞队列并保障可追溯审计；
 - **平滑优雅停机**：监听容器实现了 `DisposableBean`，在 JVM 或 Spring 容器销毁时首先停止拉取新消息，等待在途任务执行完成并注销内部阻塞循环与受管线程池，保障零消息悬挂。
 
-### 12.4 布隆过滤器容量 80% 安全预警与生命周期清理
+### 13.4 布隆过滤器容量 80% 安全预警与生命周期清理
 - **元素填充率实时预警**：布隆过滤器的误判率由预估容量与已插入元素数决定。当实际元素数超过预估容量的 80%（`getUsageRate() >= 0.8`）时，`RedisBloomFilter` 在添加操作后自动记录 WARN 日志告警，提示运维及时扩容或重建双过滤器平滑迁移；
 - **对称物理销毁**：通过 `RedisBloomFilter.delete(filterName)` 可一键原子销毁底层 Redis 位图，释放内存占用。
+
+### 13.5 RedisCacheTemplate 争锁超时容灾与死锁防御
+- **争锁超时平滑降级（Resilience Pass-Through）**：当极端高并发争抢热点 Key 时，若等待互斥锁超时（超出 `lockWaitTime`，默认 3s），模板记录 WARN 日志后平滑降级穿透查库，并将查库结果异步尝试回填 Redis，严禁向外抛出异常阻断正常业务流；
+- **批量缺失键字典序排序加锁**：在 `batchGetOrLoad` 处理并发缺失多键时，所有物理锁 Key 严格执行字典序升序排序（`Collections.sort(lockKeys)`）后再申请 MultiLock，从数学机制上杜绝并发请求中不同顺序加锁引发的死锁悬挂隐患。
 

@@ -259,6 +259,11 @@ public class RedisProperties {
          * 针对特定 cacheName 的独立过期时间配置（如 userCache: 10m, dictCache: 2h）
          */
         private Map<String, Duration> expires = new HashMap<>();
+
+        /**
+         * 缓存防击穿分布式互斥锁获取等待超时时长（默认 3 秒）
+         */
+        private Duration lockWaitTime = Duration.ofSeconds(3);
     }
 
     /**

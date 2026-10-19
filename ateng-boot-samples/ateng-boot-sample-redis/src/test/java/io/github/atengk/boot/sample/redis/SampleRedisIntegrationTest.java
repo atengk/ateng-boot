@@ -95,6 +95,7 @@ class SampleRedisIntegrationTest {
 
         private final ReentrantLock jvmLock = new ReentrantLock();
         private final BlockingQueue<Object> internalDelayQueue = new LinkedBlockingQueue<>();
+        private static final Map<String, Object> cacheStore = new ConcurrentHashMap<>();
 
         @Bean
         @Primary
@@ -160,6 +161,14 @@ class SampleRedisIntegrationTest {
                     return timeoutLock;
                 }
                 return sampleRLock;
+            });
+
+            // 批量 MultiLock 模拟
+            when(client.getMultiLock(any(RLock[].class))).thenAnswer(inv -> {
+                RLock multiLock = mock(RLock.class);
+                when(multiLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(true);
+                when(multiLock.isHeldByCurrentThread()).thenReturn(true);
+                return multiLock;
             });
 
             // 限流令牌桶模拟
@@ -253,6 +262,45 @@ class SampleRedisIntegrationTest {
             when(template.opsForValue()).thenReturn(valOps);
             when(template.opsForZSet()).thenReturn(zSetOps);
 
+            // 缓存存取与空哨兵防穿透支持
+            when(valOps.get(anyString())).thenAnswer(inv -> cacheStore.get(inv.getArgument(0)));
+            doAnswer(inv -> {
+                cacheStore.put(inv.getArgument(0), inv.getArgument(1));
+                return null;
+            }).when(valOps).set(anyString(), any(), any());
+            doAnswer(inv -> {
+                cacheStore.put(inv.getArgument(0), inv.getArgument(1));
+                return null;
+            }).when(valOps).set(anyString(), any());
+            when(valOps.multiGet(any(Collection.class))).thenAnswer(inv -> {
+                Collection<String> keys = inv.getArgument(0);
+                List<Object> list = new java.util.ArrayList<>();
+                for (String k : keys) {
+                    list.add(cacheStore.get(k));
+                }
+                return list;
+            });
+
+            when(template.delete(anyString())).thenAnswer(inv -> cacheStore.remove(inv.getArgument(0)) != null);
+            when(template.delete(any(Collection.class))).thenAnswer(inv -> {
+                Collection<?> keys = inv.getArgument(0);
+                long count = 0;
+                for (Object k : keys) {
+                    if (cacheStore.remove(k) != null) {
+                        count++;
+                    }
+                }
+                return count;
+            });
+            when(template.hasKey(anyString())).thenAnswer(inv -> cacheStore.containsKey(inv.getArgument(0)));
+            when(template.executePipelined(any(org.springframework.data.redis.core.SessionCallback.class))).thenAnswer(inv -> {
+                org.springframework.data.redis.core.SessionCallback<?> cb = inv.getArgument(0);
+                org.springframework.data.redis.core.RedisOperations ops = mock(org.springframework.data.redis.core.RedisOperations.class);
+                when(ops.opsForValue()).thenReturn(valOps);
+                cb.execute(ops);
+                return java.util.Collections.emptyList();
+            });
+
             // Pub/Sub 广播发送模拟与内存分发
             when(template.convertAndSend(anyString(), any())).thenAnswer(inv -> {
                 String ch = inv.getArgument(0);
@@ -325,6 +373,10 @@ class SampleRedisIntegrationTest {
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         org.mockito.Mockito.clearInvocations(sampleRLock, redissonClient);
+        TestRedisConfig.cacheStore.clear();
+        if (redisSampleService != null) {
+            redisSampleService.resetDbQueryCount();
+        }
     }
 
     @Autowired
@@ -359,6 +411,9 @@ class SampleRedisIntegrationTest {
 
     @Autowired(required = false)
     private DistributedLockTemplate distributedLockTemplate;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.redis.cache.template.RedisCacheTemplate redisCacheTemplate;
 
     @Test
     @DisplayName("端到端验证：@DistributedLock 声明式分布式锁切面拦截、SpEL 动态解析与加解锁协同")
@@ -621,5 +676,97 @@ class SampleRedisIntegrationTest {
                 .andExpect(jsonPath("$.data.filterName").value("user-blacklist"))
                 .andExpect(jsonPath("$.data.count").value("1"))
                 .andExpect(jsonPath("$.data.expectedInsertions").value("50000"));
+    }
+
+    @Test
+    @DisplayName("端到端验证：RedisCacheTemplate 成功装配至 Spring 上下文")
+    void shouldInjectRedisCacheTemplateSuccessfully() {
+        assertThat(redisCacheTemplate).isNotNull();
+    }
+
+    @Test
+    @DisplayName("端到端验证：单商品查询冷启动回源、命中缓存不查库与主动驱逐")
+    void shouldGetProductWithCacheHitAndEvict() throws Exception {
+        // 1. 初次查询，冷启动未命中缓存，回源查库 (DB count = 1)
+        mockMvc.perform(get("/api/redis-sample/cache/product")
+                        .param("productId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value("1001"))
+                .andExpect(jsonPath("$.data.name").value("iPhone 16 Pro"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 2. 第二次查询，命中 Redis 缓存，不触发查库 (DB count 依然为 1)
+        mockMvc.perform(get("/api/redis-sample/cache/product")
+                        .param("productId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value("1001"))
+                .andExpect(jsonPath("$.data.name").value("iPhone 16 Pro"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 3. 主动驱逐商品缓存
+        mockMvc.perform(post("/api/redis-sample/cache/product/evict")
+                        .param("productId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 4. 驱逐后再次查询，重新回源查库 (DB count 递增至 2)
+        mockMvc.perform(get("/api/redis-sample/cache/product")
+                        .param("productId", "1001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.productId").value("1001"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("端到端验证：非存在商品查询写入短 TTL 空值哨兵，杜绝缓存穿透")
+    void shouldProtectAgainstCachePenetrationForNonExistentProduct() throws Exception {
+        // 1. 初次查询不存在的商品，回源查库为空，写入空哨兵 (DB count = 1)
+        mockMvc.perform(get("/api/redis-sample/cache/product")
+                        .param("productId", "9999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 2. 第二次查询不存在的商品，命中短 TTL 空哨兵，直接拦截不查库 (DB count 依然为 1)
+        mockMvc.perform(get("/api/redis-sample/cache/product")
+                        .param("productId", "9999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").doesNotExist());
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("端到端验证：批量商品查询 MGET 探测 + 批量 Loader + Pipeline 回写，彻底消除 N+1")
+    void shouldBatchGetProductsWithAntiNPlusOne() throws Exception {
+        // 1. 批量查询 [1001, 1002, 9999]，初次缺失回源，仅触发 1 次批量 DB 查询 (DB count = 1)
+        mockMvc.perform(get("/api/redis-sample/cache/products")
+                        .param("productIds", "1001", "1002", "9999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data['1001'].name").value("iPhone 16 Pro"))
+                .andExpect(jsonPath("$.data['1002'].name").value("MacBook Pro M4"))
+                .andExpect(jsonPath("$.data['9999']").doesNotExist());
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
+
+        // 2. 再次批量查询相同列表，全部命中缓存与空哨兵，0 次 DB 查询 (DB count 依然为 1)
+        mockMvc.perform(get("/api/redis-sample/cache/products")
+                        .param("productIds", "1001", "1002", "9999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data['1001'].name").value("iPhone 16 Pro"))
+                .andExpect(jsonPath("$.data['1002'].name").value("MacBook Pro M4"));
+
+        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
     }
 }

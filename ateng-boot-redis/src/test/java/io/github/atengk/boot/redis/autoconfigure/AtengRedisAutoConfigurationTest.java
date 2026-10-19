@@ -71,6 +71,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("redisRateLimiterClient");
                     assertThat(context).doesNotHaveBean("redisAtomicUtil");
                     assertThat(context).doesNotHaveBean("redisCacheManager");
+                    assertThat(context).doesNotHaveBean("redisCacheTemplate");
                 });
     }
 
@@ -120,6 +121,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisBloomFilter");
                     assertThat(context).hasBean("bloomFilterBootstrap");
                     assertThat(context).hasBean("redisCacheManager");
+                    assertThat(context).hasBean("redisCacheTemplate");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
@@ -193,6 +195,7 @@ class AtengRedisAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisCacheManager");
+                    assertThat(context).doesNotHaveBean("redisCacheTemplate");
                 });
     }
 

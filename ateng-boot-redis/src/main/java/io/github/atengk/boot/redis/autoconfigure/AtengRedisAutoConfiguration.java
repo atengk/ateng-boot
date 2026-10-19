@@ -4,6 +4,7 @@ import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
 import io.github.atengk.boot.redis.bloom.BloomFilterBootstrap;
 import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
+import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
@@ -338,6 +339,23 @@ public class AtengRedisAutoConfiguration {
                 .cacheDefaults(defaultConfig)
                 .withInitialCacheConfigurations(initialCacheConfigs)
                 .build();
+    }
+
+    /**
+     * 装配全景缓存防击穿、防穿透、防雪崩安全执行模板 RedisCacheTemplate
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return RedisCacheTemplate 模板实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisCacheTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisCacheTemplate redisCacheTemplate(RedisTemplate<String, Object> redisTemplate,
+                                                 RedissonClient redissonClient,
+                                                 RedisProperties redisProperties) {
+        return new RedisCacheTemplate(redisTemplate, redissonClient, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
     }
 
     /**

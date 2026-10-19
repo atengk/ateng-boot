@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.redis.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.redis.model.ProductVO;
 import io.github.atengk.boot.sample.redis.service.OrderDelayQueueService;
 import io.github.atengk.boot.sample.redis.service.RedisSampleService;
 import io.github.atengk.boot.web.idempotent.annotation.Idempotent;
@@ -13,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -197,5 +200,39 @@ public class RedisSampleController {
         metrics.put("usageRate", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getUsageRate("user-blacklist"));
         metrics.put("falseProbability", io.github.atengk.boot.redis.bloom.RedisBloomFilter.getFalseProbability("user-blacklist"));
         return Result.success(metrics);
+    }
+
+    /**
+     * 单商品安全查询（通过 RedisCacheTemplate 防穿透、防击穿、防雪崩）
+     *
+     * @param productId 商品 ID
+     * @return 商品详情统一响应
+     */
+    @GetMapping("/cache/product")
+    public Result<ProductVO> getProduct(@RequestParam("productId") Long productId) {
+        return Result.success(redisSampleService.getProduct(productId));
+    }
+
+    /**
+     * 批量商品安全查询（通过 RedisCacheTemplate MGET + 排序锁 + 批量加载防 N+1）
+     *
+     * @param productIds 商品 ID 列表
+     * @return 商品映射 Map 统一响应
+     */
+    @GetMapping("/cache/products")
+    public Result<Map<Long, ProductVO>> batchGetProducts(@RequestParam("productIds") List<Long> productIds) {
+        return Result.success(redisSampleService.batchGetProducts(productIds));
+    }
+
+    /**
+     * 清理指定商品缓存
+     *
+     * @param productId 商品 ID
+     * @return 成功响应
+     */
+    @PostMapping("/cache/product/evict")
+    public Result<Void> evictProduct(@RequestParam("productId") Long productId) {
+        redisSampleService.evictProduct(productId);
+        return Result.success();
     }
 }
