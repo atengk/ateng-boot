@@ -498,32 +498,7 @@ public class DynamicSqlExecutor {
     /**
      * 将底层持久层原生查询结果流式转译为指定目标类型
      */
-    @SuppressWarnings("unchecked")
     private <T> T convertResult(Object raw, Class<T> resultType) {
-        if (raw == null) {
-            return null;
-        }
-        if (resultType == null || resultType.isInstance(raw)) {
-            return (T) raw;
-        }
-        if (resultType == Map.class) {
-            if (raw instanceof Map) {
-                return (T) raw;
-            }
-            return (T) JsonUtil.convertValue(raw, Map.class);
-        }
-        if (raw instanceof Map<?, ?> map) {
-            Map<String, Object> camelMap = new HashMap<>();
-            map.forEach((k, v) -> {
-                if (k != null) {
-                    String keyStr = k.toString();
-                    camelMap.put(keyStr, v);
-                    String camelKey = io.github.atengk.boot.mybatisplus.dynamicquery.DynamicSqlProjectionResolver.underlineToCamel(keyStr);
-                    camelMap.putIfAbsent(camelKey, v);
-                }
-            });
-            return JsonUtil.convertValue(camelMap, resultType);
-        }
-        return JsonUtil.convertValue(raw, resultType);
+        return io.github.atengk.boot.mybatisplus.dynamicquery.DynamicSqlProjectionResolver.convertValueWithCamelSupport(raw, resultType);
     }
 }

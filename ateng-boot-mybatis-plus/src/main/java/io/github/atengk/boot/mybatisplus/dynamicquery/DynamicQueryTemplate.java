@@ -257,16 +257,24 @@ public class DynamicQueryTemplate {
      */
     public long count(String statementName, DynamicQueryRequest request) {
         Objects.requireNonNull(statementName, "statementName 不能为 null");
+        if (request == null) {
+            return 0L;
+        }
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(request, mapping);
 
+        Page<?> page = new Page<>(1, 1);
         Map<String, Object> paramMap = new HashMap<>();
+        paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
         paramMap.put("ew", wrapper);
 
         String targetStatementId = prepareTargetStatement(statementId);
         List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
+        if (page.getTotal() > 0) {
+            return page.getTotal();
+        }
         return list != null ? list.size() : 0L;
     }
 
@@ -282,16 +290,24 @@ public class DynamicQueryTemplate {
             return count(statementName, request);
         }
         Objects.requireNonNull(statementName, "statementName 不能为 null");
+        if (queryDto == null) {
+            return 0L;
+        }
         String statementId = findStatementId(statementName);
         Map<String, String> mapping = resolveProjections(statementId);
         QueryWrapper<?> wrapper = DynamicQueryHelper.buildWrapper(queryDto, mapping);
 
+        Page<?> page = new Page<>(1, 1);
         Map<String, Object> paramMap = new HashMap<>();
+        paramMap.put("page", page);
         paramMap.put(Constants.WRAPPER, wrapper);
         paramMap.put("ew", wrapper);
 
         String targetStatementId = prepareTargetStatement(statementId);
         List<?> list = sqlSessionTemplate.selectList(targetStatementId, paramMap);
+        if (page.getTotal() > 0) {
+            return page.getTotal();
+        }
         return list != null ? list.size() : 0L;
     }
 
@@ -611,11 +627,13 @@ public class DynamicQueryTemplate {
             String key = statementId.trim();
             projectionCache.remove(key);
             statementSqlCache.remove(key);
+            DynamicSqlProjectionResolver.invalidate(key);
             safelyRemoveStatement(key + "$dynamicAdaptive");
             if (key.contains(".")) {
                 String shortKey = key.substring(key.lastIndexOf('.') + 1);
                 projectionCache.remove(shortKey);
                 statementSqlCache.remove(shortKey);
+                DynamicSqlProjectionResolver.invalidate(shortKey);
                 safelyRemoveStatement(shortKey + "$dynamicAdaptive");
             }
         }
@@ -882,27 +900,7 @@ public class DynamicQueryTemplate {
             return (List<V>) rawList;
         }
         return rawList.stream()
-                .map(item -> {
-                    if (item == null) {
-                        return null;
-                    }
-                    if (voClass.isInstance(item)) {
-                        return (V) item;
-                    }
-                    if (item instanceof Map<?, ?> map && voClass != Map.class) {
-                        Map<String, Object> camelMap = new HashMap<>();
-                        map.forEach((k, v) -> {
-                            if (k != null) {
-                                String keyStr = k.toString();
-                                camelMap.put(keyStr, v);
-                                String camelKey = DynamicSqlProjectionResolver.underlineToCamel(keyStr);
-                                camelMap.putIfAbsent(camelKey, v);
-                            }
-                        });
-                        return JsonUtil.convertValue(camelMap, voClass);
-                    }
-                    return JsonUtil.convertValue(item, voClass);
-                })
+                .map(item -> DynamicSqlProjectionResolver.convertValueWithCamelSupport(item, voClass))
                 .toList();
     }
 }

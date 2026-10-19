@@ -3,11 +3,12 @@ package io.github.atengk.boot.sample.controller;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
-import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
-import io.github.atengk.boot.sample.entity.SysDocumentEntity;
-import io.github.atengk.boot.sample.entity.TenantOrderEntity;
+import io.github.atengk.boot.sample.service.SysDocumentService;
+import io.github.atengk.boot.sample.service.TenantOrderService;
 import io.github.atengk.boot.sample.service.UserService;
+import io.github.atengk.boot.sample.vo.SysDocumentVO;
+import io.github.atengk.boot.sample.vo.TenantOrderVO;
 import io.github.atengk.boot.sample.vo.UserRoleVO;
 import io.github.atengk.boot.sample.vo.UserVO;
 import io.github.atengk.boot.web.annotation.WebLog;
@@ -20,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 动态查询转译与多表联表直出示例控制层
- * 显式遵循 Result 契约与接入层薄层原则，调度 Service、DynamicQueryTemplate 与 DynamicSqlExecutor
+ * 显式遵循 Result 契约、传输层 Zero-Entity-Leakage 与接入层薄层原则
  *
  * @author Ateng
  * @since 2026-10-19
@@ -31,7 +32,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class DynamicQuerySampleController {
 
     private final UserService userService;
-    private final DynamicQueryTemplate dynamicQueryTemplate;
+    private final SysDocumentService sysDocumentService;
+    private final TenantOrderService tenantOrderService;
     private final org.springframework.beans.factory.ObjectProvider<DynamicSqlExecutor> dynamicSqlExecutorProvider;
 
     /**
@@ -76,23 +78,23 @@ public class DynamicQuerySampleController {
      * 4. @DataScope 数据权限协同动态查询端点
      *
      * @param request 动态查询请求契约
-     * @return 分页文档结果
+     * @return 分页文档视图结果 (Zero-Entity-Leakage)
      */
     @PostMapping("/documents/scope")
     @WebLog(value = "数据权限协同动态查询文档列表", printParams = true, printCostTime = true)
-    public Result<PageResult<SysDocumentEntity>> queryDocumentsWithScope(@Valid @RequestBody DynamicQueryRequest request) {
-        return Result.success(dynamicQueryTemplate.selectPage("io.github.atengk.boot.sample.mapper.SysDocumentMapper.selectPageWithScope", request, SysDocumentEntity.class));
+    public Result<PageResult<SysDocumentVO>> queryDocumentsWithScope(@Valid @RequestBody DynamicQueryRequest request) {
+        return Result.success(sysDocumentService.pageDocumentsWithScope(request));
     }
 
     /**
      * 5. 多租户行级隔离协同动态查询端点
      *
      * @param request 动态查询请求契约
-     * @return 分页订单结果
+     * @return 分页订单视图结果 (Zero-Entity-Leakage)
      */
     @PostMapping("/tenant-orders")
     @WebLog(value = "多租户行级隔离协同动态查询订单列表", printParams = true, printCostTime = true)
-    public Result<PageResult<TenantOrderEntity>> queryTenantOrders(@Valid @RequestBody DynamicQueryRequest request) {
-        return Result.success(dynamicQueryTemplate.selectPage(request, TenantOrderEntity.class));
+    public Result<PageResult<TenantOrderVO>> queryTenantOrders(@Valid @RequestBody DynamicQueryRequest request) {
+        return Result.success(tenantOrderService.pageTenantOrders(request));
     }
 }

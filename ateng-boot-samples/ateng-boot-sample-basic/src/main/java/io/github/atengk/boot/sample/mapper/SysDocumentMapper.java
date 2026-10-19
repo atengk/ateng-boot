@@ -1,8 +1,8 @@
 package io.github.atengk.boot.sample.mapper;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
+import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.entity.SysDocumentEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
@@ -18,7 +18,7 @@ import java.util.Map;
  * @since 2026-10-16
  */
 @Mapper
-public interface SysDocumentMapper extends BaseMapper<SysDocumentEntity> {
+public interface SysDocumentMapper extends AtengBaseMapper<SysDocumentEntity> {
 
     /**
      * 单表查询：标注 @DataScope 进行细粒度数据权限过滤

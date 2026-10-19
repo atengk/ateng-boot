@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.mapper;
 
-import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import io.github.atengk.boot.mybatisplus.annotation.IgnoreTenant;
+import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.entity.TenantOrderEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
@@ -15,7 +15,7 @@ import java.util.List;
  * @since 2026-10-16
  */
 @Mapper
-public interface TenantOrderMapper extends BaseMapper<TenantOrderEntity> {
+public interface TenantOrderMapper extends AtengBaseMapper<TenantOrderEntity> {
 
     /**
      * 标注 @IgnoreTenant 注解的特权查询方法

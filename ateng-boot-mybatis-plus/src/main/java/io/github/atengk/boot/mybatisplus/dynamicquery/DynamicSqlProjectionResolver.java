@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mybatisplus.dynamicquery;
 
+import io.github.atengk.boot.core.util.JsonUtil;
 import lombok.extern.slf4j.Slf4j;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.schema.Column;
@@ -299,5 +300,42 @@ public final class DynamicSqlProjectionResolver {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 将原始对象（尤其是 Map 结果集）安全转换为目标类型，针对 Map 自动补齐驼峰键以支持 VO 反序列化
+     *
+     * @param raw        原始对象或 Map
+     * @param targetType 目标类型
+     * @param <T>        目标泛型
+     * @return 转换后的目标对象
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> T convertValueWithCamelSupport(Object raw, Class<T> targetType) {
+        if (raw == null) {
+            return null;
+        }
+        if (targetType == null || targetType == Object.class || targetType.isInstance(raw)) {
+            return (T) raw;
+        }
+        if (targetType == Map.class) {
+            if (raw instanceof Map) {
+                return (T) raw;
+            }
+            return (T) JsonUtil.convertValue(raw, Map.class);
+        }
+        if (raw instanceof Map<?, ?> map) {
+            Map<String, Object> camelMap = new HashMap<>(map.size() * 2);
+            map.forEach((k, v) -> {
+                if (k != null) {
+                    String keyStr = k.toString();
+                    camelMap.put(keyStr, v);
+                    String camelKey = underlineToCamel(keyStr);
+                    camelMap.putIfAbsent(camelKey, v);
+                }
+            });
+            return JsonUtil.convertValue(camelMap, targetType);
+        }
+        return JsonUtil.convertValue(raw, targetType);
     }
 }
