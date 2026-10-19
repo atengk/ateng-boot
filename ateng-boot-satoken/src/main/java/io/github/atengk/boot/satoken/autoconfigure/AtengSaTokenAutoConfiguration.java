@@ -23,10 +23,13 @@ import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.dao.SaTokenRedisDao;
 import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
+import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
 import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
+import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
+import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.annotation.PostConstruct;
@@ -200,15 +203,54 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
+     * 注册 Sa-Token 增强路由拦截器实例
+     *
+     * @return AtengSaTokenInterceptor 拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AtengSaTokenInterceptor atengSaTokenInterceptor() {
+        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor();
+        saInterceptor.isAnnotation(false);
+        if (properties.getInterceptor().isCheckLogin()) {
+            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
+            saInterceptor.setAuth(handler -> StpUtil.checkLogin());
+        }
+        return saInterceptor;
+    }
+
+    /**
      * 注册 Sa-Token WebMVC 路由拦截器配置
      *
+     * @param saTokenInterceptor 增强路由拦截器
      * @return WebMvcConfigurer 拦截器配置实例
      */
     @Bean
     @ConditionalOnClass(WebMvcConfigurer.class)
+    @ConditionalOnMissingBean(SaTokenWebMvcConfigurer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer() {
-        return new SaTokenWebMvcConfigurer(properties);
+    public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer(AtengSaTokenInterceptor saTokenInterceptor) {
+        return new SaTokenWebMvcConfigurer(properties, saTokenInterceptor);
+    }
+
+    /**
+     * 注册 Sa-Token 匿名公开访问与动态白名单自动汇聚处理器
+     *
+     * @param applicationContext  Spring 上下文容器
+     * @param saTokenInterceptor 增强路由拦截器
+     * @param whitelistProviders 白名单提供者 SPI 可选提供者
+     * @return AnonymousUrlProcessor 实例
+     */
+    @Bean
+    @ConditionalOnClass(WebMvcConfigurer.class)
+    @ConditionalOnMissingBean(AnonymousUrlProcessor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AnonymousUrlProcessor anonymousUrlProcessor(
+            ApplicationContext applicationContext,
+            AtengSaTokenInterceptor saTokenInterceptor,
+            ObjectProvider<SaTokenWhitelistProvider> whitelistProviders) {
+        return new AnonymousUrlProcessor(applicationContext, properties, saTokenInterceptor, whitelistProviders);
     }
 
     /**

@@ -788,5 +788,46 @@ class SampleSaTokenIntegrationTest {
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.msg").value("非法跨租户数据访问"));
     }
+
+    @Test
+    @DisplayName("25. 方法级 @Anonymous 声明式放行端到端：未携带 Token 访问公开方法及路径参数通配接口直接放行")
+    void testAnonymousMethodEndpointWithoutToken() throws Exception {
+        // 1. 无参普通 GET 接口
+        mockMvc.perform(get("/api/auth/public/ping"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("pong"));
+
+        // 2. 带路径变量占位符接口（自动转译为 AntPath 通配符）
+        mockMvc.perform(get("/api/auth/public/article/10086"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("公开文章详情: 10086"));
+    }
+
+    @Test
+    @DisplayName("26. 类级 @Anonymous 声明式放行端到端：整类所有方法免鉴权放行，支持路径参数")
+    void testAnonymousClassEndpointWithoutToken() throws Exception {
+        // 1. 访问类级公开接口
+        mockMvc.perform(get("/api/anonymous/hello"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("类级匿名访问成功"));
+
+        // 2. 访问类级公开带路径参数接口
+        mockMvc.perform(get("/api/anonymous/item/ITEM-999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("类级匿名条目详情: ITEM-999"));
+    }
+
+    @Test
+    @DisplayName("27. SaTokenWhitelistProvider SPI 动态白名单端到端：外部拓展路径未携带 Token 成功放行")
+    void testDynamicSpiWhitelistWithoutToken() throws Exception {
+        mockMvc.perform(get("/api/custom-spi/data"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("SPI白名单访问成功"));
+    }
 }
 

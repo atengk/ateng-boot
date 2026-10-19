@@ -86,4 +86,65 @@ class AtengSaTokenInterceptorTest {
             assertThat(UserContextHolder.get()).isNull();
         }
     }
+
+    @Test
+    @DisplayName("测试白名单路径匹配逻辑 (isWhitelisted)")
+    void testIsWhitelisted() {
+        interceptor.setWhitelist(java.util.List.of("/api/public/**", "/users/*", "/favicon.ico"));
+
+        assertThat(interceptor.isWhitelisted("/api/public/ping")).isTrue();
+        assertThat(interceptor.isWhitelisted("/api/public/article/10086")).isTrue();
+        assertThat(interceptor.isWhitelisted("/users/99")).isTrue();
+        assertThat(interceptor.isWhitelisted("/favicon.ico")).isTrue();
+
+        assertThat(interceptor.isWhitelisted("/users/99/detail")).isFalse();
+        assertThat(interceptor.isWhitelisted("/api/admin/users")).isFalse();
+        assertThat(interceptor.isWhitelisted("")).isFalse();
+        assertThat(interceptor.isWhitelisted(null)).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试白名单路由在 checkLogin 开启时成功放行，非白名单路由抛出 NotLoginException")
+    void testWhitelistBypassCheckLoginAndInterceptNonWhitelist() throws Exception {
+        interceptor.setWhitelist(java.util.List.of("/api/public/**"));
+        // 开启严格登录校验（未登录抛出异常）
+        interceptor.setAuth(handler -> {
+            throw new cn.dev33.satoken.exception.NotLoginException("未提供访问凭据", "-1", cn.dev33.satoken.exception.NotLoginException.NOT_TOKEN);
+        });
+
+        // 1. 白名单接口：即使未登录且开启 checkLogin，依然跳过 auth 成功放行
+        when(request.getRequestURI()).thenReturn("/api/public/ping");
+        boolean pass = interceptor.preHandle(request, response, new Object());
+        assertThat(pass).isTrue();
+
+        // 2. 非白名单接口：未登录直接抛出 NotLoginException 阻断
+        when(request.getRequestURI()).thenReturn("/api/admin/data");
+        org.junit.jupiter.api.Assertions.assertThrows(
+                cn.dev33.satoken.exception.NotLoginException.class,
+                () -> interceptor.preHandle(request, response, new Object())
+        );
+    }
+
+    @Test
+    @DisplayName("测试白名单接口携带合法 Token 访问时，依然自动注入四维上下文")
+    void testWhitelistedRouteWithTokenStillSyncsContext() throws Exception {
+        interceptor.setWhitelist(java.util.List.of("/api/public/**"));
+        when(request.getRequestURI()).thenReturn("/api/public/ping");
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            loginHelperMock.when(LoginHelper::isLogin).thenReturn(true);
+            loginHelperMock.when(LoginHelper::getTenantId).thenReturn("tenant-whitelisted");
+            loginHelperMock.when(LoginHelper::getUserId).thenReturn("user-whitelisted");
+
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-whitelisted");
+            assertThat(UserContextHolder.get()).isEqualTo("user-whitelisted");
+
+            interceptor.afterCompletion(request, response, new Object(), null);
+            assertThat(TenantContextHolder.getTenantId()).isNull();
+            assertThat(UserContextHolder.get()).isNull();
+        }
+    }
 }

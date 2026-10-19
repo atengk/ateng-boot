@@ -8,6 +8,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.provider.SampleOrderDataOwnerProvider;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
+import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
@@ -242,9 +243,22 @@ public class SaTokenSampleController {
      *
      * @return 响应结果
      */
+    @Anonymous
     @GetMapping("/public/ping")
     public Result<String> publicPing() {
         return Result.success("pong");
+    }
+
+    /**
+     * 声明式匿名公开文章详情接口（验证路径参数通配符转译）
+     *
+     * @param articleId 文章标识
+     * @return 响应结果
+     */
+    @Anonymous
+    @GetMapping("/public/article/{articleId}")
+    public Result<String> publicArticle(@PathVariable("articleId") Long articleId) {
+        return Result.success("公开文章详情: " + articleId);
     }
 
     /**
