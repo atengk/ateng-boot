@@ -1,7 +1,10 @@
 package io.github.atengk.boot.mybatisplus.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Constants;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.cursor.Cursor;
 
 import java.util.Collection;
 
@@ -68,4 +71,17 @@ public interface AtengBaseMapper<T> extends BaseMapper<T> {
         }
         return upsertBatchSomeColumn(java.util.Collections.singletonList(entity));
     }
+
+    /**
+     * 原生流式游标条件查询
+     * <p>
+     * 依托 MyBatis 原生 {@link Cursor} 与 JDBC 流式能力逐行读取海量数据，MappedStatement 强制注入 {@code fetchSize = 1000}，
+     * 必须在事务上下文（如 {@link io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate} 或标注 {@code @Transactional} 的方法）中执行，
+     * 并在消费完成后确定性关闭游标以释放底层 JDBC 物理连接。
+     * </p>
+     *
+     * @param queryWrapper 实体对象封装操作类（可以为 null）
+     * @return 实体游标
+     */
+    Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper);
 }

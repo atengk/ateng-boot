@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -82,6 +83,27 @@ public final class StreamingQueryTemplate {
         execute(cursorSupplier, cursor -> {
             for (T item : cursor) {
                 consumer.accept(item);
+            }
+            return null;
+        });
+    }
+
+    /**
+     * 条件流式消费游标记录（支持 Predicate 提前短路退出）
+     * 在受管只读事务中开启 MyBatis 游标，只要 Predicate 返回 true 则继续遍历消费，
+     * 当 Predicate 返回 false 时提前短路退出，并在 finally 中通过 try-with-resources 确定性闭合游标与释放数据库连接
+     *
+     * @param cursorSupplier 游标提供者，不能为 null
+     * @param predicate      条件断言消费器（返回 true 继续消费，返回 false 提前短路退出），不能为 null
+     * @param <T>            记录实体类型
+     */
+    public <T> void forEachWhile(Supplier<Cursor<T>> cursorSupplier, Predicate<T> predicate) {
+        Objects.requireNonNull(predicate, "Predicate must not be null");
+        execute(cursorSupplier, cursor -> {
+            for (T item : cursor) {
+                if (!predicate.test(item)) {
+                    break;
+                }
             }
             return null;
         });

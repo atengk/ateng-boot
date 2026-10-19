@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mybatisplus.service;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -14,12 +15,15 @@ import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
+import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * 增强型通用业务 Service 接口
@@ -254,6 +258,15 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return 动态查询执行模板，未注入时返回 null
      */
     default DynamicQueryTemplate getDynamicQueryTemplate() {
+        return null;
+    }
+
+    /**
+     * 获取受管游标流式查询模板组件（子类实现可按需注入）
+     *
+     * @return 游标流式查询模板，未注入时返回 null
+     */
+    default StreamingQueryTemplate getStreamingQueryTemplate() {
         return null;
     }
 
@@ -651,5 +664,334 @@ public interface AtengBaseService<T> extends IService<T> {
             return false;
         }
         return upsertBatch(Collections.singletonList(entity), 1) > 0;
+    }
+
+    // ==========================================
+    // 5. 原生受管游标流式与动态投影查询体系 (SelectCursor Pipeline)
+    // ==========================================
+
+    /**
+     * 原生受管游标逐条流式查询（单条实体消费）
+     * 在受管只读事务中借助 MyBatis 原生 {@link org.apache.ibatis.cursor.Cursor} 逐条读取数据，消费完毕后确定性关闭游标并释放连接
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param consumer     单条记录消费器，不能为 null
+     */
+    void stream(Wrapper<T> queryWrapper, Consumer<T> consumer);
+
+    /**
+     * 原生受管游标逐条流式查询，并一步到位流式投影为强类型 VO
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型，不能为 null
+     * @param consumer     VO 消费器，不能为 null
+     * @param <V>          目标 VO 泛型
+     */
+    default <V> void stream(Wrapper<T> queryWrapper, Class<V> voClass, Consumer<V> consumer) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        Objects.requireNonNull(consumer, "Consumer 不能为 null");
+        stream(queryWrapper, entity -> consumer.accept(JsonUtil.convertValue(entity, voClass)));
+    }
+
+    /**
+     * 原生受管游标分批切片流式查询（支持自定义切片批次大小）
+     *
+     * @param queryWrapper  查询条件封装器（可为 null）
+     * @param batchSize     单批次切片大小（小于等于 0 时采用默认配置）
+     * @param batchConsumer 分批消费器（入参为只读切片 List），不能为 null
+     */
+    void streamBatch(Wrapper<T> queryWrapper, int batchSize, Consumer<List<T>> batchConsumer);
+
+    /**
+     * 原生受管游标分批切片流式查询（采用全局默认批次大小）
+     *
+     * @param queryWrapper  查询条件封装器（可为 null）
+     * @param batchConsumer 分批消费器，不能为 null
+     */
+    default void streamBatch(Wrapper<T> queryWrapper, Consumer<List<T>> batchConsumer) {
+        streamBatch(queryWrapper, 0, batchConsumer);
+    }
+
+    /**
+     * 原生受管游标分批切片流式查询，并一步到位流式投影为强类型 VO 切片（支持自定义切片批次大小）
+     *
+     * @param queryWrapper  查询条件封装器（可为 null）
+     * @param voClass       目标 VO 类型，不能为 null
+     * @param batchSize     单批次切片大小（小于等于 0 时采用默认配置）
+     * @param batchConsumer 分批 VO 消费器，不能为 null
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamBatch(Wrapper<T> queryWrapper, Class<V> voClass, int batchSize, Consumer<List<V>> batchConsumer) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        Objects.requireNonNull(batchConsumer, "Batch consumer 不能为 null");
+        streamBatch(queryWrapper, batchSize, entityList -> {
+            List<V> voList = entityList.stream()
+                    .map(entity -> JsonUtil.convertValue(entity, voClass))
+                    .toList();
+            batchConsumer.accept(voList);
+        });
+    }
+
+    /**
+     * 原生受管游标分批切片流式查询，并一步到位流式投影为强类型 VO 切片（采用全局默认批次大小）
+     *
+     * @param queryWrapper  查询条件封装器（可为 null）
+     * @param voClass       目标 VO 类型，不能为 null
+     * @param batchConsumer 分批 VO 消费器，不能为 null
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamBatch(Wrapper<T> queryWrapper, Class<V> voClass, Consumer<List<V>> batchConsumer) {
+        streamBatch(queryWrapper, voClass, 0, batchConsumer);
+    }
+
+    /**
+     * 原生受管游标条件流式查询（支持 Predicate 提前短路退出）
+     * 当 Predicate 返回 true 时继续遍历消费，当返回 false 时提前退出循环并触发 try-with-resources 确定性关闭游标与连接释放
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param predicate    条件断言消费器（返回 true 继续消费，返回 false 提前短路退出），不能为 null
+     */
+    void streamWhile(Wrapper<T> queryWrapper, Predicate<T> predicate);
+
+    /**
+     * 原生受管游标条件流式查询，并一步到位投影为强类型 VO 条件断言（支持 Predicate 提前短路退出）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param voClass      目标 VO 类型，不能为 null
+     * @param predicate    条件断言消费器，不能为 null
+     * @param <V>          目标 VO 泛型
+     */
+    default <V> void streamWhile(Wrapper<T> queryWrapper, Class<V> voClass, Predicate<V> predicate) {
+        Objects.requireNonNull(voClass, "目标视图类型 voClass 不能为 null");
+        Objects.requireNonNull(predicate, "Predicate 不能为 null");
+        streamWhile(queryWrapper, entity -> predicate.test(JsonUtil.convertValue(entity, voClass)));
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标逐条流式消费
+     *
+     * @param request  动态查询请求
+     * @param consumer 单条实体消费器
+     */
+    default void streamDynamic(DynamicQueryRequest request, Consumer<T> consumer) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        stream(wrapper, consumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标逐条流式消费，并一步到位流式投影为强类型 VO
+     *
+     * @param request  动态查询请求
+     * @param voClass  目标 VO 类型
+     * @param consumer 单条 VO 消费器
+     * @param <V>      目标 VO 泛型
+     */
+    default <V> void streamDynamic(DynamicQueryRequest request, Class<V> voClass, Consumer<V> consumer) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        stream(wrapper, voClass, consumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标逐条流式消费
+     *
+     * @param queryDto 查询 DTO
+     * @param consumer 单条实体消费器
+     */
+    default void streamDynamic(Object queryDto, Consumer<T> consumer) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamic(request, consumer);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        stream(wrapper, consumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标逐条流式消费，并一步到位流式投影为强类型 VO
+     *
+     * @param queryDto 查询 DTO
+     * @param voClass  目标 VO 类型
+     * @param consumer 单条 VO 消费器
+     * @param <V>      目标 VO 泛型
+     */
+    default <V> void streamDynamic(Object queryDto, Class<V> voClass, Consumer<V> consumer) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamic(request, voClass, consumer);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        stream(wrapper, voClass, consumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标分批切片流式消费（支持自定义切片批次大小）
+     *
+     * @param request       动态查询请求
+     * @param batchSize     分批大小
+     * @param batchConsumer 分批消费器
+     */
+    default void streamDynamicBatch(DynamicQueryRequest request, int batchSize, Consumer<List<T>> batchConsumer) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        streamBatch(wrapper, batchSize, batchConsumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标分批切片流式消费（采用全局默认批次大小）
+     *
+     * @param request       动态查询请求
+     * @param batchConsumer 分批消费器
+     */
+    default void streamDynamicBatch(DynamicQueryRequest request, Consumer<List<T>> batchConsumer) {
+        streamDynamicBatch(request, 0, batchConsumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标分批切片流式消费，并一步到位投影为 VO 切片（支持自定义批次）
+     *
+     * @param request       动态查询请求
+     * @param voClass       目标 VO 类型
+     * @param batchSize     分批大小
+     * @param batchConsumer 分批 VO 消费器
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamDynamicBatch(DynamicQueryRequest request, Class<V> voClass, int batchSize, Consumer<List<V>> batchConsumer) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        streamBatch(wrapper, voClass, batchSize, batchConsumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标分批切片流式消费，并一步到位投影为 VO 切片（采用全局默认批次大小）
+     *
+     * @param request       动态查询请求
+     * @param voClass       目标 VO 类型
+     * @param batchConsumer 分批 VO 消费器
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamDynamicBatch(DynamicQueryRequest request, Class<V> voClass, Consumer<List<V>> batchConsumer) {
+        streamDynamicBatch(request, voClass, 0, batchConsumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标分批切片流式消费（支持自定义切片批次大小）
+     *
+     * @param queryDto      查询 DTO
+     * @param batchSize     分批大小
+     * @param batchConsumer 分批消费器
+     */
+    default void streamDynamicBatch(Object queryDto, int batchSize, Consumer<List<T>> batchConsumer) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamicBatch(request, batchSize, batchConsumer);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        streamBatch(wrapper, batchSize, batchConsumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标分批切片流式消费（采用全局默认批次大小）
+     *
+     * @param queryDto      查询 DTO
+     * @param batchConsumer 分批消费器
+     */
+    default void streamDynamicBatch(Object queryDto, Consumer<List<T>> batchConsumer) {
+        streamDynamicBatch(queryDto, 0, batchConsumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标分批切片流式消费，并一步到位投影为 VO 切片（支持自定义批次）
+     *
+     * @param queryDto      查询 DTO
+     * @param voClass       目标 VO 类型
+     * @param batchSize     分批大小
+     * @param batchConsumer 分批 VO 消费器
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamDynamicBatch(Object queryDto, Class<V> voClass, int batchSize, Consumer<List<V>> batchConsumer) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamicBatch(request, voClass, batchSize, batchConsumer);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        streamBatch(wrapper, voClass, batchSize, batchConsumer);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标分批切片流式消费，并一步到位投影为 VO 切片（采用全局默认批次大小）
+     *
+     * @param queryDto      查询 DTO
+     * @param voClass       目标 VO 类型
+     * @param batchConsumer 分批 VO 消费器
+     * @param <V>           目标 VO 泛型
+     */
+    default <V> void streamDynamicBatch(Object queryDto, Class<V> voClass, Consumer<List<V>> batchConsumer) {
+        streamDynamicBatch(queryDto, voClass, 0, batchConsumer);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标条件流式消费（支持 Predicate 提前短路退出）
+     *
+     * @param request   动态查询请求
+     * @param predicate 条件断言消费器
+     */
+    default void streamDynamicWhile(DynamicQueryRequest request, Predicate<T> predicate) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        streamWhile(wrapper, predicate);
+    }
+
+    /**
+     * 基于结构化动态查询请求执行受管游标条件流式消费，并一步到位投影为 VO 断言（支持 Predicate 提前短路退出）
+     *
+     * @param request   动态查询请求
+     * @param voClass   目标 VO 类型
+     * @param predicate VO 条件断言消费器
+     * @param <V>       目标 VO 泛型
+     */
+    default <V> void streamDynamicWhile(DynamicQueryRequest request, Class<V> voClass, Predicate<V> predicate) {
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(request, entityClass);
+        streamWhile(wrapper, voClass, predicate);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标条件流式消费（支持 Predicate 提前短路退出）
+     *
+     * @param queryDto  查询 DTO
+     * @param predicate 条件断言消费器
+     */
+    default void streamDynamicWhile(Object queryDto, Predicate<T> predicate) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamicWhile(request, predicate);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        streamWhile(wrapper, predicate);
+    }
+
+    /**
+     * 基于普通查询 DTO 执行受管游标条件流式消费，并一步到位投影为 VO 断言（支持 Predicate 提前短路退出）
+     *
+     * @param queryDto  查询 DTO
+     * @param voClass   目标 VO 类型
+     * @param predicate VO 条件断言消费器
+     * @param <V>       目标 VO 泛型
+     */
+    default <V> void streamDynamicWhile(Object queryDto, Class<V> voClass, Predicate<V> predicate) {
+        if (queryDto instanceof DynamicQueryRequest request) {
+            streamDynamicWhile(request, voClass, predicate);
+            return;
+        }
+        Class<T> entityClass = getEntityClass();
+        QueryWrapper<T> wrapper = DynamicQueryHelper.buildWrapper(queryDto, entityClass);
+        streamWhile(wrapper, voClass, predicate);
     }
 }

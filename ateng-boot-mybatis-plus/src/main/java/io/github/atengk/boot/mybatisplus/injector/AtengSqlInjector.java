@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.injector.AbstractMethod;
 import com.baomidou.mybatisplus.core.injector.DefaultSqlInjector;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.extension.injector.methods.InsertBatchSomeColumn;
+import io.github.atengk.boot.mybatisplus.injector.methods.SelectCursor;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpdateBatchSomeColumn;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpsertBatchSomeColumn;
 import org.apache.ibatis.session.Configuration;
@@ -13,8 +14,8 @@ import java.util.List;
 
 /**
  * 增强型全局 SQL 注入器
- * 继承 MyBatis-Plus DefaultSqlInjector，默认挂载 InsertBatchSomeColumn、UpsertBatchSomeColumn 与 UpdateBatchSomeColumn 原生多值批量操作，
- * 自动排除标注 @TableLogic 的逻辑删除字段与仅插入填充字段，支持 MySQL / PostgreSQL 双方言原生 Upsert 语法与单条 CASE WHEN 防死锁批量更新
+ * 继承 MyBatis-Plus DefaultSqlInjector，默认挂载 InsertBatchSomeColumn、UpsertBatchSomeColumn、UpdateBatchSomeColumn 与 SelectCursor 原生方法，
+ * 自动排除标注 @TableLogic 的逻辑删除字段与仅插入填充字段，支持 MySQL / PostgreSQL 双方言原生 Upsert 语法、单条 CASE WHEN 防死锁批量更新与受管游标流式查询
  *
  * @author Ateng
  * @since 2026-10-16
@@ -41,6 +42,8 @@ public class AtengSqlInjector extends DefaultSqlInjector {
         methodList.add(new UpsertBatchSomeColumn(field -> !field.isLogicDelete(), dbType));
         // 3. 挂载原生单条多值 CASE WHEN 批量更新方法：UPDATE table SET col1 = CASE id WHEN ... ELSE col1 END WHERE id IN (...)
         methodList.add(new UpdateBatchSomeColumn(field -> !field.isLogicDelete()));
+        // 4. 挂载原生受管游标查询方法：SELECT ... FROM table <where> ... (fetchSize = 1000)
+        methodList.add(new SelectCursor());
         return methodList;
     }
 

@@ -13,14 +13,17 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import com.baomidou.mybatisplus.annotation.DbType;
+import io.github.atengk.boot.mybatisplus.injector.methods.SelectCursor;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpdateBatchSomeColumn;
 import io.github.atengk.boot.mybatisplus.injector.methods.UpsertBatchSomeColumn;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.mapping.SqlCommandType;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * AtengSqlInjector 全局 SQL 注入器单元测试
- * 验证 InsertBatchSomeColumn、UpsertBatchSomeColumn 与 UpdateBatchSomeColumn 原生批量操作方法被正确追加至方法列表
+ * 验证 InsertBatchSomeColumn、UpsertBatchSomeColumn、UpdateBatchSomeColumn 与 SelectCursor 原生批量操作方法被正确追加至方法列表
  *
  * @author Ateng
  * @since 2026-10-16
@@ -37,7 +40,7 @@ class AtengSqlInjectorTest {
     interface SampleMapper {}
 
     @Test
-    @DisplayName("1. 挂载验证：getMethodList 返回的注入方法列表中包含 InsertBatchSomeColumn、UpsertBatchSomeColumn 与 UpdateBatchSomeColumn")
+    @DisplayName("1. 挂载验证：getMethodList 返回的注入方法列表中包含 InsertBatchSomeColumn、UpsertBatchSomeColumn、UpdateBatchSomeColumn 与 SelectCursor")
     void shouldIncludeInsertAndUpsertBatchInMethodList() {
         Configuration configuration = new Configuration();
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "resource");
@@ -51,6 +54,7 @@ class AtengSqlInjectorTest {
         assertThat(methodList).anyMatch(m -> m instanceof InsertBatchSomeColumn);
         assertThat(methodList).anyMatch(m -> m instanceof UpsertBatchSomeColumn);
         assertThat(methodList).anyMatch(m -> m instanceof UpdateBatchSomeColumn);
+        assertThat(methodList).anyMatch(m -> m instanceof SelectCursor);
     }
 
     @Test
@@ -69,5 +73,24 @@ class AtengSqlInjectorTest {
                 .findFirst()
                 .orElseThrow();
         assertThat(upsertMethod.getDbType()).isEqualTo(DbType.POSTGRE_SQL);
+    }
+
+    @Test
+    @DisplayName("3. 游标注入验证：SelectCursor 注入的 MappedStatement 具备 fetchSize = 1000 与 SELECT 命令类型")
+    void shouldInjectSelectCursorWithDefaultFetchSize() {
+        Configuration configuration = new Configuration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "resource");
+        assistant.setCurrentNamespace(SampleMapper.class.getName());
+        TableInfo tableInfo = TableInfoHelper.initTableInfo(assistant, SampleEntity.class);
+
+        SelectCursor selectCursor = new SelectCursor();
+        selectCursor.inject(assistant, SampleMapper.class, SampleEntity.class, tableInfo);
+
+        MappedStatement ms = configuration.getMappedStatement(SampleMapper.class.getName() + ".selectCursor");
+        assertThat(ms).isNotNull();
+        assertThat(ms.getSqlCommandType()).isEqualTo(SqlCommandType.SELECT);
+        assertThat(ms.getFetchSize()).isEqualTo(1000);
+        assertThat(ms.getResultMaps()).isNotEmpty();
+        assertThat(ms.getResultMaps().get(0).getType()).isEqualTo(SampleEntity.class);
     }
 }

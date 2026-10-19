@@ -155,6 +155,14 @@ class StreamingQueryTemplateTest {
         assertThatThrownBy(() -> template.forEach(() -> null, null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("Consumer must not be null");
+
+        assertThatThrownBy(() -> template.forEachWhile(null, item -> true))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("Cursor supplier must not be null");
+
+        assertThatThrownBy(() -> template.forEachWhile(() -> null, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("Predicate must not be null");
     }
 
     @Test
@@ -226,6 +234,24 @@ class StreamingQueryTemplateTest {
             assertThat(ids.get(2499)).isEqualTo(2500L);
             // 等差数列求和：(10 + 25000) * 2500 / 2 = 31262500
             assertThat(sumAmount.get()).isEqualTo(31262500L);
+        }
+    }
+
+    @Test
+    @DisplayName("forEachWhile 条件流式消费：当 Predicate 返回 false 时提前短路退出并确定性关闭游标")
+    void shouldShortCircuitWhenPredicateReturnsFalse() {
+        try (SqlSession session = sqlSessionFactory.openSession()) {
+            StreamingTestMapper mapper = session.getMapper(StreamingTestMapper.class);
+            List<Long> readIds = new ArrayList<>();
+
+            template.forEachWhile(mapper::selectAllCursor, item -> {
+                readIds.add(item.getId());
+                return item.getId() < 50; // 当达到 50 时返回 false 提前短路退出
+            });
+
+            assertThat(readIds).hasSize(50);
+            assertThat(readIds.get(0)).isEqualTo(1L);
+            assertThat(readIds.get(49)).isEqualTo(50L);
         }
     }
 

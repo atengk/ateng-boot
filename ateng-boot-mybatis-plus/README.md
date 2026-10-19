@@ -41,10 +41,11 @@
 | **动态 SQL** | 外部动态 SQL 增强注册中心 | `DynamicSqlRegistry` | `ateng.boot.mybatis-plus.dynamic-sql.enabled`<br>`ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 注册、AST 投影字典解析提取与热加载中心，支持运行时动态注册/移除外部 XML 脚本，联动缓存失效通知 | `DynamicSqlRegistryTest` / `DynamicSqlExecutorDynamicTest` / `SampleDynamicSqlTest` |
 | **动态 SQL** | 外部动态 SQL 统一执行门面 | `DynamicSqlExecutor` | `ateng.boot.mybatis-plus.dynamic-sql.auto-script-wrap` | `selectPage` / `selectList` / `selectOne` / `count` / `insert` / `update` / `delete`，原生支持接收 `DynamicQueryRequest` 及业务 DTO，多表 AST 投影自愈与 ADR-0010 强类型 VO 映射 | `DynamicSqlExecutorTest` / `DynamicSqlExecutorDynamicTest` / `SampleDynamicSqlTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` / `SampleDynamicSqlTest` |
-| **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach(Supplier<Cursor<T>>, Consumer<T>)` / `forEachBatch(Supplier<Cursor<T>>, int, Consumer<List<T>>)`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，防 OOM 与句柄泄漏 | `StreamingQueryTemplateTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **流式游标** | 原生游标 SQL 注入器 | `SelectCursor` | - | 自动向 Mapper 注入 `selectCursor` MappedStatement，底层强制设置 `fetchSize = 1000`，杜绝内存溢出 | `AtengSqlInjectorTest` / `AtengBaseServiceStreamTest` |
+| **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `AtengBaseServiceStreamTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
-| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载 `insertBatchSomeColumn`、`upsertBatchSomeColumn`、`updateBatchSomeColumn` 与单实体 `upsertSomeColumn` 原生批量扩展 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `AtengBaseServiceBatchTest` |
-| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、受事务守护的原生批量写入（`insertBatch` / `upsertBatch` / `updateBatch` / `upsert`）与动态直出门面 | `AtengBaseServiceBatchTest` / `SampleBatchInsertTest` |
+| **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `BatchUpdateTest` / `AtengBaseServiceStreamTest` |
+| **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，封装通用 CRUD、批量写入与受管流式查询体系（`stream` / `streamBatch` / `streamWhile` / `streamDynamic*`），支持分批切片、短路退出与强类型 VO 投影直出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `SampleBatchInsertTest` |
 | **动态查询** | 通用受管执行模板门面 | `DynamicQueryTemplate` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `selectPage` / `selectList` / `selectOne` / `count`，跨单表实体、Mapper XML 语句或外部动态 SQL 提供对称完备的强类型动态查询直出，内建 AST 别名自愈与自适应条件追加 | `DynamicQueryTemplateTest` / `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | Service 联表方法引用与短方法名直出 | `AtengBaseService` / `AtengServiceImpl` | `ateng.boot.mybatis-plus.dynamic-query.enabled` | `pageDynamic(mapper::method, request, voClass)` / `pageDynamic(statementName, request, voClass)` / `listDynamic` / `getOneDynamic`，基于方法引用或短方法名实现多表联表极速直出 | `AtengBaseServiceMultiTableDynamicTest` / `SampleDynamicQueryIntegrationTest` |
 | **动态查询** | AST 多表别名与物理列投影自愈解析器 | `DynamicSqlProjectionResolver` | - | 基于 JSqlParser 解析 Mapper XML / 外部 SQL 投影字典，纳秒级缓存，运行时无感知将 VO 属性名与多表别名透明映射为底层物理列表达式（如 `deptName` -> `d.name`） | `DynamicSqlProjectionResolverTest` / `SampleDynamicQueryIntegrationTest` |
@@ -666,7 +667,7 @@ public class SlowSqlMetricsListener {
 
 ---
 
-## 14. 受管游标流式查询模板与防 OOM 门面 (`StreamingQueryTemplate`)
+## 14. 原生游标注入与受管流式查询体系 (`SelectCursor` & `StreamingQueryTemplate`)
 
 ### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
 
@@ -674,52 +675,108 @@ public class SlowSqlMetricsListener {
 
 MyBatis 原生提供了 `Cursor<T>` 游标流式查询能力，但其致命痛点在于：**必须由外层事务维持底层 JDBC 连接在整个迭代期间持续开启**；若开发者忘记显式开启事务、或在业务异常时未闭合游标，极易造成数据库连接池句柄悬挂泄漏与死锁雪崩。
 
-`ateng-boot-mybatis-plus` 原生交付 `StreamingQueryTemplate` 门面：
+`ateng-boot-mybatis-plus` 原生交付贯穿 **Mapper 注入器 -> BaseMapper -> StreamingQueryTemplate -> BaseService** 的完整受管流式查询体系：
+- **原生游标 SQL 注入 (`SelectCursor`)**：无需开发者手写 XML 或 `@Select` 注解，`AtengBaseMapper` 自动获得 `selectCursor(Wrapper<T>)` 方法，底层由框架强制注入 `fetchSize = 1000`，避免 JDBC 客户端缓冲区内存溢出；
 - **声明式只读事务守护**：内部由 `TransactionTemplate` 自动开启 `readOnly = true` 事务（`PROPAGATION_REQUIRED`），自适应加入外层事务，确保遍历期间连接有效；
-- **确定性生命周期清理**：借助 `try-with-resources` 机制，无论是正常消费完毕还是下游业务消费器抛出异常，游标 100% 确定性关闭并释放物理连接；
-- **双消费契约自由选用**：提供逐条流式（`forEach`）与分批切片（`forEachBatch`）消费门面，开箱即用。
+- **确定性生命周期清理**：借助 `try-with-resources` 机制，无论是正常消费完毕、条件提前退出还是下游业务消费器抛出异常，游标 100% 确定性关闭并安全释放物理连接；
+- **全方位消费契约**：提供逐条流式（`stream`）、分批切片（`streamBatch`）与提前短路退出（`streamWhile`）；
+- **传输层实体隔离 (Zero-Entity-Leakage)**：支持一步直出投影为强类型 VO，彻底杜绝持久层实体泄露至传输层；
+- **动态查询游标直出**：原生支持传入 `DynamicQueryRequest` 或业务 DTO 动态条件进行游标流式遍历（`streamDynamic*`）。
 
-#### 步骤一：在 Mapper 中定义返回 `Cursor<T>` 的查询方法
+#### 方式一：直接使用 `AtengBaseService` 原生受管流式门面（推荐）
+继承 `AtengServiceImpl` 的业务 Service 自动获得受管流式查询能力：
+
 ```java
-public interface StreamingTestMapper {
+@Service
+public class UserServiceImpl extends AtengServiceImpl<UserMapper, UserEntity> implements UserService {
 
-    @Select("SELECT id, name, amount FROM test_streaming_item ORDER BY id ASC")
-    @Options(fetchSize = 1000)
-    Cursor<StreamingItem> selectAllCursor();
+    // 1. 逐条流式消费（内存占用仅单对象级别）
+    public void exportUsers() {
+        stream(
+                Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getStatus, 1),
+                user -> {
+                    // 业务逻辑处理当前用户实体
+                }
+        );
+    }
+
+    // 2. 分批切片消费（默认或指定批次大小，传出 Collections.unmodifiableList 防卫脏写）
+    public void pushUsersInBatches() {
+        streamBatch(
+                Wrappers.<UserEntity>lambdaQuery().gt(UserEntity::getAge, 18),
+                1000,
+                batchList -> {
+                    // 分批次批量推送或远程 RPC 调用，单批消费完毕立即 GC
+                }
+        );
+    }
+
+    // 3. 提前短路退出（当满足特定业务条件时提前中断遍历，返回 false 立即停止迭代）
+    public void scanUntilFound() {
+        streamWhile(
+                Wrappers.<UserEntity>lambdaQuery().orderByAsc(UserEntity::getId),
+                user -> {
+                    if ("TARGET_CODE".equals(user.getCode())) {
+                        log.info("已命中目标用户: {}", user.getId());
+                        return false; // 提前退出游标遍历，立即触发资源清理
+                    }
+                    return true; // 继续下一条遍历
+                }
+        );
+    }
 }
 ```
 
-#### 步骤二：使用 `StreamingQueryTemplate` 进行逐条或分批消费
+#### 方式二：零实体泄露的强类型 VO 投影流式查询
+严格遵循 [ADR-0010](./docs/adr/0010-transport-pagination-contract-decoupling.md) 契约，直接流式直出强类型 VO：
+
 ```java
-@Service
-public class StreamingExportService {
+// 1. 强类型 VO 逐条流式
+userService.stream(
+        Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getStatus, 1),
+        UserExportVO.class,
+        vo -> excelStreamWriter.write(vo)
+);
 
-    @Autowired
-    private StreamingQueryTemplate streamingQueryTemplate;
+// 2. 强类型 VO 分批流式
+userService.streamBatch(
+        Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getStatus, 1),
+        500,
+        UserExportVO.class,
+        voBatchList -> thirdPartyClient.batchSync(voBatchList)
+);
+```
 
-    @Autowired
-    private StreamingTestMapper testMapper;
+#### 方式三：动态请求直出流式遍历 (`streamDynamic*`)
+配合 `DynamicQueryRequest` 或挂载 `@QueryField` 的业务查询 DTO，一步直出：
 
-    // 1. 逐条流式消费（适用于逐行导出或流式处理）
-    public void exportSingleItem() {
-        streamingQueryTemplate.forEach(
-                testMapper::selectAllCursor,
-                item -> {
-                    // 业务逻辑处理当前单条记录（内存占用仅单对象级别）
-                }
-        );
-    }
+```java
+DynamicQueryRequest request = new DynamicQueryRequest();
+request.addCondition("status", QueryOperator.EQ, 1);
+request.addAsc("id");
 
-    // 2. 分批切片消费（默认 1000 条切片或自定义切片大小，适用于批量 RPC 或下游微服务分批推送）
-    public void exportInBatches() {
-        streamingQueryTemplate.forEachBatch(
-                testMapper::selectAllCursor,
-                1000,
-                batchList -> {
-                    // batchList 为 unmodifiableList 不可变切片，消费完成后立即由 GC 回收
-                }
-        );
-    }
+// 动态条件流式直出 VO
+userService.streamDynamic(
+        request,
+        UserExportVO.class,
+        vo -> processExport(vo)
+);
+```
+
+#### 方式四：直接使用 Mapper 与底层 `StreamingQueryTemplate`
+若在非 Service 上下文或自定义复杂 Mapper XML 查询中，可直接调用 `StreamingQueryTemplate`：
+
+```java
+@Autowired
+private StreamingQueryTemplate streamingQueryTemplate;
+@Autowired
+private UserMapper userMapper;
+
+public void process() {
+    streamingQueryTemplate.forEach(
+            () -> userMapper.selectCursor(Wrappers.<UserEntity>lambdaQuery().eq(UserEntity::getStatus, 1)),
+            entity -> handle(entity)
+    );
 }
 ```
 
@@ -731,15 +788,18 @@ public class StreamingExportService {
 当需要对游标数据执行自定义聚合、求和或带返回值的复杂流式计算时，可使用通用 `execute` 契约：
 
 ```java
-Long maxId = streamingQueryTemplate.execute(testMapper::selectAllCursor, cursor -> {
-    long max = -1L;
-    for (StreamingItem item : cursor) {
-        if (item.getId() > max) {
-            max = item.getId();
+Long maxId = streamingQueryTemplate.execute(
+        () -> userMapper.selectCursor(Wrappers.emptyWrapper()),
+        cursor -> {
+            long max = -1L;
+            for (UserEntity item : cursor) {
+                if (item.getId() > max) {
+                    max = item.getId();
+                }
+            }
+            return max;
         }
-    }
-    return max;
-});
+);
 ```
 
 #### 方案二：基于独立只读数据源或自定义 `TransactionTemplate` 接管
@@ -762,13 +822,17 @@ public class CustomStreamingConfig {
 ### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
 
 1. **确定性生命周期与零连接悬挂**：
-   无论下游业务 `Consumer` 正常执行结束，还是中途抛出受控/非受控异常，`StreamingQueryTemplate` 的 `try-with-resources` 守卫均保证在第一时间内调用 `Cursor.close()`，紧接着由事务管理器归还底层物理连接至连接池，彻底消灭连接泄露隐患。
-2. **因果异常传递与原子回滚**：
+   无论下游业务 `Consumer` 正常执行结束、`Predicate` 提前返回 `false` 中断，还是中途抛出受控/非受控异常，`StreamingQueryTemplate` 的 `try-with-resources` 守卫均保证在第一时间内调用 `Cursor.close()`，紧接着由事务管理器归还底层物理连接至连接池，彻底消灭连接泄露隐患。
+2. **提前短路退出安全性 (`streamWhile` / `forEachWhile`)**：
+   业务判断满足终止条件时返回 `false`，迭代器立即 break 中断循环并触发 `finally` 中的游标关闭与连接归还，绝不残留未读完的 JDBC 游标会话。
+3. **因果异常传递与原子回滚**：
    当下游消费逻辑抛出业务异常（如 `BusinessException` 或其他 `RuntimeException`）时，模板内部在 `catch` 中显式调用 `status.setRollbackOnly()` 触发只读事务安全回滚，并**原样向外透传原始异常**，绝不吞咽异常或二次包装污染因果链。
-3. **JDBC FetchSize 与客户端缓冲区防溢出**：
-   MyBatis 流式游标建议配合 `@Options(fetchSize = 1000)` 使用（框架推荐默认值 `DEFAULT_FETCH_SIZE = 1000`）。避免底层 JDBC 驱动将数据库千万级记录一次性加载到网络 Socket 缓冲区造成物理机器内存打满。
-4. **切片数据不可变性防卫**：
-   `forEachBatch` 传出的每批 `List<T>` 均经由 `Collections.unmodifiableList` 封装，防止下游误操作对其执行 `add` / `remove` 导致数据脏读，并在每批消费完毕后立即解除引用协助 JVM 极速 GC。
+4. **JDBC FetchSize 强制注入防内存溢出**：
+   `SelectCursor` 注入器生成 `MappedStatement` 时强制注入 `fetchSize = 1000`。底层 JDBC 驱动按批次从网络流中拉取数据，避免千万级记录一次性加载到网络 Socket 缓冲区造成物理机器内存打满。
+5. **切片数据不可变性防卫**：
+   `streamBatch` / `forEachBatch` 传出的每批 `List<T>` 均经由 `Collections.unmodifiableList` 封装，防止下游误操作对其执行 `add` / `remove` 导致数据脏读，并在每批消费完毕后立即解除引用协助 JVM 极速 GC。
+6. **未装配快速失败防卫**：
+   若业务环境中未注入 `StreamingQueryTemplate`（例如未启用 Spring 事务管理器或配置排除了装配），调用 `AtengBaseService` 流式方法时立即抛出语义清晰的 `IllegalStateException`，Fail-Fast 阻断潜在运行期风险。
 
 ---
 
