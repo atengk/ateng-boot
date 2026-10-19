@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
 
 CREATE TABLE IF NOT EXISTS tenant_order (
     id BIGINT NOT NULL PRIMARY KEY,
-    order_no VARCHAR(64) NOT NULL,
+    order_no VARCHAR(64) NOT NULL UNIQUE,
     order_title VARCHAR(128) NOT NULL,
     sku_code VARCHAR(64) NOT NULL,
     amount DECIMAL(10, 2),

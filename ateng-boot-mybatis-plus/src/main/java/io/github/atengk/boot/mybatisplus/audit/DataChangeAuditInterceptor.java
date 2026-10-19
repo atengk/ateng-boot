@@ -266,6 +266,7 @@ public class DataChangeAuditInterceptor implements Interceptor {
                 return null;
             }
             MappedStatement selectMs = configuration.getMappedStatement(selectByIdId);
+            executor.clearLocalCache();
             List<?> list = executor.query(selectMs, id, RowBounds.DEFAULT, Executor.NO_RESULT_HANDLER);
             return (list != null && !list.isEmpty()) ? list.get(0) : null;
         } catch (Throwable t) {

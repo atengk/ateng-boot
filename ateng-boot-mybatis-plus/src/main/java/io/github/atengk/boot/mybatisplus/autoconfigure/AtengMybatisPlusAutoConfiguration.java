@@ -23,6 +23,8 @@ import io.github.atengk.boot.mybatisplus.tenant.DefaultTenantLineHandler;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -60,6 +62,8 @@ import java.util.List;
  * @since 2026-10-15
  */
 @AutoConfiguration
+@AutoConfigureBefore(name = "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration")
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration")
 @ConditionalOnClass({MybatisPlusInterceptor.class, MetaObjectHandler.class})
 @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(MybatisPlusProperties.class)

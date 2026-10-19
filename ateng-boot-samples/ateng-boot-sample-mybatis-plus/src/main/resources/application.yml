@@ -18,11 +18,28 @@ mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
   configuration:
     map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 ateng:
   boot:
     mybatis-plus:
+      crypto:
+        secret-key: "1234567890123456"
+      tenant:
+        enabled: true
+        column: tenant_id
+        ignore-tables:
+          - sys_user
+      data-permission:
+        enabled: true
+      audit-change:
+        enabled: true
+        publish-event: true
+        async: false
+      dynamic-query:
+        enabled: true
       pagination:
+        enabled: true
         max-limit: 500
         overflow: false
       block-attack:
@@ -32,5 +49,5 @@ ateng:
       audit:
         enabled: true
         default-operator: SYSTEM
-      dynamic-sql:
-        enabled: true
+      batch:
+        default-size: 1000
