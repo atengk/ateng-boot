@@ -387,55 +387,7 @@ public class UserServiceImpl implements UserService {
 
 ---
 
-## 12. 模块配置属性参考 (`application.yml`)
-
-```yaml
-ateng:
-  boot:
-    mybatis-plus:
-      enabled: true               # 是否启用持久层增强装配（默认 true）
-      batch:
-        default-size: 1000        # 原生批量插入默认单批次切片容量（默认 1000）
-      audit:
-        default-operator: "SYSTEM"# 无法获取操作人时的审计兜底操作人标识
-      pagination:
-        enabled: true             # 是否装配通用分页插件（默认 true）
-        max-limit: 500            # 单页允许查询的最大记录上限（默认 500）
-        overflow: false           # 溢出总页数后是否进行处理（默认 false，继续请求）
-        db-type: ""               # 数据库方言类型（默认留空，框架自动推导）
-      block-attack:
-        enabled: true             # 是否装配防全表更新删除插件（默认 true）
-      optimistic-locker:
-        enabled: true             # 是否装配乐观锁插件（默认 true）
-      tenant:
-        enabled: false            # 是否启用行级多租户插件（默认 false，按需开启）
-        column: "tenant_id"       # 数据库租户列字段名（默认 tenant_id）
-        ignore-tables:            # 全局免多租户过滤的静态数据表名列表
-          - "sys_dict"
-          - "sys_config"
-      data-permission:
-        enabled: false            # 是否启用细粒度数据权限拦截器（默认 false，按需开启）
-      crypto:
-        secret-key: "YourSecretKey" # AES 存储透明加密密钥（可选，未配时自适应默认内置密钥）
-      snowflake:
-        enabled: true             # 是否启用雪花发号桥接（默认 true）
-        worker-id: 1              # 工作节点编号（0~31，未配置时四级自适应推导）
-        datacenter-id: 1          # 数据中心编号（0~31，未配置时四级自适应推导）
-      dynamic-sql:
-        enabled: true             # 是否启用外部动态 SQL 增强引擎（默认 false，按需开启）
-        auto-script-wrap: true    # 是否自动为未包裹 <script> 根标签的动态 SQL 容错包裹（默认 true）
-        locations:                # 默认外部 XML 资源扫描路径
-          - "classpath*:dynamic-sql/**/*.xml"
-      audit-change:
-        enabled: false            # 是否启用数据变更 Diff 审计拦截器（默认 false，按需开启）
-        max-diff-rows: 100        # 单次更新最大 Diff 计算行数阈值（默认 100 行），超限时自动熔断降级
-        async: true               # 是否在事务提交后异步调度投递审计记录（默认 true）
-        publish-event: true       # 是否发布 Spring DataChangeEvent 事件（默认 true）
-```
-
----
-
-## 13. 外部动态 SQL 引擎与运行时热更新 (`DynamicSqlEngine`)
+## 12. 外部动态 SQL 引擎与运行时热更新 (`DynamicSqlEngine`)
 
 ### 场景痛点
 传统 MyBatis 必须在编译期将 XML 固化打包于应用 JAR 包内部，任何 SQL 调整均需重新编译发版。
@@ -567,7 +519,7 @@ public class DatabaseExternalSqlLoader implements ExternalSqlLoader {
 
 ---
 
-## 11. 慢 SQL 性能审计与告警通知 (`SlowSqlInterceptor`)
+## 13. 慢 SQL 性能审计与告警通知 (`SlowSqlInterceptor`)
 
 ### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
 
@@ -673,7 +625,7 @@ public class SlowSqlMetricsListener {
 
 ---
 
-## 12. 受管游标流式查询模板与防 OOM 门面 (`StreamingQueryTemplate`)
+## 14. 受管游标流式查询模板与防 OOM 门面 (`StreamingQueryTemplate`)
 
 ### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
 
@@ -779,7 +731,7 @@ public class CustomStreamingConfig {
 
 ---
 
-## 13. 多数据源协同诊断探针与上下文守卫 (`DynamicDatasourceGuard`)
+## 15. 多数据源协同诊断探针与上下文守卫 (`DynamicDatasourceGuard`)
 
 ### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
 
@@ -857,7 +809,7 @@ public class DynamicDataSourceAspect {
 
 ---
 
-## 14. 动态查询安全转译引擎与 URL 冒号高阶语法解析器 (`DynamicQueryHelper` & `DynamicQueryParser`)
+## 16. 动态查询安全转译引擎与 URL 冒号高阶语法解析器 (`DynamicQueryHelper` & `DynamicQueryParser`)
 
 ### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
 
@@ -960,7 +912,7 @@ QueryWrapper<UserEntity> wrapper = DynamicQueryHelper.buildWrapper(request, User
 
 ---
 
-## 14. 数据变更 Diff 审计拦截器与三级开关治理 (AuditChange & DataChangeAuditProvider)
+## 17. 数据变更 Diff 审计拦截器与三级开关治理 (`AuditChange` & `DataChangeAuditProvider`)
 
 ### 场景痛点
 在金融、电商交易及核心业务系统中，追踪“谁在什么时间把什么数据的哪个字段从什么值改成了什么值”是合规审计的核心诉求。传统方案要么依赖应用层手写比对侵入业务，要么依赖数据库 CDC（Canal/Debezium）无法捕获当前登录操作人、租户 ID 与全链路 TraceId。
@@ -1061,6 +1013,63 @@ public class AuditEventListener {
    通过 Spring 原生 `TransactionSynchronizationManager` 注册 `afterCommit` 回调，确保变更记录仅在当前数据库事务**真正提交成功后**才投递至 SPI 或发布事件；若业务事务发生异常回滚（Rollback），审计记录自动作废丢弃，绝不向消费端投递“幻影变更数据”。
 4. **旁路容错不扰业务 (Non-Intrusive Isolation)**：
    变更审计属于系统旁路保障功能，拦截器内部包含严密的前置卫语句与全局异常兜底拦截。即使前置快照因特殊表结构失败，拦截器仅打印告警日志并安全降级，绝不影响主业务事务的正常执行与持久化。
+
+---
+
+## 18. 模块配置属性参考 (`application.yml`)
+
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      enabled: true               # 是否启用持久层增强装配（默认 true）
+      batch:
+        default-size: 1000        # 原生批量插入默认单批次切片容量（默认 1000）
+      audit:
+        default-operator: "SYSTEM"# 无法获取操作人时的审计兜底操作人标识
+      pagination:
+        enabled: true             # 是否装配通用分页插件（默认 true）
+        max-limit: 500            # 单页允许查询的最大记录上限（默认 500）
+        overflow: false           # 溢出总页数后是否进行处理（默认 false，继续请求）
+        db-type: ""               # 数据库方言类型（默认留空，框架自动推导）
+      block-attack:
+        enabled: true             # 是否装配防全表更新删除插件（默认 true）
+      optimistic-locker:
+        enabled: true             # 是否装配乐观锁插件（默认 true）
+      tenant:
+        enabled: false            # 是否启用行级多租户插件（默认 false，按需开启）
+        column: "tenant_id"       # 数据库租户列字段名（默认 tenant_id）
+        ignore-tables:            # 全局免多租户过滤的静态数据表名列表
+          - "sys_dict"
+          - "sys_config"
+      data-permission:
+        enabled: false            # 是否启用细粒度数据权限拦截器（默认 false，按需开启）
+      crypto:
+        secret-key: "YourSecretKey" # AES 存储透明加密密钥（可选，未配时自适应默认内置密钥）
+      snowflake:
+        enabled: true             # 是否启用雪花发号桥接（默认 true）
+        worker-id: 1              # 工作节点编号（0~31，未配置时四级自适应推导）
+        datacenter-id: 1          # 数据中心编号（0~31，未配置时四级自适应推导）
+      dynamic-sql:
+        enabled: true             # 是否启用外部动态 SQL 增强引擎（默认 false，按需开启）
+        auto-script-wrap: true    # 是否自动为未包裹 <script> 根标签的动态 SQL 容错包裹（默认 true）
+        locations:                # 默认外部 XML 资源扫描路径
+          - "classpath*:dynamic-sql/**/*.xml"
+      slow-sql:
+        enabled: true             # 是否启用慢 SQL 审计拦截器（默认 true）
+        threshold: 1s             # 慢 SQL 判定耗时阈值（默认 1s）
+        format-sql: true          # 是否对 SQL 文本进行多行美化缩进（默认 true）
+        mask-sensitive: true      # 是否对敏感字段与密码凭据进行掩码脱敏（默认 true）
+      guard:
+        dynamic-datasource: true   # 是否启用多数据源协同诊断探针（默认 true）
+      dynamic-query:
+        enabled: true             # 是否启用动态查询转译引擎（默认 true）
+      audit-change:
+        enabled: false            # 是否启用数据变更 Diff 审计拦截器（默认 false，按需开启）
+        max-diff-rows: 100        # 单次更新最大 Diff 计算行数阈值（默认 100 行），超限时自动熔断降级
+        async: true               # 是否在事务提交后异步调度投递审计记录（默认 true）
+        publish-event: true       # 是否发布 Spring DataChangeEvent 事件（默认 true）
+```
 
 
 
