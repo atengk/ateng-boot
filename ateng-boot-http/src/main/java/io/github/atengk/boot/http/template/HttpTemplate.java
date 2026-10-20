@@ -1,10 +1,13 @@
 package io.github.atengk.boot.http.template;
 
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.options.RequestOptions;
+import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.util.Assert;
 import org.springframework.web.client.RestClient;
 
+import java.net.URI;
 import java.util.Optional;
 
 /**
@@ -38,6 +41,10 @@ public class HttpTemplate {
         this.restClient = restClientBuilder.build();
     }
 
+    // ==========================================
+    // GET 操作
+    // ==========================================
+
     /**
      * 发起 HTTP GET 请求并反序列化为指定类类型
      *
@@ -47,12 +54,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T get(String url, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        return this.restClient.get()
-                .uri(url)
-                .retrieve()
-                .body(responseType);
+        return get(url, null, responseType);
     }
 
     /**
@@ -64,13 +66,48 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T get(String url, ParameterizedTypeReference<T> responseType) {
+        return get(url, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP GET 请求并反序列化为指定类类型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T get(String url, RequestOptions options, Class<T> responseType) {
         Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return this.restClient.get()
-                .uri(url)
-                .retrieve()
-                .body(responseType);
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().body(responseType);
     }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP GET 请求并反序列化为复杂泛型类型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T get(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // GET OPTIONAL 空安全操作
+    // ==========================================
 
     /**
      * 发起 HTTP GET 请求并安全返回 Optional 包装对象
@@ -82,14 +119,7 @@ public class HttpTemplate {
      * @return Optional 包装的实体对象
      */
     public <T> Optional<T> getOptional(String url, Class<T> responseType) {
-        try {
-            return Optional.ofNullable(get(url, responseType));
-        } catch (HttpRemoteException ex) {
-            if (ex.getHttpStatusCode() == 404) {
-                return Optional.empty();
-            }
-            throw ex;
-        }
+        return getOptional(url, null, responseType);
     }
 
     /**
@@ -102,8 +132,22 @@ public class HttpTemplate {
      * @return Optional 包装的实体对象
      */
     public <T> Optional<T> getOptional(String url, ParameterizedTypeReference<T> responseType) {
+        return getOptional(url, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP GET 请求并安全返回 Optional 包装对象
+     * 仅当远端响应 404 Not Found 时安全返回 Optional.empty()，其余非 2xx 抛出 HttpRemoteException
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return Optional 包装的实体对象
+     */
+    public <T> Optional<T> getOptional(String url, RequestOptions options, Class<T> responseType) {
         try {
-            return Optional.ofNullable(get(url, responseType));
+            return Optional.ofNullable(get(url, options, responseType));
         } catch (HttpRemoteException ex) {
             if (ex.getHttpStatusCode() == 404) {
                 return Optional.empty();
@@ -111,6 +155,31 @@ public class HttpTemplate {
             throw ex;
         }
     }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP GET 请求并安全返回复杂泛型 Optional 包装对象
+     * 仅当远端响应 404 Not Found 时安全返回 Optional.empty()，其余非 2xx 抛出 HttpRemoteException
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return Optional 包装的实体对象
+     */
+    public <T> Optional<T> getOptional(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        try {
+            return Optional.ofNullable(get(url, options, responseType));
+        } catch (HttpRemoteException ex) {
+            if (ex.getHttpStatusCode() == 404) {
+                return Optional.empty();
+            }
+            throw ex;
+        }
+    }
+
+    // ==========================================
+    // POST 操作
+    // ==========================================
 
     /**
      * 发起 HTTP POST 请求并发送 JSON 请求体
@@ -122,13 +191,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T post(String url, Object body, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(url);
-        if (body != null) {
-            spec.body(body);
-        }
-        return spec.retrieve().body(responseType);
+        return post(url, body, null, responseType);
     }
 
     /**
@@ -141,14 +204,56 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T post(String url, Object body, ParameterizedTypeReference<T> responseType) {
+        return post(url, body, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T post(String url, Object body, RequestOptions options, Class<T> responseType) {
         Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(url);
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
         if (body != null) {
             spec.body(body);
         }
         return spec.retrieve().body(responseType);
     }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T post(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // PUT 操作
+    // ==========================================
 
     /**
      * 发起 HTTP PUT 请求并发送 JSON 请求体
@@ -160,13 +265,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T put(String url, Object body, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        RestClient.RequestBodySpec spec = this.restClient.put().uri(url);
-        if (body != null) {
-            spec.body(body);
-        }
-        return spec.retrieve().body(responseType);
+        return put(url, body, null, responseType);
     }
 
     /**
@@ -179,14 +278,56 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T put(String url, Object body, ParameterizedTypeReference<T> responseType) {
+        return put(url, body, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PUT 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T put(String url, Object body, RequestOptions options, Class<T> responseType) {
         Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        RestClient.RequestBodySpec spec = this.restClient.put().uri(url);
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.put().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
         if (body != null) {
             spec.body(body);
         }
         return spec.retrieve().body(responseType);
     }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PUT 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T put(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.put().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // DELETE 操作
+    // ==========================================
 
     /**
      * 发起 HTTP DELETE 请求
@@ -197,12 +338,7 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T delete(String url, Class<T> responseType) {
-        Assert.hasText(url, "请求 URL 不能为空");
-        Assert.notNull(responseType, "responseType 不能为空");
-        return this.restClient.delete()
-                .uri(url)
-                .retrieve()
-                .body(responseType);
+        return delete(url, null, responseType);
     }
 
     /**
@@ -214,12 +350,43 @@ public class HttpTemplate {
      * @return 反序列化后的实体对象
      */
     public <T> T delete(String url, ParameterizedTypeReference<T> responseType) {
+        return delete(url, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP DELETE 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T delete(String url, RequestOptions options, Class<T> responseType) {
         Assert.hasText(url, "请求 URL 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
-        return this.restClient.delete()
-                .uri(url)
-                .retrieve()
-                .body(responseType);
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().body(responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP DELETE 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T delete(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().body(responseType);
     }
 
     /**

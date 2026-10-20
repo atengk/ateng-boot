@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.http;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.template.HttpTemplate;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -17,11 +18,14 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.web.client.ResourceAccessException;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -285,5 +289,79 @@ class HttpTemplateSampleTest {
                     assertThat(remoteEx.getResponseBody()).endsWith("... [truncated]");
                     assertThat(remoteEx.getResponseBody()).hasSize(2048 + "... [truncated]".length());
                 });
+    }
+
+    @Test
+    @DisplayName("测试 RequestOptions 注入自定义 Header 与安全 RFC 3986 编码 Query 参数")
+    void testRequestOptionsHeadersAndQueryParamsWithRfc3986() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"status\":\"OK\"}"));
+
+        RequestOptions options = RequestOptions.builder()
+                .header("X-Tenant-Id", "tenant-vip-001")
+                .header("X-Client-Version", "1.0.0")
+                .queryParam("keyword", "深度 学习")
+                .queryParam("tag", "ai+model")
+                .build();
+
+        Map<?, ?> result = httpTemplate.get(baseUrl + "search", options, Map.class);
+        assertThat(result).isNotNull();
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getHeader("X-Tenant-Id")).isEqualTo("tenant-vip-001");
+        assertThat(request.getHeader("X-Client-Version")).isEqualTo("1.0.0");
+        // 验证 URL query 参数已被正确执行 RFC 3986 编码
+        assertThat(request.getPath())
+                .contains("keyword=%E6%B7%B1%E5%BA%A6%20%E5%AD%A6%E4%B9%A0")
+                .contains("tag=ai+model");
+    }
+
+    @Test
+    @DisplayName("测试 RequestOptions 注入 URI 模板变量并正确完成路径展开")
+    void testRequestOptionsUriTemplateVariables() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"userId\":6666,\"role\":\"ADMIN\"}"));
+
+        RequestOptions options = RequestOptions.builder()
+                .uriVariable("deptId", "rd")
+                .uriVariable("userId", 6666)
+                .queryParam("detail", true)
+                .build();
+
+        Map<?, ?> result = httpTemplate.get(
+                baseUrl + "departments/{deptId}/users/{userId}",
+                options,
+                Map.class
+        );
+        assertThat(result).isNotNull();
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getPath()).isEqualTo("/departments/rd/users/6666?detail=true");
+    }
+
+    @Test
+    @DisplayName("测试 RequestOptions 单次读取超时覆盖生效（触发快速失败）")
+    void testRequestOptionsPerRequestTimeoutOverride() {
+        // 模拟远端响应头延迟 2 秒
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"delayed\":true}")
+                .setHeadersDelay(2, TimeUnit.SECONDS));
+
+        // 单次请求覆盖 readTimeout 为 300ms（全局默认为 10s）
+        RequestOptions options = RequestOptions.builder()
+                .readTimeout(Duration.ofMillis(300))
+                .build();
+
+        long start = System.currentTimeMillis();
+        assertThatThrownBy(() -> httpTemplate.get(baseUrl + "delayed-endpoint", options, Map.class))
+                .isInstanceOf(ResourceAccessException.class);
+        long elapsed = System.currentTimeMillis() - start;
+        assertThat(elapsed).isLessThan(1500);
     }
 }
