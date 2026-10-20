@@ -2,6 +2,7 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
@@ -23,7 +24,9 @@ import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
+import io.github.atengk.boot.excel.properties.ExcelStreamingExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
+import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
@@ -51,7 +54,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Excel 核心门面操作工具类
@@ -94,6 +99,11 @@ public final class ExcelUtil {
      */
     private static volatile ExcelStyleProperties defaultStyleProperties = new ExcelStyleProperties();
 
+    /**
+     * 流式分页导出全局默认配置（可通过配置文件 ateng.boot.excel.streaming-export.* 调整）
+     */
+    private static volatile ExcelStreamingExportProperties defaultStreamingExportProperties = new ExcelStreamingExportProperties();
+
     private ExcelUtil() {
         // 私有构造，工具类禁止实例化
     }
@@ -114,7 +124,19 @@ public final class ExcelUtil {
             if (properties.getStyle() != null) {
                 defaultStyleProperties = properties.getStyle();
             }
+            if (properties.getStreamingExport() != null) {
+                defaultStreamingExportProperties = properties.getStreamingExport();
+            }
         }
+    }
+
+    /**
+     * 获取当前生效的流式分页导出配置属性对象
+     *
+     * @return 流式分页配置对象
+     */
+    public static ExcelStreamingExportProperties getStreamingExportProperties() {
+        return defaultStreamingExportProperties;
     }
 
     /**
@@ -296,6 +318,212 @@ public final class ExcelUtil {
             export(response.getOutputStream(), sheetName, data, clazz);
         } catch (IOException e) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 创建基于指定输出流的海量数据流式分页导出模板
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param <T>          实体泛型
+     * @return 流式分页导出模板实例
+     */
+    public static <T> StreamingPageExportTemplate<T> streaming(OutputStream outputStream, Class<T> clazz) {
+        StreamingPageExportTemplate<T> template = new StreamingPageExportTemplate<>(outputStream, clazz);
+        template.maxRowsPerSheet(defaultStreamingExportProperties.getMaxRowsPerSheet());
+        template.defaultPageSize(defaultStreamingExportProperties.getDefaultPageSize());
+        template.sheetConfigurator(ExcelUtil::configureSheet);
+        return template;
+    }
+
+    /**
+     * Web 环境下创建基于 HttpServletResponse 的海量数据流式分页导出模板
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz    导出的实体类型 Class（不可为空）
+     * @param <T>      实体泛型
+     * @return 流式分页导出模板实例
+     */
+    public static <T> StreamingPageExportTemplate<T> streaming(HttpServletResponse response, String fileName, Class<T> clazz) {
+        prepareWebResponse(response, fileName);
+        try {
+            return streaming(response.getOutputStream(), clazz);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建流式分页导出模板失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 流式分页导出数据至指定的 OutputStream（基于 PageResult 驱动）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param pageLoader   分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>          实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return exportStreaming(outputStream, DEFAULT_SHEET_NAME, clazz, pageLoader);
+    }
+
+    /**
+     * 流式分页导出数据至指定的 OutputStream，并指定基础 Sheet 名称（基于 PageResult 驱动）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param sheetName    基础工作表名称
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param pageLoader   分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>          实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        try (StreamingPageExportTemplate<T> template = streaming(outputStream, clazz)) {
+            template.baseSheetName(sheetName);
+            return template.exportByPage(pageLoader);
+        }
+    }
+
+    /**
+     * Web 环境下流式分页导出至 HttpServletResponse（基于 PageResult 驱动）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>        实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(HttpServletResponse response, String fileName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return exportStreaming(response, fileName, DEFAULT_SHEET_NAME, clazz, pageLoader);
+    }
+
+    /**
+     * Web 环境下流式分页导出至 HttpServletResponse，并指定基础 Sheet 名称（基于 PageResult 驱动）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param sheetName  基础工作表名称
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>        实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        prepareWebResponse(response, fileName);
+        try {
+            return exportStreaming(response.getOutputStream(), sheetName, clazz, pageLoader);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 流式分页导出 Excel 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 流式游标分页导出数据至指定的 OutputStream（基于主键/时间戳游标驱动，消除慢 SQL）
+     *
+     * @param outputStream    目标输出流
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return exportStreamingByCursor(outputStream, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+    }
+
+    /**
+     * 流式游标分页导出数据至指定的 OutputStream，并指定基础 Sheet 名称（基于主键/时间戳游标驱动）
+     *
+     * @param outputStream    目标输出流
+     * @param sheetName       基础工作表名称
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            String sheetName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        try (StreamingPageExportTemplate<T> template = streaming(outputStream, clazz)) {
+            template.baseSheetName(sheetName);
+            return template.exportByCursor(initialCursor, pageSize, cursorLoader, cursorExtractor);
+        }
+    }
+
+    /**
+     * Web 环境下流式游标分页导出至 HttpServletResponse（基于主键/时间戳游标驱动）
+     *
+     * @param response        响应对象
+     * @param fileName        导出的文件名
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            HttpServletResponse response,
+            String fileName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return exportStreamingByCursor(response, fileName, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+    }
+
+    /**
+     * Web 环境下流式游标分页导出至 HttpServletResponse，并指定基础 Sheet 名称
+     *
+     * @param response        响应对象
+     * @param fileName        导出的文件名
+     * @param sheetName       基础工作表名称
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            HttpServletResponse response,
+            String fileName,
+            String sheetName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        prepareWebResponse(response, fileName);
+        try {
+            return exportStreamingByCursor(response.getOutputStream(), sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 游标流式分页导出 Excel 失败: " + ex.getMessage(), ex);
         }
     }
 

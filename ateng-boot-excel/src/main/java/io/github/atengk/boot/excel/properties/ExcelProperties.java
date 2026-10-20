@@ -45,4 +45,10 @@ public class ExcelProperties {
      */
     @NestedConfigurationProperty
     private ExcelAsyncExportProperties asyncExport = new ExcelAsyncExportProperties();
+
+    /**
+     * Excel 海量数据流式分页导出配置
+     */
+    @NestedConfigurationProperty
+    private ExcelStreamingExportProperties streamingExport = new ExcelStreamingExportProperties();
 }

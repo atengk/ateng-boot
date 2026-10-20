@@ -72,3 +72,31 @@ _Avoid_: UrlPictureConverter, UniversalImageLoader, PhotoCellAdapter
 工作表透明防拍照暗水印写入拦截器，在工作表创建时通过 Java 2D 动态生成半透明旋转工号防伪切片并注入为工作表底层背景（Background Picture），在屏幕浏览和纸质打印时呈现全屏 45° 倾斜暗水印，且 100% 不妨碍单元格点击与公式输入；协同提供只读防篡改密码锁定。
 _Avoid_: BackgroundWatermarkHelper, ExcelWatermarkFilter, AntiphotoStamp
 
+**StreamingPageExportTemplate**:
+流式大数据分页导出执行模板，解耦内存爆炸风险，按步长分页拉取数据并实时刷入 Fesod 工作簿流，在行数达到单工作表上限时自动无缝跨 Sheet 轮转。
+_Avoid_: CursorExcelExporter, ChunkExportHelper, BigDataExporter
+
+**RedisAsyncExportTaskService**:
+基于分布式 Redis 的集中式异步导出任务中心实现，支持任务元数据管理、状态机流转与执行进度跨多实例协同轮询，具备 TTL 自动延期与回收。
+_Avoid_: RedisTaskManager, DistributedExportWorker, ClusterTaskCenter
+
+**ExportFileStorage**:
+异步海量导出文件持久化与分发 SPI 门面，解耦底层具体存储介质，提供文件暂存、流式读取、预签名直链生成与生命周期清理契约。
+_Avoid_: FileRepository, ExcelBlobService, DiskStorageDriver
+
+**ExcelHeaderValidator**:
+导入表头契约前置校验监听拦截器，在流式解析初始阶段实施严格（STRICT）或宽松（LOOSE）的列名与序列一致性比对，首行失配即刻 Fail-Fast 熔断阻断。
+_Avoid_: HeaderMatcher, TitleChecker, HeadSchemaValidator
+
+**FormulaInjectionWriteHandler**:
+Excel 公式注入（CSV/Formula Injection）安全防御拦截器，配合 `@ExcelRawFormula` 注解，写出时自动对以 `=+-@` 起始的文本字面量增加防注入前缀单引号并支持合法公式豁免。
+_Avoid_: CsvInjectionFilter, FormulaSanitizer, ExcelEscapeHandler
+
+**ColumnLockWriteHandler**:
+列级可编辑性锁定与部分只读细粒度控制拦截器，配合属性级注解 `@ExcelColumnLock`，在工作表密码锁定生效的前提下精准放行指定列的单元格编辑权限。
+_Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy
+
+**I18nHeadWriteHandler**:
+国际化多语言表头动态转译拦截器，自动识别 `{i18n:key}` 格式的表头声明，联动 Spring `MessageSource` 与当前请求区域（Locale）动态完成表头本地化翻译。
+_Avoid_: LocaleHeaderWriter, MultiLangHeaderHandler, TranslationInterceptor
+
