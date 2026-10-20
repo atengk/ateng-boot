@@ -67,6 +67,12 @@ public class SaTokenProperties {
     private LoginDefenseProperties loginDefense = new LoginDefenseProperties();
 
     /**
+     * 数据所有权 (@CheckDataOwner) 越权防御切面配置
+     */
+    @NestedConfigurationProperty
+    private DataOwnerProperties dataOwner = new DataOwnerProperties();
+
+    /**
      * 路由拦截器详细配置属性
      */
     @Data
@@ -249,5 +255,17 @@ public class SaTokenProperties {
          * 失败计数统计时间窗口，在该窗口内未输错将自然过期重置计数（默认: 15m）
          */
         private Duration windowTime = Duration.ofMinutes(15);
+    }
+
+    /**
+     * 数据所有权越权防御属性
+     */
+    @Data
+    public static class DataOwnerProperties {
+
+        /**
+         * 是否启用数据所有权 (@CheckDataOwner) 切面防御
+         */
+        private boolean enabled = true;
     }
 }

@@ -59,10 +59,9 @@ public class SaCheckDataOwnerAspect {
         String ownerId = resolveOwnerId(targetResourceOrOwner, checkDataOwner.provider());
 
         // 4. 比对当前登录用户唯一标识
-        String currentUserId = LoginHelper.getUserId();
-        if (ownerId == null || currentUserId == null || !currentUserId.trim().equals(ownerId.trim())) {
+        if (!LoginHelper.isSelf(ownerId)) {
             log.warn("检测到水平越权访问拦截: currentUserId={}, targetOwnerId={}, expr={}",
-                    currentUserId, ownerId, checkDataOwner.expr());
+                    LoginHelper.getUserId(), ownerId, checkDataOwner.expr());
             throw new BusinessException(CommonResultCode.FORBIDDEN, checkDataOwner.message());
         }
     }

@@ -293,21 +293,28 @@ class LoginHelperTest {
 
             LoginHelper.checkSelf("2002");
             LoginHelper.checkSelf(2002L);
-            assertThat(LoginHelper.isSelf("2002")).isTrue();
-            assertThat(LoginHelper.isSelf(2002L)).isTrue();
+            // isSelf 为纯身份断言，即便管理员比对他人也应返回 false
+            assertThat(LoginHelper.isSelf("2002")).isFalse();
+            assertThat(LoginHelper.isSelf(2002L)).isFalse();
+            // isSelfOrAdmin 支持超管特权豁免判定
+            assertThat(LoginHelper.isSelfOrAdmin("2002")).isTrue();
+            assertThat(LoginHelper.isSelfOrAdmin(2002L)).isTrue();
         }
     }
 
     @Test
-    @DisplayName("14. checkBelongsToTenant: 多租户隔离断言")
+    @DisplayName("14. checkBelongsToTenant & isBelongsToTenant: 多租户隔离断言与判定")
     void testCheckBelongsToTenant() {
         try (MockedStatic<StpUtil> stpUtilMock = mockStatic(StpUtil.class)) {
             stpUtilMock.when(StpUtil::isLogin).thenReturn(true);
             stpUtilMock.when(() -> StpUtil.getSession(false)).thenReturn(null);
             stpUtilMock.when(StpUtil::getLoginIdDefaultNull).thenReturn("tenant-01_1001");
 
-            // 1. 本租户匹配：放行
+            // 1. 本租户匹配：放行与布尔判定
             LoginHelper.checkBelongsToTenant("tenant-01");
+            assertThat(LoginHelper.isBelongsToTenant("tenant-01")).isTrue();
+            assertThat(LoginHelper.isBelongsToTenant("tenant-02")).isFalse();
+            assertThat(LoginHelper.isBelongsToTenant((String) null)).isFalse();
 
             // 2. 跨租户篡改：抛出 403 异常
             assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant("tenant-02"))
@@ -319,9 +326,11 @@ class LoginHelperTest {
                     .hasMessageContaining("跨租户阻止");
 
             // 3. 空值防卫
-            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant(null))
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant((String) null))
                     .isInstanceOf(BusinessException.class);
             assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant("  "))
+                    .isInstanceOf(BusinessException.class);
+            assertThatThrownBy(() -> LoginHelper.checkBelongsToTenant((Long) null))
                     .isInstanceOf(BusinessException.class);
         }
     }

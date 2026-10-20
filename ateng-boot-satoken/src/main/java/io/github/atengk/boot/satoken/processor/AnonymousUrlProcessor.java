@@ -7,6 +7,7 @@ import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationListener;
@@ -34,12 +35,17 @@ import java.util.Set;
  */
 @Slf4j
 @RequiredArgsConstructor
-public class AnonymousUrlProcessor implements ApplicationListener<ApplicationReadyEvent> {
+public class AnonymousUrlProcessor implements SmartInitializingSingleton, ApplicationListener<ApplicationReadyEvent> {
 
     private final ApplicationContext applicationContext;
     private final SaTokenProperties properties;
     private final AtengSaTokenInterceptor saTokenInterceptor;
     private final ObjectProvider<SaTokenWhitelistProvider> whitelistProviders;
+
+    @Override
+    public void afterSingletonsInstantiated() {
+        process();
+    }
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {

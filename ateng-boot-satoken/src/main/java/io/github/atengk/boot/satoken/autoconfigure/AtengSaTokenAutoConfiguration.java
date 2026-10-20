@@ -364,6 +364,7 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnClass(org.aspectj.lang.annotation.Aspect.class)
     @ConditionalOnMissingBean(SaCheckDataOwnerAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.data-owner", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaCheckDataOwnerAspect saCheckDataOwnerAspect(ApplicationContext applicationContext) {
         return new SaCheckDataOwnerAspect(applicationContext);
     }

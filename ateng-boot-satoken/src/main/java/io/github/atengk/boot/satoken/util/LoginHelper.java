@@ -795,8 +795,7 @@ public final class LoginHelper {
         if (isSuperAdmin()) {
             return;
         }
-        String currentUserId = getUserId();
-        if (currentUserId == null || !currentUserId.trim().equals(targetUserId.trim())) {
+        if (!isSelf(targetUserId)) {
             throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "无权访问该资源");
         }
     }
@@ -821,30 +820,75 @@ public final class LoginHelper {
     }
 
     /**
-     * 判断目标用户标识是否为当前登录用户（或拥有超级管理员特权）
+     * 判断目标用户标识是否为当前登录用户本人（纯身份断言，不掺杂特权豁免）
      *
      * @param targetUserId 目标用户标识
-     * @return true 表示为本人或具备超级管理员特权
+     * @return true 表示为本人
      */
     public static boolean isSelf(String targetUserId) {
         if (targetUserId == null || targetUserId.isBlank()) {
             return false;
-        }
-        if (isSuperAdmin()) {
-            return true;
         }
         String currentUserId = getUserId();
         return currentUserId != null && currentUserId.trim().equals(targetUserId.trim());
     }
 
     /**
-     * 判断目标用户 Long 标识是否为当前登录用户（或拥有超级管理员特权）
+     * 判断目标用户 Long 标识是否为当前登录用户本人（纯身份断言，不掺杂特权豁免）
+     *
+     * @param targetUserId 目标用户 Long 标识
+     * @return true 表示为本人
+     */
+    public static boolean isSelf(Long targetUserId) {
+        if (targetUserId == null) {
+            return false;
+        }
+        Long currentUserId = getUserIdAsLong();
+        return currentUserId != null && currentUserId.equals(targetUserId);
+    }
+
+    /**
+     * 判断目标用户标识是否为当前登录用户本人，或当前登录用户具备超级管理员特权
+     *
+     * @param targetUserId 目标用户标识
+     * @return true 表示为本人或具备超级管理员特权
+     */
+    public static boolean isSelfOrAdmin(String targetUserId) {
+        return isSuperAdmin() || isSelf(targetUserId);
+    }
+
+    /**
+     * 判断目标用户 Long 标识是否为当前登录用户本人，或当前登录用户具备超级管理员特权
      *
      * @param targetUserId 目标用户 Long 标识
      * @return true 表示为本人或具备超级管理员特权
      */
-    public static boolean isSelf(Long targetUserId) {
-        return targetUserId != null && isSelf(String.valueOf(targetUserId));
+    public static boolean isSelfOrAdmin(Long targetUserId) {
+        return isSuperAdmin() || isSelf(targetUserId);
+    }
+
+    /**
+     * 判断目标租户标识是否为当前登录用户的归属租户
+     *
+     * @param targetTenantId 目标租户标识
+     * @return true 表示归属于目标租户
+     */
+    public static boolean isBelongsToTenant(String targetTenantId) {
+        if (targetTenantId == null || targetTenantId.isBlank()) {
+            return false;
+        }
+        String currentTenantId = getTenantId();
+        return currentTenantId != null && currentTenantId.trim().equals(targetTenantId.trim());
+    }
+
+    /**
+     * 判断目标租户 Long 标识是否为当前登录用户的归属租户
+     *
+     * @param targetTenantId 目标租户 Long 标识
+     * @return true 表示归属于目标租户
+     */
+    public static boolean isBelongsToTenant(Long targetTenantId) {
+        return targetTenantId != null && isBelongsToTenant(String.valueOf(targetTenantId));
     }
 
     /**
@@ -863,13 +907,28 @@ public final class LoginHelper {
      * @param message        越权提示消息
      */
     public static void checkBelongsToTenant(String targetTenantId, String message) {
-        if (targetTenantId == null || targetTenantId.isBlank()) {
+        if (!isBelongsToTenant(targetTenantId)) {
             throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
         }
-        String currentTenantId = getTenantId();
-        if (currentTenantId == null || !currentTenantId.trim().equals(targetTenantId.trim())) {
-            throw new BusinessException(CommonResultCode.FORBIDDEN, message != null ? message : "非法跨租户数据访问");
-        }
+    }
+
+    /**
+     * 校验目标租户 Long 标识是否为当前登录用户的归属租户
+     *
+     * @param targetTenantId 目标租户 Long 标识
+     */
+    public static void checkBelongsToTenant(Long targetTenantId) {
+        checkBelongsToTenant(targetTenantId != null ? String.valueOf(targetTenantId) : null);
+    }
+
+    /**
+     * 校验目标租户 Long 标识是否为当前登录用户的归属租户（带自定义提示消息）
+     *
+     * @param targetTenantId 目标租户 Long 标识
+     * @param message        越权提示消息
+     */
+    public static void checkBelongsToTenant(Long targetTenantId, String message) {
+        checkBelongsToTenant(targetTenantId != null ? String.valueOf(targetTenantId) : null, message);
     }
 
     /**

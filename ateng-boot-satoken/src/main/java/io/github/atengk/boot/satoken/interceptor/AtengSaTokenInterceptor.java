@@ -87,6 +87,11 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
         if (lookupPath == null || lookupPath.isBlank() || this.whitelist.isEmpty()) {
             return false;
         }
+        // 1. 精确匹配快速通道 (O(1) 短路)
+        if (this.whitelist.contains(lookupPath)) {
+            return true;
+        }
+        // 2. 通配符模式匹配
         for (String pattern : this.whitelist) {
             if (pathMatcher.match(pattern, lookupPath)) {
                 return true;
