@@ -63,4 +63,10 @@ public class ExcelProperties {
      */
     @NestedConfigurationProperty
     private ExcelSecurityProperties security = new ExcelSecurityProperties();
+
+    /**
+     * Excel 多语言国际化表头转译配置
+     */
+    @NestedConfigurationProperty
+    private ExcelI18nProperties i18n = new ExcelI18nProperties();
 }

@@ -6,6 +6,7 @@ import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.handler.ColumnLockSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
+import io.github.atengk.boot.excel.handler.I18nHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -25,6 +26,7 @@ import java.io.OutputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.BiConsumer;
 
 /**
@@ -41,6 +43,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
 
     private final ExcelWriter excelWriter;
     private final BiConsumer<ExcelWriterSheetBuilder, Class<?>> sheetConfigurator;
+    private final I18nHeadWriteHandler i18nHeadWriteHandler = new I18nHeadWriteHandler();
     private int currentSheetNo = 0;
     private boolean finished = false;
 
@@ -74,11 +77,23 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
         this.sheetConfigurator = sheetConfigurator;
         this.excelWriter = FesodSheet.write(outputStream)
+                .registerWriteHandler(this.i18nHeadWriteHandler)
                 .registerWriteHandler(new SensitiveCellWriteHandler())
                 .registerWriteHandler(new PromptHeadWriteHandler())
                 .registerWriteHandler(new MergeCellWriteHandler())
                 .registerWriteHandler(new FormulaProtectionCellWriteHandler())
                 .build();
+    }
+
+    /**
+     * 流式指定导出的国际化语言环境
+     *
+     * @param locale 国际化语言环境
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder locale(Locale locale) {
+        this.i18nHeadWriteHandler.setLocale(locale);
+        return this;
     }
 
     /**

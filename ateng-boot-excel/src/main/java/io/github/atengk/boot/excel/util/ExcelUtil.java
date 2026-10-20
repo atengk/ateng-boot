@@ -19,6 +19,7 @@ import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.FailSplitRowWriteHandler;
 import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
+import io.github.atengk.boot.excel.handler.I18nHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -29,6 +30,7 @@ import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.listener.ExcelHeaderValidator;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.properties.ExcelI18nProperties;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import io.github.atengk.boot.excel.properties.ExcelSecurityProperties;
 import io.github.atengk.boot.excel.properties.ExcelStreamingExportProperties;
@@ -93,6 +95,11 @@ public final class ExcelUtil {
     private static final PromptHeadWriteHandler DEFAULT_PROMPT_HEAD_WRITE_HANDLER = new PromptHeadWriteHandler();
 
     /**
+     * 默认多语言国际化表头动态转译写入拦截器（无状态线程安全单例）
+     */
+    private static final I18nHeadWriteHandler DEFAULT_I18N_HEAD_WRITE_HANDLER = new I18nHeadWriteHandler();
+
+    /**
      * 默认公式注入安全防御写入拦截器（无状态线程安全单例）
      */
     private static final FormulaProtectionCellWriteHandler DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER = new FormulaProtectionCellWriteHandler();
@@ -132,6 +139,11 @@ public final class ExcelUtil {
      */
     private static volatile ExcelSecurityProperties defaultSecurityProperties = new ExcelSecurityProperties();
 
+    /**
+     * 多语言国际化表头全局配置（可通过配置文件 ateng.boot.excel.i18n.* 调整）
+     */
+    private static volatile ExcelI18nProperties defaultI18nProperties = new ExcelI18nProperties();
+
     private ExcelUtil() {
         // 私有构造，工具类禁止实例化
     }
@@ -161,6 +173,29 @@ public final class ExcelUtil {
             if (properties.getSecurity() != null) {
                 defaultSecurityProperties = properties.getSecurity();
             }
+            if (properties.getI18n() != null) {
+                defaultI18nProperties = properties.getI18n();
+            }
+        }
+    }
+
+    /**
+     * 获取当前生效的多语言国际化表头配置属性对象
+     *
+     * @return 国际化配置属性对象
+     */
+    public static ExcelI18nProperties getI18nProperties() {
+        return defaultI18nProperties;
+    }
+
+    /**
+     * 手动更新多语言国际化配置属性（主要用于测试与动态覆盖）
+     *
+     * @param properties 国际化配置属性
+     */
+    public static void setI18nProperties(ExcelI18nProperties properties) {
+        if (properties != null) {
+            defaultI18nProperties = properties;
         }
     }
 
@@ -289,6 +324,7 @@ public final class ExcelUtil {
 
     private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz) {
         var writerBuilder = FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
@@ -1158,6 +1194,7 @@ public final class ExcelUtil {
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
 
         var writerBuilder = FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(new DropdownSheetWriteHandler(clazz))
                 .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
@@ -1385,6 +1422,7 @@ public final class ExcelUtil {
 
         var writerBuilder = FesodSheet.write(out)
                 .head(fesodHead)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)
@@ -1421,6 +1459,7 @@ public final class ExcelUtil {
 
         var writerBuilder = FesodSheet.write(out)
                 .head(fesodHead)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)

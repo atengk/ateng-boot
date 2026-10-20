@@ -24,6 +24,7 @@ import java.io.Closeable;
 import java.io.OutputStream;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -68,6 +69,7 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
     private boolean styleDisabled = false;
     private String watermarkText;
     private String protectionPassword;
+    private Locale locale;
 
     // 运行态状态
     private ExcelWriter excelWriter;
@@ -230,6 +232,17 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
      */
     public StreamingPageExportTemplate<T> protect(String protectionPassword) {
         this.protectionPassword = protectionPassword;
+        return this;
+    }
+
+    /**
+     * 设置流式导出的国际化语言环境
+     *
+     * @param locale 语言环境
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> locale(Locale locale) {
+        this.locale = locale;
         return this;
     }
 
@@ -409,6 +422,7 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         }
         // 1. 初始化工作簿级 ExcelWriter
         ExcelWriterBuilder writerBuilder = FesodSheet.write(outputStream, headClass)
+                .registerWriteHandler(new I18nHeadWriteHandler(this.locale))
                 .registerWriteHandler(new SensitiveCellWriteHandler())
                 .registerWriteHandler(new PromptHeadWriteHandler())
                 .registerWriteHandler(new FormulaProtectionCellWriteHandler());
