@@ -471,6 +471,47 @@ public class LocalDriver implements StorageDriver {
                 .build();
     }
 
+    @Override
+    public PresignedUrl getPresignedUploadPartUrl(String path, String uploadId, int chunkIndex, Duration duration) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        validateUploadId(uploadId);
+        if (chunkIndex < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
+        }
+        Path chunkDir = resolveChunkDir(uploadId);
+        if (!Files.exists(chunkDir)) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到分片上传会话或已被清理: " + uploadId);
+        }
+
+        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
+                ? duration
+                : Duration.ofMinutes(15);
+        Instant expiration = Instant.now().plus(effectiveDuration);
+        long expires = expiration.getEpochSecond();
+
+        // 签名计算规则与 LocalStorageUploadController 严格对齐：cleanPath:expires:uploadId:chunkIndex
+        String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex;
+        String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
+
+        String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        String endpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank()) ? uploadEndpoint.trim() : DEFAULT_UPLOAD_ENDPOINT;
+        if (!endpoint.startsWith("/")) {
+            endpoint = "/" + endpoint;
+        }
+
+        String url = baseUrl + endpoint + "?path=" + cleanPath + "&expires=" + expires
+                + "&uploadId=" + uploadId + "&chunkIndex=" + chunkIndex + "&signature=" + signature;
+
+        return PresignedUrl.builder()
+                .url(url)
+                .expiration(expiration)
+                .httpMethod("PUT")
+                .build();
+    }
+
     /**
      * 校验并将安全路径解析为物理 Path，防御根目录逃逸
      *

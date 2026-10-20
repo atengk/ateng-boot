@@ -140,6 +140,19 @@ public interface StorageDriver extends AutoCloseable {
     }
 
     /**
+     * 获取大文件分片预签名直传外链凭证
+     *
+     * @param path       存储对象相对路径
+     * @param uploadId   分片上传会话标识
+     * @param chunkIndex 分片正序编号（从 1 开始，1-based）
+     * @param duration   链接有效持续时长
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUploadPartUrl(String path, String uploadId, int chunkIndex, Duration duration) {
+        throw new UnsupportedOperationException("Current storage driver does not support presigned upload part URL");
+    }
+
+    /**
      * 初始化大文件分片上传会话
      *
      * @param path 目标存储对象路径

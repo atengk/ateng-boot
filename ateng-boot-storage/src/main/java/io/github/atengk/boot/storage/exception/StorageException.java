@@ -50,9 +50,11 @@ public class StorageException extends BusinessException {
      * @param cause      原始异常
      */
     public StorageException(IResultCode resultCode, String msg, Throwable cause) {
-        super(resultCode != null ? resultCode.getCode() : StorageResultCode.OPERATION_FAILED.getCode(),
-                msg != null ? msg : (resultCode != null ? resultCode.getMsg() : StorageResultCode.OPERATION_FAILED.getMsg()),
-                cause);
+        super(resolveResultCode(resultCode), msg, cause);
+    }
+
+    private static IResultCode resolveResultCode(IResultCode resultCode) {
+        return resultCode != null ? resultCode : StorageResultCode.OPERATION_FAILED;
     }
 
     /**

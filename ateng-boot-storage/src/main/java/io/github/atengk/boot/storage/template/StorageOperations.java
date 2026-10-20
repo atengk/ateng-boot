@@ -291,6 +291,17 @@ public interface StorageOperations {
     PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request);
 
     /**
+     * 获取大文件分片预签名直传外链凭证
+     *
+     * @param path       目标相对路径
+     * @param uploadId   分片上传会话标识
+     * @param chunkIndex 分片正序编号（从 1 开始，1-based）
+     * @param duration   有效时长
+     * @return 预签名外链模型
+     */
+    PresignedUrl getPresignedUploadPartUrl(String path, String uploadId, int chunkIndex, Duration duration);
+
+    /**
      * 编程式链式切源：获取绑定了指定命名存储源的不可变操作门面句柄
      * 局部作用域线程安全，不污染全局上下文
      *

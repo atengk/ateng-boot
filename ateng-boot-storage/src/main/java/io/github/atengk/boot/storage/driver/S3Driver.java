@@ -51,7 +51,10 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedUploadPartRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
+import io.github.atengk.boot.storage.util.S3ChunkTokenUtil;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -63,8 +66,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /**
  * 标准 S3 兼容协议对象存储驱动实现
@@ -99,13 +100,18 @@ public class S3Driver implements StorageDriver {
     private final String domain;
 
     /**
+     * 用于无状态分片 Token HMAC-SHA256 签名的密钥
+     */
+    private final String secretKey;
+
+    /**
      * 基础构造函数（仅 S3Client）
      *
      * @param s3Client S3 客户端
      * @param bucket   存储桶名称
      */
     public S3Driver(S3Client s3Client, String bucket) {
-        this(s3Client, null, bucket, null);
+        this(s3Client, null, bucket, null, null);
     }
 
     /**
@@ -116,11 +122,11 @@ public class S3Driver implements StorageDriver {
      * @param bucket      存储桶名称
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket) {
-        this(s3Client, s3Presigner, bucket, null);
+        this(s3Client, s3Presigner, bucket, null, null);
     }
 
     /**
-     * 完整参数构造函数
+     * 包含自定义域名的构造函数
      *
      * @param s3Client    S3 客户端
      * @param s3Presigner S3 预签名器
@@ -128,6 +134,19 @@ public class S3Driver implements StorageDriver {
      * @param domain      自定义访问域名或 CDN 加速域名
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain) {
+        this(s3Client, s3Presigner, bucket, domain, null);
+    }
+
+    /**
+     * 完整参数构造函数（包含用于无状态分片 Token 的签名密钥）
+     *
+     * @param s3Client    S3 客户端
+     * @param s3Presigner S3 预签名器
+     * @param bucket      存储桶名称
+     * @param domain      自定义访问域名或 CDN 加速域名
+     * @param secretKey   HMAC 签名密钥（为空时自动生成安全随机密钥保底）
+     */
+    public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey) {
         if (s3Client == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "S3Client 不能为空");
         }
@@ -138,6 +157,9 @@ public class S3Driver implements StorageDriver {
         this.s3Presigner = s3Presigner;
         this.bucket = bucket.trim();
         this.domain = domain;
+        this.secretKey = (secretKey != null && !secretKey.isBlank())
+                ? secretKey.trim()
+                : StorageSecurityUtil.generateRandomSecretKey();
     }
 
     /**
@@ -577,6 +599,58 @@ public class S3Driver implements StorageDriver {
         }
     }
 
+    @Override
+    public PresignedUrl getPresignedUploadPartUrl(String path, String uploadId, int chunkIndex, Duration duration) {
+        if (this.s3Presigner == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未配置 S3Presigner，无法生成预签名分片直传外链");
+        }
+        if (uploadId == null || uploadId.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "分片上传会话标识 uploadId 不能为空");
+        }
+        if (chunkIndex < 1) {
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
+        }
+        S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
+        String key = token.path();
+        String rawUploadId = token.rawUploadId();
+
+        if (path != null && !path.isBlank()) {
+            String cleanPath = StorageSecurityUtil.normalizePath(path);
+            if (!cleanPath.equals(key)) {
+                throw new StorageException(StorageResultCode.INVALID_PATH,
+                        "分片直传路径与上传会话绑定的路径不一致: expected=" + key + ", actual=" + cleanPath);
+            }
+        }
+
+        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
+                ? duration
+                : Duration.ofMinutes(15);
+        try {
+            UploadPartRequest uploadPartRequest = UploadPartRequest.builder()
+                    .bucket(this.bucket)
+                    .key(key)
+                    .uploadId(rawUploadId)
+                    .partNumber(chunkIndex)
+                    .build();
+
+            UploadPartPresignRequest presignRequest = UploadPartPresignRequest.builder()
+                    .signatureDuration(effectiveDuration)
+                    .uploadPartRequest(uploadPartRequest)
+                    .build();
+
+            PresignedUploadPartRequest presigned = this.s3Presigner.presignUploadPart(presignRequest);
+            String finalUrl = applyDomain(presigned.url().toString(), this.domain);
+
+            return PresignedUrl.builder()
+                    .url(finalUrl)
+                    .expiration(presigned.expiration())
+                    .httpMethod("PUT")
+                    .build();
+        } catch (Exception e) {
+            throw translateException(e, key, "生成 S3 预签名分片直传外链失败 (chunk=" + chunkIndex + ")");
+        }
+    }
+
     /**
      * 将底层 AWS SDK 抛出的异常精准转译为受管的 StorageException
      *
@@ -690,8 +764,6 @@ public class S3Driver implements StorageDriver {
         }
     }
 
-    private final ConcurrentMap<String, S3UploadSession> activeSessions = new ConcurrentHashMap<>();
-
     @Override
     public String initiateChunkedUpload(String path) {
         if (path == null || path.isBlank()) {
@@ -706,9 +778,8 @@ public class S3Driver implements StorageDriver {
                     .contentType(contentType)
                     .build();
             CreateMultipartUploadResponse resp = this.s3Client.createMultipartUpload(req);
-            String uploadId = resp.uploadId();
-            this.activeSessions.put(uploadId, new S3UploadSession(cleanPath, uploadId));
-            return uploadId;
+            String rawUploadId = resp.uploadId();
+            return S3ChunkTokenUtil.encode(cleanPath, rawUploadId, this.secretKey);
         } catch (Exception e) {
             throw translateException(e, cleanPath, "初始化 S3 分片上传会话失败");
         }
@@ -725,10 +796,9 @@ public class S3Driver implements StorageDriver {
         if (chunkIndex < 1) {
             throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片索引必须 >= 1 (1-based)，当前为: " + chunkIndex);
         }
-        S3UploadSession session = this.activeSessions.get(uploadId);
-        if (session == null) {
-            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到 S3 分片上传会话或已被清理: " + uploadId);
-        }
+        S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
+        String key = token.path();
+        String rawUploadId = token.rawUploadId();
         try {
             RequestBody body;
             if (size >= 0) {
@@ -739,16 +809,15 @@ public class S3Driver implements StorageDriver {
             }
             UploadPartRequest partReq = UploadPartRequest.builder()
                     .bucket(this.bucket)
-                    .key(session.getKey())
-                    .uploadId(uploadId)
+                    .key(key)
+                    .uploadId(rawUploadId)
                     .partNumber(chunkIndex)
                     .build();
-            UploadPartResponse partResp = this.s3Client.uploadPart(partReq, body);
-            session.addPart(chunkIndex, stripQuotes(partResp.eTag()));
+            this.s3Client.uploadPart(partReq, body);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取分片数据输入流异常: " + uploadId, e);
         } catch (Exception e) {
-            throw translateException(e, session.getKey(), "上传 S3 分片失败 (chunk=" + chunkIndex + ")");
+            throw translateException(e, key, "上传 S3 分片失败 (chunk=" + chunkIndex + ")");
         }
     }
 
@@ -760,44 +829,43 @@ public class S3Driver implements StorageDriver {
         if (totalChunks < 1) {
             throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID, "分片总片数必须 >= 1，当前为: " + totalChunks);
         }
-        String cleanPath = StorageSecurityUtil.normalizePath(targetPath);
-        S3UploadSession session = this.activeSessions.get(uploadId);
-        String key = session != null ? session.getKey() : cleanPath;
+        S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
+        String key = token.path();
+        String rawUploadId = token.rawUploadId();
 
         List<CompletedPart> completedParts = new ArrayList<>(totalChunks);
-        if (session != null) {
+        try {
+            Map<Integer, String> s3Parts = new HashMap<>();
+            Integer partNumberMarker = null;
+            do {
+                ListPartsRequest.Builder listPartsBuilder = ListPartsRequest.builder()
+                        .bucket(this.bucket)
+                        .key(key)
+                        .uploadId(rawUploadId);
+                if (partNumberMarker != null) {
+                    listPartsBuilder.partNumberMarker(partNumberMarker);
+                }
+                ListPartsResponse listPartsResp = this.s3Client.listParts(listPartsBuilder.build());
+                if (listPartsResp.hasParts()) {
+                    for (Part p : listPartsResp.parts()) {
+                        s3Parts.put(p.partNumber(), stripQuotes(p.eTag()));
+                    }
+                }
+                partNumberMarker = listPartsResp.isTruncated() ? listPartsResp.nextPartNumberMarker() : null;
+            } while (partNumberMarker != null);
+
             for (int i = 1; i <= totalChunks; i++) {
-                String etag = session.getPartETag(i);
+                String etag = s3Parts.get(i);
                 if (etag == null || etag.isBlank()) {
                     throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING,
                             "S3 分片合并失败，缺失第 " + i + " 个分片（预期总片数: " + totalChunks + "）");
                 }
                 completedParts.add(CompletedPart.builder().partNumber(i).eTag(etag).build());
             }
-        } else {
-            try {
-                ListPartsResponse listPartsResp = this.s3Client.listParts(ListPartsRequest.builder()
-                        .bucket(this.bucket)
-                        .key(key)
-                        .uploadId(uploadId)
-                        .build());
-                Map<Integer, String> s3Parts = new HashMap<>();
-                if (listPartsResp.hasParts()) {
-                    for (Part p : listPartsResp.parts()) {
-                        s3Parts.put(p.partNumber(), stripQuotes(p.eTag()));
-                    }
-                }
-                for (int i = 1; i <= totalChunks; i++) {
-                    String etag = s3Parts.get(i);
-                    if (etag == null || etag.isBlank()) {
-                        throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING,
-                                "S3 分片合并失败，缺失第 " + i + " 个分片（预期总片数: " + totalChunks + "）");
-                    }
-                    completedParts.add(CompletedPart.builder().partNumber(i).eTag(etag).build());
-                }
-            } catch (Exception e) {
-                throw translateException(e, key, "查询 S3 分片列表失败");
-            }
+        } catch (StorageException e) {
+            throw e;
+        } catch (Exception e) {
+            throw translateException(e, key, "查询 S3 分片列表失败");
         }
 
         try {
@@ -807,11 +875,10 @@ public class S3Driver implements StorageDriver {
             CompleteMultipartUploadRequest completeReq = CompleteMultipartUploadRequest.builder()
                     .bucket(this.bucket)
                     .key(key)
-                    .uploadId(uploadId)
+                    .uploadId(rawUploadId)
                     .multipartUpload(multipartUpload)
                     .build();
             this.s3Client.completeMultipartUpload(completeReq);
-            this.activeSessions.remove(uploadId);
             return getMetadata(key);
         } catch (Exception e) {
             throw translateException(e, key, "完成 S3 分片合并失败");
@@ -823,8 +890,16 @@ public class S3Driver implements StorageDriver {
         if (uploadId == null || uploadId.isBlank()) {
             return;
         }
-        S3UploadSession session = this.activeSessions.remove(uploadId);
-        String key = session != null ? session.getKey() : null;
+        String key = null;
+        String rawUploadId = uploadId;
+        try {
+            S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
+            key = token.path();
+            rawUploadId = token.rawUploadId();
+        } catch (Exception ignored) {
+            // Token 解码失败时尝试作为原生 uploadId 回退
+        }
+
         if (key == null) {
             try {
                 ListMultipartUploadsResponse uploadsResp = this.s3Client.listMultipartUploads(
@@ -840,12 +915,13 @@ public class S3Driver implements StorageDriver {
             } catch (Exception ignored) {
             }
         }
+
         if (key != null) {
             try {
                 this.s3Client.abortMultipartUpload(AbortMultipartUploadRequest.builder()
                         .bucket(this.bucket)
                         .key(key)
-                        .uploadId(uploadId)
+                        .uploadId(rawUploadId)
                         .build());
             } catch (Exception ignored) {
             }
@@ -869,32 +945,5 @@ public class S3Driver implements StorageDriver {
             }
         }
         return false;
-    }
-
-    private static class S3UploadSession {
-        private final String key;
-        private final String uploadId;
-        private final ConcurrentMap<Integer, String> parts = new ConcurrentHashMap<>();
-
-        public S3UploadSession(String key, String uploadId) {
-            this.key = key;
-            this.uploadId = uploadId;
-        }
-
-        public String getKey() {
-            return key;
-        }
-
-        public String getUploadId() {
-            return uploadId;
-        }
-
-        public void addPart(int partNumber, String etag) {
-            this.parts.put(partNumber, etag);
-        }
-
-        public String getPartETag(int partNumber) {
-            return this.parts.get(partNumber);
-        }
     }
 }

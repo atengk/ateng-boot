@@ -282,4 +282,39 @@ class LocalDriverTest {
         assertNotNull(items);
         assertTrue(items.isEmpty());
     }
+
+    @Test
+    @DisplayName("LocalDriver 生成分片预签名直传外链成功")
+    void testLocalGetPresignedUploadPartUrlSuccess() {
+        String path = "bigfiles/archive.tar.gz";
+        String uploadId = driver.initiateChunkedUpload(path);
+
+        PresignedUrl partUrl = driver.getPresignedUploadPartUrl(path, uploadId, 1, Duration.ofMinutes(15));
+        assertNotNull(partUrl);
+        assertEquals("PUT", partUrl.getHttpMethod());
+        assertNotNull(partUrl.getExpiration());
+        assertTrue(partUrl.getUrl().startsWith("http://localhost:8080/storage/local/upload"));
+        assertTrue(partUrl.getUrl().contains("path=bigfiles/archive.tar.gz"));
+        assertTrue(partUrl.getUrl().contains("uploadId=" + uploadId));
+        assertTrue(partUrl.getUrl().contains("chunkIndex=1"));
+        assertTrue(partUrl.getUrl().contains("signature="));
+    }
+
+    @Test
+    @DisplayName("LocalDriver 生成分片直传外链在未找到会话或已被清理时抛出异常")
+    void testLocalGetPresignedUploadPartUrlSessionNotFound() {
+        assertThrows(StorageException.class, () ->
+                driver.getPresignedUploadPartUrl("bigfiles/archive.tar.gz", "nonexistuploadid123", 1, Duration.ofMinutes(15)));
+    }
+
+    @Test
+    @DisplayName("LocalDriver 生成分片直传外链时分片索引非法拦截")
+    void testLocalGetPresignedUploadPartUrlInvalidChunkIndex() {
+        String path = "bigfiles/archive.tar.gz";
+        String uploadId = driver.initiateChunkedUpload(path);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                driver.getPresignedUploadPartUrl(path, uploadId, 0, Duration.ofMinutes(15)));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_INVALID, ex.getResultCode());
+    }
 }

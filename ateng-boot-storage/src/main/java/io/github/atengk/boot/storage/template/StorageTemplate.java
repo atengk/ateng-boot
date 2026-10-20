@@ -394,6 +394,11 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     }
 
     @Override
+    public PresignedUrl getPresignedUploadPartUrl(String path, String uploadId, int chunkIndex, Duration duration) {
+        return getDriver().getPresignedUploadPartUrl(path, uploadId, chunkIndex, duration);
+    }
+
+    @Override
     public void downloadAsZip(List<String> paths, OutputStream out) {
         if (paths == null || paths.isEmpty()) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "打包 ZIP 路径列表不能为空");

@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +18,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -229,6 +231,19 @@ class StorageTemplateTest {
         assertNotNull(page4);
         assertEquals(5, page4.getTotal());
         assertTrue(page4.getRecords().isEmpty());
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 门面获取分片预签名直传外链")
+    void testTemplateGetPresignedUploadPartUrl() {
+        String path = "chunked/large.zip";
+        String uploadId = template.initiateChunkedUpload(path);
+
+        PresignedUrl presigned = template.getPresignedUploadPartUrl(path, uploadId, 1, Duration.ofMinutes(15));
+        assertNotNull(presigned);
+        assertEquals("PUT", presigned.getHttpMethod());
+        assertTrue(presigned.getUrl().contains("uploadId=" + uploadId));
+        assertTrue(presigned.getUrl().contains("chunkIndex=1"));
     }
 
     public static class TestUser {

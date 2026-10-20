@@ -238,4 +238,29 @@ class LocalStorageUploadControllerTest {
         assertTrue(Files.exists(chunkFile));
         assertArrayEquals(chunkData, Files.readAllBytes(chunkFile));
     }
+
+    @Test
+    @DisplayName("端到端联动测试：通过 driver.getPresignedUploadPartUrl 生成分片直传链接并 PUT 上传成功")
+    void testEndToEndPresignedUploadPartUrl() throws Exception {
+        String targetPath = "media/movie.mp4";
+        String uploadId = driver.initiateChunkedUpload(targetPath);
+
+        // 1. 生成分片直传预签名 URL
+        PresignedUrl presignedPartUrl = driver.getPresignedUploadPartUrl(targetPath, uploadId, 1, Duration.ofMinutes(15));
+        assertNotNull(presignedPartUrl);
+        assertEquals("PUT", presignedPartUrl.getHttpMethod());
+
+        URI uri = URI.create(presignedPartUrl.getUrl());
+        byte[] chunkBytes = "High Definition Video Chunk 1".getBytes(StandardCharsets.UTF_8);
+
+        // 2. 模拟客户端直接向生成的预签名 URL 发起 PUT 请求
+        mockMvc.perform(put(uri.getPath() + "?" + uri.getQuery())
+                        .content(chunkBytes))
+                .andExpect(status().isOk());
+
+        // 3. 校验磁盘中成功落盘该分片
+        Path chunkFile = tempDir.resolve(".chunks").resolve(uploadId).resolve("chunk_1");
+        assertTrue(Files.exists(chunkFile));
+        assertArrayEquals(chunkBytes, Files.readAllBytes(chunkFile));
+    }
 }
