@@ -1,14 +1,31 @@
 package io.github.atengk.boot.http.template;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.util.Assert;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.function.Supplier;
 
 /**
  * HTTP 通信统一命令式操作门面具体类
@@ -19,7 +36,11 @@ import java.util.Optional;
  */
 public class HttpTemplate {
 
+    private static final int BUFFER_SIZE = 8192; // 8KB 零堆缓冲直刷
+
     private final RestClient restClient;
+    private final HttpErrorHandler httpErrorHandler;
+    private final Executor executor;
 
     /**
      * 基于已有 RestClient 实例构建 HttpTemplate
@@ -27,8 +48,21 @@ public class HttpTemplate {
      * @param restClient RestClient 实例，不可为 null
      */
     public HttpTemplate(RestClient restClient) {
+        this(restClient, new HttpErrorHandler(), null);
+    }
+
+    /**
+     * 基于 RestClient、HttpErrorHandler 与受管异步执行器构建 HttpTemplate
+     *
+     * @param restClient       RestClient 实例，不可为 null
+     * @param httpErrorHandler HTTP 统一异常响应处理器
+     * @param executor         受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     */
+    public HttpTemplate(RestClient restClient, HttpErrorHandler httpErrorHandler, Executor executor) {
         Assert.notNull(restClient, "restClient 实例不可为 null");
         this.restClient = restClient;
+        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
+        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
     }
 
     /**
@@ -37,8 +71,21 @@ public class HttpTemplate {
      * @param restClientBuilder RestClient 构建器，不可为 null
      */
     public HttpTemplate(RestClient.Builder restClientBuilder) {
+        this(restClientBuilder, new HttpErrorHandler(), null);
+    }
+
+    /**
+     * 基于 RestClient.Builder、HttpErrorHandler 与受管异步执行器构建 HttpTemplate
+     *
+     * @param restClientBuilder RestClient 构建器，不可为 null
+     * @param httpErrorHandler  HTTP 统一异常响应处理器
+     * @param executor          受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     */
+    public HttpTemplate(RestClient.Builder restClientBuilder, HttpErrorHandler httpErrorHandler, Executor executor) {
         Assert.notNull(restClientBuilder, "restClientBuilder 实例不可为 null");
         this.restClient = restClientBuilder.build();
+        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
+        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
     }
 
     // ==========================================
@@ -387,6 +434,169 @@ public class HttpTemplate {
         RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
         RequestOptionsApplier.apply(spec, options);
         return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // 大流传输（零缓冲下载与上传）
+    // ==========================================
+
+    /**
+     * 流式下载远程大文件并直刷至指定的 OutputStream（8KB 定长缓冲，杜绝 JVM 堆膨胀）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param outputStream 目标输出流（由调用方负责生命周期关闭）
+     */
+    public void download(String url, OutputStream outputStream) {
+        download(url, null, outputStream);
+    }
+
+    /**
+     * 携带动态 RequestOptions 流式下载远程大文件并直刷至指定的 OutputStream
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param outputStream 目标输出流（由调用方负责生命周期关闭）
+     */
+    public void download(String url, RequestOptions options, OutputStream outputStream) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(outputStream, "outputStream 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        spec.exchange((request, response) -> {
+            if (response.getStatusCode().isError()) {
+                this.httpErrorHandler.handleError(uri, HttpMethod.GET, response);
+            }
+            try (InputStream in = response.getBody()) {
+                byte[] buffer = new byte[BUFFER_SIZE];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                }
+                outputStream.flush();
+            }
+            return null;
+        }, false);
+    }
+
+    /**
+     * 流式下载远程文件并直接保存至指定的本地文件路径
+     *
+     * @param url        请求 URL 绝对路径
+     * @param targetFile 本地目标文件路径
+     */
+    public void download(String url, Path targetFile) {
+        download(url, null, targetFile);
+    }
+
+    /**
+     * 携带动态 RequestOptions 流式下载远程文件并直接保存至指定的本地文件路径
+     *
+     * @param url        请求 URL 绝对路径
+     * @param options    单次请求配置载荷（可为 null）
+     * @param targetFile 本地目标文件路径
+     */
+    public void download(String url, RequestOptions options, Path targetFile) {
+        Assert.notNull(targetFile, "targetFile 不能为空");
+        try (OutputStream out = Files.newOutputStream(targetFile)) {
+            download(url, options, out);
+        } catch (IOException e) {
+            throw new BusinessException("写入目标本地文件失败: " + targetFile, e);
+        }
+    }
+
+    /**
+     * 单资源流式 Multipart 文件上传
+     *
+     * @param url          请求 URL 绝对路径
+     * @param partName     分片字段名（如 "file"）
+     * @param resource     待上传资源实体
+     * @param responseType 响应类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, String partName, Resource resource, Class<T> responseType) {
+        return upload(url, partName, resource, null, responseType);
+    }
+
+    /**
+     * 携带 RequestOptions 的单资源流式 Multipart 文件上传
+     *
+     * @param url          请求 URL 绝对路径
+     * @param partName     分片字段名（如 "file"）
+     * @param resource     待上传资源实体
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, String partName, Resource resource, RequestOptions options, Class<T> responseType) {
+        Assert.hasText(partName, "partName 不能为空");
+        Assert.notNull(resource, "resource 不能为空");
+        MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+        parts.add(partName, resource);
+        return upload(url, parts, options, responseType);
+    }
+
+    /**
+     * 携带 RequestOptions 的多分片流式 Multipart 文件及表单上传
+     *
+     * @param url          请求 URL 绝对路径
+     * @param parts        分片及表单数据字典
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, MultiValueMap<String, Object> parts, RequestOptions options, Class<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(parts, "parts 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        spec.contentType(MediaType.MULTIPART_FORM_DATA);
+        spec.body(parts);
+        return spec.retrieve().body(responseType);
+    }
+
+    /**
+     * 携带 RequestOptions 的多分片流式 Multipart 上传并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param parts        分片及表单数据字典
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 复杂泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, MultiValueMap<String, Object> parts, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(parts, "parts 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        spec.contentType(MediaType.MULTIPART_FORM_DATA);
+        spec.body(parts);
+        return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // 受管异步执行器（四维上下文传播）
+    // ==========================================
+
+    /**
+     * 在受管异步线程池中执行 HTTP 请求，自动透传四维上下文快照（MDC/User/Tenant/IgnoreTenant）
+     *
+     * @param task 异步请求执行体
+     * @param <T>  返回实体泛型
+     * @return CompletableFuture 异步结果凭证
+     */
+    public <T> CompletableFuture<T> executeAsync(Supplier<T> task) {
+        Assert.notNull(task, "异步执行 task 不能为空");
+        Supplier<T> wrappedTask = AsyncContext.wrapSupplier(task);
+        return CompletableFuture.supplyAsync(wrappedTask, this.executor);
     }
 
     /**

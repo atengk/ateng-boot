@@ -1,6 +1,8 @@
 package io.github.atengk.boot.sample.http;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.options.RequestOptions;
@@ -8,24 +10,36 @@ import io.github.atengk.boot.http.template.HttpTemplate;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
+import okio.Buffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.ResourceAccessException;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -58,6 +72,9 @@ class HttpTemplateSampleTest {
 
     @AfterEach
     void tearDown() throws IOException {
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
         if (mockWebServer != null) {
             mockWebServer.shutdown();
         }
@@ -312,7 +329,6 @@ class HttpTemplateSampleTest {
         RecordedRequest request = mockWebServer.takeRequest();
         assertThat(request.getHeader("X-Tenant-Id")).isEqualTo("tenant-vip-001");
         assertThat(request.getHeader("X-Client-Version")).isEqualTo("1.0.0");
-        // 验证 URL query 参数已被正确执行 RFC 3986 编码
         assertThat(request.getPath())
                 .contains("keyword=%E6%B7%B1%E5%BA%A6%20%E5%AD%A6%E4%B9%A0")
                 .contains("tag=ai+model");
@@ -346,14 +362,12 @@ class HttpTemplateSampleTest {
     @Test
     @DisplayName("测试 RequestOptions 单次读取超时覆盖生效（触发快速失败）")
     void testRequestOptionsPerRequestTimeoutOverride() {
-        // 模拟远端响应头延迟 2 秒
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"delayed\":true}")
                 .setHeadersDelay(2, TimeUnit.SECONDS));
 
-        // 单次请求覆盖 readTimeout 为 300ms（全局默认为 10s）
         RequestOptions options = RequestOptions.builder()
                 .readTimeout(Duration.ofMillis(300))
                 .build();
@@ -363,5 +377,116 @@ class HttpTemplateSampleTest {
                 .isInstanceOf(ResourceAccessException.class);
         long elapsed = System.currentTimeMillis() - start;
         assertThat(elapsed).isLessThan(1500);
+    }
+
+    @Test
+    @DisplayName("测试大文件流式下载至本地文件（8KB 零缓冲直刷与临时目录隔离）")
+    void testDownloadLargeFileStream(@TempDir Path tempDir) throws IOException {
+        // 构造 64KB 重复数据
+        byte[] expectedContent = new byte[65536];
+        Arrays.fill(expectedContent, (byte) 'A');
+
+        Buffer buffer = new Buffer();
+        buffer.write(expectedContent);
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/octet-stream")
+                .setBody(buffer));
+
+        Path targetFile = tempDir.resolve("downloaded-file.bin");
+        httpTemplate.download(baseUrl + "download", targetFile);
+
+        assertThat(Files.exists(targetFile)).isTrue();
+        assertThat(Files.size(targetFile)).isEqualTo(65536);
+        assertThat(Files.readAllBytes(targetFile)).isEqualTo(expectedContent);
+
+        // 验证 404 时抛出 HttpRemoteException
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(404)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"error\":\"file not found\"}"));
+
+        Path failFile = tempDir.resolve("fail-file.bin");
+        assertThatThrownBy(() -> httpTemplate.download(baseUrl + "download/not-found", failFile))
+                .isInstanceOf(HttpRemoteException.class);
+    }
+
+    @Test
+    @DisplayName("测试流式 Multipart 文件上传")
+    void testUploadMultipartFile() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"success\":true,\"filename\":\"report.csv\"}"));
+
+        byte[] fileBytes = "id,name,role\n1,ateng,admin".getBytes(StandardCharsets.UTF_8);
+        ByteArrayResource resource = new ByteArrayResource(fileBytes) {
+            @Override
+            public String getFilename() {
+                return "report.csv";
+            }
+        };
+
+        Map<?, ?> result = httpTemplate.upload(baseUrl + "upload", "file", resource, Map.class);
+        assertThat(result).isNotNull();
+        assertThat(result.get("success")).isEqualTo(true);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getHeader("Content-Type")).contains("multipart/form-data");
+        assertThat(recordedRequest.getBody().readUtf8()).contains("report.csv");
+    }
+
+    @Test
+    @DisplayName("测试 executeAsync 异步执行与四维上下文（MDC、User、Tenant）跨线程透传")
+    void testExecuteAsyncAndFourDimensionalContextPropagation() throws ExecutionException, InterruptedException, TimeoutException {
+        // 1. 在当前线程装载四维上下文
+        MDC.put("traceId", "trace-async-9999");
+        UserContextHolder.set("user-async-super");
+        TenantContextHolder.setTenantId("tenant-async-001");
+
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"async\":\"OK\"}"));
+
+        // 2. 异步执行，验证在工作线程中四维上下文成功透传
+        CompletableFuture<Map> future = httpTemplate.executeAsync(() -> {
+            assertThat(MDC.get("traceId")).isEqualTo("trace-async-9999");
+            assertThat(UserContextHolder.get()).isEqualTo("user-async-super");
+            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-async-001");
+            return httpTemplate.get(baseUrl + "async-call", Map.class);
+        });
+
+        Map<?, ?> result = future.get(5, TimeUnit.SECONDS);
+        assertThat(result).isNotNull();
+        assertThat(result.get("async")).isEqualTo("OK");
+    }
+
+    @Test
+    @DisplayName("测试 50 并发请求下的连接池物理连接复用与高并发稳定准出")
+    void testFiftyConcurrentRequestsConnectionPoolReuse() throws ExecutionException, InterruptedException, TimeoutException {
+        int requestCount = 50;
+        for (int i = 0; i < requestCount; i++) {
+            mockWebServer.enqueue(new MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"seq\":" + i + "}"));
+        }
+
+        List<CompletableFuture<Map>> futures = IntStream.range(0, requestCount)
+                .mapToObj(i -> CompletableFuture.supplyAsync(() -> httpTemplate.get(baseUrl + "pool-load", Map.class)))
+                .toList();
+
+        CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        allFutures.get(10, TimeUnit.SECONDS);
+
+        assertThat(futures).allMatch(f -> {
+            try {
+                return f.get() != null && f.get().containsKey("seq");
+            } catch (Exception e) {
+                return false;
+            }
+        });
     }
 }

@@ -7,6 +7,7 @@ import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.template.HttpTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -16,6 +17,8 @@ import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
+
+import java.util.concurrent.Executor;
 
 /**
  * ateng-boot HTTP 通信底座自动装配类
@@ -80,13 +83,18 @@ public class AtengHttpAutoConfiguration {
 
     /**
      * 注册全局统一命令式操作门面 HttpTemplate Bean
+     * 统一绑定受管异步线程池设施以实现四维上下文跨线程传播
      *
-     * @param restClientBuilder RestClient 构建器
+     * @param restClientBuilder    RestClient 构建器
+     * @param httpErrorHandler     HTTP 异常响应处理器
+     * @param taskExecutorProvider 受管异步执行器提供者
      * @return HttpTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public HttpTemplate httpTemplate(RestClient.Builder restClientBuilder) {
-        return new HttpTemplate(restClientBuilder);
+    public HttpTemplate httpTemplate(RestClient.Builder restClientBuilder,
+                                     HttpErrorHandler httpErrorHandler,
+                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new HttpTemplate(restClientBuilder, httpErrorHandler, taskExecutorProvider.getIfAvailable());
     }
 }
