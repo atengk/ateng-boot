@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -575,5 +576,172 @@ class SampleStorageIntegrationTest {
                         .param("sourcePath", "   ")
                         .param("targetPath", "target.txt"))
                 .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
+
+    @Test
+    @DisplayName("端到端测试 14：客户端直传预签名生成与前端 PUT 直传交互闭环")
+    void testPresignedDirectUploadPut() throws Exception {
+        byte[] payload = "Direct PUT Content".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 获取预签名直传写入外链凭据
+        MvcResult presignResult = mockMvc.perform(get("/api/storage/presigned-upload")
+                        .param("path", "direct/doc.txt")
+                        .param("durationSeconds", "300"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.httpMethod").value("PUT"))
+                .andReturn();
+
+        JsonNode root = objectMapper.readTree(presignResult.getResponse().getContentAsString());
+        String fullUrl = root.get("data").get("url").asText();
+        assertThat(fullUrl).contains("/storage/local/upload");
+
+        // 2. 模拟前端直接通过 HTTP PUT 将二进制写入直传端点
+        java.net.URI uri = java.net.URI.create(fullUrl);
+        mockMvc.perform(put(uri)
+                        .content(payload)
+                        .contentType(MediaType.TEXT_PLAIN))
+                .andExpect(status().isOk());
+
+        // 3. 校验文件在底层存储中真实存在且内容一致
+        assertThat(storageTemplate.exists("direct/doc.txt")).isTrue();
+        assertThat(new String(storageTemplate.downloadBytes("direct/doc.txt"), StandardCharsets.UTF_8)).isEqualTo("Direct PUT Content");
+    }
+
+    @Test
+    @DisplayName("端到端测试 15：端侧大文件分块直传预签名与完成合并闭环")
+    void testPresignedChunkedUploadPartAndComplete() throws Exception {
+        byte[] part1Bytes = "Part 1 Chunk Data".getBytes(StandardCharsets.UTF_8);
+        byte[] part2Bytes = "Part 2 Chunk Data".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 初始化分片会话
+        MvcResult initResult = mockMvc.perform(post("/api/storage/chunk/initiate")
+                        .param("path", "chunked/large.bin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String uploadId = objectMapper.readTree(initResult.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 获取分片 1 直传外链并上传
+        MvcResult part1Result = mockMvc.perform(get("/api/storage/presigned-upload-part")
+                        .param("path", "chunked/large.bin")
+                        .param("uploadId", uploadId)
+                        .param("chunkIndex", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String part1Url = objectMapper.readTree(part1Result.getResponse().getContentAsString()).get("data").get("url").asText();
+        mockMvc.perform(put(java.net.URI.create(part1Url)).content(part1Bytes)).andExpect(status().isOk());
+
+        // 3. 获取分片 2 直传外链并上传
+        MvcResult part2Result = mockMvc.perform(get("/api/storage/presigned-upload-part")
+                        .param("path", "chunked/large.bin")
+                        .param("uploadId", uploadId)
+                        .param("chunkIndex", "2"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String part2Url = objectMapper.readTree(part2Result.getResponse().getContentAsString()).get("data").get("url").asText();
+        mockMvc.perform(put(java.net.URI.create(part2Url)).content(part2Bytes)).andExpect(status().isOk());
+
+        // 4. 完成合并
+        mockMvc.perform(post("/api/storage/chunk/complete")
+                        .param("uploadId", uploadId)
+                        .param("path", "chunked/large.bin")
+                        .param("totalChunks", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.size").value(part1Bytes.length + part2Bytes.length));
+
+        assertThat(storageTemplate.exists("chunked/large.bin")).isTrue();
+    }
+
+    @Test
+    @DisplayName("端到端测试 16：StorageHashUtil 散列计算与大文件秒传业务闭环")
+    void testCalculateHashAndFastUpload() throws Exception {
+        String content = "Hello Fast Upload Deterministic Content 2026";
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+
+        // 1. 将文件预先放入哈希池
+        String sha256 = io.github.atengk.boot.storage.util.StorageHashUtil.sha256Hex(new ByteArrayInputStream(bytes));
+        storageTemplate.uploadString("hash-pool/" + sha256 + ".dat", content);
+
+        // 2. 校验散列计算端点
+        mockMvc.perform(get("/api/storage/hash")
+                        .param("path", "hash-pool/" + sha256 + ".dat")
+                        .param("algorithm", "SHA256"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(sha256));
+
+        // 3. 执行秒传（文件已存在于哈希池，秒传成功）
+        mockMvc.perform(post("/api/storage/fast-upload")
+                        .param("targetPath", "user-space/report.txt")
+                        .param("hash", sha256))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.path").value("user-space/report.txt"));
+
+        assertThat(storageTemplate.exists("user-space/report.txt")).isTrue();
+        assertThat(storageTemplate.downloadString("user-space/report.txt")).isEqualTo(content);
+
+        // 4. 秒传未命中池（返回 40404 引导走普通上传）
+        mockMvc.perform(post("/api/storage/fast-upload")
+                        .param("targetPath", "user-space/not-found.txt")
+                        .param("hash", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40404));
+    }
+
+    @Test
+    @DisplayName("端到端测试 17：前缀与目录流式批量删除场景闭环")
+    void testDeletePrefixAndDirectory() throws Exception {
+        storageTemplate.uploadString("purge/2026/01.log", "log1");
+        storageTemplate.uploadString("purge/2026/02.log", "log2");
+        storageTemplate.uploadString("purge/other.txt", "keep");
+
+        // 1. 删除 purge/2026/ 前缀
+        mockMvc.perform(post("/api/storage/delete-prefix")
+                        .param("prefix", "purge/2026/"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        assertThat(storageTemplate.exists("purge/2026/01.log")).isFalse();
+        assertThat(storageTemplate.exists("purge/2026/02.log")).isFalse();
+        assertThat(storageTemplate.exists("purge/other.txt")).isTrue();
+
+        // 2. 级联删除目录 purge
+        mockMvc.perform(post("/api/storage/delete-directory")
+                        .param("dirPath", "purge"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        assertThat(storageTemplate.exists("purge/other.txt")).isFalse();
+    }
+
+    @Test
+    @DisplayName("端到端测试 18：上传携带用户自定义元数据闭环")
+    void testUploadWithUserMetadata() throws Exception {
+        byte[] fileBytes = "Metadata demo content".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile("file", "meta.txt", "text/plain", fileBytes);
+
+        mockMvc.perform(multipart("/api/storage/upload-with-metadata")
+                        .file(file)
+                        .param("path", "custom/meta.txt")
+                        .param("author", "Ateng")
+                        .param("env", "sample-test"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.userMetadata.author").value("Ateng"))
+                .andExpect(jsonPath("$.data.userMetadata.env").value("sample-test"));
+    }
+
+    @Test
+    @DisplayName("端到端测试 19：Spring Boot Actuator /actuator/health 存储健康探针感知")
+    void testActuatorHealthIndicator() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components.storage.status").value("UP"));
     }
 }

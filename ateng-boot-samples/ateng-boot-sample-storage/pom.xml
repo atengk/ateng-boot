@@ -29,6 +29,12 @@
             <artifactId>ateng-boot-storage</artifactId>
         </dependency>
 
+        <!-- Spring Boot Actuator 健康检查与监控 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <!-- SpringDoc OpenAPI (用于接口文档与外链调试) -->
         <dependency>
             <groupId>org.springdoc</groupId>

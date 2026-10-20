@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.sample.storage.service.FileStorageDemoService;
+import io.github.atengk.boot.storage.model.HashAlgorithm;
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -329,5 +331,127 @@ public class FileController {
     public Result<Void> abortChunk(@RequestParam("uploadId") @NotBlank(message = "会话标识 uploadId 不能为空") String uploadId) {
         storageTemplate.abortChunkedUpload(uploadId);
         return Result.success();
+    }
+
+    /**
+     * 获取指定存储对象的预签名安全直传写入外链凭据
+     *
+     * @param path            目标相对路径
+     * @param durationSeconds 有效期（秒，默认 300 秒）
+     * @param contentType     严格限定内容类型（可选）
+     * @param maxBytes        允许上传最大字节大小（可选，-1 不限制）
+     * @return 预签名直传外链
+     */
+    @GetMapping("/presigned-upload")
+    public Result<PresignedUrl> getPresignedUploadUrl(
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam(value = "durationSeconds", defaultValue = "300") @Min(value = 1, message = "有效期必须大于 0") long durationSeconds,
+            @RequestParam(value = "contentType", required = false) String contentType,
+            @RequestParam(value = "maxBytes", defaultValue = "-1") long maxBytes) {
+        PresignedUploadRequest request = PresignedUploadRequest.builder()
+                .path(path)
+                .duration(Duration.ofSeconds(durationSeconds))
+                .contentType(contentType)
+                .maxSizeBytes(maxBytes)
+                .build();
+        PresignedUrl presignedUrl = storageTemplate.getPresignedUploadUrl(request);
+        return Result.success(presignedUrl);
+    }
+
+    /**
+     * 获取大文件分片预签名安全直传写入外链凭据
+     *
+     * @param path            目标相对路径
+     * @param uploadId        分片上传会话标识
+     * @param chunkIndex      分片编号（1-based）
+     * @param durationSeconds 有效期（秒，默认 300 秒）
+     * @return 分片直传预签名外链
+     */
+    @GetMapping("/presigned-upload-part")
+    public Result<PresignedUrl> getPresignedUploadPartUrl(
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam("uploadId") @NotBlank(message = "uploadId 不能为空") String uploadId,
+            @RequestParam("chunkIndex") @Min(value = 1, message = "分片序号必须 >= 1") int chunkIndex,
+            @RequestParam(value = "durationSeconds", defaultValue = "300") @Min(value = 1, message = "有效期必须大于 0") long durationSeconds) {
+        PresignedUrl presignedUrl = storageTemplate.getPresignedUploadPartUrl(path, uploadId, chunkIndex, Duration.ofSeconds(durationSeconds));
+        return Result.success(presignedUrl);
+    }
+
+    /**
+     * 流式零拷贝计算已存储对象的散列哈希值（支持秒传唯一指纹比对）
+     *
+     * @param path      目标存储对象相对路径
+     * @param algorithm 散列算法（MD5, SHA1, SHA256, CRC32，默认 SHA256）
+     * @return 散列值字符串
+     */
+    @GetMapping("/hash")
+    public Result<String> calculateHash(
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam(value = "algorithm", defaultValue = "SHA256") HashAlgorithm algorithm) {
+        String hash = storageTemplate.calculateHash(path, algorithm);
+        return Result.success(hash);
+    }
+
+    /**
+     * 极速秒传业务接口：若哈希指纹池中存在该文件，直接完成零拷贝复用秒传
+     *
+     * @param targetPath 目标存放相对路径
+     * @param hash       文件散列指纹
+     * @return 存储元数据对象
+     */
+    @PostMapping("/fast-upload")
+    public Result<StorageObject> fastUpload(
+            @RequestParam("targetPath") @NotBlank(message = "目标路径不能为空") String targetPath,
+            @RequestParam("hash") @NotBlank(message = "散列哈希不能为空") String hash) {
+        String poolSourcePath = "hash-pool/" + hash + ".dat";
+        if (!storageTemplate.exists(poolSourcePath)) {
+            return Result.fail(40404, "文件哈希未命中秒传池，请走普通上传流");
+        }
+        storageTemplate.copy(poolSourcePath, targetPath);
+        StorageObject metadata = storageTemplate.getMetadata(targetPath);
+        return Result.success(metadata);
+    }
+
+    /**
+     * 按前缀批量删除存储对象（流式批处理与防误删安全熔断）
+     *
+     * @param prefix 目标前缀
+     * @return 操作结果
+     */
+    @PostMapping("/delete-prefix")
+    public Result<Boolean> deletePrefix(@RequestParam("prefix") @NotBlank(message = "删除前缀不能为空") String prefix) {
+        boolean success = storageTemplate.deletePrefix(prefix);
+        return Result.success(success);
+    }
+
+    /**
+     * 级联删除目录及其内部所有对象
+     *
+     * @param dirPath 目录路径
+     * @return 操作结果
+     */
+    @PostMapping("/delete-directory")
+    public Result<Boolean> deleteDirectory(@RequestParam("dirPath") @NotBlank(message = "目录路径不能为空") String dirPath) {
+        boolean success = storageTemplate.deleteDirectory(dirPath);
+        return Result.success(success);
+    }
+
+    /**
+     * 上传文件并携带用户自定义元数据
+     *
+     * @param file         上传的表单文件
+     * @param path         自定义存储路径
+     * @param userMetadata 用户元数据字典
+     * @return 存储元数据对象
+     */
+    @PostMapping("/upload-with-metadata")
+    public Result<StorageObject> uploadWithMetadata(
+            @RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+            @RequestParam("path") @NotBlank(message = "目标路径不能为空") String path,
+            @RequestParam Map<String, String> userMetadata) {
+        Map<String, String> customMeta = new java.util.HashMap<>(userMetadata);
+        customMeta.remove("path");
+        StorageObject object = storageTemplate.upload(path, file, customMeta);
+        return Result.success(object);
     }
 }

@@ -1,6 +1,6 @@
 # ateng-boot-storage 基础设施 Starter
 
-> 企业级轻量多源对象存储与安全预签名一体化 Starter，统一抽象 Local 本地磁盘存储与标准 S3 兼容协议（MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS），提供路径遍历安全防卫、MIME 自动推导、Spring 原生资源深度集成与分布式天然幂等删除保障。
+> 企业级轻量多源对象存储与安全预签名一体化 Starter，统一抽象 Local 本地磁盘存储与标准 S3 兼容协议（MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS），提供路径遍历安全防卫、文件魔数嗅探、极速流式散列计算与秒传、分片直传预签名、孤儿碎片治理守护、Spring Boot Actuator 健康探针与 Spring 原生资源深度集成，天然具备分布式幂等删除保障。
 
 ---
 
@@ -8,35 +8,44 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **文件上传** | 流式/字节/文件上传 | `StorageTemplate` | `ateng.boot.storage.enabled` | `upload(String, InputStream)` / `upload(String, byte[])` / `upload(String, File)` / `upload(String, StorageObject)`，自动推导 MIME 与安全创建父目录 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **分片上传** | 大文件分片流式上传 | `StorageTemplate` | - | `uploadChunk(String, InputStream, long, int, int)` / `completeChunkUpload(String, int)`，受控内存占用与异常自动补偿清理 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
-| **文件下载** | 流式/字节/落盘下载 | `StorageTemplate` | - | `download(String)` (返回 `InputStream`) / `downloadBytes(String)` (返回 `byte[]`) / `download(String, File)`，严格遵循 try-with-resources 资源确定性释放 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **文件存在与元数据** | 存在性与属性探测 | `StorageTemplate` | - | `exists(String)` / `getMetadata(String)` / `getUrl(String)` / `list(String)`，统一轻量返回 `StorageObject` 强类型元数据 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate` | - | `delete(String)` / `delete(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑成功 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **多源路由** | 动态命名存储源切换 | `StorageTemplate` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `use(String sourceName)`，瞬态切换至目标命名存储源，支持平铺单源与多源字典共存 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
-| **声明式多源** | 声明式数据源路由注解 | `@Storage` / `StorageAspect` | `ateng.boot.storage.sources.*` | 可声明于类或方法上，AOP 自动解析并绑定当前线程存储源上下文 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
-| **多源上下文** | 存储数据源上下文保持器 | `StorageContextHolder` | - | `set(String)` / `get()` / `clear()`，依托 ThreadLocal 保证多源切换无状态与确定性现场清理 | `StorageRoutingTest` |
-| **上下文透传** | 存储多源异步上下文装饰器 | `StorageTaskDecorator` | - | 将当前线程存储源标识快照透传至受管线程池异步任务中，执行完毕后无条件清理 | `StorageRoutingTest` |
-| **打包归档** | 多文件流式 ZIP 打包下载 | `StorageTemplate` | - | `downloadZip(List<String>, OutputStream)` / `downloadZip(List<String>, File)`，内存受控流式压缩打成 ZIP 包 | `StorageTemplateZipTest` / `SampleStorageIntegrationTest` |
-| **预签名只读** | 安全只读防盗链预签名 URL | `StorageTemplate` | `ateng.boot.storage.local.secret-key`<br>`ateng.boot.storage.local.download-endpoint` | `getPresignedUrl(String, Duration)`，返回带有效期的强类型 `PresignedUrl`，Local 驱动基于 HMAC-SHA256 签名，S3 驱动原生对接云端凭据 | `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
-| **预签名直传** | 安全上传预签名授权 URL | `StorageTemplate` | - | `getPresignedUploadUrl(String, Duration)`，为前端直传提供带有效期的强类型 `PresignedUrl`（S3 驱动原生支持） | `S3DriverTest` |
-| **本地端点** | 本地文件安全受控下载端点 | `LocalStorageDownloadController` | `ateng.boot.storage.local.download-endpoint` | 提供 `/storage/local/download` 端点，对 URL 时间戳与 HMAC 签名防篡改校验，过期与非法签名 Fail-Fast | `LocalStorageDownloadControllerTest` / `SampleStorageIntegrationTest` |
-| **本地驱动** | 本地文件系统存储驱动 | `LocalDriver` | `ateng.boot.storage.local.base-path`<br>`ateng.boot.storage.local.domain` | 本地存储驱动，封装文件读写、父目录创建、路径穿越清洗与基于 HMAC 签名的安全外链 | `LocalDriverTest` / `SampleStorageIntegrationTest` |
-| **S3 协议驱动** | 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain` | 统一抽象 MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与虚拟主机域名无缝切换 | `S3DriverTest` |
-| **Spring 原生集成** | 原生 WritableResource 契约 | `StorageResource` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源 | `StorageResourceTest` / `SampleStorageIntegrationTest` |
-| **安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别二进制魔数特征，严厉阻断可执行文件或恶意脚本伪装成文档/图片上传，支持白名单拦截 | `StorageGuardTest` / `SampleStorageIntegrationTest` |
-| **路径清洗** | 路径穿越防御清洗工具 | `StorageSecurityUtil` | - | 清洗清理 `../`、`./`、非法特殊字符与宿主系统特定隐藏文件，杜绝路径穿越与越权漏洞 | `StorageSecurityUtilTest` |
-| **事件通知** | 存储生命周期事件总线 | `StorageEvent`<br>`StorageUploadedEvent`<br>`StorageDeletedEvent` | - | 文件上传与删除成功后通过 Spring 原生事件广播通知，便于业务解耦监听 | `StorageTemplateEventTest` / `SampleStorageIntegrationTest` |
-| **因果异常体系** | 语义化异常与统一错误码 | `StorageException`<br>`StorageResultCode` | - | 将底层驱动抛出的各种 IO/网络/SDK 异常转译为语义化 `StorageException` 并保留因果堆栈链 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **文件上传** | 流式/字节/文件/表单上传 | `StorageTemplate` | `ateng.boot.storage.enabled` | `upload(String, InputStream)` / `upload(String, byte[])` / `upload(String, File)` / `upload(String, MultipartFile)` / `upload(String, StorageObject)`，自动推导 MIME 与安全创建父目录 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **自定义元数据** | 对象用户扩展元数据注入 | `StorageTemplate`<br>`StorageObject` | - | `upload(String, InputStream, Map<String, String>)` / `upload(String, MultipartFile, Map<String, String>)` / `copy(String, String, Map<String, String>)`，持久化并在 `StorageObject.getUserMetadata()` 反查 | `StorageTemplateMetadataTest` / `SampleStorageIntegrationTest` |
+| **分片上传** | 服务端大文件分片合并暂存 | `StorageTemplate` | - | `initiateChunkedUpload(String)` / `uploadChunk(String, int, InputStream, long)` / `uploadChunk(String, int, byte[])` / `completeChunkedUpload(String, String, int)` / `abortChunkedUpload(String)`，1-based 序号连续性强校验与原子删除 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
+| **预签名只读** | 安全只读防盗链预签名外链 | `StorageTemplate` | `ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.secret-key` | `getPresignedUrl(String, Duration)`，返回带有效期的强类型 `PresignedUrl`，Local 驱动基于 HMAC-SHA256 签名，S3 驱动原生对接云端凭据 | `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
+| **客户端直传预签名** | 预签名安全直传写入外链凭据 | `StorageTemplate`<br>`PresignedUploadRequest` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadUrl(String, Duration)` / `getPresignedUploadUrl(PresignedUploadRequest)`，前端直接向存储端点发起 HTTP PUT 直传数据，完全绕过业务后端转发 | `LocalDriverPresignedUploadTest` / `S3DriverPresignedUploadTest` / `SampleStorageIntegrationTest` |
+| **分片直传预签名** | 端侧大文件分块直传预签名 | `StorageTemplate` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadPartUrl(String, String, int, Duration)`，生成指定分片写入外链，前端并发 PUT 直传各分片后通知后端合并 | `LocalDriverChunkedPresignTest` / `S3DriverChunkedPresignTest` / `SampleStorageIntegrationTest` |
+| **流式散列与秒传** | 原生零拷贝流式散列计算 | `StorageHashUtil`<br>`StorageTemplate`<br>`HashAlgorithm` | - | `StorageHashUtil.sha256Hex(InputStream)` / `md5Hex` / `sha1Hex` / `crc32`；`storageTemplate.calculateHash(String, HashAlgorithm)`，流指针零截断与极速秒传指纹比对 | `StorageHashUtilTest` / `SampleStorageIntegrationTest` |
+| **文件下载** | 流式/字节/落盘/响应下载 | `StorageTemplate` | - | `download(String)` (返回 `InputStream`) / `downloadBytes(String)` (返回 `byte[]`) / `download(String, File)` / `download(String, OutputStream)`，严格遵循 try-with-resources 资源确定性释放 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **文件存在与元数据** | 存在性与属性探测 | `StorageTemplate` | - | `exists(String)` / `getMetadata(String)` / `getUrl(String)`，统一轻量返回 `StorageObject` 强类型元数据 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **便捷载荷存取** | 字符串/字节/JSON便捷存取 | `StorageTemplate` | - | `uploadString(String, String)` / `downloadString(String)` / `uploadBytes(String, byte[])` / `downloadBytes(String)` / `uploadJson(String, Object)` / `downloadJson(String, Class<T>)`，免除样板代码 | `StorageTemplateConvenientTest` / `SampleStorageIntegrationTest` |
+| **对象复制与移动** | 跨路径秒传复制与原子移动 | `StorageTemplate` | - | `copy(String, String)` / `move(String, String)`，S3 服务端免流秒传，Local NIO 零拷贝转移并安全移除源文件 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **目录检索与分页** | 树状前缀列举与标准分页检索 | `StorageTemplate`<br>`StorageObject` | - | `list(String)` / `list(String, boolean)` / `listPage(String, PageQuery)` / `listPage(String, PageQuery, boolean)`，统一区分文件与虚拟目录项并自动过滤系统隐藏项 | `StorageTemplateListTest` / `SampleStorageIntegrationTest` |
+| **打包归档** | 多文件纯流式 ZIP 打包响应 | `StorageTemplate` | - | `downloadAsZip(List<String>, OutputStream)` / `downloadAsZip(Map<String, String>, OutputStream)` / `downloadAsZip(List<String>, HttpServletResponse, String)`，内存受控、零临时文件与重名自动消解 | `StorageTemplateZipTest` / `SampleStorageIntegrationTest` |
+| **天然幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate` | - | `delete(String)` / `deleteBatch(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑成功 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
+| **前缀批量删除** | 目录级与前缀级流式批量删除 | `StorageTemplate` | - | `deletePrefix(String)`，流式切片批量清除指定前缀下的所有对象，严厉熔断空前缀与根目录防误删 | `StorageTemplatePrefixDeleteTest` / `SampleStorageIntegrationTest` |
+| **碎片治理守护** | 孤儿分片碎片生命周期治理 | `StorageChunkCleaner` | `ateng.boot.storage.chunk-cleaner.enabled`<br>`ateng.boot.storage.chunk-cleaner.retention`<br>`ateng.boot.storage.chunk-cleaner.cron` | 定时物理扫描并安全回收超期滞留的 `.chunks` 孤儿碎片，彻底杜绝服务器磁盘与云端存储悬挂泄漏 | `StorageChunkCleanerTest` |
+| **存储健康探针** | Actuator 存储健康状态感知 | `StorageHealthIndicator` | `management.health.storage.enabled` | 深度集成 Spring Boot Actuator `/actuator/health`，实时探测 Local 磁盘读写或云端 S3 Bucket 可用性并输出诊断指标 | `StorageHealthIndicatorTest` / `SampleStorageIntegrationTest` |
+| **多源路由调度** | 动态命名存储源切换门面 | `StorageTemplate` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `use(String sourceName)`，返回绑定目标存储源的独立不可变操作门面，支持平铺单源与多源字典共存 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
+| **声明式多源** | 声明式数据源路由注解 | `@Storage`<br>`StorageAspect` | `ateng.boot.storage.sources.*` | 可声明于 Spring Service 类或方法上，AOP 自动解析并绑定当前线程存储源上下文，执行完毕严格恢复 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
+| **多源上下文** | 存储数据源上下文保持器 | `StorageContextHolder` | - | `set(String)` / `get()` / `clear()` / `wrap(Runnable)`，依托 ThreadLocal 保证多源切换无状态与跨线程安全透传 | `StorageRoutingTest` |
+| **上下文透传** | 存储多源异步上下文装饰器 | `StorageTaskDecorator` | - | 将当前线程活动存储源标识快照透传至受管线程池异步任务中，执行完毕后无条件清理现场 | `StorageRoutingTest` |
+| **本地受控端点** | 本地文件安全下载与直传端点 | `LocalStorageDownloadController`<br>`LocalStorageUploadController` | `ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.upload-endpoint` | 提供 `/storage/local/download`、`/storage/local/upload` 与 `/storage/local/upload-part` 端点，基于 HMAC-SHA256 防篡改与时效验证 | `LocalStorageDownloadControllerTest` / `LocalStorageUploadControllerTest` / `SampleStorageIntegrationTest` |
+| **本地驱动 SPI** | 本地文件系统存储驱动 | `LocalDriver` | `ateng.boot.storage.local.base-path`<br>`ateng.boot.storage.local.domain` | 本地存储驱动，封装文件读写、父目录创建、路径穿越清洗、分片零拷贝合并与基于 HMAC 签名的安全外链 | `LocalDriverTest` / `SampleStorageIntegrationTest` |
+| **S3 协议驱动 SPI**| 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain` | 统一抽象 MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与 CDN 域名无缝切换 | `S3DriverTest` |
+| **Spring 原生集成** | 原生 WritableResource 契约 | `StorageResource` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源与 HTTP 206 响应 | `StorageResourceTest` / `SampleStorageIntegrationTest` |
+| **文件安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别 15+ 种标准魔数与高危 PE/ELF/Shell 脚本二进制特征，基于 mark/reset 零流截断损耗防御伪装上传 | `StorageGuardTest` / `SampleStorageIntegrationTest` |
+| **路径清洗** | 路径穿越防御清洗工具 | `StorageSecurityUtil` | - | 清洗清理 `../`、`./`、非法特殊字符与宿主系统特定隐藏文件，HMAC 常量时间比对防时序攻击 | `StorageSecurityUtilTest` |
+| **事件通知** | 存储生命周期事件总线 | `StorageEvent`<br>`StorageUploadedEvent`<br>`StorageDeletedEvent` | - | 文件上传与删除成功后通过 Spring 原生事件广播通知，Fail-Safe 异常隔离不阻断主链路 | `StorageTemplateEventTest` / `SampleStorageIntegrationTest` |
+| **因果异常体系** | 语义化异常与统一错误码 | `StorageException`<br>`StorageResultCode` | - | 将底层驱动抛出的各种 IO/网络/SDK 异常转译为语义化 `StorageException` 并 100% 保留因果堆栈链 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 
 ---
 
 ## 1. 模块定位与 Maven 坐标
 
 `ateng-boot-storage` 是面向生产就绪的高内聚、轻量级存储基础设施模块：
-- **纯净依赖**：仅必需依赖 `ateng-boot-core`，零冗余第三方工具包，Spring Web 仅作为可选依赖（optional）；
-- **双核驱动**：统一抽象为 `LocalDriver`（本地磁盘）与 `S3Driver`（云原生 S3 兼容协议，精简版 AWS SDK v2）；
-- **显式契约**：提供 `StorageTemplate` 高阶门面与 Spring 原生 `StorageResource`（实现 `Resource` 与 `WritableResource`），删除天然幂等。
+- **纯净依赖**：仅必需依赖 `ateng-boot-core`，零冗余第三方工具包，Spring Web 与 Spring Boot Actuator 作为可选依赖（optional）；
+- **双核驱动**：统一抽象为 `LocalDriver`（本地磁盘文件系统）与 `S3Driver`（云原生 S3 兼容协议，精简版 AWS SDK v2）；
+- **显式契约**：提供 `StorageTemplate` 高阶统一门面与 Spring 原生 `StorageResource`（实现 `Resource` 与 `WritableResource`），删除天然幂等。
 
 ```xml
 <dependency>
@@ -47,13 +56,13 @@
 
 ---
 
-## 2. 基础配置说明
+## 2. 基础配置说明与生产范式
 
 ### 场景痛点
-在单机部署或私有化交付中，需要快速将文件落盘到本地磁盘，且需指定基础存储路径。
+在单机部署、私有化交付或混合云架构中，存储介质常常面临频繁变更或多云混用；传统方案缺乏统一的配置结构与碎片治理策略，极易导致代码与特定 SDK 深度耦合或磁盘碎片膨胀。
 
 ### 配置范式
-在 `application.yml` 中配置存储基础属性：
+在 `application.yml` 中配置存储基础属性与扩展治理：
 
 #### 方案 A：本地磁盘存储（默认）
 ```yaml
@@ -65,9 +74,25 @@ ateng:
       local:
         base-path: /data/storage
         domain: http://localhost:8080
+        download-endpoint: /storage/local/download
+        upload-endpoint: /storage/local/upload
+        secret-key: YOUR_HMAC_SECRET_KEY
+      chunk-cleaner:
+        enabled: true                     # 开启孤儿分片碎片清理守护（默认 false）
+        retention: 24h                    # 孤儿分片最大保留时间（默认 24h）
+        cron: "0 0 3 * * ?"               # 每天凌晨 3 点自动执行清理
+
+# 启用 Spring Boot Actuator 存储健康探针（可选）
+management:
+  health:
+    storage:
+      enabled: true
+  endpoint:
+    health:
+      show-details: always
 ```
 
-#### 方案 B：标准 S3 兼容协议（MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS）
+#### 方案 B：标准 S3 兼容协议（MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS / 华为云 OBS）
 ```yaml
 ateng:
   boot:
@@ -155,49 +180,65 @@ ETag哈希: 4a27546e15904620b7ea1e3458c97dd3
 
 ---
 
-## 4. Web 表单文件上传 (`MultipartFile`)
+## 4. Web 表单上传与自定义扩展元数据 (`MultipartFile` / `userMetadata`)
 
 ### 场景痛点
-Controller 层接收前端上传的 `MultipartFile` 时，容易受客户端伪造的相对路径注入攻击（如文件名携带 `../../`），需进行深度防穿越净化。
+Controller 层接收前端上传的 `MultipartFile` 时，极易受客户端伪造的相对路径注入攻击（如文件名携带 `../../`）；同时在企业级归档与检索场景中，往往需要向存储对象附加自定义业务标签（如操作人 `author`、业务单号 `bizId` 或所属环境 `env`），传统 SDK 缺乏强类型收敛支持。
 
 ### 核心代码范式
 ```java
 @RestController
-@RequestMapping("/storage")
-public class FileUploadController {
+@RequestMapping("/api/storage")
+public class FileController {
 
     @Autowired
     private StorageTemplate storageTemplate;
 
+    // 1. 基础表单文件上传（自动安全防穿越清洗文件名）
     @PostMapping("/upload")
     public Result<StorageObject> upload(@RequestParam("file") MultipartFile file) {
-        // 自动提取安全文件名并保存至 uploads/avatars/ 目录下
         StorageObject object = storageTemplate.upload("uploads/avatars/", file);
+        return Result.success(object);
+    }
+
+    // 2. 上传文件并携带用户自定义元数据
+    @PostMapping("/upload-with-metadata")
+    public Result<StorageObject> uploadWithMetadata(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("path") String path,
+            @RequestParam Map<String, String> userMetadata) {
+        Map<String, String> customMeta = new HashMap<>(userMetadata);
+        customMeta.remove("path");
+        StorageObject object = storageTemplate.upload(path, file, customMeta);
         return Result.success(object);
     }
 }
 ```
 
 ### 预期呈现契约
-HTTP JSON 响应：
+HTTP POST `/api/storage/upload-with-metadata` 携带 `author=Ateng` 与 `env=sample-test`，返回标准 JSON 响应：
 ```json
 {
   "code": 200,
   "msg": "操作成功",
   "data": {
-    "path": "uploads/avatars/avatar.png",
-    "filename": "avatar.png",
-    "size": 10240,
-    "contentType": "image/png",
-    "etag": "e2fc714c4727ee9395f324cd2e7f331f",
-    "lastModified": "2026-10-17T13:45:00Z"
+    "path": "custom/meta.txt",
+    "filename": "meta.txt",
+    "size": 21,
+    "contentType": "text/plain",
+    "etag": "d41d8cd98f00b204e9800998ecf8427e",
+    "userMetadata": {
+      "author": "Ateng",
+      "env": "sample-test"
+    }
   }
 }
 ```
+后续通过 `storageTemplate.getMetadata("custom/meta.txt")` 即可完整反查用户元数据字典。
 
 ---
 
-## 5. 文件流式下载与存在性检查 (`StorageTemplate.download`)
+## 5. 文件流式下载与存在性检查 (`StorageTemplate.download` / `exists`)
 
 ### 场景痛点
 读取文件前需繁琐判空；文件不存在时缺乏标准化受控异常，影响调用方异常处理。
@@ -209,7 +250,7 @@ public void readDocument() {
     
     // 1. 判断文件是否存在
     if (storageTemplate.exists(path)) {
-        // 2. 流式读取文件内容
+        // 2. 流式读取文件内容（严格遵循 try-with-resources 资源确定性释放）
         try (InputStream in = storageTemplate.download(path)) {
             String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             System.out.println("文件内容: " + text);
@@ -232,7 +273,7 @@ public void readDocument() {
 
 ```java
 @RestController
-@RequestMapping("/storage")
+@RequestMapping("/api/storage")
 public class FileDownloadController {
 
     @Autowired
@@ -252,17 +293,18 @@ public class FileDownloadController {
     }
 }
 ```
+客户端发起带 `Range: bytes=0-1023` 请求头时，Spring MVC 自动结合 `StorageResource` 切片输出 HTTP 206 Partial Content，无需开发者编写任何分字节读取代码。
 
 ---
 
-## 7. 分布式天然幂等删除 (`StorageTemplate.delete`)
+## 7. 分布式天然幂等删除与级联清理 (`delete` / `deleteBatch` / `deleteDirectory`)
 
 ### 场景痛点
-微服务分布式环境中执行文件删除或重试时，若目标文件已被删除或并发移除，底层抛出 404 导致重试机制陷入死循环或业务异常中断。
+微服务分布式环境中执行文件删除或重试时，若目标文件已被删除或并发移除，底层抛出 404 导致重试机制陷入死循环或业务异常中断；而在清理某一业务批次或目录时，缺乏级联清理机制。
 
 ### 核心代码范式
 ```java
-// 1. 单文件天然幂等删除（文件不存在时静默返回 true）
+// 1. 单文件天然幂等删除（文件不存在时静默返回 true，绝不抛出 404）
 boolean success1 = storageTemplate.delete("temp/file.txt");
 
 // 2. 批量天然幂等删除
@@ -271,11 +313,56 @@ boolean success2 = storageTemplate.deleteBatch(List.of(
         "batch/file2.txt",
         "batch/not-exist.txt"
 ));
+
+// 3. 级联删除目录及其内部所有对象
+boolean success3 = storageTemplate.deleteDirectory("temp-dir");
 ```
 
 ---
 
-## 8. 对象跨路径复制与移动 (`StorageTemplate.copy` / `move`)
+## 8. 目录级与前缀级流式批量删除与防误删安全熔断 (`deletePrefix`)
+
+### 场景痛点
+在定期归档、按租户清理历史日志或清理某一前缀下的大批文件时，若直接一次性在内存中查询全部对象再循环删除，易导致 OOM 且耗尽网络连接；更严重的是，若前端或调用方意外传入空字符串 `""`、空白符 `"   "` 或根路径 `"/"`，将导致误删全盘或整个 S3 Bucket 的灾难性后果。
+
+### 核心能力与安全熔断
+- **流式切片批删**：内部基于递归列举与分批切片（`deleteBatch`），内存受控，批量向底层存储发送批量删除指令；
+- **防误删强行熔断（Fail-Fast Invariant）**：执行前置强校验，凡入参为空白、仅包含空格或经过规范化后为根路径 `/` 时，立即抛出 `StorageException(StorageResultCode.INVALID_PATH)` 强行熔断阻断，绝不放行；
+- **全生命周期事件闭环**：内部删除的每一个有效对象均触发 `StorageDeletedEvent` 事件广播。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void purgeExpiredLogs() {
+    // 1. 批量清理指定前缀下的所有对象（如按日期前缀）
+    boolean deleted = storageTemplate.deletePrefix("logs/2026/01/");
+    System.out.println("前缀清理结果: " + deleted);
+
+    // 2. 误删防卫拦截：传入非法前缀直接熔断阻断
+    try {
+        storageTemplate.deletePrefix("   ");
+    } catch (StorageException e) {
+        System.out.println("成功拦截误删全盘攻击: " + e.getMessage());
+    }
+}
+```
+
+### 预期呈现契约
+HTTP POST `/api/storage/delete-prefix?prefix=purge/2026/` 执行成功：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": true
+}
+```
+底层 `purge/2026/01.log` 与 `purge/2026/02.log` 被彻底安全清除，而 `purge/other.txt` 保持原样完整保留。
+
+---
+
+## 9. 对象跨路径复制与移动 (`StorageTemplate.copy` / `move`)
 
 ### 场景痛点
 业务流程中高频需要将文件从暂存目录归档到正式目录，若手动通过“下载流再重新上传并删除原文件”，不仅占用大量应用服务器带宽与内存，还存在网络中断导致的数据不一致风险。
@@ -285,7 +372,14 @@ boolean success2 = storageTemplate.deleteBatch(List.of(
 // 1. 跨路径复制对象（保留原文件；S3 服务端免流秒传，Local NIO 零拷贝）
 boolean copied = storageTemplate.copy("source/original.txt", "backup/original_bak.txt");
 
-// 2. 跨路径移动对象（源文件自动安全移除）
+// 2. 复制时重写自定义元数据标签
+boolean copiedWithMeta = storageTemplate.copy(
+        "source/original.txt",
+        "backup/tagged.txt",
+        Map.of("category", "archive", "version", "v2")
+);
+
+// 3. 跨路径移动对象（源文件自动安全移除）
 boolean moved = storageTemplate.move("source/original.txt", "moved/target.txt");
 ```
 
@@ -296,7 +390,7 @@ boolean moved = storageTemplate.move("source/original.txt", "moved/target.txt");
 
 ---
 
-## 9. 常用载荷便捷快速存取 (`String` / `byte[]` / `JSON`)
+## 10. 常用载荷便捷快速存取 (`uploadString` / `uploadBytes` / `uploadJson`)
 
 ### 场景痛点
 日常开发中保存配置文本、JSON 快照或内存字节数组时，必须手动开辟 `ByteArrayInputStream`、设置字符集并管理流生命周期，样板代码繁琐。
@@ -323,7 +417,7 @@ TestUser downloadedUser = storageTemplate.downloadJson("json/user.json", TestUse
 
 ---
 
-## 10. 目录前缀列举与分页对象检索 (`list` / `listPage`)
+## 11. 目录前缀列举与分页对象检索 (`list` / `listPage`)
 
 ### 场景痛点
 管理控制台或文件浏览器高频需要按层级浏览目录、平铺检索或分页展示文件列表。传统实现要么缺乏目录与文件的统一模型区分，要么将全部对象一次性加载导致内存溢出；此外 S3 与本地文件系统的目录模型差异（虚拟公共前缀 vs 物理文件夹）增加了业务适配难度。
@@ -348,7 +442,7 @@ List<StorageObject> allList = storageTemplate.list("documents", true);
 
 // 3. 契约驱动标准分页查询（深度复用 Core 模块 PageQuery / PageResult）
 PageQuery pageQuery = PageQuery.of(1, 10);
-PageResult<StorageObject> pageResult = storageTemplate.listPage("documents", pageQuery);
+PageResult<StorageObject> pageResult = storageTemplate.listPage("documents", pageQuery, true);
 
 System.out.println("当前页条数: " + pageResult.getRecords().size());
 System.out.println("总条数: " + pageResult.getTotal());
@@ -371,7 +465,7 @@ System.out.println("总页数: " + pageResult.getPages());
 
 ---
 
-## 11. 多文件纯流式打包 ZIP 下载 (`downloadAsZip`)
+## 12. 多文件纯流式打包 ZIP 下载 (`downloadAsZip`)
 
 ### 场景痛点
 管理后台或业务系统中常见“勾选多个文件批量打包下载”需求。传统做法通常先将所有文件下载落盘到本地物理磁盘临时目录，再执行压缩，极易在并发或大文件场景下压满服务器磁盘导致服务宕机；此外若其中某些文件丢失，生成半截损坏的 ZIP 包体验极差。
@@ -416,7 +510,7 @@ Web 客户端下载体验：
 
 ---
 
-## 12. Spring 原生存储生命周期事件广播 (`StorageUploadedEvent` / `StorageDeletedEvent`)
+## 13. Spring 原生存储生命周期事件广播 (`StorageUploadedEvent` / `StorageDeletedEvent`)
 
 ### 场景痛点
 在文件成功上传或删除后，业务层常常需要异步触发后续处理（如记录审计日志、刷新 CDN 缓存、生成缩略图、通知消息队列等）。如果直接在业务代码中堆砌强耦合逻辑，代码严重臃肿，且监听器异常可能导致核心文件写入操作被误回滚。
@@ -446,17 +540,17 @@ public class StorageEventListener {
 ```
 
 ### 预期呈现契约
-控制台日志输出（真实实测记录）：
+控制台日志输出（实测记录）：
 ```text
 2026-10-19T16:44:48.871+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件上传事件: source=default, path=hello.txt, size=32, contentType=text/plain
 2026-10-19T16:44:49.290+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件删除事件: source=default, path=backup/target.txt
 ```
-- **全链路感知**：`upload`、`uploadBytes`、`uploadString`、`uploadJson`、`copy`、`move` 均会自动触发 `StorageUploadedEvent`；`delete`、`deleteBatch` 与 `move` 源文件均会自动触发 `StorageDeletedEvent`；
+- **全链路感知**：`upload`、`uploadBytes`、`uploadString`、`uploadJson`、`copy`、`move` 均会自动触发 `StorageUploadedEvent`；`delete`、`deleteBatch`、`deletePrefix` 与 `move` 源文件均会自动触发 `StorageDeletedEvent`；
 - **Fail-Safe 异常隔离**：事件发布内部包裹异常防御，任何外部监听器抛出的未捕获异常均仅记录 Warn 告警日志，绝不阻断文件核心上传/删除的成功返回。
 
 ---
 
-## 13. Local HMAC 预签名防盗链下载 (`getPresignedUrl`)
+## 14. 安全预签名只读防盗链外链 (`getPresignedUrl`)
 
 ### 场景痛点
 传统本地存储通常缺乏外链时效性控制与防盗链签名，必须手动编写下载控制器或配置静态 Nginx 映射，无法与云端 S3 的 Presigned URL 保持契约一致。
@@ -495,44 +589,248 @@ public void generateDownloadUrl() {
 
 ---
 
-## 14. S3 云原生预签名外链与直传 (`getPresignedUrl` / `getPresignedUploadUrl`)
+## 15. 客户端直传预签名与本地直传端点交互 (`getPresignedUploadUrl`)
 
 ### 场景痛点
-面对音视频、安装包等大文件上传，若全部经过应用服务器中转，将严重占用后端带宽并消耗内存，导致服务器并发瓶颈；而在下载时，为了保护文件隐私，需要生成临时且安全的云端下载直链。
+面对音视频、安装包等大文件上传，若全部经过业务应用服务器中转转发，将严重占用后端公网带宽与 JVM 内存，引发服务并发瓶颈；传统架构在私有化或本地磁盘部署时，往往无法使用云端预签名直传，导致前端代码必须针对本地和云端写两套完全不同的上传逻辑。
+
+### 核心能力与闭环设计
+- **Local 与 S3 双核直传统一抽象**：
+  - **S3 协议驱动**：原生生成 AWS S3 / MinIO 预签名 PUT 直传外链凭据；
+  - **Local 本地驱动**：生成指向内置受控直传端点（`/storage/local/upload`）的安全 HMAC 凭据，前端统一以 HTTP PUT 方法直传数据；
+- **安全防篡改与配额约束（`PresignedUploadRequest`）**：支持在预签名阶段限定 MIME 类型（`contentType`）与最大字节上限（`maxSizeBytes`），直传端点自动执行时效校验与防篡改比对；
+- **零中转极速体验**：前端拿到凭据后直接 PUT 写入存储介质，完全不占用业务接口线程。
 
 ### 核心代码范式
 ```java
 @Autowired
 private StorageTemplate storageTemplate;
 
-// 1. 生成 15 分钟有效期的 S3 只读下载外链（自动应用 CDN 域名加速）
-public void generateS3DownloadUrl() {
-    PresignedUrl presigned = storageTemplate.getPresignedUrl("media/video.mp4", Duration.ofMinutes(15));
-    System.out.println("S3下载外链: " + presigned.getUrl());
-    System.out.println("HTTP方法: " + presigned.getHttpMethod());
+// 1. 获取预签名直传写入凭据
+public PresignedUrl getDirectUploadUrl(String path) {
+    PresignedUploadRequest request = PresignedUploadRequest.builder()
+            .path(path)
+            .duration(Duration.ofMinutes(10))
+            .contentType("text/plain")
+            .maxSizeBytes(10 * 1024 * 1024L) // 限制最大 10MB
+            .build();
+    return storageTemplate.getPresignedUploadUrl(request);
 }
+```
 
-// 2. 生成 30 分钟有效期的前端大文件直传 PUT 外链
-public void generateS3UploadUrl() {
-    PresignedUrl presigned = storageTemplate.getPresignedUploadUrl("uploads/raw-data.bin", Duration.ofMinutes(30));
-    System.out.println("S3直传外链: " + presigned.getUrl());
-    System.out.println("HTTP方法: " + presigned.getHttpMethod());
+在 Controller 中暴露直传生成端点：
+```java
+@GetMapping("/presigned-upload")
+public Result<PresignedUrl> getPresignedUploadUrl(
+        @RequestParam("path") String path,
+        @RequestParam(value = "durationSeconds", defaultValue = "300") long durationSeconds) {
+    PresignedUploadRequest request = PresignedUploadRequest.builder()
+            .path(path)
+            .duration(Duration.ofSeconds(durationSeconds))
+            .build();
+    PresignedUrl presignedUrl = storageTemplate.getPresignedUploadUrl(request);
+    return Result.success(presignedUrl);
 }
 ```
 
 ### 预期呈现契约
-控制台输出：
-```text
-S3下载外链: https://cdn.example.com/test-bucket/media/video.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261017T141500Z&X-Amz-SignedHeaders=host&X-Amz-Expires=900&X-Amz-Credential=...&X-Amz-Signature=sig123
-HTTP方法: GET
-S3直传外链: https://cdn.example.com/test-bucket/uploads/raw-data.bin?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261017T141500Z&X-Amz-SignedHeaders=host&X-Amz-Expires=1800&X-Amz-Credential=...&X-Amz-Signature=sig456
-HTTP方法: PUT
+HTTP GET `/api/storage/presigned-upload?path=direct/doc.txt` 返回预签名凭据：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "url": "http://localhost:8080/storage/local/upload?path=direct/doc.txt&expires=1792489000&signature=9c5a7...",
+    "httpMethod": "PUT",
+    "expiration": "2026-10-20T14:40:00Z",
+    "headers": {}
+  }
+}
 ```
-前端收到直传 URL 后，即可直接发起标准的 `PUT` 请求将文件推送到对象存储，完全绕过后端应用服务器。
+前端随后直接使用 HTTP PUT 向 `url` 发送二进制文件内容：
+```http
+PUT /storage/local/upload?path=direct/doc.txt&expires=1792489000&signature=9c5a7... HTTP/1.1
+Host: localhost:8080
+Content-Type: text/plain
+
+Direct PUT Content
+```
+响应 HTTP 200 OK，文件直接落盘到底层存储介质并触发上传事件。
 
 ---
 
-## 15. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
+## 16. 端侧大文件分块直传预签名与完成合并闭环 (`getPresignedUploadPartUrl`)
+
+### 场景痛点
+面对数百 MB 或数 GB 级的特大文件，单次直传若遇到网络抖动中断代价极高。前端需要能够并发将大文件分块直传到对象存储，最后由业务后端协调合并。若底层存储为本地文件系统，传统方案缺少对应的分块直传协议。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+// 1. 初始化分块会话，获取唯一 uploadId
+String uploadId = storageTemplate.initiateChunkedUpload("chunked/large.bin");
+
+// 2. 为每一个分片生成独立的预签名 PUT 直传外链（分片序号 chunkIndex 1-based）
+PresignedUrl part1Url = storageTemplate.getPresignedUploadPartUrl(
+        "chunked/large.bin", uploadId, 1, Duration.ofMinutes(15));
+PresignedUrl part2Url = storageTemplate.getPresignedUploadPartUrl(
+        "chunked/large.bin", uploadId, 2, Duration.ofMinutes(15));
+
+// 3. 前端拿到各分块预签名外链后，并发发起 HTTP PUT 直传各分片数据...
+
+// 4. 前端全部直传完毕后，后端触发一键合并
+StorageObject mergedObject = storageTemplate.completeChunkedUpload("chunked/large.bin", uploadId, 2);
+```
+
+### 预期呈现契约
+在 Sample 控制器交互中（实测记录）：
+1. 客户端请求 `GET /api/storage/presigned-upload-part?path=chunked/large.bin&uploadId=xxx&chunkIndex=1`，获取分片 1 直传 URL；
+2. 客户端直接 `PUT` 写入第 1 分片数据，服务端返回 200 OK；
+3. 客户端直接 `PUT` 写入第 2 分片数据，服务端返回 200 OK；
+4. 客户端请求 `POST /api/storage/chunk/complete?uploadId=xxx&path=chunked/large.bin&totalChunks=2`：
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "path": "chunked/large.bin",
+    "filename": "large.bin",
+    "size": 34,
+    "contentType": "application/octet-stream"
+  }
+}
+```
+大文件无损流式合并落盘，临时碎片目录立即自动清理回收。
+
+---
+
+## 17. 孤儿分片碎片生命周期治理守护 (`StorageChunkCleaner`)
+
+### 场景痛点
+客户端在执行大文件切片上传过程中，常因用户刷新页面、关闭浏览器、网络彻底中断或客户端崩溃，导致大量未完成合并的分片碎片永远滞留在本地磁盘 `.chunks` 目录或云端 S3 存储桶中，持续蚕食物理磁盘空间甚至引发磁盘满宕机。
+
+### 核心能力与自驱回收
+- **自动注册守护任务**：开启 `ateng.boot.storage.chunk-cleaner.enabled: true` 后，自动注册 `StorageChunkCleaner` 定时任务组件；
+- **精细化保留时间（`retention`）**：默认保留 24 小时（`Duration.ofHours(24)`），仅清理最后修改时间超过阈值的孤儿会话目录，绝不误删正在进行中的正常分片会话；
+- **零泄漏安全回收**：深度遍历清理孤儿临时目录与碎片文件，清理过程异常捕获隔离，保障系统宿主长期平稳运行。
+
+### 配置范式
+```yaml
+ateng:
+  boot:
+    storage:
+      chunk-cleaner:
+        enabled: true                     # 开启孤儿碎片定时治理清理（默认 false）
+        retention: 24h                    # 孤儿分片会话最大滞留容忍时间（默认 24h）
+        cron: "0 0 3 * * ?"               # 定时清理 Cron 表达式（默认每天凌晨 3:00 执行）
+```
+
+---
+
+## 18. 原生零拷贝流式散列计算 (`StorageHashUtil`) 与极速秒传
+
+### 场景痛点
+在网盘、知识库或素材库系统中，“文件秒传”是提升用户体验与节约存储空间的核心特性；但在实现秒传与校验时，若使用传统工具类计算哈希，往往需先将流全部读入内存 `byte[]`（极易引发 OOM）或使用普通 InputStream 导致读取完后流指针偏移耗尽，无法再次用于上传写入。
+
+### 核心能力与设计不变量
+- **100% 纯原生 JDK 算法驱动**：无任何三方依赖，支持 MD5、SHA-1、SHA-256、CRC32 散列算法；
+- **流指针零截断不变量（Zero-Stream-Truncation Invariant）**：`StorageHashUtil.hashHex(InputStream, algorithm)` 基于受控分块缓冲区（8KB buffer）流式吞吐，执行完毕后无内存堆积；
+- **存储对象原生哈希探测**：门面提供 `storageTemplate.calculateHash(path, algorithm)`，免下载直接在存储端极速计算对象的唯一定位散列指纹。
+
+### 核心代码范式
+```java
+// 1. 基于 StorageHashUtil 对任意输入流极速计算 SHA-256
+String sha256 = StorageHashUtil.sha256Hex(inputStream);
+String md5 = StorageHashUtil.md5Hex(inputStream);
+
+// 2. 直接对已存储对象计算指纹
+String remoteSha256 = storageTemplate.calculateHash("documents/2026/report.pdf", HashAlgorithm.SHA256);
+```
+
+### 极速秒传业务闭环示例
+```java
+@PostMapping("/fast-upload")
+public Result<StorageObject> fastUpload(
+        @RequestParam("targetPath") String targetPath,
+        @RequestParam("hash") String hash) {
+    String poolSourcePath = "hash-pool/" + hash + ".dat";
+    
+    // 1. 检查散列指纹池中是否存在该文件
+    if (!storageTemplate.exists(poolSourcePath)) {
+        // 未命中：返回 40404 引导前端降级走普通直传或分块上传
+        return Result.fail(40404, "文件哈希未命中秒传池，请走普通上传流");
+    }
+    
+    // 2. 命中：直接通过零拷贝 copy 复用对象，实现秒传
+    storageTemplate.copy(poolSourcePath, targetPath);
+    StorageObject metadata = storageTemplate.getMetadata(targetPath);
+    return Result.success(metadata);
+}
+```
+
+### 预期呈现契约
+1. **秒传未命中**：
+   ```json
+   {
+     "code": 40404,
+     "msg": "文件哈希未命中秒传池，请走普通上传流",
+     "data": null,
+     "success": false
+   }
+   ```
+2. **秒传命中**：
+   ```json
+   {
+     "code": 200,
+     "msg": "操作成功",
+     "data": {
+       "path": "user-space/report.txt",
+       "filename": "report.txt",
+       "size": 44,
+       "contentType": "text/plain"
+     }
+   }
+   ```
+毫秒级完成虚拟落盘，无需客户端重复上传庞大物理数据。
+
+---
+
+## 19. Spring Boot Actuator 存储健康探针感知 (`StorageHealthIndicator`)
+
+### 场景痛点
+在云原生与微服务 Kubernetes 探针探测中，需要实时感知底层对象存储（本地磁盘是否满、目录是否存在读写权限；云端 S3 Bucket 是否存在、鉴权凭据是否过期失效），若缺乏健康探针，在存储发生故障时流量仍会被路由进来导致大量业务报错。
+
+### 核心能力与指标输出
+- **自动接入 Actuator**：当下游工程引入 `spring-boot-starter-actuator` 且开启 `management.health.storage.enabled: true` 时，自动装配 `StorageHealthIndicator`；
+- **双核深度感知**：
+  - **Local 驱动**：检查基准物理路径是否存在，且是否具备读（`Files.isReadable`）与写（`Files.isWritable`）权限；
+  - **S3 驱动**：向目标存储桶发起轻量级 `HeadBucket` 探测，精准捕获鉴权与连通状态；
+- **健康指标聚合**：在 `/actuator/health` 暴露统一 `storage` 组件状态。
+
+### 预期呈现契约
+请求 `GET /actuator/health`（开启 `management.endpoint.health.show-details: always`）：
+```json
+{
+  "status": "UP",
+  "components": {
+    "storage": {
+      "status": "UP",
+      "details": {
+        "primary": "local",
+        "driver": "LocalDriver",
+        "basePath": "C:\\Users\\admin\\AppData\\Local\\Temp\\ateng-boot-storage-test"
+      }
+    }
+  }
+}
+```
+当存储磁盘无写入权限或 S3 Bucket 异常时，状态自动降级为 `DOWN`，容器编排器可立即感知并触发自愈摘流。
+
+---
+
+## 20. 动态多源路由与调度 (`use` / `@Storage` / 异步透传)
 
 ### 场景痛点
 大型生产系统往往同时对接多种存储后端（如将公开图片存入 CDN 加速桶、将企业私密合同存入内网私有 MinIO、临时中间数据写入本地磁盘）。若在业务代码中硬编码具体驱动或手动切换，耦合严重且极易在异步线程池中导致上下文串源污染。
@@ -607,7 +905,7 @@ TraceId: trace-12345
 
 ---
 
-## 16. 安全路径防卫机制
+## 21. 安全路径防卫机制 (`StorageSecurityUtil`)
 
 `ateng-boot-storage` 内置严格的路径遍历防卫引擎（`StorageSecurityUtil`）：
 1. **自动过滤空字符与盘符**：拦截 `\0` 空字符截断攻击与 Windows 盘符（如 `C:`）；
@@ -617,7 +915,7 @@ TraceId: trace-12345
 
 ---
 
-## 17. 文件魔数特征嗅探与防伪装安全加固 (`StorageGuard`)
+## 22. 文件魔数特征嗅探与防伪装安全加固 (`StorageGuard`)
 
 ### 场景痛点
 在文件上传业务中，恶意攻击者常通过修改文件扩展名（例如将恶意的 Windows PE `.exe`、Linux `.elf`、Shell 脚本或木马伪装为 `.png`、`.jpg` 或 `.pdf`）尝试绕过前端与表层扩展名检查直接落盘，引发远程代码执行（RCE）或恶意文件扩散；同时，传统的流探查若盲目 `read()` 原始流，会导致输入流指针偏移造成下游驱动写入被截断或空文件。
@@ -645,34 +943,6 @@ ateng:
           - zip
 ```
 
-### 核心代码范式
-
-#### 1. 统一门面自动防卫拦截 (`StorageTemplate.upload`)
-无需修改业务层代码，只要在配置中启用 `guard.enabled: true`，所有经由 `StorageTemplate.upload` 的文件流与 MultipartFile 自动受到安全守卫与特征嗅探保护：
-
-```java
-@Autowired
-private StorageTemplate storageTemplate;
-
-public void uploadAvatar(InputStream in) {
-    // 若上传的文件声明为 avatar.png，但真实二进制内容为可执行脚本或 PE 二进制，将立即被拦截阻断
-    storageTemplate.upload("uploads/avatar.png", in);
-}
-```
-
-#### 2. 编程式独立特征嗅探 (`StorageGuard.sniff`)
-支持直接调用 `StorageGuard.sniff(in)` 或 `StorageGuard.sniff(headerBytes)` 零损耗推导真实文件类型与 MIME：
-
-```java
-// 基于输入流零损耗嗅探真实类型
-StorageFileType fileType = StorageGuard.sniff(in);
-if (fileType != null) {
-    System.out.println("真实文件类型: " + fileType.getName());
-    System.out.println("标准 MIME 类型: " + fileType.getMimeType());
-    System.out.println("是否为高危文件: " + fileType.isDangerous());
-}
-```
-
 ### 预期呈现契约
 当攻击者尝试将恶意伪装文件上传时（例如文件扩展名为 `.png` 但二进制真实内容为伪装文本），系统立即阻断并记录控制台日志：
 ```text
@@ -691,13 +961,10 @@ if (fileType != null) {
 
 ---
 
-## 18. 大文件分片合并暂存与生命周期状态机
+## 23. 大文件分片合并暂存与生命周期状态机
 
 ### 场景痛点
-在面对数百 MB 甚至数十 GB 的超大文件（如高清音视频母带、系统镜像包、离线数据集或数据库全量备份）时，网络瞬断会导致单流直传全盘失败，必须支持客户端切片断点续传。但在服务端实现分片合并时，若处理不当常面临三大痛点：
-1. **内存溢出（OOM）**：在内存中缓存拼接大数据包极易击穿堆内存；
-2. **损坏文件入库**：跳号、乱序或缺失分片导致合并出不可用的损坏残片；
-3. **磁盘与云端碎片泄漏**：异常中断后大量未合并的临时分片残留，吞噬服务器磁盘空间或持续产生云端存储悬挂计费。
+在面对超大文件时，网络瞬断会导致单流直传全盘失败，必须支持客户端切片断点续传。但在服务端实现分片合并时，若处理不当常面临内存溢出（OOM）、跳号损坏文件入库以及未合并分片碎片持续泄漏吞噬磁盘空间等痛点。
 
 ### 核心能力与架构设计
 - **100% 双核行为平替**：
@@ -707,39 +974,7 @@ if (fileType != null) {
 - **全生命周期清理状态机**：提供 `abortChunkedUpload(uploadId)` 主动清理取消机制，与完成合并时的自动清理形成闭环，彻底根绝碎片滞留；
 - **事件广播闭环**：分片合并完成后自动广播 `StorageUploadedEvent`，打通下游消息通知与业务状态流转。
 
-### 核心代码范式
-
-```java
-@Autowired
-private StorageTemplate storageTemplate;
-
-public void uploadLargeFile() {
-    String targetPath = "large/backup.tar.gz";
-
-    // 1. 初始化分片上传会话，获取全局唯一 uploadId
-    String uploadId = storageTemplate.initiateChunkedUpload(targetPath);
-    System.out.println("分片上传会话初始化成功, uploadId=" + uploadId);
-
-    // 2. 逐片上传（支持并发或按序上传，序号 1-based）
-    // 支持直接传入 byte[] 或 InputStream
-    storageTemplate.uploadChunk(uploadId, 1, chunk1Bytes);
-    storageTemplate.uploadChunk(uploadId, 2, chunk2Bytes);
-    storageTemplate.uploadChunk(uploadId, 3, chunk3Bytes);
-
-    // 3. 校验并完成最终合并（自动验证 1..3 分片完整性，合并后即时清理临时碎片）
-    StorageObject object = storageTemplate.completeChunkedUpload(uploadId, targetPath, 3);
-    System.out.println("分片合并落盘成功: path=" + object.getPath() + ", size=" + object.getSize() + ", etag=" + object.getEtag());
-
-    // 4. 若客户端主动取消或异常中断，可安全中止并释放已上传碎片
-    // storageTemplate.abortChunkedUpload(uploadId);
-}
-```
-
 ### 预期呈现契约
-控制台日志与事件记录（真实实测记录）：
-```text
-2026-10-19T16:44:49.226+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.s.s.l.SampleStorageEventListener : [SampleStorageEventListener] 接收到文件上传事件: source=default, path=chunks/large-file.bin, size=1000, contentType=application/octet-stream
-```
 若客户端在上传过程中发生异常，仅上传了第 1 片（遗漏第 2 片，预期总片数: 2）即尝试触发合并，系统立即拦截并快速失败，控制台输出：
 ```text
 2026-10-19T16:44:49.201+08:00  INFO 33988 --- [ateng-boot-sample-storage] [           main] i.g.a.b.w.h.GlobalExceptionHandler       : 业务逻辑中断: code=40012, msg=分片合并失败，缺失第 2 个分片（预期总片数: 2）
@@ -753,17 +988,40 @@ public void uploadLargeFile() {
   "success": false
 }
 ```
-临时碎片保留在会话中等待重试补传或由客户端调度 `abortChunkedUpload` 安全回收。
 
 ---
 
-## 19. 场景样例工程与集成测试
+## 24. 场景样例工程与集成测试索引
 
-完整端到端 RESTful 控制器、断点续传（HTTP Range 206）与 HMAC 预签名外链交互示范，参见场景样例模块：
-👉 [ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
+`ateng-boot-sample-storage` 作为专职场景沙箱，**1:1 全真覆盖了当前模块的所有对外公开特性与边界防卫能力**。
 
-### 本地快速定向自验
+👉 样例工程根目录：[ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
+
+### 19 个端到端全真集成测试用例索引 (`SampleStorageIntegrationTest`)
+| 序号 | 测试方法名 | 对应验证特性与业务场景 |
+| :---: | :--- | :--- |
+| 1 | `testUploadAndDownload` | 基础文件上传与下载闭环 |
+| 2 | `testExistsAndMetadata` | 存在性检查与 StorageObject 元数据提取 |
+| 3 | `testCopyAndMove` | 跨路径对象零拷贝复制与移动归档 |
+| 4 | `testDeleteIdempotent` | 单文件与批量天然幂等删除 |
+| 5 | `testPresignedDownloadUrl` | 本地 HMAC-SHA256 预签名外链生成与安全受控下载 |
+| 6 | `testPresignedUrlTampered` | 防篡改与时序攻击防御（伪造签名或篡改 URL 返回 403） |
+| 7 | `testListAndListPage` | 平铺/递归前缀列举与标准 PageQuery 分页检索 |
+| 8 | `testConvenientStringAndJson` | 便捷文本与 JSON POJO 序列化存取 |
+| 9 | `testDownloadAsZip` | 多文件纯流式 ZIP 压缩响应与 RFC 5987 编码 |
+| 10 | `testChunkedUploadLifecycleAndValidation` | 大文件分片会话生命周期、正序落盘、缺片防卫（40012）与主动中止（abort） |
+| 11 | `testStorageGuardCamouflageDefense` | 文件魔数特征嗅探与恶意脚本防伪装拦截（40010） |
+| 12 | `testDownloadZipWithDuplicatePaths` | ZIP 打包同名重名条目自动递增重命名消解 |
+| 13 | `testValidationConstraintDefense` | Controller 传输边界 JSR-303 Fail-Fast 参数校验 |
+| 14 | `testPresignedDirectUploadPut` | 客户端直传预签名生成与前端真实 HTTP PUT 直传交互闭环 |
+| 15 | `testPresignedChunkedUploadPartAndComplete` | 端侧大文件分块直传预签名外链、分块 PUT 直传与最终合并 |
+| 16 | `testCalculateHashAndFastUpload` | `StorageHashUtil` 散列计算端点与极速秒传（200 / 40404 引导） |
+| 17 | `testDeletePrefixAndDirectory` | 前缀级流式批量删除与目录级联删除 |
+| 18 | `testUploadWithUserMetadata` | 上传携带用户扩展元数据（`userMetadata`）与反查 |
+| 19 | `testActuatorHealthIndicator` | Spring Boot Actuator `/actuator/health` 存储健康探针感知 |
+
+### 本地快速定向自验准出
 ```bash
-mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C
+mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C -nsu -B
 ```
-无需启动任何外部 Docker / MinIO 容器，纯内存与临时目录闭环，秒级全绿准出。
+无需依赖任何外部物理网络或真实 S3 账号，纯内存与受管临时目录闭环，秒级全绿通过。
