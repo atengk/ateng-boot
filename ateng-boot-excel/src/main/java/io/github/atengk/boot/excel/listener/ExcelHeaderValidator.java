@@ -189,6 +189,28 @@ public class ExcelHeaderValidator<T> extends AnalysisEventListener<T> {
                 }
             }
         }
+
+        // 校验是否存在多余冗余列（STRICT 模式严禁多列）
+        List<String> redundantColumns = new ArrayList<>();
+        for (int colIndex = expectedColumns.size(); colIndex <= maxActualCol; colIndex++) {
+            for (Map<Integer, String> rowMap : actualHeadRows) {
+                String val = rowMap.getOrDefault(colIndex, "").trim();
+                if (!val.isEmpty()) {
+                    redundantColumns.add(val);
+                    break;
+                }
+            }
+        }
+        if (!redundantColumns.isEmpty()) {
+            throw new ExcelHeaderValidationException(
+                    String.format("Excel 表头契约校验失败 (STRICT 模式)：检测到多余的未知表头列 %s（预期总列数: %d，实际多出: %d 列。预期表头: %s，实际表头: %s）",
+                            redundantColumns, expectedColumns.size(), redundantColumns.size(), expectedSummary, actualSummary),
+                    HeaderValidationStrategy.STRICT,
+                    expectedSummary,
+                    actualSummary,
+                    Collections.emptyList()
+            );
+        }
     }
 
     private static void validateLoose(List<ModelHeaderColumn> expectedColumns, List<Map<Integer, String>> actualHeadRows) {

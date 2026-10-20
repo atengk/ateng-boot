@@ -113,6 +113,27 @@ class ExcelCircuitBreakerTest {
     }
 
     @Test
+    @DisplayName("精确按错误行数统计而非违规项总数：3行包含6个错误项且maxErrorRows=5时不应误触发熔断")
+    void testCircuitBreakerCountsByRowsNotItems() {
+        int totalRows = 3;
+        int maxErrorRows = 5;
+        byte[] excelBytes = createTestExcel(totalRows, true); // 3行，每行2个错误，共6个错误项
+
+        BatchValidationListener<RowDTO> listener = new BatchValidationListener<>(
+                RowDTO.class,
+                HeaderValidationStrategy.LOOSE,
+                maxErrorRows
+        );
+
+        var readerBuilder = org.apache.fesod.sheet.FesodSheet.read(new ByteArrayInputStream(excelBytes), RowDTO.class, listener);
+        readerBuilder.sheet().doRead();
+
+        assertFalse(listener.isCircuitBroken(), "错误行数 (3) 未达阈值 (5)，不应触发熔断");
+        assertEquals(3, listener.getErrorRowCount(), "错误物理行数应精确为 3");
+        assertEquals(6, listener.getErrorList().size(), "违规错误条目总数应为 6");
+    }
+
+    @Test
     @DisplayName("readWithValidation 触发熔断时抛出明确包含熔断信息的 ExcelValidationException")
     void testReadWithValidationCircuitBreakException() {
         int totalRows = 30;

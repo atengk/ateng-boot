@@ -290,4 +290,35 @@ class ExcelHeaderValidatorTest {
                 )
         );
     }
+
+    @Test
+    @DisplayName("STRICT 严格模式下严禁多余冗余列：包含多余表头列时立即 Fail-Fast 阻断")
+    void testStrictValidationFailsOnRedundantExtraColumns() {
+        // SimpleUserDTO 仅包含 3 列：用户名称、用户年龄、手机号码
+        // 传入包含第 4 列 "多余备注" 的 Excel 表格
+        byte[] excelWithExtraColumn = createExcel(
+                List.of(List.of("用户名称", "用户年龄", "手机号码", "多余备注")),
+                List.of(List.of("周八", 28, "13600000000", "一些备注"))
+        );
+
+        // 1. STRICT 模式必须拦截多余列
+        ExcelHeaderValidationException ex = assertThrows(ExcelHeaderValidationException.class, () ->
+                ExcelUtil.validateHeader(
+                        new ByteArrayInputStream(excelWithExtraColumn),
+                        SimpleUserDTO.class,
+                        HeaderValidationStrategy.STRICT
+                )
+        );
+        assertTrue(ex.getMessage().contains("多余的未知表头列"));
+        assertTrue(ex.getMessage().contains("多余备注"));
+
+        // 2. 相同文件在 LOOSE 宽松模式下应正常通过（因为包含了所有预期列）
+        assertDoesNotThrow(() ->
+                ExcelUtil.validateHeader(
+                        new ByteArrayInputStream(excelWithExtraColumn),
+                        SimpleUserDTO.class,
+                        HeaderValidationStrategy.LOOSE
+                )
+        );
+    }
 }

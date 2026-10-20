@@ -25,11 +25,11 @@
 | **复杂报表** | 模板数据填充 | `ExcelUtil.fill` | - | `fill(out, templateIn, data, fillConfig)`：基于预设 `.xlsx` 模板，支持单对象占位符 `{name}` 与列表集合循环 `{.list}` 复合填充 | `ExcelTemplateTest` |
 | **动态导出** | 无实体动态流式导出 | `ExcelUtil.exportDynamic` | - | `exportDynamic(out, headList, dataList)`：支持动态表头与 `List<Map>` / `List<List<?>>` 二维数据直接流式写出 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
 | **异步中心** | 大文件异步导出任务中心 | `AsyncExportTaskService` / `InMemoryAsyncExportTaskService` / `RedisAsyncExportTaskService` / `ExportFileStorage` | `ateng.boot.excel.async-export.enabled`<br>`ateng.boot.excel.async-export.retention-period`<br>`ateng.boot.excel.async-export.lease-timeout`<br>`ateng.boot.excel.async-export.core-pool-size`<br>`ateng.boot.excel.async-export.queue-capacity`<br>`ateng.boot.excel.async-export.redis.enabled`<br>`ateng.boot.excel.async-export.redis.key-prefix`<br>`ateng.boot.excel.async-export.redis.ttl` | `submit(taskName, executor)` / `getTask(taskId)` / `cancel(taskId)`：受管线程池后台写出、四维上下文快照透传、进度感知、内存/Redis 集群双模驱动、租约防宕机悬挂与过期文件定时自动清理 | `AsyncExportTaskServiceTest`<br>`RedisAsyncExportTaskServiceTest`<br>`SampleExcelIntegrationTest` |
-| **流式分页** | 海量数据游标分页与跨表轮转导出 | `StreamingPageExportTemplate` / `PageDataReader<T>` / `StreamingExportOptions` | `ateng.boot.excel.streaming-export.max-rows-per-sheet`<br>`ateng.boot.excel.streaming-export.default-page-size` | `export(out, dataClass, pageReader, options)`：游标分页流式消费拉取，单 Sheet 达到物理行上限自动开辟新工作表续写，突破百万行 OOM 瓶颈 | `StreamingPageExportTemplateTest`<br>`SampleExcelIntegrationTest` |
+| **流式分页** | 海量数据游标分页与跨表轮转导出 | `StreamingPageExportTemplate` / `PageDataReader<T>` / `ExcelUtil.exportStreamingByPage` | `ateng.boot.excel.streaming-export.max-rows-per-sheet`<br>`ateng.boot.excel.streaming-export.default-page-size` | `exportStreamingByPage(out, dataClass, pageReader, pageSize)` / `exportStreamingByCursor(...)`：游标分页流式消费拉取，单 Sheet 达到物理行上限自动开辟新工作表续写，突破百万行 OOM 瓶颈 | `StreamingPageExportTemplateTest`<br>`SampleExcelIntegrationTest` |
 | **契约校验** | 导入预读首行表头校验 | `ExcelHeaderValidator` / `HeaderValidationStrategy` / `ExcelHeaderValidationException` | `ateng.boot.excel.validation.header-strategy` | `validate(inputStream, modelClass, allowExtraColumns)` / `validate(inputStream, modelClass, strategy)`：解析前轻量预读首行比对 `@ExcelProperty` 契约，顺序、名称与缺失列不符立即 Fail-Fast 阻断 | `ExcelHeaderValidatorTest`<br>`SampleExcelIntegrationTest` |
-| **错误熔断** | 行级校验错误阈值自动熔断 | `BatchValidationListener` / `ExcelValidationException` | `ateng.boot.excel.validation.max-error-rows` | `BatchValidationListener(clazz, validator, failFast, maxErrorRows)`：累计校验错误行达到阈值时主动中断解析，防止全量解析垃圾数据耗尽系统 CPU 与内存 | `ExcelValidationTest`<br>`SampleExcelIntegrationTest` |
-| **注入防护** | CSV / Excel 公式注入主动防御 | `ExcelSecurityUtil` / `FormulaInjectionWriteHandler` / `@ExcelFormulaAllowed` | `ateng.boot.excel.security.formula-protection` | 自动拦截 `=,+,-,@,\t,\r` 前缀文本并转义为安全单引号 `'`，彻底防御 DDE 远程执行命令高危漏洞；支持 `@ExcelFormulaAllowed` 字段级白名单豁免 | `ExcelFormulaDefenseTest`<br>`SampleExcelIntegrationTest` |
-| **列锁防呆** | 模板列级锁定与保护 | `@ExcelColumnLock` / `ColumnLockWriteHandler` / `ExcelUtil.protectSheet` | - | `@ExcelColumnLock(locked = true)`：配合工作表只读保护密码，精准锁定固定列/序号列防篡改，其余可录入列保持编辑权限 | `ExcelColumnLockTest`<br>`SampleExcelIntegrationTest` |
+| **错误熔断** | 行级校验错误阈值自动熔断 | `BatchValidationListener` / `ExcelValidationException` | `ateng.boot.excel.validation.max-error-rows` | `BatchValidationListener(clazz, validator, failFast, maxErrorRows)`：累计校验错误行达到阈值时主动中断解析，防止全量解析垃圾数据耗尽系统 CPU 与内存 | `ExcelCircuitBreakerTest`<br>`SampleExcelIntegrationTest` |
+| **注入防护** | CSV / Excel 公式注入主动防御 | `ExcelSecurityUtil` / `FormulaProtectionCellWriteHandler` / `@ExcelFormulaAllowed` | `ateng.boot.excel.security.formula-protection` | 自动拦截 `=,+,-,@,\t,\r` 前缀文本并转义为安全单引号 `'`，彻底防御 DDE 远程执行命令高危漏洞；支持 `@ExcelFormulaAllowed` 字段级白名单豁免 | `ExcelFormulaProtectionTest`<br>`SampleExcelIntegrationTest` |
+| **列锁防呆** | 模板列级锁定与保护 | `@ExcelColumnLock` / `ColumnLockSheetWriteHandler` / `ExcelUtil.protectSheet` | - | `@ExcelColumnLock(locked = true)`：配合工作表只读保护密码，精准锁定固定列/序号列防篡改，其余可录入列保持编辑权限 | `ExcelColumnLockTest`<br>`SampleExcelIntegrationTest` |
 | **多语言表头** | 国际化动态表头解析 | `I18nHeadWriteHandler` | `ateng.boot.excel.i18n.enabled` | 拦截 `@ExcelProperty("{i18n:key}")` 占位符，结合 Spring `MessageSource` 与请求 `LocaleContextHolder.getLocale()` 动态转译中英文多语言表头 | `I18nHeadWriteHandlerTest`<br>`SampleExcelIntegrationTest` |
 
 ---
@@ -871,51 +871,39 @@ try (ExcelBuilder builder = ExcelUtil.builder(response, "年度经营决算")) {
 单次查询数十万乃至百万行数据进行导出时，若一次性将全量数据查出载入 List 集合，会瞬间撑爆 JVM 堆内存导致服务 OOM；此外，单个 Excel 工作表（Sheet）存在 1,048,576 行物理极限，超出阈值时传统写入会直接报错崩溃。
 
 ### 核心代码范式
-`StreamingPageExportTemplate` 抽象了基于游标的分页拉取流水线，由开发者提供 `PageDataReader<T>` 分页回调函数；引擎每读取一页立即流式写出到底层流并清空该页内存对象引用；当单表写入行数达到配置的上限（默认 1,000,000 行）时，自动新建下一个 Sheet（如 `用户数据_1`、`用户数据_2`）平滑续写：
+`StreamingPageExportTemplate` 与 `ExcelUtil` 封装了基于游标/页码的分页拉取流水线，由开发者提供 `PageDataReader<T>` 分页数据回调；引擎每读取一页立即流式刷写到底层流并清空该页内存对象引用；当单表写入行数达到配置的上限（默认 1,000,000 行）时，自动新建下一个 Sheet（如 `用户数据_1`、`用户数据_2`）并 100% 自动继承表头与所有拦截器：
 
 ```java
-import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.excel.template.StreamingExportOptions;
-import io.github.atengk.boot.excel.template.StreamingPageExportTemplate;
-import io.github.atengk.boot.excel.util.ExcelUtil;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.io.IOException;
-import java.util.List;
-
 @RestController
 @RequestMapping("/api/excel")
 public class ExcelSampleController {
 
     @Autowired
-    private StreamingPageExportTemplate streamingPageExportTemplate;
+    private ExcelSampleService excelSampleService;
 
     @GetMapping("/export-streaming-page")
-    public void exportStreamingPage(
-            HttpServletResponse response,
-            @RequestParam(defaultValue = "1000") int pageSize,
-            @RequestParam(defaultValue = "10000") int maxRowsPerSheet) throws IOException {
-        
-        ExcelUtil.configureResponse(response, "海量用户游标分页导出");
-        
-        StreamingExportOptions options = StreamingExportOptions.builder()
-                .pageSize(pageSize)
-                .maxRowsPerSheet(maxRowsPerSheet)
-                .sheetNamePrefix("用户明细")
-                .build();
-
-        streamingPageExportTemplate.export(
-                response.getOutputStream(),
-                UserExcelVO.class,
-                (pageIndex, size) -> fetchUserPageFromDatabase(pageIndex, size),
-                options
-        );
+    public void exportStreamingPage(HttpServletResponse response) {
+        excelSampleService.exportStreamingPage(response);
     }
+}
+```
+
+Service 业务层流式写出（直接提取自真实跑通的 `ExcelSampleService.java`）：
+
+```java
+public void exportStreamingPage(HttpServletResponse response) {
+    ExcelUtil.exportStreamingByCursor(
+            response,
+            "流式游标用户导出.xlsx",
+            UserExcelVO.class,
+            0L, // 初始游标 ID
+            100, // 每批拉取步长
+            (cursorId, size) -> {
+                // 模拟根据上一页最后主键 ID 游标拉取下一批，避免深度分页慢 SQL
+                return fetchUserBatchAfterId(cursorId, size);
+            },
+            UserExcelVO::getId // 提取下一轮游标 ID
+    );
 }
 ```
 
@@ -1200,20 +1188,29 @@ public class OssExportFileStorage implements ExportFileStorage {
     private OssClient ossClient;
 
     @Override
-    public OutputStream openOutputStream(String taskId, String fileName) throws IOException {
-        // 返回流式分片上传至 OSS 的输出流
-        return ossClient.createMultipartUploadStream(taskId, fileName);
+    public String store(String taskId, File tempFile, String fileName) throws IOException {
+        // 将本地临时生成的文件上传至 OSS 并返回对应的存储键 / 路径
+        String objectKey = "excel/export/" + taskId + "/" + fileName;
+        ossClient.putObject(objectKey, tempFile);
+        return objectKey;
     }
 
     @Override
-    public InputStream openInputStream(String taskId, String storageKey) throws IOException {
-        // 从 OSS 流式下载产物文件
+    public InputStream getInputStream(String taskId, String storageKey) throws IOException {
+        // 从 OSS 流式获取产物文件输入流
         return ossClient.getObject(storageKey);
     }
 
     @Override
-    public boolean delete(String taskId, String storageKey) {
-        return ossClient.deleteObject(storageKey);
+    public String getDownloadUrl(String taskId, String storageKey) {
+        // 生成具有 1 小时有效期的预签名安全下载直链，实现动静分离
+        return ossClient.generatePresignedUrl(storageKey, Duration.ofHours(1));
+    }
+
+    @Override
+    public void delete(String taskId, String storageKey) {
+        // 清理已过期的导出产物文件
+        ossClient.deleteObject(storageKey);
     }
 }
 ```

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.excel.properties;
 
 import lombok.Data;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 
@@ -36,6 +37,7 @@ public class ExcelAsyncExportProperties {
     /**
      * Redis 分布式任务中心配置
      */
+    @NestedConfigurationProperty
     private ExcelAsyncExportRedisProperties redis = new ExcelAsyncExportRedisProperties();
 
     /**

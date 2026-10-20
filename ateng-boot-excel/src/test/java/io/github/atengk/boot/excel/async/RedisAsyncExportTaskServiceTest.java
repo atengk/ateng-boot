@@ -80,6 +80,22 @@ class RedisAsyncExportTaskServiceTest {
             return null;
         }).when(mockValueOperations).set(anyString(), anyString(), any(Duration.class));
 
+        // 模拟 Redis Lua CAS 脚本执行
+        when(mockRedisTemplate.execute(org.mockito.ArgumentMatchers.<org.springframework.data.redis.core.script.RedisScript<Long>>any(),
+                org.mockito.ArgumentMatchers.anyList(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> {
+            List<String> keys = inv.getArgument(1);
+            String newJson = inv.getArgument(2);
+            String key = keys.get(0);
+            String current = redisDataStore.get(key);
+            if (current != null && current.contains("\"PROCESSING\"")) {
+                redisDataStore.put(key, newJson);
+                return 1L;
+            }
+            return 0L;
+        });
+
         properties = new ExcelProperties();
         properties.getAsyncExport().setTempDir(tempDir.toString());
         properties.getAsyncExport().setCorePoolSize(2);

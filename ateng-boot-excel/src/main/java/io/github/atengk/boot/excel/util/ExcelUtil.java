@@ -97,7 +97,7 @@ public final class ExcelUtil {
     /**
      * 默认多语言国际化表头动态转译写入拦截器（无状态线程安全单例）
      */
-    private static final I18nHeadWriteHandler DEFAULT_I18N_HEAD_WRITE_HANDLER = new I18nHeadWriteHandler();
+    private static final I18nHeadWriteHandler DEFAULT_I18N_HEAD_WRITE_HANDLER = I18nHeadWriteHandler.unmodifiable();
 
     /**
      * 默认公式注入安全防御写入拦截器（无状态线程安全单例）

@@ -39,12 +39,22 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
 
     private MessageSource messageSource;
     private Locale locale;
+    private final boolean readOnly;
+
+    /**
+     * 创建全局只读不可变的无状态处理器单例
+     *
+     * @return 不可变单例处理器
+     */
+    public static I18nHeadWriteHandler unmodifiable() {
+        return new I18nHeadWriteHandler(null, null, true);
+    }
 
     /**
      * 构造默认无状态处理器（自动从 Spring 上下文获取 MessageSource 与当前线程请求 Locale）
      */
     public I18nHeadWriteHandler() {
-        this(null, null);
+        this(null, null, false);
     }
 
     /**
@@ -53,7 +63,7 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
      * @param messageSource Spring MessageSource 国际化源
      */
     public I18nHeadWriteHandler(MessageSource messageSource) {
-        this(messageSource, null);
+        this(messageSource, null, false);
     }
 
     /**
@@ -62,7 +72,7 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
      * @param locale 显式指定的国际化语言环境
      */
     public I18nHeadWriteHandler(Locale locale) {
-        this(null, locale);
+        this(null, locale, false);
     }
 
     /**
@@ -72,8 +82,13 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
      * @param locale        显式指定的国际化语言环境
      */
     public I18nHeadWriteHandler(MessageSource messageSource, Locale locale) {
+        this(messageSource, locale, false);
+    }
+
+    private I18nHeadWriteHandler(MessageSource messageSource, Locale locale, boolean readOnly) {
         this.messageSource = messageSource;
         this.locale = locale;
+        this.readOnly = readOnly;
     }
 
     @Override
@@ -215,6 +230,9 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
     }
 
     public void setMessageSource(MessageSource messageSource) {
+        if (this.readOnly) {
+            throw new UnsupportedOperationException("全局默认国际化表头处理器为不可变单例，禁止并发修改内部状态");
+        }
         this.messageSource = messageSource;
     }
 
@@ -223,6 +241,9 @@ public class I18nHeadWriteHandler implements CellWriteHandler {
     }
 
     public void setLocale(Locale locale) {
+        if (this.readOnly) {
+            throw new UnsupportedOperationException("全局默认国际化表头处理器为不可变单例，禁止并发修改内部状态");
+        }
         this.locale = locale;
     }
 }

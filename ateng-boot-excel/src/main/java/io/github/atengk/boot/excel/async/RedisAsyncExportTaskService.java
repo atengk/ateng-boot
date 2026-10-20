@@ -14,6 +14,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.util.Assert;
 
 import java.io.File;
@@ -24,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -43,12 +46,24 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
     private static final Logger log = LoggerFactory.getLogger(RedisAsyncExportTaskService.class);
 
+    private static final RedisScript<Long> CAS_TIMEOUT_STATUS_SCRIPT = new DefaultRedisScript<>(
+            "local current = redis.call('get', KEYS[1])\n" +
+            "if not current then return 0 end\n" +
+            "if string.find(current, '\"PROCESSING\"') then\n" +
+            "    redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])\n" +
+            "    return 1\n" +
+            "end\n" +
+            "return 0\n",
+            Long.class
+    );
+
     private final StringRedisTemplate redisTemplate;
     private final ExportFileStorage fileStorage;
     private final Map<String, Future<?>> localFutureMap = new ConcurrentHashMap<>(128);
 
     private final Path tempDirPath;
     private final ThreadPoolExecutor executorService;
+    private final ScheduledExecutorService heartbeatScheduler;
     private final String keyPrefix;
     private final Duration ttl;
     private final Duration leaseTimeout;
@@ -100,6 +115,10 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                 new NamedThreadFactory("ateng-excel-redis-async-"),
                 new ThreadPoolExecutor.AbortPolicy()
         );
+
+        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("ateng-excel-redis-heartbeat-")
+        );
     }
 
     @Override
@@ -136,6 +155,15 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                 task.setLeaseExpireTime(LocalDateTime.now().plus(leaseTimeout));
                 saveTask(task);
                 log.info("开始执行分布式异步导出任务 [{}]: {}", taskId, finalTaskName);
+
+                // 启动执行期租约自动心跳续期
+                long intervalSeconds = Math.max(5, Math.min(60, leaseTimeout.toSeconds() / 3));
+                ScheduledFuture<?> heartbeatFuture = heartbeatScheduler.scheduleWithFixedDelay(
+                        () -> refreshLease(taskId),
+                        intervalSeconds,
+                        intervalSeconds,
+                        TimeUnit.SECONDS
+                );
 
                 try {
                     try (FileOutputStream fos = new FileOutputStream(tempFile)) {
@@ -175,6 +203,7 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                     saveTask(task);
                     log.error("分布式异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
                 } finally {
+                    heartbeatFuture.cancel(false);
                     localFutureMap.remove(taskId);
                     if (tempFile.exists() && task.getStatus() != ExportTaskStatus.SUCCESS) {
                         tempFile.delete();
@@ -214,17 +243,53 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
             return null;
         }
 
-        // 执行租约超时探测（死任务 / 宕机节点自恢复）
+        // 执行租约超时探测（死任务 / 宕机节点自恢复），通过 CAS 脚本保证原子流转
         if (task.getStatus() == ExportTaskStatus.PROCESSING) {
             if (task.getLeaseExpireTime() != null && LocalDateTime.now().isAfter(task.getLeaseExpireTime())) {
                 task.setStatus(ExportTaskStatus.FAILED);
                 task.setErrorMsg("导出节点异常离线或任务执行超时（租约超期）");
                 task.setFinishTime(LocalDateTime.now());
-                saveTask(task);
-                log.warn("检测到分布式异步导出任务 [{}] 执行租约超期，已原子流转为 FAILED 状态", taskId);
+                String failedJson = JsonUtil.toJsonString(task);
+                Long updated = null;
+                try {
+                    updated = redisTemplate.execute(
+                            CAS_TIMEOUT_STATUS_SCRIPT,
+                            Collections.singletonList(key),
+                            failedJson,
+                            String.valueOf(ttl.toSeconds())
+                    );
+                } catch (Throwable ex) {
+                    log.debug("Redis CAS 脚本执行异常，将降级执行直接保存: {}", ex.getMessage());
+                }
+                if (updated != null && updated == 1L) {
+                    log.warn("检测到分布式异步导出任务 [{}] 执行租约超期，已原子流转为 FAILED 状态", taskId);
+                } else if (updated == null) {
+                    // 降级兼容：如不支持 Lua 或单元测试 Mock 环境下，安全执行回写
+                    saveTask(task);
+                    log.warn("检测到分布式异步导出任务 [{}] 执行租约超期，已流转为 FAILED 状态 (降级回写)", taskId);
+                } else {
+                    // updated == 0 说明已被其他并发节点原子流转或已被正常完成，重新拉取最新真实状态
+                    String latestJson = redisTemplate.opsForValue().get(key);
+                    if (latestJson != null && !latestJson.isBlank()) {
+                        task = JsonUtil.parseObject(latestJson, ExportTask.class);
+                    }
+                }
             }
         }
         return task;
+    }
+
+    private void refreshLease(String taskId) {
+        try {
+            ExportTask task = getTask(taskId);
+            if (task != null && task.getStatus() == ExportTaskStatus.PROCESSING) {
+                task.setLeaseExpireTime(LocalDateTime.now().plus(leaseTimeout));
+                saveTask(task);
+                log.debug("分布式异步导出任务 [{}] 租约心跳续期成功", taskId);
+            }
+        } catch (Throwable ex) {
+            log.warn("分布式异步导出任务 [{}] 租约心跳续期异常: {}", taskId, ex.getMessage());
+        }
     }
 
     @Override
@@ -285,6 +350,7 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
 
     @Override
     public void destroy() {
+        heartbeatScheduler.shutdownNow();
         executorService.shutdown();
         try {
             if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {

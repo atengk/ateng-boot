@@ -13,6 +13,7 @@ import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
 import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
@@ -28,6 +29,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * Excel 链式 Fluent 构建器
@@ -360,5 +363,41 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     @Override
     public void close() {
         finish();
+    }
+
+    /**
+     * 基于页码流式分页导出（代理 {@link ExcelUtil#exportStreaming}）
+     *
+     * @param <T>          数据实体类型
+     * @param outputStream 目标输出流
+     * @param clazz        实体类型 Class
+     * @param pageLoader   分页数据拉取函数
+     * @return 实际导出行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return ExcelUtil.exportStreaming(outputStream, clazz, pageLoader);
+    }
+
+    /**
+     * 基于游标流式分页导出（代理 {@link ExcelUtil#exportStreamingByCursor}）
+     *
+     * @param <T>             数据实体类型
+     * @param <K>             游标类型
+     * @param outputStream    目标输出流
+     * @param clazz           实体类型 Class
+     * @param initialCursor   初始游标值
+     * @param pageSize        每页批次步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @return 实际导出行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return ExcelUtil.exportStreamingByCursor(outputStream, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
     }
 }

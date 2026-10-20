@@ -62,6 +62,7 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
 
     private final List<T> validDataList = new ArrayList<>();
     private final List<ExcelErrorRow> errorList = new ArrayList<>();
+    private int errorRowCount = 0;
     private volatile boolean circuitBroken = false;
 
     /**
@@ -250,11 +251,12 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
             throw new ExcelValidationException("Excel 第 " + rowIndex + " 行数据校验失败 (fail-fast)", currentErrors);
         }
 
-        // 错误聚合模式：累计错误并探测熔断阈值
+        // 错误聚合模式：累计错误并探测错误行数熔断阈值
+        errorRowCount++;
         errorList.addAll(currentErrors);
-        if (errorList.size() >= maxErrorRows) {
+        if (errorRowCount >= maxErrorRows) {
             this.circuitBroken = true;
-            log.warn("Excel 导入错误数达到或超出熔断阈值 [maxErrorRows={}]，触发紧急熔断阻断后续解析", maxErrorRows);
+            log.warn("Excel 导入错误行数达到或超出熔断阈值 [errorRowCount={}, maxErrorRows={}]，触发紧急熔断阻断后续解析", errorRowCount, maxErrorRows);
         }
     }
 
@@ -298,6 +300,15 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
      */
     public boolean hasErrors() {
         return !errorList.isEmpty();
+    }
+
+    /**
+     * 获取当前校验失败的物理错误行数
+     *
+     * @return 错误行数计数
+     */
+    public int getErrorRowCount() {
+        return errorRowCount;
     }
 
     /**

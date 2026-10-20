@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.async.AsyncExportTaskService;
 import io.github.atengk.boot.excel.async.ExportTask;
+import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
@@ -48,11 +49,14 @@ public class ExcelSampleService {
 
     private final Validator validator;
     private final AsyncExportTaskService asyncExportTaskService;
+    private final ExportFileStorage exportFileStorage;
 
     public ExcelSampleService(Validator validator,
-                              @Autowired(required = false) AsyncExportTaskService asyncExportTaskService) {
+                              @Autowired(required = false) AsyncExportTaskService asyncExportTaskService,
+                              @Autowired(required = false) ExportFileStorage exportFileStorage) {
         this.validator = validator;
         this.asyncExportTaskService = asyncExportTaskService;
+        this.exportFileStorage = exportFileStorage;
     }
 
     /**
@@ -283,18 +287,30 @@ public class ExcelSampleService {
      */
     public void downloadAsyncTask(String taskId, HttpServletResponse response) throws IOException {
         ExportTask task = getAsyncTask(taskId);
-        if (task == null || task.getFilePath() == null) {
-            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "未找到已完成的异步导出文件: " + taskId);
+        if (task == null) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "未找到已完成的异步导出任务: " + taskId);
         }
-        File file = new File(task.getFilePath());
-        if (!file.exists()) {
-            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "目标导出文件物理不存在: " + task.getFilePath());
+
+        // 优先通过持久化存储 SPI 获取输入流，实现与存储介质物理透明解耦
+        InputStream inputStream = null;
+        if (exportFileStorage != null) {
+            String storageKey = task.getStorageKey() != null ? task.getStorageKey() : task.getFilePath();
+            inputStream = exportFileStorage.getInputStream(taskId, storageKey);
+        }
+        if (inputStream == null && task.getFilePath() != null) {
+            File file = new File(task.getFilePath());
+            if (file.exists()) {
+                inputStream = new FileInputStream(file);
+            }
+        }
+        if (inputStream == null) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "目标导出文件物理不存在或无法读取: " + taskId);
         }
 
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         String encodedName = URLEncoder.encode(task.getTaskName() + ".xlsx", StandardCharsets.UTF_8).replace("+", "%20");
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + encodedName + "\"; filename*=utf-8''" + encodedName);
-        try (InputStream in = new FileInputStream(file); OutputStream out = response.getOutputStream()) {
+        try (InputStream in = inputStream; OutputStream out = response.getOutputStream()) {
             in.transferTo(out);
         }
     }

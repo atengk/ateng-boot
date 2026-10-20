@@ -88,13 +88,13 @@ _Avoid_: FileRepository, ExcelBlobService, DiskStorageDriver
 导入表头契约前置校验监听拦截器，在流式解析初始阶段实施严格（STRICT）或宽松（LOOSE）的列名与序列一致性比对，首行失配即刻 Fail-Fast 熔断阻断。
 _Avoid_: HeaderMatcher, TitleChecker, HeadSchemaValidator
 
-**FormulaInjectionWriteHandler**:
-Excel 公式注入（CSV/Formula Injection）安全防御拦截器，配合 `@ExcelRawFormula` 注解，写出时自动对以 `=+-@` 起始的文本字面量增加防注入前缀单引号并支持合法公式豁免。
-_Avoid_: CsvInjectionFilter, FormulaSanitizer, ExcelEscapeHandler
+**FormulaProtectionCellWriteHandler**:
+Excel 公式注入（CSV/Formula Injection）安全防御拦截器，配合 `@ExcelFormulaAllowed` 注解，写出时自动对以 `=+-@` 起始的文本字面量增加防注入前缀单引号并支持合法公式豁免。
+_Avoid_: CsvInjectionFilter, FormulaSanitizer, ExcelEscapeHandler, FormulaInjectionWriteHandler
 
-**ColumnLockWriteHandler**:
+**ColumnLockSheetWriteHandler**:
 列级可编辑性锁定与部分只读细粒度控制拦截器，配合属性级注解 `@ExcelColumnLock`，在工作表密码锁定生效的前提下精准放行指定列的单元格编辑权限。
-_Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy
+_Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy, ColumnLockWriteHandler
 
 **I18nHeadWriteHandler**:
 国际化多语言表头动态转译拦截器，自动识别 `{i18n:key}` 格式的表头声明，联动 Spring `MessageSource` 与当前请求区域（Locale）动态完成表头本地化翻译。
