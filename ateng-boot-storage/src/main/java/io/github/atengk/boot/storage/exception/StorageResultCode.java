@@ -72,7 +72,27 @@ public enum StorageResultCode implements IResultCode {
     /**
      * 分片索引或总片数非法
      */
-    STORAGE_CHUNK_INVALID(40013, "分片索引或总片数非法");
+    STORAGE_CHUNK_INVALID(40013, "分片索引或总片数非法"),
+
+    /**
+     * 存储对象签名验证失败（防篡改与验签未通过）
+     */
+    STORAGE_SIGNATURE_INVALID(40018, "存储对象签名验证失败"),
+
+    /**
+     * 预签名外链访问已超时过期
+     */
+    STORAGE_URL_EXPIRED(40019, "预签名外链已过期"),
+
+    /**
+     * 上传对象大小超出最大限制配额
+     */
+    STORAGE_SIZE_EXCEEDED(40020, "上传对象大小超出限制配额"),
+
+    /**
+     * 存储对象散列哈希校验不匹配（完整性比对失败）
+     */
+    STORAGE_HASH_MISMATCH(40021, "存储对象散列校验不匹配");
 
     /**
      * 状态码数值

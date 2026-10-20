@@ -24,6 +24,7 @@ import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -91,6 +92,35 @@ class StorageTemplateTest {
         // 3. 上传空文件快速失败
         MockMultipartFile emptyFile = new MockMultipartFile("empty", "empty.txt", "text/plain", new byte[0]);
         assertThrows(StorageException.class, () -> template.upload("empty.txt", emptyFile));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 上传并携带用户自定义元数据")
+    void testUploadWithUserMetadata() {
+        byte[] data = "Hello Metadata".getBytes(StandardCharsets.UTF_8);
+        Map<String, String> userMetadata = Map.of("creator", "Ateng", "classification", "confidential");
+
+        StorageObject obj = template.upload("meta/file.txt", new ByteArrayInputStream(data), "text/plain", data.length, userMetadata);
+        assertNotNull(obj);
+        assertEquals("meta/file.txt", obj.getPath());
+        assertNotNull(obj.getUserMetadata());
+        assertEquals("Ateng", obj.getUserMetadata().get("creator"));
+        assertEquals("confidential", obj.getUserMetadata().get("classification"));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 上传 MultipartFile 并携带用户自定义元数据")
+    void testUploadMultipartFileWithUserMetadata() throws Exception {
+        byte[] bytes = new byte[]{1, 2, 3};
+        MockMultipartFile file = new MockMultipartFile("file", "doc.pdf", "application/pdf", bytes);
+        Map<String, String> userMetadata = Map.of("department", "dev", "version", "v1.0");
+
+        StorageObject obj = template.upload("docs/", file, userMetadata);
+        assertNotNull(obj);
+        assertEquals("docs/doc.pdf", obj.getPath());
+        assertNotNull(obj.getUserMetadata());
+        assertEquals("dev", obj.getUserMetadata().get("department"));
+        assertEquals("v1.0", obj.getUserMetadata().get("version"));
     }
 
     @Test

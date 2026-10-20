@@ -30,6 +30,8 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest;
@@ -62,6 +64,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -760,5 +763,53 @@ class S3DriverTest {
         verify(s3Client).abortMultipartUpload(captor.capture());
         assertEquals("expired-upload-id-1", captor.getValue().uploadId());
         assertEquals("temp/big1.zip", captor.getValue().key());
+    }
+
+    @Test
+    @DisplayName("S3Driver 上传并携带自定义用户元数据")
+    void testUploadWithUserMetadata() {
+        PutObjectResponse putResp = PutObjectResponse.builder()
+                .eTag("\"etag123\"")
+                .build();
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenReturn(putResp);
+
+        byte[] data = "S3 Meta Test".getBytes(StandardCharsets.UTF_8);
+        Map<String, String> meta = Map.of("author", "Ateng", "env", "test");
+        StorageObject obj = s3Driver.upload("meta/file.txt", new ByteArrayInputStream(data), "text/plain", data.length, meta);
+
+        assertNotNull(obj);
+        assertEquals("meta/file.txt", obj.getPath());
+        assertEquals("Ateng", obj.getUserMetadata().get("author"));
+        assertEquals("test", obj.getUserMetadata().get("env"));
+
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(RequestBody.class));
+        assertEquals("Ateng", captor.getValue().metadata().get("author"));
+    }
+
+    @Test
+    @DisplayName("S3Driver 获取元数据解析 userMetadata 键值对")
+    void testGetMetadataWithUserMetadata() {
+        HeadObjectResponse headResp = HeadObjectResponse.builder()
+                .contentLength(100L)
+                .contentType("text/plain")
+                .eTag("\"etag456\"")
+                .lastModified(Instant.now())
+                .metadata(Map.of("project", "ateng-boot"))
+                .build();
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(headResp);
+
+        StorageObject obj = s3Driver.getMetadata("meta/file.txt");
+        assertNotNull(obj);
+        assertEquals("ateng-boot", obj.getUserMetadata().get("project"));
+    }
+
+    @Test
+    @DisplayName("S3Driver ping 探查连通性执行 headBucket")
+    void testPing() throws Exception {
+        when(s3Client.headBucket(any(HeadBucketRequest.class))).thenReturn(HeadBucketResponse.builder().build());
+
+        s3Driver.ping();
+        verify(s3Client).headBucket(any(HeadBucketRequest.class));
     }
 }

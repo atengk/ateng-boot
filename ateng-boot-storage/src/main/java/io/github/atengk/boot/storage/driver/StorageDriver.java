@@ -7,6 +7,7 @@ import io.github.atengk.boot.storage.model.StorageObject;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 统一存储协议驱动 SPI 契约
@@ -35,6 +36,29 @@ public interface StorageDriver extends AutoCloseable {
      * @return 存储对象元数据
      */
     StorageObject upload(String path, InputStream in, String contentType, long size);
+
+    /**
+     * 上传存储对象（携带用户自定义元数据）
+     *
+     * @param path         存储对象相对路径
+     * @param in           对象输入流
+     * @param contentType  MIME 内容类型（若为 null 或空白由实现负责推导）
+     * @param size         对象字节长度（流未知长度时传 -1）
+     * @param userMetadata 用户自定义元数据键值对（S3 映射为 x-amz-meta-*，Local 驱动映射为对象元数据）
+     * @return 存储对象元数据
+     */
+    default StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        return upload(path, in, contentType, size);
+    }
+
+    /**
+     * 探查底层物理存储介质的健康状态与连通性
+     *
+     * @throws Exception 当底层存储不可用（如本地目录不存在/不可写、S3 存储桶无法访问等）时抛出异常
+     */
+    default void ping() throws Exception {
+        // 默认空实现
+    }
 
     /**
      * 下载存储对象输入流

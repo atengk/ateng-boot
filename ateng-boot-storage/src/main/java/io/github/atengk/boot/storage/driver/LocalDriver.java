@@ -177,6 +177,37 @@ public class LocalDriver implements StorageDriver {
     }
 
     @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        StorageObject obj = upload(path, in, contentType, size);
+        if (userMetadata != null && !userMetadata.isEmpty()) {
+            obj.setUserMetadata(Map.copyOf(userMetadata));
+        }
+        return obj;
+    }
+
+    @Override
+    public void ping() throws Exception {
+        if (!Files.exists(this.basePath)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "本地存储基准目录不存在: " + this.basePath);
+        }
+        if (!Files.isDirectory(this.basePath)) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基准路径不是目录: " + this.basePath);
+        }
+        if (!Files.isWritable(this.basePath)) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "本地存储基准目录无写入权限: " + this.basePath);
+        }
+    }
+
+    /**
+     * 获取本地物理基准路径
+     *
+     * @return 基准路径
+     */
+    public Path getBasePath() {
+        return this.basePath;
+    }
+
+    @Override
     public InputStream download(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
         Path targetFile = resolveAndVerify(cleanPath);

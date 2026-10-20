@@ -58,6 +58,43 @@ public interface StorageOperations {
     StorageObject upload(String path, InputStream in, String contentType, long size);
 
     /**
+     * 完整参数上传输入流（携带用户自定义元数据）
+     *
+     * @param path         目标相对路径
+     * @param in           输入流
+     * @param contentType  MIME 内容类型
+     * @param size         数据流字节大小（未知时传 -1）
+     * @param userMetadata 用户自定义元数据键值对（S3 映射为 x-amz-meta-*，Local 驱动映射为对象元数据）
+     * @return 存储元数据对象
+     */
+    StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata);
+
+    /**
+     * 携带明确 MIME 内容类型与元数据上传输入流
+     *
+     * @param path         目标相对路径
+     * @param in           输入流
+     * @param contentType  MIME 内容类型
+     * @param userMetadata 用户自定义元数据键值对
+     * @return 存储元数据对象
+     */
+    default StorageObject upload(String path, InputStream in, String contentType, Map<String, String> userMetadata) {
+        return upload(path, in, contentType, -1, userMetadata);
+    }
+
+    /**
+     * 携带用户自定义元数据上传输入流（自动推导 MIME 与计算大小）
+     *
+     * @param path         目标相对路径
+     * @param in           输入流
+     * @param userMetadata 用户自定义元数据键值对
+     * @return 存储元数据对象
+     */
+    default StorageObject upload(String path, InputStream in, Map<String, String> userMetadata) {
+        return upload(path, in, null, -1, userMetadata);
+    }
+
+    /**
      * 上传 Spring Web MultipartFile 表单文件
      *
      * @param path 目标相对路径
@@ -65,6 +102,16 @@ public interface StorageOperations {
      * @return 存储元数据对象
      */
     StorageObject upload(String path, MultipartFile file);
+
+    /**
+     * 上传 Spring Web MultipartFile 表单文件（携带用户自定义元数据）
+     *
+     * @param path         目标相对路径
+     * @param file         表单上传文件
+     * @param userMetadata 用户自定义元数据键值对
+     * @return 存储元数据对象
+     */
+    StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata);
 
     /**
      * 下载目标对象内容输入流

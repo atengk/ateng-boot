@@ -29,6 +29,7 @@ import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest;
@@ -62,6 +63,7 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -224,6 +226,11 @@ public class S3Driver implements StorageDriver {
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null);
+    }
+
+    @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
         if (in == null) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传对象输入流不能为空");
         }
@@ -243,13 +250,15 @@ public class S3Driver implements StorageDriver {
                 requestBody = RequestBody.fromBytes(bytes);
             }
 
-            PutObjectRequest putRequest = PutObjectRequest.builder()
+            PutObjectRequest.Builder putRequestBuilder = PutObjectRequest.builder()
                     .bucket(this.bucket)
                     .key(cleanPath)
-                    .contentType(finalContentType)
-                    .build();
+                    .contentType(finalContentType);
+            if (userMetadata != null && !userMetadata.isEmpty()) {
+                putRequestBuilder.metadata(userMetadata);
+            }
 
-            PutObjectResponse response = this.s3Client.putObject(putRequest, requestBody);
+            PutObjectResponse response = this.s3Client.putObject(putRequestBuilder.build(), requestBody);
             String etag = stripQuotes(response.eTag());
 
             return StorageObject.builder()
@@ -258,6 +267,7 @@ public class S3Driver implements StorageDriver {
                     .size(actualSize)
                     .contentType(finalContentType)
                     .etag(etag)
+                    .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
                     .lastModified(Instant.now())
                     .build();
         } catch (Exception e) {
@@ -292,6 +302,9 @@ public class S3Driver implements StorageDriver {
                     ? response.contentType()
                     : StorageSecurityUtil.determineContentType(cleanPath);
             String etag = stripQuotes(response.eTag());
+            Map<String, String> userMeta = (response.metadata() != null && !response.metadata().isEmpty())
+                    ? Map.copyOf(response.metadata())
+                    : Collections.emptyMap();
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -299,11 +312,20 @@ public class S3Driver implements StorageDriver {
                     .size(response.contentLength())
                     .contentType(contentType)
                     .etag(etag)
+                    .userMetadata(userMeta)
                     .lastModified(response.lastModified())
                     .build();
         } catch (Exception e) {
             throw translateException(e, cleanPath, "获取 S3 对象元数据失败");
         }
+    }
+
+    @Override
+    public void ping() throws Exception {
+        HeadBucketRequest headRequest = HeadBucketRequest.builder()
+                .bucket(this.bucket)
+                .build();
+        this.s3Client.headBucket(headRequest);
     }
 
     @Override

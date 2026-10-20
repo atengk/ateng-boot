@@ -8,12 +8,14 @@ import io.github.atengk.boot.storage.driver.S3Driver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.guard.StorageGuard;
+import io.github.atengk.boot.storage.health.StorageHealthIndicator;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -21,6 +23,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskDecorator;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -222,5 +225,22 @@ public class AtengStorageAutoConfiguration {
             ObjectProvider<StorageDriverFactory> driverFactoryProvider,
             ObjectProvider<StorageGuard> storageGuardProvider) {
         return new LocalStorageUploadController(properties, storageDriver, driverFactoryProvider, storageGuardProvider);
+    }
+
+    /**
+     * Spring Boot Actuator 存储健康探针自动装配配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(HealthIndicator.class)
+    @ConditionalOnProperty(prefix = "management.health.storage", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class StorageHealthIndicatorConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(name = "storageHealthIndicator")
+        public StorageHealthIndicator storageHealthIndicator(
+                ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+                ObjectProvider<StorageDriver> defaultDriverProvider) {
+            return new StorageHealthIndicator(driverFactoryProvider, defaultDriverProvider);
+        }
     }
 }
