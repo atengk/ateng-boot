@@ -57,4 +57,10 @@ public class ExcelProperties {
      */
     @NestedConfigurationProperty
     private ExcelValidationProperties validation = new ExcelValidationProperties();
+
+    /**
+     * Excel 安全防护与公式注入防御配置
+     */
+    @NestedConfigurationProperty
+    private ExcelSecurityProperties security = new ExcelSecurityProperties();
 }

@@ -3,7 +3,9 @@ package io.github.atengk.boot.excel.builder;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
+import io.github.atengk.boot.excel.handler.ColumnLockSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
+import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -75,6 +77,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
                 .registerWriteHandler(new SensitiveCellWriteHandler())
                 .registerWriteHandler(new PromptHeadWriteHandler())
                 .registerWriteHandler(new MergeCellWriteHandler())
+                .registerWriteHandler(new FormulaProtectionCellWriteHandler())
                 .build();
     }
 
@@ -205,6 +208,9 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
             sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
         }
         applyStyle(sheetBuilder, headClass);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass, this.protectionPassword));
+        }
         WriteSheet writeSheet = sheetBuilder.build();
         Collection<T> writeData = (data != null) ? data : Collections.emptyList();
         excelWriter.write(writeData, writeSheet);

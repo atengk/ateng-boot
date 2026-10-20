@@ -410,7 +410,8 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         // 1. 初始化工作簿级 ExcelWriter
         ExcelWriterBuilder writerBuilder = FesodSheet.write(outputStream, headClass)
                 .registerWriteHandler(new SensitiveCellWriteHandler())
-                .registerWriteHandler(new PromptHeadWriteHandler());
+                .registerWriteHandler(new PromptHeadWriteHandler())
+                .registerWriteHandler(new FormulaProtectionCellWriteHandler());
 
         if (MergeCellWriteHandler.hasMergeAnnotation(headClass)) {
             writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
@@ -463,6 +464,9 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         }
 
         applyStyle(sheetBuilder, headClass);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass, this.protectionPassword));
+        }
     }
 
     private void applyStyle(ExcelWriterSheetBuilder sheetBuilder, Class<?> targetClass) {

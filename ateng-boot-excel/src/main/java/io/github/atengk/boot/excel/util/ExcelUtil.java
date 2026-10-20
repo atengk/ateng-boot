@@ -13,9 +13,12 @@ import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
 import io.github.atengk.boot.excel.exception.ExcelHeaderValidationException;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
+import io.github.atengk.boot.excel.converter.FormulaProtectionStringConverter;
+import io.github.atengk.boot.excel.handler.ColumnLockSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.FailSplitRowWriteHandler;
+import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -27,6 +30,7 @@ import io.github.atengk.boot.excel.listener.ExcelHeaderValidator;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
+import io.github.atengk.boot.excel.properties.ExcelSecurityProperties;
 import io.github.atengk.boot.excel.properties.ExcelStreamingExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import io.github.atengk.boot.excel.properties.ExcelValidationProperties;
@@ -89,6 +93,16 @@ public final class ExcelUtil {
     private static final PromptHeadWriteHandler DEFAULT_PROMPT_HEAD_WRITE_HANDLER = new PromptHeadWriteHandler();
 
     /**
+     * 默认公式注入安全防御写入拦截器（无状态线程安全单例）
+     */
+    private static final FormulaProtectionCellWriteHandler DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER = new FormulaProtectionCellWriteHandler();
+
+    /**
+     * 默认公式注入安全防御字符串反转译转换器（无状态线程安全单例）
+     */
+    private static final FormulaProtectionStringConverter DEFAULT_FORMULA_PROTECTION_STRING_CONVERTER = new FormulaProtectionStringConverter();
+
+    /**
      * 流式读取全局默认批次大小（可通过配置文件 ateng.boot.excel.default-batch-size 调整）
      */
     private static volatile int defaultBatchSize = 1000;
@@ -112,6 +126,11 @@ public final class ExcelUtil {
      * 导入数据校验与熔断全局配置（可通过配置文件 ateng.boot.excel.validation.* 调整）
      */
     private static volatile ExcelValidationProperties defaultValidationProperties = new ExcelValidationProperties();
+
+    /**
+     * 安全防护与公式注入防御全局配置（可通过配置文件 ateng.boot.excel.security.* 调整）
+     */
+    private static volatile ExcelSecurityProperties defaultSecurityProperties = new ExcelSecurityProperties();
 
     private ExcelUtil() {
         // 私有构造，工具类禁止实例化
@@ -139,7 +158,19 @@ public final class ExcelUtil {
             if (properties.getValidation() != null) {
                 defaultValidationProperties = properties.getValidation();
             }
+            if (properties.getSecurity() != null) {
+                defaultSecurityProperties = properties.getSecurity();
+            }
         }
+    }
+
+    /**
+     * 获取当前生效的安全防护与公式注入防御配置属性对象
+     *
+     * @return 安全防护配置对象
+     */
+    public static ExcelSecurityProperties getSecurityProperties() {
+        return defaultSecurityProperties;
     }
 
     /**
@@ -258,7 +289,8 @@ public final class ExcelUtil {
 
     private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz) {
         var writerBuilder = FesodSheet.write(outputStream, clazz)
-                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
+                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
             writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
         }
@@ -267,6 +299,9 @@ public final class ExcelUtil {
             writerBuilder.registerConverter(new SmartImageConverter());
         }
         configureStyle(writerBuilder, clazz);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(clazz)) {
+            writerBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(clazz));
+        }
         registerEnumConverters(writerBuilder, clazz);
         return writerBuilder;
     }
@@ -1124,8 +1159,12 @@ public final class ExcelUtil {
 
         var writerBuilder = FesodSheet.write(outputStream, clazz)
                 .registerWriteHandler(new DropdownSheetWriteHandler(clazz))
-                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER);
+                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, clazz);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(clazz)) {
+            writerBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(clazz));
+        }
         writerBuilder.sheet(targetSheetName)
                 .doWrite(Collections.emptyList());
     }
@@ -1345,7 +1384,8 @@ public final class ExcelUtil {
         List<?> normalizedData = normalizeData(dataList, headList);
 
         var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead);
+                .head(fesodHead)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(normalizedData);
@@ -1380,7 +1420,8 @@ public final class ExcelUtil {
         }
 
         var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead);
+                .head(fesodHead)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(rows);
@@ -1585,7 +1626,11 @@ public final class ExcelUtil {
      * @param clazz   实体 Class
      */
     private static void registerEnumConverters(AbstractParameterBuilder<?, ?> builder, Class<?> clazz) {
-        if (builder == null || clazz == null) {
+        if (builder == null) {
+            return;
+        }
+        builder.registerConverter(DEFAULT_FORMULA_PROTECTION_STRING_CONVERTER);
+        if (clazz == null) {
             return;
         }
         Set<Class<?>> enumClasses = EnumMappingCache.getEntityEnumClasses(clazz);
@@ -1603,6 +1648,9 @@ public final class ExcelUtil {
             return;
         }
         sheetBuilder.registerWriteHandler(new DropdownSheetWriteHandler(headClass));
+        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass));
+        }
         registerEnumConverters(sheetBuilder, headClass);
     }
 }
