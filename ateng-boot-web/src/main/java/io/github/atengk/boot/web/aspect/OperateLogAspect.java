@@ -164,10 +164,7 @@ public class OperateLogAspect {
             // 若进入方法时即处于模拟态，被模拟人优先锁定为进入时的目标身份，防止方法内执行 endSwitch() 导致被模拟人丢失
             String finalUserId;
             String finalUserName;
-            if (isRunAsPre) {
-                finalUserId = userId;
-                finalUserName = userName;
-            } else if (isRunAsPost) {
+            if (!isRunAsPre && isRunAsPost) {
                 finalUserId = UserContextHolder.getUserId() != null ? UserContextHolder.getUserId() : userId;
                 finalUserName = UserContextHolder.get() != null ? UserContextHolder.get() : userName;
             } else {

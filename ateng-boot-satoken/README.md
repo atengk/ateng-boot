@@ -20,7 +20,7 @@
 | **身份模拟** | 会话持久模拟与还原 | `LoginHelper` | - | `switchTo(String)` / `switchTo(Long)` / `endSwitch()` 会话级模拟，保留原始运维人链路 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **身份模拟** | 瞬态代码块安全模拟 | `LoginHelper` | - | `runAs(String, Supplier<T>)` / `runAs(String, Runnable)` / `runAs(Long, ...)` 栈式保护与 `finally` 可靠清理 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **双维审计** | 模拟感知与原始人追踪 | `LoginHelper`<br>`SaTokenCurrentUserProvider` | - | `isRunAs()` / `getOriginalUserId()`，自动贯通 Core/Web `@OperateLog` 切面双维操作审计 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`DataOwnerProvider`<br>`LoginHelper` | `ateng.boot.satoken.data-owner.enabled` | `@CheckDataOwner(expr, provider)` / `DataOwnerProvider.getOwnerId` / `checkSelf(String/Long)` / `isSelf(String/Long)` / `isSelfOrAdmin` / `checkBelongsToTenant` / `isBelongsToTenant` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **越权防御** | 数据所有权防卫断言 | `@CheckDataOwner`<br>`DataOwnerProvider`<br>`LoginHelper` | `ateng.boot.satoken.data-owner.enabled` | `@CheckDataOwner(expr, provider, allowAdmin, message)` / `DataOwnerProvider.getOwnerId` / `checkSelf(String/Long)` / `isSelf(String/Long)` / `isSelfOrAdmin` / `checkBelongsToTenant` / `isBelongsToTenant` | `SaCheckDataOwnerAspectTest` / `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **公开访问** | 声明式公开与动态白名单 | `@Anonymous`<br>`SaTokenWhitelistProvider`<br>`AnonymousUrlProcessor` | `ateng.boot.satoken.white-list` | 类/方法级 `@Anonymous`，`SaTokenWhitelistProvider.getWhitelist()`，动态扫描转译 AntPath，多源白名单聚合放行 | `AnonymousUrlProcessorTest` / `SampleSaTokenIntegrationTest` |
 | **权限断言** | 角色与特权判定 | `LoginHelper` | - | `getRoles()` / `getPermissions()` / `hasRole(String)` / `hasPermission(String)` / `isSuperAdmin()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **用户载荷** | 工业级强类型载荷 | `LoginUser` | - | 标配 `@SaJsonType`、链式 setter 与 `extraData` 扩展字典 | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
@@ -558,7 +558,7 @@ public class ImpersonateController {
      * 运维管理员切换为目标用户身份
      */
     @PostMapping("/switch")
-    public Result<String> impersonateSwitch(@RequestParam("targetUserId") String targetUserId) {
+    public Result<String> impersonateSwitch(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
         LoginHelper.checkLogin();
         // 切换身份（自动记录原始登录管理员为 originalUserId，即便多次连续切换也不丢失最初源头）
         LoginHelper.switchTo(targetUserId);
@@ -577,17 +577,18 @@ public class ImpersonateController {
     }
 
     /**
-     * 查询双维身份状态
+     * 查询双维身份状态与审计快照
      */
     @GetMapping("/status")
-    public Result<Map<String, Object>> impersonateStatus() {
+    public Result<ImpersonateStatusVO> impersonateStatus() {
         LoginHelper.checkLogin();
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("isRunAs", LoginHelper.isRunAs());                 // 是否处于模拟态
-        map.put("currentUserId", LoginHelper.getUserId());         // 当前生效用户（被模拟人）
-        map.put("realUserId", LoginHelper.getRealUserId());        // 真实底层登录人
-        map.put("originalUserId", LoginHelper.getOriginalUserId());// 原始操作人
-        return Result.success(map);
+        ImpersonateStatusVO vo = ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())                  // 是否处于模拟态
+                .currentUserId(LoginHelper.getUserId())          // 当前生效用户（被模拟人）
+                .realUserId(LoginHelper.getRealUserId())         // 真实底层登录人
+                .originalUserId(LoginHelper.getOriginalUserId()) // 原始操作人
+                .build();
+        return Result.success(vo);
     }
 }
 ```
