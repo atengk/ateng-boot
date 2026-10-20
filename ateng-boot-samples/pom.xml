@@ -25,6 +25,7 @@
         <module>ateng-boot-sample-satoken</module>
         <module>ateng-boot-sample-smoke-test</module>
         <module>ateng-boot-sample-storage</module>
+        <module>ateng-boot-sample-http</module>
     </modules>
 
     <properties>

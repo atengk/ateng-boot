@@ -1,0 +1,20 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-http
+
+ateng:
+  boot:
+    http:
+      enabled: true
+      engine: auto
+      pool:
+        max-connections: 200
+        max-per-route: 50
+        connect-timeout: 3s
+        read-timeout: 10s
+        connection-request-timeout: 2s
+        idle-timeout: 60s
+        validate-after-inactivity: 2s

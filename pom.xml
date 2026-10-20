@@ -44,6 +44,7 @@
         <module>ateng-boot-all</module>
         <module>ateng-boot-satoken</module>
         <module>ateng-boot-storage</module>
+        <module>ateng-boot-http</module>
         <module>ateng-boot-samples</module>
     </modules>
 
