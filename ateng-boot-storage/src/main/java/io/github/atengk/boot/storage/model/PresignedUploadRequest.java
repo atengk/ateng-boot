@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.util.unit.DataSize;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -48,8 +49,39 @@ public class PresignedUploadRequest implements Serializable {
     private long maxSizeBytes = -1;
 
     /**
+     * 目标存储源名称（可选，多存储源场景下指定）
+     */
+    private String source;
+
+    /**
      * 客户端发起直传时必须携带的 HTTP Headers 报头映射（可选）
      */
     @Builder.Default
     private Map<String, String> headers = Collections.emptyMap();
+
+    /**
+     * 快捷设置最大上传文件体积（采用 Spring 强类型 DataSize）
+     *
+     * @param dataSize 容量规格
+     */
+    public void setMaxPayloadSize(DataSize dataSize) {
+        this.maxSizeBytes = dataSize != null ? dataSize.toBytes() : -1;
+    }
+
+    /**
+     * 获取强类型 DataSize 容量规格
+     *
+     * @return DataSize 对象，若未设置或 <= 0 则返回 null
+     */
+    public DataSize getMaxPayloadSize() {
+        return this.maxSizeBytes > 0 ? DataSize.ofBytes(this.maxSizeBytes) : null;
+    }
+
+    public static class PresignedUploadRequestBuilder {
+        public PresignedUploadRequestBuilder maxPayloadSize(DataSize dataSize) {
+            this.maxSizeBytes$value = dataSize != null ? dataSize.toBytes() : -1;
+            this.maxSizeBytes$set = true;
+            return this;
+        }
+    }
 }

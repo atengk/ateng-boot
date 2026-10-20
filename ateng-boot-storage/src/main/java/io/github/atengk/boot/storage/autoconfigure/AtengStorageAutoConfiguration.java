@@ -63,7 +63,7 @@ public class AtengStorageAutoConfiguration {
         Map<String, StorageSourceProperties> sources = properties.getSources();
         if (sources != null && !sources.isEmpty()) {
             for (Map.Entry<String, StorageSourceProperties> entry : sources.entrySet()) {
-                factory.registerDriver(entry.getKey(), StorageDriverFactory.createDriver(entry.getValue()));
+                factory.registerDriver(entry.getKey(), StorageDriverFactory.createDriver(entry.getKey(), entry.getValue()));
             }
         }
 

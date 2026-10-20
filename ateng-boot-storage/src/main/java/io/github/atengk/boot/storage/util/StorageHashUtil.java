@@ -66,21 +66,13 @@ public final class StorageHashUtil {
         }
         try {
             if (algorithm == HashAlgorithm.CRC32) {
-                CRC32 crc = new CRC32();
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    crc.update(buffer, 0, read);
-                }
-                return formatCrc32Hex(crc.getValue());
+                CrcSink sink = new CrcSink();
+                consumeStream(in, sink);
+                return formatCrc32Hex(sink.getValue());
             } else {
-                MessageDigest digest = MessageDigest.getInstance(algorithm.getStandardName());
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    digest.update(buffer, 0, read);
-                }
-                return HexFormat.of().formatHex(digest.digest());
+                DigestSink sink = new DigestSink(MessageDigest.getInstance(algorithm.getStandardName()));
+                consumeStream(in, sink);
+                return HexFormat.of().formatHex(sink.digest());
             }
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算数据流散列失败: " + e.getMessage(), e);
@@ -106,23 +98,13 @@ public final class StorageHashUtil {
         }
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
             if (algorithm == HashAlgorithm.CRC32) {
-                CRC32 crc = new CRC32();
-                ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-                while (channel.read(buffer) != -1) {
-                    buffer.flip();
-                    crc.update(buffer);
-                    buffer.clear();
-                }
-                return formatCrc32Hex(crc.getValue());
+                CrcSink sink = new CrcSink();
+                consumeChannel(channel, sink);
+                return formatCrc32Hex(sink.getValue());
             } else {
-                MessageDigest digest = MessageDigest.getInstance(algorithm.getStandardName());
-                ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-                while (channel.read(buffer) != -1) {
-                    buffer.flip();
-                    digest.update(buffer);
-                    buffer.clear();
-                }
-                return HexFormat.of().formatHex(digest.digest());
+                DigestSink sink = new DigestSink(MessageDigest.getInstance(algorithm.getStandardName()));
+                consumeChannel(channel, sink);
+                return HexFormat.of().formatHex(sink.digest());
             }
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算文件散列失败: " + e.getMessage(), e);
@@ -196,13 +178,9 @@ public final class StorageHashUtil {
                 buf.putInt((int) crcVal);
                 return buf.array();
             } else {
-                MessageDigest digest = MessageDigest.getInstance(algorithm.getStandardName());
-                byte[] buffer = new byte[BUFFER_SIZE];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    digest.update(buffer, 0, read);
-                }
-                return digest.digest();
+                DigestSink sink = new DigestSink(MessageDigest.getInstance(algorithm.getStandardName()));
+                consumeStream(in, sink);
+                return sink.digest();
             }
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算数据流散列失败: " + e.getMessage(), e);
@@ -228,26 +206,16 @@ public final class StorageHashUtil {
         }
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
             if (algorithm == HashAlgorithm.CRC32) {
-                CRC32 crc = new CRC32();
-                ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-                while (channel.read(buffer) != -1) {
-                    buffer.flip();
-                    crc.update(buffer);
-                    buffer.clear();
-                }
-                long crcVal = crc.getValue();
+                CrcSink sink = new CrcSink();
+                consumeChannel(channel, sink);
+                long crcVal = sink.getValue();
                 ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES);
                 buf.putInt((int) crcVal);
                 return buf.array();
             } else {
-                MessageDigest digest = MessageDigest.getInstance(algorithm.getStandardName());
-                ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-                while (channel.read(buffer) != -1) {
-                    buffer.flip();
-                    digest.update(buffer);
-                    buffer.clear();
-                }
-                return digest.digest();
+                DigestSink sink = new DigestSink(MessageDigest.getInstance(algorithm.getStandardName()));
+                consumeChannel(channel, sink);
+                return sink.digest();
             }
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算文件散列失败: " + e.getMessage(), e);
@@ -410,13 +378,9 @@ public final class StorageHashUtil {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "输入流不能为空");
         }
         try {
-            CRC32 crc = new CRC32();
-            byte[] buffer = new byte[BUFFER_SIZE];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                crc.update(buffer, 0, read);
-            }
-            return crc.getValue();
+            CrcSink sink = new CrcSink();
+            consumeStream(in, sink);
+            return sink.getValue();
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算 CRC32 失败: " + e.getMessage(), e);
         }
@@ -436,14 +400,9 @@ public final class StorageHashUtil {
             throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "指定文件不存在或不是普通文件: " + path);
         }
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
-            CRC32 crc = new CRC32();
-            ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-            while (channel.read(buffer) != -1) {
-                buffer.flip();
-                crc.update(buffer);
-                buffer.clear();
-            }
-            return crc.getValue();
+            CrcSink sink = new CrcSink();
+            consumeChannel(channel, sink);
+            return sink.getValue();
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "计算 CRC32 失败: " + e.getMessage(), e);
         }
@@ -581,5 +540,70 @@ public final class StorageHashUtil {
      */
     private static String formatCrc32Hex(long crcVal) {
         return String.format(Locale.ROOT, "%08x", crcVal);
+    }
+
+    /**
+     * 内部散列累加器抽象接口
+     */
+    private interface HashSink {
+        void update(byte[] buffer, int offset, int len);
+        void update(ByteBuffer buffer);
+    }
+
+    private static final class CrcSink implements HashSink {
+        private final CRC32 crc = new CRC32();
+
+        @Override
+        public void update(byte[] buffer, int offset, int len) {
+            crc.update(buffer, offset, len);
+        }
+
+        @Override
+        public void update(ByteBuffer buffer) {
+            crc.update(buffer);
+        }
+
+        public long getValue() {
+            return crc.getValue();
+        }
+    }
+
+    private static final class DigestSink implements HashSink {
+        private final MessageDigest digest;
+
+        DigestSink(MessageDigest digest) {
+            this.digest = digest;
+        }
+
+        @Override
+        public void update(byte[] buffer, int offset, int len) {
+            digest.update(buffer, offset, len);
+        }
+
+        @Override
+        public void update(ByteBuffer buffer) {
+            digest.update(buffer);
+        }
+
+        public byte[] digest() {
+            return digest.digest();
+        }
+    }
+
+    private static void consumeStream(InputStream in, HashSink sink) throws IOException {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            sink.update(buffer, 0, read);
+        }
+    }
+
+    private static void consumeChannel(FileChannel channel, HashSink sink) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
+        while (channel.read(buffer) != -1) {
+            buffer.flip();
+            sink.update(buffer);
+            buffer.clear();
+        }
     }
 }

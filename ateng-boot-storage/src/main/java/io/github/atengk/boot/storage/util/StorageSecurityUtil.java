@@ -240,6 +240,8 @@ public final class StorageSecurityUtil {
             throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀不能包含驱动器盘符标识: " + rawPrefix);
         }
 
+        boolean endsWithSlash = path.endsWith("/");
+
         while (path.startsWith("/")) {
             path = path.substring(1);
         }
@@ -269,6 +271,7 @@ public final class StorageSecurityUtil {
             throw new StorageException(StorageResultCode.INVALID_PATH, "规范化后的批量删除前缀为空，触发防清库熔断保护");
         }
 
-        return String.join("/", stack);
+        String normalized = String.join("/", stack);
+        return endsWithSlash ? normalized + "/" : normalized;
     }
 }

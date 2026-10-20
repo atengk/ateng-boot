@@ -6,6 +6,7 @@ import io.github.atengk.boot.storage.model.StorageObject;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -240,5 +241,14 @@ public interface StorageDriver extends AutoCloseable {
      */
     default int cleanExpiredChunkSessions(Duration maxAge) {
         return 0;
+    }
+
+    /**
+     * 获取驱动健康探测与诊断上下文信息字典
+     *
+     * @return 包含驱动类型与核心定位信息的诊断字典
+     */
+    default Map<String, Object> getDiagnostics() {
+        return Collections.emptyMap();
     }
 }

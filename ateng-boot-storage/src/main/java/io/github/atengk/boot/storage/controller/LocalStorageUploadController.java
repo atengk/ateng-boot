@@ -128,13 +128,13 @@ public class LocalStorageUploadController {
         String signPayload;
         if (isChunked) {
             signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
-                    + (source != null && !source.isBlank() ? ":" + source : "");
+                    + (source != null && !source.isBlank() ? ":" + source.trim() : "");
         } else {
             String ct = (expectedContentType != null && !expectedContentType.isBlank())
                     ? expectedContentType.trim()
                     : "";
             signPayload = cleanPath + ":" + expires + ":" + ct + ":" + maxBytes
-                    + (source != null && !source.isBlank() ? ":" + source : "");
+                    + (source != null && !source.isBlank() ? ":" + source.trim() : "");
         }
 
         if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(signPayload, secretKey, signature)) {
@@ -203,14 +203,22 @@ public class LocalStorageUploadController {
      * 解析当前请求绑定的本地存储驱动
      */
     private LocalDriver resolveLocalDriver(String source) {
-        if (source != null && !source.isBlank() && driverFactoryProvider != null) {
-            StorageDriverFactory factory = driverFactoryProvider.getIfAvailable();
-            if (factory != null) {
-                StorageDriver driver = factory.getDriver(source.trim());
-                if (driver instanceof LocalDriver ld) {
-                    return ld;
+        if (source != null && !source.isBlank()) {
+            if (driverFactoryProvider != null) {
+                StorageDriverFactory factory = driverFactoryProvider.getIfAvailable();
+                if (factory != null) {
+                    try {
+                        StorageDriver driver = factory.getDriver(source.trim());
+                        if (driver instanceof LocalDriver ld) {
+                            return ld;
+                        }
+                    } catch (StorageException e) {
+                        log.warn("定位命名存储源失败: source={}, cause={}", source, e.getMessage());
+                        return null;
+                    }
                 }
             }
+            return null;
         }
         if (defaultDriver instanceof LocalDriver ld) {
             return ld;

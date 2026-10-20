@@ -77,12 +77,9 @@ public class StorageHealthIndicator implements HealthIndicator {
         }
 
         details.put("driver", driver.getClass().getSimpleName());
-        if (driver instanceof LocalDriver local) {
-            details.put("type", "local");
-            details.put("basePath", local.getBasePath().toString());
-        } else if (driver instanceof S3Driver s3) {
-            details.put("type", "s3");
-            details.put("bucket", s3.getBucket());
+        Map<String, Object> diag = driver.getDiagnostics();
+        if (diag != null && !diag.isEmpty()) {
+            details.putAll(diag);
         }
 
         try {

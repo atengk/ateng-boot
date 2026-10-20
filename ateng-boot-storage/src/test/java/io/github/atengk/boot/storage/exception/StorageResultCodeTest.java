@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class StorageResultCodeTest {
 
     @Test
-    @DisplayName("验证新增 40018~40021 错误码语义与数值正确性")
+    @DisplayName("验证新增 40018~40023 错误码语义与数值正确性")
     void testNewResultCodes() {
         assertEquals(40018, StorageResultCode.STORAGE_SIGNATURE_INVALID.getCode());
         assertEquals("存储对象签名验证失败", StorageResultCode.STORAGE_SIGNATURE_INVALID.getMsg());
@@ -30,6 +30,12 @@ class StorageResultCodeTest {
 
         assertEquals(40021, StorageResultCode.STORAGE_HASH_MISMATCH.getCode());
         assertEquals("存储对象散列校验不匹配", StorageResultCode.STORAGE_HASH_MISMATCH.getMsg());
+
+        assertEquals(40022, StorageResultCode.STORAGE_CHUNK_EXPIRED.getCode());
+        assertEquals("分片上传会话已过期或不存在", StorageResultCode.STORAGE_CHUNK_EXPIRED.getMsg());
+
+        assertEquals(40023, StorageResultCode.STORAGE_HEALTH_CHECK_FAILED.getCode());
+        assertEquals("存储健康检查探测失败", StorageResultCode.STORAGE_HEALTH_CHECK_FAILED.getMsg());
     }
 
     @Test

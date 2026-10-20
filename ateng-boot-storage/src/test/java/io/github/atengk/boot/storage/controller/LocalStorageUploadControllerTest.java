@@ -1,6 +1,7 @@
 package io.github.atengk.boot.storage.controller;
 
 import io.github.atengk.boot.storage.driver.LocalDriver;
+import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.guard.StorageGuard;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
@@ -10,10 +11,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.util.unit.DataSize;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -45,10 +50,13 @@ class LocalStorageUploadControllerTest {
     private static final String DOMAIN = "http://localhost:8080";
 
     private LocalDriver driver;
+    private LocalDriver backupDriver;
+    private Path backupDir;
     private MockMvc mockMvc;
 
     @BeforeEach
-    void setUp() {
+    @SuppressWarnings("unchecked")
+    void setUp() throws Exception {
         StorageProperties properties = new StorageProperties();
         properties.getLocal().setBasePath(tempDir.toString());
         properties.getLocal().setDomain(DOMAIN);
@@ -56,7 +64,23 @@ class LocalStorageUploadControllerTest {
         properties.getGuard().setEnabled(true);
 
         driver = new LocalDriver(tempDir.toString(), DOMAIN, SECRET_KEY);
-        LocalStorageUploadController controller = new LocalStorageUploadController(properties, driver);
+        backupDir = tempDir.resolve("backup-store");
+        Files.createDirectories(backupDir);
+        backupDriver = new LocalDriver(backupDir.toString(), DOMAIN, "backup-secret-key-2026",
+                LocalDriver.DEFAULT_DOWNLOAD_ENDPOINT, LocalDriver.DEFAULT_UPLOAD_ENDPOINT, "backup");
+
+        StorageDriverFactory factory = new StorageDriverFactory("primary");
+        factory.registerDriver("primary", driver);
+        factory.registerDriver("backup", backupDriver);
+
+        ObjectProvider<StorageDriverFactory> factoryProvider = mock(ObjectProvider.class);
+        when(factoryProvider.getIfAvailable()).thenReturn(factory);
+
+        ObjectProvider<StorageGuard> guardProvider = mock(ObjectProvider.class);
+        when(guardProvider.getIfAvailable()).thenReturn(new StorageGuard(properties.getGuard()));
+
+        LocalStorageUploadController controller = new LocalStorageUploadController(
+                properties, driver, factoryProvider, guardProvider);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -262,5 +286,99 @@ class LocalStorageUploadControllerTest {
         Path chunkFile = tempDir.resolve(".chunks").resolve(uploadId).resolve("chunk_1");
         assertTrue(Files.exists(chunkFile));
         assertArrayEquals(chunkBytes, Files.readAllBytes(chunkFile));
+    }
+
+    @Test
+    @DisplayName("指定多源 source 参数通过 HTTP PUT 直传普通文件成功落盘至对应存储源目录")
+    void testMultiSourceUploadSuccess() throws Exception {
+        byte[] content = "Multi Source Local Upload Content 2026".getBytes(StandardCharsets.UTF_8);
+        String path = "reports/annual-2026.txt";
+
+        PresignedUploadRequest request = PresignedUploadRequest.builder()
+                .path(path)
+                .duration(Duration.ofMinutes(15))
+                .contentType("text/plain")
+                .maxSizeBytes(1024)
+                .build();
+
+        PresignedUrl presigned = backupDriver.getPresignedUploadUrl(request);
+        assertNotNull(presigned);
+        assertEquals("PUT", presigned.getHttpMethod());
+        assertTrue(presigned.getUrl().contains("source=backup"));
+
+        URI uri = URI.create(presigned.getUrl());
+
+        mockMvc.perform(put(uri.getPath() + "?" + uri.getQuery())
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content(content))
+                .andExpect(status().isOk());
+
+        // 校验文件落在 backupDir，而未落在主 tempDir
+        Path savedFile = backupDir.resolve("reports/annual-2026.txt");
+        assertTrue(Files.exists(savedFile));
+        assertArrayEquals(content, Files.readAllBytes(savedFile));
+        assertFalse(Files.exists(tempDir.resolve("reports/annual-2026.txt")));
+    }
+
+    @Test
+    @DisplayName("指定多源 source 参数通过 HTTP PUT 直传分片数据成功落盘至对应存储源分片目录")
+    void testMultiSourceChunkUploadSuccess() throws Exception {
+        String targetPath = "backup-videos/large.mp4";
+        String uploadId = backupDriver.initiateChunkedUpload(targetPath);
+
+        PresignedUrl presignedPartUrl = backupDriver.getPresignedUploadPartUrl(targetPath, uploadId, 1, Duration.ofMinutes(15));
+        assertNotNull(presignedPartUrl);
+        assertTrue(presignedPartUrl.getUrl().contains("source=backup"));
+
+        URI uri = URI.create(presignedPartUrl.getUrl());
+        byte[] chunkBytes = "Backup Video Chunk 1".getBytes(StandardCharsets.UTF_8);
+
+        mockMvc.perform(put(uri.getPath() + "?" + uri.getQuery())
+                        .content(chunkBytes))
+                .andExpect(status().isOk());
+
+        Path chunkFile = backupDir.resolve(".chunks").resolve(uploadId).resolve("chunk_1");
+        assertTrue(Files.exists(chunkFile));
+        assertArrayEquals(chunkBytes, Files.readAllBytes(chunkFile));
+        assertFalse(Files.exists(tempDir.resolve(".chunks").resolve(uploadId)));
+    }
+
+    @Test
+    @DisplayName("篡改或移除 source 参数时签名失效返回 403 Forbidden，不存在 source 返回 400")
+    void testMultiSourceTamperedSourceReturnsForbidden() throws Exception {
+        PresignedUploadRequest request = PresignedUploadRequest.builder()
+                .path("secure/data.txt")
+                .duration(Duration.ofMinutes(15))
+                .contentType("text/plain")
+                .build();
+
+        PresignedUrl presigned = backupDriver.getPresignedUploadUrl(request);
+        URI uri = URI.create(presigned.getUrl());
+
+        // 篡改为不存在的 source 返回 400
+        String tamperedUnknownQuery = uri.getQuery().replace("source=backup", "source=unknown-source");
+        mockMvc.perform(put(uri.getPath() + "?" + tamperedUnknownQuery)
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("Tampered Content".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isBadRequest());
+
+        // 移除 source（缺少 source 导致与原签名因式不匹配）返回 403
+        String tamperedOmittedQuery = uri.getQuery().replace("&source=backup", "");
+        mockMvc.perform(put(uri.getPath() + "?" + tamperedOmittedQuery)
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("Tampered Content".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("PresignedUploadRequest 支持使用 Spring DataSize 强类型配置最大体积规格")
+    void testDataSizeOverloadInPresignedUploadRequest() {
+        PresignedUploadRequest request = PresignedUploadRequest.builder()
+                .path("docs/file.pdf")
+                .maxPayloadSize(DataSize.ofMegabytes(10))
+                .build();
+
+        assertEquals(10 * 1024 * 1024L, request.getMaxSizeBytes());
+        assertEquals(DataSize.ofMegabytes(10), request.getMaxPayloadSize());
     }
 }

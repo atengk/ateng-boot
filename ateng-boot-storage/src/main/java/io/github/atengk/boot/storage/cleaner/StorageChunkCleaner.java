@@ -1,5 +1,6 @@
 package io.github.atengk.boot.storage.cleaner;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
 import io.github.atengk.boot.storage.properties.StorageProperties;
@@ -11,7 +12,6 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,12 +37,8 @@ public class StorageChunkCleaner implements DisposableBean {
         this.driverFactoryProvider = driverFactoryProvider;
         this.defaultDriverProvider = defaultDriverProvider;
 
-        ThreadFactory threadFactory = runnable -> {
-            Thread thread = new Thread(runnable, "storage-chunk-cleaner");
-            thread.setDaemon(true);
-            return thread;
-        };
-        this.executor = Executors.newSingleThreadScheduledExecutor(threadFactory);
+        this.executor = Executors.newSingleThreadScheduledExecutor(
+                new NamedThreadFactory("storage-chunk-cleaner", true));
 
         Duration interval = (properties != null && properties.getChunkCleaner() != null && properties.getChunkCleaner().getInterval() != null)
                 ? properties.getChunkCleaner().getInterval()

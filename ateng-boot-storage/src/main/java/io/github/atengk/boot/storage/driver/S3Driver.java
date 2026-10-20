@@ -9,6 +9,7 @@ import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.properties.S3StorageProperties;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
@@ -66,6 +67,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -78,6 +80,7 @@ import java.util.Map;
  * @author Ateng
  * @since 2026-10-17
  */
+@Slf4j
 @Getter
 public class S3Driver implements StorageDriver {
 
@@ -329,6 +332,14 @@ public class S3Driver implements StorageDriver {
     }
 
     @Override
+    public Map<String, Object> getDiagnostics() {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("type", "s3");
+        map.put("bucket", this.bucket);
+        return map;
+    }
+
+    @Override
     public boolean exists(String path) {
         if (path == null || path.isBlank()) {
             return false;
@@ -407,26 +418,32 @@ public class S3Driver implements StorageDriver {
     public boolean deletePrefix(String prefix) {
         String cleanPrefix = StorageSecurityUtil.validatePrefixForDeletion(prefix);
         try {
-            String continuationToken = null;
             List<ObjectIdentifier> batch = new ArrayList<>(1000);
-            do {
-                ListObjectsV2Request listReq = ListObjectsV2Request.builder()
-                        .bucket(this.bucket)
-                        .prefix(cleanPrefix)
-                        .continuationToken(continuationToken)
-                        .build();
-                ListObjectsV2Response listResp = this.s3Client.listObjectsV2(listReq);
-                if (listResp.hasContents()) {
-                    for (S3Object obj : listResp.contents()) {
-                        batch.add(ObjectIdentifier.builder().key(obj.key()).build());
-                        if (batch.size() >= 1000) {
-                            flushDeleteBatch(batch);
-                            batch.clear();
-                        }
-                    }
+            ListObjectsV2Request listReq = ListObjectsV2Request.builder()
+                    .bucket(this.bucket)
+                    .prefix(cleanPrefix)
+                    .build();
+
+            software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable paginator = null;
+            try {
+                paginator = this.s3Client.listObjectsV2Paginator(listReq);
+            } catch (Exception e) {
+                log.debug("调用 listObjectsV2Paginator 异常，回退至普通分页: {}", e.getMessage());
+            }
+
+            if (paginator != null) {
+                for (ListObjectsV2Response page : paginator) {
+                    processDeletePage(page, batch);
                 }
-                continuationToken = listResp.isTruncated() ? listResp.nextContinuationToken() : null;
-            } while (continuationToken != null);
+            } else {
+                String continuationToken = null;
+                do {
+                    ListObjectsV2Request req = listReq.toBuilder().continuationToken(continuationToken).build();
+                    ListObjectsV2Response listResp = this.s3Client.listObjectsV2(req);
+                    processDeletePage(listResp, batch);
+                    continuationToken = listResp.isTruncated() ? listResp.nextContinuationToken() : null;
+                } while (continuationToken != null);
+            }
 
             if (!batch.isEmpty()) {
                 flushDeleteBatch(batch);
@@ -437,6 +454,18 @@ public class S3Driver implements StorageDriver {
             throw e;
         } catch (Exception e) {
             throw translateException(e, prefix, "按前缀批量删除 S3 对象失败");
+        }
+    }
+
+    private void processDeletePage(ListObjectsV2Response page, List<ObjectIdentifier> batch) {
+        if (page != null && page.hasContents()) {
+            for (S3Object obj : page.contents()) {
+                batch.add(ObjectIdentifier.builder().key(obj.key()).build());
+                if (batch.size() >= 1000) {
+                    flushDeleteBatch(batch);
+                    batch.clear();
+                }
+            }
         }
     }
 
@@ -650,9 +679,6 @@ public class S3Driver implements StorageDriver {
                 putRequestBuilder.contentType(ct);
                 signedHeaders.put("Content-Type", ct);
             }
-            if (request.getMaxSizeBytes() > 0) {
-                putRequestBuilder.contentLength(request.getMaxSizeBytes());
-            }
             if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
                 request.getHeaders().forEach((k, v) -> {
                     if (k != null && v != null) {
@@ -834,13 +860,15 @@ public class S3Driver implements StorageDriver {
         if (this.s3Client != null) {
             try {
                 this.s3Client.close();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("关闭 S3Client 客户端发生异常: {}", e.getMessage());
             }
         }
         if (this.s3Presigner != null) {
             try {
                 this.s3Presigner.close();
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("关闭 S3Presigner 预签名器发生异常: {}", e.getMessage());
             }
         }
     }
@@ -914,6 +942,14 @@ public class S3Driver implements StorageDriver {
         String key = token.path();
         String rawUploadId = token.rawUploadId();
 
+        if (targetPath != null && !targetPath.isBlank()) {
+            String cleanTargetPath = StorageSecurityUtil.normalizePath(targetPath);
+            if (!cleanTargetPath.equals(key)) {
+                throw new StorageException(StorageResultCode.STORAGE_CHUNK_INVALID,
+                        "分片上传目标路径不匹配: tokenPath=" + key + ", targetPath=" + cleanTargetPath);
+            }
+        }
+
         List<CompletedPart> completedParts = new ArrayList<>(totalChunks);
         try {
             Map<Integer, String> s3Parts = new HashMap<>();
@@ -977,8 +1013,8 @@ public class S3Driver implements StorageDriver {
             S3ChunkTokenUtil.S3ChunkToken token = S3ChunkTokenUtil.decode(uploadId, this.secretKey);
             key = token.path();
             rawUploadId = token.rawUploadId();
-        } catch (Exception ignored) {
-            // Token 解码失败时尝试作为原生 uploadId 回退
+        } catch (Exception e) {
+            log.debug("分片上传 uploadId 无法作为 S3 签名 Token 解码，尝试作为原生 S3 uploadId 处理: uploadId={}, cause={}", uploadId, e.getMessage());
         }
 
         if (key == null) {
@@ -993,7 +1029,8 @@ public class S3Driver implements StorageDriver {
                         }
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("反查 S3 原生分片上传会话所属 Key 失败: uploadId={}, cause={}", uploadId, e.getMessage());
             }
         }
 
@@ -1004,8 +1041,11 @@ public class S3Driver implements StorageDriver {
                         .key(key)
                         .uploadId(rawUploadId)
                         .build());
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                throw translateException(e, key, "中止 S3 分片上传会话失败");
             }
+        } else {
+            log.warn("无法中止 S3 分片上传会话，未定位到对应的存储对象: uploadId={}", uploadId);
         }
     }
 
@@ -1038,6 +1078,7 @@ public class S3Driver implements StorageDriver {
         try {
             String keyMarker = null;
             String uploadIdMarker = null;
+            boolean isTruncated;
             do {
                 ListMultipartUploadsRequest.Builder builder = ListMultipartUploadsRequest.builder()
                         .bucket(this.bucket);
@@ -1058,19 +1099,20 @@ public class S3Driver implements StorageDriver {
                                         .uploadId(u.uploadId())
                                         .build());
                                 cleanedCount++;
-                            } catch (Exception ignored) {
+                            } catch (Exception e) {
+                                log.warn("清理超时 S3 分片上传会话失败: key={}, uploadId={}, cause={}", u.key(), u.uploadId(), e.getMessage());
                             }
                         }
                     }
                 }
-                if (resp.isTruncated()) {
+                isTruncated = Boolean.TRUE.equals(resp.isTruncated());
+                if (isTruncated) {
                     keyMarker = resp.nextKeyMarker();
                     uploadIdMarker = resp.nextUploadIdMarker();
-                } else {
-                    keyMarker = null;
                 }
-            } while (keyMarker != null);
-        } catch (Exception ignored) {
+            } while (isTruncated);
+        } catch (Exception e) {
+            log.error("扫描与清理超时 S3 分片上传会话发生异常: cause={}", e.getMessage(), e);
         }
         return cleanedCount;
     }

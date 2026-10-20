@@ -8,6 +8,7 @@ import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -39,6 +40,7 @@ import java.util.stream.Stream;
  * @author Ateng
  * @since 2026-10-17
  */
+@Slf4j
 @Getter
 public class LocalDriver implements StorageDriver {
 
@@ -78,12 +80,17 @@ public class LocalDriver implements StorageDriver {
     private final String uploadEndpoint;
 
     /**
+     * 绑定的命名存储源标识（多源模式下用于生成带 source 参数的外链）
+     */
+    private final String sourceName;
+
+    /**
      * 构造基础本地磁盘驱动（自动生成随机密钥）
      *
      * @param basePath 本地存储物理基准路径
      */
     public LocalDriver(String basePath) {
-        this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT);
+        this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT, null);
     }
 
     /**
@@ -94,7 +101,7 @@ public class LocalDriver implements StorageDriver {
      * @param secretKey 签名密钥（留空时自动生成安全随机密钥）
      */
     public LocalDriver(String basePath, String domain, String secretKey) {
-        this(basePath, domain, secretKey, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT);
+        this(basePath, domain, secretKey, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT, null);
     }
 
     /**
@@ -106,7 +113,7 @@ public class LocalDriver implements StorageDriver {
      * @param downloadEndpoint 预签名安全下载端点
      */
     public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint) {
-        this(basePath, domain, secretKey, downloadEndpoint, DEFAULT_UPLOAD_ENDPOINT);
+        this(basePath, domain, secretKey, downloadEndpoint, DEFAULT_UPLOAD_ENDPOINT, null);
     }
 
     /**
@@ -119,6 +126,20 @@ public class LocalDriver implements StorageDriver {
      * @param uploadEndpoint   预签名安全直传端点
      */
     public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint) {
+        this(basePath, domain, secretKey, downloadEndpoint, uploadEndpoint, null);
+    }
+
+    /**
+     * 完整多源参数构造本地磁盘驱动
+     *
+     * @param basePath         本地存储物理基准路径
+     * @param domain           访问域名或基础 URL
+     * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
+     * @param downloadEndpoint 预签名安全下载端点
+     * @param uploadEndpoint   预签名安全直传端点
+     * @param sourceName       绑定的命名存储源名称（多源模式下使用）
+     */
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint, String sourceName) {
         if (basePath == null || basePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基础路径 basePath 不能为空");
         }
@@ -140,6 +161,9 @@ public class LocalDriver implements StorageDriver {
         this.uploadEndpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank())
                 ? uploadEndpoint
                 : DEFAULT_UPLOAD_ENDPOINT;
+        this.sourceName = (sourceName != null && !sourceName.isBlank())
+                ? sourceName.trim()
+                : null;
     }
 
     @Override
@@ -188,14 +212,22 @@ public class LocalDriver implements StorageDriver {
     @Override
     public void ping() throws Exception {
         if (!Files.exists(this.basePath)) {
-            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "本地存储基准目录不存在: " + this.basePath);
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED, "本地存储基准目录不存在: " + this.basePath);
         }
         if (!Files.isDirectory(this.basePath)) {
-            throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基准路径不是目录: " + this.basePath);
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED, "本地存储基准路径不是目录: " + this.basePath);
         }
         if (!Files.isWritable(this.basePath)) {
-            throw new StorageException(StorageResultCode.OPERATION_FAILED, "本地存储基准目录无写入权限: " + this.basePath);
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED, "本地存储基准目录无写入权限: " + this.basePath);
         }
+    }
+
+    @Override
+    public Map<String, Object> getDiagnostics() {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("type", "local");
+        map.put("basePath", this.basePath.toString());
+        return map;
     }
 
     /**
@@ -298,15 +330,23 @@ public class LocalDriver implements StorageDriver {
         String cleanPrefix = StorageSecurityUtil.validatePrefixForDeletion(prefix);
         Path target = resolveAndVerify(cleanPrefix);
         try {
-            if (Files.exists(target)) {
-                deleteRecursively(target);
-            }
-            Path parent = target.getParent();
-            if (parent != null && Files.exists(parent) && Files.isDirectory(parent)) {
-                String prefixName = target.getFileName().toString();
-                try (Stream<Path> stream = Files.list(parent)) {
-                    stream.filter(p -> p.getFileName().toString().startsWith(prefixName))
-                            .forEach(this::deleteRecursively);
+            if (cleanPrefix.endsWith("/")) {
+                // 1. 若前缀明确以 / 结尾，代表目录前缀删除（如 temp/logs/），仅删除该目录自身及内容
+                if (Files.exists(target) && Files.isDirectory(target)) {
+                    deleteRecursively(target);
+                }
+            } else {
+                // 2. 若不以 / 结尾，代表按前缀匹配删除（如 temp/log 匹配 temp/log.txt、temp/logs 等）
+                if (Files.exists(target)) {
+                    deleteRecursively(target);
+                }
+                Path parent = target.getParent();
+                if (parent != null && Files.exists(parent) && Files.isDirectory(parent)) {
+                    String prefixName = target.getFileName().toString();
+                    try (Stream<Path> stream = Files.list(parent)) {
+                        stream.filter(p -> p.getFileName().toString().startsWith(prefixName))
+                                .forEach(this::deleteRecursively);
+                    }
                 }
             }
             return true;
@@ -406,7 +446,8 @@ public class LocalDriver implements StorageDriver {
                                     Instant lastModified = Instant.EPOCH;
                                     try {
                                         lastModified = Files.getLastModifiedTime(p).toInstant();
-                                    } catch (IOException ignored) {
+                                    } catch (IOException e) {
+                                        log.debug("获取本地目录修改时间失败: path={}, cause={}", p, e.getMessage());
                                     }
                                     return StorageObject.builder()
                                             .path(relPath)
@@ -458,17 +499,8 @@ public class LocalDriver implements StorageDriver {
         long expires = expiration.getEpochSecond();
 
         String signature = StorageSecurityUtil.hmacSha256(cleanPath + ":" + expires, this.secretKey);
-
-        String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        }
-        String endpoint = (downloadEndpoint != null && !downloadEndpoint.isBlank()) ? downloadEndpoint.trim() : DEFAULT_DOWNLOAD_ENDPOINT;
-        if (!endpoint.startsWith("/")) {
-            endpoint = "/" + endpoint;
-        }
-
-        String url = baseUrl + endpoint + "?path=" + cleanPath + "&expires=" + expires + "&signature=" + signature;
+        String url = buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT)
+                + "?path=" + cleanPath + "&expires=" + expires + "&signature=" + signature;
 
         return PresignedUrl.builder()
                 .url(url)
@@ -493,21 +525,17 @@ public class LocalDriver implements StorageDriver {
                 : "";
         long maxBytes = request.getMaxSizeBytes() > 0 ? request.getMaxSizeBytes() : -1;
 
-        // 签名计算规则：cleanPath:expires:contentType:maxBytes
-        String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes;
+        String effectiveSource = (request.getSource() != null && !request.getSource().isBlank())
+                ? request.getSource().trim()
+                : this.sourceName;
+
+        // 签名计算规则：cleanPath:expires:contentType:maxBytes[:source] 与 LocalStorageUploadController 保持严格对称
+        String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes
+                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
-        String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
-        }
-        String endpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank()) ? uploadEndpoint.trim() : DEFAULT_UPLOAD_ENDPOINT;
-        if (!endpoint.startsWith("/")) {
-            endpoint = "/" + endpoint;
-        }
-
         StringBuilder urlBuilder = new StringBuilder();
-        urlBuilder.append(baseUrl).append(endpoint)
+        urlBuilder.append(buildEndpointUrl(uploadEndpoint, DEFAULT_UPLOAD_ENDPOINT))
                 .append("?path=").append(cleanPath)
                 .append("&expires=").append(expires)
                 .append("&signature=").append(signature);
@@ -516,6 +544,9 @@ public class LocalDriver implements StorageDriver {
         }
         if (maxBytes > 0) {
             urlBuilder.append("&maxBytes=").append(maxBytes);
+        }
+        if (effectiveSource != null && !effectiveSource.isBlank()) {
+            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
         }
 
         Map<String, String> signedHeaders = new LinkedHashMap<>();
@@ -552,27 +583,48 @@ public class LocalDriver implements StorageDriver {
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        // 签名计算规则与 LocalStorageUploadController 严格对齐：cleanPath:expires:uploadId:chunkIndex
-        String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex;
+        String effectiveSource = this.sourceName;
+
+        // 签名计算规则：cleanPath:expires:uploadId:chunkIndex[:source] 与 LocalStorageUploadController 严格对称
+        String signPayload = cleanPath + ":" + expires + ":" + uploadId + ":" + chunkIndex
+                + (effectiveSource != null && !effectiveSource.isBlank() ? ":" + effectiveSource : "");
         String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
 
+        StringBuilder urlBuilder = new StringBuilder();
+        urlBuilder.append(buildEndpointUrl(uploadEndpoint, DEFAULT_UPLOAD_ENDPOINT))
+                .append("?path=").append(cleanPath)
+                .append("&expires=").append(expires)
+                .append("&uploadId=").append(uploadId)
+                .append("&chunkIndex=").append(chunkIndex)
+                .append("&signature=").append(signature);
+        if (effectiveSource != null && !effectiveSource.isBlank()) {
+            urlBuilder.append("&source=").append(URLEncoder.encode(effectiveSource, StandardCharsets.UTF_8));
+        }
+
+        return PresignedUrl.builder()
+                .url(urlBuilder.toString())
+                .expiration(expiration)
+                .httpMethod("PUT")
+                .build();
+    }
+
+    /**
+     * 规范化拼装带基础域名与端点路径的完整 URL 前缀
+     *
+     * @param endpoint        配置的端点路径
+     * @param defaultEndpoint 默认端点路径
+     * @return 完整 URL 前缀
+     */
+    private String buildEndpointUrl(String endpoint, String defaultEndpoint) {
         String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
-        String endpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank()) ? uploadEndpoint.trim() : DEFAULT_UPLOAD_ENDPOINT;
-        if (!endpoint.startsWith("/")) {
-            endpoint = "/" + endpoint;
+        String ep = (endpoint != null && !endpoint.isBlank()) ? endpoint.trim() : defaultEndpoint;
+        if (!ep.startsWith("/")) {
+            ep = "/" + ep;
         }
-
-        String url = baseUrl + endpoint + "?path=" + cleanPath + "&expires=" + expires
-                + "&uploadId=" + uploadId + "&chunkIndex=" + chunkIndex + "&signature=" + signature;
-
-        return PresignedUrl.builder()
-                .url(url)
-                .expiration(expiration)
-                .httpMethod("PUT")
-                .build();
+        return baseUrl + ep;
     }
 
     /**
@@ -644,7 +696,7 @@ public class LocalDriver implements StorageDriver {
         }
         Path chunkDir = resolveChunkDir(uploadId);
         if (!Files.exists(chunkDir)) {
-            throw new StorageException(StorageResultCode.OPERATION_FAILED, "未找到分片上传会话或已被清理: " + uploadId);
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_EXPIRED, "未找到分片上传会话或已过期清理: " + uploadId);
         }
         Path chunkFile = chunkDir.resolve("chunk_" + chunkIndex);
         try {
@@ -663,7 +715,7 @@ public class LocalDriver implements StorageDriver {
         String cleanPath = StorageSecurityUtil.normalizePath(targetPath);
         Path chunkDir = resolveChunkDir(uploadId);
         if (!Files.exists(chunkDir)) {
-            throw new StorageException(StorageResultCode.STORAGE_CHUNK_MISSING, "未找到分片上传会话或已被清理: " + uploadId);
+            throw new StorageException(StorageResultCode.STORAGE_CHUNK_EXPIRED, "未找到分片上传会话或已过期清理: " + uploadId);
         }
 
         // 严格校验 1 ~ totalChunks 连续性
@@ -747,10 +799,12 @@ public class LocalDriver implements StorageDriver {
                     .forEach(p -> {
                         try {
                             Files.deleteIfExists(p);
-                        } catch (IOException ignored) {
+                        } catch (IOException e) {
+                            log.warn("删除本地文件失败: path={}, cause={}", p, e.getMessage());
                         }
                     });
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            log.warn("递归删除本地路径时遍历失败: dir={}, cause={}", dir, e.getMessage());
         }
     }
 
@@ -782,7 +836,8 @@ public class LocalDriver implements StorageDriver {
                     cleanedCount++;
                 }
             }
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            log.warn("扫描并清理本地孤儿分片会话失败: dir={}, cause={}", chunksBaseDir, e.getMessage());
         }
         return cleanedCount;
     }
@@ -800,6 +855,7 @@ public class LocalDriver implements StorageDriver {
             }
             return maxTime;
         } catch (Exception e) {
+            log.debug("获取会话目录最后修改时间失败: sessionDir={}, cause={}", sessionDir, e.getMessage());
             return null;
         }
     }

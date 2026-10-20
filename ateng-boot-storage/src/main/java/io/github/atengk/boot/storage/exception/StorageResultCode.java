@@ -92,7 +92,17 @@ public enum StorageResultCode implements IResultCode {
     /**
      * 存储对象散列哈希校验不匹配（完整性比对失败）
      */
-    STORAGE_HASH_MISMATCH(40021, "存储对象散列校验不匹配");
+    STORAGE_HASH_MISMATCH(40021, "存储对象散列校验不匹配"),
+
+    /**
+     * 分片上传会话已过期或不存在
+     */
+    STORAGE_CHUNK_EXPIRED(40022, "分片上传会话已过期或不存在"),
+
+    /**
+     * 存储健康检查探测失败
+     */
+    STORAGE_HEALTH_CHECK_FAILED(40023, "存储健康检查探测失败");
 
     /**
      * 状态码数值

@@ -5,6 +5,7 @@ import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.properties.S3StorageProperties;
+import io.github.atengk.boot.storage.util.S3ChunkTokenUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -70,6 +71,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -300,6 +302,10 @@ class S3DriverTest {
         assertEquals("application/pdf", presigned.getHeaders().get("Content-Type"));
         assertEquals("finance-2026", presigned.getHeaders().get("x-custom-tag"));
         assertEquals("https://cdn.example.com/test-bucket/uploads/report.pdf?X-Amz-Signature=sig789", presigned.getUrl());
+
+        ArgumentCaptor<PutObjectPresignRequest> presignCaptor = ArgumentCaptor.forClass(PutObjectPresignRequest.class);
+        verify(s3Presigner).presignPutObject(presignCaptor.capture());
+        assertNull(presignCaptor.getValue().putObjectRequest().contentLength(), "S3 PUT 预签名外链不得强行固化 Content-Length");
     }
 
     @Test
@@ -690,6 +696,35 @@ class S3DriverTest {
     }
 
     @Test
+    @DisplayName("S3 完成分片合并时 targetPath 与 Token 内绑定路径不匹配拦截抛出 STORAGE_CHUNK_INVALID")
+    void testS3CompleteChunkedUploadTargetPathMismatch() {
+        String rawUploadId = "s3-raw-mismatch-token";
+        String tokenKey = "media/podcast.mp3";
+        String token = S3ChunkTokenUtil.encode(tokenKey, rawUploadId, TEST_SECRET_KEY);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.completeChunkedUpload(token, "different/target.mp3", 3));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_INVALID, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("分片上传目标路径不匹配"));
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传在底层 SDK 抛出异常时精准转译为 StorageException 且保留原始因果链")
+    void testS3AbortChunkedUploadThrowsStorageExceptionOnFailure() {
+        String rawUploadId = "s3-raw-fail-abort";
+        String tokenKey = "temp/faulty.bin";
+        String token = S3ChunkTokenUtil.encode(tokenKey, rawUploadId, TEST_SECRET_KEY);
+
+        when(s3Client.abortMultipartUpload(any(AbortMultipartUploadRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(500).message("Internal S3 Error").build());
+
+        StorageException ex = assertThrows(StorageException.class, () -> s3Driver.abortChunkedUpload(token));
+        assertEquals(StorageResultCode.OPERATION_FAILED, ex.getResultCode());
+        assertNotNull(ex.getCause());
+        assertTrue(ex.getCause() instanceof S3Exception);
+    }
+
+    @Test
     @DisplayName("S3 按前缀流式批量删除对象成功")
     void testS3DeletePrefixSuccess() {
         S3Object obj1 = S3Object.builder().key("temp/logs/app.log").build();
@@ -699,7 +734,10 @@ class S3DriverTest {
                 .contents(List.of(obj1, obj2))
                 .isTruncated(false)
                 .build();
-        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+        software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable mockPaginator =
+                org.mockito.Mockito.mock(software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable.class);
+        when(mockPaginator.iterator()).thenReturn(List.of(listResp).iterator());
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(mockPaginator);
 
         assertTrue(s3Driver.deletePrefix("temp/logs"));
         verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
@@ -713,9 +751,27 @@ class S3DriverTest {
                 .contents(List.of(obj))
                 .isTruncated(false)
                 .build();
-        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+        software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable mockPaginator =
+                org.mockito.Mockito.mock(software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable.class);
+        when(mockPaginator.iterator()).thenReturn(List.of(listResp).iterator());
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(mockPaginator);
 
         assertTrue(s3Driver.deleteDirectory("archive/2026"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 批量删除在 Paginator 为空时平滑降级普通分页")
+    void testS3DeletePrefixFallbackSuccess() {
+        S3Object obj = S3Object.builder().key("temp/fallback/file.txt").build();
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj))
+                .isTruncated(false)
+                .build();
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(null);
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+
+        assertTrue(s3Driver.deletePrefix("temp/fallback"));
         verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
     }
 

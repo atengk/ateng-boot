@@ -405,11 +405,36 @@ public class FileController {
             @RequestParam("hash") @NotBlank(message = "散列哈希不能为空") String hash) {
         String poolSourcePath = "hash-pool/" + hash + ".dat";
         if (!storageTemplate.exists(poolSourcePath)) {
-            return Result.fail(40404, "文件哈希未命中秒传池，请走普通上传流");
+            return Result.fail(SampleResultCode.FAST_UPLOAD_MISSED);
         }
         storageTemplate.copy(poolSourcePath, targetPath);
         StorageObject metadata = storageTemplate.getMetadata(targetPath);
         return Result.success(metadata);
+    }
+
+    /**
+     * 样例工程业务响应状态码
+     */
+    public enum SampleResultCode implements io.github.atengk.boot.core.code.IResultCode {
+        FAST_UPLOAD_MISSED(40404, "文件哈希未命中秒传池，请走普通上传流");
+
+        private final Integer code;
+        private final String msg;
+
+        SampleResultCode(Integer code, String msg) {
+            this.code = code;
+            this.msg = msg;
+        }
+
+        @Override
+        public Integer getCode() {
+            return code;
+        }
+
+        @Override
+        public String getMsg() {
+            return msg;
+        }
     }
 
     /**

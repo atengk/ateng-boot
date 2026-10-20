@@ -136,6 +136,17 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
      * @return 对应的 StorageDriver 实例
      */
     public static StorageDriver createDriver(StorageSourceProperties properties) {
+        return createDriver(null, properties);
+    }
+
+    /**
+     * 根据 StorageSourceProperties 与存储源标识快速构建存储驱动
+     *
+     * @param sourceKey  存储源标识（如 "backup"）
+     * @param properties 存储源配置属性
+     * @return 对应的 StorageDriver 实例
+     */
+    public static StorageDriver createDriver(String sourceKey, StorageSourceProperties properties) {
         if (properties == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "存储源配置属性不能为空");
         }
@@ -154,7 +165,10 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
             secretKey = StorageSecurityUtil.generateRandomSecretKey();
             local.setSecretKey(secretKey);
         }
-        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint(), local.getUploadEndpoint());
+        String sourceName = (sourceKey != null && !"primary".equalsIgnoreCase(sourceKey) && !"default".equalsIgnoreCase(sourceKey))
+                ? sourceKey.trim()
+                : null;
+        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint(), local.getUploadEndpoint(), sourceName);
     }
 
     /**

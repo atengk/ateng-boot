@@ -9,20 +9,20 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **文件上传** | 流式/字节/文件/表单上传 | `StorageTemplate` | `ateng.boot.storage.enabled` | `upload(String, InputStream)` / `upload(String, byte[])` / `upload(String, File)` / `upload(String, MultipartFile)` / `upload(String, StorageObject)`，自动推导 MIME 与安全创建父目录 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **自定义元数据** | 对象用户扩展元数据注入 | `StorageTemplate`<br>`StorageObject` | - | `upload(String, InputStream, Map<String, String>)` / `upload(String, MultipartFile, Map<String, String>)` / `copy(String, String, Map<String, String>)`，持久化并在 `StorageObject.getUserMetadata()` 反查 | `StorageTemplateMetadataTest` / `SampleStorageIntegrationTest` |
+| **自定义元数据** | 对象用户扩展元数据注入 | `StorageTemplate`<br>`StorageObject` | - | `upload(String, InputStream, Map<String, String>)` / `upload(String, MultipartFile, Map<String, String>)`，携带扩展元数据（S3 云端原生持久化，Local 内存即时返回）并在 `StorageObject.getUserMetadata()` 反查 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **分片上传** | 服务端大文件分片合并暂存 | `StorageTemplate` | - | `initiateChunkedUpload(String)` / `uploadChunk(String, int, InputStream, long)` / `uploadChunk(String, int, byte[])` / `completeChunkedUpload(String, String, int)` / `abortChunkedUpload(String)`，1-based 序号连续性强校验与原子删除 | `StorageTemplateChunkedTest` / `SampleStorageIntegrationTest` |
 | **预签名只读** | 安全只读防盗链预签名外链 | `StorageTemplate` | `ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.secret-key` | `getPresignedUrl(String, Duration)`，返回带有效期的强类型 `PresignedUrl`，Local 驱动基于 HMAC-SHA256 签名，S3 驱动原生对接云端凭据 | `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
-| **客户端直传预签名** | 预签名安全直传写入外链凭据 | `StorageTemplate`<br>`PresignedUploadRequest` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadUrl(String, Duration)` / `getPresignedUploadUrl(PresignedUploadRequest)`，前端直接向存储端点发起 HTTP PUT 直传数据，完全绕过业务后端转发 | `LocalDriverPresignedUploadTest` / `S3DriverPresignedUploadTest` / `SampleStorageIntegrationTest` |
-| **分片直传预签名** | 端侧大文件分块直传预签名 | `StorageTemplate` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadPartUrl(String, String, int, Duration)`，生成指定分片写入外链，前端并发 PUT 直传各分片后通知后端合并 | `LocalDriverChunkedPresignTest` / `S3DriverChunkedPresignTest` / `SampleStorageIntegrationTest` |
+| **客户端直传预签名** | 预签名安全直传写入外链凭据 | `StorageTemplate`<br>`PresignedUploadRequest` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadUrl(String, Duration)` / `getPresignedUploadUrl(PresignedUploadRequest)`，前端直接向存储端点发起 HTTP PUT 直传数据，完全绕过业务后端转发 | `LocalStorageUploadControllerTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
+| **分片直传预签名** | 端侧大文件分块直传预签名 | `StorageTemplate` | `ateng.boot.storage.local.upload-endpoint` | `getPresignedUploadPartUrl(String, String, int, Duration)`，生成指定分片写入外链，前端并发 PUT 直传各分片后通知后端合并 | `LocalStorageUploadControllerTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
 | **流式散列与秒传** | 原生零拷贝流式散列计算 | `StorageHashUtil`<br>`StorageTemplate`<br>`HashAlgorithm` | - | `StorageHashUtil.sha256Hex(InputStream)` / `md5Hex` / `sha1Hex` / `crc32`；`storageTemplate.calculateHash(String, HashAlgorithm)`，流指针零截断与极速秒传指纹比对 | `StorageHashUtilTest` / `SampleStorageIntegrationTest` |
 | **文件下载** | 流式/字节/落盘/响应下载 | `StorageTemplate` | - | `download(String)` (返回 `InputStream`) / `downloadBytes(String)` (返回 `byte[]`) / `download(String, File)` / `download(String, OutputStream)`，严格遵循 try-with-resources 资源确定性释放 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **文件存在与元数据** | 存在性与属性探测 | `StorageTemplate` | - | `exists(String)` / `getMetadata(String)` / `getUrl(String)`，统一轻量返回 `StorageObject` 强类型元数据 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **便捷载荷存取** | 字符串/字节/JSON便捷存取 | `StorageTemplate` | - | `uploadString(String, String)` / `downloadString(String)` / `uploadBytes(String, byte[])` / `downloadBytes(String)` / `uploadJson(String, Object)` / `downloadJson(String, Class<T>)`，免除样板代码 | `StorageTemplateConvenientTest` / `SampleStorageIntegrationTest` |
+| **便捷载荷存取** | 字符串/字节/JSON便捷存取 | `StorageTemplate` | - | `uploadString(String, String)` / `downloadString(String)` / `uploadBytes(String, byte[])` / `downloadBytes(String)` / `uploadJson(String, Object)` / `downloadJson(String, Class<T>)`，免除样板代码 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **对象复制与移动** | 跨路径秒传复制与原子移动 | `StorageTemplate` | - | `copy(String, String)` / `move(String, String)`，S3 服务端免流秒传，Local NIO 零拷贝转移并安全移除源文件 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **目录检索与分页** | 树状前缀列举与标准分页检索 | `StorageTemplate`<br>`StorageObject` | - | `list(String)` / `list(String, boolean)` / `listPage(String, PageQuery)` / `listPage(String, PageQuery, boolean)`，统一区分文件与虚拟目录项并自动过滤系统隐藏项 | `StorageTemplateListTest` / `SampleStorageIntegrationTest` |
+| **目录检索与分页** | 树状前缀列举与标准分页检索 | `StorageTemplate`<br>`StorageObject` | - | `list(String)` / `list(String, boolean)` / `listPage(String, PageQuery)` / `listPage(String, PageQuery, boolean)`，统一区分文件与虚拟目录项并自动过滤系统隐藏项 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
 | **打包归档** | 多文件纯流式 ZIP 打包响应 | `StorageTemplate` | - | `downloadAsZip(List<String>, OutputStream)` / `downloadAsZip(Map<String, String>, OutputStream)` / `downloadAsZip(List<String>, HttpServletResponse, String)`，内存受控、零临时文件与重名自动消解 | `StorageTemplateZipTest` / `SampleStorageIntegrationTest` |
 | **天然幂等删除** | 单文件/批量/目录幂等删除 | `StorageTemplate` | - | `delete(String)` / `deleteBatch(List<String>)` / `deleteDirectory(String)`，天然幂等语义，文件不存在亦平滑成功 | `StorageTemplateTest` / `SampleStorageIntegrationTest` |
-| **前缀批量删除** | 目录级与前缀级流式批量删除 | `StorageTemplate` | - | `deletePrefix(String)`，流式切片批量清除指定前缀下的所有对象，严厉熔断空前缀与根目录防误删 | `StorageTemplatePrefixDeleteTest` / `SampleStorageIntegrationTest` |
+| **前缀批量删除** | 目录级与前缀级流式批量删除 | `StorageTemplate` | - | `deletePrefix(String)`，流式切片批量清除指定前缀下的所有对象，严厉熔断空前缀与根目录防误删 | `StorageTemplateTest` / `LocalDriverTest` / `S3DriverTest` / `SampleStorageIntegrationTest` |
 | **碎片治理守护** | 孤儿分片碎片生命周期治理 | `StorageChunkCleaner` | `ateng.boot.storage.chunk-cleaner.enabled`<br>`ateng.boot.storage.chunk-cleaner.retention`<br>`ateng.boot.storage.chunk-cleaner.cron` | 定时物理扫描并安全回收超期滞留的 `.chunks` 孤儿碎片，彻底杜绝服务器磁盘与云端存储悬挂泄漏 | `StorageChunkCleanerTest` |
 | **存储健康探针** | Actuator 存储健康状态感知 | `StorageHealthIndicator` | `management.health.storage.enabled` | 深度集成 Spring Boot Actuator `/actuator/health`，实时探测 Local 磁盘读写或云端 S3 Bucket 可用性并输出诊断指标 | `StorageHealthIndicatorTest` / `SampleStorageIntegrationTest` |
 | **多源路由调度** | 动态命名存储源切换门面 | `StorageTemplate` | `ateng.boot.storage.primary`<br>`ateng.boot.storage.sources.*` | `use(String sourceName)`，返回绑定目标存储源的独立不可变操作门面，支持平铺单源与多源字典共存 | `StorageRoutingTest` / `SampleStorageIntegrationTest` |
@@ -234,7 +234,10 @@ HTTP POST `/api/storage/upload-with-metadata` 携带 `author=Ateng` 与 `env=sam
   }
 }
 ```
-后续通过 `storageTemplate.getMetadata("custom/meta.txt")` 即可完整反查用户元数据字典。
+> [!NOTE]
+> **自定义元数据持久化介质边界说明**：
+> - **S3 协议驱动**：用户自定义元数据原生映射为云端对象 Headers（`x-amz-meta-*`），由云端对象存储永久持久化，后续随时调用 `storageTemplate.getMetadata(...)` 均可完整反查用户元数据字典；
+> - **Local 磁盘驱动**：因本地标准文件系统缺乏统一且跨平台的扩展元数据属性，用户元数据随当前上传操作即时返回至 `StorageObject` 内存对象中；后续调用 `getMetadata(...)` 仅读取本地文件的基础物理属性。若业务层在 Local 模式下有持久化反查元数据诉求，建议由业务数据库集中纳管。
 
 ---
 
