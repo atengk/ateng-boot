@@ -43,6 +43,12 @@ public class ExcelReadResult<T> implements Serializable {
     private List<ExcelErrorRow> errors = new ArrayList<>();
 
     /**
+     * 是否触发了错误行数熔断（达到 maxErrorRows 上限后停止后续解析）
+     */
+    @Builder.Default
+    private boolean circuitBroken = false;
+
+    /**
      * 是否存在校验错误
      *
      * @return true 若存在至少一条错误

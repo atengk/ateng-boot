@@ -51,4 +51,10 @@ public class ExcelProperties {
      */
     @NestedConfigurationProperty
     private ExcelStreamingExportProperties streamingExport = new ExcelStreamingExportProperties();
+
+    /**
+     * Excel 导入校验与错误熔断配置
+     */
+    @NestedConfigurationProperty
+    private ExcelValidationProperties validation = new ExcelValidationProperties();
 }
