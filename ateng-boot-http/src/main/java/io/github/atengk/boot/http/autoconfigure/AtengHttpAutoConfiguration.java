@@ -1,6 +1,7 @@
 package io.github.atengk.boot.http.autoconfigure;
 
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
+import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.template.HttpTemplate;
@@ -46,17 +47,33 @@ public class AtengHttpAutoConfiguration {
     }
 
     /**
-     * 自动装配受管的 RestClient.Builder，绑定物理连接工厂并自动应用所有 RestClientCustomizer 定制器
+     * 注册 HTTP 异常响应统一转译处理器 Bean
+     * 拦截 4xx 与 5xx 状态码并统一转译为 HttpRemoteException
+     *
+     * @return HttpErrorHandler 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public HttpErrorHandler httpErrorHandler() {
+        return new HttpErrorHandler();
+    }
+
+    /**
+     * 自动装配受管的 RestClient.Builder，绑定物理连接工厂与统一异常处理器，并自动应用所有 RestClientCustomizer 定制器
      *
      * @param clientHttpRequestFactory 底层物理连接工厂
+     * @param httpErrorHandler HTTP 统一异常响应转译处理器
      * @param customizers RestClient 定制器提供者
      * @return RestClient.Builder
      */
     @Bean
     @ConditionalOnMissingBean
     public RestClient.Builder restClientBuilder(ClientHttpRequestFactory clientHttpRequestFactory,
-                                               ObjectProvider<RestClientCustomizer> customizers) {
-        RestClient.Builder builder = RestClient.builder().requestFactory(clientHttpRequestFactory);
+                                                HttpErrorHandler httpErrorHandler,
+                                                ObjectProvider<RestClientCustomizer> customizers) {
+        RestClient.Builder builder = RestClient.builder()
+                .requestFactory(clientHttpRequestFactory)
+                .defaultStatusHandler(httpErrorHandler);
         customizers.orderedStream().forEach(customizer -> customizer.customize(builder));
         return builder;
     }
