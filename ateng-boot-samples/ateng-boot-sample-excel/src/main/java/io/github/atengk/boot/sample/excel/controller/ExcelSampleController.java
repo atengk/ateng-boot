@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.excel.async.ExportTask;
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.service.ExcelSampleService;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import io.github.atengk.boot.web.annotation.WebLog;
@@ -172,5 +174,106 @@ public class ExcelSampleController {
             return Result.fail(CommonResultCode.NOT_FOUND, "未查询到目标导出任务: " + taskId);
         }
         return Result.success(task);
+    }
+
+    /**
+     * 流式游标分页导出海量数据端点
+     * 演示 StreamingPageExportTemplate 游标分页驱动流式写出，恒定低内存无 OOM 隐患
+     *
+     * @param response HTTP Servlet 响应对象
+     */
+    @GetMapping("/export-streaming-page")
+    @WebLog(value = "流式分页游标导出", printParams = false, printResult = false, printCostTime = true)
+    public void exportStreamingPage(HttpServletResponse response) {
+        excelSampleService.exportStreamingPage(response);
+    }
+
+    /**
+     * 下载已生成的异步导出文件端点
+     *
+     * @param taskId   任务 ID
+     * @param response HTTP Servlet 响应对象
+     * @throws IOException IO 异常
+     */
+    @GetMapping("/async-task/{taskId}/download")
+    @WebLog(value = "下载异步导出文件", printParams = true, printResult = false, printCostTime = true)
+    public void downloadAsyncTask(@PathVariable("taskId") String taskId, HttpServletResponse response) throws IOException {
+        excelSampleService.downloadAsyncTask(taskId, response);
+    }
+
+    /**
+     * 导入前置表头契约严格校验端点
+     * 演示 ExcelHeaderValidator 在解析数据行前拦截表头缺列、别名或顺序违规
+     *
+     * @param file     上传的 Excel 文件
+     * @param strategy 表头契约校验策略（STRICT / IGNORE_ORDER / LOOSE）
+     * @return 导入数据列表
+     * @throws IOException 读取流异常
+     */
+    @PostMapping("/import-header-check")
+    @WebLog(value = "导入前置表头契约校验", printParams = false, printResult = true, printCostTime = true)
+    public Result<List<UserExcelVO>> importWithHeaderCheck(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "strategy", defaultValue = "STRICT") HeaderValidationStrategy strategy) throws IOException {
+        try (InputStream in = file.getInputStream()) {
+            ExcelUtil.validateHeader(in, UserExcelVO.class, strategy);
+        }
+        try (InputStream in = file.getInputStream()) {
+            ExcelReadResult<UserExcelVO> result = excelSampleService.readAndValidate(in);
+            if (!result.isSuccess()) {
+                return Result.fail(CommonResultCode.BAD_REQUEST, "数据校验不通过，共 " + result.getErrorCount() + " 行错误");
+            }
+            return Result.success(result.getData());
+        }
+    }
+
+    /**
+     * 导入数据错误熔断防穿透端点
+     * 演示 BatchValidationListener 超过错误阈值时触发紧急熔断阻断解析，防御畸形文件 DOS 攻击
+     *
+     * @param file         上传的 Excel 文件
+     * @param maxErrorRows 最大允许错误行数阈值（默认 10）
+     * @return 校验结果
+     * @throws IOException 读取流异常
+     */
+    @PostMapping("/import-circuit-breaker")
+    @WebLog(value = "导入错误熔断防穿透", printParams = false, printResult = true, printCostTime = true)
+    public Result<List<UserExcelVO>> importWithCircuitBreaker(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "maxErrorRows", defaultValue = "10") int maxErrorRows) throws IOException {
+        try (InputStream in = file.getInputStream()) {
+            ExcelReadResult<UserExcelVO> result = excelSampleService.readWithCircuitBreaker(in, maxErrorRows);
+            if (!result.isSuccess()) {
+                String errorMsg = result.isCircuitBroken()
+                        ? "数据错误数超过熔断上限 [" + maxErrorRows + "] 行，已紧急熔断终止后续解析"
+                        : "数据校验不通过，共 " + result.getErrorCount() + " 行错误";
+                return Result.fail(CommonResultCode.BAD_REQUEST, errorMsg);
+            }
+            return Result.success(result.getData());
+        }
+    }
+
+    /**
+     * 安全防护与列锁防呆模板下载端点
+     * 演示公式注入安全防御（CWE-1236）、@ExcelFormulaAllowed 白名单豁免与 @ExcelColumnLock 列级锁定保护
+     *
+     * @param response HTTP Servlet 响应对象
+     */
+    @GetMapping("/template-security")
+    @WebLog(value = "下载安全防呆模板", printParams = false, printResult = false, printCostTime = true)
+    public void downloadSecurityTemplate(HttpServletResponse response) {
+        excelSampleService.downloadSecurityTemplate(response);
+    }
+
+    /**
+     * 多语言国际化表头流式导出端点
+     * 演示结合 Spring MessageSource 与请求上下文 Locale 动态转译表头占位符 {i18n:xxx}
+     *
+     * @param response HTTP Servlet 响应对象
+     */
+    @GetMapping("/export-i18n")
+    @WebLog(value = "多语言国际化表头导出", printParams = false, printResult = false, printCostTime = true)
+    public void exportI18nUsers(HttpServletResponse response) {
+        excelSampleService.exportI18nUsers(response);
     }
 }

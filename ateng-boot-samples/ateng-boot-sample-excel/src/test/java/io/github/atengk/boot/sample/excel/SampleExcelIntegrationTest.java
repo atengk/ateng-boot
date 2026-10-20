@@ -7,8 +7,11 @@ import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
+import io.github.atengk.boot.sample.excel.vo.I18nUserExcelVO;
+import io.github.atengk.boot.sample.excel.vo.SecurityUserExcelVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -521,5 +525,235 @@ class SampleExcelIntegrationTest {
 
         assertThat(batchCounter.get()).isEqualTo(5);
         assertThat(totalCounter.get()).isEqualTo(totalRows);
+    }
+
+    @Test
+    @DisplayName("测试流式游标分页导出端点：验证基于游标驱动写出、无缝跨页拉取与文件生成")
+    void testExportStreamingPageViaController() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/api/excel/export-streaming-page"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        String disposition = mvcResult.getResponse().getHeader("Content-Disposition");
+        assertThat(URLDecoder.decode(disposition, StandardCharsets.UTF_8)).contains("流式游标用户导出.xlsx");
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // 3 页，每页 100 条，总计 300 条数据 + 1 行表头 = 301 行
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(301);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
+            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("用户姓名");
+
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("游标用户_1");
+            Row row300 = sheet.getRow(300);
+            assertThat(row300.getCell(1).getStringCellValue()).isEqualTo("游标用户_300");
+        }
+
+        saveTempExcel("sample-streaming-cursor.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("测试异步导出任务完整闭环：提交任务、轮询状态并直接下载文件验证有效性")
+    void testAsyncExportAndDownloadWorkflow() throws Exception {
+        MvcResult submitResult = mockMvc.perform(post("/api/excel/async-export")
+                        .param("taskName", "用户下载闭环测试"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+
+        String body = submitResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode root = objectMapper.readTree(body);
+        String taskId = root.get("data").asText();
+        assertThat(taskId).isNotBlank();
+
+        // 等待异步任务执行完成
+        long deadline = System.currentTimeMillis() + 8000;
+        while (System.currentTimeMillis() < deadline) {
+            MvcResult queryResult = mockMvc.perform(get("/api/excel/async-task/" + taskId))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            JsonNode queryRoot = objectMapper.readTree(queryResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+            String status = queryRoot.get("data").get("status").asText();
+            if ("SUCCESS".equals(status)) {
+                break;
+            }
+            Thread.sleep(100);
+        }
+
+        // 下载文件端点调用
+        MvcResult downloadResult = mockMvc.perform(get("/api/excel/async-task/" + taskId + "/download"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] fileBytes = downloadResult.getResponse().getContentAsByteArray();
+        assertThat(fileBytes).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(fileBytes))) {
+            assertThat(workbook.getNumberOfSheets()).isGreaterThanOrEqualTo(1);
+            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 行表头 + 3 条 Mock 用户
+        }
+    }
+
+    @Test
+    @DisplayName("测试导入前置表头契约严格校验：合法表头放行、畸形表头被精确拦截阻断")
+    void testImportHeaderCheckViaController() throws Exception {
+        // 1. 构造合法表头 Excel
+        byte[] validExcel;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet("Sheet1");
+            Row head = sheet.createRow(0);
+            head.createCell(0).setCellValue("用户ID");
+            head.createCell(1).setCellValue("用户姓名");
+            head.createCell(2).setCellValue("联系手机");
+            head.createCell(3).setCellValue("电子邮箱");
+            head.createCell(4).setCellValue("用户性别");
+            head.createCell(5).setCellValue("所属部门");
+            head.createCell(6).setCellValue("账号状态");
+
+            Row row1 = sheet.createRow(1);
+            row1.createCell(0).setCellValue(1001L);
+            row1.createCell(1).setCellValue("赵六");
+            row1.createCell(2).setCellValue("13812345678");
+            row1.createCell(3).setCellValue("zhaoliu@example.com");
+            row1.createCell(4).setCellValue("男");
+            row1.createCell(5).setCellValue("研发部");
+            row1.createCell(6).setCellValue("正常");
+            wb.write(out);
+            validExcel = out.toByteArray();
+        }
+
+        MockMultipartFile validFile = new MockMultipartFile("file", "valid.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", validExcel);
+        mockMvc.perform(multipart("/api/excel/import-header-check").file(validFile).param("strategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 2. 构造缺失必填列的畸形表头 Excel
+        byte[] invalidExcel;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet("Sheet1");
+            Row head = sheet.createRow(0);
+            head.createCell(0).setCellValue("用户ID");
+            head.createCell(1).setCellValue("错误列名"); // 非法列名
+            wb.write(out);
+            invalidExcel = out.toByteArray();
+        }
+
+        MockMultipartFile invalidFile = new MockMultipartFile("file", "invalid.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", invalidExcel);
+        mockMvc.perform(multipart("/api/excel/import-header-check").file(invalidFile).param("strategy", "STRICT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("表头")));
+    }
+
+    @Test
+    @DisplayName("测试导入错误熔断防穿透：超过指定错误阈值时立即熔断阻断")
+    void testImportCircuitBreakerViaController() throws Exception {
+        byte[] invalidExcel;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = wb.createSheet("Sheet1");
+            Row head = sheet.createRow(0);
+            head.createCell(0).setCellValue("用户ID");
+            head.createCell(1).setCellValue("用户姓名");
+            head.createCell(2).setCellValue("联系手机");
+            head.createCell(3).setCellValue("电子邮箱");
+            head.createCell(4).setCellValue("用户性别");
+            head.createCell(5).setCellValue("所属部门");
+            head.createCell(6).setCellValue("账号状态");
+
+            // 写入 20 行完全不合法数据（姓名为空，手机格式错误）
+            for (int i = 1; i <= 20; i++) {
+                Row row = sheet.createRow(i);
+                row.createCell(0).setCellValue((long) i);
+                row.createCell(1).setCellValue(""); // 触发 @NotBlank
+                row.createCell(2).setCellValue("110"); // 手机格式不合法
+                row.createCell(3).setCellValue("invalid-email");
+            }
+            wb.write(out);
+            invalidExcel = out.toByteArray();
+        }
+
+        MockMultipartFile invalidFile = new MockMultipartFile("file", "circuit-breaker.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", invalidExcel);
+        mockMvc.perform(multipart("/api/excel/import-circuit-breaker").file(invalidFile).param("maxErrorRows", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("熔断")));
+    }
+
+    @Test
+    @DisplayName("测试安全防呆模板：验证公式注入单引号转译、@ExcelFormulaAllowed 白名单豁免与 @ExcelColumnLock 只读保护")
+    void testDownloadSecurityTemplateViaController() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(get("/api/excel/template-security"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("Content-Disposition"))
+                .andReturn();
+
+        byte[] content = mvcResult.getResponse().getContentAsByteArray();
+        assertThat(content).isNotEmpty();
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Row row1 = sheet.getRow(1);
+
+            // 索引 1: 员工姓名原为 "=cmd|'/C calc'!A0"，写出时应前置单引号转译为普通文本防 CWE-1236 攻击
+            String safeEmployeeName = row1.getCell(1).getStringCellValue();
+            assertThat(safeEmployeeName).isEqualTo("'=cmd|'/C calc'!A0");
+
+            // 索引 2: 薪资公式原为 "=SUM(A1:B1)"，标注了 @ExcelFormulaAllowed，保留真公式
+            String allowedFormula = row1.getCell(2).getStringCellValue();
+            assertThat(allowedFormula).isEqualTo("=SUM(A1:B1)");
+
+            // 索引 0: 工号被 @ExcelColumnLock 锁定
+            CellStyle lockStyle = row1.getCell(0).getCellStyle();
+            assertThat(lockStyle.getLocked()).isTrue();
+
+            // 索引 3: 职级被 @ExcelColumnLock 锁定
+            CellStyle gradeStyle = row1.getCell(3).getCellStyle();
+            assertThat(gradeStyle.getLocked()).isTrue();
+        }
+
+        saveTempExcel("sample-security-template.xlsx", content);
+    }
+
+    @Test
+    @DisplayName("测试多语言国际化表头导出端点：验证基于 Accept-Language 动态转译中英文表头")
+    void testExportI18nViaController() throws Exception {
+        // 1. 中文请求头导出
+        MvcResult zhResult = mockMvc.perform(get("/api/excel/export-i18n").header("Accept-Language", "zh-CN"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] zhBytes = zhResult.getResponse().getContentAsByteArray();
+        try (Workbook wbZh = WorkbookFactory.create(new ByteArrayInputStream(zhBytes))) {
+            Sheet sheet = wbZh.getSheetAt(0);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户标识");
+            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("用户名称");
+            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("电子邮箱");
+            assertThat(head.getCell(3).getStringCellValue()).isEqualTo("默认部门");
+        }
+
+        // 2. 英文请求头导出
+        MvcResult enResult = mockMvc.perform(get("/api/excel/export-i18n").header("Accept-Language", "en-US"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        byte[] enBytes = enResult.getResponse().getContentAsByteArray();
+        try (Workbook wbEn = WorkbookFactory.create(new ByteArrayInputStream(enBytes))) {
+            Sheet sheet = wbEn.getSheetAt(0);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("User ID");
+            assertThat(head.getCell(1).getStringCellValue()).isEqualTo("User Name");
+            assertThat(head.getCell(2).getStringCellValue()).isEqualTo("Email Address");
+            assertThat(head.getCell(3).getStringCellValue()).isEqualTo("默认部门");
+        }
     }
 }

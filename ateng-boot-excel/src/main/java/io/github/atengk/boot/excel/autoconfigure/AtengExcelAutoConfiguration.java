@@ -18,6 +18,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 /**
@@ -61,16 +62,20 @@ public class AtengExcelAutoConfiguration {
         return new LocalFileSystemStorage(properties);
     }
 
-    @Bean
-    @ConditionalOnClass(StringRedisTemplate.class)
-    @ConditionalOnBean(StringRedisTemplate.class)
-    @ConditionalOnMissingBean(AsyncExportTaskService.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public AsyncExportTaskService redisAsyncExportTaskService(
-            ExcelProperties properties,
-            StringRedisTemplate redisTemplate,
-            ExportFileStorage fileStorage) {
-        return new RedisAsyncExportTaskService(properties, redisTemplate, fileStorage);
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    public static class RedisAsyncExportConfiguration {
+
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(AsyncExportTaskService.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AsyncExportTaskService redisAsyncExportTaskService(
+                ExcelProperties properties,
+                StringRedisTemplate redisTemplate,
+                ExportFileStorage fileStorage) {
+            return new RedisAsyncExportTaskService(properties, redisTemplate, fileStorage);
+        }
     }
 
     @Bean

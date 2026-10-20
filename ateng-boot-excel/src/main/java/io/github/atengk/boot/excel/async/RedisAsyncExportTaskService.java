@@ -161,6 +161,10 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
                     saveTask(task);
                     log.info("分布式异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
                 } catch (Throwable ex) {
+                    if (task.getStatus() == ExportTaskStatus.CANCELLED || Thread.currentThread().isInterrupted() || ex instanceof InterruptedException) {
+                        log.info("分布式异步导出任务已被取消或中断 [{}]", taskId);
+                        return;
+                    }
                     ExportTask latestTask = getTask(taskId);
                     if (latestTask != null && latestTask.getStatus() == ExportTaskStatus.CANCELLED) {
                         return;
@@ -236,14 +240,14 @@ public class RedisAsyncExportTaskService implements AsyncExportTaskService, Disp
             return false;
         }
 
+        task.setStatus(ExportTaskStatus.CANCELLED);
+        task.setFinishTime(LocalDateTime.now());
+        saveTask(task);
+
         Future<?> future = localFutureMap.remove(taskId);
         if (future != null) {
             future.cancel(true);
         }
-
-        task.setStatus(ExportTaskStatus.CANCELLED);
-        task.setFinishTime(LocalDateTime.now());
-        saveTask(task);
 
         if (task.getStorageKey() != null) {
             fileStorage.delete(taskId, task.getStorageKey());

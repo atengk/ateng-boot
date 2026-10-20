@@ -126,6 +126,18 @@ public class BatchValidationListener<T> extends AnalysisEventListener<T> {
     }
 
     /**
+     * 构造支持注入 Validator、指定 failFast 模式与错误熔断阈值的监听器
+     *
+     * @param targetClass  读取映射的目标实体 Class（不可为空）
+     * @param validator    自定义 Validator 校验器
+     * @param failFast     是否快速失败
+     * @param maxErrorRows 错误行数熔断阈值
+     */
+    public BatchValidationListener(Class<T> targetClass, Validator validator, boolean failFast, int maxErrorRows) {
+        this(targetClass, DEFAULT_BATCH_SIZE, failFast, maxErrorRows, HeaderValidationStrategy.DISABLED, null, null, validator);
+    }
+
+    /**
      * 构造分批校验监听器
      *
      * @param targetClass     读取映射的目标实体 Class（不可为空）

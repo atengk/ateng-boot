@@ -12,18 +12,25 @@ import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
 import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
+import io.github.atengk.boot.sample.excel.vo.I18nUserExcelVO;
+import io.github.atengk.boot.sample.excel.vo.SecurityUserExcelVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Validator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -229,5 +236,105 @@ public class ExcelSampleService {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "异步导出任务中心未就绪");
         }
         return asyncExportTaskService.getTask(taskId);
+    }
+
+    /**
+     * 流式分页与游标导出海量数据
+     * 演示 StreamingPageExportTemplate 游标驱动流式写出
+     *
+     * @param response HTTP 响应
+     */
+    public void exportStreamingPage(HttpServletResponse response) {
+        ExcelUtil.exportStreamingByCursor(
+                response,
+                "流式游标用户导出.xlsx",
+                UserExcelVO.class,
+                0L,
+                100,
+                (cursorId, size) -> {
+                    if (cursorId >= 300) {
+                        return List.of();
+                    }
+                    List<UserExcelVO> list = new ArrayList<>(size);
+                    for (int i = 1; i <= size; i++) {
+                        long currentId = cursorId + i;
+                        list.add(new UserExcelVO(
+                                currentId,
+                                "游标用户_" + currentId,
+                                "1380000" + String.format("%04d", currentId % 10000),
+                                "user" + currentId + "@example.com",
+                                (currentId % 2 == 0) ? SampleGenderEnum.MALE : SampleGenderEnum.FEMALE,
+                                "研发部",
+                                "0"
+                        ));
+                    }
+                    return list;
+                },
+                UserExcelVO::getUserId
+        );
+    }
+
+    /**
+     * 下载已完成的异步导出任务文件
+     *
+     * @param taskId   任务 ID
+     * @param response HTTP 响应
+     * @throws IOException IO 异常
+     */
+    public void downloadAsyncTask(String taskId, HttpServletResponse response) throws IOException {
+        ExportTask task = getAsyncTask(taskId);
+        if (task == null || task.getFilePath() == null) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "未找到已完成的异步导出文件: " + taskId);
+        }
+        File file = new File(task.getFilePath());
+        if (!file.exists()) {
+            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), "目标导出文件物理不存在: " + task.getFilePath());
+        }
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        String encodedName = URLEncoder.encode(task.getTaskName() + ".xlsx", StandardCharsets.UTF_8).replace("+", "%20");
+        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + encodedName + "\"; filename*=utf-8''" + encodedName);
+        try (InputStream in = new FileInputStream(file); OutputStream out = response.getOutputStream()) {
+            in.transferTo(out);
+        }
+    }
+
+    /**
+     * 带有错误熔断阈值的流式解析校验
+     *
+     * @param inputStream 输入流
+     * @param maxErrorRows 最大错误熔断行数
+     * @return 校验聚合结果
+     */
+    public ExcelReadResult<UserExcelVO> readWithCircuitBreaker(InputStream inputStream, int maxErrorRows) {
+        BatchValidationListener<UserExcelVO> listener = new BatchValidationListener<>(UserExcelVO.class, validator, false, maxErrorRows);
+        ExcelUtil.read(inputStream, UserExcelVO.class, listener);
+        return listener.toResult();
+    }
+
+    /**
+     * 导出带有公式注入安全防御与列级防呆锁定的模板
+     *
+     * @param response HTTP 响应
+     */
+    public void downloadSecurityTemplate(HttpServletResponse response) {
+        List<SecurityUserExcelVO> list = List.of(
+                new SecurityUserExcelVO(9001L, "=cmd|'/C calc'!A0", "=SUM(A1:B1)", "P7"),
+                new SecurityUserExcelVO(9002L, "+8613800000000", "=AVERAGE(C1:C10)", "P8")
+        );
+        ExcelUtil.export(response, "安全防呆员工名单.xlsx", SecurityUserExcelVO.class, list);
+    }
+
+    /**
+     * 流式导出多语言国际化表头用户数据
+     *
+     * @param response HTTP 响应
+     */
+    public void exportI18nUsers(HttpServletResponse response) {
+        List<I18nUserExcelVO> list = List.of(
+                new I18nUserExcelVO(101L, "Alice", "alice@example.com", "研发部"),
+                new I18nUserExcelVO(102L, "Bob", "bob@example.com", "市场部")
+        );
+        ExcelUtil.export(response, "多语言用户列表.xlsx", I18nUserExcelVO.class, list);
     }
 }

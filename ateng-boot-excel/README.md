@@ -24,7 +24,13 @@
 | **结构排版** | 单元格纵向合并 | `@ExcelMerge` / `MergeCellWriteHandler` | - | `@ExcelMerge(value, dependParent)`：对连续相同的数据单元格自动纵向合并，支持依赖前序关联列联动合并 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
 | **复杂报表** | 模板数据填充 | `ExcelUtil.fill` | - | `fill(out, templateIn, data, fillConfig)`：基于预设 `.xlsx` 模板，支持单对象占位符 `{name}` 与列表集合循环 `{.list}` 复合填充 | `ExcelTemplateTest` |
 | **动态导出** | 无实体动态流式导出 | `ExcelUtil.exportDynamic` | - | `exportDynamic(out, headList, dataList)`：支持动态表头与 `List<Map>` / `List<List<?>>` 二维数据直接流式写出 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
-| **异步中心** | 大文件异步导出任务中心 | `AsyncExportTaskService` / `InMemoryAsyncExportTaskService` | `ateng.boot.excel.async-export.enabled`<br>`ateng.boot.excel.async-export.retention-period`<br>`ateng.boot.excel.async-export.core-pool-size`<br>`ateng.boot.excel.async-export.queue-capacity` | `submit(taskName, executor)` / `getTask(taskId)` / `cancel(taskId)`：受管线程池后台写出、四维上下文快照透传、进度感知、防重复队列拦截与过期文件定时自动清理 | `AsyncExportTaskServiceTest`<br>`SampleExcelIntegrationTest` |
+| **异步中心** | 大文件异步导出任务中心 | `AsyncExportTaskService` / `InMemoryAsyncExportTaskService` / `RedisAsyncExportTaskService` / `ExportFileStorage` | `ateng.boot.excel.async-export.enabled`<br>`ateng.boot.excel.async-export.retention-period`<br>`ateng.boot.excel.async-export.lease-timeout`<br>`ateng.boot.excel.async-export.core-pool-size`<br>`ateng.boot.excel.async-export.queue-capacity`<br>`ateng.boot.excel.async-export.redis.enabled`<br>`ateng.boot.excel.async-export.redis.key-prefix`<br>`ateng.boot.excel.async-export.redis.ttl` | `submit(taskName, executor)` / `getTask(taskId)` / `cancel(taskId)`：受管线程池后台写出、四维上下文快照透传、进度感知、内存/Redis 集群双模驱动、租约防宕机悬挂与过期文件定时自动清理 | `AsyncExportTaskServiceTest`<br>`RedisAsyncExportTaskServiceTest`<br>`SampleExcelIntegrationTest` |
+| **流式分页** | 海量数据游标分页与跨表轮转导出 | `StreamingPageExportTemplate` / `PageDataReader<T>` / `StreamingExportOptions` | `ateng.boot.excel.streaming-export.max-rows-per-sheet`<br>`ateng.boot.excel.streaming-export.default-page-size` | `export(out, dataClass, pageReader, options)`：游标分页流式消费拉取，单 Sheet 达到物理行上限自动开辟新工作表续写，突破百万行 OOM 瓶颈 | `StreamingPageExportTemplateTest`<br>`SampleExcelIntegrationTest` |
+| **契约校验** | 导入预读首行表头校验 | `ExcelHeaderValidator` / `HeaderValidationStrategy` / `ExcelHeaderValidationException` | `ateng.boot.excel.validation.header-strategy` | `validate(inputStream, modelClass, allowExtraColumns)` / `validate(inputStream, modelClass, strategy)`：解析前轻量预读首行比对 `@ExcelProperty` 契约，顺序、名称与缺失列不符立即 Fail-Fast 阻断 | `ExcelHeaderValidatorTest`<br>`SampleExcelIntegrationTest` |
+| **错误熔断** | 行级校验错误阈值自动熔断 | `BatchValidationListener` / `ExcelValidationException` | `ateng.boot.excel.validation.max-error-rows` | `BatchValidationListener(clazz, validator, failFast, maxErrorRows)`：累计校验错误行达到阈值时主动中断解析，防止全量解析垃圾数据耗尽系统 CPU 与内存 | `ExcelValidationTest`<br>`SampleExcelIntegrationTest` |
+| **注入防护** | CSV / Excel 公式注入主动防御 | `ExcelSecurityUtil` / `FormulaInjectionWriteHandler` / `@ExcelFormulaAllowed` | `ateng.boot.excel.security.formula-protection` | 自动拦截 `=,+,-,@,\t,\r` 前缀文本并转义为安全单引号 `'`，彻底防御 DDE 远程执行命令高危漏洞；支持 `@ExcelFormulaAllowed` 字段级白名单豁免 | `ExcelFormulaDefenseTest`<br>`SampleExcelIntegrationTest` |
+| **列锁防呆** | 模板列级锁定与保护 | `@ExcelColumnLock` / `ColumnLockWriteHandler` / `ExcelUtil.protectSheet` | - | `@ExcelColumnLock(locked = true)`：配合工作表只读保护密码，精准锁定固定列/序号列防篡改，其余可录入列保持编辑权限 | `ExcelColumnLockTest`<br>`SampleExcelIntegrationTest` |
+| **多语言表头** | 国际化动态表头解析 | `I18nHeadWriteHandler` | `ateng.boot.excel.i18n.enabled` | 拦截 `@ExcelProperty("{i18n:key}")` 占位符，结合 Spring `MessageSource` 与请求 `LocaleContextHolder.getLocale()` 动态转译中英文多语言表头 | `I18nHeadWriteHandlerTest`<br>`SampleExcelIntegrationTest` |
 
 ---
 
@@ -859,9 +865,219 @@ try (ExcelBuilder builder = ExcelUtil.builder(response, "年度经营决算")) {
 
 ---
 
-## 15. 配置属性参考
+## 15. 海量数据游标分页与跨 Sheet 自动轮转导出 (`StreamingPageExportTemplate`)
 
-在 `application.yml` 中按需定制全局行为、样式与异步导出中心参数：
+### 场景痛点
+单次查询数十万乃至百万行数据进行导出时，若一次性将全量数据查出载入 List 集合，会瞬间撑爆 JVM 堆内存导致服务 OOM；此外，单个 Excel 工作表（Sheet）存在 1,048,576 行物理极限，超出阈值时传统写入会直接报错崩溃。
+
+### 核心代码范式
+`StreamingPageExportTemplate` 抽象了基于游标的分页拉取流水线，由开发者提供 `PageDataReader<T>` 分页回调函数；引擎每读取一页立即流式写出到底层流并清空该页内存对象引用；当单表写入行数达到配置的上限（默认 1,000,000 行）时，自动新建下一个 Sheet（如 `用户数据_1`、`用户数据_2`）平滑续写：
+
+```java
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.excel.template.StreamingExportOptions;
+import io.github.atengk.boot.excel.template.StreamingPageExportTemplate;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.io.IOException;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/excel")
+public class ExcelSampleController {
+
+    @Autowired
+    private StreamingPageExportTemplate streamingPageExportTemplate;
+
+    @GetMapping("/export-streaming-page")
+    public void exportStreamingPage(
+            HttpServletResponse response,
+            @RequestParam(defaultValue = "1000") int pageSize,
+            @RequestParam(defaultValue = "10000") int maxRowsPerSheet) throws IOException {
+        
+        ExcelUtil.configureResponse(response, "海量用户游标分页导出");
+        
+        StreamingExportOptions options = StreamingExportOptions.builder()
+                .pageSize(pageSize)
+                .maxRowsPerSheet(maxRowsPerSheet)
+                .sheetNamePrefix("用户明细")
+                .build();
+
+        streamingPageExportTemplate.export(
+                response.getOutputStream(),
+                UserExcelVO.class,
+                (pageIndex, size) -> fetchUserPageFromDatabase(pageIndex, size),
+                options
+        );
+    }
+}
+```
+
+---
+
+## 16. 导入前置表头契约校验与行校验错误熔断 (`ExcelHeaderValidator` & Circuit Breaker)
+
+### 场景痛点
+- **错版模板全量穿透**：用户上传了格式错乱、列名不匹配或缺少核心列的错误模板，传统方式往往一行行解析并抛出大量无意义转换异常，严重浪费服务端 CPU 算力；
+- **错误行穿透与内存耗尽**：当用户误传了数万行脏数据时，若逐行积累错误集，会导致错题集对象内存急剧膨胀，最终引爆堆内存。
+
+### 核心代码范式
+#### 1. 前置轻量表头校验 (`ExcelHeaderValidator`)
+在解析全量数据前，预读首行表头比对 `@ExcelProperty` 契约，支持 `STRICT`（严格匹配列名与顺序）与 `LOOSE`（宽松全包含匹配）策略，不匹配立即抛出 `ExcelHeaderValidationException` 快速失败：
+
+```java
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
+import io.github.atengk.boot.excel.util.ExcelHeaderValidator;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.springframework.web.multipart.MultipartFile;
+
+// 1. 预读并校验表头，失败立即抛出 ExcelHeaderValidationException
+ExcelHeaderValidator.validate(file.getInputStream(), UserExcelVO.class, HeaderValidationStrategy.STRICT);
+
+// 2. 表头契约合法后，执行后续正常读取与业务入库
+List<UserExcelVO> userList = ExcelUtil.read(file.getInputStream(), UserExcelVO.class);
+```
+
+#### 2. 错误行数阈值紧急熔断 (`BatchValidationListener` 熔断机制)
+通过在监听器中配置 `maxErrorRows`（如 500 行），当累计校验失败错误行数达到该阈值时触发熔断，立即中断解析并抛出 `ExcelValidationException`：
+
+```java
+import io.github.atengk.boot.excel.listener.BatchValidationListener;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.validation.Validator;
+
+BatchValidationListener<UserExcelVO> listener = new BatchValidationListener<>(
+        UserExcelVO.class,
+        validator,
+        false, // 是否单行失败即 failFast
+        500    // maxErrorRows: 错误行数达到 500 行时紧急熔断终止
+);
+ExcelUtil.readWithListener(file.getInputStream(), UserExcelVO.class, listener);
+```
+
+---
+
+## 17. CSV/Excel 公式注入主动防御与列级只读锁定 (`@ExcelFormulaAllowed` & `@ExcelColumnLock`)
+
+### 场景痛点
+- **DDE 公式注入漏洞 (CSV/Excel Formula Injection)**：用户在输入框恶意输入 `=cmd|'/C calc'!A0`、`@SUM(...)` 等公式前缀，被系统导出至 Excel 后，管理员打开该文件即可被触发远程命令执行或数据泄露；
+- **模板固定列被恶意篡改**：在分发给业务员填报的模版中，系统预生成的“用户ID”或“业务编号”若被随意修改，将导致回传导入时持久层外键关联错乱。
+
+### 核心代码范式
+#### 1. 公式注入主动防御与 `@ExcelFormulaAllowed` 白名单
+Starter 默认开启公式安全防护，自动拦截以 `=, +, -, @, \t, \r` 开头的字符串文本并前置单引号 `'`（Excel 仅按纯文本渲染，不执行任何 DDE 公式计算）；如确有字段需要合法导出 Excel 计算公式（如自动小计、求和），可显式挂载 `@ExcelFormulaAllowed` 白名单豁免：
+
+```java
+import io.github.atengk.boot.excel.annotation.ExcelColumnLock;
+import io.github.atengk.boot.excel.annotation.ExcelFormulaAllowed;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class SecurityUserExcelVO {
+
+    @ExcelProperty("用户编号")
+    @ExcelColumnLock(locked = true)
+    private Long id;
+
+    @ExcelProperty("用户姓名")
+    // 若输入内容为 "=cmd|' /C calc'!A0"，导出时自动安全转义为 "'=cmd|' /C calc'!A0"
+    private String username;
+
+    @ExcelProperty("结算计算公式")
+    @ExcelFormulaAllowed // 显式豁免公式防御，允许合法公式计算（如 =SUM(C2:C10)）
+    private String formula;
+
+    @ExcelProperty("系统只读备注")
+    @ExcelColumnLock(locked = true)
+    private String remark;
+}
+```
+
+#### 2. 列级锁定与防呆填报模板生成
+结合 `@ExcelColumnLock(locked = true)` 与工作表密码保护，精准锁定指定列禁止修改：
+
+```java
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import jakarta.servlet.http.HttpServletResponse;
+
+@GetMapping("/template-security")
+public void downloadSecurityTemplate(HttpServletResponse response) {
+    List<SecurityUserExcelVO> templateData = List.of(
+            new SecurityUserExcelVO(1L, "=cmd|' /C calc'!A0", "=SUM(10,20)", "系统只读项")
+    );
+    // 配置保护密码，未标记 @ExcelColumnLock 的列保持解锁可编辑，锁定列只读
+    ExcelUtil.exportWithWatermark(
+            response,
+            "防呆录入模板",
+            templateData,
+            SecurityUserExcelVO.class,
+            "防呆模板",
+            "lockSecret888"
+    );
+}
+```
+
+---
+
+## 18. 国际化多语言动态表头 (`I18nHeadWriteHandler`)
+
+### 场景痛点
+跨国或多语言企业应用中，同一份报表需要根据当前登录用户的前端语言偏好（中文、英文等）动态渲染表头文字，而 `@ExcelProperty` 默认只支持静态字符串硬编码。
+
+### 核心代码范式
+在 VO 对象的 `@ExcelProperty` 中声明 `{i18n:key}` 格式占位符，框架自动结合 Spring `MessageSource` 与当前线程请求的 `LocaleContextHolder.getLocale()`（支持由 Accept-Language、URL 参数或用户会话提供）动态转译表头：
+
+```java
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import lombok.Data;
+
+@Data
+public class I18nUserExcelVO {
+
+    @ExcelProperty("{i18n:user.id}")
+    private Long id;
+
+    @ExcelProperty("{i18n:user.name}")
+    private String name;
+
+    @ExcelProperty("{i18n:user.email}")
+    private String email;
+}
+```
+
+配套国际化资源文件配置（`messages.properties` / `messages_en_US.properties`）：
+```properties
+# messages_zh_CN.properties
+user.id=用户编号
+user.name=用户姓名
+user.email=电子邮箱
+
+# messages_en_US.properties
+user.id=User ID
+user.name=User Name
+user.email=Email Address
+```
+
+```java
+@GetMapping("/export-i18n")
+public void exportI18nUsers(HttpServletResponse response) {
+    // 自动根据当前请求线程的 Locale 动态解析表头占位符
+    ExcelUtil.export(response, "多语言用户清单", userList, I18nUserExcelVO.class);
+}
+```
+
+---
+
+## 19. 配置属性参考
+
+在 `application.yml` 中按需定制全局行为、样式、异步任务中心、流式分页与安全策略：
 
 ```yaml
 ateng:
@@ -875,6 +1091,7 @@ ateng:
       max-sync-rows: 100000
       # 大文件磁盘溢出临时目录（留空时使用系统默认临时目录）
       temp-dir: /data/tmp/fesod
+      
       # 异步导出任务中心配置
       async-export:
         # 是否启用异步导出中心（默认 true）
@@ -887,8 +1104,43 @@ ateng:
         max-pool-size: 8
         # 缓冲队列容量（默认 200）
         queue-capacity: 200
-        # 产物物理文件默认保留过期时长（默认 24h，支持 24h、1d 等标准 Duration 格式，亦兼容 retention-hours）
+        # 产物物理文件默认保留过期时长（默认 24h，支持 24h、1d 等标准 Duration 格式）
         retention-period: 24h
+        # 任务执行租约超时时间（默认 30m，执行中定期自动续期，节点宕机超期后查询自动原子标记为 FAILED）
+        lease-timeout: 30m
+        # Redis 分布式任务中心配置
+        redis:
+          # 是否启用基于 Redis 的分布式异步导出任务中心（默认 true，当应用引入 Redis 时自适应激活）
+          enabled: true
+          # 任务在 Redis 中的键前缀（默认 "ateng:excel:async-task:"）
+          key-prefix: "ateng:excel:async-task:"
+          # 任务元数据在 Redis 中的保留与有效时长（默认 24h）
+          ttl: 24h
+
+      # 海量数据流式分页导出配置
+      streaming-export:
+        # 单个工作表最大允许写入行数上限（超过时自动换 Sheet 分割，默认 1,000,000 行）
+        max-rows-per-sheet: 1000000
+        # 流式分页拉取默认步长大小（默认 1000 行/页）
+        default-page-size: 1000
+
+      # 导入数据校验与错误熔断配置
+      validation:
+        # 导入表头契约校验策略（STRICT: 严格匹配列名与顺序; LOOSE: 宽松全包含匹配; DISABLED: 禁用表头校验；默认 LOOSE）
+        header-strategy: LOOSE
+        # 错误行数熔断阈值（默认 500 行；当单次导入校验失败错误行数达到该阈值时触发熔断终止解析，避免 OOM）
+        max-error-rows: 500
+
+      # 安全防护与公式注入防御配置
+      security:
+        # 是否开启公式注入安全防御（默认开启，导出时对以 =, +, -, @, \t, \r 开头的字符串前置单引号）
+        formula-protection: true
+
+      # 国际化多语言表头转译配置
+      i18n:
+        # 是否开启多语言国际化表头动态转译（默认开启）
+        enabled: true
+
       # 样式与主题配置
       style:
         # 是否启用全局样式拦截增强（默认 true；设置为 false 时完全关闭样式与列宽增强，零开销）
@@ -911,11 +1163,11 @@ ateng:
 
 ---
 
-## 16. 生产扩展与高阶定制 (Customization & Extensibility)
+## 20. 生产扩展与高阶定制 (Customization & Extensibility)
 
 `ateng-boot-excel` 遵循模块解耦与 SPI 扩展原则，支持企业级核心能力的平滑自定义接管：
 
-### 16.1 自定义动态数据字典提供者 (`DictProvider` SPI)
+### 20.1 自定义动态数据字典提供者 (`DictProvider` SPI)
 当系统使用自定义数据库表、Redis 或远程 RPC 服务维护数据字典时，只需向 Spring 容器注册 `DictProvider` Bean 即可无缝接管 `@ExcelDict` 翻译：
 
 ```java
@@ -937,49 +1189,66 @@ public class RemoteDictProvider implements DictProvider {
 }
 ```
 
-### 16.2 自定义异步导出任务中心 (`AsyncExportTaskService` 接管)
-当企业需要分布式任务调度（如持久化至 MySQL/PostgreSQL 或上传至 MinIO/OSS 对象存储）时，仅需声明同类型 Bean 即可覆盖默认的内存实现：
+### 20.2 自定义异步导出文件存储适配器 (`ExportFileStorage` SPI)
+当企业集群需要将导出的 Excel 文件持久化上传至云端对象存储（如 MinIO、阿里云 OSS、腾讯云 COS）时，仅需实现 `ExportFileStorage` 并注册为 Spring Bean，即可平滑无缝替换本地磁盘存储：
 
 ```java
-@Service
-public class OssDistributedAsyncExportService implements AsyncExportTaskService {
+@Component
+public class OssExportFileStorage implements ExportFileStorage {
+
+    @Autowired
+    private OssClient ossClient;
 
     @Override
-    public String submit(String taskName, ExportTaskExecutor executor) {
-        // 自定义提交至分布式任务表或 MQ，执行流式上传至 OSS
-        return "custom_task_id";
+    public OutputStream openOutputStream(String taskId, String fileName) throws IOException {
+        // 返回流式分片上传至 OSS 的输出流
+        return ossClient.createMultipartUploadStream(taskId, fileName);
     }
 
     @Override
-    public ExportTask getTask(String taskId) {
-        return queryTaskFromDb(taskId);
+    public InputStream openInputStream(String taskId, String storageKey) throws IOException {
+        // 从 OSS 流式下载产物文件
+        return ossClient.getObject(storageKey);
     }
 
     @Override
-    public boolean cancel(String taskId) {
-        return cancelTaskInCluster(taskId);
-    }
-
-    @Override
-    public void cleanExpiredTasks(Duration retention) {
-        // 清理 OSS 与数据库过期归档记录
+    public boolean delete(String taskId, String storageKey) {
+        return ossClient.deleteObject(storageKey);
     }
 }
 ```
 
+### 20.3 分布式集群异步导出任务中心 (`RedisAsyncExportTaskService`)
+当应用部署为多实例多节点微服务集群时，只需引入 `spring-boot-starter-data-redis`，框架将自动通过 `RedisAsyncExportConfiguration` 激活 `RedisAsyncExportTaskService`：
+- **状态机集群可见**：任务状态保存在 Redis 哈希结构中，任意节点提交的任务，均可在任意节点查询进度；
+- **宕机租约防御**：配合 `lease-timeout`（默认 30m），若某个工作节点在执行任务期间宕机，超时后查询状态将自动原子标记为 `FAILED`，避免任务永久处于 `RUNNING` 假死状态。
+
 ---
 
-## 17. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 21. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
-### 17.1 流式事件驱动与内存防爆 (OOM 防御)
+### 21.1 流式事件驱动与内存防爆 (OOM 防御)
 - **逐行事件流读取**：底层基于 Apache Fesod 事件模型，逐行解析 XML 标记并不在堆中滞留全表模型；调用 `readBatch` 时每累积至 `batchSize`（默认 1000 行）即回调消费并清空内部缓冲区，千万级行数导入亦可维持平稳的常数级堆内存开销。
 - **同步全量读取安全阈值**：对于一次性返回 List 的同步接口 `ExcelUtil.read` 与 `readWithValidation`，内置 `maxSyncRows`（默认 100,000 行）快速失败防线；超过阈值立即抛出 `BusinessException` 阻断，杜绝恶意或误传超大文件导致 JVM FullGC 与 OOM。
 
-### 17.2 内存真明文与脱敏拦截原理
+### 21.2 单 Sheet 百万行物理极限与自动分表轮转
+- **Excel 物理极限**：Microsoft Excel 单个 Sheet 规范物理上限为 1,048,576 行；
+- **自适应分表**：`StreamingPageExportTemplate` 内部维护了行数累加游标，当写入行数逼近 `maxRowsPerSheet`（默认 1,000,000 行）时，自动触发跨 Sheet 轮转并生成新工作表，有效防御由于超出 Excel 物理容量限制导致的写出崩溃。
+
+### 21.3 CSV/Excel 公式注入 (DDE) 原理与防御边界
+- **漏洞成因**：Microsoft Excel 与 WPS 等电子表格软件在打开含有 `=`, `+`, `-`, `@`, `\t`, `\r` 前缀的单元格时，会将其默认解释为公式或 DDE 外部命令（例如 `=cmd|' /C calc'!A0`）；
+- **沙箱隔离**：框架在写出文本单元格时，主动探测特殊前缀并在文本前补齐单引号 `'`（如 `'=cmd...`）。这使电子表格软件强制将该单元格渲染为纯文本展示，彻底阻断公式解析与命令执行；
+- **白名单机制**：对需要合法生成公式计算的单元格，开发者可使用 `@ExcelFormulaAllowed` 显式开辟白名单通道。
+
+### 21.4 导入契约防卫与错误熔断非功能边界
+- **预读表头防穿透**：通过 `ExcelHeaderValidator` 在零数据反序列化成本下轻量扫描第一行，一旦列缺失或列名不匹配立即 Fail-Fast，拦截不合规的错版模板；
+- **熔断防耗尽**：`BatchValidationListener` 的 `maxErrorRows`（默认 500 行）机制保证了即使客户端上传了数万行完全非法的错误数据，系统也会在达到阈值后立即熔断终止读取并抛出异常，杜绝无休止的校验计算与错题集对象膨胀。
+
+### 21.5 内存真明文与脱敏拦截原理
 - **切面拦截写出**：脱敏统一收敛在 `SensitiveCellWriteHandler` 的 `afterCellDataConverted` 阶段，仅修改输出至 Excel 单元格的字面量文本（`cellData.setStringValue(maskedValue)`）；
 - **内存真明文不变量**：内存中的实体 Bean、Service 业务逻辑与上下文保持 100% 原始真实明文，彻底根除因在业务层打星号导致掩码脏数据写回持久层的致命隐患。
 
-### 17.3 确定性资源释放与临时文件物理清理
+### 21.6 确定性资源释放与临时文件物理清理
 - **流与连接绝对清理**：所有导出、填充与反馈工具方法严格在 `try-with-resources` 或 `finally` 块中关闭 `Workbook` 与流对象；
 - **异步半成品补偿清理**：异步导出任务在发生异常中断或调用 `cancel(taskId)` 时，自动物理删除磁盘上已生成的半成品临时文件；同时由守护线程定期根据 `retentionPeriod` 物理回收历史过期文件，防止磁盘物理空间耗尽。
 

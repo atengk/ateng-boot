@@ -193,13 +193,13 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
             return false;
         }
 
+        task.setStatus(ExportTaskStatus.CANCELLED);
+        task.setFinishTime(LocalDateTime.now());
+
         Future<?> future = futureMap.remove(taskId);
         if (future != null) {
             future.cancel(true);
         }
-
-        task.setStatus(ExportTaskStatus.CANCELLED);
-        task.setFinishTime(LocalDateTime.now());
 
         if (task.getStorageKey() != null) {
             fileStorage.delete(taskId, task.getStorageKey());
