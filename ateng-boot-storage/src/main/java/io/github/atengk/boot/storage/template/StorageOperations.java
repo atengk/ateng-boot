@@ -2,10 +2,12 @@ package io.github.atengk.boot.storage.template;
 
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.storage.model.HashAlgorithm;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
+import io.github.atengk.boot.storage.util.StorageHashUtil;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -441,5 +443,26 @@ public interface StorageOperations {
      */
     default int cleanExpiredChunkSessions() {
         return cleanExpiredChunkSessions(Duration.ofHours(24));
+    }
+
+    /**
+     * 计算已存储对象的散列哈希值（流式零拷贝计算）
+     *
+     * @param path      目标存储对象相对路径
+     * @param algorithm 散列算法
+     * @return 标准小写十六进制字符串
+     */
+    default String calculateHash(String path, HashAlgorithm algorithm) {
+        return StorageHashUtil.hashHex(getResource(path), algorithm);
+    }
+
+    /**
+     * 计算已存储对象的 SHA-256 散列哈希值（秒传唯一标识标配，流式零拷贝计算）
+     *
+     * @param path 目标存储对象相对路径
+     * @return 64 位小写十六进制 SHA-256 字符串
+     */
+    default String calculateHash(String path) {
+        return calculateHash(path, HashAlgorithm.SHA256);
     }
 }

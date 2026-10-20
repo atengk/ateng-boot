@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.driver.LocalDriver;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.HashAlgorithm;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -293,6 +294,27 @@ class StorageTemplateTest {
         assertEquals("PUT", presigned.getHttpMethod());
         assertTrue(presigned.getUrl().contains("uploadId=" + uploadId));
         assertTrue(presigned.getUrl().contains("chunkIndex=1"));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 门面流式计算对象散列并支持秒传")
+    void testCalculateHashAndFastUploadSupport() {
+        String data = "123456789";
+        template.uploadString("fast-upload/data.txt", data);
+
+        // 默认计算 SHA-256
+        String sha256 = template.calculateHash("fast-upload/data.txt");
+        assertEquals("15e2b0d3c33891ebb0f1ef609ec419420c20e320ce94c65fbc8c3312448eb225", sha256);
+
+        // 指定算法 MD5
+        String md5 = template.calculateHash("fast-upload/data.txt", HashAlgorithm.MD5);
+        assertEquals("25f9e794323b453885f5181f1b624d0b", md5);
+
+        // 联动 copy 支撑秒传（同一哈希文件极速复制至用户业务路径，无需重复传输与落盘）
+        boolean fastUploaded = template.copy("fast-upload/data.txt", "user1001/files/sample.txt");
+        assertTrue(fastUploaded);
+        assertTrue(template.exists("user1001/files/sample.txt"));
+        assertEquals(sha256, template.calculateHash("user1001/files/sample.txt"));
     }
 
     public static class TestUser {
