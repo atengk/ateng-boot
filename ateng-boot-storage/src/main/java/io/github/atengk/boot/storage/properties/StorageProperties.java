@@ -55,4 +55,10 @@ public class StorageProperties {
      */
     @NestedConfigurationProperty
     private StorageGuardProperties guard = new StorageGuardProperties();
+
+    /**
+     * 孤儿分片碎片生命周期治理与后台清理配置
+     */
+    @NestedConfigurationProperty
+    private ChunkCleanerProperties chunkCleaner = new ChunkCleanerProperties();
 }

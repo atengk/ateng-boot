@@ -17,8 +17,11 @@ import org.springframework.mock.web.MockMultipartFile;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -115,6 +118,52 @@ class StorageTemplateTest {
 
         assertTrue(template.deleteBatch(List.of("del/2.txt", "del/3-not-exist.txt")));
         assertFalse(template.exists("del/2.txt"));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 执行前缀批量删除与目录级联删除")
+    void testDeletePrefixAndDirectory() {
+        template.uploadString("cleanup/2026/01.log", "log1");
+        template.uploadString("cleanup/2026/02.log", "log2");
+        template.uploadString("cleanup/2026/sub/03.log", "log3");
+        template.uploadString("cleanup/keep.txt", "keep");
+
+        // 1. 前缀删除 cleanup/2026/
+        boolean deleted = template.deletePrefix("cleanup/2026/");
+        assertTrue(deleted);
+        assertFalse(template.exists("cleanup/2026/01.log"));
+        assertFalse(template.exists("cleanup/2026/02.log"));
+        assertFalse(template.exists("cleanup/2026/sub/03.log"));
+        assertTrue(template.exists("cleanup/keep.txt"));
+
+        // 2. 目录删除 cleanup
+        boolean deletedDir = template.deleteDirectory("cleanup");
+        assertTrue(deletedDir);
+        assertFalse(template.exists("cleanup/keep.txt"));
+
+        // 3. 防误删熔断：根路径或空路径抛出异常
+        assertThrows(StorageException.class, () -> template.deletePrefix("/"));
+        assertThrows(StorageException.class, () -> template.deleteDirectory(""));
+    }
+
+    @Test
+    @DisplayName("通过 StorageTemplate 执行孤儿分片会话超时清理")
+    void testCleanExpiredChunkSessions() throws Exception {
+        String uploadId = template.initiateChunkedUpload("chunk-orphan/sample.bin");
+        Path chunkDir = tempDir.resolve(".chunks").resolve(uploadId);
+        assertTrue(Files.exists(chunkDir));
+
+        // 模拟 48 小时前修改的超时分片
+        Files.setLastModifiedTime(chunkDir, FileTime.from(Instant.now().minus(Duration.ofHours(48))));
+
+        // 清理超过 24 小时的孤儿分片
+        int cleaned = template.cleanExpiredChunkSessions(Duration.ofHours(24));
+        assertEquals(1, cleaned);
+        assertFalse(Files.exists(chunkDir));
+
+        // 再次清理已无碎片
+        int secondClean = template.cleanExpiredChunkSessions(Duration.ofHours(24));
+        assertEquals(0, secondClean);
     }
 
     @Test

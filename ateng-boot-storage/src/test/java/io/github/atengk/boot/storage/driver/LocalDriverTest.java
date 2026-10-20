@@ -13,7 +13,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -316,5 +318,65 @@ class LocalDriverTest {
         StorageException ex = assertThrows(StorageException.class, () ->
                 driver.getPresignedUploadPartUrl(path, uploadId, 0, Duration.ofMinutes(15)));
         assertEquals(StorageResultCode.STORAGE_CHUNK_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("LocalDriver 目录与前缀级流式批量删除成功")
+    void testDeletePrefixAndDirectorySuccess() {
+        driver.upload("logs/2026/app.log", new ByteArrayInputStream("app".getBytes()), "text/plain", 3);
+        driver.upload("logs/2026/error.log", new ByteArrayInputStream("err".getBytes()), "text/plain", 3);
+        driver.upload("logs/audit.log", new ByteArrayInputStream("audit".getBytes()), "text/plain", 5);
+        driver.upload("other/file.txt", new ByteArrayInputStream("other".getBytes()), "text/plain", 5);
+
+        // 1. 删除特定子目录 logs/2026
+        assertTrue(driver.deleteDirectory("logs/2026"));
+        assertFalse(driver.exists("logs/2026/app.log"));
+        assertFalse(driver.exists("logs/2026/error.log"));
+        assertTrue(driver.exists("logs/audit.log"));
+        assertTrue(driver.exists("other/file.txt"));
+
+        // 2. 删除前缀 logs
+        assertTrue(driver.deletePrefix("logs"));
+        assertFalse(driver.exists("logs/audit.log"));
+        assertTrue(driver.exists("other/file.txt"));
+    }
+
+    @Test
+    @DisplayName("LocalDriver 批量删除防误删熔断保护：根路径、通配符等立即阻断")
+    void testDeletePrefixMeltDownProtection() {
+        assertThrows(StorageException.class, () -> driver.deletePrefix(null));
+        assertThrows(StorageException.class, () -> driver.deletePrefix(""));
+        assertThrows(StorageException.class, () -> driver.deletePrefix("/"));
+        assertThrows(StorageException.class, () -> driver.deletePrefix("///"));
+        assertThrows(StorageException.class, () -> driver.deletePrefix("."));
+        assertThrows(StorageException.class, () -> driver.deletePrefix("*"));
+        assertThrows(StorageException.class, () -> driver.deletePrefix("logs/*"));
+        assertThrows(StorageException.class, () -> driver.deleteDirectory("/"));
+    }
+
+    @Test
+    @DisplayName("LocalDriver 扫描并清理超时孤儿分片碎片，保留未过期分片")
+    void testCleanExpiredChunkSessions() throws Exception {
+        String upload1 = driver.initiateChunkedUpload("big/file1.zip");
+        String upload2 = driver.initiateChunkedUpload("big/file2.zip");
+
+        Path chunkDir1 = tempDir.resolve(".chunks").resolve(upload1);
+        Path chunkDir2 = tempDir.resolve(".chunks").resolve(upload2);
+        assertTrue(Files.exists(chunkDir1));
+        assertTrue(Files.exists(chunkDir2));
+
+        // 模拟 upload1 为 48 小时前修改（超时孤儿分片）
+        Instant twoDaysAgo = Instant.now().minus(Duration.ofHours(48));
+        Files.setLastModifiedTime(chunkDir1, FileTime.from(twoDaysAgo));
+
+        // 模拟 upload2 为 1 小时前修改（仍在活跃期）
+        Instant oneHourAgo = Instant.now().minus(Duration.ofHours(1));
+        Files.setLastModifiedTime(chunkDir2, FileTime.from(oneHourAgo));
+
+        // 清理超过 24 小时的孤儿分片
+        int cleaned = driver.cleanExpiredChunkSessions(Duration.ofHours(24));
+        assertEquals(1, cleaned);
+        assertFalse(Files.exists(chunkDir1));
+        assertTrue(Files.exists(chunkDir2));
     }
 }

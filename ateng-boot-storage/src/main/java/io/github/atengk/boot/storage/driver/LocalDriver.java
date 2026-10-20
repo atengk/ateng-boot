@@ -263,6 +263,38 @@ public class LocalDriver implements StorageDriver {
     }
 
     @Override
+    public boolean deletePrefix(String prefix) {
+        String cleanPrefix = StorageSecurityUtil.validatePrefixForDeletion(prefix);
+        Path target = resolveAndVerify(cleanPrefix);
+        try {
+            if (Files.exists(target)) {
+                deleteRecursively(target);
+            }
+            Path parent = target.getParent();
+            if (parent != null && Files.exists(parent) && Files.isDirectory(parent)) {
+                String prefixName = target.getFileName().toString();
+                try (Stream<Path> stream = Files.list(parent)) {
+                    stream.filter(p -> p.getFileName().toString().startsWith(prefixName))
+                            .forEach(this::deleteRecursively);
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.DELETE_FAILED, "批量删除本地存储对象失败: " + prefix, e);
+        }
+    }
+
+    @Override
+    public boolean deleteDirectory(String dirPath) {
+        String cleanDir = StorageSecurityUtil.validatePrefixForDeletion(dirPath);
+        Path target = resolveAndVerify(cleanDir);
+        if (Files.exists(target) && Files.isDirectory(target)) {
+            deleteRecursively(target);
+        }
+        return true;
+    }
+
+    @Override
     public boolean copy(String sourcePath, String targetPath) {
         if (sourcePath == null || sourcePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "源文件路径不能为空");
@@ -696,5 +728,48 @@ public class LocalDriver implements StorageDriver {
             return false;
         }
         return name.startsWith(".") || "desktop.ini".equalsIgnoreCase(name) || "thumbs.db".equalsIgnoreCase(name);
+    }
+
+    @Override
+    public int cleanExpiredChunkSessions(Duration maxAge) {
+        Duration effectiveMaxAge = (maxAge != null && !maxAge.isNegative() && !maxAge.isZero())
+                ? maxAge
+                : Duration.ofHours(24);
+        Path chunksBaseDir = this.basePath.resolve(CHUNKS_DIR_NAME);
+        if (!Files.exists(chunksBaseDir) || !Files.isDirectory(chunksBaseDir)) {
+            return 0;
+        }
+
+        Instant threshold = Instant.now().minus(effectiveMaxAge);
+        int cleanedCount = 0;
+        try (Stream<Path> stream = Files.list(chunksBaseDir)) {
+            List<Path> sessionDirs = stream.filter(Files::isDirectory).toList();
+            for (Path sessionDir : sessionDirs) {
+                Instant lastModified = getLastModifiedTimeSafely(sessionDir);
+                if (lastModified != null && lastModified.isBefore(threshold)) {
+                    deleteRecursively(sessionDir);
+                    cleanedCount++;
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        return cleanedCount;
+    }
+
+    private Instant getLastModifiedTimeSafely(Path sessionDir) {
+        try {
+            Instant maxTime = Files.getLastModifiedTime(sessionDir).toInstant();
+            try (Stream<Path> files = Files.list(sessionDir)) {
+                for (Path p : files.toList()) {
+                    Instant t = Files.getLastModifiedTime(p).toInstant();
+                    if (t.isAfter(maxTime)) {
+                        maxTime = t;
+                    }
+                }
+            }
+            return maxTime;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

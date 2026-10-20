@@ -685,4 +685,80 @@ class S3DriverTest {
         assertEquals(remoteKey, captor.getValue().key());
         assertEquals(uploadId, captor.getValue().uploadId());
     }
+
+    @Test
+    @DisplayName("S3 按前缀流式批量删除对象成功")
+    void testS3DeletePrefixSuccess() {
+        S3Object obj1 = S3Object.builder().key("temp/logs/app.log").build();
+        S3Object obj2 = S3Object.builder().key("temp/logs/error.log").build();
+
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj1, obj2))
+                .isTruncated(false)
+                .build();
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+
+        assertTrue(s3Driver.deletePrefix("temp/logs"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 删除目录及其子对象成功")
+    void testS3DeleteDirectorySuccess() {
+        S3Object obj = S3Object.builder().key("archive/2026/data.csv").build();
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj))
+                .isTruncated(false)
+                .build();
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+
+        assertTrue(s3Driver.deleteDirectory("archive/2026"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 批量删除防误删熔断保护：根路径、通配符等立即阻断")
+    void testS3DeletePrefixMeltDownProtection() {
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix(null));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix(""));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("/"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("///"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("*"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("logs/*"));
+        assertThrows(StorageException.class, () -> s3Driver.deleteDirectory("/"));
+    }
+
+    @Test
+    @DisplayName("S3 扫描并清理超时未完成的分片上传会话，保留活跃会话")
+    void testS3CleanExpiredChunkSessions() {
+        Instant twoDaysAgo = Instant.now().minus(Duration.ofHours(48));
+        Instant oneHourAgo = Instant.now().minus(Duration.ofHours(1));
+
+        MultipartUpload u1 = MultipartUpload.builder()
+                .uploadId("expired-upload-id-1")
+                .key("temp/big1.zip")
+                .initiated(twoDaysAgo)
+                .build();
+
+        MultipartUpload u2 = MultipartUpload.builder()
+                .uploadId("active-upload-id-2")
+                .key("temp/big2.zip")
+                .initiated(oneHourAgo)
+                .build();
+
+        ListMultipartUploadsResponse resp = ListMultipartUploadsResponse.builder()
+                .uploads(List.of(u1, u2))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listMultipartUploads(any(ListMultipartUploadsRequest.class))).thenReturn(resp);
+
+        int cleaned = s3Driver.cleanExpiredChunkSessions(Duration.ofHours(24));
+        assertEquals(1, cleaned);
+
+        ArgumentCaptor<AbortMultipartUploadRequest> captor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        verify(s3Client).abortMultipartUpload(captor.capture());
+        assertEquals("expired-upload-id-1", captor.getValue().uploadId());
+        assertEquals("temp/big1.zip", captor.getValue().key());
+    }
 }

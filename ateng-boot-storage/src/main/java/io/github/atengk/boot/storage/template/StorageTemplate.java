@@ -265,6 +265,24 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     }
 
     @Override
+    public boolean deletePrefix(String prefix) {
+        boolean result = getDriver().deletePrefix(prefix);
+        if (result && prefix != null && !prefix.isBlank()) {
+            publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), prefix.trim()));
+        }
+        return result;
+    }
+
+    @Override
+    public boolean deleteDirectory(String dirPath) {
+        boolean result = getDriver().deleteDirectory(dirPath);
+        if (result && dirPath != null && !dirPath.isBlank()) {
+            publishEventSafely(new StorageDeletedEvent(this, getCurrentSourceKey(), dirPath.trim()));
+        }
+        return result;
+    }
+
+    @Override
     public boolean copy(String sourcePath, String targetPath) {
         boolean result = getDriver().copy(sourcePath, targetPath);
         if (result) {
@@ -605,5 +623,10 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     @Override
     public void abortChunkedUpload(String uploadId) {
         getDriver().abortChunkedUpload(uploadId);
+    }
+
+    @Override
+    public int cleanExpiredChunkSessions(Duration maxAge) {
+        return getDriver().cleanExpiredChunkSessions(maxAge);
     }
 }

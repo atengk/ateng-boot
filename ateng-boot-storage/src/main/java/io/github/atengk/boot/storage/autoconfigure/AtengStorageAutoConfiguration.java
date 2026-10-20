@@ -143,6 +143,25 @@ public class AtengStorageAutoConfiguration {
     }
 
     /**
+     * 孤儿分片碎片生命周期治理与定时清理守护组件 Bean 装配
+     * 针对客户端中断上传留存的孤儿碎片，默认开启受管后台定时扫描
+     *
+     * @param properties 存储配置属性
+     * @param driverFactoryProvider 存储驱动工厂提供者
+     * @param defaultDriverProvider 默认存储驱动提供者
+     * @return StorageChunkCleaner 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(io.github.atengk.boot.storage.cleaner.StorageChunkCleaner.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.storage.chunk-cleaner", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public io.github.atengk.boot.storage.cleaner.StorageChunkCleaner storageChunkCleaner(
+            StorageProperties properties,
+            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+            ObjectProvider<StorageDriver> defaultDriverProvider) {
+        return new io.github.atengk.boot.storage.cleaner.StorageChunkCleaner(properties, driverFactoryProvider, defaultDriverProvider);
+    }
+
+    /**
      * S3 独立客户端静态嵌套配置类
      * 仅当类路径存在 S3Client 且配置了 type=s3 时激活，隔离类加载与方法内省防御
      */

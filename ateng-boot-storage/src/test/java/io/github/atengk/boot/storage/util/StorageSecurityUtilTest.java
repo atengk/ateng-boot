@@ -134,4 +134,35 @@ class StorageSecurityUtilTest {
         assertEquals(64, key2.length());
         assertNotEquals(key1, key2);
     }
+
+    @Test
+    @DisplayName("批量删除前缀安全校验与防清库熔断测试")
+    void testValidatePrefixForDeletion() {
+        // 1. 合法前缀清洗
+        assertEquals("temp/logs", StorageSecurityUtil.validatePrefixForDeletion("temp/logs"));
+        assertEquals("temp/logs", StorageSecurityUtil.validatePrefixForDeletion("/temp/logs/"));
+        assertEquals("temp/logs", StorageSecurityUtil.validatePrefixForDeletion("temp//logs"));
+        assertEquals("temp/logs", StorageSecurityUtil.validatePrefixForDeletion("temp\\logs"));
+        assertEquals("single", StorageSecurityUtil.validatePrefixForDeletion("single"));
+        assertEquals("single", StorageSecurityUtil.validatePrefixForDeletion("/single/"));
+
+        // 2. 空、空白拦截
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion(null));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion(""));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("   "));
+
+        // 3. 根路径防清库熔断拦截
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("/"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("///"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("."));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("/."));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("./"));
+
+        // 4. 通配符与危险逃逸拦截
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("*"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("temp/*"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("temp?log"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("../root"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("temp/../../etc"));
+    }
 }

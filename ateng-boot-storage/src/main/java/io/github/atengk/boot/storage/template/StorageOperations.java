@@ -114,6 +114,26 @@ public interface StorageOperations {
     boolean deleteBatch(List<String> paths);
 
     /**
+     * 删除指定路径前缀下的所有存储对象（天然幂等，流式分批删除）
+     * 具备严格防误删熔断防卫：对空前缀、根路径 /、通配符 * 强行阻断抛出 StorageException(INVALID_PATH)
+     *
+     * @param prefix 目标路径前缀（如 "temp/logs"）
+     * @return true 批量删除成功或原本无匹配对象
+     */
+    boolean deletePrefix(String prefix);
+
+    /**
+     * 删除指定目录及其内部包含的所有存储对象（天然幂等）
+     * 具备严格防误删熔断防卫：对空路径、根路径 /、通配符 * 强行阻断抛出 StorageException(INVALID_PATH)
+     *
+     * @param dirPath 目标目录路径（如 "temp/logs" 或 "temp/logs/"）
+     * @return true 目录及其子对象删除成功或原本不存在
+     */
+    default boolean deleteDirectory(String dirPath) {
+        return deletePrefix(dirPath);
+    }
+
+    /**
      * 跨路径复制存储对象
      *
      * @param sourcePath 源对象相对路径
@@ -405,4 +425,21 @@ public interface StorageOperations {
      * @param uploadId 分片上传会话标识
      */
     void abortChunkedUpload(String uploadId);
+
+    /**
+     * 扫描并清理超时未完成的孤儿分片碎片会话（运维与生命周期治理）
+     *
+     * @param maxAge 分片碎片最大存活保留寿命（超过此时长的未决分片被判定为孤儿碎片进行物理清理）
+     * @return 成功清理释放的孤儿分片会话数量
+     */
+    int cleanExpiredChunkSessions(Duration maxAge);
+
+    /**
+     * 扫描并清理超时未完成的孤儿分片碎片会话（默认超时寿命 24 小时）
+     *
+     * @return 成功清理释放的孤儿分片会话数量
+     */
+    default int cleanExpiredChunkSessions() {
+        return cleanExpiredChunkSessions(Duration.ofHours(24));
+    }
 }

@@ -212,4 +212,63 @@ public final class StorageSecurityUtil {
         SECURE_RANDOM.nextBytes(randomBytes);
         return HexFormat.of().formatHex(randomBytes);
     }
+
+    /**
+     * 校验并清洗用于批量删除的前缀（防清库与误删熔断保护）
+     * 1. 严格拦截 null、空白字符串；
+     * 2. 严格拦截包含通配符 *、? 或空字符；
+     * 3. 拦截根路径 /、仅包含点号 .、.. 等危险逃逸路径，防止清空整盘或清空整个 Bucket；
+     * 4. 返回清洗归一化后的干净前缀。
+     *
+     * @param rawPrefix 原始输入前缀
+     * @return 经过严格安全审查的干净前缀
+     * @throws StorageException 若前缀不合规或触发熔断保护
+     */
+    public static String validatePrefixForDeletion(String rawPrefix) {
+        if (rawPrefix == null || rawPrefix.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀不能为空");
+        }
+        if (rawPrefix.contains("\0")) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀包含非法空字符");
+        }
+        if (rawPrefix.contains("*") || rawPrefix.contains("?")) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀不能包含通配符: " + rawPrefix);
+        }
+
+        String path = rawPrefix.trim().replace('\\', '/');
+        if (path.contains(":")) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀不能包含驱动器盘符标识: " + rawPrefix);
+        }
+
+        while (path.startsWith("/")) {
+            path = path.substring(1);
+        }
+        while (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        path = path.trim();
+
+        if (path.isEmpty() || ".".equals(path) || "..".equals(path)) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "禁止使用根路径作为批量删除前缀，触发防清库熔断保护: " + rawPrefix);
+        }
+
+        String[] segments = path.split("/");
+        Deque<String> stack = new ArrayDeque<>();
+        for (String segment : segments) {
+            String trimmed = segment.trim();
+            if (trimmed.isEmpty() || ".".equals(trimmed)) {
+                continue;
+            }
+            if ("..".equals(trimmed)) {
+                throw new StorageException(StorageResultCode.INVALID_PATH, "批量删除前缀包含路径遍历逃逸风险: " + rawPrefix);
+            }
+            stack.addLast(trimmed);
+        }
+
+        if (stack.isEmpty()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "规范化后的批量删除前缀为空，触发防清库熔断保护");
+        }
+
+        return String.join("/", stack);
+    }
 }

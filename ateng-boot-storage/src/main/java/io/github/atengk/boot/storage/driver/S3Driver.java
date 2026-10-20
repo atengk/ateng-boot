@@ -382,6 +382,65 @@ public class S3Driver implements StorageDriver {
     }
 
     @Override
+    public boolean deletePrefix(String prefix) {
+        String cleanPrefix = StorageSecurityUtil.validatePrefixForDeletion(prefix);
+        try {
+            String continuationToken = null;
+            List<ObjectIdentifier> batch = new ArrayList<>(1000);
+            do {
+                ListObjectsV2Request listReq = ListObjectsV2Request.builder()
+                        .bucket(this.bucket)
+                        .prefix(cleanPrefix)
+                        .continuationToken(continuationToken)
+                        .build();
+                ListObjectsV2Response listResp = this.s3Client.listObjectsV2(listReq);
+                if (listResp.hasContents()) {
+                    for (S3Object obj : listResp.contents()) {
+                        batch.add(ObjectIdentifier.builder().key(obj.key()).build());
+                        if (batch.size() >= 1000) {
+                            flushDeleteBatch(batch);
+                            batch.clear();
+                        }
+                    }
+                }
+                continuationToken = listResp.isTruncated() ? listResp.nextContinuationToken() : null;
+            } while (continuationToken != null);
+
+            if (!batch.isEmpty()) {
+                flushDeleteBatch(batch);
+                batch.clear();
+            }
+            return true;
+        } catch (StorageException e) {
+            throw e;
+        } catch (Exception e) {
+            throw translateException(e, prefix, "按前缀批量删除 S3 对象失败");
+        }
+    }
+
+    @Override
+    public boolean deleteDirectory(String dirPath) {
+        String cleanDir = StorageSecurityUtil.validatePrefixForDeletion(dirPath);
+        String dirPrefix = cleanDir.endsWith("/") ? cleanDir : cleanDir + "/";
+        // 1. 批量删除该目录及其下全部对象
+        deletePrefix(dirPrefix);
+        // 2. 天然幂等删除可能的目录占位符自身
+        delete(cleanDir);
+        return true;
+    }
+
+    private void flushDeleteBatch(List<ObjectIdentifier> identifiers) {
+        if (identifiers == null || identifiers.isEmpty()) {
+            return;
+        }
+        DeleteObjectsRequest deleteRequest = DeleteObjectsRequest.builder()
+                .bucket(this.bucket)
+                .delete(Delete.builder().objects(identifiers).quiet(true).build())
+                .build();
+        this.s3Client.deleteObjects(deleteRequest);
+    }
+
+    @Override
     public boolean copy(String sourcePath, String targetPath) {
         if (sourcePath == null || sourcePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "源文件路径不能为空");
@@ -945,5 +1004,52 @@ public class S3Driver implements StorageDriver {
             }
         }
         return false;
+    }
+
+    @Override
+    public int cleanExpiredChunkSessions(Duration maxAge) {
+        Duration effectiveMaxAge = (maxAge != null && !maxAge.isNegative() && !maxAge.isZero())
+                ? maxAge
+                : Duration.ofHours(24);
+        Instant threshold = Instant.now().minus(effectiveMaxAge);
+        int cleanedCount = 0;
+        try {
+            String keyMarker = null;
+            String uploadIdMarker = null;
+            do {
+                ListMultipartUploadsRequest.Builder builder = ListMultipartUploadsRequest.builder()
+                        .bucket(this.bucket);
+                if (keyMarker != null) {
+                    builder.keyMarker(keyMarker);
+                }
+                if (uploadIdMarker != null) {
+                    builder.uploadIdMarker(uploadIdMarker);
+                }
+                ListMultipartUploadsResponse resp = this.s3Client.listMultipartUploads(builder.build());
+                if (resp.hasUploads()) {
+                    for (MultipartUpload u : resp.uploads()) {
+                        if (u.initiated() != null && u.initiated().isBefore(threshold)) {
+                            try {
+                                this.s3Client.abortMultipartUpload(AbortMultipartUploadRequest.builder()
+                                        .bucket(this.bucket)
+                                        .key(u.key())
+                                        .uploadId(u.uploadId())
+                                        .build());
+                                cleanedCount++;
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                }
+                if (resp.isTruncated()) {
+                    keyMarker = resp.nextKeyMarker();
+                    uploadIdMarker = resp.nextUploadIdMarker();
+                } else {
+                    keyMarker = null;
+                }
+            } while (keyMarker != null);
+        } catch (Exception ignored) {
+        }
+        return cleanedCount;
     }
 }
