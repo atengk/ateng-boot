@@ -238,6 +238,7 @@ public class AtengSaTokenAutoConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
     public static class RedisDaoConfiguration {
 
         /**
@@ -427,7 +428,16 @@ public class AtengSaTokenAutoConfiguration {
                 SaTokenClusterRedisMessageSubscriber subscriber,
                 SaTokenProperties properties,
                 ObjectProvider<org.springframework.core.task.TaskExecutor> taskExecutorProvider) {
-            RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+            RedisMessageListenerContainer container = new RedisMessageListenerContainer() {
+                @Override
+                public void start() {
+                    try {
+                        super.start();
+                    } catch (Throwable ex) {
+                        log.warn("Sa-Token 集群消息订阅监听容器启动失败，Redis 不可用或连接被拒绝，已静默安全降级: {}", ex.getMessage());
+                    }
+                }
+            };
             container.setConnectionFactory(connectionFactory);
             org.springframework.core.task.TaskExecutor taskExecutor = taskExecutorProvider.getIfAvailable();
             if (taskExecutor != null) {
