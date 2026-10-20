@@ -158,10 +158,22 @@ public class OperateLogAspect {
         } finally {
             long costTime = System.currentTimeMillis() - startTime;
             // 协调执行后的最终上下文身份（兼顾方法内切换身份或正常模拟请求）
-            boolean isRunAs = isRunAsPre || UserContextHolder.isRunAs();
-            String originalUserId = originalUserIdPre != null ? originalUserIdPre : UserContextHolder.getOriginalUserId();
-            String finalUserId = isRunAs && UserContextHolder.getUserId() != null ? UserContextHolder.getUserId() : userId;
-            String finalUserName = isRunAs && UserContextHolder.get() != null ? UserContextHolder.get() : userName;
+            boolean isRunAsPost = UserContextHolder.isRunAs();
+            boolean isRunAs = isRunAsPre || isRunAsPost;
+            String originalUserId = isRunAsPre ? originalUserIdPre : UserContextHolder.getOriginalUserId();
+            // 若进入方法时即处于模拟态，被模拟人优先锁定为进入时的目标身份，防止方法内执行 endSwitch() 导致被模拟人丢失
+            String finalUserId;
+            String finalUserName;
+            if (isRunAsPre) {
+                finalUserId = userId;
+                finalUserName = userName;
+            } else if (isRunAsPost) {
+                finalUserId = UserContextHolder.getUserId() != null ? UserContextHolder.getUserId() : userId;
+                finalUserName = UserContextHolder.get() != null ? UserContextHolder.get() : userName;
+            } else {
+                finalUserId = userId;
+                finalUserName = userName;
+            }
 
             OperateLogModel logModel = new OperateLogModel();
             logModel.setTraceId(traceId);

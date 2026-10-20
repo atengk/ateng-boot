@@ -12,6 +12,7 @@ import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
 import io.github.atengk.boot.sample.satoken.provider.SampleOrderDataOwnerProvider;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
 import io.github.atengk.boot.sample.satoken.vo.DefenseStatusVO;
+import io.github.atengk.boot.sample.satoken.vo.ImpersonateStatusVO;
 import io.github.atengk.boot.satoken.annotation.Anonymous;
 import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
@@ -418,11 +419,7 @@ public class SaTokenSampleController {
      * @return 响应结果
      */
     @PostMapping("/impersonate/switch")
-    public Result<String> impersonateSwitch(@RequestParam("targetUserId") String targetUserId) {
-        if (targetUserId == null || targetUserId.isBlank()) {
-            throw new io.github.atengk.boot.core.exception.BusinessException(
-                    io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "目标用户标识不能为空");
-        }
+    public Result<String> impersonateSwitch(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
         LoginHelper.checkLogin();
         LoginHelper.switchTo(targetUserId);
         return Result.success("成功切换身份至: " + targetUserId);
@@ -443,17 +440,18 @@ public class SaTokenSampleController {
     /**
      * 获取当前身份模拟状态与双维审计快照
      *
-     * @return 状态映射
+     * @return 状态视图对象
      */
     @GetMapping("/impersonate/status")
-    public Result<Map<String, Object>> impersonateStatus() {
+    public Result<ImpersonateStatusVO> impersonateStatus() {
         LoginHelper.checkLogin();
-        Map<String, Object> map = new java.util.LinkedHashMap<>();
-        map.put("isRunAs", LoginHelper.isRunAs());
-        map.put("currentUserId", LoginHelper.getUserId());
-        map.put("realUserId", LoginHelper.getRealUserId());
-        map.put("originalUserId", LoginHelper.getOriginalUserId());
-        return Result.success(map);
+        ImpersonateStatusVO vo = ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())
+                .realUserId(LoginHelper.getRealUserId())
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build();
+        return Result.success(vo);
     }
 
     /**
@@ -463,20 +461,14 @@ public class SaTokenSampleController {
      * @return 闭包内执行快照
      */
     @PostMapping("/impersonate/run-as")
-    public Result<Map<String, Object>> impersonateRunAs(@RequestParam("targetUserId") String targetUserId) {
-        if (targetUserId == null || targetUserId.isBlank()) {
-            throw new io.github.atengk.boot.core.exception.BusinessException(
-                    io.github.atengk.boot.core.code.CommonResultCode.BAD_REQUEST, "目标用户标识不能为空");
-        }
+    public Result<ImpersonateStatusVO> impersonateRunAs(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
         LoginHelper.checkLogin();
-        Map<String, Object> innerResult = LoginHelper.runAs(targetUserId, () -> {
-            Map<String, Object> map = new java.util.LinkedHashMap<>();
-            map.put("isRunAs", LoginHelper.isRunAs());
-            map.put("currentUserId", LoginHelper.getUserId());
-            map.put("realUserId", LoginHelper.getRealUserId());
-            map.put("originalUserId", LoginHelper.getOriginalUserId());
-            return map;
-        });
+        ImpersonateStatusVO innerResult = LoginHelper.runAs(targetUserId, () -> ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())
+                .realUserId(LoginHelper.getRealUserId())
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build());
         return Result.success(innerResult);
     }
 

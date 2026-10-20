@@ -70,6 +70,12 @@ public class LoginFailureLockService {
                 Long count = redisTemplate.opsForValue().increment(key);
                 if (count != null && count == 1) {
                     redisTemplate.expire(key, windowDuration);
+                } else if (count != null && count > 1) {
+                    // 防无界悬挂自愈补偿机制：若首次设置 TTL 遭遇偶发异常，后续请求检测到 ttl == -1 立即自动补设
+                    Long ttl = redisTemplate.getExpire(key);
+                    if (ttl != null && ttl == -1L) {
+                        redisTemplate.expire(key, windowDuration);
+                    }
                 }
 
                 if (count != null && count >= maxRetry) {
@@ -83,7 +89,7 @@ public class LoginFailureLockService {
                 int current = count != null ? count.intValue() : 0;
                 return Math.max(0, maxRetry - current);
             } catch (Throwable ex) {
-                log.warn("Redis 记录登录失败次数异常，降级回退至本地内存模式: account={}, error={}", account, ex.getMessage());
+                log.warn("Redis 记录登录失败次数异常，降级回退至本地内存模式: account={}, error={}", account, ex.toString());
             }
         }
 
@@ -141,7 +147,7 @@ public class LoginFailureLockService {
             try {
                 redisTemplate.delete(KEY_PREFIX + account);
             } catch (Throwable ex) {
-                log.warn("Redis 清除登录失败计数异常: account={}, error={}", account, ex.getMessage());
+                log.warn("Redis 清除登录失败计数异常: account={}, error={}", account, ex.toString());
             }
         }
         localFailMap.remove(account);
@@ -186,7 +192,7 @@ public class LoginFailureLockService {
                 }
                 return 0;
             } catch (Throwable ex) {
-                log.warn("Redis 读取登录失败次数异常，降级读取内存: account={}, error={}", account, ex.getMessage());
+                log.warn("Redis 读取登录失败次数异常，降级读取内存: account={}, error={}", account, ex.toString());
             }
         }
 

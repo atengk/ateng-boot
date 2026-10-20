@@ -89,7 +89,7 @@ public class SaTokenClusterBroadcaster {
         } catch (Throwable ex) {
             // 异常隔离防卫，严禁广播异常阻断核心业务主链路
             log.warn("Sa-Token 集群广播消息发送异常（降级忽略）: eventType={}, targetKey={}, error={}",
-                    eventType, targetKey, ex.getMessage());
+                    eventType, targetKey, ex.toString());
         }
     }
 }
