@@ -30,4 +30,9 @@ public class LocalStorageProperties {
      * 预签名只读安全下载端点路径（默认 /storage/local/download）
      */
     private String downloadEndpoint = "/storage/local/download";
+
+    /**
+     * 预签名写入安全直传端点路径（默认 /storage/local/upload）
+     */
+    private String uploadEndpoint = "/storage/local/upload";
 }

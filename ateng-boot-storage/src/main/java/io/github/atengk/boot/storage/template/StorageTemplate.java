@@ -11,6 +11,7 @@ import io.github.atengk.boot.storage.event.StorageDeletedEvent;
 import io.github.atengk.boot.storage.event.StorageEvent;
 import io.github.atengk.boot.storage.event.StorageUploadedEvent;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.core.util.JsonUtil;
@@ -382,6 +383,14 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     @Override
     public PresignedUrl getPresignedUploadUrl(String path, Duration duration) {
         return getDriver().getPresignedUploadUrl(path, duration);
+    }
+
+    @Override
+    public PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request) {
+        if (request == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名直传请求不能为空");
+        }
+        return getDriver().getPresignedUploadUrl(request);
     }
 
     @Override

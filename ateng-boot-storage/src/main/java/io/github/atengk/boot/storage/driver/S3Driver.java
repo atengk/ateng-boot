@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.properties.S3StorageProperties;
@@ -517,21 +518,50 @@ public class S3Driver implements StorageDriver {
 
     @Override
     public PresignedUrl getPresignedUploadUrl(String path, Duration duration) {
+        return getPresignedUploadUrl(PresignedUploadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    @Override
+    public PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request) {
         if (this.s3Presigner == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "未配置 S3Presigner，无法生成预签名上传外链");
         }
-        String cleanPath = StorageSecurityUtil.normalizePath(path);
-        Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
-                ? duration
+        if (request == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名直传请求参数不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
+        Duration effectiveDuration = (request.getDuration() != null && !request.getDuration().isNegative() && !request.getDuration().isZero())
+                ? request.getDuration()
                 : Duration.ofMinutes(15);
         try {
-            PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+            PutObjectRequest.Builder putRequestBuilder = PutObjectRequest.builder()
                     .bucket(this.bucket)
-                    .key(cleanPath)
-                    .build();
+                    .key(cleanPath);
+
+            java.util.Map<String, String> signedHeaders = new java.util.LinkedHashMap<>();
+            if (request.getContentType() != null && !request.getContentType().isBlank()) {
+                String ct = request.getContentType().trim();
+                putRequestBuilder.contentType(ct);
+                signedHeaders.put("Content-Type", ct);
+            }
+            if (request.getMaxSizeBytes() > 0) {
+                putRequestBuilder.contentLength(request.getMaxSizeBytes());
+            }
+            if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
+                request.getHeaders().forEach((k, v) -> {
+                    if (k != null && v != null) {
+                        putRequestBuilder.overrideConfiguration(c -> c.putHeader(k, v));
+                        signedHeaders.put(k, v);
+                    }
+                });
+            }
+
             PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
                     .signatureDuration(effectiveDuration)
-                    .putObjectRequest(putObjectRequest)
+                    .putObjectRequest(putRequestBuilder.build())
                     .build();
             PresignedPutObjectRequest presigned = this.s3Presigner.presignPutObject(presignRequest);
             String finalUrl = applyDomain(presigned.url().toString(), this.domain);
@@ -540,6 +570,7 @@ public class S3Driver implements StorageDriver {
                     .url(finalUrl)
                     .expiration(presigned.expiration())
                     .httpMethod("PUT")
+                    .headers(signedHeaders)
                     .build();
         } catch (Exception e) {
             throw translateException(e, cleanPath, "生成 S3 预签名直传外链失败");

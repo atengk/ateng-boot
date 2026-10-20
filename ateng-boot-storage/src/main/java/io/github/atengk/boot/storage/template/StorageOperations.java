@@ -2,6 +2,7 @@ package io.github.atengk.boot.storage.template;
 
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -268,13 +269,26 @@ public interface StorageOperations {
     PresignedUrl getPresignedUrl(String path, Duration duration);
 
     /**
-     * 获取预签名直传写入外链凭证
+     * 获取预签名直传写入外链凭证（极简重载，默认向后兼容）
      *
      * @param path     目标相对路径
      * @param duration 有效时长
      * @return 预签名外链模型
      */
-    PresignedUrl getPresignedUploadUrl(String path, Duration duration);
+    default PresignedUrl getPresignedUploadUrl(String path, Duration duration) {
+        return getPresignedUploadUrl(PresignedUploadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置请求构建预签名直传写入外链凭证
+     *
+     * @param request 直传配置请求
+     * @return 预签名外链模型
+     */
+    PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request);
 
     /**
      * 编程式链式切源：获取绑定了指定命名存储源的不可变操作门面句柄

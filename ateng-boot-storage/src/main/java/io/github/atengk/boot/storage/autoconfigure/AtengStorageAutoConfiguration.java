@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.autoconfigure;
 import io.github.atengk.boot.storage.aspect.StorageAspect;
 import io.github.atengk.boot.storage.context.StorageTaskDecorator;
 import io.github.atengk.boot.storage.controller.LocalStorageDownloadController;
+import io.github.atengk.boot.storage.controller.LocalStorageUploadController;
 import io.github.atengk.boot.storage.driver.S3Driver;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
@@ -12,6 +13,7 @@ import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import io.github.atengk.boot.storage.template.StorageOperations;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import org.aspectj.lang.annotation.Aspect;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -179,5 +181,27 @@ public class AtengStorageAutoConfiguration {
             StorageProperties properties,
             StorageDriver storageDriver) {
         return new LocalStorageDownloadController(properties, storageDriver);
+    }
+
+    /**
+     * 本地存储预签名直传写入端点 Bean 装配（仅在 Servlet Web 环境下且类型为 local 时激活）
+     *
+     * @param properties 存储配置属性
+     * @param storageDriver 活动存储驱动
+     * @param driverFactoryProvider 多存储源工厂提供者
+     * @param storageGuardProvider 安全防卫嗅探器提供者
+     * @return LocalStorageUploadController 端点控制器
+     */
+    @Bean
+    @ConditionalOnMissingBean(LocalStorageUploadController.class)
+    @ConditionalOnClass(name = "org.springframework.web.servlet.DispatcherServlet")
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    @ConditionalOnProperty(prefix = "ateng.boot.storage", name = "type", havingValue = "local", matchIfMissing = true)
+    public LocalStorageUploadController localStorageUploadController(
+            StorageProperties properties,
+            StorageDriver storageDriver,
+            ObjectProvider<StorageDriverFactory> driverFactoryProvider,
+            ObjectProvider<StorageGuard> storageGuardProvider) {
+        return new LocalStorageUploadController(properties, storageDriver, driverFactoryProvider, storageGuardProvider);
     }
 }

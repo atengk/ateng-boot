@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
@@ -10,7 +11,9 @@ import lombok.Getter;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URLEncoder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,7 +25,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -41,6 +46,11 @@ public class LocalDriver implements StorageDriver {
      * 默认预签名下载端点路径
      */
     public static final String DEFAULT_DOWNLOAD_ENDPOINT = "/storage/local/download";
+
+    /**
+     * 默认预签名写入直传端点路径
+     */
+    public static final String DEFAULT_UPLOAD_ENDPOINT = "/storage/local/upload";
 
     /**
      * 本地存储物理基准根目录
@@ -63,12 +73,17 @@ public class LocalDriver implements StorageDriver {
     private final String downloadEndpoint;
 
     /**
+     * 预签名写入安全直传端点路径
+     */
+    private final String uploadEndpoint;
+
+    /**
      * 构造基础本地磁盘驱动（自动生成随机密钥）
      *
      * @param basePath 本地存储物理基准路径
      */
     public LocalDriver(String basePath) {
-        this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT);
+        this(basePath, null, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT);
     }
 
     /**
@@ -79,7 +94,19 @@ public class LocalDriver implements StorageDriver {
      * @param secretKey 签名密钥（留空时自动生成安全随机密钥）
      */
     public LocalDriver(String basePath, String domain, String secretKey) {
-        this(basePath, domain, secretKey, DEFAULT_DOWNLOAD_ENDPOINT);
+        this(basePath, domain, secretKey, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT);
+    }
+
+    /**
+     * 参数构造本地磁盘驱动
+     *
+     * @param basePath         本地存储物理基准路径
+     * @param domain           访问域名或基础 URL
+     * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
+     * @param downloadEndpoint 预签名安全下载端点
+     */
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint) {
+        this(basePath, domain, secretKey, downloadEndpoint, DEFAULT_UPLOAD_ENDPOINT);
     }
 
     /**
@@ -89,8 +116,9 @@ public class LocalDriver implements StorageDriver {
      * @param domain           访问域名或基础 URL
      * @param secretKey        签名密钥（留空时自动生成安全随机密钥）
      * @param downloadEndpoint 预签名安全下载端点
+     * @param uploadEndpoint   预签名安全直传端点
      */
-    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint) {
+    public LocalDriver(String basePath, String domain, String secretKey, String downloadEndpoint, String uploadEndpoint) {
         if (basePath == null || basePath.isBlank()) {
             throw new StorageException(StorageResultCode.INVALID_PATH, "本地存储基础路径 basePath 不能为空");
         }
@@ -109,6 +137,9 @@ public class LocalDriver implements StorageDriver {
         this.downloadEndpoint = (downloadEndpoint != null && !downloadEndpoint.isBlank())
                 ? downloadEndpoint
                 : DEFAULT_DOWNLOAD_ENDPOINT;
+        this.uploadEndpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank())
+                ? uploadEndpoint
+                : DEFAULT_UPLOAD_ENDPOINT;
     }
 
     @Override
@@ -380,6 +411,63 @@ public class LocalDriver implements StorageDriver {
                 .url(url)
                 .expiration(expiration)
                 .httpMethod("GET")
+                .build();
+    }
+
+    @Override
+    public PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request) {
+        if (request == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名直传请求参数不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
+        Duration effectiveDuration = (request.getDuration() != null && !request.getDuration().isNegative() && !request.getDuration().isZero())
+                ? request.getDuration()
+                : Duration.ofMinutes(15);
+        Instant expiration = Instant.now().plus(effectiveDuration);
+        long expires = expiration.getEpochSecond();
+        String contentType = (request.getContentType() != null && !request.getContentType().isBlank())
+                ? request.getContentType().trim()
+                : "";
+        long maxBytes = request.getMaxSizeBytes() > 0 ? request.getMaxSizeBytes() : -1;
+
+        // 签名计算规则：cleanPath:expires:contentType:maxBytes
+        String signPayload = cleanPath + ":" + expires + ":" + contentType + ":" + maxBytes;
+        String signature = StorageSecurityUtil.hmacSha256(signPayload, this.secretKey);
+
+        String baseUrl = (domain != null && !domain.isBlank()) ? domain.trim() : "";
+        if (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        String endpoint = (uploadEndpoint != null && !uploadEndpoint.isBlank()) ? uploadEndpoint.trim() : DEFAULT_UPLOAD_ENDPOINT;
+        if (!endpoint.startsWith("/")) {
+            endpoint = "/" + endpoint;
+        }
+
+        StringBuilder urlBuilder = new StringBuilder();
+        urlBuilder.append(baseUrl).append(endpoint)
+                .append("?path=").append(cleanPath)
+                .append("&expires=").append(expires)
+                .append("&signature=").append(signature);
+        if (!contentType.isBlank()) {
+            urlBuilder.append("&contentType=").append(URLEncoder.encode(contentType, StandardCharsets.UTF_8));
+        }
+        if (maxBytes > 0) {
+            urlBuilder.append("&maxBytes=").append(maxBytes);
+        }
+
+        Map<String, String> signedHeaders = new LinkedHashMap<>();
+        if (!contentType.isBlank()) {
+            signedHeaders.put("Content-Type", contentType);
+        }
+        if (request.getHeaders() != null && !request.getHeaders().isEmpty()) {
+            signedHeaders.putAll(request.getHeaders());
+        }
+
+        return PresignedUrl.builder()
+                .url(urlBuilder.toString())
+                .expiration(expiration)
+                .httpMethod("PUT")
+                .headers(signedHeaders)
                 .build();
     }
 

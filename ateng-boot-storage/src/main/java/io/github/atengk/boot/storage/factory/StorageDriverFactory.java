@@ -154,7 +154,7 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
             secretKey = StorageSecurityUtil.generateRandomSecretKey();
             local.setSecretKey(secretKey);
         }
-        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint());
+        return new LocalDriver(basePath, local.getDomain(), secretKey, local.getDownloadEndpoint(), local.getUploadEndpoint());
     }
 
     /**

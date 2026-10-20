@@ -152,6 +152,47 @@ flowchart TD
 - 模块单测基于 `@TempDir` 验证本地驱动，基于 Mockito 打桩验证 S3Client 与 S3Presigner；
 - 场景工程通过 MockMvc 开展端到端 HTTP 上传、Range 206 断点续传、HMAC 授权与防篡改、动态多源隔离、对象复移、目录分页、便捷存取、流式 ZIP 打包、分片状态机、魔数安全防卫与领域事件广播全链路自验，秒级准出。
 
+### 13. Local 预签名直传端点与全对称行为平替 (LocalStorageUploadController)
+- 为抹平 S3 与 Local 在“客户端直传”能力上的割裂，新增 `LocalStorageUploadController`（默认端点 `PUT /storage/local/upload`）。
+- 客户端通过 HTTP PUT 流式直传二进制流，URL Query 携带 `path`、`expires`、`signature`，可选携带 `contentType`、`maxBytes` 及分片参数 `uploadId` 与 `chunkIndex`。
+- 多源感知与防篡改：HMAC-SHA256 签名因子涵盖 `path`、`expires`、限定 `contentType`、`maxBytes` 及多源 `source` 标识；通过 `StorageDriverFactory` 动态路由至对应 Local 实例与密钥验签；
+- 上传写入本地磁盘后即时联动 `StorageGuard` 触发魔数安全校验，与云端 S3 PUT 预签名在契约上达成 100% 对称。
+
+### 14. 强类型预签名直传约束与分片直传预签名 (Presigned Direct Upload & Chunk Presigning)
+- 提供强类型请求模型 `PresignedUploadRequest`，支持设定有效时长、严格限制的 `contentType`、`maxSizeBytes` 及必须携带的 HTTP Headers，升级 `PresignedUrl` 携带必须附加的 Headers 映射；
+- 保留 `getPresignedUploadUrl(path, duration)` 简易重载严守向后兼容；
+- **分片直传预签名**：新增 `getPresignedUploadPartUrl(path, uploadId, chunkIndex, duration)`，S3 驱动封装 `UploadPartPresignRequest`，Local 驱动由上传控制器统一承接；支持浏览器或客户端将大文件本地切片后并发直传到存储介质，应用服务端零网络带宽代理消耗。
+
+### 15. S3 分片上传集群无状态化与自包含签名 Token (Stateless S3 Chunk Sessions)
+- 彻底废除 `S3Driver` 本地内存缓存 `ConcurrentMap<String, S3UploadSession>`，解决多 Pod / K8s 集群部署下分片请求漂移导致的“会话未找到”崩溃；
+- `initiateChunkedUpload` 生成的 `uploadId` 采用防篡改无状态签名 Token：`Base64Url(cleanPath + "::" + s3UploadId + "::" + hmac)`，任意节点收到分片或合并请求均可自洽验签并解析真实 `key` 与底层 `s3UploadId`；
+- 在 `completeChunkedUpload` 阶段，动态调用 S3 `listParts` 接口从云端拉取已上传的所有分片与 ETag，正序自洽组装发起合并，实现 100% 纯无状态与集群免疫。
+
+### 16. 孤儿分片碎片生命周期治理与后台清理调度 (Chunk Cleaner Lifecycle Governance)
+- 解决客户端因网络异常或放弃上传造成的磁盘/云存储孤儿碎片积压问题；
+- 门面层暴露 `cleanExpiredChunkSessions(Duration maxAge)` 运维方法；
+- 提供轻量守护调度配置 `ateng.boot.storage.chunk-cleaner`（`enabled: true`, `interval: 2h`, `max-age: 24h`），依托受管后台线程执行定时清理：LocalDriver 递归扫描 `.chunks` 目录删除超时碎片，S3Driver 遍历 `listMultipartUploads` 自动调用 `abortMultipartUpload` 取消超时会话。
+
+### 17. 目录级与前缀级流式批量删除与防清库熔断 (deletePrefix & Directory Guard)
+- 在 `StorageOperations` 与底层 SPI 扩充 `deletePrefix(String prefix)` 与 `deleteDirectory(String dirPath)`；
+- S3Driver 采用 `ListObjectsV2Paginator` 游标流式拉取，每满 1,000 个 Key 触发一次 S3 批量删除（`DeleteObjects`），支持海量对象分批平稳清理；LocalDriver 基于 `Files.walkFileTree` 自底向上深度优先递归删除；
+- **防误删熔断铁律**：前缀经过安全归一化后，若为空字符串、`/`、包含通配符 `*` 或仅有点号，立即抛出 `StorageException(INVALID_PATH)` 强行熔断，坚决杜绝清空整盘或清空整个 Bucket。
+
+### 18. 原生零拷贝流式散列计算与秒传支撑 (StorageHashUtil & Instant Upload)
+- 遵循底座优先与零业务污染原则，存储底座提供 `StorageHashUtil`，覆盖 MD5、SHA-256、SHA-1 与 CRC32 计算；
+- 依托 Java NIO `FileChannel` 与流式固定缓冲区（8KB~64KB）恒定内存复用，实现零堆内存拷贝；输出规约为标准小写十六进制字符串，提供常数级抗时序攻击比对 `verifyHash`；
+- 业务系统结合 `StorageHashUtil` 计算散列并联动 `storageTemplate.copy` 实现极速秒传，存储模块自身不绑定任何业务数据表。
+
+### 19. Spring Boot Actuator 存储健康探针 (StorageHealthIndicator)
+- 当应用引入 `spring-boot-starter-actuator` 时自动注册 `StorageHealthIndicator`；
+- LocalDriver 探测基准物理目录的存在性与磁盘可写权限（`Files.isWritable`）；
+- S3Driver 触发存储桶存活性与连通性轻量探查（`headBucket`）；
+- 支持多源探测，异常时报告 DOWN 并安全脱敏输出异常摘要，无缝接入 Kubernetes 存活与就绪探针。
+
+### 20. 结构化错误码与用户自定义元数据扩展 (StorageResultCode & userMetadata)
+- `StorageResultCode` 新增结构化错误码：`STORAGE_SIGNATURE_INVALID (40018)`、`STORAGE_URL_EXPIRED (40019)`、`STORAGE_SIZE_EXCEEDED (40020)`、`STORAGE_HASH_MISMATCH (40021)`；
+- `StorageObject` 模型扩充 `Map<String, String> userMetadata` 属性，并在 `upload` 门面增加携带元数据的重载，S3 驱动原生映射为 `x-amz-meta-*`，兼顾云原生业务打标与合规审计。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
@@ -159,10 +200,11 @@ flowchart TD
 ### 正向收益 (Positive Consequences)
 1. **体积与依赖纯净**：排除庞大 Netty 传输层后，S3 SDK 极致轻量；零第三方专用云厂商 SDK，极大收敛依赖树；
 2. **动静分离与多源无缝切换**：一套配置与一套 API 支持动态多源路由，彻底消灭 `if-else` 硬编码切源；
-3. **环境平替与体验统一**：Local 内置 HMAC 预签名端点让离线单机开发与本地环境也能完整闭环预签名防盗链下载；
-4. **防御纵深安全可靠**：路径归一化防御穿越，HMAC 签名防御篡改与过期，JSR-303 与显式 `Result<StorageObject>` 契约自洽；
-5. **Spring 框架高度融合**：`StorageResource` 带来原生 HTTP Range 206 断点续传与极简代码风格，Spring 原生事件广播无缝接入事件驱动架构；
-6. **企业级高阶能力完备**：对象秒级复移、目录树分页、纯流式零磁盘临时文件 ZIP 打包、零流截断损耗魔数防伪装嗅探、1-based 大文件分片状态机一体化自洽交付。
+3. **环境平替与体验统一**：Local 内置 HMAC 预签名下载与直传端点，让离线单机开发与本地环境也能完整闭环客户端预签名直传与防盗链下载；
+4. **防御纵深安全可靠**：路径归一化防御穿越，HMAC 签名防御篡改与过期，JSR-303 与显式 `Result<StorageObject>` 契约自洽，防空路径批量删除熔断卫语句；
+5. **Spring 框架高度融合**：`StorageResource` 带来原生 HTTP Range 206 断点续传，Actuator `StorageHealthIndicator` 带来云原生就绪感知，Spring 原生事件广播无缝接入事件驱动架构；
+6. **企业级高阶能力完备**：对象秒级复移、目录树分页、纯流式零磁盘临时文件 ZIP 打包、零流截断损耗魔数防伪装嗅探、1-based 大文件分片状态机一体化自洽交付；
+7. **集群无状态与生命周期治理**：S3 分片签名 Token 彻底破除多 Pod 内存黏性，孤儿分片定时扫描防止磁盘与云存储账单泄漏膨胀，`StorageHashUtil` 零拷贝支撑秒传。
 
 ### 妥协与规约 (Trade-offs & Constraints)
 1. **S3 协议通用性 vs. 厂商特有专有特性**：
@@ -170,4 +212,4 @@ flowchart TD
 2. **Local 预签名与集群环境**：
    在多实例集群部署 Local 驱动时，各节点必须通过配置显式指定相同的 `ateng.boot.storage.local.secret-key` 并配合共享存储卷（NFS / NAS），以保障跨节点验签通过；单节点或未配置密钥时系统将在启动时安全随机生成。
 3. **分片暂存与临时目录清理**：
-   LocalDriver 的分片暂存目录 `.chunks` 会在完成合并或显式调用 abort 时自动递归清理；在多节点分布式集群部署 Local 驱动时，建议为上传会话配置定时清理任务以防异常中断残留。
+   LocalDriver 的分片暂存目录 `.chunks` 会在完成合并或显式调用 abort 时自动递归清理；在多节点分布式集群部署 Local 驱动时，建议启用 `ateng.boot.storage.chunk-cleaner` 定时清理以防异常中断残留。

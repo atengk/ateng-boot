@@ -263,6 +263,34 @@ class S3DriverTest {
     }
 
     @Test
+    @DisplayName("通过 PresignedUploadRequest 生成 S3 预签名直传外链，包含 Content-Type 与自定义报头")
+    void testGetPresignedUploadUrlWithRequest() throws Exception {
+        String path = "uploads/report.pdf";
+        URL rawUrl = new URL("https://s3.us-east-1.amazonaws.com/test-bucket/uploads/report.pdf?X-Amz-Signature=sig789");
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(20));
+
+        when(presignedPutObjectRequest.url()).thenReturn(rawUrl);
+        when(presignedPutObjectRequest.expiration()).thenReturn(expiration);
+        when(s3Presigner.presignPutObject(any(PutObjectPresignRequest.class))).thenReturn(presignedPutObjectRequest);
+
+        io.github.atengk.boot.storage.model.PresignedUploadRequest request = io.github.atengk.boot.storage.model.PresignedUploadRequest.builder()
+                .path(path)
+                .duration(Duration.ofMinutes(20))
+                .contentType("application/pdf")
+                .maxSizeBytes(10485760)
+                .headers(java.util.Map.of("x-custom-tag", "finance-2026"))
+                .build();
+
+        PresignedUrl presigned = s3Driver.getPresignedUploadUrl(request);
+
+        assertNotNull(presigned);
+        assertEquals("PUT", presigned.getHttpMethod());
+        assertEquals("application/pdf", presigned.getHeaders().get("Content-Type"));
+        assertEquals("finance-2026", presigned.getHeaders().get("x-custom-tag"));
+        assertEquals("https://cdn.example.com/test-bucket/uploads/report.pdf?X-Amz-Signature=sig789", presigned.getUrl());
+    }
+
+    @Test
     @DisplayName("S3 异常精准转译测试：404/NoSuchKey 转为 OBJECT_NOT_FOUND，403 与其他错误转为 OPERATION_FAILED")
     void testExceptionTranslation() {
         // NoSuchKeyException

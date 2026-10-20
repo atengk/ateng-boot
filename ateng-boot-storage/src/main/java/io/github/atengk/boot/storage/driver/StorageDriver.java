@@ -1,5 +1,6 @@
 package io.github.atengk.boot.storage.driver;
 
+import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
 
@@ -115,13 +116,26 @@ public interface StorageDriver extends AutoCloseable {
     }
 
     /**
-     * 获取预签名直传写入外链凭证
+     * 获取预签名直传写入外链凭证（极简重载，默认向后兼容）
      *
      * @param path     存储对象相对路径
      * @param duration 链接有效持续时长
      * @return 预签名外链模型
      */
     default PresignedUrl getPresignedUploadUrl(String path, Duration duration) {
+        return getPresignedUploadUrl(PresignedUploadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置构建预签名直传写入外链凭证
+     *
+     * @param request 直传配置请求
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUploadUrl(PresignedUploadRequest request) {
         throw new UnsupportedOperationException("Current storage driver does not support presigned upload URL");
     }
 

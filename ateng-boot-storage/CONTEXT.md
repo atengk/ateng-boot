@@ -40,6 +40,18 @@ _Avoid_: DriverRegistry, DriverPool, StorageManager
 Local 存储内置的预签名防盗链只读安全下载端点，校验 HMAC-SHA256 签名合法性与有效期限，执行二次路径清洗与流式输出。
 _Avoid_: FileDownloadServlet, StaticFileServer
 
+**LocalStorageUploadController**:
+Local 存储内置的预签名直传写入安全控制器，基于 HTTP PUT 接收客户端直传数据，校验 HMAC-SHA256 签名、时效、限定 MIME 与体积上限，并联动 StorageGuard 执行魔数防卫。
+_Avoid_: FileUploadServlet, LocalUploadReceiver
+
+**PresignedUploadRequest**:
+构建预签名直传外链的强类型入参模型，封装目标路径、授权有效时长、严格限制的 MIME 类型、最大允许字节大小及必须携带的 HTTP 报头。
+_Avoid_: UploadParam, DirectUploadDto, SignRequest
+
+**StorageHashUtil**:
+基于原生 NIO Channel 与流式分块的高性能散列计算工具，提供零内存拷贝的 MD5、SHA-256、CRC32 摘要计算与秒传判重契约支撑。
+_Avoid_: HashHelper, DigestUtil, ChecksumTool
+
 **StorageSecurityUtil**:
 存储安全防卫与路径规范化工具，提供全路径归一化、剥除相对路径与前置斜杠、文件名防御清洗及 HMAC-SHA256 签名验签算法。
 _Avoid_: PathSecurityHelper, SafePathUtil
@@ -59,4 +71,8 @@ _Avoid_: FileEvent, StorageMessage, StorageCallback
 **StorageException**:
 存储模块受管业务异常根基类，继承自 Core 模块 `BusinessException`，支持标准的业务错误码与上下文溯源。
 _Avoid_: FileException, S3Exception
+
+**StorageHealthIndicator**:
+基于 Spring Boot Actuator 的存储健康状态探测器，提供 Local 本地物理目录写权限探测与 S3 存储桶可达性探查。
+_Avoid_: StorageChecker, HealthProbe
 
