@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
+import io.github.atengk.boot.excel.async.storage.LocalFileSystemStorage;
 import io.github.atengk.boot.excel.properties.ExcelAsyncExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import org.slf4j.Logger;
@@ -38,15 +40,21 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
     private final Map<String, ExportTask> taskMap = new ConcurrentHashMap<>(128);
     private final Map<String, Future<?>> futureMap = new ConcurrentHashMap<>(128);
 
+    private final ExportFileStorage fileStorage;
     private final Path tempDirPath;
     private final ThreadPoolExecutor executorService;
     private final ScheduledExecutorService cleanerExecutor;
 
     public InMemoryAsyncExportTaskService() {
-        this(new ExcelProperties());
+        this(new ExcelProperties(), null);
     }
 
     public InMemoryAsyncExportTaskService(ExcelProperties excelProperties) {
+        this(excelProperties, null);
+    }
+
+    public InMemoryAsyncExportTaskService(ExcelProperties excelProperties, ExportFileStorage fileStorage) {
+        this.fileStorage = (fileStorage != null) ? fileStorage : new LocalFileSystemStorage(excelProperties);
         ExcelAsyncExportProperties props = (excelProperties != null && excelProperties.getAsyncExport() != null)
                 ? excelProperties.getAsyncExport()
                 : new ExcelAsyncExportProperties();
@@ -123,12 +131,19 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                 task.setProgress(10);
                 log.info("开始执行异步导出任务 [{}]: {}", taskId, finalTaskName);
 
-                try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-                    executor.execute(fos);
+                try {
+                    try (FileOutputStream fos = new FileOutputStream(targetFile)) {
+                        executor.execute(fos);
+                    }
                     if (task.getStatus() == ExportTaskStatus.CANCELLED) {
                         return;
                     }
-                    task.setFileSize(targetFile.length());
+                    long fileSize = targetFile.length();
+                    String storageKey = fileStorage.store(taskId, targetFile, finalTaskName + ".xlsx");
+                    task.setStorageKey(storageKey);
+                    task.setFilePath(storageKey);
+                    task.setDownloadUrl(fileStorage.getDownloadUrl(taskId, storageKey));
+                    task.setFileSize(fileSize);
                     task.setStatus(ExportTaskStatus.SUCCESS);
                     task.setProgress(100);
                     task.setFinishTime(LocalDateTime.now());
@@ -185,6 +200,10 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
 
         task.setStatus(ExportTaskStatus.CANCELLED);
         task.setFinishTime(LocalDateTime.now());
+
+        if (task.getStorageKey() != null) {
+            fileStorage.delete(taskId, task.getStorageKey());
+        }
 
         // 清理已生成的半成品临时文件
         if (task.getFilePath() != null) {

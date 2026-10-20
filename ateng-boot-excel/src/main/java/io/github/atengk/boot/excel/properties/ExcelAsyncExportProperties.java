@@ -29,6 +29,16 @@ public class ExcelAsyncExportProperties {
     private Duration retentionPeriod = Duration.ofHours(24);
 
     /**
+     * 任务单次执行租约超时时间（默认 30m，执行中定期自动续期，节点宕机超期后查询自动原子标记为 FAILED）
+     */
+    private Duration leaseTimeout = Duration.ofMinutes(30);
+
+    /**
+     * Redis 分布式任务中心配置
+     */
+    private ExcelAsyncExportRedisProperties redis = new ExcelAsyncExportRedisProperties();
+
+    /**
      * 异步执行线程池核心线程数（默认 4）
      */
     private int corePoolSize = 4;
