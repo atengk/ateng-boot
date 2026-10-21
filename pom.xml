@@ -46,6 +46,7 @@
         <module>ateng-boot-storage</module>
         <module>ateng-boot-http</module>
         <module>ateng-boot-realtime</module>
+        <module>ateng-boot-rabbitmq</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -198,6 +199,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-realtime</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-rabbitmq</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
