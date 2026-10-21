@@ -35,6 +35,14 @@ ateng:
         header-name: Authorization
         token-prefix: "Bearer "
         cookie-name: satoken
+      offline:
+        enabled: true
+        max-messages-per-user: 100
+        ttl: 7d
+      shutdown:
+        enabled: true
+        drain-timeout: 3s
+        quiet-period: 500ms
 
 sa-token:
   token-name: satoken

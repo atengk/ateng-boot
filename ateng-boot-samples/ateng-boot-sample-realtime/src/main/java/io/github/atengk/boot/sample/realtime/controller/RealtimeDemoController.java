@@ -143,4 +143,64 @@ public class RealtimeDemoController {
         }
         return emitter;
     }
+
+    /**
+     * 发送持久化离线消息（当用户离线时触发离线暂存 SPI）
+     */
+    @PostMapping("/send-offline-persistent")
+    public Result<Integer> sendOfflinePersistent(@RequestParam String userId, @RequestParam String message) {
+        int sent = realtimeTemplate.sendToUser(userId, RealtimeMessage.ofPersistent("notice:persistent", message));
+        return Result.success(sent);
+    }
+
+    /**
+     * 一次性拉取并清空离线暂存消息
+     */
+    @GetMapping("/offline-messages")
+    public Result<java.util.List<RealtimeMessage<?>>> pullOfflineMessages(@RequestParam String userId) {
+        return Result.success(realtimeTemplate.pullAndClearOfflineMessages(userId));
+    }
+
+    /**
+     * 获取用户当前离线暂存消息总数
+     */
+    @GetMapping("/offline-count")
+    public Result<Integer> getOfflineMessageCount(@RequestParam String userId) {
+        return Result.success(realtimeTemplate.getOfflineMessageCount(userId));
+    }
+
+    /**
+     * 获取全集群当前在线连接总数
+     */
+    @GetMapping("/cluster-metrics")
+    public Result<Integer> getClusterOnlineCount() {
+        return Result.success(realtimeTemplate.getClusterOnlineCount());
+    }
+
+    /**
+     * 触发 Sa-Token 账号登出
+     */
+    @PostMapping("/sa-logout")
+    public Result<Void> saLogout(@RequestParam String userId) {
+        StpUtil.logout(userId);
+        return Result.success();
+    }
+
+    /**
+     * 触发 Sa-Token 强制踢人
+     */
+    @PostMapping("/sa-kickout")
+    public Result<Void> saKickout(@RequestParam String userId) {
+        StpUtil.kickout(userId);
+        return Result.success();
+    }
+
+    /**
+     * 触发 Sa-Token 封禁账号
+     */
+    @PostMapping("/sa-disable")
+    public Result<Void> saDisable(@RequestParam String userId, @RequestParam(defaultValue = "86400") long disableTime) {
+        StpUtil.disable(userId, disableTime);
+        return Result.success();
+    }
 }
