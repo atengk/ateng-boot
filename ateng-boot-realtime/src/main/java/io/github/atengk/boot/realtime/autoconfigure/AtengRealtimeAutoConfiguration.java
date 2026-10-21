@@ -13,6 +13,7 @@ import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSessionListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.realtime.sse.AtengSseController;
+import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketConfigurer;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketHandler;
 import org.springframework.beans.factory.ObjectProvider;
@@ -97,6 +98,17 @@ public class AtengRealtimeAutoConfiguration {
     public GhostConnectionDetector ghostConnectionDetector(RealtimeProperties properties,
                                                           RealtimeSessionManager sessionManager) {
         return new GhostConnectionDetector(properties, sessionManager);
+    }
+
+    /**
+     * 注册统一实时通信门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeTemplate.class)
+    public RealtimeTemplate realtimeTemplate(RealtimeSessionManager sessionManager,
+                                             RealtimeGroupManager groupManager,
+                                             RealtimeProperties properties) {
+        return new RealtimeTemplate(sessionManager, groupManager, properties);
     }
 
     /**

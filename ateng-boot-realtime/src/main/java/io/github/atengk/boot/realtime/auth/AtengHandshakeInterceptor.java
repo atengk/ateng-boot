@@ -78,6 +78,10 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
                 if (payload == null) {
                     log.warn("[Realtime] WebSocket 握手鉴权失败: 无效或已过期的 Token");
                     response.setStatusCode(HttpStatus.UNAUTHORIZED);
+                    try {
+                        response.close();
+                    } catch (Exception ignored) {
+                    }
                     return false;
                 }
                 // 绑定已认证身份属性
@@ -103,6 +107,10 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
                 }
                 log.warn("[Realtime] WebSocket 未装配鉴权提供者，拒绝凭据连接");
                 response.setStatusCode(HttpStatus.UNAUTHORIZED);
+                try {
+                    response.close();
+                } catch (Exception ignored) {
+                }
                 return false;
             }
         }
@@ -117,6 +125,10 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
 
         log.warn("[Realtime] WebSocket 拒绝未携带凭据的连接请求: clientId={}", clientId);
         response.setStatusCode(HttpStatus.UNAUTHORIZED);
+        try {
+            response.close();
+        } catch (Exception ignored) {
+        }
         return false;
     }
 

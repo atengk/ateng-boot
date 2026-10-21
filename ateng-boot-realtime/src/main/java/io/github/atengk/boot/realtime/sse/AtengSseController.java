@@ -101,6 +101,10 @@ public class AtengSseController {
                         if (actualDeviceType.equals(SessionKey.DEFAULT_DEVICE_TYPE) && payload.getDeviceType() != null) {
                             actualDeviceType = payload.getDeviceType();
                         }
+                    } else {
+                        // 显式携带了 Token 但鉴权失败：必须严格拒绝，严禁静默降级为匿名访客
+                        log.warn("[Realtime] SSE 握手鉴权失败: 无效或已过期的 Token, clientId={}", actualClientId);
+                        throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid or expired token");
                     }
                 }
             }

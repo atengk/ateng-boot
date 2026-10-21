@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-realtime
+
+ateng:
+  boot:
+    realtime:
+      enabled: true
+      websocket:
+        enabled: true
+        path: /ws/realtime
+        allowed-origins: "*"
+        buffer-size: 64KB
+      sse:
+        enabled: true
+        path: /sse/realtime
+        timeout: 30m
+      session:
+        max-connections-per-user: 5
+        eviction-policy: fifo
+      heartbeat:
+        ping-interval: 25s
+        idle-timeout: 60s
+      auth:
+        token-param-name: token
+        token-header-name: Sec-WebSocket-Protocol
+        allow-anonymous: true
+
+sa-token:
+  token-name: satoken
+  timeout: 86400
+  is-concurrent: true
+  is-share: true
+  is-read-body: false
+  is-read-head: true
+  is-read-cookie: false
