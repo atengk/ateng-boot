@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.http;
 
+import io.github.atengk.boot.http.annotation.EnableHttpInterfaces;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -12,6 +13,7 @@ import org.springframework.context.annotation.Bean;
  * @author Ateng
  * @since 2026-10-21
  */
+@EnableHttpInterfaces(basePackages = "io.github.atengk.boot.sample.http.client")
 @SpringBootApplication
 public class SampleHttpApplication {
 

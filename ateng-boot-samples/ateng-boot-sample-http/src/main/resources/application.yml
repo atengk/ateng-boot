@@ -18,3 +18,18 @@ ateng:
         connection-request-timeout: 2s
         idle-timeout: 60s
         validate-after-inactivity: 2s
+      tracing:
+        enabled: true
+      logging:
+        enabled: true
+      clients:
+        user-service:
+          base-url: ${sample.user-service.url:http://localhost:8080}
+          connect-timeout: 2s
+          read-timeout: 5s
+          propagate-context: true
+        wechat-pay:
+          base-url: ${sample.wechat-pay.url:https://api.mch.weixin.qq.com}
+          connect-timeout: 2s
+          read-timeout: 5s
+          propagate-context: false
