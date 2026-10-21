@@ -172,8 +172,8 @@ public final class RequestOptionsApplier {
                     return nextReq;
                 }
             }
-        } catch (Exception ignored) {
-            // 降级退出
+        } catch (Exception ex) {
+            log.debug("反射解包底层 ClientHttpRequest 委托对象失败，终止委托链探查: {}", ex.getMessage());
         }
         return null;
     }

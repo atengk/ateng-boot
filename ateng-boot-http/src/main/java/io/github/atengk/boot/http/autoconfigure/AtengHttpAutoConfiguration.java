@@ -1,5 +1,6 @@
 package io.github.atengk.boot.http.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
@@ -12,6 +13,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.web.client.RestClientAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
@@ -28,7 +30,10 @@ import java.util.concurrent.Executor;
  * @since 2026-10-21
  */
 @Slf4j
-@AutoConfiguration
+@AutoConfiguration(
+        before = RestClientAutoConfiguration.class,
+        after = AtengAsyncAutoConfiguration.class
+)
 @ConditionalOnClass(RestClient.class)
 @EnableConfigurationProperties(HttpProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.http", name = "enabled", havingValue = "true", matchIfMissing = true)

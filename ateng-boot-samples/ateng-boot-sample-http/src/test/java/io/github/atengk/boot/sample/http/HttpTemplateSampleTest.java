@@ -409,6 +409,8 @@ class HttpTemplateSampleTest {
         Path failFile = tempDir.resolve("fail-file.bin");
         assertThatThrownBy(() -> httpTemplate.download(baseUrl + "download/not-found", failFile))
                 .isInstanceOf(HttpRemoteException.class);
+        // 验证失败中断时自动执行补偿清理，绝不残留 0 字节或损坏的孤儿文件
+        assertThat(Files.exists(failFile)).isFalse();
     }
 
     @Test
@@ -438,7 +440,7 @@ class HttpTemplateSampleTest {
     }
 
     @Test
-    @DisplayName("测试 executeAsync 异步执行与四维上下文（MDC、User、Tenant）跨线程透传")
+    @DisplayName("测试 executeAsync 异步执行与四维上下文（MDC、User、Tenant、IgnoreTenant）跨线程透传")
     void testExecuteAsyncAndFourDimensionalContextPropagation() throws ExecutionException, InterruptedException, TimeoutException {
         // 1. 在当前线程装载四维上下文
         MDC.put("traceId", "trace-async-9999");
@@ -450,13 +452,16 @@ class HttpTemplateSampleTest {
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"async\":\"OK\"}"));
 
-        // 2. 异步执行，验证在工作线程中四维上下文成功透传
-        CompletableFuture<Map> future = httpTemplate.executeAsync(() -> {
-            assertThat(MDC.get("traceId")).isEqualTo("trace-async-9999");
-            assertThat(UserContextHolder.get()).isEqualTo("user-async-super");
-            assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-async-001");
-            return httpTemplate.get(baseUrl + "async-call", Map.class);
-        });
+        // 2. 在忽略租户环境下异步执行，验证在工作线程中四维上下文成功透传
+        CompletableFuture<Map> future = TenantContextHolder.runWithoutTenant(() ->
+                httpTemplate.executeAsync(() -> {
+                    assertThat(MDC.get("traceId")).isEqualTo("trace-async-9999");
+                    assertThat(UserContextHolder.get()).isEqualTo("user-async-super");
+                    assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-async-001");
+                    assertThat(TenantContextHolder.isIgnoreTenant()).isTrue();
+                    return httpTemplate.get(baseUrl + "async-call", Map.class);
+                })
+        );
 
         Map<?, ?> result = future.get(5, TimeUnit.SECONDS);
         assertThat(result).isNotNull();
@@ -488,5 +493,53 @@ class HttpTemplateSampleTest {
                 return false;
             }
         });
+    }
+
+    @Test
+    @DisplayName("测试流式 Multipart 上传并基于 ParameterizedTypeReference 复杂泛型反序列化")
+    void testUploadMultipartWithParameterizedTypeReference() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"code\":200,\"msg\":\"操作成功\",\"data\":{\"fileId\":9988,\"name\":\"contract.pdf\"}}"));
+
+        byte[] fileBytes = "%PDF-1.4 dummy content".getBytes(StandardCharsets.UTF_8);
+        ByteArrayResource resource = new ByteArrayResource(fileBytes) {
+            @Override
+            public String getFilename() {
+                return "contract.pdf";
+            }
+        };
+
+        Result<Map<String, Object>> result = httpTemplate.upload(
+                baseUrl + "upload-generic",
+                "document",
+                resource,
+                new ParameterizedTypeReference<>() {}
+        );
+
+        assertThat(result).isNotNull();
+        assertThat(result.getCode()).isEqualTo(200);
+        assertThat(result.getData().get("fileId")).isEqualTo(9988);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getHeader("Content-Type")).contains("multipart/form-data");
+    }
+
+    @Test
+    @DisplayName("测试 HttpClient5Customizer 与 RestClientCustomizer 容器扩展生效")
+    void testCustomizersApplied() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"customizer\":\"OK\"}"));
+
+        Map<?, ?> result = httpTemplate.get(baseUrl + "customizer-verify", Map.class);
+        assertThat(result).isNotNull();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getHeader("X-Custom-Client")).isEqualTo("ateng-http-sample");
+        assertThat(recordedRequest.getHeader("User-Agent")).isEqualTo("ateng-sample-agent/1.0.0");
     }
 }

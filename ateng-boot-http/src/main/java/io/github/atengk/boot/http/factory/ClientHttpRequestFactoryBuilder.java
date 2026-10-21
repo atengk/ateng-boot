@@ -32,8 +32,21 @@ public final class ClientHttpRequestFactoryBuilder {
      * @return ClientHttpRequestFactory 物理请求工厂
      */
     public static ClientHttpRequestFactory build(HttpProperties properties, List<HttpClient5Customizer> customizers) {
+        return build(properties, customizers, ClassUtils.getDefaultClassLoader());
+    }
+
+    /**
+     * 构建适合当前环境、类加载器与配置的 ClientHttpRequestFactory
+     *
+     * @param properties  配置属性
+     * @param customizers HttpClient 5 自定义定制器列表
+     * @param classLoader 类加载器（用于探测 HttpClient 5 是否存在）
+     * @return ClientHttpRequestFactory 物理请求工厂
+     */
+    public static ClientHttpRequestFactory build(HttpProperties properties, List<HttpClient5Customizer> customizers, ClassLoader classLoader) {
         HttpEngineType engine = properties.getEngine();
-        boolean hasHttpClient5 = ClassUtils.isPresent(HTTPCLIENT5_CLASS, ClientHttpRequestFactoryBuilder.class.getClassLoader());
+        ClassLoader cl = classLoader != null ? classLoader : ClassUtils.getDefaultClassLoader();
+        boolean hasHttpClient5 = ClassUtils.isPresent(HTTPCLIENT5_CLASS, cl);
 
         if (engine == HttpEngineType.HTTPCLIENT5) {
             if (!hasHttpClient5) {

@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 物理连接工厂自适应构建单元测试
@@ -80,5 +81,78 @@ class ClientHttpRequestFactoryBuilderTest {
 
         assertThat(factory).isNotNull();
         assertThat(customizerCalled.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试当类路径无 HttpClient 5 时 AUTO 模式自动平滑降级至 JDK 引擎")
+    void testAutoEngineFallbackWhenHttpClient5Absent() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.AUTO);
+
+        ClassLoader filteringClassLoader = new ClassLoader(getClass().getClassLoader()) {
+            @Override
+            public Class<?> loadClass(String name) throws ClassNotFoundException {
+                if (name.startsWith("org.apache.hc.client5.")) {
+                    throw new ClassNotFoundException(name);
+                }
+                return super.loadClass(name);
+            }
+        };
+
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList(), filteringClassLoader);
+
+        assertThat(factory).isNotNull();
+        assertThat(factory).isInstanceOf(JdkClientHttpRequestFactory.class);
+    }
+
+    @Test
+    @DisplayName("测试强制指定 HTTPCLIENT5 但类路径缺失时抛出 IllegalStateException")
+    void testHttpClient5EngineThrowsWhenAbsent() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.HTTPCLIENT5);
+
+        ClassLoader filteringClassLoader = new ClassLoader(getClass().getClassLoader()) {
+            @Override
+            public Class<?> loadClass(String name) throws ClassNotFoundException {
+                if (name.startsWith("org.apache.hc.client5.")) {
+                    throw new ClassNotFoundException(name);
+                }
+                return super.loadClass(name);
+            }
+        };
+
+        assertThatThrownBy(() -> ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList(), filteringClassLoader))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未引入 Apache HttpClient 5 依赖");
+    }
+
+    @Test
+    @DisplayName("测试启用代理但 host 为空时抛出 IllegalArgumentException 快速失败")
+    void testProxyEnabledWithoutHostThrows() {
+        HttpProperties properties = new HttpProperties();
+        properties.getProxy().setEnabled(true);
+        properties.getProxy().setHost("");
+
+        assertThatThrownBy(() -> ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("代理主机 host 不能为空");
+
+        properties.setEngine(HttpEngineType.JDK);
+        assertThatThrownBy(() -> ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("代理主机 host 不能为空");
+    }
+
+    @Test
+    @DisplayName("测试 JDK 引擎在 Insecure SSL 模式下安全构建工厂")
+    void testJdkEngineInsecureSsl() {
+        HttpProperties properties = new HttpProperties();
+        properties.setEngine(HttpEngineType.JDK);
+        properties.getSsl().setInsecure(true);
+
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.build(properties, Collections.emptyList());
+
+        assertThat(factory).isNotNull();
+        assertThat(factory).isInstanceOf(JdkClientHttpRequestFactory.class);
     }
 }

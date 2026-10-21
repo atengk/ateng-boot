@@ -193,14 +193,7 @@ public class HttpTemplate {
      * @return Optional 包装的实体对象
      */
     public <T> Optional<T> getOptional(String url, RequestOptions options, Class<T> responseType) {
-        try {
-            return Optional.ofNullable(get(url, options, responseType));
-        } catch (HttpRemoteException ex) {
-            if (ex.getHttpStatusCode() == 404) {
-                return Optional.empty();
-            }
-            throw ex;
-        }
+        return executeOptional(() -> get(url, options, responseType));
     }
 
     /**
@@ -214,8 +207,12 @@ public class HttpTemplate {
      * @return Optional 包装的实体对象
      */
     public <T> Optional<T> getOptional(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return executeOptional(() -> get(url, options, responseType));
+    }
+
+    private <T> Optional<T> executeOptional(java.util.function.Supplier<T> supplier) {
         try {
-            return Optional.ofNullable(get(url, options, responseType));
+            return Optional.ofNullable(supplier.get());
         } catch (HttpRemoteException ex) {
             if (ex.getHttpStatusCode() == 404) {
                 return Optional.empty();
@@ -476,7 +473,7 @@ public class HttpTemplate {
                 outputStream.flush();
             }
             return null;
-        }, false);
+        });
     }
 
     /**
@@ -491,6 +488,7 @@ public class HttpTemplate {
 
     /**
      * 携带动态 RequestOptions 流式下载远程文件并直接保存至指定的本地文件路径
+     * 若下载过程中发生异常，自动执行补偿清理以删除脏文件或 0 字节文件
      *
      * @param url        请求 URL 绝对路径
      * @param options    单次请求配置载荷（可为 null）
@@ -498,10 +496,20 @@ public class HttpTemplate {
      */
     public void download(String url, RequestOptions options, Path targetFile) {
         Assert.notNull(targetFile, "targetFile 不能为空");
-        try (OutputStream out = Files.newOutputStream(targetFile)) {
-            download(url, options, out);
-        } catch (IOException e) {
-            throw new BusinessException("写入目标本地文件失败: " + targetFile, e);
+        try {
+            try (OutputStream out = Files.newOutputStream(targetFile)) {
+                download(url, options, out);
+            }
+        } catch (Throwable t) {
+            try {
+                Files.deleteIfExists(targetFile);
+            } catch (IOException ignored) {
+                // 忽略次生清理异常
+            }
+            if (t instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new BusinessException("写入目标本地文件失败: " + targetFile, t);
         }
     }
 
@@ -536,6 +544,65 @@ public class HttpTemplate {
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         parts.add(partName, resource);
         return upload(url, parts, options, responseType);
+    }
+
+    /**
+     * 单资源流式 Multipart 文件上传（复杂泛型反序列化）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param partName     分片字段名（如 "file"）
+     * @param resource     待上传资源实体
+     * @param responseType 复杂泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, String partName, Resource resource, ParameterizedTypeReference<T> responseType) {
+        return upload(url, partName, resource, null, responseType);
+    }
+
+    /**
+     * 携带 RequestOptions 的单资源流式 Multipart 文件上传（复杂泛型反序列化）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param partName     分片字段名（如 "file"）
+     * @param resource     待上传资源实体
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 复杂泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, String partName, Resource resource, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(partName, "partName 不能为空");
+        Assert.notNull(resource, "resource 不能为空");
+        MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+        parts.add(partName, resource);
+        return upload(url, parts, options, responseType);
+    }
+
+    /**
+     * 多分片流式 Multipart 文件及表单上传（免传 options）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param parts        分片及表单数据字典
+     * @param responseType 响应类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, MultiValueMap<String, Object> parts, Class<T> responseType) {
+        return upload(url, parts, null, responseType);
+    }
+
+    /**
+     * 多分片流式 Multipart 上传并反序列化为复杂泛型（免传 options）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param parts        分片及表单数据字典
+     * @param responseType 复杂泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T upload(String url, MultiValueMap<String, Object> parts, ParameterizedTypeReference<T> responseType) {
+        return upload(url, parts, null, responseType);
     }
 
     /**

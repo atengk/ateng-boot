@@ -42,6 +42,11 @@ class HttpRemoteExceptionTest {
                 .isEqualTo(CommonResultCode.METHOD_NOT_ALLOWED);
         assertThat(new HttpRemoteException(429, HttpMethod.GET, url, "").getResultCode())
                 .isEqualTo(CommonResultCode.TOO_MANY_REQUESTS);
+        // 验证非直接枚举的 4xx (409 Conflict, 422 Unprocessable) 统一保底映射为客户端错误 BAD_REQUEST
+        assertThat(new HttpRemoteException(409, HttpMethod.POST, url, "").getResultCode())
+                .isEqualTo(CommonResultCode.BAD_REQUEST);
+        assertThat(new HttpRemoteException(422, HttpMethod.POST, url, "").getResultCode())
+                .isEqualTo(CommonResultCode.BAD_REQUEST);
         assertThat(new HttpRemoteException(500, HttpMethod.GET, url, "").getResultCode())
                 .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR);
         assertThat(new HttpRemoteException(502, HttpMethod.GET, url, "").getResultCode())

@@ -92,15 +92,18 @@ public class HttpRemoteException extends BusinessException {
      * @return 映射后的错误码契约
      */
     private static IResultCode resolveDefaultResultCode(int httpStatusCode) {
-        return switch (httpStatusCode) {
-            case 400 -> CommonResultCode.BAD_REQUEST;
-            case 401 -> CommonResultCode.UNAUTHORIZED;
-            case 403 -> CommonResultCode.FORBIDDEN;
-            case 404 -> CommonResultCode.NOT_FOUND;
-            case 405 -> CommonResultCode.METHOD_NOT_ALLOWED;
-            case 429 -> CommonResultCode.TOO_MANY_REQUESTS;
-            default -> CommonResultCode.INTERNAL_SERVER_ERROR;
-        };
+        if (httpStatusCode >= 400 && httpStatusCode < 500) {
+            return switch (httpStatusCode) {
+                case 400 -> CommonResultCode.BAD_REQUEST;
+                case 401 -> CommonResultCode.UNAUTHORIZED;
+                case 403 -> CommonResultCode.FORBIDDEN;
+                case 404 -> CommonResultCode.NOT_FOUND;
+                case 405 -> CommonResultCode.METHOD_NOT_ALLOWED;
+                case 429 -> CommonResultCode.TOO_MANY_REQUESTS;
+                default -> CommonResultCode.BAD_REQUEST;
+            };
+        }
+        return CommonResultCode.INTERNAL_SERVER_ERROR;
     }
 
     /**

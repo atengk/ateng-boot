@@ -48,5 +48,6 @@ public class HttpProperties {
     /**
      * 命名客户端专属配置映射表（按客户端名称映射独立个性化配置，留待后续阶段联动）
      */
+    @NestedConfigurationProperty
     private Map<String, HttpClientItemProperties> clients = new LinkedHashMap<>();
 }

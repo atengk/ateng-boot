@@ -1,6 +1,5 @@
 package io.github.atengk.boot.http.factory;
 
-import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
@@ -27,6 +26,7 @@ import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import javax.net.ssl.SSLContext;
@@ -100,7 +100,8 @@ public final class ApacheHttpClient5Factory {
         clientBuilder.setDefaultRequestConfig(requestConfig);
 
         // 6. 出口正向代理支持
-        if (proxy.isEnabled() && StringUtils.hasText(proxy.getHost())) {
+        if (proxy.isEnabled()) {
+            Assert.hasText(proxy.getHost(), "HTTP 代理已启用(ateng.boot.http.proxy.enabled=true)，代理主机 host 不能为空");
             HttpHost proxyHost = new HttpHost(proxy.getHost(), proxy.getPort());
             clientBuilder.setProxy(proxyHost);
             if (StringUtils.hasText(proxy.getUsername())) {

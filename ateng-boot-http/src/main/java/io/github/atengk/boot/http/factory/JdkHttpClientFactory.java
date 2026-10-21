@@ -1,6 +1,5 @@
 package io.github.atengk.boot.http.factory;
 
-import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
@@ -8,9 +7,11 @@ import io.github.atengk.boot.http.properties.HttpSslProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.net.Authenticator;
@@ -75,14 +76,18 @@ public final class JdkHttpClientFactory {
                 SSLContext sslContext = SSLContext.getInstance("TLS");
                 sslContext.init(null, trustAllCerts, new SecureRandom());
                 builder.sslContext(sslContext);
-                log.info("JDK HttpClient 已启用 Insecure SSL 模式，信任所有证书");
+                SSLParameters sslParameters = new SSLParameters();
+                sslParameters.setEndpointIdentificationAlgorithm("");
+                builder.sslParameters(sslParameters);
+                log.info("JDK HttpClient 已启用 Insecure SSL 模式，信任所有证书并跳过主机名校验");
             } catch (GeneralSecurityException e) {
                 throw new IllegalStateException("构建 JDK Insecure SSLContext 失败", e);
             }
         }
 
         // 3. 出口正向代理支持
-        if (proxy.isEnabled() && StringUtils.hasText(proxy.getHost())) {
+        if (proxy.isEnabled()) {
+            Assert.hasText(proxy.getHost(), "HTTP 代理已启用(ateng.boot.http.proxy.enabled=true)，代理主机 host 不能为空");
             builder.proxy(ProxySelector.of(new InetSocketAddress(proxy.getHost(), proxy.getPort())));
             if (StringUtils.hasText(proxy.getUsername())) {
                 builder.authenticator(new Authenticator() {
