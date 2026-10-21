@@ -47,3 +47,23 @@ _Avoid_: RetryInterceptor, BackoffInterceptor, SpringRetryTemplate
 **HttpResultCode**:
 HTTP 远程通信专职语义化结果码枚举（实现 Core 模块 IResultCode 契约），精准区分远程下游客户端错误（40001）、下游服务端内部错误（50001）、网络调用超时（50004）及网关不可达（50002）。
 _Avoid_: ResultCode, HttpResponseCode, ErrorCode
+
+**HttpClient**:
+声明式 HTTP 客户端核心标记注解，用于修饰 Spring 6 远程契约接口并显式绑定命名客户端标识、BaseUrl 及其占位符。
+_Avoid_: FeignClient, RetrofitClient, HttpApi, RemoteService
+
+**EnableHttpInterfaces**:
+声明式 HTTP 客户端接口包扫描驱动注解，自动导入 HttpInterfaceRegistrar 扫描指定候选包路径并向 Spring 容器注册代理工厂 Bean。
+_Avoid_: EnableFeignClients, ScanHttpInterfaces, EnableHttpServices
+
+**HttpInterfaceRegistrar**:
+基于 Spring 原生 ImportBeanDefinitionRegistrar 的轻量级包扫描注册器，负责解析带有 @HttpClient 注解的接口元数据并动态注入 HttpInterfaceFactoryBean。
+_Avoid_: FeignClientsRegistrar, HttpClientScanner, HttpServiceRegistrar
+
+**HttpInterfaceFactoryBean**:
+声明式 HTTP 接口动态代理工厂 Bean（实现 Spring FactoryBean 契约），负责自适应桥接 RestClient 并基于 Spring 6 原生 HttpServiceProxyFactory 生成强类型代理实例。
+_Avoid_: HttpProxyFactoryBean, FeignClientFactoryBean, DynamicHttpProxy
+
+**RestClientRegistry**:
+多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/隔离性）与单例实例缓存。
+_Avoid_: ClientManager, HttpClientContainer, RestClientPool
