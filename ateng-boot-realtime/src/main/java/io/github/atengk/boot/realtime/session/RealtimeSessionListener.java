@@ -1,5 +1,7 @@
 package io.github.atengk.boot.realtime.session;
 
+import org.springframework.web.socket.CloseStatus;
+
 /**
  * 实时通信受管会话生命周期监听器
  * <p>
@@ -25,5 +27,15 @@ public interface RealtimeSessionListener {
      * @param session 受管会话
      */
     default void onSessionClosed(RealtimeSession session) {
+    }
+
+    /**
+     * 会话关闭或注销后触发（携带关闭状态原因）
+     *
+     * @param session 受管会话
+     * @param status  关闭状态原因（可空）
+     */
+    default void onSessionClosed(RealtimeSession session, CloseStatus status) {
+        onSessionClosed(session);
     }
 }

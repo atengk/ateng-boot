@@ -1,5 +1,10 @@
 package io.github.atengk.boot.realtime.autoconfigure;
 
+import cn.dev33.satoken.stp.StpUtil;
+import io.github.atengk.boot.realtime.auth.AtengHandshakeInterceptor;
+import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
+import io.github.atengk.boot.realtime.auth.SaTokenRealtimeAuthProvider;
+import io.github.atengk.boot.realtime.event.RealtimeSessionEventPublisher;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSessionListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
@@ -13,6 +18,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -40,6 +46,39 @@ public class AtengRealtimeAutoConfiguration {
     public RealtimeSessionManager realtimeSessionManager(RealtimeProperties properties,
                                                          ObjectProvider<RealtimeSessionListener> sessionListeners) {
         return new RealtimeSessionManager(properties, sessionListeners);
+    }
+
+    /**
+     * 注册 Spring 原生应用事件发布监听器
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeSessionEventPublisher.class)
+    public RealtimeSessionEventPublisher realtimeSessionEventPublisher(ApplicationEventPublisher eventPublisher) {
+        return new RealtimeSessionEventPublisher(eventPublisher);
+    }
+
+    /**
+     * 注册默认 WebSocket 握手拦截器
+     */
+    @Bean
+    @ConditionalOnMissingBean(AtengHandshakeInterceptor.class)
+    public AtengHandshakeInterceptor atengHandshakeInterceptor(RealtimeProperties properties,
+                                                               ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
+        return new AtengHandshakeInterceptor(properties, authProvider);
+    }
+
+    /**
+     * Sa-Token 握手鉴权集成自动装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StpUtil.class)
+    public static class SaTokenRealtimeAuthConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(RealtimeAuthHandshakeProvider.class)
+        public SaTokenRealtimeAuthProvider saTokenRealtimeAuthProvider() {
+            return new SaTokenRealtimeAuthProvider();
+        }
     }
 
     /**
@@ -103,8 +142,9 @@ public class AtengRealtimeAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean(AtengSseController.class)
         public AtengSseController atengSseController(RealtimeProperties properties,
-                                                     RealtimeSessionManager sessionManager) {
-            return new AtengSseController(properties, sessionManager);
+                                                     RealtimeSessionManager sessionManager,
+                                                     ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
+            return new AtengSseController(properties, sessionManager, authProvider);
         }
     }
 }

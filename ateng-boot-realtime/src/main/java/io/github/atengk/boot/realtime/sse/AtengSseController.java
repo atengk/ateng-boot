@@ -1,13 +1,16 @@
 package io.github.atengk.boot.realtime.sse;
 
+import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
+import io.github.atengk.boot.realtime.auth.RealtimeAuthPayload;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -31,12 +35,25 @@ import java.util.UUID;
  */
 @Slf4j
 @RestController
-@RequiredArgsConstructor
 @CrossOrigin(originPatterns = "*")
 public class AtengSseController {
 
     private final RealtimeProperties properties;
     private final RealtimeSessionManager sessionManager;
+    private final ObjectProvider<RealtimeAuthHandshakeProvider> authProvider;
+
+    public AtengSseController(RealtimeProperties properties,
+                              RealtimeSessionManager sessionManager) {
+        this(properties, sessionManager, null);
+    }
+
+    public AtengSseController(RealtimeProperties properties,
+                              RealtimeSessionManager sessionManager,
+                              ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
+        this.properties = properties;
+        this.sessionManager = sessionManager;
+        this.authProvider = authProvider;
+    }
 
     /**
      * 建立 SSE 长连接流式事件通道
@@ -67,6 +84,29 @@ public class AtengSseController {
 
         // 3. 提取用户标识（支持 URL 参数传参或由安全拦截器注入的 request attribute）
         String actualUserId = (userId != null && !userId.isBlank()) ? userId.trim() : null;
+        Long actualTenantId = tenantId;
+
+        // 4. 若无直接 userId，通过三阶提取凭据 Token 并由 AuthProvider 鉴权
+        if (actualUserId == null && request != null) {
+            String token = extractToken(request);
+            if (token != null && !token.isBlank() && authProvider != null) {
+                RealtimeAuthHandshakeProvider provider = authProvider.getIfAvailable();
+                if (provider != null) {
+                    RealtimeAuthPayload payload = provider.authenticate(token);
+                    if (payload != null) {
+                        actualUserId = payload.getUserId();
+                        if (payload.getTenantId() != null && actualTenantId == null) {
+                            actualTenantId = payload.getTenantId();
+                        }
+                        if (actualDeviceType.equals(SessionKey.DEFAULT_DEVICE_TYPE) && payload.getDeviceType() != null) {
+                            actualDeviceType = payload.getDeviceType();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. 再次尝试从 request attribute 中提取已鉴权用户
         if (actualUserId == null && request != null) {
             Object attrUser = request.getAttribute("userId");
             if (attrUser != null) {
@@ -74,7 +114,7 @@ public class AtengSseController {
             }
         }
 
-        // 4. 身份校验与匿名防卫
+        // 6. 身份校验与匿名防卫
         if (actualUserId == null || actualUserId.isBlank()) {
             if (properties.getAuth().isAllowAnonymous()) {
                 actualUserId = SessionKey.ANONYMOUS_USER_PREFIX + actualClientId;
@@ -84,13 +124,13 @@ public class AtengSseController {
             }
         }
 
-        // 5. 构建 SessionKey 与受管 SseEmitter
+        // 7. 构建 SessionKey 与受管 SseEmitter
         SessionKey sessionKey = SessionKey.of(actualUserId, actualDeviceType, actualClientId);
         Duration defaultTimeout = properties.getSse().getDefaultTimeout();
         SseEmitter emitter = SseStreamHelper.create(defaultTimeout);
 
-        // 6. 注册生命周期托管到 RealtimeSessionManager
-        RealtimeSession session = RealtimeSession.ofSse(sessionKey, emitter, tenantId, null);
+        // 8. 注册生命周期托管到 RealtimeSessionManager
+        RealtimeSession session = RealtimeSession.ofSse(sessionKey, emitter, actualTenantId, null);
 
         emitter.onCompletion(() -> {
             log.debug("[Realtime] SSE 连接自然关闭: sessionKey={}", sessionKey);
@@ -120,9 +160,47 @@ public class AtengSseController {
             return emitter;
         }
 
-        // 7. 下发连接建立保底确认注释帧，防止代理网关超时掐断
+        // 9. 下发连接建立保底确认注释帧，防止代理网关超时掐断
         SseStreamHelper.sendComment(emitter, "connected:" + sessionKey.format());
 
         return emitter;
+    }
+
+    private String extractToken(HttpServletRequest request) {
+        List<String> tokenParamNames = (properties != null && properties.getAuth() != null)
+                ? properties.getAuth().getTokenQueryParamNames()
+                : List.of("token", "satoken", "access_token");
+
+        // 一阶: Query
+        for (String param : tokenParamNames) {
+            String val = request.getParameter(param);
+            if (val != null && !val.isBlank()) {
+                return val.trim();
+            }
+        }
+
+        // 二阶: Header
+        String authHeader = request.getHeader("Authorization");
+        if (authHeader != null && !authHeader.isBlank()) {
+            String trimmed = authHeader.trim();
+            if (trimmed.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                return trimmed.substring(7).trim();
+            }
+            return trimmed;
+        }
+
+        // 三阶: Cookie
+        Cookie[] cookies = request.getCookies();
+        if (cookies != null) {
+            for (String param : tokenParamNames) {
+                for (Cookie c : cookies) {
+                    if (param.equalsIgnoreCase(c.getName()) && c.getValue() != null && !c.getValue().isBlank()) {
+                        return c.getValue().trim();
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 }

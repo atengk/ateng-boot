@@ -152,6 +152,17 @@ public class RealtimeSessionManager {
      * @return 移除的原会话实例（若不存在则返回 null）
      */
     public RealtimeSession removeSession(SessionKey sessionKey) {
+        return removeSession(sessionKey, null);
+    }
+
+    /**
+     * 注销并移除受管会话（携带关闭状态原因）
+     *
+     * @param sessionKey 会话坐标
+     * @param status     关闭状态原因
+     * @return 移除的原会话实例
+     */
+    public RealtimeSession removeSession(SessionKey sessionKey, CloseStatus status) {
         if (sessionKey == null) {
             return null;
         }
@@ -184,7 +195,7 @@ public class RealtimeSessionManager {
                 }
             }
             // 触发注销监听回调
-            notifySessionClosed(removed);
+            notifySessionClosed(removed, status);
             log.debug("[Realtime] 会话注销成功: sessionKey={}", sessionKey);
         }
         return removed;
@@ -198,7 +209,7 @@ public class RealtimeSessionManager {
      * @return 关闭的原会话实例
      */
     public RealtimeSession removeAndClose(SessionKey sessionKey, CloseStatus status) {
-        RealtimeSession session = removeSession(sessionKey);
+        RealtimeSession session = removeSession(sessionKey, status);
         if (session != null) {
             session.close(status != null ? status : RealtimeCloseStatus.NORMAL);
         }
@@ -373,10 +384,10 @@ public class RealtimeSessionManager {
         }
     }
 
-    private void notifySessionClosed(RealtimeSession session) {
+    private void notifySessionClosed(RealtimeSession session, CloseStatus status) {
         for (RealtimeSessionListener listener : listeners) {
             try {
-                listener.onSessionClosed(session);
+                listener.onSessionClosed(session, status);
             } catch (Throwable t) {
                 log.warn("[Realtime] 会话关闭监听器执行异常: listener={}, error={}", listener.getClass().getName(), t.getMessage());
             }

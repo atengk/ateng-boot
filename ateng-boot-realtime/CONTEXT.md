@@ -32,9 +32,25 @@ _Avoid_: SocketMessage, WsPayload, EventMessage, PushData
 实时通信底层物理通道协议类型枚举，明确定义为 WEBSOCKET（全双工）与 SSE（单向流）。
 _Avoid_: ProtocolType, ConnType, SocketType
 
+**RealtimeAuthPayload**:
+实时通信握手身份认证解析载荷实体，规范化承载用户唯一标识（userId）、设备类型（deviceType）、多租户标识（tenantId）、匿名标记与扩展属性。
+_Avoid_: AuthResult, UserPrincipal, AuthToken, RealtimeUser
+
 **RealtimeAuthHandshakeProvider**:
 握手连接身份认证与凭据解析 SPI 扩展点，按优先级自适应解析 Query 参数、HTTP Header 及 Cookie，并将认证结果映射绑定至会话。
 _Avoid_: HandshakeInterceptor, AuthProvider, TokenParser
+
+**SaTokenRealtimeAuthProvider**:
+基于 Sa-Token 框架的实时通信握手鉴权具体实现，自适应提取 userId、多租户 tenantId、多端 deviceType 及 LoginUser 会话实体。
+_Avoid_: SaTokenAuthService, SaTokenHandshakeHandler
+
+**AtengHandshakeInterceptor**:
+实时通信原生 WebSocket 握手拦截器，自适应执行 Query -> Header -> Cookie 三阶凭据提取，支持匿名放行与 Sec-WebSocket-Protocol 协议回执。
+_Avoid_: RealtimeHandshakeInterceptor, WebSocketAuthInterceptor, WsHandshakeFilter
+
+**RealtimeSessionEventPublisher**:
+实时会话 Spring 原生应用事件发布监听器，监听会话建立与销毁，解耦发布 RealtimeConnectedEvent 与 RealtimeDisconnectedEvent。
+_Avoid_: SessionEventDispatcher, RealtimeEventBroadcaster
 
 **RealtimeClusterBroadcaster**:
 跨节点分布式集群广播门面组件，单机模式下内存自洽，探测到 RedissonClient 时自动无缝升级为 Redis Pub/Sub 广播并附带源节点防反射过滤。
