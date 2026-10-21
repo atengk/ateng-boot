@@ -49,6 +49,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Redisson 分布式客户端 (可选依赖，用于自动装配 Redis Pub/Sub 跨节点广播) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -32,6 +32,12 @@ public class RealtimeProperties {
     private ClusterMode clusterMode = ClusterMode.AUTO;
 
     /**
+     * 集群分布式协同配置
+     */
+    @NestedConfigurationProperty
+    private ClusterProperties cluster = new ClusterProperties();
+
+    /**
      * 握手鉴权与凭据解析配置
      */
     @NestedConfigurationProperty
@@ -207,5 +213,17 @@ public class RealtimeProperties {
          * 允许跨域来源列表（默认: *）
          */
         private List<String> allowedOrigins = new ArrayList<>(List.of("*"));
+    }
+
+    /**
+     * 集群分布式协同配置
+     */
+    @Data
+    public static class ClusterProperties {
+
+        /**
+         * 集群广播 Redis Topic 主题名称（默认: ateng:realtime:broadcast）
+         */
+        private String topic = "ateng:realtime:broadcast";
     }
 }

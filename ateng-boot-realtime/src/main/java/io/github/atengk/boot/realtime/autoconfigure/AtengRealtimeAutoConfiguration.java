@@ -4,8 +4,12 @@ import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.realtime.auth.AtengHandshakeInterceptor;
 import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
 import io.github.atengk.boot.realtime.auth.SaTokenRealtimeAuthProvider;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageListener;
+import io.github.atengk.boot.realtime.enums.ClusterMode;
 import io.github.atengk.boot.realtime.event.RealtimeSessionEventPublisher;
 import io.github.atengk.boot.realtime.group.RealtimeGroupManager;
 import io.github.atengk.boot.realtime.heartbeat.GhostConnectionDetector;
@@ -16,8 +20,10 @@ import io.github.atengk.boot.realtime.sse.AtengSseController;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketConfigurer;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketHandler;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -123,6 +129,35 @@ public class AtengRealtimeAutoConfiguration {
         public SaTokenRealtimeAuthProvider saTokenRealtimeAuthProvider() {
             return new SaTokenRealtimeAuthProvider();
         }
+    }
+
+    /**
+     * Redisson 集群广播自动装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(RedissonClient.class)
+    public static class RedissonClusterConfiguration {
+
+        @Bean
+        @ConditionalOnBean(RedissonClient.class)
+        @ConditionalOnMissingBean(RealtimeClusterBroadcaster.class)
+        public RealtimeClusterBroadcaster redissonRealtimeClusterBroadcaster(
+                RedissonClient redissonClient,
+                RealtimeProperties properties) {
+            if (properties.getClusterMode() == ClusterMode.STANDALONE) {
+                return new StandaloneRealtimeClusterBroadcaster();
+            }
+            return new RedissonRealtimeClusterBroadcaster(redissonClient, properties);
+        }
+    }
+
+    /**
+     * 注册单机保底广播器（当无 Redisson 或未配置集群时生效）
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeClusterBroadcaster.class)
+    public RealtimeClusterBroadcaster standaloneRealtimeClusterBroadcaster() {
+        return new StandaloneRealtimeClusterBroadcaster();
     }
 
     /**
