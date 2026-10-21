@@ -365,15 +365,25 @@ public class RabbitReliableTemplate {
      * 构建消息对象：注入四维上下文、序列化载荷、报文体积 Fail-Fast 校验与透明 GZIP 压缩
      */
     private Message prepareMessage(String exchange, Object payload, MessageProperties messageProperties, String bizKey) {
-        // 1. 抓取当前调用线程四维上下文并注入消息头 (UTF-8 归一化)
+        // 1. 尝试按优先级解析有效业务键：显式传参 -> Payload/Message 原生 Header -> 兜底由 inject 赋 traceId
+        String resolvedBizKey = resolveBizKey(payload, messageProperties, bizKey);
+
+        // 2. 抓取当前调用线程四维上下文并注入消息头 (UTF-8 归一化)
         Map<String, Object> headers = new HashMap<>();
-        MessageContextPropagator.inject(headers, bizKey);
+        MessageContextPropagator.inject(headers, resolvedBizKey);
         headers.forEach(messageProperties::setHeader);
 
-        // 2. 序列化为 Message 对象
+        // 3. 序列化为 Message 对象
         Message message;
         if (payload instanceof Message msg) {
-            headers.forEach((k, v) -> msg.getMessageProperties().setHeader(k, v));
+            MessageProperties props = msg.getMessageProperties();
+            headers.forEach((k, v) -> {
+                if (!MessageHeaderConstants.BIZ_KEY.equals(k) || bizKey != null) {
+                    props.setHeader(k, v);
+                } else if (props.getHeader(k) == null) {
+                    props.setHeader(k, v);
+                }
+            });
             message = msg;
         } else if (payload instanceof byte[] bytes) {
             message = new Message(bytes, messageProperties);
@@ -388,7 +398,7 @@ public class RabbitReliableTemplate {
         // 提取已归一化的业务键
         String effectiveBizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
 
-        // 3. 校验出站报文原始体积 (Fail-Fast 防爆)
+        // 4. 校验出站报文原始体积 (Fail-Fast 防爆)
         byte[] body = message.getBody();
         long rawSize = body != null ? body.length : 0L;
         long maxPayloadSize = properties.getProducer().getMaxPayloadSize().toBytes();
@@ -401,7 +411,7 @@ public class RabbitReliableTemplate {
                             rawSize, maxPayloadSize, payload.getClass().getSimpleName()));
         }
 
-        // 4. 透明 GZIP 压缩
+        // 5. 透明 GZIP 压缩
         if (properties.getProducer().isCompressionEnabled()) {
             long compressionThreshold = properties.getProducer().getCompressionThreshold().toBytes();
             if (rawSize > compressionThreshold) {
@@ -410,6 +420,43 @@ public class RabbitReliableTemplate {
         }
 
         return message;
+    }
+
+    /**
+     * 按三级优先级自适应解析业务键 (显式传参 -> Payload/Message 原生 Header/实体属性 -> null)
+     */
+    private String resolveBizKey(Object payload, MessageProperties messageProperties, String explicitBizKey) {
+        if (explicitBizKey != null && !explicitBizKey.isBlank()) {
+            return explicitBizKey;
+        }
+        if (payload instanceof Message msg) {
+            String msgBizKey = MessageContextPropagator.extractString(msg.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
+            if (msgBizKey != null && !msgBizKey.isBlank()) {
+                return msgBizKey;
+            }
+        }
+        if (messageProperties != null) {
+            String propBizKey = MessageContextPropagator.extractString(messageProperties.getHeaders(), MessageHeaderConstants.BIZ_KEY);
+            if (propBizKey != null && !propBizKey.isBlank()) {
+                return propBizKey;
+            }
+        }
+        if (payload instanceof Map<?, ?> map) {
+            Object mapBizKey = map.get("bizKey");
+            if (mapBizKey == null) {
+                mapBizKey = map.get("bizId");
+            }
+            if (mapBizKey == null) {
+                mapBizKey = map.get("id");
+            }
+            if (mapBizKey != null) {
+                String str = String.valueOf(mapBizKey);
+                if (!str.isBlank()) {
+                    return str;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -429,7 +476,7 @@ public class RabbitReliableTemplate {
         CorrelationData correlationData = new CorrelationData(correlationId);
         CompletableFuture<CorrelationData.Confirm> future = correlationData.getFuture();
 
-        // 挂载异步审计宏日志
+        // 挂载异步审计宏日志 (单次发送的唯一日志出口，防双重打印)
         future.whenComplete((confirm, ex) -> {
             long cost = System.currentTimeMillis() - start;
             if (ex != null || (confirm != null && !confirm.isAck())) {
@@ -443,8 +490,6 @@ public class RabbitReliableTemplate {
         try {
             rabbitTemplate.send(exchange, routingKey, message, correlationData);
         } catch (Throwable ex) {
-            long cost = System.currentTimeMillis() - start;
-            logMacroSend(exchange, routingKey, bizKey, traceId, size, "FAILED", cost, ex.getMessage());
             MessageDeliveryException mde = new MessageDeliveryException(
                     MQ_TYPE_RABBITMQ,
                     exchange,

@@ -32,6 +32,7 @@ import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.amqp.support.postprocessor.GUnzipPostProcessor;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration;
@@ -40,8 +41,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnThreading;
+import org.springframework.boot.autoconfigure.thread.Threading;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.retry.interceptor.RetryOperationsInterceptor;
 
 import java.util.Collections;
@@ -58,6 +64,7 @@ import java.util.Map;
 @ConditionalOnClass({RabbitTemplate.class, Channel.class})
 @ConditionalOnProperty(prefix = "ateng.boot.rabbitmq", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(RabbitmqProperties.class)
+@Import(AtengRabbitmqAutoConfiguration.VirtualThreadsConfiguration.class)
 public class AtengRabbitmqAutoConfiguration {
 
     /**
@@ -120,7 +127,7 @@ public class AtengRabbitmqAutoConfiguration {
                 rabbitTemplate.setMandatory(true);
                 returnsCallbackProvider.ifAvailable(rabbitTemplate::setReturnsCallback);
             }
-            rabbitTemplate.setAfterReceivePostProcessors(new GUnzipPostProcessor());
+            rabbitTemplate.addAfterReceivePostProcessors(new GUnzipPostProcessor());
             observationRegistryProvider.ifAvailable(registry -> rabbitTemplate.setObservationEnabled(true));
         };
     }
@@ -173,62 +180,118 @@ public class AtengRabbitmqAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public ContainerCustomizer<SimpleMessageListenerContainer> atengContainerCustomizer(RabbitmqProperties properties) {
-        return container -> container.setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
+        return container -> {
+            container.setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
+            container.addAfterReceivePostProcessors(new GUnzipPostProcessor());
+        };
     }
 
     /**
      * 容器工厂与 RabbitAdmin 生命周期后置增强处理器
      */
     @Bean
-    public static BeanPostProcessor atengRabbitLifecycleBeanPostProcessor(
+    @ConditionalOnMissingBean(name = "atengRabbitLifecycleBeanPostProcessor")
+    public static AtengRabbitLifecycleBeanPostProcessor atengRabbitLifecycleBeanPostProcessor(
             ObjectProvider<RabbitmqProperties> propertiesProvider,
             ObjectProvider<MessageConverter> messageConverterProvider,
             ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
             ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider) {
-        return new BeanPostProcessor() {
-            @Override
-            public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
-                if (bean instanceof SimpleRabbitListenerContainerFactory factory) {
-                    RabbitmqProperties properties = propertiesProvider.getIfAvailable();
-                    if (properties != null) {
-                        RabbitmqProperties.Consumer consumer = properties.getConsumer();
-                        factory.setPrefetchCount(consumer.getPrefetch());
-                        factory.setConcurrentConsumers(consumer.getConcurrency());
-                        factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
+        return new AtengRabbitLifecycleBeanPostProcessor(
+                propertiesProvider,
+                messageConverterProvider,
+                errorHandlerProvider,
+                adviceProvider,
+                observationRegistryProvider);
+    }
 
-                        // 装配消费端受控防卫拦截链与本地指数退避重试
-                        RabbitListenerGlobalAdvice globalAdvice = adviceProvider.getIfAvailable();
-                        if (globalAdvice != null) {
-                            RabbitmqProperties.Consumer.Retry retryProps = consumer.getRetry();
-                            if (retryProps.isEnabled()) {
-                                RetryOperationsInterceptor retryInterceptor = RetryInterceptorBuilder.stateless()
-                                        .retryPolicy(new RabbitRetryPolicy(retryProps.getMaxAttempts()))
-                                        .backOffOptions(
-                                                retryProps.getInitialInterval().toMillis(),
-                                                retryProps.getMultiplier(),
-                                                retryProps.getMaxInterval().toMillis())
-                                        .recoverer(new RejectAndDontRequeueRecoverer())
-                                        .build();
-                                factory.setAdviceChain(retryInterceptor, globalAdvice);
-                            } else {
-                                factory.setAdviceChain(globalAdvice);
-                            }
+    /**
+     * Rabbit 监听器容器与 Admin 生命周期后置处理器实现类
+     */
+    public static class AtengRabbitLifecycleBeanPostProcessor implements BeanPostProcessor {
+        private final ObjectProvider<RabbitmqProperties> propertiesProvider;
+        private final ObjectProvider<MessageConverter> messageConverterProvider;
+        private final ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider;
+        private final ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider;
+        private final ObjectProvider<ObservationRegistry> observationRegistryProvider;
+
+        public AtengRabbitLifecycleBeanPostProcessor(
+                ObjectProvider<RabbitmqProperties> propertiesProvider,
+                ObjectProvider<MessageConverter> messageConverterProvider,
+                ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
+                ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider,
+                ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+            this.propertiesProvider = propertiesProvider;
+            this.messageConverterProvider = messageConverterProvider;
+            this.errorHandlerProvider = errorHandlerProvider;
+            this.adviceProvider = adviceProvider;
+            this.observationRegistryProvider = observationRegistryProvider;
+        }
+
+        @Override
+        public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+            if (bean instanceof SimpleRabbitListenerContainerFactory factory) {
+                RabbitmqProperties properties = propertiesProvider.getIfAvailable();
+                if (properties != null) {
+                    RabbitmqProperties.Consumer consumer = properties.getConsumer();
+                    factory.setPrefetchCount(consumer.getPrefetch());
+                    factory.setConcurrentConsumers(consumer.getConcurrency());
+                    factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
+
+                    // 装配消费端受控防卫拦截链与本地指数退避重试
+                    RabbitListenerGlobalAdvice globalAdvice = adviceProvider.getIfAvailable();
+                    if (globalAdvice != null) {
+                        RabbitmqProperties.Consumer.Retry retryProps = consumer.getRetry();
+                        if (retryProps.isEnabled()) {
+                            RetryOperationsInterceptor retryInterceptor = RetryInterceptorBuilder.stateless()
+                                    .retryPolicy(new RabbitRetryPolicy(retryProps.getMaxAttempts()))
+                                    .backOffOptions(
+                                            retryProps.getInitialInterval().toMillis(),
+                                            retryProps.getMultiplier(),
+                                            retryProps.getMaxInterval().toMillis())
+                                    .recoverer(new RejectAndDontRequeueRecoverer())
+                                    .build();
+                            factory.setAdviceChain(retryInterceptor, globalAdvice);
+                        } else {
+                            factory.setAdviceChain(globalAdvice);
                         }
                     }
-                    errorHandlerProvider.ifAvailable(factory::setErrorHandler);
-                    messageConverterProvider.ifAvailable(factory::setMessageConverter);
-                    factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
-                    observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
-                } else if (bean instanceof RabbitAdmin admin) {
-                    RabbitmqProperties properties = propertiesProvider.getIfAvailable();
-                    if (properties != null && !properties.getTopology().isAutoDeclare()) {
-                        log.info("[RABBITMQ-TOPOLOGY] auto-declare=false，已禁用 RabbitAdmin 启动自动建队与声明拓扑");
-                        admin.setAutoStartup(false);
-                    }
                 }
-                return bean;
+                errorHandlerProvider.ifAvailable(factory::setErrorHandler);
+                messageConverterProvider.ifAvailable(factory::setMessageConverter);
+                factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
+                observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
+            } else if (bean instanceof RabbitAdmin admin) {
+                RabbitmqProperties properties = propertiesProvider.getIfAvailable();
+                if (properties != null && !properties.getTopology().isAutoDeclare()) {
+                    log.info("[RABBITMQ-TOPOLOGY] auto-declare=false，已禁用 RabbitAdmin 启动自动建队与声明拓扑");
+                    admin.setAutoStartup(false);
+                }
             }
-        };
+            return bean;
+        }
+    }
+
+    /**
+     * JDK 21+ 虚拟线程自适应环境下的监听器容器调度执行器装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnThreading(Threading.VIRTUAL)
+    static class VirtualThreadsConfiguration {
+
+        @Bean(name = "atengRabbitVirtualTaskExecutor")
+        @ConditionalOnMissingBean(name = "atengRabbitVirtualTaskExecutor")
+        public SimpleAsyncTaskExecutor atengRabbitVirtualTaskExecutor() {
+            SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor("ateng-vt-rabbit-");
+            executor.setVirtualThreads(true);
+            return executor;
+        }
+
+        @Bean(name = "atengRabbitVirtualThreadCustomizer")
+        @ConditionalOnMissingBean(name = "atengRabbitVirtualThreadCustomizer")
+        public ContainerCustomizer<SimpleMessageListenerContainer> atengRabbitVirtualThreadCustomizer(
+                @Qualifier("atengRabbitVirtualTaskExecutor") SimpleAsyncTaskExecutor executor) {
+            return container -> container.setTaskExecutor(executor);
+        }
     }
 }

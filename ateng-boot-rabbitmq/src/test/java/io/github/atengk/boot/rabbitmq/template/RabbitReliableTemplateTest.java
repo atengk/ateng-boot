@@ -336,4 +336,48 @@ class RabbitReliableTemplateTest {
     void testGetRabbitTemplate() {
         assertThat(template.getRabbitTemplate()).isSameAs(rabbitTemplate);
     }
+
+    @Test
+    @DisplayName("原生 Message 携带业务键且未显式传参时保持原头不被 TraceId 逆向覆盖")
+    void testNativeMessageBizKeyPreservedWhenParamNull() {
+        org.mockito.ArgumentCaptor<Message> messageCaptor = org.mockito.ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("test.exchange"), eq("test.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        MessageProperties props = new MessageProperties();
+        props.setHeader(io.github.atengk.boot.core.constant.MessageHeaderConstants.BIZ_KEY, "RAW-BIZ-999");
+        Message rawMessage = new Message("raw-body".getBytes(java.nio.charset.StandardCharsets.UTF_8), props);
+
+        template.sendReliable("test.exchange", "test.key", rawMessage);
+
+        Message captured = messageCaptor.getValue();
+        String headerBizKey = io.github.atengk.boot.core.context.MessageContextPropagator.extractString(
+                captured.getMessageProperties().getHeaders(), io.github.atengk.boot.core.constant.MessageHeaderConstants.BIZ_KEY);
+        assertThat(headerBizKey).isEqualTo("RAW-BIZ-999");
+    }
+
+    @Test
+    @DisplayName("显式传入 bizKey 时优先覆盖原生 Message 中携带的旧业务键")
+    void testExplicitBizKeyOverridesNativeMessageBizKey() {
+        org.mockito.ArgumentCaptor<Message> messageCaptor = org.mockito.ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("test.exchange"), eq("test.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        MessageProperties props = new MessageProperties();
+        props.setHeader(io.github.atengk.boot.core.constant.MessageHeaderConstants.BIZ_KEY, "OLD-BIZ-111");
+        Message rawMessage = new Message("raw-body".getBytes(java.nio.charset.StandardCharsets.UTF_8), props);
+
+        template.sendReliable("test.exchange", "test.key", rawMessage, "NEW-EXPLICIT-BIZ");
+
+        Message captured = messageCaptor.getValue();
+        String headerBizKey = io.github.atengk.boot.core.context.MessageContextPropagator.extractString(
+                captured.getMessageProperties().getHeaders(), io.github.atengk.boot.core.constant.MessageHeaderConstants.BIZ_KEY);
+        assertThat(headerBizKey).isEqualTo("NEW-EXPLICIT-BIZ");
+    }
 }

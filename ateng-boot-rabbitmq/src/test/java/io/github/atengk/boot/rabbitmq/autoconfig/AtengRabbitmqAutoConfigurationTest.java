@@ -115,6 +115,43 @@ class AtengRabbitmqAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("用户自定义 BeanPostProcessor 时平滑无缝覆盖 (@ConditionalOnMissingBean)")
+    void testUserCustomLifecycleBeanPostProcessorOverride() {
+        contextRunner
+                .withUserConfiguration(CustomLifecycleBeanPostProcessorConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("atengRabbitLifecycleBeanPostProcessor");
+                    assertThat(context.getBean("atengRabbitLifecycleBeanPostProcessor"))
+                            .isNotInstanceOf(AtengRabbitmqAutoConfiguration.AtengRabbitLifecycleBeanPostProcessor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("开启虚拟线程配置时自适应装配或平滑降级")
+    void testVirtualThreadsAutoConfiguration() {
+        contextRunner
+                .withPropertyValues("spring.threads.virtual.enabled=true")
+                .run(context -> {
+                    boolean isJdk21OrLater = Runtime.version().feature() >= 21;
+                    if (isJdk21OrLater) {
+                        assertThat(context).hasBean("atengRabbitVirtualTaskExecutor");
+                        assertThat(context).hasBean("atengRabbitVirtualThreadCustomizer");
+                    } else {
+                        assertThat(context).doesNotHaveBean("atengRabbitVirtualTaskExecutor");
+                        assertThat(context).doesNotHaveBean("atengRabbitVirtualThreadCustomizer");
+                    }
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomLifecycleBeanPostProcessorConfiguration {
+        @Bean
+        public org.springframework.beans.factory.config.BeanPostProcessor atengRabbitLifecycleBeanPostProcessor() {
+            return new org.springframework.beans.factory.config.BeanPostProcessor() {};
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class MockRabbitAdminConfiguration {
         @Bean

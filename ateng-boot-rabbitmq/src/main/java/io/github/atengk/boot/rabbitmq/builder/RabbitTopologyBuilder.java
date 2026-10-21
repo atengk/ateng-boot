@@ -327,23 +327,21 @@ public final class RabbitTopologyBuilder {
                 Queue mainQueue = new Queue(def.queueName, def.durable, def.exclusive, def.autoDelete, def.arguments);
                 declarables.add(mainQueue);
 
-                // 3. 注册主队列与交换机的绑定关系
+                // 3. 注册主队列与交换机的绑定关系 (未配置路由键时默认以队列名作为单一路由键)
+                Set<String> effectiveRoutingKeys = def.routingKeys.isEmpty() ? Set.of(def.queueName) : def.routingKeys;
                 if (this.exchange instanceof FanoutExchange fanout) {
                     declarables.add(BindingBuilder.bind(mainQueue).to(fanout));
                 } else if (this.exchange instanceof TopicExchange topic) {
-                    Set<String> rks = def.routingKeys.isEmpty() ? Set.of(def.queueName) : def.routingKeys;
-                    for (String rk : rks) {
+                    for (String rk : effectiveRoutingKeys) {
                         declarables.add(BindingBuilder.bind(mainQueue).to(topic).with(rk));
                     }
                 } else if (this.exchange instanceof DirectExchange direct) {
-                    Set<String> rks = def.routingKeys.isEmpty() ? Set.of(def.queueName) : def.routingKeys;
-                    for (String rk : rks) {
+                    for (String rk : effectiveRoutingKeys) {
                         declarables.add(BindingBuilder.bind(mainQueue).to(direct).with(rk));
                     }
                 } else {
                     // 自定义或延迟交换机 (CustomExchange)
-                    Set<String> rks = def.routingKeys.isEmpty() ? Set.of(def.queueName) : def.routingKeys;
-                    for (String rk : rks) {
+                    for (String rk : effectiveRoutingKeys) {
                         declarables.add(BindingBuilder.bind(mainQueue).to(this.exchange).with(rk).noargs());
                     }
                 }

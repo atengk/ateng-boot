@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -152,5 +153,35 @@ class MessageContextPropagatorTest {
         assertNull(MessageContextPropagator.extractString(map, "nullKey"));
         assertNull(MessageContextPropagator.extractString(map, "nonExistentKey"));
         assertNull(MessageContextPropagator.extractString(null, "strKey"));
+    }
+
+    @Test
+    @DisplayName("入站未携带头信息时彻底杜绝旧上下文脏读逃逸并在退出时恢复现场")
+    void testContextBleedPreventionAndRestoration() {
+        // 模拟线程池复用时的旧残留现场
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "old-trace-id");
+        MDC.put("custom-key", "custom-val");
+        UserContextHolder.set("old-user");
+        TenantContextHolder.setTenantId("old-tenant");
+        TenantContextHolder.setIgnoreTenant(true);
+
+        // 入站消息完全未携带上下文头
+        Map<String, Object> emptyHeaders = Collections.emptyMap();
+        try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(emptyHeaders)) {
+            // scope 内部不应继承旧线程残留，且 traceId 自动生成
+            assertNotEquals("old-trace-id", MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            assertNotNull(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            assertNull(MDC.get("custom-key"));
+            assertNull(UserContextHolder.getExplicit());
+            assertNull(TenantContextHolder.getTenantId());
+            assertFalse(TenantContextHolder.isIgnoreTenant());
+        }
+
+        // 退出 scope 后原始线程现场精准还原
+        assertEquals("old-trace-id", MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+        assertEquals("custom-val", MDC.get("custom-key"));
+        assertEquals("old-user", UserContextHolder.getExplicit());
+        assertEquals("old-tenant", TenantContextHolder.getTenantId());
+        assertTrue(TenantContextHolder.isIgnoreTenant());
     }
 }

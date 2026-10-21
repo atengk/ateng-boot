@@ -15,6 +15,7 @@ import io.github.atengk.boot.sample.rabbitmq.model.OrderCreateMessage;
 import io.github.atengk.boot.sample.rabbitmq.model.OrderTimeoutMessage;
 import io.github.atengk.boot.sample.rabbitmq.producer.TradeMessageProducer;
 import io.github.atengk.boot.sample.rabbitmq.service.OrderTransactionService;
+import org.aopalliance.intercept.MethodInvocation;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -271,11 +272,18 @@ class SampleRabbitmqE2eTest {
                     } else if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_IDEMPOTENT.equals(routingKey)) {
                         String payload = (String) converter.fromMessage(message);
                         String bizKey = (String) message.getMessageProperties().getHeaders().get("X-Biz-Key");
+                        // 真实挂载 RabbitListenerGlobalAdvice 拦截切面，端到端检验幂等异常静默确认 (Silent ACK)
+                        MethodInvocation methodInvocation = mock(MethodInvocation.class);
+                        when(methodInvocation.getArguments()).thenReturn(new Object[]{message});
                         try {
-                            idempotentConsumer.onConsume(payload, bizKey);
-                        } catch (IdempotentException e) {
-                            // 模拟 RabbitListenerGlobalAdvice 的静默确认切面拦截
-                            // 切面捕获后执行 silent ACK，正常返回 null，不向外抛出
+                            when(methodInvocation.proceed()).thenAnswer(inv -> {
+                                idempotentConsumer.onConsume(payload, bizKey);
+                                return null;
+                            });
+                            Object adviceResult = globalAdvice.invoke(methodInvocation);
+                            assertThat(adviceResult).isNull();
+                        } catch (Throwable t) {
+                            throw new RuntimeException("RabbitListenerGlobalAdvice 未能正常静默确认消费", t);
                         }
                     }
                 } else if (RabbitScenarioTopologyConfig.EXCHANGE_LOG_TOPIC.equals(exchange)) {

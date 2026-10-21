@@ -31,7 +31,6 @@ public final class FatalExceptionClassifier {
             "org.springframework.web.bind.MethodArgumentNotValidException",
             "org.springframework.validation.BindException",
             "org.springframework.core.codec.DecodingException",
-            "org.springframework.amqp.rabbit.support.ListenerExecutionFailedException",
             "org.apache.kafka.common.errors.SerializationException",
             "com.fasterxml.jackson.core.JsonParseException",
             "com.fasterxml.jackson.databind.JsonMappingException",

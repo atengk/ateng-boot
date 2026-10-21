@@ -107,14 +107,16 @@ public final class MessageContextPropagator {
         String userId = extractString(headers, MessageHeaderConstants.USER_ID);
         String ignoreTenant = extractString(headers, MessageHeaderConstants.IGNORE_TENANT);
 
-        // 3. 激活 MDC TraceId (若消息未携带 traceId，则生成新 ID 保证链路可追踪)
+        // 3. 激活 MDC TraceId (隔离当前现场，若消息未携带 traceId，则生成新 ID 保证链路可追踪)
+        MDC.clear();
         if (traceId != null && !traceId.isBlank()) {
             MDC.put(MDC_TRACE_ID_KEY, traceId);
         } else {
             MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
         }
 
-        // 4. 激活 Tenant 上下文
+        // 4. 激活 Tenant 上下文 (先清空当前线程旧现场，防止入站消息未携带租户头时发生脏读逃逸)
+        TenantContextHolder.clear();
         if (tenantId != null && !tenantId.isBlank()) {
             TenantContextHolder.setTenantId(tenantId);
         }
@@ -122,9 +124,11 @@ public final class MessageContextPropagator {
             TenantContextHolder.setIgnoreTenant(true);
         }
 
-        // 5. 激活 User 上下文
+        // 5. 激活 User 上下文 (显式设置或清空当前线程旧现场)
         if (userId != null && !userId.isBlank()) {
             UserContextHolder.set(userId);
+        } else {
+            UserContextHolder.clear();
         }
 
         // 6. 返回具备确定性自恢复能力的句柄

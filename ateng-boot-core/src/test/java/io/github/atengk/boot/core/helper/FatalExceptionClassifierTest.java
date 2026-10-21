@@ -84,4 +84,16 @@ class FatalExceptionClassifierTest {
         Exception multi = new Exception("Level 1", new RuntimeException("Level 2", root));
         assertSame(root, FatalExceptionClassifier.getRootCause(multi));
     }
+
+    @Test
+    @DisplayName("包装可自愈异常时不被误判为毒丸")
+    void testWrappedTransientExceptionNotFatal() {
+        // 模拟监听器执行异常包装超时异常，不应判定为致命异常
+        RuntimeException transientWrapper = new RuntimeException("Listener execution failed", new TimeoutException("下游网络抖动"));
+        assertFalse(FatalExceptionClassifier.isFatal(transientWrapper));
+
+        // 包装真正毒丸时仍应准确识别
+        RuntimeException fatalWrapper = new RuntimeException("Listener execution failed", new IllegalArgumentException("参数格式错误"));
+        assertTrue(FatalExceptionClassifier.isFatal(fatalWrapper));
+    }
 }
