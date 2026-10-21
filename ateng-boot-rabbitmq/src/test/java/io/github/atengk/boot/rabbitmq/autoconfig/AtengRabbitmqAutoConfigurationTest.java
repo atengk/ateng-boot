@@ -1,8 +1,10 @@
 package io.github.atengk.boot.rabbitmq.autoconfig;
 
+import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.amqp.support.converter.SimpleMessageConverter;
@@ -13,6 +15,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * RabbitMQ 自动装配单元测试
@@ -35,7 +38,20 @@ class AtengRabbitmqAutoConfigurationTest {
 
             assertThat(context).hasSingleBean(RabbitTemplateCustomizer.class);
             assertThat(context).hasSingleBean(ContainerCustomizer.class);
+            assertThat(context).hasSingleBean(RabbitTemplate.ReturnsCallback.class);
         });
+    }
+
+    @Test
+    @DisplayName("存在 RabbitTemplate 时成功装配 RabbitReliableTemplate 门面")
+    void testRabbitReliableTemplateAutoConfiguration() {
+        contextRunner
+                .withUserConfiguration(MockRabbitTemplateConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitReliableTemplate.class);
+                    RabbitReliableTemplate template = context.getBean(RabbitReliableTemplate.class);
+                    assertThat(template.getRabbitTemplate()).isNotNull();
+                });
     }
 
     @Test
@@ -47,6 +63,8 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MessageConverter.class);
                     assertThat(context).doesNotHaveBean(RabbitTemplateCustomizer.class);
                     assertThat(context).doesNotHaveBean(ContainerCustomizer.class);
+                    assertThat(context).doesNotHaveBean(RabbitTemplate.ReturnsCallback.class);
+                    assertThat(context).doesNotHaveBean(RabbitReliableTemplate.class);
                 });
     }
 
@@ -66,6 +84,14 @@ class AtengRabbitmqAutoConfigurationTest {
         @Bean
         public MessageConverter customMessageConverter() {
             return new SimpleMessageConverter();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockRabbitTemplateConfiguration {
+        @Bean
+        public RabbitTemplate rabbitTemplate() {
+            return mock(RabbitTemplate.class);
         }
     }
 }

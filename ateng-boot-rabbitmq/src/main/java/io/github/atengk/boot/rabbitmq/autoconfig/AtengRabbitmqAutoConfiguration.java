@@ -2,10 +2,17 @@ package io.github.atengk.boot.rabbitmq.autoconfig;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
+import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.rabbitmq.callback.RabbitTransactionFailureCallback;
+import io.github.atengk.boot.rabbitmq.callback.RabbitUnroutableMessageCallback;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
+import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
@@ -15,17 +22,22 @@ import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.amqp.support.postprocessor.GUnzipPostProcessor;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitTemplateCustomizer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * RabbitMQ 生产级增强底座自动装配
@@ -57,21 +69,65 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
-     * 定制原生 RabbitTemplate：绑定消息转换器、强制路由退回标志与可观测性度量
+     * 装配全局不可路由退回消息处理器，支持结构化宏日志与 SPI 回调
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitTemplate.ReturnsCallback atengRabbitReturnsCallback(
+            ObjectProvider<RabbitUnroutableMessageCallback> unroutableCallbackProvider) {
+        return returned -> {
+            Message message = returned.getMessage();
+            MessageProperties props = message != null ? message.getMessageProperties() : null;
+            Map<String, Object> headers = props != null ? props.getHeaders() : Collections.emptyMap();
+            String bizKey = MessageContextPropagator.extractString(headers, MessageHeaderConstants.BIZ_KEY);
+            String traceId = MessageContextPropagator.extractString(headers, MessageHeaderConstants.TRACE_ID);
+
+            log.warn("[MQ-RETURNS] mq=rabbitmq exchange={} routingKey={} replyCode={} replyText={} bizKey={} traceId={}",
+                    returned.getExchange(), returned.getRoutingKey(), returned.getReplyCode(), returned.getReplyText(), bizKey, traceId);
+
+            unroutableCallbackProvider.ifAvailable(callback -> {
+                try {
+                    callback.onUnroutableMessage(returned);
+                } catch (Throwable ex) {
+                    log.error("[MQ-RETURNS-CALLBACK-ERROR] 消息不可路由回调 SPI 执行异常: exchange={}, routingKey={}",
+                            returned.getExchange(), returned.getRoutingKey(), ex);
+                }
+            });
+        };
+    }
+
+    /**
+     * 定制原生 RabbitTemplate：绑定消息转换器、退回回调、入站透明解压与可观测性度量
      */
     @Bean
     @ConditionalOnMissingBean
     public RabbitTemplateCustomizer atengRabbitTemplateCustomizer(
             RabbitmqProperties properties,
             MessageConverter messageConverter,
+            ObjectProvider<RabbitTemplate.ReturnsCallback> returnsCallbackProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider) {
         return rabbitTemplate -> {
             rabbitTemplate.setMessageConverter(messageConverter);
             if (properties.getReliable().isReturnsCallbackEnabled()) {
                 rabbitTemplate.setMandatory(true);
+                returnsCallbackProvider.ifAvailable(rabbitTemplate::setReturnsCallback);
             }
+            rabbitTemplate.setAfterReceivePostProcessors(new GUnzipPostProcessor());
             observationRegistryProvider.ifAvailable(registry -> rabbitTemplate.setObservationEnabled(true));
         };
+    }
+
+    /**
+     * 装配生产级高可靠投递与事务感知门面模版
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(RabbitTemplate.class)
+    public RabbitReliableTemplate rabbitReliableTemplate(
+            RabbitTemplate rabbitTemplate,
+            RabbitmqProperties properties,
+            ObjectProvider<RabbitTransactionFailureCallback> transactionFailureCallbackProvider) {
+        return new RabbitReliableTemplate(rabbitTemplate, properties, transactionFailureCallbackProvider);
     }
 
     /**
@@ -103,6 +159,7 @@ public class AtengRabbitmqAutoConfiguration {
                         factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
                     }
                     messageConverterProvider.ifAvailable(factory::setMessageConverter);
+                    factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
                     observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
                 } else if (bean instanceof RabbitAdmin admin) {
                     RabbitmqProperties properties = propertiesProvider.getIfAvailable();
