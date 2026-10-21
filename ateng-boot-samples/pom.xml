@@ -27,6 +27,7 @@
         <module>ateng-boot-sample-storage</module>
         <module>ateng-boot-sample-http</module>
         <module>ateng-boot-sample-realtime</module>
+        <module>ateng-boot-sample-rabbitmq</module>
     </modules>
 
     <properties>

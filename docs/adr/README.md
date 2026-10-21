@@ -44,6 +44,7 @@
 | **0034** | 动态查询转译、双方言批量增强与数据变更审计架构决策 | `Accepted` | 动态查询条件转译引擎与 URL 冒号语法解析器（六重安全防卫与作用域 OR 分组），双方言原生批量 Upsert 注入器与主键排序防死锁引擎，数据变更 Diff 审计拦截器与防爆熔断三级治理 | `ateng-boot-mybatis-plus` / `core` | [查看](./0034-dynamic-query-multidialect-upsert-and-data-audit-architecture.md) |
 | **0035** | 声明式与命令式双模 HTTP 通信底座与多命名客户端架构决策 | `Accepted` | Spring 6 原生轻量扫描驱动（`@EnableHttpInterfaces` / `@HttpClient`），多命名客户端注册表 `RestClientRegistry` 与物理连接池唯一共享，四维上下文域隔离透传，cURL 脱敏日志，幂等退避重试与虚拟线程高并发协同 | `ateng-boot-http` / `core` | [查看](./0035-declarative-and-imperative-http-client-architecture.md) |
 | **0036** | 实时通信多节点集群协同、防反射广播与优雅停机排空架构决策 | `Accepted` | 运行时无侵入 Redisson 探测与单机降级，Redis Pub/Sub 去中心化广播与 `sourceNodeId` 防反射风暴，可拔插离线消息暂存 SPI，Sa-Token 封禁事件联动切断，SmartLifecycle 四阶优雅停机排空与高吞吐集群度量 | `ateng-boot-realtime` / `redis` / `satoken` | [查看](./0036-realtime-cluster-and-distributed-coordination.md) |
+| **0037** | RabbitMQ 生产级路由与可靠投递底座架构决策 | `Accepted` | 基于 Spring AMQP 官方基线，四维上下文透明透传，Publisher Confirms 与 Returns 双重保障，事务感知 sendAfterCommit 杜绝幽灵消息，INFERRED 泛型推断反序列化解耦微服务契约，消费端幂等静默确认与毒丸快速隔离，死信终点不变量强校验，RabbitTopologyBuilder 声明式拓扑与 100% 离线自洽集成测试沙箱 | `ateng-boot-rabbitmq` / `core` | [查看](./0037-rabbitmq-production-routing-and-reliable-delivery-architecture.md) |
 
 ---
 
