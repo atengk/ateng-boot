@@ -31,7 +31,6 @@ import java.io.IOException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -125,11 +124,11 @@ class DeclarativeClientScenarioTest {
         assertThat(getRequest.getPath()).isEqualTo("/users/1001");
         assertInternalContextHeaders(getRequest, traceId, tenantId, userId);
 
-        // 3. 模拟远端返回 POST 创建用户响应（强类型 UserRequest 契约）
+        // 3. 模拟远端返回 POST 创建用户响应（强类型 UserRequest / UserResponse 契约）
         mockWebServer.enqueue(new MockResponse()
                 .setResponseCode(200)
                 .setHeader("Content-Type", "application/json;charset=UTF-8")
-                .setBody("{\"code\":200,\"message\":\"User created successfully\"}"));
+                .setBody("{\"id\":1002,\"username\":\"NewDevUser\",\"role\":\"DEV\",\"status\":\"ACTIVE\"}"));
 
         UserRequest createPayload = UserRequest.builder()
                 .username("NewDevUser")
@@ -137,9 +136,10 @@ class DeclarativeClientScenarioTest {
                 .role("DEV")
                 .build();
 
-        Map<String, Object> createResult = userServiceClient.createUser(createPayload);
+        UserResponse createResult = userServiceClient.createUser(createPayload);
         assertThat(createResult).isNotNull();
-        assertThat(createResult.get("code")).isEqualTo(200);
+        assertThat(createResult.getId()).isEqualTo(1002L);
+        assertThat(createResult.getUsername()).isEqualTo("NewDevUser");
 
         RecordedRequest postRequest = mockWebServer.takeRequest(2, TimeUnit.SECONDS);
         assertThat(postRequest).isNotNull();
@@ -310,9 +310,8 @@ class DeclarativeClientScenarioTest {
         } catch (Throwable ex) {
             org.slf4j.LoggerFactory.getLogger(DeclarativeClientScenarioTest.class)
                     .info("当前运行时为 Java 17，平滑接入 Core 受管异步线程池设施支撑高并发压测");
-            Executor fallbackExecutor = this.taskExecutor != null ? this.taskExecutor : Executors.newFixedThreadPool(50);
-            boolean needShutdown = this.taskExecutor == null;
-            return new ExecutorWrapper(fallbackExecutor, needShutdown);
+            org.junit.jupiter.api.Assertions.assertNotNull(this.taskExecutor, "Core 受管 taskExecutor 必须非空");
+            return new ExecutorWrapper(this.taskExecutor, false);
         }
     }
 

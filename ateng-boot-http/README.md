@@ -8,7 +8,7 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **命令式通信** | 统一命令式操作门面 | `HttpTemplate` | `ateng.boot.http.enabled` | `get(url, responseType)` / `post(url, body, responseType)` / `put(url, body, responseType)` / `delete(url, responseType)` / `patch(url, body, responseType)` / `exchange(url, method, body, responseType)` / `getForEntity` / `postForEntity`，自动泛型反序列化与状态码防御拦截 | `HttpTemplateSampleTest` / `HttpGovernanceScenarioTest` |
+| **命令式通信** | 统一命令式操作门面 | `HttpTemplate` | `ateng.boot.http.enabled` | `get(url, [options], type)` / `getOptional(url, [options], type)` / `post(url, body, [options], type)` / `put(url, body, [options], type)` / `delete(url, [options], type)` / `upload(url, parts, [options], type)` / `download(url, [options], target)` / `executeAsync(supplier)`，自动泛型反序列化、大文件零缓冲流式传输与状态码防御拦截 | `HttpTemplateSampleTest` / `HttpGovernanceScenarioTest` |
 | **单次动态参数** | 单次超时覆盖与头治理 | `RequestOptions`<br>`RequestOptionsApplier`<br>`HttpRequestContextHolder` | - | `RequestOptions.builder().readTimeout(Duration).header(name, value).queryParam(k, v).uriVariable(k, v).propagateContext(boolean).clientName(name).build()`，RFC 3986 安全编码与底层物理请求超时动态生效 | `RequestOptionsTest` / `RequestOptionsApplierTest` / `HttpTemplateSampleTest` |
 | **声明式客户端** | 声明式接口标记驱动 | `@HttpClient`<br>`@HttpExchange` | `ateng.boot.http.clients.<name>.*` | `@HttpClient(name = "user-service", url = "${remote.url}")`，支持元注解派生与 `${...}` 占位符解析，绑定命名客户端隔离治理策略 | `HttpInterfaceRegistrarTest` / `DeclarativeClientScenarioTest` |
 | **声明式包扫描** | 声明式轻量动态包扫描器 | `@EnableHttpInterfaces`<br>`HttpInterfaceRegistrar`<br>`HttpInterfaceFactoryBean` | - | `@EnableHttpInterfaces(basePackages = "com.example.client", clients = {UserClient.class})`，自研轻量 Spring 原生扫描器，桥接 Spring 6 `HttpServiceProxyFactory` 动态生成代理单例 Bean | `HttpInterfaceRegistrarTest` / `DeclarativeClientScenarioTest` |
@@ -147,8 +147,6 @@ import org.springframework.web.service.annotation.GetExchange;
 import org.springframework.web.service.annotation.HttpExchange;
 import org.springframework.web.service.annotation.PostExchange;
 
-import java.util.Map;
-
 @HttpClient(name = "user-service", url = "${sample.user-service.url:http://localhost:8080}")
 @HttpExchange
 public interface UserServiceClient {
@@ -157,7 +155,7 @@ public interface UserServiceClient {
     UserResponse getUserById(@PathVariable("id") Long id);
 
     @PostExchange("/users")
-    Map<String, Object> createUser(@RequestBody UserRequest user);
+    UserResponse createUser(@RequestBody UserRequest user);
 }
 ```
 

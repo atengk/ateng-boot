@@ -1,5 +1,6 @@
 package io.github.atengk.boot.http.registrar;
 
+import io.github.atengk.boot.http.factory.RestClientRegistry;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -8,13 +9,10 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.util.Assert;
-import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.support.RestClientAdapter;
 import org.springframework.web.service.invoker.HttpServiceProxyFactory;
-
-import java.lang.reflect.Method;
 
 /**
  * 声明式 HTTP 客户端接口动态代理工厂 Bean
@@ -26,22 +24,24 @@ import java.lang.reflect.Method;
  */
 @Slf4j
 @Getter
-@Setter
 public class HttpInterfaceFactoryBean<T> implements FactoryBean<T>, ApplicationContextAware, InitializingBean {
 
     /**
      * 目标客户端接口类型
      */
+    @Setter
     private Class<T> interfaceType;
 
     /**
      * 命名客户端标识
      */
+    @Setter
     private String clientName;
 
     /**
      * 目标服务远程 BaseUrl（支持占位符解析）
      */
+    @Setter
     private String url;
 
     /**
@@ -118,22 +118,10 @@ public class HttpInterfaceFactoryBean<T> implements FactoryBean<T>, ApplicationC
      */
     private RestClient resolveRestClient(String resolvedUrl) {
         if (this.applicationContext != null) {
-            // 1. 尝试从 RestClientRegistry 获取命名客户端
-            try {
-                Class<?> registryClass = ClassUtils.forName(
-                        "io.github.atengk.boot.http.factory.RestClientRegistry",
-                        this.applicationContext.getClassLoader()
-                );
-                Object registry = this.applicationContext.getBeanProvider(registryClass).getIfAvailable();
-                if (registry != null) {
-                    Method getClientMethod = registryClass.getMethod("getClient", String.class, String.class);
-                    Object clientObj = getClientMethod.invoke(registry, this.clientName, this.url);
-                    if (clientObj instanceof RestClient customClient) {
-                        return customClient;
-                    }
-                }
-            } catch (Throwable ignored) {
-                // RestClientRegistry 未就绪时平滑回退
+            // 1. 优先从受管的 RestClientRegistry 获取命名客户端单例
+            RestClientRegistry registry = this.applicationContext.getBeanProvider(RestClientRegistry.class).getIfAvailable();
+            if (registry != null) {
+                return registry.getClient(this.clientName, this.url);
             }
 
             // 2. 从容器中获取受管的 RestClient.Builder 副本

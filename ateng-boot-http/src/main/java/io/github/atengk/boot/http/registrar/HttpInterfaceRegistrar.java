@@ -187,7 +187,6 @@ public class HttpInterfaceRegistrar implements ImportBeanDefinitionRegistrar, En
         builder.addPropertyValue("interfaceType", candidateInterface);
         builder.addPropertyValue("clientName", name);
         builder.addPropertyValue("url", url);
-        builder.setAutowireMode(AbstractBeanDefinition.AUTOWIRE_BY_TYPE);
         builder.setLazyInit(false);
 
         AbstractBeanDefinition beanDefinition = builder.getBeanDefinition();

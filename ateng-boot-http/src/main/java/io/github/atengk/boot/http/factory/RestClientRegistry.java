@@ -151,6 +151,19 @@ public class RestClientRegistry {
     }
 
     /**
+     * 获取指定命名客户端的配置项，执行空安全防御
+     *
+     * @param clientName 客户端名称
+     * @return 命名客户端配置项，未配置或不存在时返回 null
+     */
+    private HttpClientItemProperties getClientItemProperties(String clientName) {
+        if (!StringUtils.hasText(clientName) || this.properties == null || this.properties.getClients() == null) {
+            return null;
+        }
+        return this.properties.getClients().get(clientName);
+    }
+
+    /**
      * 解析命名客户端的最终目标 BaseUrl
      * 优先级策略：配置文件 ateng.boot.http.clients.<name>.base-url > 注解 url (支持占位符) > 全局兜底
      *
@@ -159,7 +172,7 @@ public class RestClientRegistry {
      * @return 解析后的真实 BaseUrl，若未配置则返回空字符串
      */
     public String resolveBaseUrl(String clientName, String annotationUrl) {
-        HttpClientItemProperties item = this.properties.getClients().get(clientName);
+        HttpClientItemProperties item = getClientItemProperties(clientName);
 
         // 1. 优先提取配置文件中的 base-url
         if (item != null && StringUtils.hasText(item.getBaseUrl())) {
@@ -186,7 +199,7 @@ public class RestClientRegistry {
         RestClient.Builder builder = this.baseRestClientBuilder.clone();
 
         // 2. 检索命名客户端专属配置项
-        HttpClientItemProperties item = this.properties.getClients().get(clientName);
+        HttpClientItemProperties item = getClientItemProperties(clientName);
 
         // 3. 多级 BaseUrl 动态融合
         String resolvedBaseUrl = resolveBaseUrl(clientName, annotationUrl);
