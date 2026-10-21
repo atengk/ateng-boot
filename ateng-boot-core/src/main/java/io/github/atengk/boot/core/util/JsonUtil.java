@@ -268,6 +268,48 @@ public final class JsonUtil {
     }
 
     /**
+     * 基于 Java Type 将 JSON 字符串反序列化为对象 (支持 ParameterizedType 等复杂泛型)
+     *
+     * @param json JSON 字符串
+     * @param type 目标类型 Type
+     * @param <T>  目标类型泛型
+     * @return 反序列化对象；入参为空或空串时安全返回 null
+     */
+    public static <T> T parseObject(String json, java.lang.reflect.Type type) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        Objects.requireNonNull(type, "目标类型 Type 不能为 null");
+        try {
+            JavaType javaType = defaultMapper.constructType(type);
+            return defaultMapper.readValue(json, javaType);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("JSON 反序列化失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 基于 Java Type 将 UTF-8 字节数组反序列化为对象 (支持 ParameterizedType 等复杂泛型)
+     *
+     * @param bytes JSON 字节数组
+     * @param type  目标类型 Type
+     * @param <T>   目标类型泛型
+     * @return 反序列化对象；入参为空或长度为 0 时安全返回 null
+     */
+    public static <T> T parseObject(byte[] bytes, java.lang.reflect.Type type) {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        Objects.requireNonNull(type, "目标类型 Type 不能为 null");
+        try {
+            JavaType javaType = defaultMapper.constructType(type);
+            return defaultMapper.readValue(bytes, javaType);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 字节数组反序列化失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 将 JSON 数组字符串反序列化为 List 集合
      *
      * @param json  JSON 数组字符串
