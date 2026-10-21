@@ -46,6 +46,12 @@ public class HttpProperties {
     private HttpProxyProperties proxy = new HttpProxyProperties();
 
     /**
+     * 全局链路追踪与四维上下文出站透传配置
+     */
+    @NestedConfigurationProperty
+    private HttpTracingProperties tracing = new HttpTracingProperties();
+
+    /**
      * 命名客户端专属配置映射表（按客户端名称映射独立个性化配置，留待后续阶段联动）
      */
     @NestedConfigurationProperty

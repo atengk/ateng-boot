@@ -31,3 +31,19 @@ _Avoid_: ResponseErrorHandler, ErrorInterceptor, HttpErrorDecoder
 **HttpClient5Customizer**:
 底层 Apache HttpClient 5 构建过程的函数式定制器 SPI，允许下游在不覆盖自动装配的前提下深度微调连接管理与 Socket 策略。
 _Avoid_: HttpClientCustomizer, HttpCustomizer
+
+**TraceContextInterceptor**:
+出站 HTTP 请求四维上下文透传与非信任域隔离拦截器，自动捕获 MDC 链路追踪标识、租户标识与用户标识注入标准请求头，并在目标为公网非信任服务时执行安全剥离。
+_Avoid_: ContextInterceptor, HeaderInterceptor, TraceFilter
+
+**HttpLoggingInterceptor**:
+出站 HTTP 结构化日志拦截器，提供四级日志开关、终端可复现 cURL 脚本打印、敏感 Header 动态掩码脱敏及大响应体容量安全截断。
+_Avoid_: LoggingInterceptor, HttpLogger, CurlInterceptor
+
+**HttpRetryInterceptor**:
+出站弹性重试拦截器，深度接入 Core 模块 RetryUtil 函数式引擎，针对幂等动词在遭遇网络 I/O 抖动与 502/503/504 异常时执行指数退避重试与随机抖动打散。
+_Avoid_: RetryInterceptor, BackoffInterceptor, SpringRetryTemplate
+
+**HttpResultCode**:
+HTTP 远程通信专职语义化结果码枚举（实现 Core 模块 IResultCode 契约），精准区分远程下游客户端错误（40001）、下游服务端内部错误（50001）、网络调用超时（50004）及网关不可达（50002）。
+_Avoid_: ResultCode, HttpResponseCode, ErrorCode

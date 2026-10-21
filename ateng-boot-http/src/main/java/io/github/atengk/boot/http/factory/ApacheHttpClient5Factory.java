@@ -1,6 +1,8 @@
 package io.github.atengk.boot.http.factory;
 
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
+import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
@@ -24,13 +26,18 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.ssl.SSLContextBuilder;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.client.ClientHttpRequest;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import javax.net.ssl.SSLContext;
+import java.io.IOException;
+import java.net.URI;
 import java.security.GeneralSecurityException;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -128,6 +135,16 @@ public final class ApacheHttpClient5Factory {
         CloseableHttpClient httpClient = clientBuilder.build();
         log.info("Apache HttpClient 5 生产级池化连接工厂初始化成功 [maxTotal={}, maxPerRoute={}, connectTimeout={}, readTimeout={}]",
                 pool.getMaxConnections(), pool.getMaxPerRoute(), pool.getConnectTimeout(), pool.getReadTimeout());
-        return new HttpComponentsClientHttpRequestFactory(httpClient);
+        return new HttpComponentsClientHttpRequestFactory(httpClient) {
+            @Override
+            public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
+                ClientHttpRequest request = super.createRequest(uri, httpMethod);
+                Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
+                if (perRequestTimeout != null) {
+                    RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
+                }
+                return request;
+            }
+        };
     }
 }

@@ -28,6 +28,8 @@ public final class RequestOptions {
             new HttpHeaders(),
             new LinkedMultiValueMap<>(),
             Map.of(),
+            null,
+            null,
             null
     );
 
@@ -51,10 +53,22 @@ public final class RequestOptions {
      */
     private final Duration readTimeout;
 
+    /**
+     * 单次请求四维上下文出站透传控制开关（为 null 时依客户端或全局规则自适应判断）
+     */
+    private final Boolean propagateContext;
+
+    /**
+     * 显式指定归属的命名客户端标识（为 null 时依据请求 URL 自动进行最长前缀匹配）
+     */
+    private final String clientName;
+
     private RequestOptions(HttpHeaders headers,
                            MultiValueMap<String, String> queryParams,
                            Map<String, Object> uriVariables,
-                           Duration readTimeout) {
+                           Duration readTimeout,
+                           Boolean propagateContext,
+                           String clientName) {
         this.headers = HttpHeaders.readOnlyHttpHeaders(headers != null ? headers : new HttpHeaders());
         this.queryParams = CollectionUtils.unmodifiableMultiValueMap(
                 queryParams != null ? new LinkedMultiValueMap<>(queryParams) : new LinkedMultiValueMap<>()
@@ -63,6 +77,8 @@ public final class RequestOptions {
                 ? Collections.unmodifiableMap(new LinkedHashMap<>(uriVariables))
                 : Collections.emptyMap();
         this.readTimeout = readTimeout;
+        this.propagateContext = propagateContext;
+        this.clientName = clientName;
     }
 
     /**
@@ -105,6 +121,8 @@ public final class RequestOptions {
         private final MultiValueMap<String, String> queryParams = new LinkedMultiValueMap<>();
         private final Map<String, Object> uriVariables = new LinkedHashMap<>();
         private Duration readTimeout;
+        private Boolean propagateContext;
+        private String clientName;
 
         private Builder() {
         }
@@ -254,12 +272,35 @@ public final class RequestOptions {
         }
 
         /**
+         * 设置单次请求四维上下文出站透传控制开关
+         * 设置为 false 时，出站请求将严格剥离内网私有标识（X-Tenant-Id, X-User-Id 等），支持在调用外部公网接口时实现非信任域隔离
+         *
+         * @param propagateContext 是否透传上下文
+         * @return 当前构建器
+         */
+        public Builder propagateContext(Boolean propagateContext) {
+            this.propagateContext = propagateContext;
+            return this;
+        }
+
+        /**
+         * 显式指定当前请求所归属的命名客户端标识（用于绑定专属超时、重试与域隔离策略）
+         *
+         * @param clientName 客户端标识
+         * @return 当前构建器
+         */
+        public Builder clientName(String clientName) {
+            this.clientName = clientName;
+            return this;
+        }
+
+        /**
          * 完成构建并返回不可变 RequestOptions 载荷实例
          *
          * @return 不可变 RequestOptions 实例
          */
         public RequestOptions build() {
-            return new RequestOptions(headers, queryParams, uriVariables, readTimeout);
+            return new RequestOptions(headers, queryParams, uriVariables, readTimeout, propagateContext, clientName);
         }
     }
 }

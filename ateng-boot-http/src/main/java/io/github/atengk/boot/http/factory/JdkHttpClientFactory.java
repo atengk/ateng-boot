@@ -1,10 +1,14 @@
 package io.github.atengk.boot.http.factory;
 
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
+import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpSslProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.client.ClientHttpRequest;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.util.Assert;
@@ -14,14 +18,17 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+import java.io.IOException;
 import java.net.Authenticator;
 import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
 import java.net.ProxySelector;
+import java.net.URI;
 import java.net.http.HttpClient;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 
 /**
  * JDK 17 原生 HttpClient 物理连接工厂
@@ -104,7 +111,17 @@ public final class JdkHttpClientFactory {
         }
 
         HttpClient httpClient = builder.build();
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient) {
+            @Override
+            public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
+                ClientHttpRequest request = super.createRequest(uri, httpMethod);
+                Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
+                if (perRequestTimeout != null) {
+                    RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
+                }
+                return request;
+            }
+        };
         if (pool.getReadTimeout() != null) {
             factory.setReadTimeout(pool.getReadTimeout());
         }

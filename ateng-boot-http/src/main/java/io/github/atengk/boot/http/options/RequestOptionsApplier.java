@@ -1,5 +1,7 @@
 package io.github.atengk.boot.http.options;
 
+import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.NestedExceptionUtils;
 import org.springframework.http.client.ClientHttpRequest;
@@ -72,7 +74,16 @@ public final class RequestOptionsApplier {
 
         // 2. 覆盖单次读取超时
         if (options.getReadTimeout() != null) {
+            HttpRequestContextHolder.setReadTimeout(options.getReadTimeout());
             spec.httpRequest(clientRequest -> applyTimeout(clientRequest, options.getReadTimeout()));
+        }
+
+        // 3. 注入单次请求上下文透传显式控制与客户端标识（供拦截器链路消费并在出站前严格剥离）
+        if (options.getPropagateContext() != null) {
+            spec.header(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, String.valueOf(options.getPropagateContext()));
+        }
+        if (options.getClientName() != null && !options.getClientName().isBlank()) {
+            spec.header(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, options.getClientName());
         }
     }
 

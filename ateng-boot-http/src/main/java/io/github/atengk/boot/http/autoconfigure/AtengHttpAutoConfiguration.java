@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
+import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.template.HttpTemplate;
 import lombok.extern.slf4j.Slf4j;
@@ -64,6 +65,30 @@ public class AtengHttpAutoConfiguration {
     @ConditionalOnMissingBean
     public HttpErrorHandler httpErrorHandler() {
         return new HttpErrorHandler();
+    }
+
+    /**
+     * 注册出站四维上下文透传与非信任域隔离拦截器 Bean
+     *
+     * @param properties 配置属性
+     * @return TraceContextInterceptor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public TraceContextInterceptor traceContextInterceptor(HttpProperties properties) {
+        return new TraceContextInterceptor(properties);
+    }
+
+    /**
+     * 注册链路追踪拦截器 RestClientCustomizer 定制器
+     *
+     * @param traceContextInterceptor 四维上下文透传拦截器
+     * @return RestClientCustomizer 定制器
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "traceContextRestClientCustomizer")
+    public RestClientCustomizer traceContextRestClientCustomizer(TraceContextInterceptor traceContextInterceptor) {
+        return builder -> builder.requestInterceptor(traceContextInterceptor);
     }
 
     /**
