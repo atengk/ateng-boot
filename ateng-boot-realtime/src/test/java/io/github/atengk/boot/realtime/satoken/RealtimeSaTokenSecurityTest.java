@@ -193,4 +193,22 @@ class RealtimeSaTokenSecurityTest {
 
         verify(clusterBroadcaster, never()).broadcast(any());
     }
+
+    @Test
+    @DisplayName("容错防御: 当底层踢人广播异常时受控拦截，防止阻断业务事务")
+    void testExceptionSafetyWhenKickoutFails() {
+        RealtimeTemplate mockTemplate = mock(RealtimeTemplate.class);
+        doThrow(new RuntimeException("Redis cluster timeout"))
+                .when(mockTemplate).kickoutUser(any(), any());
+
+        RealtimeSaTokenListener defensiveListener = new RealtimeSaTokenListener(mockTemplate);
+
+        // 验证执行登出和封禁均不向上层抛出异常
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                defensiveListener.doLogout("login", "user-error", "token-xxx")
+        );
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                defensiveListener.doDisable("login", "user-error", "user", 1, 3600)
+        );
+    }
 }

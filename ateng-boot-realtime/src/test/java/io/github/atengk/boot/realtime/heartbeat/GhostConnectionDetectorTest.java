@@ -98,11 +98,13 @@ class GhostConnectionDetectorTest {
         GhostConnectionDetector detector = new GhostConnectionDetector(properties, sessionManager);
 
         assertThat(detector.isRunning()).isFalse();
+        assertThat(detector.getPhase()).isEqualTo(Integer.MAX_VALUE - 1100);
 
         detector.start();
         assertThat(detector.isRunning()).isTrue();
 
         detector.stop();
         assertThat(detector.isRunning()).isFalse();
+        assertThat(detector.getPhase()).isEqualTo(Integer.MAX_VALUE - 1100);
     }
 }

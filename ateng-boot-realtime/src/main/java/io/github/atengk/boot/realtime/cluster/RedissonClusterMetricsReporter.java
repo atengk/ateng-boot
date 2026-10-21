@@ -12,8 +12,8 @@ import org.springframework.context.SmartLifecycle;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Objects;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -89,7 +89,9 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
             String nodeId = clusterBroadcaster.getNodeId();
             int localCount = sessionManager.getOnlineCount();
             RMap<String, String> nodeMap = redissonClient.getMap(hashKey, StringCodec.INSTANCE);
-            nodeMap.put(nodeId, String.valueOf(localCount));
+            if (nodeMap != null) {
+                nodeMap.put(nodeId, String.valueOf(localCount));
+            }
             log.trace("[Realtime-Cluster] 节点度量上报成功: nodeId={}, localCount={}", nodeId, localCount);
         } catch (Throwable t) {
             log.warn("[Realtime-Cluster] 节点在线度量上报失败: nodeId={}, error={}",
@@ -102,13 +104,22 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
      */
     public void cleanup() {
         stop();
+        deregisterFromCluster();
+    }
+
+    /**
+     * 从 Redis 集群度量 Hash 中注销本节点键值
+     */
+    private void deregisterFromCluster() {
         if (clusterBroadcaster.isClusterEnabled()) {
             try {
                 String hashKey = getNodesHashKey();
                 String nodeId = clusterBroadcaster.getNodeId();
                 RMap<String, String> nodeMap = redissonClient.getMap(hashKey, StringCodec.INSTANCE);
-                nodeMap.remove(nodeId);
-                log.info("[Realtime-Cluster] 节点已从集群在线度量 Hash 中注销: nodeId={}", nodeId);
+                if (nodeMap != null) {
+                    nodeMap.remove(nodeId);
+                    log.info("[Realtime-Cluster] 节点已从集群在线度量 Hash 中注销: nodeId={}", nodeId);
+                }
             } catch (Throwable t) {
                 log.warn("[Realtime-Cluster] 清理集群在线节点度量失败: nodeId={}, error={}",
                         clusterBroadcaster.getNodeId(), t.getMessage());
@@ -127,9 +138,12 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
             // 启动时立即上报一次初始状态
             reportMetrics();
 
-            this.scheduler = Executors.newSingleThreadScheduledExecutor(
+            ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
+                    1,
                     new NamedThreadFactory("realtime-metrics-reporter-", true)
             );
+            executor.setRemoveOnCancelPolicy(true);
+            this.scheduler = executor;
             this.scheduler.scheduleAtFixedRate(
                     this::reportMetrics,
                     intervalMillis,
@@ -155,6 +169,8 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
                     Thread.currentThread().interrupt();
                 }
             }
+            // 自动注销 Redis Hash 节点记录，防御孤立停机导致残留
+            deregisterFromCluster();
             log.info("[Realtime-Cluster] 集群在线度量上报器已停止");
         }
     }
@@ -166,7 +182,8 @@ public class RedissonClusterMetricsReporter implements RealtimeClusterMetricsPro
 
     @Override
     public int getPhase() {
-        return Integer.MAX_VALUE - 200;
+        // 在优雅停机排空 (Phase = Integer.MAX_VALUE - 1000) 与死链心跳 (Phase = Integer.MAX_VALUE - 1100) 停止后再停止集群度量上报
+        return Integer.MAX_VALUE - 1200;
     }
 
     @Override

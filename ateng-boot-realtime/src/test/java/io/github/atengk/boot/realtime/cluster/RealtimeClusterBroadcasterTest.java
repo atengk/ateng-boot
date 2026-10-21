@@ -5,13 +5,16 @@ import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RFuture;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.listener.MessageListener;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -34,6 +37,15 @@ class RealtimeClusterBroadcasterTest {
         // 广播不报错（No-Op）
         RealtimeClusterPacket packet = RealtimeClusterPacket.ofAll(broadcaster.getNodeId(), RealtimeMessage.of("ping", "pong"));
         broadcaster.broadcast(packet);
+
+        Consumer<RealtimeClusterPacket> noopConsumer = p -> {};
+        broadcaster.addConsumer(noopConsumer);
+        broadcaster.removeConsumer(noopConsumer);
+
+        assertThatThrownBy(() -> broadcaster.addConsumer(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> broadcaster.removeConsumer(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -42,6 +54,10 @@ class RealtimeClusterBroadcasterTest {
         RedissonClient redissonClient = mock(RedissonClient.class);
         RTopic topic = mock(RTopic.class);
         when(redissonClient.getTopic(anyString())).thenReturn(topic);
+
+        @SuppressWarnings("unchecked")
+        RFuture<Long> future = mock(RFuture.class);
+        when(topic.publishAsync(anyString())).thenReturn(future);
 
         AtomicReference<MessageListener<String>> listenerRef = new AtomicReference<>();
         when(topic.addListener(eq(String.class), any())).thenAnswer(invocation -> {
@@ -60,14 +76,20 @@ class RealtimeClusterBroadcasterTest {
         String selfNodeId = broadcaster.getNodeId();
         assertThat(selfNodeId).isNotBlank();
 
-        // 1. 验证主动广播向 Topic 发布 JSON 文本
+        // 1. 验证主动广播向 Topic 异步发布 JSON 文本
         RealtimeClusterPacket outgoing = RealtimeClusterPacket.ofUser(selfNodeId, "user-1", RealtimeMessage.of("msg", "hello"));
         broadcaster.broadcast(outgoing);
-        verify(topic, times(1)).publish(anyString());
+        verify(topic, times(1)).publishAsync(anyString());
 
         // 2. 挂载消息接收消费回调
         AtomicReference<RealtimeClusterPacket> receivedPacket = new AtomicReference<>();
-        broadcaster.addConsumer(receivedPacket::set);
+        Consumer<RealtimeClusterPacket> consumer = receivedPacket::set;
+        broadcaster.addConsumer(consumer);
+
+        assertThatThrownBy(() -> broadcaster.addConsumer(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> broadcaster.removeConsumer(null))
+                .isInstanceOf(NullPointerException.class);
 
         // 3. 模拟收到自身发送的消息 -> 触发防反射过滤（必须丢弃，receivedPacket 为空）
         String selfJson = JsonUtil.toJsonString(outgoing);
@@ -82,7 +104,13 @@ class RealtimeClusterBroadcasterTest {
         assertThat(receivedPacket.get().getSourceNodeId()).isEqualTo("remote-node-2");
         assertThat(receivedPacket.get().getTargetKey()).isEqualTo("user-1");
 
-        // 5. 验证优雅销毁注销 Topic 监听
+        // 5. 验证 removeConsumer 注销后不再接收消息
+        receivedPacket.set(null);
+        broadcaster.removeConsumer(consumer);
+        listenerRef.get().onMessage(null, remoteJson);
+        assertThat(receivedPacket.get()).isNull();
+
+        // 6. 验证优雅销毁注销 Topic 监听
         broadcaster.destroy();
         verify(topic, times(1)).removeListener(101);
     }

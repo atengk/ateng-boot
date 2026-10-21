@@ -8,11 +8,12 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **统一推送门面** | 统一推送与会话治理门面 | `RealtimeTemplate` | `ateng.boot.realtime.enabled` | `sendToSession(sessionKey, message)` / `sendToUser(userId, message)` / `sendViaWebSocket(sessionKey, message)` / `sendViaSse(sessionKey, message)` / `sendToUserViaWebSocket(userId, message)` / `sendToUserViaSse(userId, message)` / `sendToGroup(groupId, message)` / `sendToTenant(tenantId, message)` / `sendToAll(message)` / `joinGroup(groupId, sessionKey/userId)` / `leaveGroup(groupId, sessionKey/userId)` / `getGroupSessions(groupId)` / `getGroupMemberCount(groupId)` / `kickoutSession(sessionKey, [status])` / `kickoutUser(userId, [status])` / `isUserOnline(userId)` / `isSessionOnline(sessionKey)` / `getOnlineCount()` / `getOnlineUserCount()` / `getOnlineCountByChannel(channelType)` / `getSessionsByUser(userId)` / `getAllSessions()` / `getSession(sessionKey)` / `getClusterOnlineCount()` / `pullAndClearOfflineMessages(userId)` / `getOfflineMessageCount(userId)` | `RealtimeTemplateTest` / `ClusterAndOfflineScenarioTest` / `GroupMulticastScenarioTest` / `RealtimeAuthScenarioTest` |
-| **集群分布式协同** | 多节点去中心化广播管理器 | `ClusterBroadcastManager`<br>`LocalClusterBroadcastManager`<br>`RedisClusterBroadcastManager` | `ateng.boot.realtime.cluster-mode`<br>`ateng.boot.realtime.cluster.topic`<br>`ateng.boot.realtime.cluster.nodes-hash-key`<br>`ateng.boot.realtime.cluster.metrics-interval` | `publishBroadcast(message)` / `publishUnicast(userId, message)` / `publishMulticast(groupId, message)` / `publishTenant(tenantId, message)` / `publishKickout(userId, status)` / `getNodeId()` / `getClusterOnlineCount()`，依托 Redis Pub/Sub 广播并注入 `sourceNodeId` 防反射回环丢弃 | `RedisClusterBroadcastManagerTest` / `LocalClusterBroadcastManagerTest` / `ClusterAndOfflineScenarioTest` |
-| **离线消息存储 SPI** | 离线暂存扩展接口与实现 | `RealtimeOfflineMessageProvider`<br>`InMemoryRealtimeOfflineMessageProvider`<br>`RedisRealtimeOfflineMessageProvider` | `ateng.boot.realtime.offline.enabled`<br>`ateng.boot.realtime.offline.max-messages-per-user`<br>`ateng.boot.realtime.offline.ttl` | `saveOfflineMessage(userId, message, expireSeconds)` / `pullAndClearOfflineMessages(userId)` / `getOfflineMessageCount(userId)`，目标用户全集群离线时自动触发暂存，配额上限 FIFO 淘汰防 OOM | `InMemoryRealtimeOfflineMessageProviderTest` / `RedisRealtimeOfflineMessageProviderTest` / `ClusterAndOfflineScenarioTest` |
-| **优雅停机排空** | 云原生优雅停机排空处理器 | `RealtimeGracefulShutdownHandler` | `ateng.boot.realtime.shutdown.enabled`<br>`ateng.boot.realtime.shutdown.drain-timeout`<br>`ateng.boot.realtime.shutdown.quiet-period` | 实现 Spring `SmartLifecycle` (Phase=2147482647)，按序执行拒绝握手 -> 注销集群度量 -> 向本地会话广播 1012 重启帧 -> 缓冲排空与确定性物理切断 | `RealtimeGracefulShutdownHandlerTest` |
-| **权限事件切断** | Sa-Token 账号封禁联动切断 | `RealtimeSaTokenListener` | - | 实现 Sa-Token `SaTokenListener` SPI，监听 `doDisable` 封禁与 `doKickout` 踢退，全集群广播 4002 (USER_KICKED_OUT) 物理切断长连接 | `RealtimeSaTokenListenerTest` / `ClusterAndOfflineScenarioTest` |
+| **统一推送门面** | 统一推送与会话治理门面 | `RealtimeTemplate` | `ateng.boot.realtime.enabled` | `sendToSession(sessionKey, message)` / `sendToUser(userId, message)` / `sendViaWebSocket(sessionKey, message)` / `sendViaSse(sessionKey, message)` / `sendToUserViaWebSocket(userId, message)` / `sendToUserViaSse(userId, message)` / `sendToGroup(groupId, message)` / `sendToTenant(tenantId, message)` / `sendToAll(message)` / `joinGroup(groupId, sessionKey/userId)` / `leaveGroup(groupId, sessionKey/userId)` / `getGroupSessions(groupId)` / `getGroupMemberCount(groupId)` / `kickoutSession(sessionKey, [status])` / `kickoutUser(userId, [status])` / `isUserOnline(userId)` / `isSessionOnline(sessionKey)` / `getOnlineCount()` / `getOnlineUserCount()` / `getOnlineCountByChannel(channelType)` / `getSessionsByUser(userId)` / `getAllSessions()` / `getSession(sessionKey)` / `getClusterOnlineCount()` / `pullAndClearOfflineMessages(userId)` / `getOfflineMessages(userId)` / `clearOfflineMessages(userId)` / `getOfflineMessageCount(userId)` | `RealtimeTemplateTest` / `ClusterAndOfflineScenarioTest` / `GroupMulticastScenarioTest` / `RealtimeAuthScenarioTest` |
+| **集群分布式协同** | 多节点去中心化广播门面 | `RealtimeClusterBroadcaster`<br>`StandaloneRealtimeClusterBroadcaster`<br>`RedissonRealtimeClusterBroadcaster` | `ateng.boot.realtime.cluster-mode`<br>`ateng.boot.realtime.cluster.topic`<br>`ateng.boot.realtime.cluster.nodes-hash-key`<br>`ateng.boot.realtime.cluster.metrics-interval` | `broadcast(packet)` / `addConsumer(consumer)` / `removeConsumer(consumer)` / `getNodeId()` / `isClusterEnabled()`，依托 Redis Pub/Sub 广播并注入 `sourceNodeId` 防反射回环丢弃 | `RealtimeClusterBroadcasterTest` / `RealtimeClusterAntiReflectionTest` / `RealtimeClusterMulticastTest` / `ClusterAndOfflineScenarioTest` |
+| **集群在线度量** | 集群节点在线度量统计与聚合 | `RealtimeClusterMetricsProvider`<br>`StandaloneClusterMetricsProvider`<br>`RedissonClusterMetricsReporter` | `ateng.boot.realtime.cluster.nodes-hash-key`<br>`ateng.boot.realtime.cluster.metrics-interval` | `getClusterOnlineCount()`，单机直接统计本地连接数，集群模式通过定时受管调度任务将本地计数上报至 Redis Hash 并聚合汇总 | `RealtimeClusterMetricsTest` / `ClusterAndOfflineScenarioTest` |
+| **离线消息存储 SPI** | 离线暂存扩展接口与实现 | `RealtimeOfflineMessageProvider`<br>`InMemoryRealtimeOfflineMessageProvider`<br>`NoOpRealtimeOfflineMessageProvider` | `ateng.boot.realtime.offline.enabled`<br>`ateng.boot.realtime.offline.max-messages-per-user`<br>`ateng.boot.realtime.offline.ttl` | `saveOfflineMessage(userId, message)` / `pullAndClearOfflineMessages(userId)` / `getOfflineMessages(userId)` / `clearOfflineMessages(userId)` / `getOfflineMessageCount(userId)`，目标用户全集群离线时自动触发暂存，配额上限 FIFO 淘汰防 OOM | `RealtimeOfflineMessageProviderTest` / `ClusterAndOfflineScenarioTest` |
+| **优雅停机排空** | 云原生优雅停机排空处理器 | `RealtimeGracefulShutdownHandler` | `ateng.boot.realtime.shutdown.enabled`<br>`ateng.boot.realtime.shutdown.drain-timeout`<br>`ateng.boot.realtime.shutdown.quiet-period` | 实现 Spring `SmartLifecycle` (Phase=Integer.MAX_VALUE - 1000)，按序执行拒绝握手 -> 向本地会话广播 1012 重启帧 -> 缓冲排空与确定性物理切断 | `RealtimeGracefulShutdownTest` |
+| **权限事件切断** | Sa-Token 账号封禁联动切断 | `RealtimeSaTokenListener` | - | 实现 Sa-Token `SaTokenListener` SPI，监听 `doDisable` 封禁与 `doKickout` 踢退，全集群广播 4002 (USER_KICKED_OUT) 物理切断长连接 | `RealtimeSaTokenSecurityTest` / `ClusterAndOfflineScenarioTest` |
 | **会话中心** | 统一受管会话管理器 | `RealtimeSessionManager`<br>`RealtimeSession` | `ateng.boot.realtime.session.max-connections-per-user`<br>`ateng.boot.realtime.session.eviction-policy` | `registerSession(session)` / `removeSession(sessionKey, [status])` / `removeAndClose(sessionKey, status)` / `getSession(sessionKey)` / `getSessionsByUser(userId)` / `getSessionsByChannel(channelType)` / `getSessionsByTenant(tenantId)` / `getAllSessions()` / `getOnlineCount()` / `getOnlineUserCount()` / `containsSession(sessionKey)` / `clear()` / `addListener(listener)`，多维索引维护与单用户超限 FIFO 淘汰或 REJECT 治理 | `RealtimeSessionManagerTest` / `RealtimeSessionTest` |
 | **分组协同** | 单机频道订阅与分组管理器 | `RealtimeGroupManager` | - | `joinGroup(groupId, sessionKey)` / `leaveGroup(groupId, sessionKey)` / `leaveAllGroups(sessionKey)` / `getGroupSessions(groupId)` / `getGroupMemberCount(groupId)` / `getSessionGroups(sessionKey)` / `getAllGroupIds()` / `clear()`，实现 `RealtimeSessionListener` 监听会话断开自动排空群组 | `RealtimeGroupManagerTest` / `GroupMulticastScenarioTest` |
 | **打字机流助手** | 专职 SSE 命令式流助手 | `SseStreamHelper` | `ateng.boot.realtime.sse.default-timeout` | `create([timeout])` / `sendChunk(emitter, chunk)` / `sendEvent(emitter, message)` / `sendEvent(emitter, event, data, [id])` / `sendKeepalive(emitter)` / `complete(emitter)` / `completeWithError(emitter, throwable)` / `isClientAbortException(throwable)`，静默吞咽客户端断开防日志风暴 | `SseStreamHelperTest` / `SseSubscriptionScenarioTest` |
@@ -276,20 +277,31 @@ public class RealtimeDemoController {
 public class CustomDatabaseOfflineMessageProvider implements RealtimeOfflineMessageProvider {
 
     @Override
-    public void saveOfflineMessage(String userId, RealtimeMessage<?> message, long expireSeconds) {
+    public void saveOfflineMessage(Object userId, RealtimeMessage<?> message) {
         // 存储到业务持久化数据库或专用离线消息表
     }
 
     @Override
-    public List<RealtimeMessage<?>> pullAndClearOfflineMessages(String userId) {
+    public List<RealtimeMessage<?>> pullAndClearOfflineMessages(Object userId) {
         // 从数据库拉取未读消息并标记为已排空
         return Collections.emptyList();
     }
 
     @Override
-    public long getOfflineMessageCount(String userId) {
+    public List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
+        // 只读查询未读离线消息（不清除，幂等安全）
+        return Collections.emptyList();
+    }
+
+    @Override
+    public void clearOfflineMessages(Object userId) {
+        // 清理指定用户的离线暂存消息
+    }
+
+    @Override
+    public int getOfflineMessageCount(Object userId) {
         // 统计未读消息总数
-        return 0L;
+        return 0;
     }
 }
 ```
@@ -341,14 +353,14 @@ public class RealtimeAuditEventListener {
 
 ### 5.1 多节点去中心化广播与 `sourceNodeId` 防反射风暴
 - **无主架构 (Peer-to-Peer)**：基于 Redis Pub/Sub 实现跨节点消息广播，单播、组播与租户广播时，发送节点无需探知目标连接驻留在哪一台物理机器上，直接通过 Redis Topic 扇出；
-- **防反射风暴保障**：每个集群节点启动时在内存中生成唯一且不可变的 `sourceNodeId`。跨节点广播通过 `ClusterMessageWrapper` 信封包装，各节点监听订阅 Topic 时，在前置卫语句中严格对比 `sourceNodeId`，丢弃自身发出的消息，彻底消除死循环与重复消费。
+- **防反射风暴保障**：每个集群节点启动时在内存中生成唯一且不可变的 `sourceNodeId`。跨节点广播通过 `RealtimeClusterPacket` 信封包装，各节点监听订阅 Topic 时，在前置卫语句中严格对比 `sourceNodeId`，丢弃自身发出的消息，彻底消除死循环与重复消费。
 
 ### 5.2 Spring `SmartLifecycle` 四阶优雅停机排空机制
-为了彻底解决微服务发布上线时的惊群风暴与句柄泄露，`RealtimeGracefulShutdownHandler` 挂载至 `SmartLifecycle`（Phase 为 `2147482647`，优先于 Web 容器与其他业务 Bean 销毁前排空）：
-- **阶段一：停止握手接纳**：置位内部状态 `shuttingDown = true`，握手拦截器与 SSE 端点对所有新连接请求返回 503 或拒绝握手；
-- **阶段二：集群度量注销**：从 Redis 集群在线节点度量表中移除当前节点；
-- **阶段三：定向发送 1012 重启帧**：向当前节点纳管的所有活跃 WebSocket 与 SSE 连接主动下发 `RealtimeCloseStatus.SERVICE_RESTART (1012)` 关闭帧或事件，客户端收到后启动带抖动的指数退避（Jittered Backoff）重新连接其他可用节点；
-- **阶段四：确定性超时排空**：等待 `drainTimeout`（默认 3s）缓冲冲刷，超时后执行最终强制物理切断并清理底层会话池。
+为了彻底解决微服务发布上线时的惊群风暴与句柄泄露，`RealtimeGracefulShutdownHandler` 挂载至 `SmartLifecycle`（Phase 为 `Integer.MAX_VALUE - 1000` 即 `2147481647`，优先于 Web 容器与其他业务 Bean 销毁前排空）：
+- **阶段一：停止握手接纳**：置位内部状态 `draining = true`，握手拦截器与 SSE 端点对所有新连接请求返回 HTTP 503 或拒绝握手；
+- **阶段二：定向发送 1012 重启帧**：向当前节点纳管的所有活跃 WebSocket 与 SSE 连接主动下发 `RealtimeCloseStatus.SERVICE_RESTART (1012)` 关闭帧或事件，客户端收到后启动带抖动的指数退避（Jittered Backoff）重新连接其他可用节点；
+- **阶段三：确定性超时排空**：等待 `drainTimeout`（默认 3s）缓冲冲刷；
+- **阶段四：物理资源清理与集群注销**：注销集群广播订阅与集群在线节点度量，执行最终强制物理切断并清理底层会话池。
 
 ### 5.3 Sa-Token 账号封禁 / 踢下线 4002 强退切断联动
 - **权限与长连接实时同步**：实现 Sa-Token 的 `SaTokenListener` 监听器；

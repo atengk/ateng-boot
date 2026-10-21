@@ -34,6 +34,24 @@ public interface RealtimeOfflineMessageProvider {
     List<RealtimeMessage<?>> pullAndClearOfflineMessages(Object userId);
 
     /**
+     * 只读获取目标用户的离线暂存消息（不执行清空，支持 CQS 幂等查询）
+     *
+     * @param userId 目标用户唯一标识
+     * @return 离线消息列表（保底返回空列表，绝不返回 null）
+     */
+    default List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
+        return java.util.Collections.emptyList();
+    }
+
+    /**
+     * 清空目标用户的离线暂存消息
+     *
+     * @param userId 目标用户唯一标识
+     */
+    default void clearOfflineMessages(Object userId) {
+    }
+
+    /**
      * 获取指定用户当前暂存的离线消息总数
      *
      * @param userId 目标用户唯一标识

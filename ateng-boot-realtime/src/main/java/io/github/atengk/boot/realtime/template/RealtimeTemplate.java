@@ -102,19 +102,22 @@ public class RealtimeTemplate {
                 String targetUserId = packet.getTargetKey();
                 if (targetUserId != null) {
                     List<RealtimeSession> sessions = sessionManager.getSessionsByUser(targetUserId);
-                    sendToSessions(sessions, null, packet.getMessage());
+                    Long tenantId = packet.getTenantId();
+                    sendToSessions(sessions, s -> tenantId == null || Objects.equals(tenantId, s.getTenantId()), packet.getMessage());
                 }
             }
             case GROUP -> {
                 String groupId = packet.getTargetKey();
                 if (groupId != null) {
                     Set<SessionKey> members = groupManager.getGroupSessions(groupId);
+                    List<RealtimeSession> sessions = new ArrayList<>(members.size());
                     for (SessionKey key : members) {
                         RealtimeSession session = sessionManager.getSession(key);
                         if (session != null) {
-                            doSend(session, packet.getMessage());
+                            sessions.add(session);
                         }
                     }
+                    sendToSessions(sessions, null, packet.getMessage());
                 }
             }
             case TENANT -> {
@@ -124,8 +127,9 @@ public class RealtimeTemplate {
                         Long tenantId = Long.valueOf(tenantKey);
                         List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
                         sendToSessions(sessions, null, packet.getMessage());
-                    } catch (NumberFormatException ignored) {
-                        // 忽略格式异常租户
+                    } catch (NumberFormatException e) {
+                        log.warn("[Realtime-Cluster] 远端广播租户 ID 格式非法，忽略投递: tenantKey={}, error={}",
+                                tenantKey, e.getMessage());
                     }
                 }
             }
@@ -189,17 +193,7 @@ public class RealtimeTemplate {
      * @return 成功投递的会话数量
      */
     public int sendToUser(Object userId, RealtimeMessage<?> message) {
-        if (userId == null || message == null) {
-            return 0;
-        }
-        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId), null, message);
-        if (clusterBroadcaster.isClusterEnabled()) {
-            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(clusterBroadcaster.getNodeId(), userId, message));
-        }
-        if (localCount == 0 && isOfflineSaveEligible(message)) {
-            offlineMessageProvider.saveOfflineMessage(userId, message);
-        }
-        return localCount;
+        return sendToUser(userId, null, message);
     }
 
     /**
@@ -214,10 +208,17 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId),
-                s -> tenantId == null || Objects.equals(tenantId, s.getTenantId()),
-                message);
-        if (localCount == 0 && isOfflineSaveEligible(message)) {
+        Predicate<RealtimeSession> predicate = (tenantId == null)
+                ? null
+                : s -> Objects.equals(tenantId, s.getTenantId());
+        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId), predicate, message);
+        boolean clusterEnabled = clusterBroadcaster.isClusterEnabled();
+        if (clusterEnabled) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(clusterBroadcaster.getNodeId(), userId, tenantId, message));
+        }
+        // 离线消息触发判定：仅当目标用户全网离线（本地且集群均无活跃连接）且消息标记持久化时触发 SPI 暂存
+        boolean isOnline = localCount > 0 || (clusterEnabled && clusterBroadcaster.isUserOnline(userId));
+        if (!isOnline && isOfflineSaveEligible(message)) {
             offlineMessageProvider.saveOfflineMessage(userId, message);
         }
         return localCount;
@@ -307,13 +308,14 @@ public class RealtimeTemplate {
             return 0;
         }
         Set<SessionKey> members = groupManager.getGroupSessions(groupId);
-        int successCount = 0;
+        List<RealtimeSession> sessions = new ArrayList<>(members.size());
         for (SessionKey key : members) {
             RealtimeSession session = sessionManager.getSession(key);
-            if (session != null && doSend(session, message)) {
-                successCount++;
+            if (session != null) {
+                sessions.add(session);
             }
         }
+        int successCount = sendToSessions(sessions, null, message);
         if (clusterBroadcaster.isClusterEnabled()) {
             clusterBroadcaster.broadcast(RealtimeClusterPacket.ofGroup(clusterBroadcaster.getNodeId(), groupId, message));
         }
@@ -515,7 +517,13 @@ public class RealtimeTemplate {
             return false;
         }
         List<RealtimeSession> sessions = sessionManager.getSessionsByUser(userId);
-        return !sessions.isEmpty();
+        if (!sessions.isEmpty()) {
+            return true;
+        }
+        if (clusterBroadcaster.isClusterEnabled()) {
+            return clusterBroadcaster.isUserOnline(userId);
+        }
+        return false;
     }
 
     /**
@@ -618,6 +626,30 @@ public class RealtimeTemplate {
             return 0;
         }
         return offlineMessageProvider.getOfflineMessageCount(userId);
+    }
+
+    /**
+     * 只读获取指定用户的离线暂存消息（不执行清空操作，支持 CQS 幂等探测）
+     *
+     * @param userId 用户标识
+     * @return 离线消息列表（保底返回空列表，绝不返回 null）
+     */
+    public List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.getOfflineMessages(userId);
+    }
+
+    /**
+     * 清空指定用户的离线暂存消息
+     *
+     * @param userId 用户标识
+     */
+    public void clearOfflineMessages(Object userId) {
+        if (userId != null) {
+            offlineMessageProvider.clearOfflineMessages(userId);
+        }
     }
 
     // ==================== 内部稳健发送核心 (Internal Defensive Send) ====================

@@ -44,6 +44,11 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
             if (deque == null) {
                 deque = new ArrayDeque<>();
             }
+            long now = System.currentTimeMillis();
+            long ttlMillis = ttl.toMillis();
+            if (ttlMillis > 0) {
+                deque.removeIf(msg -> msg.getTimestamp() != null && (now - msg.getTimestamp() > ttlMillis));
+            }
             // 防 OOM 治理：超出单用户最大配额时按照 FIFO 淘汰最早的消息
             while (deque.size() >= maxMessagesPerUser) {
                 deque.pollFirst();
@@ -74,6 +79,36 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
             result.add(msg);
         }
         return Collections.unmodifiableList(result);
+    }
+
+    @Override
+    public List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        Deque<RealtimeMessage<?>> deque = messageMap.get(String.valueOf(userId));
+        if (deque == null || deque.isEmpty()) {
+            return Collections.emptyList();
+        }
+        long now = System.currentTimeMillis();
+        long ttlMillis = ttl.toMillis();
+        List<RealtimeMessage<?>> result = new ArrayList<>(deque.size());
+        synchronized (deque) {
+            for (RealtimeMessage<?> msg : deque) {
+                if (msg.getTimestamp() != null && ttlMillis > 0 && (now - msg.getTimestamp() > ttlMillis)) {
+                    continue;
+                }
+                result.add(msg);
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override
+    public void clearOfflineMessages(Object userId) {
+        if (userId != null) {
+            messageMap.remove(String.valueOf(userId));
+        }
     }
 
     @Override

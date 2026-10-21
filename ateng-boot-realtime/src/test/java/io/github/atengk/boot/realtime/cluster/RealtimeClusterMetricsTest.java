@@ -80,6 +80,7 @@ class RealtimeClusterMetricsTest {
     void testRedissonClusterMetricsAggregation() {
         RedissonClusterMetricsReporter reporter = new RedissonClusterMetricsReporter(
                 redissonClient, properties, sessionManager, clusterBroadcaster);
+        assertThat(reporter.getPhase()).isEqualTo(Integer.MAX_VALUE - 1200);
 
         // 模拟 Redis Hash 中存在 3 个节点的上报数据 (NodeA=10, NodeB=25, NodeC=5)
         when(mockNodeMap.readAllValues()).thenReturn(List.of("10", "25", "5"));
@@ -94,6 +95,7 @@ class RealtimeClusterMetricsTest {
     void testMetricsFallbackOnRedisError() {
         RedissonClusterMetricsReporter reporter = new RedissonClusterMetricsReporter(
                 redissonClient, properties, sessionManager, clusterBroadcaster);
+        assertThat(reporter.getPhase()).isEqualTo(Integer.MAX_VALUE - 1200);
 
         WebSocketSession mockWs = mock(WebSocketSession.class);
         when(mockWs.isOpen()).thenReturn(true);
@@ -113,6 +115,7 @@ class RealtimeClusterMetricsTest {
     void testReportAndCleanupLifecycle() {
         RedissonClusterMetricsReporter reporter = new RedissonClusterMetricsReporter(
                 redissonClient, properties, sessionManager, clusterBroadcaster);
+        assertThat(reporter.getPhase()).isEqualTo(Integer.MAX_VALUE - 1200);
 
         WebSocketSession mockWs = mock(WebSocketSession.class);
         when(mockWs.isOpen()).thenReturn(true);
@@ -125,6 +128,10 @@ class RealtimeClusterMetricsTest {
         // 2. 清理注销
         reporter.cleanup();
         verify(mockNodeMap).remove(eq("node-test-1"));
+
+        // 3. 验证独立 stop 也自动触发从 Hash 移除，防御孤立停机导致残留
+        reporter.stop();
+        verify(mockNodeMap, atLeastOnce()).remove(eq("node-test-1"));
     }
 
     @Test

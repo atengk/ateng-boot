@@ -82,6 +82,11 @@ class RealtimeClusterMulticastTest {
         public void addConsumer(Consumer<RealtimeClusterPacket> consumer) {
             this.consumers.add(consumer);
         }
+
+        @Override
+        public void removeConsumer(Consumer<RealtimeClusterPacket> consumer) {
+            this.consumers.remove(consumer);
+        }
     }
 
     private RealtimeSession createMockSession(String userId, String clientId, Long tenantId, List<RealtimeMessage<?>> receivedSink) throws IOException {
@@ -131,6 +136,41 @@ class RealtimeClusterMulticastTest {
         assertThat(localCount).isEqualTo(0);
         assertThat(nodeBUserMessages).hasSize(1);
         assertThat(nodeBUserMessages.get(0).getData()).isEqualTo("hello cross node");
+    }
+
+    @Test
+    @DisplayName("跨节点多租户用户单播：指定租户隔离下发，非同租户不投递")
+    void testCrossNodeTenantUserUnicast() throws Exception {
+        List<MockSharedBusBroadcaster> bus = new ArrayList<>();
+        RealtimeProperties props = new RealtimeProperties();
+
+        // Node A
+        RealtimeSessionManager smA = new RealtimeSessionManager(props);
+        RealtimeGroupManager gmA = new RealtimeGroupManager();
+        MockSharedBusBroadcaster bA = new MockSharedBusBroadcaster("node-A", bus);
+        RealtimeTemplate templateA = new RealtimeTemplate(smA, gmA, props, bA);
+
+        // Node B
+        RealtimeSessionManager smB = new RealtimeSessionManager(props);
+        RealtimeGroupManager gmB = new RealtimeGroupManager();
+        MockSharedBusBroadcaster bB = new MockSharedBusBroadcaster("node-B", bus);
+        RealtimeTemplate templateB = new RealtimeTemplate(smB, gmB, props, bB);
+
+        // Node B 上连接用户 user-tenant，属于租户 100
+        List<RealtimeMessage<?>> nodeBMessages = new ArrayList<>();
+        RealtimeSession sessionUserTenant = createMockSession("user-tenant", "c1", 100L, nodeBMessages);
+        smB.registerSession(sessionUserTenant);
+
+        // 1. Node A 向 user-tenant 在租户 200 下发 -> 租户不匹配，不应接收
+        RealtimeMessage<String> mismatchMsg = RealtimeMessage.of("greet", "mismatch tenant");
+        templateA.sendToUser("user-tenant", 200L, mismatchMsg);
+        assertThat(nodeBMessages).isEmpty();
+
+        // 2. Node A 向 user-tenant 在租户 100 下发 -> 租户匹配，成功接收
+        RealtimeMessage<String> matchMsg = RealtimeMessage.of("greet", "matched tenant");
+        templateA.sendToUser("user-tenant", 100L, matchMsg);
+        assertThat(nodeBMessages).hasSize(1);
+        assertThat(nodeBMessages.get(0).getData()).isEqualTo("matched tenant");
     }
 
     @Test

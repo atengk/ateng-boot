@@ -45,6 +45,11 @@ public class RealtimeClusterPacket implements Serializable {
     private String targetKey;
 
     /**
+     * 关联的租户标识（用于多租户单播隔离过滤，可选）
+     */
+    private Long tenantId;
+
+    /**
      * 实时业务消息载荷（踢人信令时可为空）
      */
     private RealtimeMessage<?> message;
@@ -69,12 +74,19 @@ public class RealtimeClusterPacket implements Serializable {
      * 构建指定用户单播广播包
      */
     public static RealtimeClusterPacket ofUser(String sourceNodeId, Object userId, RealtimeMessage<?> message) {
+        return ofUser(sourceNodeId, userId, null, message);
+    }
+
+    /**
+     * 构建指定租户下指定用户单播广播包
+     */
+    public static RealtimeClusterPacket ofUser(String sourceNodeId, Object userId, Long tenantId, RealtimeMessage<?> message) {
         return RealtimeClusterPacket.builder()
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.USER)
                 .targetKey(userId != null ? String.valueOf(userId) : null)
+                .tenantId(tenantId)
                 .message(message)
-                .timestamp(System.currentTimeMillis())
                 .build();
     }
 
@@ -87,7 +99,6 @@ public class RealtimeClusterPacket implements Serializable {
                 .broadcastType(ClusterBroadcastType.GROUP)
                 .targetKey(groupId)
                 .message(message)
-                .timestamp(System.currentTimeMillis())
                 .build();
     }
 
@@ -99,8 +110,8 @@ public class RealtimeClusterPacket implements Serializable {
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.TENANT)
                 .targetKey(tenantId != null ? String.valueOf(tenantId) : null)
+                .tenantId(tenantId)
                 .message(message)
-                .timestamp(System.currentTimeMillis())
                 .build();
     }
 
@@ -112,7 +123,6 @@ public class RealtimeClusterPacket implements Serializable {
                 .sourceNodeId(sourceNodeId)
                 .broadcastType(ClusterBroadcastType.ALL)
                 .message(message)
-                .timestamp(System.currentTimeMillis())
                 .build();
     }
 
@@ -126,7 +136,6 @@ public class RealtimeClusterPacket implements Serializable {
                 .targetKey(userId != null ? String.valueOf(userId) : null)
                 .closeStatusCode(closeStatusCode)
                 .reason(reason)
-                .timestamp(System.currentTimeMillis())
                 .build();
     }
 }

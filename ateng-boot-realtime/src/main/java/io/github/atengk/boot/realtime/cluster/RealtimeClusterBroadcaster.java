@@ -36,9 +36,26 @@ public interface RealtimeClusterBroadcaster {
     boolean isClusterEnabled();
 
     /**
+     * 查询指定用户在全集群范围内是否存在活跃长连接
+     *
+     * @param userId 用户标识
+     * @return true 为集群在线，false 为全网离线
+     */
+    default boolean isUserOnline(Object userId) {
+        return false;
+    }
+
+    /**
      * 注册远端广播报文接收消费者
      *
      * @param consumer 广播消费回调
      */
     void addConsumer(Consumer<RealtimeClusterPacket> consumer);
+
+    /**
+     * 注销已注册的远端广播报文接收消费者
+     *
+     * @param consumer 待移除的广播消费回调
+     */
+    void removeConsumer(Consumer<RealtimeClusterPacket> consumer);
 }

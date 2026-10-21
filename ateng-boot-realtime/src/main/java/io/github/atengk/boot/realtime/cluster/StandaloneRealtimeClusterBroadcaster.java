@@ -50,4 +50,10 @@ public class StandaloneRealtimeClusterBroadcaster implements RealtimeClusterBroa
         Objects.requireNonNull(consumer, "consumer must not be null");
         // 单机模式无需订阅远程消息
     }
+
+    @Override
+    public void removeConsumer(Consumer<RealtimeClusterPacket> consumer) {
+        Objects.requireNonNull(consumer, "consumer must not be null");
+        // 单机模式无需订阅远程消息
+    }
 }

@@ -173,3 +173,19 @@ _Avoid_: DateUtil, TimeUtil, JodaTimeUtil
 **RandomUtil**:
 纯 JDK 17 原生高性能无锁安全随机工具类，基于 ThreadLocalRandom 提供定长纯数字验证码、数字字母混合随机串、闭区间随机数与列表安全抽样洗牌。
 _Avoid_: RandomHelper, SecureRandomUtil, MathRandom
+
+**MessageHeaderConstants**:
+收敛跨中间件（RabbitMQ、Kafka、RocketMQ、HTTP）的出入站消息头/用户属性标准键名常量件，统一定义全链路追踪标识（`X-Trace-Id`）、租户标识（`X-Tenant-Id`）、操作人标识（`X-User-Id`）与发送时间戳等核心元数据键名，杜绝各中间件子模块自立门户与命名漂移。
+_Avoid_: MqHeaders, MqConstants, HeaderConsts, MessageHeaders
+
+**MessageContextPropagator**:
+跨进程与异步消息边界的四维上下文传播纯原生工具类，提供出站四维上下文快照抓取与统一注入（Headers/UserProperties）、入站消息上下文自动提取还原以及消费完成后保证确定性安全清理的生命周期防卫。
+_Avoid_: MqContextHelper, MessageTraceUtil, MqTraceFilter, ContextExtractor
+
+**FatalExceptionClassifier**:
+面向全反应堆异步消息消费的不可自愈“毒丸”异常分类与判定器，集中收敛反序列化异常、JSR-303 参数校验异常及显式致命逻辑错误，统一供各消息队列消费端拦截器判定并快速失败转入死信队列或丢弃，杜绝无脑无限重试。
+_Avoid_: MqErrorClassifier, PoisonPillHandler, FatalExceptionChecker, ErrorJudge
+
+**MessageDeliveryException**:
+表征消息出站投递或发送阶段物理中断的受控业务异常，继承自 `BusinessException`，完整封装原始底层驱动异常（cause）与目标 Topic、业务主键及追踪上下文，实现上层调用与底层驱动解耦。
+_Avoid_: MqSendException, MqException, ProducerException, DeliveryException

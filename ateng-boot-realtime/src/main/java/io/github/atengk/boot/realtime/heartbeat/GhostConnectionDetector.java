@@ -16,8 +16,8 @@ import org.springframework.web.socket.WebSocketSession;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -54,9 +54,12 @@ public class GhostConnectionDetector implements SmartLifecycle {
                     ? interval.toMillis()
                     : 25_000L;
 
-            this.scheduler = Executors.newSingleThreadScheduledExecutor(
+            ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
+                    1,
                     new NamedThreadFactory("realtime-ghost-detector-", true)
             );
+            executor.setRemoveOnCancelPolicy(true);
+            this.scheduler = executor;
             this.scheduler.scheduleAtFixedRate(
                     this::detectAndHeartbeat,
                     intervalMillis,
@@ -93,7 +96,8 @@ public class GhostConnectionDetector implements SmartLifecycle {
 
     @Override
     public int getPhase() {
-        return Integer.MAX_VALUE - 100;
+        // 在优雅停机排空 (Phase = Integer.MAX_VALUE - 1000) 完成后再停止死链心跳探测
+        return Integer.MAX_VALUE - 1100;
     }
 
     /**

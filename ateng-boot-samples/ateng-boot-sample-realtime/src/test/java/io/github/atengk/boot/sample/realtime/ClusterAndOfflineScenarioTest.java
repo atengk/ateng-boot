@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
+import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,9 +44,28 @@ class ClusterAndOfflineScenarioTest {
     private RealtimeTemplate realtimeTemplate;
 
     @Autowired
+    private RealtimeSessionManager sessionManager;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
+
+    @AfterEach
+    void tearDown() {
+        if (sessionManager != null) {
+            for (RealtimeSession session : sessionManager.getAllSessions()) {
+                try {
+                    sessionManager.removeAndClose(session.getSessionKey(), RealtimeCloseStatus.NORMAL);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        if (realtimeTemplate != null) {
+            realtimeTemplate.clearOfflineMessages("user-offline-sample");
+            realtimeTemplate.clearOfflineMessages("user-satoken-ban");
+        }
+    }
 
     private String doLogin(String userId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()

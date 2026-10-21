@@ -21,23 +21,25 @@ class RealtimeClusterPacketTest {
     @DisplayName("用户单播数据包构建与序列化自洽")
     void testUserPacketSerialization() {
         RealtimeMessage<String> message = RealtimeMessage.of("notice", "hello cluster");
-        RealtimeClusterPacket packet = RealtimeClusterPacket.ofUser("node-1", "user-888", message);
+        RealtimeClusterPacket packet = RealtimeClusterPacket.ofUser("node-1", "user-888", 999L, message);
 
         assertThat(packet.getSourceNodeId()).isEqualTo("node-1");
         assertThat(packet.getBroadcastType()).isEqualTo(ClusterBroadcastType.USER);
         assertThat(packet.getTargetKey()).isEqualTo("user-888");
+        assertThat(packet.getTenantId()).isEqualTo(999L);
         assertThat(packet.getMessage()).isEqualTo(message);
         assertThat(packet.getTimestamp()).isPositive();
 
         // 序列化与反序列化验证
         String json = JsonUtil.toJsonString(packet);
-        assertThat(json).contains("node-1").contains("user-888").contains("notice");
+        assertThat(json).contains("node-1").contains("user-888").contains("notice").contains("999");
 
         RealtimeClusterPacket deserialized = JsonUtil.parseObject(json, RealtimeClusterPacket.class);
         assertThat(deserialized).isNotNull();
         assertThat(deserialized.getSourceNodeId()).isEqualTo("node-1");
         assertThat(deserialized.getBroadcastType()).isEqualTo(ClusterBroadcastType.USER);
         assertThat(deserialized.getTargetKey()).isEqualTo("user-888");
+        assertThat(deserialized.getTenantId()).isEqualTo(999L);
         assertThat(deserialized.getMessage().getEvent()).isEqualTo("notice");
     }
 

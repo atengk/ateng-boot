@@ -87,7 +87,12 @@ public class RealtimeSaTokenListener implements SaTokenListener {
         if (loginId == null) {
             return;
         }
-        log.info("[Realtime] 捕获 Sa-Token 安全下线事件，触发跨集群切断: loginId={}, reason={}", loginId, reason);
-        realtimeTemplate.kickoutUser(loginId, RealtimeCloseStatus.USER_KICKED_OUT);
+        try {
+            log.info("[Realtime] 捕获 Sa-Token 安全下线事件，触发跨集群切断: loginId={}, reason={}", loginId, reason);
+            realtimeTemplate.kickoutUser(loginId, RealtimeCloseStatus.USER_KICKED_OUT);
+        } catch (Throwable t) {
+            log.warn("[Realtime] 处理 Sa-Token 安全下线联动切断异常，受控防御防止阻断业务事务: loginId={}, reason={}, error={}",
+                    loginId, reason, t.getMessage());
+        }
     }
 }

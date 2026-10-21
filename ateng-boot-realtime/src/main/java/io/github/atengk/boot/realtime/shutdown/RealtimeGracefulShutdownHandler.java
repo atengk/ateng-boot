@@ -1,13 +1,14 @@
 package io.github.atengk.boot.realtime.shutdown;
 
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
-import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.SmartLifecycle;
 
@@ -38,7 +39,7 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
     private final RealtimeProperties properties;
     private final RealtimeSessionManager sessionManager;
     private final ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider;
-    private final ObjectProvider<RedissonClusterMetricsReporter> metricsReporterProvider;
+    private final ObjectProvider<RealtimeClusterMetricsProvider> metricsReporterProvider;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean draining = new AtomicBoolean(false);
@@ -51,7 +52,7 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
     public RealtimeGracefulShutdownHandler(RealtimeProperties properties,
                                            RealtimeSessionManager sessionManager,
                                            ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
-                                           ObjectProvider<RedissonClusterMetricsReporter> metricsReporterProvider) {
+                                           ObjectProvider<RealtimeClusterMetricsProvider> metricsReporterProvider) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.clusterBroadcasterProvider = clusterBroadcasterProvider;
@@ -119,10 +120,10 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
             // 4. Phase 4: 物理注销与资源清理 (Physical Teardown & Unregistration)
             log.info("[Realtime] 优雅停机 Phase 4: 物理资源释放与集群注销...");
             if (metricsReporterProvider != null) {
-                RedissonClusterMetricsReporter reporter = metricsReporterProvider.getIfAvailable();
-                if (reporter != null) {
+                RealtimeClusterMetricsProvider reporter = metricsReporterProvider.getIfAvailable();
+                if (reporter instanceof RedissonClusterMetricsReporter redissonReporter) {
                     try {
-                        reporter.cleanup();
+                        redissonReporter.cleanup();
                     } catch (Throwable t) {
                         log.warn("[Realtime] 清理集群在线度量异常: {}", t.getMessage());
                     }
@@ -130,16 +131,15 @@ public class RealtimeGracefulShutdownHandler implements SmartLifecycle {
             }
             if (clusterBroadcasterProvider != null) {
                 RealtimeClusterBroadcaster broadcaster = clusterBroadcasterProvider.getIfAvailable();
-                if (broadcaster instanceof RedissonRealtimeClusterBroadcaster redissonBroadcaster) {
+                if (broadcaster instanceof DisposableBean disposable) {
                     try {
-                        redissonBroadcaster.destroy();
+                        disposable.destroy();
                     } catch (Throwable t) {
-                        log.warn("[Realtime] 注销 Redisson 广播器监听异常: {}", t.getMessage());
+                        log.warn("[Realtime] 注销集群广播器异常: {}", t.getMessage());
                     }
                 }
             }
         } finally {
-            draining.set(false);
             log.info("[Realtime] 优雅停机排空完成");
             if (callback != null) {
                 callback.run();

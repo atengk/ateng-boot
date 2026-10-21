@@ -2,6 +2,7 @@ package io.github.atengk.boot.realtime.shutdown;
 
 import io.github.atengk.boot.realtime.auth.AtengHandshakeInterceptor;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
@@ -69,7 +71,7 @@ class RealtimeGracefulShutdownTest {
                 properties,
                 sessionManager,
                 beanFactory.getBeanProvider(RealtimeClusterBroadcaster.class),
-                beanFactory.getBeanProvider(RedissonClusterMetricsReporter.class)
+                beanFactory.getBeanProvider(RealtimeClusterMetricsProvider.class)
         );
     }
 
@@ -116,10 +118,10 @@ class RealtimeGracefulShutdownTest {
 
         // 验证 Phase 4: 资源注销与回调触发
         verify(metricsReporter, times(1)).cleanup();
-        verify((RedissonRealtimeClusterBroadcaster) clusterBroadcaster, times(1)).destroy();
+        verify((DisposableBean) clusterBroadcaster, times(1)).destroy();
         assertThat(callbackInvoked.get()).isTrue();
         assertThat(shutdownHandler.isRunning()).isFalse();
-        assertThat(shutdownHandler.isDraining()).isFalse();
+        assertThat(shutdownHandler.isDraining()).isTrue();
     }
 
     @Test

@@ -38,18 +38,18 @@ flowchart TD
     subgraph ClusterNode1["实时通信集群节点 1 (NodeId: 8a3f...)"]
         LocalSession1["RealtimeSessionManager<br>(持有 User 1001 本地连接)"]
         Template1["RealtimeTemplate 统一门面"]
-        Shutdown1["RealtimeShutdownHook<br>(SmartLifecycle Order: MIN+100)"]
+        Shutdown1["RealtimeGracefulShutdownHandler<br>(SmartLifecycle Phase: MAX-1000)"]
     end
 
     subgraph ClusterNode2["实时通信集群节点 2 (NodeId: 9c2e...)"]
         LocalSession2["RealtimeSessionManager<br>(持有 User 1002 本地连接)"]
         Template2["RealtimeTemplate 统一门面"]
-        Shutdown2["RealtimeShutdownHook"]
+        Shutdown2["RealtimeGracefulShutdownHandler"]
     end
 
     subgraph DistributedInfra["分布式协调与存储底座"]
         RedisPubSub["Redis Pub/Sub 广播总线<br>(Topic: ateng:realtime:cluster:broadcast)"]
-        RedisMetrics["Redis 集群连接度量 Hash / Keys<br>(ateng:realtime:cluster:sessions)"]
+        RedisMetrics["Redis 集群连接度量 Hash / Keys<br>(ateng:realtime:cluster:nodes)"]
         OfflineSPI["RealtimeOfflineMessageProvider SPI<br>(Redis / 数据库离线暂存)"]
     end
 
@@ -61,7 +61,7 @@ flowchart TD
     ClientB -->|WebSocket / SSE| LocalSession2
 
     Template1 -->|sendToUser('1002')| RedisPubSub
-    RedisPubSub -->|广播 ClusterMessageWrapper| Template2
+    RedisPubSub -->|广播 RealtimeClusterPacket| Template2
     Template2 -->|识别 sourceNodeId != 本地<br>本地路由投递| LocalSession2
     LocalSession2 --> ClientB
 
@@ -76,15 +76,15 @@ flowchart TD
 ## 核心设计与防线展开 (Core Design & Safeguards)
 
 ### 1. 运行时无侵入依赖探测与双模降级 (Runtime Redisson Probing & Dual-Mode Fallback)
-- **零强绑定条件装配**：`ateng-boot-realtime` 将 Redisson 声明为 `optional` 依赖。通过 `@ConditionalOnClass(RedissonClient.class)` 与 `@ConditionalOnProperty(prefix = "ateng.boot.realtime.cluster.redis", name = "enabled", havingValue = "true")` 双重守卫；
-- **单机内存平滑回退**：当应用未引入 Redisson 或未显式开启集群配置时，自动装配并注入 `LocalClusterBroadcastManager`。本地调用直接在内存中闭环执行，不产生任何网络或反射开销，实现“一套代码、单机集群无缝切换”。
+- **零强绑定条件装配**：`ateng-boot-realtime` 将 Redisson 声明为 `optional` 依赖。通过 `@ConditionalOnClass(RedissonClient.class)` 与属性配置 `ateng.boot.realtime.cluster-mode` 探测守卫；
+- **单机内存平滑回退**：当应用未引入 Redisson 或配置为 `STANDALONE` 模式时，自动装配并注入 `StandaloneRealtimeClusterBroadcaster` 与 `StandaloneClusterMetricsProvider`。本地调用直接在内存中闭环执行，不产生任何网络或反射开销，实现“一套代码、单机集群无缝切换”。
 
 ### 2. 多节点 Pub/Sub 广播与 `sourceNodeId` 防反射风暴 (Reflection-Free Pub/Sub)
 - **唯一节点身份生成**：每个集群节点启动时在内存中生成唯一且不可变的 `sourceNodeId`（基于无锁高效 UUID）；
-- **信封协议封装**：所有跨节点广播行为（单播、组播、全员广播、租户广播、踢人指令）统一包装为 `ClusterMessageWrapper` 信封对象，携带 `sourceNodeId`、`clusterMessageType`、目标标识及消息载荷；
+- **信封协议封装**：所有跨节点广播行为（单播、组播、全员广播、租户广播、踢人指令）统一包装为 `RealtimeClusterPacket` 信封对象，携带 `sourceNodeId`、`clusterMessageType`、目标标识及消息载荷；
 - **端点防反射丢弃防线**：各节点监听 Redis Pub/Sub Topic 时，在反序列化消息后的第一道前置卫语句中执行：
   ```java
-  if (currentNodeId.equals(wrapper.getSourceNodeId())) {
+  if (currentNodeId.equals(packet.getSourceNodeId())) {
       // 绝对丢弃自身发出的广播，杜绝死循环回环风暴与重复推送
       return;
   }
@@ -98,9 +98,9 @@ flowchart TD
   - 若本地无匹配连接，则快速失败返回，零资源浪费。
 
 ### 4. 离线消息 SPI 与确定性生命周期治理 (Pluggable Offline Message Storage SPI)
-- **契约与持久化解耦**：定义 `RealtimeOfflineMessageProvider` 标准 SPI，提供 `saveOfflineMessage(userId, message, expireSeconds)`、`pullAndClearOfflineMessages(userId)`、`getOfflineMessageCount(userId)` 完备对称 API；
+- **契约与持久化解耦**：定义 `RealtimeOfflineMessageProvider` 标准 SPI，提供 `saveOfflineMessage(userId, message)`、`getOfflineMessages(userId)`、`clearOfflineMessages(userId)`、`pullAndClearOfflineMessages(userId)`、`getOfflineMessageCount(userId)` 完备对称与 CQS 读写分离 API；
 - **全集群离线探测与静默暂存**：当调用 `sendToUser` 时，若目标用户在全集群均不在线（或单机模式下本地不在线），底层自动感知并触发 SPI 暂存机制；
-- **安全防爆仓治理**：通过配置 `ateng.boot.realtime.offline.max-messages-per-user`（默认 100 条）与 `expire-time`（默认 7 天），严格防御恶意刷量导致的存储无界膨胀与内存溢出。
+- **安全防爆仓治理**：通过配置 `ateng.boot.realtime.offline.max-messages-per-user`（默认 100 条）与 `ttl`（默认 7 天），严格防御恶意刷量导致的存储无界膨胀与内存溢出。
 
 ### 5. Sa-Token 权限体系无缝桥接与实时踢退 (Sa-Token Event-Driven Kickout Bridge)
 - **权限与长连接实时同步**：实现 Sa-Token 的 `SaTokenListener` 监听器，挂载至 Spring 容器；
@@ -109,11 +109,11 @@ flowchart TD
   - 发送标准 RFC 6455 状态码 `4002 (USER_KICKED_OUT)`，前端可据此精准展示“账号已被踢出或封禁”并阻断自动重连。
 
 ### 6. Spring SmartLifecycle 优雅停机四阶排空时序 (Four-Stage Graceful Shutdown)
-为了彻底解决微服务发布上线时的惊群风暴与句柄泄露，实现 `RealtimeShutdownHook` 并挂载至 `SmartLifecycle`（Order 为 `Integer.MIN_VALUE + 100`，确保优先于 Web 容器与其他业务 Bean 销毁前排空）：
-- **阶段一：停止握手接纳 (Handshake Rejection)**：内部状态标志置为 `shuttingDown = true`，握手拦截器 `AtengHandshakeInterceptor` 与 SSE 注册端点立即对所有新建立的长连接请求返回 503 Service Unavailable 或拒绝握手；
+为了彻底解决微服务发布上线时的惊群风暴与句柄泄露，实现 `RealtimeGracefulShutdownHandler` 并挂载至 `SmartLifecycle`（Phase 为 `Integer.MAX_VALUE - 1000`，确保优先于 Web 容器与其他业务 Bean 销毁前排空）：
+- **阶段一：停止握手接纳 (Handshake Rejection)**：内部状态标志置为 `draining = true`，握手拦截器 `AtengHandshakeInterceptor` 与 SSE 注册端点立即对所有新建立的长连接请求返回 503 Service Unavailable 或拒绝握手；
 - **阶段二：集群度量注销 (Metrics Deregistration)**：从 Redis 集群活跃节点列表与度量统计中移除当前节点；
 - **阶段三：定向发送 1012 重启指令 (Broadcast 1012 Restart Frame)**：遍历本地持有的所有活跃 WebSocket 与 SSE 连接，主动下发包含 `RealtimeCloseStatus.SERVICE_RESTART (1012)` 的关闭帧或事件，客户端收到 1012 状态码后启动带抖动的指数退避（Jittered Backoff）重新连接其他可用节点；
-- **阶段四：确定性超时排空 (Deterministic Timeout Drain)**：配置 `ateng.boot.realtime.shutdown.grace-period`（默认 10s），在独立受管调度线程池中等待活跃连接自行关闭；若超过宽限期仍有未关闭的死链，执行最终强制物理切断并清理底层会话池。
+- **阶段四：确定性超时排空 (Deterministic Timeout Drain)**：配置 `ateng.boot.realtime.shutdown.drain-timeout`（默认 3s），在独立受管调度线程池中等待活跃连接自行关闭；若超过宽限期仍有未关闭的死链，执行最终强制物理切断并清理底层会话池。
 
 ---
 

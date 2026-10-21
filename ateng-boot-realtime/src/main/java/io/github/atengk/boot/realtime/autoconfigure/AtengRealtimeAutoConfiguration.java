@@ -31,6 +31,7 @@ import io.github.atengk.boot.realtime.websocket.AtengWebSocketHandler;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -53,6 +54,7 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * @since 2026-10-21
  */
 @AutoConfiguration
+@AutoConfigureAfter(name = "org.redisson.spring.starter.RedissonAutoConfiguration")
 @EnableConfigurationProperties(RealtimeProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.realtime", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengRealtimeAutoConfiguration {
@@ -155,9 +157,9 @@ public class AtengRealtimeAutoConfiguration {
             RealtimeProperties properties,
             RealtimeSessionManager sessionManager,
             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
-            ObjectProvider<RedissonClusterMetricsReporter> metricsReporterProvider) {
+            ObjectProvider<RealtimeClusterMetricsProvider> clusterMetricsProvider) {
         return new RealtimeGracefulShutdownHandler(properties, sessionManager,
-                clusterBroadcasterProvider, metricsReporterProvider);
+                clusterBroadcasterProvider, clusterMetricsProvider);
     }
 
     /**
@@ -202,13 +204,13 @@ public class AtengRealtimeAutoConfiguration {
         @Bean
         @ConditionalOnBean(RedissonClient.class)
         @ConditionalOnMissingBean(RealtimeClusterMetricsProvider.class)
-        public RedissonClusterMetricsReporter redissonClusterMetricsReporter(
+        public RealtimeClusterMetricsProvider redissonClusterMetricsReporter(
                 RedissonClient redissonClient,
                 RealtimeProperties properties,
                 RealtimeSessionManager sessionManager,
                 RealtimeClusterBroadcaster clusterBroadcaster) {
             if (properties.getClusterMode() == ClusterMode.STANDALONE) {
-                return null;
+                return new StandaloneClusterMetricsProvider(sessionManager);
             }
             return new RedissonClusterMetricsReporter(redissonClient, properties, sessionManager, clusterBroadcaster);
         }

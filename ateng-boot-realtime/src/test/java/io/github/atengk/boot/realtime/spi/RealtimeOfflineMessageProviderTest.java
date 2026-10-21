@@ -59,6 +59,11 @@ class RealtimeOfflineMessageProviderTest {
 
         assertThat(provider.getOfflineMessageCount("user-101")).isEqualTo(2);
 
+        // 只读探测验证 (CQS 幂等查询，不清除)
+        List<RealtimeMessage<?>> peeked = provider.getOfflineMessages("user-101");
+        assertThat(peeked).hasSize(2).containsExactly(msg1, msg2);
+        assertThat(provider.getOfflineMessageCount("user-101")).isEqualTo(2);
+
         // 一次性拉取清空
         List<RealtimeMessage<?>> pulled = provider.pullAndClearOfflineMessages("user-101");
         assertThat(pulled).hasSize(2).containsExactly(msg1, msg2);
@@ -66,6 +71,13 @@ class RealtimeOfflineMessageProviderTest {
         // 再次拉取已清空
         assertThat(provider.getOfflineMessageCount("user-101")).isZero();
         assertThat(provider.pullAndClearOfflineMessages("user-101")).isEmpty();
+        assertThat(provider.getOfflineMessages("user-101")).isEmpty();
+
+        // 独立清空验证
+        provider.saveOfflineMessage("user-101", msg1);
+        assertThat(provider.getOfflineMessageCount("user-101")).isEqualTo(1);
+        provider.clearOfflineMessages("user-101");
+        assertThat(provider.getOfflineMessageCount("user-101")).isZero();
     }
 
     @Test
@@ -169,5 +181,44 @@ class RealtimeOfflineMessageProviderTest {
 
         template.getOfflineMessageCount("user-offline");
         verify(mockProvider, times(1)).getOfflineMessageCount("user-offline");
+
+        template.getOfflineMessages("user-offline");
+        verify(mockProvider, times(1)).getOfflineMessages("user-offline");
+
+        template.clearOfflineMessages("user-offline");
+        verify(mockProvider, times(1)).clearOfflineMessages("user-offline");
+    }
+
+    @Test
+    @DisplayName("集群协同防重复消费: 远端节点持有活跃连接时，本地虽为 0 但绝不误存离线消息")
+    void testClusterModeAvoidsOfflineSaveWhenUserIsOnlineInCluster() {
+        RealtimeProperties properties = new RealtimeProperties();
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(properties);
+        RealtimeGroupManager groupManager = new RealtimeGroupManager();
+        RealtimeOfflineMessageProvider mockProvider = mock(RealtimeOfflineMessageProvider.class);
+
+        io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster mockBroadcaster =
+                mock(io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster.class);
+        when(mockBroadcaster.isClusterEnabled()).thenReturn(true);
+        when(mockBroadcaster.getNodeId()).thenReturn("node-1");
+
+        // 模拟目标用户在集群远端节点在线
+        when(mockBroadcaster.isUserOnline("user-remote-online")).thenReturn(true);
+
+        RealtimeTemplate template = new RealtimeTemplate(
+                sessionManager, groupManager, properties, mockBroadcaster, mockProvider);
+
+        RealtimeMessage<String> persistentMsg = RealtimeMessage.ofPersistent("order", "paid");
+
+        // 发送持久化消息：虽然本地会话为 0，但集群探测到在线，所以广播后绝不存离线消息！
+        int sentCount = template.sendToUser("user-remote-online", persistentMsg);
+        assertThat(sentCount).isZero();
+        verify(mockBroadcaster, times(1)).broadcast(any());
+        verify(mockProvider, never()).saveOfflineMessage(any(), any());
+
+        // 反向验证：如果全集群确实离线，则触发广播同时触发离线暂存
+        when(mockBroadcaster.isUserOnline("user-all-offline")).thenReturn(false);
+        template.sendToUser("user-all-offline", persistentMsg);
+        verify(mockProvider, times(1)).saveOfflineMessage("user-all-offline", persistentMsg);
     }
 }
