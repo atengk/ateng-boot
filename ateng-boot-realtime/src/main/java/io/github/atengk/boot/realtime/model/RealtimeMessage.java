@@ -86,6 +86,11 @@ public class RealtimeMessage<T> implements Serializable {
     private String tenantId;
 
     /**
+     * 是否需要离线持久化暂存（当目标用户离线无活跃连接时触发离线存储 SPI）
+     */
+    private Boolean persistent;
+
+    /**
      * 快速构建业务事件消息（自动填充 id, timestamp, traceId, tenantId）
      *
      * @param event 业务事件标识
@@ -95,6 +100,20 @@ public class RealtimeMessage<T> implements Serializable {
      */
     public static <T> RealtimeMessage<T> of(String event, T data) {
         return of(IdUtil.nextIdStr(), event, data);
+    }
+
+    /**
+     * 快速构建持久化离线消息（当用户离线时触发离线消息暂存 SPI）
+     *
+     * @param event 业务事件标识
+     * @param data  业务数据
+     * @param <T>   数据泛型
+     * @return 标记持久化的实时消息载荷实例
+     */
+    public static <T> RealtimeMessage<T> ofPersistent(String event, T data) {
+        RealtimeMessage<T> message = of(event, data);
+        message.setPersistent(true);
+        return message;
     }
 
     /**

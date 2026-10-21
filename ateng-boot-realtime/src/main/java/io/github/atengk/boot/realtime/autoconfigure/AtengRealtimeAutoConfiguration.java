@@ -14,8 +14,12 @@ import io.github.atengk.boot.realtime.event.RealtimeSessionEventPublisher;
 import io.github.atengk.boot.realtime.group.RealtimeGroupManager;
 import io.github.atengk.boot.realtime.heartbeat.GhostConnectionDetector;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
+import io.github.atengk.boot.realtime.satoken.RealtimeSaTokenListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.spi.InMemoryRealtimeOfflineMessageProvider;
+import io.github.atengk.boot.realtime.spi.NoOpRealtimeOfflineMessageProvider;
+import io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider;
 import io.github.atengk.boot.realtime.sse.AtengSseController;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketConfigurer;
@@ -107,6 +111,18 @@ public class AtengRealtimeAutoConfiguration {
     }
 
     /**
+     * 注册离线消息持久化提供者（当配置开启时默认提供内存防 OOM 提供者，否则 No-Op 保底）
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeOfflineMessageProvider.class)
+    public RealtimeOfflineMessageProvider realtimeOfflineMessageProvider(RealtimeProperties properties) {
+        if (properties.getOffline().isEnabled()) {
+            return new InMemoryRealtimeOfflineMessageProvider(properties);
+        }
+        return new NoOpRealtimeOfflineMessageProvider();
+    }
+
+    /**
      * 注册统一实时通信门面
      */
     @Bean
@@ -114,12 +130,15 @@ public class AtengRealtimeAutoConfiguration {
     public RealtimeTemplate realtimeTemplate(RealtimeSessionManager sessionManager,
                                              RealtimeGroupManager groupManager,
                                              RealtimeProperties properties,
-                                             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider) {
-        return new RealtimeTemplate(sessionManager, groupManager, properties, clusterBroadcasterProvider.getIfAvailable());
+                                             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
+                                             ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider) {
+        return new RealtimeTemplate(sessionManager, groupManager, properties,
+                clusterBroadcasterProvider.getIfAvailable(),
+                offlineMessageProvider.getIfAvailable());
     }
 
     /**
-     * Sa-Token 握手鉴权集成自动装配
+     * Sa-Token 握手鉴权集成与安全下线切断自动装配
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(StpUtil.class)
@@ -129,6 +148,12 @@ public class AtengRealtimeAutoConfiguration {
         @ConditionalOnMissingBean(RealtimeAuthHandshakeProvider.class)
         public SaTokenRealtimeAuthProvider saTokenRealtimeAuthProvider() {
             return new SaTokenRealtimeAuthProvider();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(RealtimeSaTokenListener.class)
+        public RealtimeSaTokenListener realtimeSaTokenListener(RealtimeTemplate realtimeTemplate) {
+            return new RealtimeSaTokenListener(realtimeTemplate);
         }
     }
 

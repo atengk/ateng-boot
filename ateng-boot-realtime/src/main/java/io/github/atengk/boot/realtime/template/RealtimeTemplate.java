@@ -11,6 +11,8 @@ import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.spi.NoOpRealtimeOfflineMessageProvider;
+import io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.socket.CloseStatus;
@@ -42,21 +44,32 @@ public class RealtimeTemplate {
     private final RealtimeProperties properties;
     @Getter
     private final RealtimeClusterBroadcaster clusterBroadcaster;
+    @Getter
+    private final RealtimeOfflineMessageProvider offlineMessageProvider;
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
                             RealtimeGroupManager groupManager,
                             RealtimeProperties properties) {
-        this(sessionManager, groupManager, properties, new StandaloneRealtimeClusterBroadcaster());
+        this(sessionManager, groupManager, properties, new StandaloneRealtimeClusterBroadcaster(), new NoOpRealtimeOfflineMessageProvider());
     }
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
                             RealtimeGroupManager groupManager,
                             RealtimeProperties properties,
                             RealtimeClusterBroadcaster clusterBroadcaster) {
+        this(sessionManager, groupManager, properties, clusterBroadcaster, new NoOpRealtimeOfflineMessageProvider());
+    }
+
+    public RealtimeTemplate(RealtimeSessionManager sessionManager,
+                            RealtimeGroupManager groupManager,
+                            RealtimeProperties properties,
+                            RealtimeClusterBroadcaster clusterBroadcaster,
+                            RealtimeOfflineMessageProvider offlineMessageProvider) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.groupManager = Objects.requireNonNull(groupManager, "groupManager must not be null");
         this.properties = properties;
         this.clusterBroadcaster = clusterBroadcaster != null ? clusterBroadcaster : new StandaloneRealtimeClusterBroadcaster();
+        this.offlineMessageProvider = offlineMessageProvider != null ? offlineMessageProvider : new NoOpRealtimeOfflineMessageProvider();
         // 注册远端集群广播消费回调（仅分发本地会话，严禁二次向外广播）
         this.clusterBroadcaster.addConsumer(this::dispatchRemotePacket);
     }
@@ -169,6 +182,9 @@ public class RealtimeTemplate {
         if (clusterBroadcaster.isClusterEnabled()) {
             clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(clusterBroadcaster.getNodeId(), userId, message));
         }
+        if (localCount == 0 && isOfflineSaveEligible(message)) {
+            offlineMessageProvider.saveOfflineMessage(userId, message);
+        }
         return localCount;
     }
 
@@ -184,9 +200,13 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        return sendToSessions(sessionManager.getSessionsByUser(userId),
+        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId),
                 s -> tenantId == null || Objects.equals(tenantId, s.getTenantId()),
                 message);
+        if (localCount == 0 && isOfflineSaveEligible(message)) {
+            offlineMessageProvider.saveOfflineMessage(userId, message);
+        }
+        return localCount;
     }
 
     // ==================== 协议定向推流 (Protocol-Directed Sending) ====================
@@ -545,6 +565,34 @@ public class RealtimeTemplate {
         return sessionManager.getSession(sessionKey);
     }
 
+    // ==================== 离线消息暂存与补发 (Offline Messages) ====================
+
+    /**
+     * 一次性拉取并清空指定用户的离线暂存消息
+     *
+     * @param userId 用户标识
+     * @return 离线消息列表（保底返回空列表，绝不返回 null）
+     */
+    public List<RealtimeMessage<?>> pullAndClearOfflineMessages(Object userId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.pullAndClearOfflineMessages(userId);
+    }
+
+    /**
+     * 获取指定用户当前暂存的离线消息总数
+     *
+     * @param userId 用户标识
+     * @return 离线消息数量
+     */
+    public int getOfflineMessageCount(Object userId) {
+        if (userId == null) {
+            return 0;
+        }
+        return offlineMessageProvider.getOfflineMessageCount(userId);
+    }
+
     // ==================== 内部稳健发送核心 (Internal Defensive Send) ====================
 
     /**
@@ -583,5 +631,18 @@ public class RealtimeTemplate {
             sessionManager.removeAndClose(session.getSessionKey(), CloseStatus.SERVER_ERROR);
             return false;
         }
+    }
+
+    /**
+     * 判断消息是否符合离线持久化暂存条件
+     *
+     * @param message 待下发消息
+     * @return 是否应暂存
+     */
+    private boolean isOfflineSaveEligible(RealtimeMessage<?> message) {
+        if (message == null) {
+            return false;
+        }
+        return Boolean.TRUE.equals(message.getPersistent());
     }
 }

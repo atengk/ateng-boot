@@ -74,6 +74,12 @@ public class RealtimeProperties {
     private CorsProperties cors = new CorsProperties();
 
     /**
+     * 离线消息暂存与防 OOM 配额治理配置
+     */
+    @NestedConfigurationProperty
+    private OfflineProperties offline = new OfflineProperties();
+
+    /**
      * 握手鉴权与凭据解析属性
      */
     @Data
@@ -225,5 +231,27 @@ public class RealtimeProperties {
          * 集群广播 Redis Topic 主题名称（默认: ateng:realtime:broadcast）
          */
         private String topic = "ateng:realtime:broadcast";
+    }
+
+    /**
+     * 离线消息暂存与防 OOM 配额治理配置
+     */
+    @Data
+    public static class OfflineProperties {
+
+        /**
+         * 是否启用离线消息暂存（默认: false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 单用户离线消息最大保留条数（默认: 100，超出按 FIFO 淘汰防 OOM）
+         */
+        private int maxMessagesPerUser = 100;
+
+        /**
+         * 离线消息保留时间（默认: 7d）
+         */
+        private Duration ttl = Duration.ofDays(7);
     }
 }
