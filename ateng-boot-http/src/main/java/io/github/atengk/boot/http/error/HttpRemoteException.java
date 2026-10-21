@@ -86,24 +86,13 @@ public class HttpRemoteException extends BusinessException {
     }
 
     /**
-     * 依据 HTTP 状态码映射到通用的系统响应契约
+     * 依据 HTTP 状态码映射到专职的远程系统响应契约
      *
      * @param httpStatusCode HTTP 状态码
      * @return 映射后的错误码契约
      */
     private static IResultCode resolveDefaultResultCode(int httpStatusCode) {
-        if (httpStatusCode >= 400 && httpStatusCode < 500) {
-            return switch (httpStatusCode) {
-                case 400 -> CommonResultCode.BAD_REQUEST;
-                case 401 -> CommonResultCode.UNAUTHORIZED;
-                case 403 -> CommonResultCode.FORBIDDEN;
-                case 404 -> CommonResultCode.NOT_FOUND;
-                case 405 -> CommonResultCode.METHOD_NOT_ALLOWED;
-                case 429 -> CommonResultCode.TOO_MANY_REQUESTS;
-                default -> CommonResultCode.BAD_REQUEST;
-            };
-        }
-        return CommonResultCode.INTERNAL_SERVER_ERROR;
+        return HttpResultCode.fromHttpStatus(httpStatusCode);
     }
 
     /**

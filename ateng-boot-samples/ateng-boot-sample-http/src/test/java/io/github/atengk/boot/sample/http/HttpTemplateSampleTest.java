@@ -1,10 +1,10 @@
 package io.github.atengk.boot.sample.http;
 
-import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.http.error.HttpResultCode;
 import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.template.HttpTemplate;
 import okhttp3.mockwebserver.MockResponse;
@@ -282,7 +282,7 @@ class HttpTemplateSampleTest {
                     HttpRemoteException remoteEx = (HttpRemoteException) ex;
                     assertThat(remoteEx.getHttpStatusCode()).isEqualTo(404);
                     assertThat(remoteEx.getRequestMethod()).isEqualTo(HttpMethod.GET);
-                    assertThat(remoteEx.getResultCode()).isEqualTo(CommonResultCode.NOT_FOUND);
+                    assertThat(remoteEx.getResultCode()).isEqualTo(HttpResultCode.REMOTE_HTTP_NOT_FOUND);
                     assertThat(remoteEx.getResponseBody()).contains("resource not found");
                 });
     }
@@ -301,7 +301,7 @@ class HttpTemplateSampleTest {
                 .satisfies(ex -> {
                     HttpRemoteException remoteEx = (HttpRemoteException) ex;
                     assertThat(remoteEx.getHttpStatusCode()).isEqualTo(500);
-                    assertThat(remoteEx.getResultCode()).isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR);
+                    assertThat(remoteEx.getResultCode()).isEqualTo(HttpResultCode.REMOTE_HTTP_SERVER_ERROR);
                     assertThat(remoteEx.getResponseBody()).isNotNull();
                     assertThat(remoteEx.getResponseBody()).endsWith("... [truncated]");
                     assertThat(remoteEx.getResponseBody()).hasSize(2048 + "... [truncated]".length());

@@ -58,6 +58,12 @@ public class HttpProperties {
     private HttpLoggingProperties logging = new HttpLoggingProperties();
 
     /**
+     * 全局出站 HTTP 弹性指数退避重试配置
+     */
+    @NestedConfigurationProperty
+    private HttpRetryProperties retry = new HttpRetryProperties();
+
+    /**
      * 命名客户端专属配置映射表（按客户端名称映射独立个性化配置，留待后续阶段联动）
      */
     @NestedConfigurationProperty

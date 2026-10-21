@@ -5,6 +5,7 @@ import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
 import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
+import io.github.atengk.boot.http.interceptor.HttpRetryInterceptor;
 import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.template.HttpTemplate;
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.web.client.RestClientAutoConfigura
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -81,15 +83,41 @@ public class AtengHttpAutoConfiguration {
     }
 
     /**
-     * 注册链路追踪拦截器 RestClientCustomizer 定制器
+     * 注册链路追踪拦截器 RestClientCustomizer 定制器（顺序：最外层，Order 10）
      *
      * @param traceContextInterceptor 四维上下文透传拦截器
      * @return RestClientCustomizer 定制器
      */
     @Bean
+    @Order(10)
     @ConditionalOnMissingBean(name = "traceContextRestClientCustomizer")
     public RestClientCustomizer traceContextRestClientCustomizer(TraceContextInterceptor traceContextInterceptor) {
         return builder -> builder.requestInterceptor(traceContextInterceptor);
+    }
+
+    /**
+     * 注册出站 HTTP 弹性指数退避重试拦截器 Bean
+     *
+     * @param properties 配置属性
+     * @return HttpRetryInterceptor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public HttpRetryInterceptor httpRetryInterceptor(HttpProperties properties) {
+        return new HttpRetryInterceptor(properties);
+    }
+
+    /**
+     * 注册弹性重试拦截器 RestClientCustomizer 定制器（顺序：次外层，Order 20）
+     *
+     * @param httpRetryInterceptor 出站弹性重试拦截器
+     * @return RestClientCustomizer 定制器
+     */
+    @Bean
+    @Order(20)
+    @ConditionalOnMissingBean(name = "httpRetryRestClientCustomizer")
+    public RestClientCustomizer httpRetryRestClientCustomizer(HttpRetryInterceptor httpRetryInterceptor) {
+        return builder -> builder.requestInterceptor(httpRetryInterceptor);
     }
 
     /**
@@ -105,12 +133,13 @@ public class AtengHttpAutoConfiguration {
     }
 
     /**
-     * 注册日志拦截器 RestClientCustomizer 定制器
+     * 注册日志拦截器 RestClientCustomizer 定制器（顺序：内层，Order 30）
      *
      * @param httpLoggingInterceptor 出站结构化日志拦截器
      * @return RestClientCustomizer 定制器
      */
     @Bean
+    @Order(30)
     @ConditionalOnMissingBean(name = "httpLoggingRestClientCustomizer")
     public RestClientCustomizer httpLoggingRestClientCustomizer(HttpLoggingInterceptor httpLoggingInterceptor) {
         return builder -> builder.requestInterceptor(httpLoggingInterceptor);

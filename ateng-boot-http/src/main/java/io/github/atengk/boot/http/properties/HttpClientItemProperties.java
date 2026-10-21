@@ -1,6 +1,7 @@
 package io.github.atengk.boot.http.properties;
 
 import lombok.Data;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 
@@ -33,4 +34,10 @@ public class HttpClientItemProperties {
      * 对接公网非信任第三方（如微信、支付宝、外部 SaaS）时强制显式配置为 false，防止内网敏感信息外泄
      */
     private boolean propagateContext = true;
+
+    /**
+     * 该客户端专属的弹性指数退避重试配置（覆盖全局 retry 配置）
+     */
+    @NestedConfigurationProperty
+    private HttpRetryProperties retry;
 }

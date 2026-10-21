@@ -27,30 +27,25 @@ class HttpRemoteExceptionTest {
         assertThat(ex404.getRequestMethod()).isEqualTo(HttpMethod.GET);
         assertThat(ex404.getRequestUrl()).isEqualTo(url);
         assertThat(ex404.getResponseBody()).isEqualTo("User not found");
-        assertThat(ex404.getResultCode()).isEqualTo(CommonResultCode.NOT_FOUND);
-        assertThat(ex404.getCode()).isEqualTo(CommonResultCode.NOT_FOUND.getCode());
+        assertThat(ex404.getResultCode()).isEqualTo(HttpResultCode.REMOTE_HTTP_NOT_FOUND);
+        assertThat(ex404.getCode()).isEqualTo(HttpResultCode.REMOTE_HTTP_NOT_FOUND.getCode());
         assertThat(ex404.getMessage()).contains("HTTP 404 GET [https://api.example.com/users/123] - User not found");
 
-        // 验证 400, 401, 403, 405, 429, 500, 502 等状态码映射
+        // 验证 400, 401, 403, 500, 502 等状态码语义化映射
         assertThat(new HttpRemoteException(400, HttpMethod.POST, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.BAD_REQUEST);
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_CLIENT_ERROR);
         assertThat(new HttpRemoteException(401, HttpMethod.GET, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.UNAUTHORIZED);
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_UNAUTHORIZED);
         assertThat(new HttpRemoteException(403, HttpMethod.DELETE, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.FORBIDDEN);
-        assertThat(new HttpRemoteException(405, HttpMethod.PUT, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.METHOD_NOT_ALLOWED);
-        assertThat(new HttpRemoteException(429, HttpMethod.GET, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.TOO_MANY_REQUESTS);
-        // 验证非直接枚举的 4xx (409 Conflict, 422 Unprocessable) 统一保底映射为客户端错误 BAD_REQUEST
-        assertThat(new HttpRemoteException(409, HttpMethod.POST, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.BAD_REQUEST);
-        assertThat(new HttpRemoteException(422, HttpMethod.POST, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.BAD_REQUEST);
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_FORBIDDEN);
         assertThat(new HttpRemoteException(500, HttpMethod.GET, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR);
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_SERVER_ERROR);
         assertThat(new HttpRemoteException(502, HttpMethod.GET, url, "").getResultCode())
-                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR);
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_GATEWAY_ERROR);
+        assertThat(new HttpRemoteException(503, HttpMethod.GET, url, "").getResultCode())
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_SERVICE_UNAVAILABLE);
+        assertThat(new HttpRemoteException(504, HttpMethod.GET, url, "").getResultCode())
+                .isEqualTo(HttpResultCode.REMOTE_HTTP_TIMEOUT);
     }
 
     @Test
