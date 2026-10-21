@@ -145,7 +145,8 @@ flowchart TD
 - 底层 SPI 扩充 `initiateChunkedUpload`、`uploadChunk`、`completeChunkedUpload`、`abortChunkedUpload`；
 - `LocalDriver` 采用 `.chunks/<uploadId>` 物理隔离目录管理碎片，基于 NIO `FileChannel.transferTo` 实现零拷贝顺序追加合并，并在完成后自动物理清理；
 - `S3Driver` 标准适配 AWS S3 Multipart Upload 原生 API，驱动内部维护并发安全 `S3UploadSession` 分片 ETag 集合，支持本地极速合并与跨节点 fallback；
-- 缺失分片阻断抛出 `STORAGE_CHUNK_MISSING (40012)`，非法分片索引拦截抛出 `STORAGE_CHUNK_INVALID (40013)`。
+- 缺失分片阻断抛出 `STORAGE_CHUNK_MISSING (40012)`，非法分片索引拦截抛出 `STORAGE_CHUNK_INVALID (40013)`；
+- **分片最小尺寸规范与边界防御 (EntityTooSmall)**：严格遵循 AWS S3 RFC 规范，除末片外每个中间分片大小必须 $\ge 5\,\text{MB}$ (5242880 字节)，若非末分片小于 5MB 底层抛出 `EntityTooSmall` 拒绝合并；生产落地切片阈值推荐配置为 $5\,\text{MB} \sim 20\,\text{MB}$（末片不限），保障 Local 与 S3 双核驱动一致性。
 
 ### 12. 纯内存自验门禁 (In-Memory Verification Gate)
 - 遵循 ADR-0028 规范，全套单元测试与场景工程 `ateng-boot-sample-storage` 0 外部物理依赖；
@@ -161,7 +162,8 @@ flowchart TD
 ### 14. 强类型预签名直传约束与分片直传预签名 (Presigned Direct Upload & Chunk Presigning)
 - 提供强类型请求模型 `PresignedUploadRequest`，支持设定有效时长、严格限制的 `contentType`、`maxSizeBytes` 及必须携带的 HTTP Headers，升级 `PresignedUrl` 携带必须附加的 Headers 映射；
 - 保留 `getPresignedUploadUrl(path, duration)` 简易重载严守向后兼容；
-- **分片直传预签名**：新增 `getPresignedUploadPartUrl(path, uploadId, chunkIndex, duration)`，S3 驱动封装 `UploadPartPresignRequest`，Local 驱动由上传控制器统一承接；支持浏览器或客户端将大文件本地切片后并发直传到存储介质，应用服务端零网络带宽代理消耗。
+- **分片直传预签名**：新增 `getPresignedUploadPartUrl(path, uploadId, chunkIndex, duration)`，S3 驱动封装 `UploadPartPresignRequest`，Local 驱动由上传控制器统一承接；支持浏览器或客户端将大文件本地切片后并发直传到存储介质，应用服务端零网络带宽代理消耗；
+- **分片切片阈值生产规范**：配合端侧并发直传时，前端切片粒度统一推荐设置为 $5\,\text{MB} \sim 20\,\text{MB}$（除末片外每片 $\ge 5\,\text{MB}$），杜绝因分片过小被云端 S3 或严格兼容介质（如 RustFS）以 `EntityTooSmall` 拦截。
 
 ### 15. S3 分片上传集群无状态化与自包含签名 Token (Stateless S3 Chunk Sessions)
 - 彻底废除 `S3Driver` 本地内存缓存 `ConcurrentMap<String, S3UploadSession>`，解决多 Pod / K8s 集群部署下分片请求漂移导致的“会话未找到”崩溃；

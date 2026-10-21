@@ -687,6 +687,12 @@ PresignedUrl part2Url = storageTemplate.getPresignedUploadPartUrl(
 StorageObject mergedObject = storageTemplate.completeChunkedUpload("chunked/large.bin", uploadId, 2);
 ```
 
+> [!IMPORTANT]
+> **生产落地建议（分片大小阈值）**：
+> 在配合前端 Web / App 直传或服务端分片时，分片切片阈值（Chunk Size）请统一配置为 **$\ge 5\,\text{MB}$（推荐生产配置为 $5\,\text{MB} \sim 20\,\text{MB}$）**，末片大小不受限制。
+> - **S3 协议硬性约束**：标准 AWS S3 协议规范及严格兼容实现（如 RustFS、阿里云 OSS 等）在协议层强制要求除最后一个分片外，每个分片大小必须 $\ge 5\,\text{MB}$（5242880 字节）；若非末分片小于 5MB，完成合并时将抛出 `EntityTooSmall` 错误被服务端强行拒绝。
+> - **双核驱动一致性**：Local 本地驱动虽无最小分片限制，但将切片阈值统一配置为 $\ge 5\,\text{MB}$ 可保障端侧直传逻辑在本地开发测试与云端 S3 / 私有对象存储之间无缝平替、零配置改动。
+
 ### 预期呈现契约
 在 Sample 控制器交互中（实测记录）：
 1. 客户端请求 `GET /api/storage/presigned-upload-part?path=chunked/large.bin&uploadId=xxx&chunkIndex=1`，获取分片 1 直传 URL；
@@ -973,6 +979,9 @@ ateng:
 - **100% 双核行为平替**：
   - **Local 本地驱动**：在受管 `.chunks/<uploadId>/` 临时隔离目录中暂存碎片，合并时利用 Java NIO `FileChannel.transferTo` **零拷贝流式按序追加合并**，合并完成后立即原子删除临时目录；
   - **S3 云原生驱动**：标准封装 AWS S3 Multipart Upload 原生 API（`CreateMultipartUpload` -> `UploadPart` -> `CompleteMultipartUpload` / `AbortMultipartUpload`），支持 S3 远程服务端无损合并；
+- **生产切片阈值规范 ($\ge 5\,\text{MB}$)**：
+  - **S3 最小分片硬边界**：AWS S3 与标准对象存储（如 RustFS、OSS 等）规范严格要求除最后一个分片外，各分片尺寸必须 $\ge 5\,\text{MB}$，否则在合并时触发 `EntityTooSmall` 拒绝。
+  - **跨端生产最佳实践**：在配合前端 Web / App 直传或服务端切片时，分片切片阈值（Chunk Size）统一推荐配置为 **$5\,\text{MB} \sim 20\,\text{MB}$**（末片大小不受限制），实现 Local 本地磁盘驱动与云原生 S3 驱动在分片行为上的绝对统一与零故障切换。
 - **1-based 序号与强连续性校验**：分片序号强制为 `1 ~ totalChunks`；合并时严格检测每一片的存在性与连续性，任一分片缺失立即快速失败，抛出 `STORAGE_CHUNK_MISSING`（`40012`）；
 - **全生命周期清理状态机**：提供 `abortChunkedUpload(uploadId)` 主动清理取消机制，与完成合并时的自动清理形成闭环，彻底根绝碎片滞留；
 - **事件广播闭环**：分片合并完成后自动广播 `StorageUploadedEvent`，打通下游消息通知与业务状态流转。
