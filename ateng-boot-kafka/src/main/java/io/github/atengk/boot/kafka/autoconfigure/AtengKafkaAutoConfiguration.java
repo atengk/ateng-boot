@@ -1,12 +1,19 @@
 package io.github.atengk.boot.kafka.autoconfigure;
 
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
+import io.github.atengk.boot.kafka.spi.KafkaTransactionFailureCallback;
+import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.kafka.DefaultKafkaProducerFactoryCustomizer;
 import org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.core.KafkaTemplate;
 
 /**
@@ -30,5 +37,27 @@ public class AtengKafkaAutoConfiguration {
                 properties.getProducer().getSendTimeout(),
                 properties.getProducer().getMaxPayloadSize(),
                 properties.isAutoCreateTopics());
+    }
+
+    /**
+     * 生产端微批聚合与幂等参数定制器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public DefaultKafkaProducerFactoryCustomizer atengKafkaProducerFactoryCustomizer(AtengKafkaProperties properties) {
+        return new AtengKafkaProducerFactoryCustomizer(properties);
+    }
+
+    /**
+     * Kafka 高可靠与事务感知发信门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(KafkaTemplate.class)
+    public KafkaReliableTemplate kafkaReliableTemplate(
+            KafkaTemplate<?, ?> kafkaTemplate,
+            AtengKafkaProperties properties,
+            ObjectProvider<KafkaTransactionFailureCallback> failureCallbackProvider) {
+        return new KafkaReliableTemplate(kafkaTemplate, properties, failureCallbackProvider);
     }
 }
