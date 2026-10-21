@@ -4,7 +4,11 @@ import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.realtime.auth.AtengHandshakeInterceptor;
 import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
 import io.github.atengk.boot.realtime.auth.SaTokenRealtimeAuthProvider;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageListener;
 import io.github.atengk.boot.realtime.event.RealtimeSessionEventPublisher;
+import io.github.atengk.boot.realtime.group.RealtimeGroupManager;
+import io.github.atengk.boot.realtime.heartbeat.GhostConnectionDetector;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSessionListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
@@ -68,6 +72,34 @@ public class AtengRealtimeAutoConfiguration {
     }
 
     /**
+     * 注册客户端上行消息分发调度引擎
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeMessageDispatcher.class)
+    public RealtimeMessageDispatcher realtimeMessageDispatcher(ObjectProvider<RealtimeMessageListener> messageListeners) {
+        return new RealtimeMessageDispatcher(messageListeners);
+    }
+
+    /**
+     * 注册单机会话分组与频道订阅受管管理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeGroupManager.class)
+    public RealtimeGroupManager realtimeGroupManager() {
+        return new RealtimeGroupManager();
+    }
+
+    /**
+     * 注册幽灵死链检测与心跳探针任务
+     */
+    @Bean
+    @ConditionalOnMissingBean(GhostConnectionDetector.class)
+    public GhostConnectionDetector ghostConnectionDetector(RealtimeProperties properties,
+                                                          RealtimeSessionManager sessionManager) {
+        return new GhostConnectionDetector(properties, sessionManager);
+    }
+
+    /**
      * Sa-Token 握手鉴权集成自动装配
      */
     @Configuration(proxyBeanMethods = false)
@@ -95,8 +127,9 @@ public class AtengRealtimeAutoConfiguration {
          */
         @Bean
         @ConditionalOnMissingBean(AtengWebSocketHandler.class)
-        public AtengWebSocketHandler atengWebSocketHandler(ObjectProvider<RealtimeSessionManager> sessionManagerProvider) {
-            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable());
+        public AtengWebSocketHandler atengWebSocketHandler(ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
+                                                           ObjectProvider<RealtimeMessageDispatcher> dispatcherProvider) {
+            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable());
         }
 
         /**
