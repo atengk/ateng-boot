@@ -47,6 +47,7 @@
         <module>ateng-boot-http</module>
         <module>ateng-boot-realtime</module>
         <module>ateng-boot-rabbitmq</module>
+        <module>ateng-boot-kafka</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -204,6 +205,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-rabbitmq</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-kafka</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

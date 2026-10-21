@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-kafka</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot Kafka 高性能流批处理与 Offset 治理底座（基于 Spring Kafka，提供微批高吞吐与幂等生产调优、事务感知发信 sendAfterCommit、ErrorHandlingDeserializer 反序列化崩溃防卫、FatalExceptionClassifier 毒丸快速分流 *.DLT、双容器工厂正交共存、KafkaRecordExecutor 批量多租户安全隔离、@Idempotent 静默提交 Offset、KafkaTopicBuilder 声明式拓扑构建与 @EmbeddedKafka 100% 离线自洽测试）</description>
+
+    <dependencies>
+        <!-- 核心底座依赖 (提供消息头常量、四维上下文传播、毒丸判定器与异常契约) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-core</artifactId>
+        </dependency>
+
+        <!-- Spring Kafka 官方依赖 (包含 spring-kafka, kafka-clients, spring-messaging, spring-tx) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配支持 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Lombok (编译期使用) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Micrometer 可观测性指标与追踪支持 (可选依赖，自动激活 observationEnabled) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-observation</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+
+        <!-- 单元测试依赖 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Kafka 官方测试支持 (提供 @EmbeddedKafka 等离线模拟工具) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>
