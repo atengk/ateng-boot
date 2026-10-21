@@ -97,14 +97,17 @@ public class AtengHttpAutoConfiguration {
 
     /**
      * 注册出站 HTTP 弹性指数退避重试拦截器 Bean
+     * 深度协同并内聚环绕日志拦截器，确保每次底层重试尝试均被独立记录
      *
      * @param properties 配置属性
+     * @param loggingInterceptorProvider 日志拦截器提供者
      * @return HttpRetryInterceptor 实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public HttpRetryInterceptor httpRetryInterceptor(HttpProperties properties) {
-        return new HttpRetryInterceptor(properties);
+    public HttpRetryInterceptor httpRetryInterceptor(HttpProperties properties,
+                                                     ObjectProvider<HttpLoggingInterceptor> loggingInterceptorProvider) {
+        return new HttpRetryInterceptor(properties, loggingInterceptorProvider.getIfAvailable());
     }
 
     /**
@@ -134,13 +137,14 @@ public class AtengHttpAutoConfiguration {
 
     /**
      * 注册日志拦截器 RestClientCustomizer 定制器（顺序：内层，Order 30）
+     * 当未装配 HttpRetryInterceptor 时独立作为 Spring 拦截器生效，避免重复拦截
      *
      * @param httpLoggingInterceptor 出站结构化日志拦截器
      * @return RestClientCustomizer 定制器
      */
     @Bean
     @Order(30)
-    @ConditionalOnMissingBean(name = "httpLoggingRestClientCustomizer")
+    @ConditionalOnMissingBean(value = HttpRetryInterceptor.class, name = "httpLoggingRestClientCustomizer")
     public RestClientCustomizer httpLoggingRestClientCustomizer(HttpLoggingInterceptor httpLoggingInterceptor) {
         return builder -> builder.requestInterceptor(httpLoggingInterceptor);
     }

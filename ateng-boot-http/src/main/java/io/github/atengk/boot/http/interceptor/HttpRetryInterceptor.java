@@ -30,21 +30,27 @@ import java.util.Map;
 public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
 
     private final HttpProperties properties;
+    private final HttpLoggingInterceptor loggingInterceptor;
 
     public HttpRetryInterceptor(HttpProperties properties) {
+        this(properties, null);
+    }
+
+    public HttpRetryInterceptor(HttpProperties properties, HttpLoggingInterceptor loggingInterceptor) {
         this.properties = properties != null ? properties : new HttpProperties();
+        this.loggingInterceptor = loggingInterceptor;
     }
 
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
         HttpRetryProperties retry = resolveRetryProperties(request.getURI());
         if (retry == null || !retry.isEnabled()) {
-            return execution.execute(request, body);
+            return executeSingleAttempt(request, body, execution);
         }
 
         // 1. 严格检查 HTTP 动词白名单（默认仅针对幂等动词 GET、HEAD，坚决杜绝盲目重试非幂等操作）
         if (!isRetryableMethod(request.getMethod(), retry.getRetryMethods())) {
-            return execution.execute(request, body);
+            return executeSingleAttempt(request, body, execution);
         }
 
         // 2. 基于 Core 模块原生 RetryUtil 构建强类型重试配置模型
@@ -73,7 +79,7 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
         try {
             return RetryUtil.execute(() -> {
                 try {
-                    ClientHttpResponse response = execution.execute(request, body);
+                    ClientHttpResponse response = executeSingleAttempt(request, body, execution);
                     int statusCode = response.getStatusCode().value();
                     if (retry.getRetryStatusCodes().contains(statusCode)) {
                         throw new RetryableStatusCodeException(response, statusCode);
@@ -90,6 +96,16 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
             // 重试耗尽后，重新抛出原始物理根因 IOException，保持因果链
             throw ex.getCause();
         }
+    }
+
+    /**
+     * 调度单次物理尝试，若挂载了内层日志拦截器则环绕执行以确保每次重试尝试均被独立记录
+     */
+    protected ClientHttpResponse executeSingleAttempt(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
+        if (this.loggingInterceptor != null) {
+            return this.loggingInterceptor.intercept(request, body, execution);
+        }
+        return execution.execute(request, body);
     }
 
     /**

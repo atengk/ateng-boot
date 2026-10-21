@@ -95,7 +95,9 @@ public final class ApacheHttpClient5Factory {
         }
 
         // 4. 构建 HttpClient 客户端并启用后台空闲与过期连接驱逐守护
+        // 显式禁用底层隐性自动重试，重试统一由框架上层 HttpRetryInterceptor 与 Core RetryUtil 显式弹性纳管
         HttpClientBuilder clientBuilder = HttpClients.custom()
+                .disableAutomaticRetries()
                 .evictIdleConnections(TimeValue.of(pool.getIdleTimeout()))
                 .evictExpiredConnections();
 
