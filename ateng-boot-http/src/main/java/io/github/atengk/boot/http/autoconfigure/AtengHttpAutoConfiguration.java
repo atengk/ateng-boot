@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
+import io.github.atengk.boot.http.factory.RestClientRegistry;
 import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
 import io.github.atengk.boot.http.interceptor.HttpRetryInterceptor;
 import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
@@ -21,6 +22,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -192,5 +194,35 @@ public class AtengHttpAutoConfiguration {
                                      HttpErrorHandler httpErrorHandler,
                                      @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         return new HttpTemplate(restClientBuilder, httpErrorHandler, taskExecutorProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册多命名 HTTP 客户端注册表 RestClientRegistry Bean
+     * 纳管多命名客户端 RestClient 单例缓存，统一实现多级 BaseUrl 解析、超时隔离与配置策略动态融合，共享全局物理连接池
+     *
+     * @param restClientBuilder          受管的基础 RestClient.Builder
+     * @param clientHttpRequestFactory   全局物理连接工厂
+     * @param properties                 HTTP 模块根配置属性
+     * @param httpErrorHandler           统一异常响应处理器
+     * @param environment                Spring 环境变量与配置上下文
+     * @param loggingInterceptorProvider 日志拦截器提供者（按需用于专属重试拦截器环绕）
+     * @return RestClientRegistry 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RestClientRegistry restClientRegistry(RestClient.Builder restClientBuilder,
+                                                 ClientHttpRequestFactory clientHttpRequestFactory,
+                                                 HttpProperties properties,
+                                                 HttpErrorHandler httpErrorHandler,
+                                                 Environment environment,
+                                                 ObjectProvider<HttpLoggingInterceptor> loggingInterceptorProvider) {
+        return new RestClientRegistry(
+                restClientBuilder,
+                clientHttpRequestFactory,
+                properties,
+                httpErrorHandler,
+                environment,
+                loggingInterceptorProvider.getIfAvailable()
+        );
     }
 }
