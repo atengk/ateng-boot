@@ -80,6 +80,12 @@ public class RealtimeProperties {
     private OfflineProperties offline = new OfflineProperties();
 
     /**
+     * 云原生优雅停机排空治理配置
+     */
+    @NestedConfigurationProperty
+    private ShutdownProperties shutdown = new ShutdownProperties();
+
+    /**
      * 握手鉴权与凭据解析属性
      */
     @Data
@@ -231,6 +237,16 @@ public class RealtimeProperties {
          * 集群广播 Redis Topic 主题名称（默认: ateng:realtime:broadcast）
          */
         private String topic = "ateng:realtime:broadcast";
+
+        /**
+         * 集群在线节点度量上报 Redis Hash 键名（默认: ateng:realtime:cluster:nodes）
+         */
+        private String nodesHashKey = "ateng:realtime:cluster:nodes";
+
+        /**
+         * 集群节点度量上报心跳周期（默认: 5s）
+         */
+        private Duration metricsInterval = Duration.ofSeconds(5);
     }
 
     /**
@@ -253,5 +269,27 @@ public class RealtimeProperties {
          * 离线消息保留时间（默认: 7d）
          */
         private Duration ttl = Duration.ofDays(7);
+    }
+
+    /**
+     * 云原生优雅停机排空配置
+     */
+    @Data
+    public static class ShutdownProperties {
+
+        /**
+         * 是否启用实时通信底座优雅停机排空机制（默认: true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 停机缓冲排空等待超时阈值（默认: 3s，供并发写装饰器完成在途数据帧的物理投递）
+         */
+        private Duration drainTimeout = Duration.ofSeconds(3);
+
+        /**
+         * 握手熔断静默期（默认: 500ms）
+         */
+        private Duration quietPeriod = Duration.ofMillis(500);
     }
 }

@@ -7,6 +7,7 @@ import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.shutdown.RealtimeGracefulShutdownHandler;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -41,18 +42,27 @@ public class AtengSseController {
     private final RealtimeProperties properties;
     private final RealtimeSessionManager sessionManager;
     private final ObjectProvider<RealtimeAuthHandshakeProvider> authProvider;
+    private final ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider;
 
     public AtengSseController(RealtimeProperties properties,
                               RealtimeSessionManager sessionManager) {
-        this(properties, sessionManager, null);
+        this(properties, sessionManager, null, null);
     }
 
     public AtengSseController(RealtimeProperties properties,
                               RealtimeSessionManager sessionManager,
                               ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
+        this(properties, sessionManager, authProvider, null);
+    }
+
+    public AtengSseController(RealtimeProperties properties,
+                              RealtimeSessionManager sessionManager,
+                              ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
+                              ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.authProvider = authProvider;
+        this.shutdownHandlerProvider = shutdownHandlerProvider;
     }
 
     /**
@@ -71,6 +81,12 @@ public class AtengSseController {
                               @RequestParam(name = "deviceType", required = false) String deviceType,
                               @RequestParam(name = "tenantId", required = false) Long tenantId,
                               HttpServletRequest request) {
+
+        // 0. 优雅停机排空防御：正在停机时拒绝新连接，返回 HTTP 503
+        if (isDraining()) {
+            log.warn("[Realtime] 服务端正在执行优雅停机排空，拒绝 SSE 连接请求");
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Server is draining for restart");
+        }
 
         // 1. 规范化客户端标识
         String actualClientId = (clientId != null && !clientId.isBlank())
@@ -221,5 +237,13 @@ public class AtengSseController {
         }
 
         return null;
+    }
+
+    private boolean isDraining() {
+        if (shutdownHandlerProvider != null) {
+            RealtimeGracefulShutdownHandler shutdownHandler = shutdownHandlerProvider.getIfAvailable();
+            return shutdownHandler != null && shutdownHandler.isDraining();
+        }
+        return false;
     }
 }

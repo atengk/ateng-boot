@@ -2,6 +2,7 @@ package io.github.atengk.boot.realtime.auth;
 
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
+import io.github.atengk.boot.realtime.shutdown.RealtimeGracefulShutdownHandler;
 import io.github.atengk.boot.realtime.websocket.AtengWebSocketHandler;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
@@ -32,17 +33,37 @@ import java.util.*;
  * @since 2026-10-21
  */
 @Slf4j
-@RequiredArgsConstructor
 public class AtengHandshakeInterceptor implements HandshakeInterceptor {
 
     private final RealtimeProperties properties;
     private final ObjectProvider<RealtimeAuthHandshakeProvider> authProvider;
+    private final ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider;
+
+    public AtengHandshakeInterceptor(RealtimeProperties properties,
+                                     ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
+        this(properties, authProvider, null);
+    }
+
+    public AtengHandshakeInterceptor(RealtimeProperties properties,
+                                     ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
+                                     ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
+        this.properties = properties;
+        this.authProvider = authProvider;
+        this.shutdownHandlerProvider = shutdownHandlerProvider;
+    }
 
     @Override
     public boolean beforeHandshake(ServerHttpRequest request,
                                    ServerHttpResponse response,
                                    WebSocketHandler wsHandler,
                                    Map<String, Object> attributes) throws Exception {
+
+        // 0. 优雅停机排空防御：正在停机时拒绝新连接，返回 HTTP 503 Service Unavailable
+        if (isDraining()) {
+            log.warn("[Realtime] 服务端正在执行优雅停机排空，拒绝 WebSocket 握手请求");
+            response.setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
+            return false;
+        }
 
         // 1. 处理并回执 Sec-WebSocket-Protocol（满足原生浏览器传递 Token 规范）
         handleSecWebSocketProtocol(request, response);
@@ -243,5 +264,13 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
             }
         }
         return params;
+    }
+
+    private boolean isDraining() {
+        if (shutdownHandlerProvider != null) {
+            RealtimeGracefulShutdownHandler shutdownHandler = shutdownHandlerProvider.getIfAvailable();
+            return shutdownHandler != null && shutdownHandler.isDraining();
+        }
+        return false;
     }
 }

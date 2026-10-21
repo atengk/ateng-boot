@@ -5,7 +5,10 @@ import io.github.atengk.boot.realtime.auth.AtengHandshakeInterceptor;
 import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
 import io.github.atengk.boot.realtime.auth.SaTokenRealtimeAuthProvider;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterMetricsProvider;
+import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageListener;
@@ -17,6 +20,7 @@ import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.satoken.RealtimeSaTokenListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionListener;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import io.github.atengk.boot.realtime.shutdown.RealtimeGracefulShutdownHandler;
 import io.github.atengk.boot.realtime.spi.InMemoryRealtimeOfflineMessageProvider;
 import io.github.atengk.boot.realtime.spi.NoOpRealtimeOfflineMessageProvider;
 import io.github.atengk.boot.realtime.spi.RealtimeOfflineMessageProvider;
@@ -77,9 +81,11 @@ public class AtengRealtimeAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(AtengHandshakeInterceptor.class)
-    public AtengHandshakeInterceptor atengHandshakeInterceptor(RealtimeProperties properties,
-                                                               ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
-        return new AtengHandshakeInterceptor(properties, authProvider);
+    public AtengHandshakeInterceptor atengHandshakeInterceptor(
+            RealtimeProperties properties,
+            ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
+            ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
+        return new AtengHandshakeInterceptor(properties, authProvider, shutdownHandlerProvider);
     }
 
     /**
@@ -131,10 +137,27 @@ public class AtengRealtimeAutoConfiguration {
                                              RealtimeGroupManager groupManager,
                                              RealtimeProperties properties,
                                              ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
-                                             ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider) {
+                                             ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider,
+                                             ObjectProvider<RealtimeClusterMetricsProvider> clusterMetricsProvider) {
         return new RealtimeTemplate(sessionManager, groupManager, properties,
                 clusterBroadcasterProvider.getIfAvailable(),
-                offlineMessageProvider.getIfAvailable());
+                offlineMessageProvider.getIfAvailable(),
+                clusterMetricsProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册云原生优雅停机排空生命周期管理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeGracefulShutdownHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.realtime.shutdown", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RealtimeGracefulShutdownHandler realtimeGracefulShutdownHandler(
+            RealtimeProperties properties,
+            RealtimeSessionManager sessionManager,
+            ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
+            ObjectProvider<RedissonClusterMetricsReporter> metricsReporterProvider) {
+        return new RealtimeGracefulShutdownHandler(properties, sessionManager,
+                clusterBroadcasterProvider, metricsReporterProvider);
     }
 
     /**
@@ -158,7 +181,7 @@ public class AtengRealtimeAutoConfiguration {
     }
 
     /**
-     * Redisson 集群广播自动装配
+     * Redisson 集群广播与在线度量自动装配
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(RedissonClient.class)
@@ -175,6 +198,20 @@ public class AtengRealtimeAutoConfiguration {
             }
             return new RedissonRealtimeClusterBroadcaster(redissonClient, properties);
         }
+
+        @Bean
+        @ConditionalOnBean(RedissonClient.class)
+        @ConditionalOnMissingBean(RealtimeClusterMetricsProvider.class)
+        public RedissonClusterMetricsReporter redissonClusterMetricsReporter(
+                RedissonClient redissonClient,
+                RealtimeProperties properties,
+                RealtimeSessionManager sessionManager,
+                RealtimeClusterBroadcaster clusterBroadcaster) {
+            if (properties.getClusterMode() == ClusterMode.STANDALONE) {
+                return null;
+            }
+            return new RedissonClusterMetricsReporter(redissonClient, properties, sessionManager, clusterBroadcaster);
+        }
     }
 
     /**
@@ -184,6 +221,15 @@ public class AtengRealtimeAutoConfiguration {
     @ConditionalOnMissingBean(RealtimeClusterBroadcaster.class)
     public RealtimeClusterBroadcaster standaloneRealtimeClusterBroadcaster() {
         return new StandaloneRealtimeClusterBroadcaster();
+    }
+
+    /**
+     * 注册单机保底度量提供者（当无 Redisson 或未配置集群时生效）
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeClusterMetricsProvider.class)
+    public RealtimeClusterMetricsProvider standaloneClusterMetricsProvider(RealtimeSessionManager sessionManager) {
+        return new StandaloneClusterMetricsProvider(sessionManager);
     }
 
     /**
@@ -249,8 +295,9 @@ public class AtengRealtimeAutoConfiguration {
         @ConditionalOnMissingBean(AtengSseController.class)
         public AtengSseController atengSseController(RealtimeProperties properties,
                                                      RealtimeSessionManager sessionManager,
-                                                     ObjectProvider<RealtimeAuthHandshakeProvider> authProvider) {
-            return new AtengSseController(properties, sessionManager, authProvider);
+                                                     ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
+                                                     ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
+            return new AtengSseController(properties, sessionManager, authProvider, shutdownHandlerProvider);
         }
     }
 }

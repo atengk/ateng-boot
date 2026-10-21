@@ -1,7 +1,9 @@
 package io.github.atengk.boot.realtime.template;
 
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket;
+import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.enums.ChannelType;
@@ -46,18 +48,20 @@ public class RealtimeTemplate {
     private final RealtimeClusterBroadcaster clusterBroadcaster;
     @Getter
     private final RealtimeOfflineMessageProvider offlineMessageProvider;
+    @Getter
+    private final RealtimeClusterMetricsProvider clusterMetricsProvider;
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
                             RealtimeGroupManager groupManager,
                             RealtimeProperties properties) {
-        this(sessionManager, groupManager, properties, new StandaloneRealtimeClusterBroadcaster(), new NoOpRealtimeOfflineMessageProvider());
+        this(sessionManager, groupManager, properties, new StandaloneRealtimeClusterBroadcaster(), new NoOpRealtimeOfflineMessageProvider(), new StandaloneClusterMetricsProvider(sessionManager));
     }
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
                             RealtimeGroupManager groupManager,
                             RealtimeProperties properties,
                             RealtimeClusterBroadcaster clusterBroadcaster) {
-        this(sessionManager, groupManager, properties, clusterBroadcaster, new NoOpRealtimeOfflineMessageProvider());
+        this(sessionManager, groupManager, properties, clusterBroadcaster, new NoOpRealtimeOfflineMessageProvider(), new StandaloneClusterMetricsProvider(sessionManager));
     }
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
@@ -65,11 +69,21 @@ public class RealtimeTemplate {
                             RealtimeProperties properties,
                             RealtimeClusterBroadcaster clusterBroadcaster,
                             RealtimeOfflineMessageProvider offlineMessageProvider) {
+        this(sessionManager, groupManager, properties, clusterBroadcaster, offlineMessageProvider, new StandaloneClusterMetricsProvider(sessionManager));
+    }
+
+    public RealtimeTemplate(RealtimeSessionManager sessionManager,
+                            RealtimeGroupManager groupManager,
+                            RealtimeProperties properties,
+                            RealtimeClusterBroadcaster clusterBroadcaster,
+                            RealtimeOfflineMessageProvider offlineMessageProvider,
+                            RealtimeClusterMetricsProvider clusterMetricsProvider) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.groupManager = Objects.requireNonNull(groupManager, "groupManager must not be null");
         this.properties = properties;
         this.clusterBroadcaster = clusterBroadcaster != null ? clusterBroadcaster : new StandaloneRealtimeClusterBroadcaster();
         this.offlineMessageProvider = offlineMessageProvider != null ? offlineMessageProvider : new NoOpRealtimeOfflineMessageProvider();
+        this.clusterMetricsProvider = clusterMetricsProvider != null ? clusterMetricsProvider : new StandaloneClusterMetricsProvider(sessionManager);
         // 注册远端集群广播消费回调（仅分发本地会话，严禁二次向外广播）
         this.clusterBroadcaster.addConsumer(this::dispatchRemotePacket);
     }
@@ -518,6 +532,19 @@ public class RealtimeTemplate {
      */
     public int getOnlineCount() {
         return sessionManager.getOnlineCount();
+    }
+
+    /**
+     * 获取全集群当前在线连接总数
+     * <p>
+     * 若处于集群协同模式，从分布式协调中心汇总全网存活节点的在线连接总数；
+     * 若处于单机模式或未启用集群度量，平滑回退为当前单机节点的在线连接数。
+     * </p>
+     *
+     * @return 全集群活跃连接总数
+     */
+    public int getClusterOnlineCount() {
+        return clusterMetricsProvider.getClusterOnlineCount();
     }
 
     /**
