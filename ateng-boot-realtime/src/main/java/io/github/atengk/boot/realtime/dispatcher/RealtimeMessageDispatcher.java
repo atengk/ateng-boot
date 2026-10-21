@@ -13,6 +13,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.core.annotation.AnnotationUtils;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.Map;
@@ -76,7 +77,7 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
                     }
                 }
             } catch (Throwable t) {
-                // 忽略非标准 Bean 获取异常
+                log.debug("[Realtime] 探测或扫描 Bean [{}] 失败: {}", beanName, t.getMessage());
             }
         }
         log.info("[Realtime] 上行 Action 路由引擎初始化完成，共纳管 [{}] 个事件动作处理方法", actionMap.size());
@@ -121,8 +122,11 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
                 }
                 return true;
             } catch (Throwable t) {
+                Throwable cause = (t instanceof InvocationTargetException ite && ite.getCause() != null)
+                        ? ite.getCause()
+                        : t;
                 log.error("[Realtime] 执行 @RealtimeAction [{}] 异常: sessionKey={}, error={}",
-                        event, session.getSessionKey(), t.getMessage(), t);
+                        event, session.getSessionKey(), cause.getMessage(), cause);
                 return false;
             }
         }
@@ -136,7 +140,7 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
                     handled[0] = true;
                 } catch (Throwable t) {
                     log.warn("[Realtime] RealtimeMessageListener 执行异常: listener={}, error={}",
-                            listener.getClass().getName(), t.getMessage());
+                            listener.getClass().getName(), t.getMessage(), t);
                 }
             });
             if (handled[0]) {

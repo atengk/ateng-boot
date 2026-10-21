@@ -238,4 +238,38 @@ class AtengHandshakeInterceptorTest {
         assertThat(key).isNotNull();
         assertThat(key.isAnonymous()).isTrue();
     }
+
+    @Test
+    @DisplayName("自定义 HeaderName 与 TokenPrefix 凭据提取成功")
+    void testCustomHeaderAndPrefixWebSocketHandshake() throws Exception {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.getAuth().setHeaderName("X-Api-Key");
+        properties.getAuth().setTokenPrefix("Token ");
+
+        RealtimeAuthHandshakeProvider authProvider = mock(RealtimeAuthHandshakeProvider.class);
+        when(authProvider.authenticate(eq("custom-api-token"), any())).thenReturn(RealtimeAuthPayload.of("user-custom", "pc", 333L));
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("authProvider", authProvider);
+
+        AtengHandshakeInterceptor interceptor = new AtengHandshakeInterceptor(properties, beanFactory.getBeanProvider(RealtimeAuthHandshakeProvider.class));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Api-Key", "Token custom-api-token");
+
+        ServerHttpRequest request = mock(ServerHttpRequest.class);
+        when(request.getURI()).thenReturn(URI.create("ws://localhost:8080/ws/realtime"));
+        when(request.getHeaders()).thenReturn(headers);
+
+        ServerHttpResponse response = mock(ServerHttpResponse.class);
+        when(response.getHeaders()).thenReturn(new HttpHeaders());
+
+        Map<String, Object> attributes = new HashMap<>();
+        boolean pass = interceptor.beforeHandshake(request, response, wsHandler, attributes);
+
+        assertThat(pass).isTrue();
+        SessionKey key = (SessionKey) attributes.get(AtengWebSocketHandler.SESSION_KEY_ATTR);
+        assertThat(key).isNotNull();
+        assertThat(key.getUserId()).isEqualTo("user-custom");
+    }
 }

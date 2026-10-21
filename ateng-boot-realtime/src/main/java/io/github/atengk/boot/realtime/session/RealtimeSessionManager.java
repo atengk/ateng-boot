@@ -240,18 +240,7 @@ public class RealtimeSessionManager {
         if (userId == null) {
             return Collections.emptyList();
         }
-        Set<SessionKey> keys = userSessions.get(String.valueOf(userId));
-        if (keys == null || keys.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<RealtimeSession> result = new ArrayList<>(keys.size());
-        for (SessionKey k : keys) {
-            RealtimeSession s = sessions.get(k);
-            if (s != null && s.isOpen()) {
-                result.add(s);
-            }
-        }
-        return Collections.unmodifiableList(result);
+        return collectActiveSessions(userSessions.get(String.valueOf(userId)));
     }
 
     /**
@@ -264,18 +253,7 @@ public class RealtimeSessionManager {
         if (channelType == null) {
             return Collections.emptyList();
         }
-        Set<SessionKey> keys = channelSessions.get(channelType);
-        if (keys == null || keys.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<RealtimeSession> result = new ArrayList<>(keys.size());
-        for (SessionKey k : keys) {
-            RealtimeSession s = sessions.get(k);
-            if (s != null && s.isOpen()) {
-                result.add(s);
-            }
-        }
-        return Collections.unmodifiableList(result);
+        return collectActiveSessions(channelSessions.get(channelType));
     }
 
     /**
@@ -288,7 +266,16 @@ public class RealtimeSessionManager {
         if (tenantId == null) {
             return Collections.emptyList();
         }
-        Set<SessionKey> keys = tenantSessions.get(tenantId);
+        return collectActiveSessions(tenantSessions.get(tenantId));
+    }
+
+    /**
+     * 根据会话坐标集合提取存活状态的会话列表
+     *
+     * @param keys 会话标识集合
+     * @return 存活会话不可变列表
+     */
+    private List<RealtimeSession> collectActiveSessions(Set<SessionKey> keys) {
         if (keys == null || keys.isEmpty()) {
             return Collections.emptyList();
         }

@@ -121,15 +121,7 @@ public final class SseStreamHelper {
             if (eventName != null && !eventName.isBlank()) {
                 builder.name(eventName);
             }
-            if (data != null) {
-                if (data instanceof CharSequence) {
-                    builder.data(data.toString());
-                } else {
-                    builder.data(JsonUtil.toJsonString(data));
-                }
-            } else {
-                builder.data("");
-            }
+            builder.data(formatDataPayload(data));
             emitter.send(builder);
             return true;
         } catch (Throwable t) {
@@ -157,15 +149,7 @@ public final class SseStreamHelper {
             if (message.getEvent() != null) {
                 builder.name(message.getEvent());
             }
-            if (message.getData() != null) {
-                if (message.getData() instanceof CharSequence) {
-                    builder.data(message.getData().toString());
-                } else {
-                    builder.data(JsonUtil.toJsonString(message.getData()));
-                }
-            } else {
-                builder.data("");
-            }
+            builder.data(formatDataPayload(message.getData()));
             emitter.send(builder);
             return true;
         } catch (Throwable t) {
@@ -283,5 +267,21 @@ public final class SseStreamHelper {
         } else {
             log.warn("[Realtime] SSE 发送异常: {}", t.getMessage());
         }
+    }
+
+    /**
+     * 格式化数据载荷（字符串原样直出，POJO 自动序列化为 JSON，null 转换为空串）
+     *
+     * @param data 原始数据载荷
+     * @return 格式化后的字符串数据
+     */
+    private static String formatDataPayload(Object data) {
+        if (data == null) {
+            return "";
+        }
+        if (data instanceof CharSequence) {
+            return data.toString();
+        }
+        return JsonUtil.toJsonString(data);
     }
 }

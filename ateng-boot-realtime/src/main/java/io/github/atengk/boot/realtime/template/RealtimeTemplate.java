@@ -14,6 +14,7 @@ import org.springframework.web.socket.CloseStatus;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.function.Predicate;
 
 /**
  * 实时通信统一消息推送与会话治理门面
@@ -70,7 +71,7 @@ public class RealtimeTemplate {
      * @param message  实时业务消息
      * @return 是否成功投递
      */
-    public boolean sendToSession(String userId, String clientId, RealtimeMessage<?> message) {
+    public boolean sendToSession(Object userId, String clientId, RealtimeMessage<?> message) {
         if (userId == null || clientId == null || message == null) {
             return false;
         }
@@ -89,17 +90,7 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getSessionsByUser(userId);
-        if (sessions.isEmpty()) {
-            return 0;
-        }
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (doSend(session, message)) {
-                successCount++;
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getSessionsByUser(userId), null, message);
     }
 
     /**
@@ -114,19 +105,9 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getSessionsByUser(userId);
-        if (sessions.isEmpty()) {
-            return 0;
-        }
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (tenantId == null || Objects.equals(tenantId, session.getTenantId())) {
-                if (doSend(session, message)) {
-                    successCount++;
-                }
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getSessionsByUser(userId),
+                s -> tenantId == null || Objects.equals(tenantId, s.getTenantId()),
+                message);
     }
 
     // ==================== 协议定向推流 (Protocol-Directed Sending) ====================
@@ -178,14 +159,9 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getSessionsByUser(userId);
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (session.getChannelType() == ChannelType.WEBSOCKET && doSend(session, message)) {
-                successCount++;
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getSessionsByUser(userId),
+                s -> s.getChannelType() == ChannelType.WEBSOCKET,
+                message);
     }
 
     /**
@@ -199,14 +175,9 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getSessionsByUser(userId);
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (session.getChannelType() == ChannelType.SSE && doSend(session, message)) {
-                successCount++;
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getSessionsByUser(userId),
+                s -> s.getChannelType() == ChannelType.SSE,
+                message);
     }
 
     // ==================== 分组协同与频道组播 (Group Multicast) ====================
@@ -229,7 +200,7 @@ public class RealtimeTemplate {
         int successCount = 0;
         for (SessionKey key : members) {
             RealtimeSession session = sessionManager.getSession(key);
-            if (doSend(session, message)) {
+            if (session != null && doSend(session, message)) {
                 successCount++;
             }
         }
@@ -332,14 +303,7 @@ public class RealtimeTemplate {
         if (tenantId == null || message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (doSend(session, message)) {
-                successCount++;
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getSessionsByTenant(tenantId), null, message);
     }
 
     /**
@@ -352,14 +316,7 @@ public class RealtimeTemplate {
         if (message == null) {
             return 0;
         }
-        List<RealtimeSession> sessions = sessionManager.getAllSessions();
-        int successCount = 0;
-        for (RealtimeSession session : sessions) {
-            if (doSend(session, message)) {
-                successCount++;
-            }
-        }
-        return successCount;
+        return sendToSessions(sessionManager.getAllSessions(), null, message);
     }
 
     // ==================== 主动会话驱逐与下线 (Kickout & Eviction) ====================
@@ -498,6 +455,29 @@ public class RealtimeTemplate {
     }
 
     // ==================== 内部稳健发送核心 (Internal Defensive Send) ====================
+
+    /**
+     * 向候选会话集合批量执行稳健投递，支持按需谓词过滤
+     *
+     * @param sessions 候选会话列表
+     * @param filter   过滤谓词条件（可空，为空时全量发送）
+     * @param message  实时业务消息
+     * @return 成功投递的会话数量
+     */
+    private int sendToSessions(Collection<RealtimeSession> sessions, Predicate<RealtimeSession> filter, RealtimeMessage<?> message) {
+        if (sessions == null || sessions.isEmpty() || message == null) {
+            return 0;
+        }
+        int successCount = 0;
+        for (RealtimeSession session : sessions) {
+            if (session != null && (filter == null || filter.test(session))) {
+                if (doSend(session, message)) {
+                    successCount++;
+                }
+            }
+        }
+        return successCount;
+    }
 
     private boolean doSend(RealtimeSession session, RealtimeMessage<?> message) {
         if (session == null || !session.isOpen()) {

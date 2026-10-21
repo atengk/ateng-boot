@@ -77,12 +77,7 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
                 RealtimeAuthPayload payload = provider.authenticate(token, attributes);
                 if (payload == null) {
                     log.warn("[Realtime] WebSocket 握手鉴权失败: 无效或已过期的 Token");
-                    response.setStatusCode(HttpStatus.UNAUTHORIZED);
-                    try {
-                        response.close();
-                    } catch (Exception ignored) {
-                    }
-                    return false;
+                    return rejectUnauthorized(response);
                 }
                 // 绑定已认证身份属性
                 String actualDevice = (deviceType != null && !deviceType.isBlank())
@@ -106,12 +101,7 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
                     return true;
                 }
                 log.warn("[Realtime] WebSocket 未装配鉴权提供者，拒绝凭据连接");
-                response.setStatusCode(HttpStatus.UNAUTHORIZED);
-                try {
-                    response.close();
-                } catch (Exception ignored) {
-                }
-                return false;
+                return rejectUnauthorized(response);
             }
         }
 
@@ -124,6 +114,16 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
         }
 
         log.warn("[Realtime] WebSocket 拒绝未携带凭据的连接请求: clientId={}", clientId);
+        return rejectUnauthorized(response);
+    }
+
+    /**
+     * 设置 401 未授权状态并显式关闭握手响应通道
+     *
+     * @param response HTTP 响应
+     * @return 恒定返回 false 以阻断握手
+     */
+    private boolean rejectUnauthorized(ServerHttpResponse response) {
         response.setStatusCode(HttpStatus.UNAUTHORIZED);
         try {
             response.close();
@@ -146,8 +146,12 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
      * 按照 Query -> Header -> Cookie 优先级提取 Token
      */
     private String extractToken(ServerHttpRequest request, Map<String, String> queryParams) {
-        List<String> tokenParamNames = (properties != null && properties.getAuth() != null)
-                ? properties.getAuth().getTokenQueryParamNames()
+        RealtimeProperties.AuthProperties authProps = (properties != null && properties.getAuth() != null)
+                ? properties.getAuth()
+                : new RealtimeProperties.AuthProperties();
+
+        List<String> tokenParamNames = (authProps.getTokenQueryParamNames() != null && !authProps.getTokenQueryParamNames().isEmpty())
+                ? authProps.getTokenQueryParamNames()
                 : List.of("token", "satoken", "access_token");
 
         // 一阶：Query 参数
@@ -158,12 +162,19 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
             }
         }
 
-        // 二阶：Header 请求头（Authorization: Bearer xxx 或 Sec-WebSocket-Protocol）
-        String authHeader = request.getHeaders().getFirst("Authorization");
+        // 二阶：Header 请求头（自定义 headerName + tokenPrefix 或 Sec-WebSocket-Protocol）
+        String headerName = (authProps.getHeaderName() != null && !authProps.getHeaderName().isBlank())
+                ? authProps.getHeaderName()
+                : "Authorization";
+        String tokenPrefix = (authProps.getTokenPrefix() != null)
+                ? authProps.getTokenPrefix()
+                : "Bearer ";
+
+        String authHeader = request.getHeaders().getFirst(headerName);
         if (authHeader != null && !authHeader.isBlank()) {
             String trimmed = authHeader.trim();
-            if (trimmed.regionMatches(true, 0, "Bearer ", 0, 7)) {
-                return trimmed.substring(7).trim();
+            if (!tokenPrefix.isEmpty() && trimmed.regionMatches(true, 0, tokenPrefix, 0, tokenPrefix.length())) {
+                return trimmed.substring(tokenPrefix.length()).trim();
             }
             return trimmed;
         }
@@ -184,8 +195,12 @@ public class AtengHandshakeInterceptor implements HandshakeInterceptor {
             HttpServletRequest httpServletRequest = servletRequest.getServletRequest();
             Cookie[] cookies = httpServletRequest.getCookies();
             if (cookies != null) {
-                for (String name : tokenParamNames) {
-                    for (Cookie cookie : cookies) {
+                String cookieName = authProps.getCookieName();
+                for (Cookie cookie : cookies) {
+                    if (cookieName != null && cookieName.equalsIgnoreCase(cookie.getName()) && cookie.getValue() != null && !cookie.getValue().isBlank()) {
+                        return cookie.getValue().trim();
+                    }
+                    for (String name : tokenParamNames) {
                         if (name.equalsIgnoreCase(cookie.getName()) && cookie.getValue() != null && !cookie.getValue().isBlank()) {
                             return cookie.getValue().trim();
                         }

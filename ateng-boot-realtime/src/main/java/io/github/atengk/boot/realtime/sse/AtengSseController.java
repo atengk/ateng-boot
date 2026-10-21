@@ -35,7 +35,7 @@ import java.util.UUID;
  */
 @Slf4j
 @RestController
-@CrossOrigin(originPatterns = "*")
+@CrossOrigin(originPatterns = "${ateng.boot.realtime.cors.allowed-origins:*}")
 public class AtengSseController {
 
     private final RealtimeProperties properties;
@@ -171,8 +171,12 @@ public class AtengSseController {
     }
 
     private String extractToken(HttpServletRequest request) {
-        List<String> tokenParamNames = (properties != null && properties.getAuth() != null)
-                ? properties.getAuth().getTokenQueryParamNames()
+        RealtimeProperties.AuthProperties authProps = (properties != null && properties.getAuth() != null)
+                ? properties.getAuth()
+                : new RealtimeProperties.AuthProperties();
+
+        List<String> tokenParamNames = (authProps.getTokenQueryParamNames() != null && !authProps.getTokenQueryParamNames().isEmpty())
+                ? authProps.getTokenQueryParamNames()
                 : List.of("token", "satoken", "access_token");
 
         // 一阶: Query
@@ -184,11 +188,18 @@ public class AtengSseController {
         }
 
         // 二阶: Header
-        String authHeader = request.getHeader("Authorization");
+        String headerName = (authProps.getHeaderName() != null && !authProps.getHeaderName().isBlank())
+                ? authProps.getHeaderName()
+                : "Authorization";
+        String tokenPrefix = (authProps.getTokenPrefix() != null)
+                ? authProps.getTokenPrefix()
+                : "Bearer ";
+
+        String authHeader = request.getHeader(headerName);
         if (authHeader != null && !authHeader.isBlank()) {
             String trimmed = authHeader.trim();
-            if (trimmed.regionMatches(true, 0, "Bearer ", 0, 7)) {
-                return trimmed.substring(7).trim();
+            if (!tokenPrefix.isEmpty() && trimmed.regionMatches(true, 0, tokenPrefix, 0, tokenPrefix.length())) {
+                return trimmed.substring(tokenPrefix.length()).trim();
             }
             return trimmed;
         }
@@ -196,8 +207,12 @@ public class AtengSseController {
         // 三阶: Cookie
         Cookie[] cookies = request.getCookies();
         if (cookies != null) {
-            for (String param : tokenParamNames) {
-                for (Cookie c : cookies) {
+            String cookieName = authProps.getCookieName();
+            for (Cookie c : cookies) {
+                if (cookieName != null && cookieName.equalsIgnoreCase(c.getName()) && c.getValue() != null && !c.getValue().isBlank()) {
+                    return c.getValue().trim();
+                }
+                for (String param : tokenParamNames) {
                     if (param.equalsIgnoreCase(c.getName()) && c.getValue() != null && !c.getValue().isBlank()) {
                         return c.getValue().trim();
                     }

@@ -12,22 +12,29 @@ ateng:
       websocket:
         enabled: true
         path: /ws/realtime
-        allowed-origins: "*"
-        buffer-size: 64KB
+        send-buffer-limit: 512KB
+      cors:
+        allowed-origins:
+          - "*"
       sse:
         enabled: true
         path: /sse/realtime
-        timeout: 30m
+        default-timeout: 30m
       session:
         max-connections-per-user: 5
         eviction-policy: fifo
       heartbeat:
-        ping-interval: 25s
+        interval: 25s
         idle-timeout: 60s
       auth:
-        token-param-name: token
-        token-header-name: Sec-WebSocket-Protocol
         allow-anonymous: true
+        token-query-param-names:
+          - token
+          - satoken
+          - access_token
+        header-name: Authorization
+        token-prefix: "Bearer "
+        cookie-name: satoken
 
 sa-token:
   token-name: satoken

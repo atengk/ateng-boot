@@ -1,12 +1,16 @@
 package io.github.atengk.boot.realtime.sse;
 
+import io.github.atengk.boot.realtime.auth.RealtimeAuthHandshakeProvider;
+import io.github.atengk.boot.realtime.auth.RealtimeAuthPayload;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -118,5 +122,63 @@ class AtengSseControllerTest {
 
         SessionKey key = SessionKey.of("u-mvc", "c-mvc");
         assertThat(sessionManager.getSession(key)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("自定义 HeaderName 与 TokenPrefix 凭据提取与鉴权成功")
+    void testCustomHeaderAndPrefixAuth() {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.getAuth().setHeaderName("X-Custom-Auth");
+        properties.getAuth().setTokenPrefix("CustomToken ");
+        properties.getAuth().setAllowAnonymous(false);
+
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(properties);
+        RealtimeAuthHandshakeProvider authProvider = mock(RealtimeAuthHandshakeProvider.class);
+        when(authProvider.authenticate("secret-123456")).thenReturn(RealtimeAuthPayload.of("u-custom-header", "browser", 999L));
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("authProvider", authProvider);
+
+        AtengSseController controller = new AtengSseController(properties, sessionManager, beanFactory.getBeanProvider(RealtimeAuthHandshakeProvider.class));
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getHeader("X-Custom-Auth")).thenReturn("CustomToken secret-123456");
+
+        SseEmitter emitter = controller.connect("c-custom", null, null, null, request);
+        assertThat(emitter).isNotNull();
+
+        SessionKey key = SessionKey.of("u-custom-header", "browser", "c-custom");
+        RealtimeSession session = sessionManager.getSession(key);
+        assertThat(session).isNotNull();
+        assertThat(session.getTenantId()).isEqualTo(999L);
+    }
+
+    @Test
+    @DisplayName("自定义 CookieName 凭据提取与鉴权成功")
+    void testCustomCookieAuth() {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.getAuth().setCookieName("my_session_token");
+        properties.getAuth().setAllowAnonymous(false);
+
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(properties);
+        RealtimeAuthHandshakeProvider authProvider = mock(RealtimeAuthHandshakeProvider.class);
+        when(authProvider.authenticate("cookie-token-val")).thenReturn(RealtimeAuthPayload.of("u-cookie-user", "desktop", 777L));
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("authProvider", authProvider);
+
+        AtengSseController controller = new AtengSseController(properties, sessionManager, beanFactory.getBeanProvider(RealtimeAuthHandshakeProvider.class));
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        Cookie[] cookies = new Cookie[]{new Cookie("my_session_token", "cookie-token-val")};
+        when(request.getCookies()).thenReturn(cookies);
+
+        SseEmitter emitter = controller.connect("c-cookie", null, null, null, request);
+        assertThat(emitter).isNotNull();
+
+        SessionKey key = SessionKey.of("u-cookie-user", "desktop", "c-cookie");
+        RealtimeSession session = sessionManager.getSession(key);
+        assertThat(session).isNotNull();
+        assertThat(session.getTenantId()).isEqualTo(777L);
     }
 }

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -86,11 +87,74 @@ class RealtimeAuthScenarioTest {
             }
             Thread.sleep(50);
         }
-        if (realtimeSession == null) {
-            System.err.println(">>> All sessions registered: " + realtimeTemplate.getAllSessions().stream().map(RealtimeSession::getSessionKey).toList());
-        }
         assertThat(realtimeSession).isNotNull();
         assertThat(realtimeSession.getUserId()).isEqualTo("88888");
+
+        session.close();
+    }
+
+    @Test
+    @DisplayName("端到端验证: 通过 Header (Authorization: Bearer <token>) 携带凭据发起 WebSocket 握手成功")
+    void testWebSocketAuthHeaderSuccess() throws Exception {
+        String token = doLogin("77777");
+        assertThat(token).isNotBlank();
+
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        AuthTestHandler handler = new AuthTestHandler();
+
+        WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
+        headers.set("Authorization", "Bearer " + token);
+
+        URI uri = URI.create("ws://127.0.0.1:" + port + "/ws/realtime?clientId=auth-header-01&deviceType=default");
+        client.execute(handler, headers, uri);
+
+        WebSocketSession session = handler.awaitConnection(5, TimeUnit.SECONDS);
+        assertThat(session.isOpen()).isTrue();
+
+        SessionKey key = SessionKey.of("77777", "default", "auth-header-01");
+        RealtimeSession realtimeSession = null;
+        for (int i = 0; i < 20; i++) {
+            realtimeSession = realtimeTemplate.getSession(key);
+            if (realtimeSession != null) {
+                break;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(realtimeSession).isNotNull();
+        assertThat(realtimeSession.getUserId()).isEqualTo("77777");
+
+        session.close();
+    }
+
+    @Test
+    @DisplayName("端到端验证: 通过 Cookie (satoken=<token>) 携带凭据发起 WebSocket 握手成功")
+    void testWebSocketAuthCookieSuccess() throws Exception {
+        String token = doLogin("99999");
+        assertThat(token).isNotBlank();
+
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        AuthTestHandler handler = new AuthTestHandler();
+
+        WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
+        headers.add("Cookie", "satoken=" + token);
+
+        URI uri = URI.create("ws://127.0.0.1:" + port + "/ws/realtime?clientId=auth-cookie-01&deviceType=default");
+        client.execute(handler, headers, uri);
+
+        WebSocketSession session = handler.awaitConnection(5, TimeUnit.SECONDS);
+        assertThat(session.isOpen()).isTrue();
+
+        SessionKey key = SessionKey.of("99999", "default", "auth-cookie-01");
+        RealtimeSession realtimeSession = null;
+        for (int i = 0; i < 20; i++) {
+            realtimeSession = realtimeTemplate.getSession(key);
+            if (realtimeSession != null) {
+                break;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(realtimeSession).isNotNull();
+        assertThat(realtimeSession.getUserId()).isEqualTo("99999");
 
         session.close();
     }
@@ -109,7 +173,7 @@ class RealtimeAuthScenarioTest {
         conn.setReadTimeout(3000);
 
         int responseCode = conn.getResponseCode();
-        assertThat(responseCode).isIn(401, 403);
+        assertThat(responseCode).isEqualTo(401);
     }
 
     @Test
