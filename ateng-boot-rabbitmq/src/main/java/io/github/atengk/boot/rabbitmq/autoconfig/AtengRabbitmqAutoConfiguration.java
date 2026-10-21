@@ -7,17 +7,24 @@ import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.rabbitmq.callback.RabbitTransactionFailureCallback;
 import io.github.atengk.boot.rabbitmq.callback.RabbitUnroutableMessageCallback;
+import io.github.atengk.boot.rabbitmq.error.RabbitFatalExceptionStrategy;
+import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
+import io.github.atengk.boot.rabbitmq.retry.RabbitRetryPolicy;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
+import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
+import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
+import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
@@ -35,6 +42,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.retry.interceptor.RetryOperationsInterceptor;
 
 import java.util.Collections;
 import java.util.Map;
@@ -131,6 +139,35 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
+     * 毒丸与致命不可自愈异常判定策略
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public FatalExceptionStrategy rabbitFatalExceptionStrategy() {
+        return new RabbitFatalExceptionStrategy();
+    }
+
+    /**
+     * 容器级异常拒绝与死信隔离错误处理器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ConditionalRejectingErrorHandler rabbitErrorHandler(FatalExceptionStrategy rabbitFatalExceptionStrategy) {
+        ConditionalRejectingErrorHandler handler = new ConditionalRejectingErrorHandler(rabbitFatalExceptionStrategy);
+        handler.setDiscardFatalsWithXDeath(true);
+        return handler;
+    }
+
+    /**
+     * 消费端全局环绕拦截链 (四维上下文激活/清理、@Idempotent 静默 ACK 与消费审计宏日志)
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RabbitListenerGlobalAdvice rabbitListenerGlobalAdvice(RabbitmqProperties properties) {
+        return new RabbitListenerGlobalAdvice(properties);
+    }
+
+    /**
      * 容器级别优雅停机排空定制器
      */
     @Bean
@@ -146,6 +183,8 @@ public class AtengRabbitmqAutoConfiguration {
     public static BeanPostProcessor atengRabbitLifecycleBeanPostProcessor(
             ObjectProvider<RabbitmqProperties> propertiesProvider,
             ObjectProvider<MessageConverter> messageConverterProvider,
+            ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
+            ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider) {
         return new BeanPostProcessor() {
             @Override
@@ -157,7 +196,27 @@ public class AtengRabbitmqAutoConfiguration {
                         factory.setPrefetchCount(consumer.getPrefetch());
                         factory.setConcurrentConsumers(consumer.getConcurrency());
                         factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
+
+                        // 装配消费端受控防卫拦截链与本地指数退避重试
+                        RabbitListenerGlobalAdvice globalAdvice = adviceProvider.getIfAvailable();
+                        if (globalAdvice != null) {
+                            RabbitmqProperties.Consumer.Retry retryProps = consumer.getRetry();
+                            if (retryProps.isEnabled()) {
+                                RetryOperationsInterceptor retryInterceptor = RetryInterceptorBuilder.stateless()
+                                        .retryPolicy(new RabbitRetryPolicy(retryProps.getMaxAttempts()))
+                                        .backOffOptions(
+                                                retryProps.getInitialInterval().toMillis(),
+                                                retryProps.getMultiplier(),
+                                                retryProps.getMaxInterval().toMillis())
+                                        .recoverer(new RejectAndDontRequeueRecoverer())
+                                        .build();
+                                factory.setAdviceChain(retryInterceptor, globalAdvice);
+                            } else {
+                                factory.setAdviceChain(globalAdvice);
+                            }
+                        }
                     }
+                    errorHandlerProvider.ifAvailable(factory::setErrorHandler);
                     messageConverterProvider.ifAvailable(factory::setMessageConverter);
                     factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
                     observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));

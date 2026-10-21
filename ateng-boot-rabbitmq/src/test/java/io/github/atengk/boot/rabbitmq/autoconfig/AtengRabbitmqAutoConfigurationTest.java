@@ -1,10 +1,13 @@
 package io.github.atengk.boot.rabbitmq.autoconfig;
 
+import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
+import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.amqp.support.converter.SimpleMessageConverter;
@@ -39,6 +42,9 @@ class AtengRabbitmqAutoConfigurationTest {
             assertThat(context).hasSingleBean(RabbitTemplateCustomizer.class);
             assertThat(context).hasSingleBean(ContainerCustomizer.class);
             assertThat(context).hasSingleBean(RabbitTemplate.ReturnsCallback.class);
+            assertThat(context).hasSingleBean(FatalExceptionStrategy.class);
+            assertThat(context).hasSingleBean(ConditionalRejectingErrorHandler.class);
+            assertThat(context).hasSingleBean(RabbitListenerGlobalAdvice.class);
         });
     }
 
@@ -65,6 +71,9 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ContainerCustomizer.class);
                     assertThat(context).doesNotHaveBean(RabbitTemplate.ReturnsCallback.class);
                     assertThat(context).doesNotHaveBean(RabbitReliableTemplate.class);
+                    assertThat(context).doesNotHaveBean(FatalExceptionStrategy.class);
+                    assertThat(context).doesNotHaveBean(ConditionalRejectingErrorHandler.class);
+                    assertThat(context).doesNotHaveBean(RabbitListenerGlobalAdvice.class);
                 });
     }
 
