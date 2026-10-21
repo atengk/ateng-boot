@@ -12,6 +12,14 @@ _Avoid_: WebSocketTemplate, SseTemplate, PushUtil, RealtimeService
 跨传输协议的受管统一会话抽象，封装底层物理连接（WebSocketSession 或 SseEmitter）、通道类型、租户标识、最后活跃时间及会话唯一坐标。
 _Avoid_: UserSession, ClientConnection, SocketSession, ConnectionHolder
 
+**RealtimeSessionManager**:
+实时通信统一受管会话管理器，基于无锁并发哈希表统一纳管 WebSocket 与 SSE 双通道会话，提供基于 SessionKey、userId、channelType 与 tenantId 的多维极速索引与连接配额治理。
+_Avoid_: SessionRegistry, ConnectionPool, SessionStore, WsSessionManager
+
+**AtengSseController**:
+实时通信原生 Server-Sent Events 长连接端点控制器，对外暴露 `/sse/realtime` HTTP GET 端点，托管 SseEmitter 生命周期并纳管至 RealtimeSessionManager。
+_Avoid_: SseEndpoint, RealtimeSseHandler, SseResource, SsePushController
+
 **SessionKey**:
 用户端点会话唯一路由标识对象，由用户标识（userId）、设备类型（deviceType）与客户端会话标识（clientId）构成的确定性三维坐标。
 _Avoid_: SessionId, ConnectionId, ChannelKey
