@@ -113,8 +113,9 @@ public class AtengRealtimeAutoConfiguration {
     @ConditionalOnMissingBean(RealtimeTemplate.class)
     public RealtimeTemplate realtimeTemplate(RealtimeSessionManager sessionManager,
                                              RealtimeGroupManager groupManager,
-                                             RealtimeProperties properties) {
-        return new RealtimeTemplate(sessionManager, groupManager, properties);
+                                             RealtimeProperties properties,
+                                             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider) {
+        return new RealtimeTemplate(sessionManager, groupManager, properties, clusterBroadcasterProvider.getIfAvailable());
     }
 
     /**

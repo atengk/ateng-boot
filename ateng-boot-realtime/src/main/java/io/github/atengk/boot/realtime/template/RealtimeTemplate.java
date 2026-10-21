@@ -1,5 +1,8 @@
 package io.github.atengk.boot.realtime.template;
 
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket;
+import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.enums.ChannelType;
 import io.github.atengk.boot.realtime.group.RealtimeGroupManager;
@@ -37,13 +40,85 @@ public class RealtimeTemplate {
     private final RealtimeGroupManager groupManager;
     @Getter
     private final RealtimeProperties properties;
+    @Getter
+    private final RealtimeClusterBroadcaster clusterBroadcaster;
 
     public RealtimeTemplate(RealtimeSessionManager sessionManager,
                             RealtimeGroupManager groupManager,
                             RealtimeProperties properties) {
+        this(sessionManager, groupManager, properties, new StandaloneRealtimeClusterBroadcaster());
+    }
+
+    public RealtimeTemplate(RealtimeSessionManager sessionManager,
+                            RealtimeGroupManager groupManager,
+                            RealtimeProperties properties,
+                            RealtimeClusterBroadcaster clusterBroadcaster) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
         this.groupManager = Objects.requireNonNull(groupManager, "groupManager must not be null");
         this.properties = properties;
+        this.clusterBroadcaster = clusterBroadcaster != null ? clusterBroadcaster : new StandaloneRealtimeClusterBroadcaster();
+        // 注册远端集群广播消费回调（仅分发本地会话，严禁二次向外广播）
+        this.clusterBroadcaster.addConsumer(this::dispatchRemotePacket);
+    }
+
+    /**
+     * 调度分发来自远端集群节点的广播数据包（执行本地匹配下发，绝不再次对外广播）
+     *
+     * @param packet 远端集群广播包
+     */
+    private void dispatchRemotePacket(RealtimeClusterPacket packet) {
+        if (packet == null || packet.getBroadcastType() == null) {
+            return;
+        }
+        switch (packet.getBroadcastType()) {
+            case USER -> {
+                String targetUserId = packet.getTargetKey();
+                if (targetUserId != null) {
+                    List<RealtimeSession> sessions = sessionManager.getSessionsByUser(targetUserId);
+                    sendToSessions(sessions, null, packet.getMessage());
+                }
+            }
+            case GROUP -> {
+                String groupId = packet.getTargetKey();
+                if (groupId != null) {
+                    Set<SessionKey> members = groupManager.getGroupSessions(groupId);
+                    for (SessionKey key : members) {
+                        RealtimeSession session = sessionManager.getSession(key);
+                        if (session != null) {
+                            doSend(session, packet.getMessage());
+                        }
+                    }
+                }
+            }
+            case TENANT -> {
+                String tenantKey = packet.getTargetKey();
+                if (tenantKey != null) {
+                    try {
+                        Long tenantId = Long.valueOf(tenantKey);
+                        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
+                        sendToSessions(sessions, null, packet.getMessage());
+                    } catch (NumberFormatException ignored) {
+                        // 忽略格式异常租户
+                    }
+                }
+            }
+            case ALL -> {
+                List<RealtimeSession> sessions = sessionManager.getAllSessions();
+                sendToSessions(sessions, null, packet.getMessage());
+            }
+            case KICKOUT -> {
+                String targetUserId = packet.getTargetKey();
+                if (targetUserId != null) {
+                    List<RealtimeSession> sessions = sessionManager.getSessionsByUser(targetUserId);
+                    CloseStatus closeStatus = packet.getCloseStatusCode() != null
+                            ? new CloseStatus(packet.getCloseStatusCode(), packet.getReason())
+                            : RealtimeCloseStatus.USER_KICKED_OUT;
+                    for (RealtimeSession s : sessions) {
+                        sessionManager.removeAndClose(s.getSessionKey(), closeStatus);
+                    }
+                }
+            }
+        }
     }
 
     // ==================== 点对点单播 (Point-to-Point Unicast) ====================
@@ -90,7 +165,11 @@ public class RealtimeTemplate {
         if (userId == null || message == null) {
             return 0;
         }
-        return sendToSessions(sessionManager.getSessionsByUser(userId), null, message);
+        int localCount = sendToSessions(sessionManager.getSessionsByUser(userId), null, message);
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofUser(clusterBroadcaster.getNodeId(), userId, message));
+        }
+        return localCount;
     }
 
     /**
@@ -194,15 +273,15 @@ public class RealtimeTemplate {
             return 0;
         }
         Set<SessionKey> members = groupManager.getGroupSessions(groupId);
-        if (members.isEmpty()) {
-            return 0;
-        }
         int successCount = 0;
         for (SessionKey key : members) {
             RealtimeSession session = sessionManager.getSession(key);
             if (session != null && doSend(session, message)) {
                 successCount++;
             }
+        }
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofGroup(clusterBroadcaster.getNodeId(), groupId, message));
         }
         return successCount;
     }
@@ -303,7 +382,11 @@ public class RealtimeTemplate {
         if (tenantId == null || message == null) {
             return 0;
         }
-        return sendToSessions(sessionManager.getSessionsByTenant(tenantId), null, message);
+        int localCount = sendToSessions(sessionManager.getSessionsByTenant(tenantId), null, message);
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofTenant(clusterBroadcaster.getNodeId(), tenantId, message));
+        }
+        return localCount;
     }
 
     /**
@@ -316,7 +399,11 @@ public class RealtimeTemplate {
         if (message == null) {
             return 0;
         }
-        return sendToSessions(sessionManager.getAllSessions(), null, message);
+        int localCount = sendToSessions(sessionManager.getAllSessions(), null, message);
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofAll(clusterBroadcaster.getNodeId(), message));
+        }
+        return localCount;
     }
 
     // ==================== 主动会话驱逐与下线 (Kickout & Eviction) ====================
@@ -364,6 +451,10 @@ public class RealtimeTemplate {
             if (sessionManager.removeAndClose(s.getSessionKey(), closeStatus) != null) {
                 count++;
             }
+        }
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofKickout(
+                    clusterBroadcaster.getNodeId(), userId, closeStatus.getCode(), closeStatus.getReason()));
         }
         return count;
     }
