@@ -5,6 +5,8 @@ import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
 import org.springframework.amqp.rabbit.listener.FatalExceptionStrategy;
@@ -86,6 +88,40 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(MessageConverter.class);
                     assertThat(context.getBean(MessageConverter.class)).isInstanceOf(SimpleMessageConverter.class);
                 });
+    }
+
+    @Test
+    @DisplayName("topology.auto-declare=false 时禁用 RabbitAdmin 启动自动声明 (autoStartup=false)")
+    void testTopologyAutoDeclareDisabled() {
+        contextRunner
+                .withUserConfiguration(MockRabbitAdminConfiguration.class)
+                .withPropertyValues("ateng.boot.rabbitmq.topology.auto-declare=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitAdmin.class);
+                    RabbitAdmin admin = context.getBean(RabbitAdmin.class);
+                    assertThat(admin.isAutoStartup()).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下 RabbitAdmin 保持自动声明启用 (autoStartup=true)")
+    void testTopologyAutoDeclareDefaultEnabled() {
+        contextRunner
+                .withUserConfiguration(MockRabbitAdminConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitAdmin.class);
+                    RabbitAdmin admin = context.getBean(RabbitAdmin.class);
+                    assertThat(admin.isAutoStartup()).isTrue();
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockRabbitAdminConfiguration {
+        @Bean
+        public RabbitAdmin rabbitAdmin() {
+            ConnectionFactory connectionFactory = mock(ConnectionFactory.class);
+            return new RabbitAdmin(connectionFactory);
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
