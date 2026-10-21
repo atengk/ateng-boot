@@ -20,4 +20,9 @@ public final class HttpConstants {
      * 单次请求目标客户端名称内部标记头（用于在拦截器链路中传递并在出站前严格剥离）
      */
     public static final String HEADER_CLIENT_NAME_OVERRIDE = "X-Ateng-Internal-Client-Name";
+
+    /**
+     * 单次大文件流式传输通道内部标记头（用于告知日志拦截器旁路 Body 缓冲，守护零内存缓冲不变量并在出站前严格剥离）
+     */
+    public static final String HEADER_STREAM_TRANSFER = "X-Ateng-Internal-Stream-Transfer";
 }

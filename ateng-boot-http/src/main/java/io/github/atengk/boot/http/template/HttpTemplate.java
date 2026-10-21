@@ -2,6 +2,7 @@ package io.github.atengk.boot.http.template;
 
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.http.constant.HttpConstants;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.options.RequestOptions;
@@ -459,6 +460,7 @@ public class HttpTemplate {
         Assert.notNull(outputStream, "outputStream 不能为空");
         URI uri = RequestOptionsApplier.resolveUri(url, options);
         RestClient.RequestHeadersSpec<?> spec = this.restClient.get().uri(uri);
+        spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
         RequestOptionsApplier.apply(spec, options);
         spec.exchange((request, response) -> {
             if (response.getStatusCode().isError()) {

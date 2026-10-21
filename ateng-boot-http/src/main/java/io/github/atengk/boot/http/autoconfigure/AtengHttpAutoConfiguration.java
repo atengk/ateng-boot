@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.factory.ClientHttpRequestFactoryBuilder;
+import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
 import io.github.atengk.boot.http.interceptor.TraceContextInterceptor;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.template.HttpTemplate;
@@ -89,6 +90,30 @@ public class AtengHttpAutoConfiguration {
     @ConditionalOnMissingBean(name = "traceContextRestClientCustomizer")
     public RestClientCustomizer traceContextRestClientCustomizer(TraceContextInterceptor traceContextInterceptor) {
         return builder -> builder.requestInterceptor(traceContextInterceptor);
+    }
+
+    /**
+     * 注册出站 HTTP 结构化日志拦截器 Bean
+     *
+     * @param properties 配置属性
+     * @return HttpLoggingInterceptor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public HttpLoggingInterceptor httpLoggingInterceptor(HttpProperties properties) {
+        return new HttpLoggingInterceptor(properties);
+    }
+
+    /**
+     * 注册日志拦截器 RestClientCustomizer 定制器
+     *
+     * @param httpLoggingInterceptor 出站结构化日志拦截器
+     * @return RestClientCustomizer 定制器
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "httpLoggingRestClientCustomizer")
+    public RestClientCustomizer httpLoggingRestClientCustomizer(HttpLoggingInterceptor httpLoggingInterceptor) {
+        return builder -> builder.requestInterceptor(httpLoggingInterceptor);
     }
 
     /**
