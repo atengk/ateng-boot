@@ -4,7 +4,6 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.http.constant.HttpConstants;
-import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpTracingProperties;
@@ -43,21 +42,16 @@ public class TraceContextInterceptor implements ClientHttpRequestInterceptor {
 
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
-        HttpTracingProperties tracing = properties.getTracing();
-        if (tracing == null || !tracing.isEnabled()) {
-            try {
-            return execution.execute(request, body);
-        } finally {
-            // 安全清理单次请求上下文持有者，杜绝线程污染
-            HttpRequestContextHolder.clear();
-        }
-        }
-
         HttpHeaders headers = request.getHeaders();
 
-        // 1. 读取并严格剥离内部控制头（绝对禁止泄露给网络物理层）
-        Boolean explicitPropagate = extractBooleanHeader(headers, HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE);
-        String explicitClientName = extractStringHeader(headers, HttpConstants.HEADER_CLIENT_NAME_OVERRIDE);
+        // 1. 读取并严格剥离内部控制头（绝对禁止泄露给外部网络物理层，无论是否启用链路追踪）
+        Boolean explicitPropagate = HttpInterceptorUtil.extractBooleanHeader(headers, HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE);
+        String explicitClientName = HttpInterceptorUtil.extractStringHeader(headers, HttpConstants.HEADER_CLIENT_NAME_OVERRIDE);
+
+        HttpTracingProperties tracing = properties.getTracing();
+        if (tracing == null || !tracing.isEnabled()) {
+            return execution.execute(request, body);
+        }
 
         // 2. 双轨自适应判定当前请求是否允许透传私有业务上下文
         boolean propagate = resolvePropagateContext(request.getURI(), explicitPropagate, explicitClientName);
@@ -109,12 +103,7 @@ public class TraceContextInterceptor implements ClientHttpRequestInterceptor {
             }
         }
 
-        try {
-            return execution.execute(request, body);
-        } finally {
-            // 安全清理单次请求上下文持有者，杜绝线程污染
-            HttpRequestContextHolder.clear();
-        }
+        return execution.execute(request, body);
     }
 
     /**
@@ -145,50 +134,12 @@ public class TraceContextInterceptor implements ClientHttpRequestInterceptor {
         }
 
         // 3. 依据目标请求 URL 进行最长前缀自适应匹配 (Longest Prefix Match)
-        if (uri != null) {
-            String uriString = uri.toString();
-            String matchedClient = null;
-            int maxMatchLen = -1;
-
-            for (Map.Entry<String, HttpClientItemProperties> entry : clients.entrySet()) {
-                HttpClientItemProperties item = entry.getValue();
-                if (item != null && StringUtils.hasText(item.getBaseUrl())) {
-                    String baseUrl = item.getBaseUrl();
-                    if (uriString.startsWith(baseUrl) && baseUrl.length() > maxMatchLen) {
-                        maxMatchLen = baseUrl.length();
-                        matchedClient = entry.getKey();
-                    }
-                }
-            }
-
-            if (matchedClient != null) {
-                return clients.get(matchedClient).isPropagateContext();
-            }
+        Map.Entry<String, HttpClientItemProperties> matched = HttpInterceptorUtil.matchClientByUrl(uri, clients);
+        if (matched != null && matched.getValue() != null) {
+            return matched.getValue().isPropagateContext();
         }
 
         // 4. 未匹配到外部配置，保底为内部信任（true）
         return true;
-    }
-
-    private Boolean extractBooleanHeader(HttpHeaders headers, String headerName) {
-        List<String> values = headers.remove(headerName);
-        if (values != null && !values.isEmpty()) {
-            String val = values.get(0);
-            if (StringUtils.hasText(val)) {
-                return Boolean.parseBoolean(val.trim());
-            }
-        }
-        return null;
-    }
-
-    private String extractStringHeader(HttpHeaders headers, String headerName) {
-        List<String> values = headers.remove(headerName);
-        if (values != null && !values.isEmpty()) {
-            String val = values.get(0);
-            if (StringUtils.hasText(val)) {
-                return val.trim();
-            }
-        }
-        return null;
     }
 }

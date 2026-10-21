@@ -67,6 +67,14 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
                     return throwable instanceof RetryableIoException;
                 })
                 .onRetry((attempt, ex) -> {
+                    // 当遭遇重试状态码（502/503/504）触发重试时，显式关闭上一次失败轮次的物理响应流，安全归还连接池，严防物理连接泄漏
+                    if (ex instanceof RetryableStatusCodeException rse && rse.getResponse() != null) {
+                        try {
+                            rse.getResponse().close();
+                        } catch (Exception closeEx) {
+                            log.debug("释放重试中间失败响应流异常: {}", closeEx.getMessage());
+                        }
+                    }
                     String reason = ex instanceof RetryableStatusCodeException rse
                             ? "HTTP 状态码 " + rse.getStatusCode()
                             : ex.getMessage();
@@ -120,34 +128,23 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
     }
 
     /**
+     * 判断当前重试拦截器是否已内聚托管执行出站日志拦截器
+     *
+     * @return true 表示已托管，无需再作为独立拦截器重复注入 RestClient
+     */
+    public boolean isLoggingDelegated() {
+        return this.loggingInterceptor != null;
+    }
+
+    /**
      * 依据目标 URL 最长前缀自适应匹配客户端配置专属重试策略，未匹配回退全局重试配置
      */
     protected HttpRetryProperties resolveRetryProperties(URI uri) {
         Map<String, HttpClientItemProperties> clients = properties.getClients();
-        if (clients != null && !clients.isEmpty() && uri != null) {
-            String uriString = uri.toString();
-            String matchedClient = null;
-            int maxMatchLen = -1;
-
-            for (Map.Entry<String, HttpClientItemProperties> entry : clients.entrySet()) {
-                HttpClientItemProperties item = entry.getValue();
-                if (item != null && StringUtils.hasText(item.getBaseUrl())) {
-                    String baseUrl = item.getBaseUrl();
-                    if (uriString.startsWith(baseUrl) && baseUrl.length() > maxMatchLen) {
-                        maxMatchLen = baseUrl.length();
-                        matchedClient = entry.getKey();
-                    }
-                }
-            }
-
-            if (matchedClient != null) {
-                HttpClientItemProperties matchedItem = clients.get(matchedClient);
-                if (matchedItem.getRetry() != null) {
-                    return matchedItem.getRetry();
-                }
-            }
+        Map.Entry<String, HttpClientItemProperties> matched = HttpInterceptorUtil.matchClientByUrl(uri, clients);
+        if (matched != null && matched.getValue() != null && matched.getValue().getRetry() != null) {
+            return matched.getValue().getRetry();
         }
-
         return properties.getRetry();
     }
 

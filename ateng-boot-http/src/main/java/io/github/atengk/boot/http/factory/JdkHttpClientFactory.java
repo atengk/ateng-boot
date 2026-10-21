@@ -117,7 +117,11 @@ public final class JdkHttpClientFactory {
                 ClientHttpRequest request = super.createRequest(uri, httpMethod);
                 Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
                 if (perRequestTimeout != null) {
-                    RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
+                    try {
+                        RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
+                    } finally {
+                        HttpRequestContextHolder.clear();
+                    }
                 }
                 return request;
             }

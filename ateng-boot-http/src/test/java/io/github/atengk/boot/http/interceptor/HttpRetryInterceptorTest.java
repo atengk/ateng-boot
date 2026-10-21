@@ -18,6 +18,7 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -59,15 +60,32 @@ class HttpRetryInterceptorTest {
     }
 
     @Test
-    @DisplayName("状态码抖动重试成功：前 2 次返回 503，第 3 次返回 200，断言自动恢复成功")
+    @DisplayName("状态码抖动重试成功：前 2 次返回 503，第 3 次返回 200，断言自动恢复且中间失败响应被显式关闭归还连接池")
     void shouldRetryOn503AndSucceedEventually() throws IOException {
         MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://api.example.com/items"));
         AtomicInteger callCount = new AtomicInteger(0);
+        AtomicBoolean attempt1Closed = new AtomicBoolean(false);
+        AtomicBoolean attempt2Closed = new AtomicBoolean(false);
 
         ClientHttpRequestExecution execution = (req, body) -> {
             int attempt = callCount.incrementAndGet();
-            if (attempt < 3) {
-                return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE);
+            if (attempt == 1) {
+                return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE) {
+                    @Override
+                    public void close() {
+                        attempt1Closed.set(true);
+                        super.close();
+                    }
+                };
+            }
+            if (attempt == 2) {
+                return new MockClientHttpResponse(new byte[0], HttpStatus.SERVICE_UNAVAILABLE) {
+                    @Override
+                    public void close() {
+                        attempt2Closed.set(true);
+                        super.close();
+                    }
+                };
             }
             return new MockClientHttpResponse("{\"success\":true}".getBytes(), HttpStatus.OK);
         };
@@ -76,6 +94,8 @@ class HttpRetryInterceptorTest {
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(3, callCount.get(), "应触发 2 次重试，总共执行 3 次调用");
+        assertTrue(attempt1Closed.get(), "第 1 次失败轮次的物理响应流必须被显式关闭归还连接池");
+        assertTrue(attempt2Closed.get(), "第 2 次失败轮次的物理响应流必须被显式关闭归还连接池");
     }
 
     @Test

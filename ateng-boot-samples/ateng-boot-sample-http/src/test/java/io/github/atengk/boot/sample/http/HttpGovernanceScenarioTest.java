@@ -80,22 +80,24 @@ class HttpGovernanceScenarioTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        mockWebServer.shutdown();
+        try {
+            mockWebServer.shutdown();
+        } finally {
+            // 严格清理线程与上下文持有者，守卫上下文零污染铁律
+            MDC.clear();
+            UserContextHolder.clear();
+            TenantContextHolder.clear();
+            HttpRequestContextHolder.clear();
 
-        // 严格清理线程与上下文持有者，守卫上下文零污染铁律
-        MDC.clear();
-        UserContextHolder.clear();
-        TenantContextHolder.clear();
-        HttpRequestContextHolder.clear();
+            // 恢复配置与卸载日志收集器
+            httpProperties.getClients().clear();
+            httpProperties.getClients().putAll(originalClients);
+            httpProperties.getLogging().setLevel(originalLoggingLevel);
 
-        // 恢复配置与卸载日志收集器
-        httpProperties.getClients().clear();
-        httpProperties.getClients().putAll(originalClients);
-        httpProperties.getLogging().setLevel(originalLoggingLevel);
-
-        if (loggingInterceptorLogger != null && listAppender != null) {
-            loggingInterceptorLogger.detachAppender(listAppender);
-            listAppender.stop();
+            if (loggingInterceptorLogger != null && listAppender != null) {
+                loggingInterceptorLogger.detachAppender(listAppender);
+                listAppender.stop();
+            }
         }
     }
 

@@ -169,16 +169,51 @@ class HttpLoggingInterceptorTest {
     }
 
     @Test
-    @DisplayName("NONE 日志级别下：拦截器完全静默直通，不读取流且性能开销为零")
+    @DisplayName("NONE 日志级别下：拦截器完全静默直通，但内部流式标记头依然必须安全剥离")
     void shouldBypassDirectlyWhenLevelIsNone() throws IOException {
         properties.getLogging().setLevel(HttpLoggingLevel.NONE);
         MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://api.example.com/silent"));
+        request.getHeaders().add(HttpConstants.HEADER_STREAM_TRANSFER, "true");
 
         byte[] payload = "plain-data".getBytes(StandardCharsets.UTF_8);
-        ClientHttpRequestExecution execution = (req, body) -> new MockClientHttpResponse(payload, HttpStatus.OK);
+        ClientHttpRequestExecution execution = (req, body) -> {
+            assertNull(req.getHeaders().getFirst(HttpConstants.HEADER_STREAM_TRANSFER), "关闭日志时内部流式头仍须被严格剥离");
+            return new MockClientHttpResponse(payload, HttpStatus.OK);
+        };
 
         ClientHttpResponse response = interceptor.intercept(request, new byte[0], execution);
         assertFalse(response instanceof BufferingClientHttpResponseWrapper);
         assertEquals("plain-data", StreamUtils.copyToString(response.getBody(), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("分块传输超限无损保护：超过 64KB 缓冲容量时安全退化为拼接流，确保下游能完整无损读取全部数据")
+    void shouldSupportChunkedStreamOverflowWithoutDataLoss() throws IOException {
+        MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("https://api.example.com/chunked-large"));
+        // 构造 70KB 数据（超过默认 64KB 缓冲上限）
+        int totalSize = 70 * 1024;
+        byte[] largeData = new byte[totalSize];
+        for (int i = 0; i < totalSize; i++) {
+            largeData[i] = (byte) (i % 127);
+        }
+
+        ClientHttpRequestExecution execution = (req, body) -> {
+            // 不设置 Content-Length 模拟 chunked 分块传输
+            MockClientHttpResponse resp = new MockClientHttpResponse(new ByteArrayInputStream(largeData), HttpStatus.OK);
+            resp.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+            return resp;
+        };
+
+        ClientHttpResponse response = interceptor.intercept(request, new byte[0], execution);
+
+        // 验证被安全包装为溢出拼接包装器
+        assertInstanceOf(BufferingClientHttpResponseWrapper.class, response);
+        BufferingClientHttpResponseWrapper wrapper = (BufferingClientHttpResponseWrapper) response;
+        assertTrue(wrapper.isOverflow(), "分块超限流必须标记为 isOverflow 拼接流");
+
+        // 验证下游通过 getBody 读取出的总字节数 100% 完整，零丢失
+        byte[] readBackBytes = StreamUtils.copyToByteArray(response.getBody());
+        assertEquals(totalSize, readBackBytes.length, "下游读取到的总字节数必须完全等于原始流大小");
+        assertArrayEquals(largeData, readBackBytes, "下游读取到的流数据内容必须与原始流完全一致");
     }
 }

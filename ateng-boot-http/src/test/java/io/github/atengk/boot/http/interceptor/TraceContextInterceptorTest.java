@@ -238,13 +238,15 @@ class TraceContextInterceptorTest {
     }
 
     @Test
-    @DisplayName("开关关闭时 (tracing.enabled = false)：直接放行，不注入任何出站头")
+    @DisplayName("开关关闭时 (tracing.enabled = false)：直接放行不注入出站头，但内部私有控制头依然必须严格剥离")
     void shouldBypassWhenTracingIsDisabled() throws IOException {
         properties.getTracing().setEnabled(false);
         MDC.put("traceId", "trace-ignored");
         TenantContextHolder.setTenantId("tenant-ignored");
 
         MockClientHttpRequest request = new MockClientHttpRequest(HttpMethod.GET, URI.create("http://192.168.1.100:8080/test"));
+        request.getHeaders().add(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, "false");
+        request.getHeaders().add(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, "my-client");
         AtomicReference<HttpHeaders> capturedHeaders = new AtomicReference<>();
 
         interceptor.intercept(request, new byte[0], (req, body) -> {
@@ -255,5 +257,7 @@ class TraceContextInterceptorTest {
         HttpHeaders headers = capturedHeaders.get();
         assertNull(headers.getFirst("X-Trace-Id"));
         assertNull(headers.getFirst("X-Tenant-Id"));
+        assertNull(headers.getFirst(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE), "关闭追踪时内部透传控制头必须被严格剥离");
+        assertNull(headers.getFirst(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE), "关闭追踪时内部客户端控制头必须被严格剥离");
     }
 }

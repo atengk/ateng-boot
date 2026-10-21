@@ -51,14 +51,15 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
 
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution) throws IOException {
+        HttpHeaders requestHeaders = request.getHeaders();
+        // 1. 读取并严格剥离流式传输标记头（守护零内存缓冲不变量，无论是否开启日志，绝不泄露至物理网络）
+        Boolean streamingDownloadHeader = HttpInterceptorUtil.extractBooleanHeader(requestHeaders, HttpConstants.HEADER_STREAM_TRANSFER);
+        boolean isStreamingDownload = Boolean.TRUE.equals(streamingDownloadHeader);
+
         HttpLoggingProperties logging = properties.getLogging();
         if (logging == null || !logging.isEnabled() || logging.getLevel() == HttpLoggingLevel.NONE) {
             return execution.execute(request, body);
         }
-
-        HttpHeaders requestHeaders = request.getHeaders();
-        // 1. 读取并剥离流式传输标记头（守护零内存缓冲不变量）
-        boolean isStreamingDownload = extractBooleanHeader(requestHeaders, HttpConstants.HEADER_STREAM_TRANSFER);
 
         long startNano = System.nanoTime();
         ClientHttpResponse response = null;
@@ -108,11 +109,12 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
             long totalRead = 0;
             while ((read = in.read(buf)) != -1) {
                 totalRead += read;
-                if (totalRead > maxCapacity) {
-                    // 超过最大缓冲容量限制，放弃包装直通返回以防爆内存
-                    return response;
-                }
                 baos.write(buf, 0, read);
+                if (totalRead > maxCapacity) {
+                    // 超过最大缓冲容量限制，停止向内存继续扩张，将已预读切片与底层剩余网络流安全拼接返回
+                    // 既守护 64KB 内存防爆红线，又确保下游业务与反序列化能读取到 100% 完整的响应流
+                    return new BufferingClientHttpResponseWrapper(response, baos.toByteArray(), in);
+                }
             }
 
             return new BufferingClientHttpResponseWrapper(response, baos.toByteArray());
@@ -170,8 +172,14 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
                     sb.append(STREAMING_BODY_PLACEHOLDER);
                 } else if (response instanceof BufferingClientHttpResponseWrapper buffered) {
                     Charset charset = resolveCharset(buffered.getHeaders().getContentType());
-                    String bodyStr = StreamUtils.copyToString(buffered.getBody(), charset);
-                    sb.append(truncateString(bodyStr, logging.getMaxBodyLength()));
+                    if (buffered.isOverflow()) {
+                        String bodyStr = new String(buffered.getBufferedBody(), charset);
+                        sb.append(truncateString(bodyStr, logging.getMaxBodyLength()))
+                                .append("\n[BODY OVERFLOW > CAPACITY - TRUNCATED, PRESERVED FOR DOWNSTREAM]");
+                    } else {
+                        String bodyStr = StreamUtils.copyToString(buffered.getBody(), charset);
+                        sb.append(truncateString(bodyStr, logging.getMaxBodyLength()));
+                    }
                 } else if (isBinaryContent(response.getHeaders().getContentType())) {
                     sb.append(BINARY_BODY_PLACEHOLDER);
                 } else {
@@ -322,14 +330,5 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
             return "";
         }
         return str.replace("'", "'\\''");
-    }
-
-    private boolean extractBooleanHeader(HttpHeaders headers, String headerName) {
-        List<String> values = headers.remove(headerName);
-        if (values != null && !values.isEmpty()) {
-            String val = values.get(0);
-            return Boolean.parseBoolean(val.trim());
-        }
-        return false;
     }
 }

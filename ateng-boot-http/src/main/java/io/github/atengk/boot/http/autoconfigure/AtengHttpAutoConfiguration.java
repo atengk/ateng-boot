@@ -137,16 +137,24 @@ public class AtengHttpAutoConfiguration {
 
     /**
      * 注册日志拦截器 RestClientCustomizer 定制器（顺序：内层，Order 30）
-     * 当未装配 HttpRetryInterceptor 时独立作为 Spring 拦截器生效，避免重复拦截
+     * 仅当未装配 HttpRetryInterceptor，或所装配的 HttpRetryInterceptor 未内聚托管日志拦截器时，作为独立 Spring 拦截器生效，
+     * 既杜绝下游开发者覆盖或声明自定义 HttpRetryInterceptor 时导致全局出站日志静默丢失，又严防双重重复拦截
      *
      * @param httpLoggingInterceptor 出站结构化日志拦截器
+     * @param retryInterceptorProvider 出站重试拦截器提供者
      * @return RestClientCustomizer 定制器
      */
     @Bean
     @Order(30)
-    @ConditionalOnMissingBean(value = HttpRetryInterceptor.class, name = "httpLoggingRestClientCustomizer")
-    public RestClientCustomizer httpLoggingRestClientCustomizer(HttpLoggingInterceptor httpLoggingInterceptor) {
-        return builder -> builder.requestInterceptor(httpLoggingInterceptor);
+    @ConditionalOnMissingBean(name = "httpLoggingRestClientCustomizer")
+    public RestClientCustomizer httpLoggingRestClientCustomizer(HttpLoggingInterceptor httpLoggingInterceptor,
+                                                                ObjectProvider<HttpRetryInterceptor> retryInterceptorProvider) {
+        return builder -> {
+            HttpRetryInterceptor retryInterceptor = retryInterceptorProvider.getIfAvailable();
+            if (retryInterceptor == null || !retryInterceptor.isLoggingDelegated()) {
+                builder.requestInterceptor(httpLoggingInterceptor);
+            }
+        };
     }
 
     /**

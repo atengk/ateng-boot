@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.http;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.http.error.HttpResultCode;
 import io.github.atengk.boot.http.options.RequestOptions;
@@ -72,11 +73,15 @@ class HttpTemplateSampleTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        MDC.clear();
-        UserContextHolder.clear();
-        TenantContextHolder.clear();
-        if (mockWebServer != null) {
-            mockWebServer.shutdown();
+        try {
+            if (mockWebServer != null) {
+                mockWebServer.shutdown();
+            }
+        } finally {
+            MDC.clear();
+            UserContextHolder.clear();
+            TenantContextHolder.clear();
+            HttpRequestContextHolder.clear();
         }
     }
 
@@ -422,12 +427,7 @@ class HttpTemplateSampleTest {
                 .setBody("{\"success\":true,\"filename\":\"report.csv\"}"));
 
         byte[] fileBytes = "id,name,role\n1,ateng,admin".getBytes(StandardCharsets.UTF_8);
-        ByteArrayResource resource = new ByteArrayResource(fileBytes) {
-            @Override
-            public String getFilename() {
-                return "report.csv";
-            }
-        };
+        ByteArrayResource resource = new NamedByteArrayResource(fileBytes, "report.csv");
 
         Map<?, ?> result = httpTemplate.upload(baseUrl + "upload", "file", resource, Map.class);
         assertThat(result).isNotNull();
@@ -479,8 +479,11 @@ class HttpTemplateSampleTest {
                     .setBody("{\"seq\":" + i + "}"));
         }
 
-        List<CompletableFuture<Map>> futures = IntStream.range(0, requestCount)
-                .mapToObj(i -> CompletableFuture.supplyAsync(() -> httpTemplate.get(baseUrl + "pool-load", Map.class)))
+        List<CompletableFuture<Map<String, Object>>> futures = IntStream.range(0, requestCount)
+                .mapToObj(i -> CompletableFuture.supplyAsync(() -> httpTemplate.get(
+                        baseUrl + "pool-load",
+                        new ParameterizedTypeReference<Map<String, Object>>() {}
+                )))
                 .toList();
 
         CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
@@ -504,12 +507,7 @@ class HttpTemplateSampleTest {
                 .setBody("{\"code\":200,\"msg\":\"操作成功\",\"data\":{\"fileId\":9988,\"name\":\"contract.pdf\"}}"));
 
         byte[] fileBytes = "%PDF-1.4 dummy content".getBytes(StandardCharsets.UTF_8);
-        ByteArrayResource resource = new ByteArrayResource(fileBytes) {
-            @Override
-            public String getFilename() {
-                return "contract.pdf";
-            }
-        };
+        ByteArrayResource resource = new NamedByteArrayResource(fileBytes, "contract.pdf");
 
         Result<Map<String, Object>> result = httpTemplate.upload(
                 baseUrl + "upload-generic",
@@ -541,5 +539,19 @@ class HttpTemplateSampleTest {
         RecordedRequest recordedRequest = mockWebServer.takeRequest();
         assertThat(recordedRequest.getHeader("X-Custom-Client")).isEqualTo("ateng-http-sample");
         assertThat(recordedRequest.getHeader("User-Agent")).isEqualTo("ateng-sample-agent/1.0.0");
+    }
+
+    private static class NamedByteArrayResource extends ByteArrayResource {
+        private final String filename;
+
+        NamedByteArrayResource(byte[] byteArray, String filename) {
+            super(byteArray);
+            this.filename = filename;
+        }
+
+        @Override
+        public String getFilename() {
+            return this.filename;
+        }
     }
 }
