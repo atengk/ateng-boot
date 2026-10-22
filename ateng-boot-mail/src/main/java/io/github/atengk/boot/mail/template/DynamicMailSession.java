@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 /**
@@ -145,5 +146,118 @@ public class DynamicMailSession {
     public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
         String renderedHtml = template.getTemplateRenderer().render(templateName, model);
         return sendHtml(to, subject, renderedHtml);
+    }
+
+    // ==================== 受管非阻塞异步发信门面 ====================
+
+    /**
+     * 基于强类型邮件消息模型异步发送邮件
+     *
+     * @param message 邮件消息模型
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsync(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        return template.sendAsyncWithAccount(account, message);
+    }
+
+    /**
+     * 基于函数式 DSL 异步发送邮件
+     *
+     * @param messageConfigurer 消息配置器闭包
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsync(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        return sendAsync(message);
+    }
+
+    /**
+     * 异步发送纯文本邮件至单收件人
+     *
+     * @param to      收件人邮箱
+     * @param subject 邮件主题
+     * @param text    纯文本内容
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(String to, String subject, String text) {
+        return sendTextAsync(to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    /**
+     * 异步发送纯文本邮件至多收件人
+     *
+     * @param to      收件人邮箱集合
+     * @param subject 邮件主题
+     * @param text    纯文本内容
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        return sendAsync(message);
+    }
+
+    /**
+     * 异步发送富文本 HTML 邮件至单收件人
+     *
+     * @param to      收件人邮箱
+     * @param subject 邮件主题
+     * @param html    HTML 内容
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(String to, String subject, String html) {
+        return sendHtmlAsync(to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    /**
+     * 异步发送富文本 HTML 邮件至多收件人
+     *
+     * @param to      收件人邮箱集合
+     * @param subject 邮件主题
+     * @param html    HTML 内容
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        return sendAsync(message);
+    }
+
+    /**
+     * 异步发送动态模板渲染邮件至单收件人
+     *
+     * @param to           收件人邮箱
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    /**
+     * 异步发送动态模板渲染邮件至多收件人
+     *
+     * @param to           收件人邮箱集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        return sendHtmlAsync(to, subject, renderedHtml);
     }
 }

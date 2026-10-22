@@ -4,9 +4,11 @@ import com.icegreen.greenmail.configuration.GreenMailConfiguration;
 import com.icegreen.greenmail.junit5.GreenMailExtension;
 import com.icegreen.greenmail.util.ServerSetupTest;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
+import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
@@ -29,9 +31,12 @@ import org.springframework.util.unit.DataSize;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -117,8 +122,12 @@ class MailTemplateGreenMailTest {
     @AfterEach
     void tearDown() {
         MDC.clear();
+        UserContextHolder.clear();
         TenantContextHolder.clear();
         accountRegistry.clearDynamic();
+        if (mailTemplate != null) {
+            mailTemplate.destroy();
+        }
         greenMail.reset();
     }
 
@@ -522,5 +531,198 @@ class MailTemplateGreenMailTest {
         String from = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
         assertTrue(from.contains("动态财务专线"));
         assertTrue(from.contains("finance@dynamic.atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试异步发送纯文本邮件并验证 CompletableFuture 与 GreenMail 物理报文")
+    void testSendTextAsyncSingleRecipient() throws Exception {
+        MDC.put("traceId", "trace-async-text-123");
+
+        CompletableFuture<MailSendResult> future = mailTemplate.sendTextAsync(
+                "async-receiver@example.com", "异步欢迎通知", "欢迎加入 Ateng Boot 异步发信体系！");
+
+        assertNotNull(future);
+        MailSendResult result = future.join();
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertNotNull(result.getMessageId());
+        assertTrue(result.getMessageId().contains("trace-async-text-123"));
+        assertEquals(List.of("async-receiver@example.com"), result.getRecipients());
+        assertNotNull(result.getDuration());
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+
+        MimeMessage message = messages[0];
+        assertEquals("异步欢迎通知", message.getSubject());
+        assertEquals("async-receiver@example.com", message.getAllRecipients()[0].toString());
+        assertTrue(message.getContent().toString().contains("欢迎加入 Ateng Boot 异步发信体系！"));
+        assertTrue(message.getHeader("Message-ID")[0].contains("trace-async-text-123"));
+    }
+
+    @Test
+    @DisplayName("测试异步发送富文本 HTML 邮件并验证 Content-Type 标头")
+    void testSendHtmlAsyncSingleRecipient() throws Exception {
+        String htmlBody = "<h2 style='color:green;'>系统恢复</h2><p>所有微服务集群已恢复正常运行。</p>";
+
+        CompletableFuture<MailSendResult> future = mailTemplate.sendHtmlAsync(
+                "async-ops@example.com", "系统恢复通知", htmlBody);
+
+        MailSendResult result = future.join();
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+        assertEquals("系统恢复通知", message.getSubject());
+        assertTrue(message.getContentType().contains("text/html"));
+        assertTrue(message.getContent().toString().contains("所有微服务集群已恢复正常运行。"));
+    }
+
+    @Test
+    @DisplayName("测试异步发送模板渲染邮件并验证插值占位符替换")
+    void testSendTemplateAsync() throws Exception {
+        Map<String, Object> model = Map.of("username", "异步李四", "platform", "Ateng Boot Mail");
+
+        CompletableFuture<MailSendResult> future = mailTemplate.sendTemplateAsync(
+                "async-client@example.com", "异步欢迎模板", "welcome", model);
+
+        MailSendResult result = future.join();
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+        assertTrue(message.getContentType().contains("text/html"));
+        assertTrue(message.getContent().toString().contains("欢迎, 异步李四!"));
+    }
+
+    @Test
+    @DisplayName("测试基于函数式 DSL 异步发送邮件")
+    void testSendAsyncFunctionalDsl() throws Exception {
+        CompletableFuture<MailSendResult> future = mailTemplate.sendAsync(msg -> msg
+                .to("dsl-async@example.com")
+                .subject("DSL 异步标题")
+                .text("DSL 异步正文内容"));
+
+        MailSendResult result = future.join();
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        assertEquals("DSL 异步标题", messages[0].getSubject());
+    }
+
+    @Test
+    @DisplayName("测试高并发异步发信与 CompletableFuture 全部就绪")
+    void testConcurrentAsyncSending() throws Exception {
+        int mailCount = 8;
+        List<CompletableFuture<MailSendResult>> futures = new ArrayList<>();
+
+        for (int i = 0; i < mailCount; i++) {
+            final int index = i;
+            futures.add(mailTemplate.sendTextAsync(
+                    "concurrent-" + index + "@example.com",
+                    "并发异步通知 " + index,
+                    "并发异步内容批次 #" + index));
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        for (CompletableFuture<MailSendResult> future : futures) {
+            MailSendResult res = future.get();
+            assertNotNull(res);
+            assertTrue(res.isSuccess());
+        }
+
+        assertTrue(greenMail.waitForIncomingEmail(10000, mailCount));
+        assertEquals(mailCount, greenMail.getReceivedMessages().length);
+    }
+
+    @Test
+    @DisplayName("测试四维上下文透明穿透与多租户自适应动态寻址")
+    void testAsync4DContextPropagationAndTenantRouting() throws Exception {
+        // 1. 在当前父调用线程注入四维上下文
+        String traceId = "trace-4d-async-uuid-999";
+        MDC.put("traceId", traceId);
+        UserContextHolder.set("user-tenant-admin");
+        TenantContextHolder.setTenantId("ops");
+
+        // 2. 异步发起发信（未显式指定发信账号，需跨线程透明穿透 tenantId 自动路由到 ops 账号）
+        CompletableFuture<MailSendResult> future = mailTemplate.sendTextAsync(
+                "tenant-async-receiver@example.com", "4D上下文异步测试", "测试四维上下文透明穿透");
+
+        // 3. 父线程立即销毁所有上下文现场，验证异步线程持有的快照不受父线程提前清理影响
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        // 4. 等待异步任务执行完成
+        MailSendResult result = future.join();
+        assertTrue(result.isSuccess());
+        assertTrue(result.getMessageId().contains(traceId), "Message-ID 头必须捕获并注入父线程的 traceId");
+
+        // 5. 验证 GreenMail 物理接收报文已自动路由到 ops 发信账号
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(1, msgs.length);
+
+        String from = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
+        assertTrue(from.contains("ops@atengk.com"), "四维上下文 TenantId 必须跨线程穿透并驱动动态账号路由命中 ops");
+        assertTrue(from.contains("运维告警中心"));
+
+        // 6. 验证当前主线程现场绝对纯净，未发生线程污染
+        assertNull(MDC.get("traceId"), "主线程 MDC 现场必须保持纯净");
+        assertNull(UserContextHolder.get(), "主线程 User 现场必须保持纯净");
+        assertNull(TenantContextHolder.getTenantId(), "主线程 Tenant 现场必须保持纯净");
+    }
+
+    @Test
+    @DisplayName("测试动态编程式账号的异步发信门面与 LRU 缓存复用")
+    void testDynamicMailSessionAsync() throws Exception {
+        int smtpPort = greenMail.getSmtp().getPort();
+
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name("dynamic-async-sales")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("sales@dynamic.atengk.com")
+                .defaultFromName("动态销售专线")
+                .build();
+
+        CompletableFuture<MailSendResult> future = mailTemplate.forDynamicAccount(dynamicAccount)
+                .sendTextAsync("client-async@dynamic.com", "异步报价单", "请查收您的实时报价单。");
+
+        MailSendResult result = future.join();
+        assertTrue(result.isSuccess());
+        assertEquals(1, accountRegistry.dynamicSize());
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(1, msgs.length);
+        String from = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
+        assertTrue(from.contains("动态销售专线"));
+        assertTrue(from.contains("sales@dynamic.atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试异步发信异常受控传播至 CompletableFuture")
+    void testAsyncSendFailurePropagation() {
+        MailMessage invalidMessage = new MailMessage().subject("无收件人邮件");
+
+        CompletableFuture<MailSendResult> future = mailTemplate.sendAsync(invalidMessage);
+
+        ExecutionException ex = assertThrows(ExecutionException.class, future::get);
+        assertInstanceOf(MailSendException.class, ex.getCause());
+        MailSendException mailEx = (MailSendException) ex.getCause();
+        assertEquals(MailResultCode.MAIL_RECIPIENT_EMPTY, mailEx.getResultCode());
     }
 }

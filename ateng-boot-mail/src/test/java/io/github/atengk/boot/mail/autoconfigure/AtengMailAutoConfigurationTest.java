@@ -11,6 +11,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -147,6 +148,36 @@ class AtengMailAutoConfigurationTest {
                     assertThat(context.getBean(MailAccountResolver.class)).isSameAs(customResolver);
                     MailTemplate template = context.getBean(MailTemplate.class);
                     assertThat(template.getAccountResolver()).isSameAs(customResolver);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器中存在名为 taskExecutor 的受管线程池时 MailTemplate 优先接入该线程池")
+    void testMailTemplateInjectsTaskExecutor() {
+        ThreadPoolTaskExecutor customExecutor = new ThreadPoolTaskExecutor();
+        customExecutor.setThreadNamePrefix("custom-test-task-");
+        customExecutor.initialize();
+
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean("taskExecutor", ThreadPoolTaskExecutor.class, () -> customExecutor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getExecutor()).isSameAs(customExecutor);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器中无任何线程池 Bean 时 MailTemplate 自动装配默认受管线程池保底")
+    void testMailTemplateDefaultExecutorFallback() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getExecutor()).isNotNull();
+                    assertThat(template.getExecutor()).isInstanceOf(ThreadPoolTaskExecutor.class);
                 });
     }
 }

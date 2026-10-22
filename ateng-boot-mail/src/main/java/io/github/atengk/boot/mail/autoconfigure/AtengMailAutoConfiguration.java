@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
@@ -11,7 +12,10 @@ import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRender
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -29,6 +33,7 @@ import org.thymeleaf.spring6.SpringTemplateEngine;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.Executor;
 
 /**
  * 邮件通信基础设施自动装配入口
@@ -36,7 +41,7 @@ import java.util.Properties;
  * @author Ateng
  * @since 2026-10-22
  */
-@AutoConfiguration
+@AutoConfiguration(after = AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(JavaMailSender.class)
 @ConditionalOnProperty(prefix = "ateng.boot.mail", name = "enabled", havingValue = "true", matchIfMissing = true)
 @Conditional(MailConfiguredCondition.class)
@@ -132,8 +137,14 @@ public class AtengMailAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
-                                     MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
-        return new MailTemplate(registry, properties, templateRenderer, accountResolver);
+                                     MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver,
+                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                     ObjectProvider<Executor> genericExecutorProvider) {
+        Executor executor = taskExecutorProvider.getIfAvailable();
+        if (executor == null) {
+            executor = genericExecutorProvider.getIfAvailable();
+        }
+        return new MailTemplate(registry, properties, templateRenderer, accountResolver, executor);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {

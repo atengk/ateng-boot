@@ -1,5 +1,7 @@
 package io.github.atengk.boot.mail.template;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.mail.exception.MailResultCode;
@@ -21,8 +23,10 @@ import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +36,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -39,14 +46,14 @@ import java.util.stream.Collectors;
  * 邮件通信核心操作门面
  * <p>
  * 提供高层次命令式与函数式 DSL 发信接口，整合强类型 {@link MailMessage} 领域对象，
- * 支持多账号路由、纯文本、HTML 与动态模板渲染、RFC 6266 大附件流式防爆挂载、正交内联资源 (Inline CID)
- * 以及确定性资源清理与因果异常转译。
+ * 支持多账号路由、受管异步发信与四维上下文透传、纯文本、HTML 与动态模板渲染、
+ * RFC 6266 大附件流式防爆挂载、正交内联资源 (Inline CID) 以及确定性资源清理与因果异常转译。
  * </p>
  *
  * @author Ateng
  * @since 2026-10-22
  */
-public class MailTemplate {
+public class MailTemplate implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(MailTemplate.class);
 
@@ -59,19 +66,35 @@ public class MailTemplate {
     @Getter
     private final MailAccountResolver accountResolver;
 
+    @Getter
+    private final Executor executor;
+
+    private final boolean defaultExecutorCreated;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
-        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver());
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
-        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver());
+        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
         this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
+        if (executor != null) {
+            this.executor = executor;
+            this.defaultExecutorCreated = false;
+        } else {
+            this.executor = createDefaultExecutor();
+            this.defaultExecutorCreated = true;
+        }
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -449,6 +472,224 @@ public class MailTemplate {
         return sendHtml(accountName, to, subject, renderedHtml);
     }
 
+    // ==================== 受管非阻塞异步发信门面 ====================
+
+    /**
+     * 异步发送邮件（基于强类型领域模型 MailMessage，依托受管线程池与四维上下文自动透传）
+     *
+     * @param message 邮件领域对象
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsync(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(message)), executor);
+    }
+
+    /**
+     * 异步发送邮件（函数式 DSL 方式）
+     *
+     * @param messageConfigurer 邮件消息配置器
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsync(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        return sendAsync(message);
+    }
+
+    /**
+     * 指定发信账号异步物理发送邮件
+     *
+     * @param account 发信账号（需已包含物理 Sender）
+     * @param message 邮件消息模型
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsyncWithAccount(MailAccount account, MailMessage message) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendWithAccount(account, message)), executor);
+    }
+
+    // ==================== 纯文本异步发信快捷门面 ====================
+
+    /**
+     * 异步发送纯文本邮件（默认账号，单收件人）
+     *
+     * @param to      单个目标收件人
+     * @param subject 邮件主题
+     * @param text    纯文本正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(String to, String subject, String text) {
+        return sendTextAsync(null, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    /**
+     * 异步发送纯文本邮件（指定账号，单收件人）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          单个目标收件人
+     * @param subject     邮件主题
+     * @param text        纯文本正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(String accountName, String to, String subject, String text) {
+        return sendTextAsync(accountName, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    /**
+     * 异步发送纯文本邮件给多个收件人（默认账号）
+     *
+     * @param to      目标收件人集合
+     * @param subject 邮件主题
+     * @param text    纯文本正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(Collection<String> to, String subject, String text) {
+        return sendTextAsync(null, to, subject, text);
+    }
+
+    /**
+     * 异步发送纯文本邮件给多个收件人（指定账号）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          目标收件人集合
+     * @param subject     邮件主题
+     * @param text        纯文本正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTextAsync(String accountName, Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        return sendAsync(message);
+    }
+
+    // ==================== 富文本 HTML 异步发信快捷门面 ====================
+
+    /**
+     * 异步发送 HTML 富文本邮件（默认账号，单收件人）
+     *
+     * @param to      单个目标收件人
+     * @param subject 邮件主题
+     * @param html    HTML 正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(String to, String subject, String html) {
+        return sendHtmlAsync(null, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    /**
+     * 异步发送 HTML 富文本邮件（指定账号，单收件人）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          单个目标收件人
+     * @param subject     邮件主题
+     * @param html        HTML 正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(String accountName, String to, String subject, String html) {
+        return sendHtmlAsync(accountName, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    /**
+     * 异步发送 HTML 富文本邮件给多个收件人（默认账号）
+     *
+     * @param to      目标收件人集合
+     * @param subject 邮件主题
+     * @param html    HTML 正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(Collection<String> to, String subject, String html) {
+        return sendHtmlAsync(null, to, subject, html);
+    }
+
+    /**
+     * 异步发送 HTML 富文本邮件给多个收件人（指定账号）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          目标收件人集合
+     * @param subject     邮件主题
+     * @param html        HTML 正文
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendHtmlAsync(String accountName, Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        return sendAsync(message);
+    }
+
+    // ==================== 模板动态渲染异步发信快捷门面 ====================
+
+    /**
+     * 异步发送模板渲染邮件（默认账号，单收件人）
+     *
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称（如 welcome、mail/verify-code 或内联模板字符串）
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    /**
+     * 异步发送模板渲染邮件（指定账号，单收件人）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    /**
+     * 异步发送模板渲染邮件给多个收件人（默认账号）
+     *
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplateAsync(null, to, subject, templateName, model);
+    }
+
+    /**
+     * 异步发送模板渲染邮件给多个收件人（指定账号）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 包含发送结果回执的异步 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = templateRenderer.render(templateName, model);
+        return sendHtmlAsync(accountName, to, subject, renderedHtml);
+    }
+
     // ==================== 内部防御性校验与辅助逻辑 ====================
 
     /**
@@ -533,5 +774,28 @@ public class MailTemplate {
             current = current.getCause();
         }
         return false;
+    }
+
+    @Override
+    public void destroy() {
+        if (defaultExecutorCreated && executor instanceof ThreadPoolTaskExecutor taskExecutor) {
+            log.info("Shutting down default mail ThreadPoolTaskExecutor");
+            taskExecutor.destroy();
+        }
+    }
+
+    private static ThreadPoolTaskExecutor createDefaultExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(Math.max(2, Runtime.getRuntime().availableProcessors()));
+        executor.setMaxPoolSize(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+        executor.setQueueCapacity(1024);
+        executor.setKeepAliveSeconds(60);
+        executor.setThreadNamePrefix("ateng-mail-async-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
+        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+        executor.initialize();
+        return executor;
     }
 }
