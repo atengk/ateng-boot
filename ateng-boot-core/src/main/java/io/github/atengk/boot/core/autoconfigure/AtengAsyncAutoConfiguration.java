@@ -16,6 +16,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.annotation.AsyncConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -38,7 +39,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 @ConditionalOnClass(ThreadPoolTaskExecutor.class)
 @EnableConfigurationProperties(AsyncProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.async", name = "enabled", havingValue = "true", matchIfMissing = true)
-@Import({AtengAsyncAutoConfiguration.VirtualThreadsConfiguration.class, AtengAsyncAutoConfiguration.PlatformThreadsConfiguration.class})
+@Import({
+        AtengAsyncAutoConfiguration.VirtualThreadsConfiguration.class,
+        AtengAsyncAutoConfiguration.PlatformThreadsConfiguration.class,
+        DynamicAsyncPoolRegistrar.class
+})
 public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
 
     private final ObjectProvider<Executor> taskExecutorProvider;
@@ -55,6 +60,7 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
     static class VirtualThreadsConfiguration {
 
         @Bean(name = {"taskExecutor", "applicationTaskExecutor"})
+        @Primary
         @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
         public SimpleAsyncTaskExecutor virtualTaskExecutor(AsyncProperties asyncProperties) {
             SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
@@ -79,6 +85,7 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
     static class PlatformThreadsConfiguration {
 
         @Bean(name = {"taskExecutor", "applicationTaskExecutor"})
+        @Primary
         @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
         public ThreadPoolTaskExecutor platformTaskExecutor(AsyncProperties asyncProperties) {
             ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
