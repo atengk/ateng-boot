@@ -1,12 +1,13 @@
 package io.github.atengk.boot.ftp.template;
 
+import io.github.atengk.boot.ftp.context.FtpContextHolder;
 import io.github.atengk.boot.ftp.exception.FtpException;
 import io.github.atengk.boot.ftp.exception.FtpResultCode;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
 import io.github.atengk.boot.ftp.pool.FtpClientCallback;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
+import io.github.atengk.boot.ftp.registry.FtpClientRegistry;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
@@ -37,7 +38,6 @@ import java.util.function.Predicate;
  * @since 2026-10-22
  */
 @Slf4j
-@RequiredArgsConstructor
 public class FtpTemplate {
 
     @Getter
@@ -46,12 +46,60 @@ public class FtpTemplate {
     @Getter
     private final FtpProperties properties;
 
+    @Getter
+    private final FtpClientRegistry registry;
+
+    @Getter
+    private final String serverName;
+
+    /**
+     * 单节点独立门面构造器
+     *
+     * @param pool       连接池
+     * @param properties 配置属性
+     */
+    public FtpTemplate(ObjectPool<FTPClient> pool, FtpProperties properties) {
+        this(pool, properties, null, FtpClientRegistry.DEFAULT_SERVER);
+    }
+
+    /**
+     * 多节点受管门面构造器
+     *
+     * @param pool       默认连接池
+     * @param properties 默认配置属性
+     * @param registry   多节点注册表
+     */
+    public FtpTemplate(ObjectPool<FTPClient> pool, FtpProperties properties, FtpClientRegistry registry) {
+        this(pool, properties, registry, FtpClientRegistry.DEFAULT_SERVER);
+    }
+
+    /**
+     * 具名节点全量构造器
+     *
+     * @param pool       节点连接池
+     * @param properties 节点配置属性
+     * @param registry   多节点注册表
+     * @param serverName 节点名称
+     */
+    public FtpTemplate(ObjectPool<FTPClient> pool, FtpProperties properties, FtpClientRegistry registry, String serverName) {
+        Assert.notNull(pool, "ObjectPool must not be null");
+        Assert.notNull(properties, "FtpProperties must not be null");
+        this.pool = pool;
+        this.properties = properties;
+        this.registry = registry;
+        this.serverName = serverName != null && !serverName.isBlank() ? serverName : FtpClientRegistry.DEFAULT_SERVER;
+    }
+
     // ==========================================
     // 核心执行底座与逃逸舱 (Core Execution & Escape Hatch)
     // ==========================================
 
     /**
      * 在受管连接池借出的原生客户端会话中执行操作（逃逸舱）
+     * <p>
+     * 支持优先探测 {@link FtpContextHolder} 绑定的线程级目标服务节点进行动态路由，
+     * 若未指定或为当前节点自身，则在当前节点连接池中安全执行。
+     * </p>
      *
      * @param action 用户自定义回调
      * @param <T>    返回值类型
@@ -59,6 +107,15 @@ public class FtpTemplate {
      */
     public <T> T execute(FtpClientCallback<T> action) {
         Assert.notNull(action, "FtpClientCallback must not be null");
+
+        // 1. 动态切源路由探测：若线程上下文绑定了特定节点，且不是当前节点自身，则委托给注册表对应的节点执行
+        String currentTarget = FtpContextHolder.getServer();
+        if (currentTarget != null && !currentTarget.isBlank()
+                && registry != null
+                && !currentTarget.equalsIgnoreCase(this.serverName)) {
+            return registry.getTemplate(currentTarget).execute(action);
+        }
+
         FTPClient client = null;
         boolean invalidated = false;
         try {
