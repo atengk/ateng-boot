@@ -59,6 +59,8 @@ public class ObservabilityEnvironmentPostProcessor implements EnvironmentPostPro
 
         // 1. Actuator 暴露端点安全收敛（仅暴露黄金探针与度量，敏感高危端点默认关闭）
         defaults.put("management.endpoints.web.exposure.include", "health,info,prometheus");
+        // 开启 Prometheus 度量导出器（Spring Boot 3.3+ 生产基线）
+        defaults.put("management.prometheus.metrics.export.enabled", "true");
 
         // 2. 自动开启 Kubernetes 存活（Liveness）与就绪（Readiness）探针
         defaults.put("management.endpoint.health.probes.enabled", "true");

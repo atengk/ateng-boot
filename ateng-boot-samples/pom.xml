@@ -30,6 +30,7 @@
         <module>ateng-boot-sample-rabbitmq</module>
         <module>ateng-boot-sample-kafka</module>
         <module>ateng-boot-sample-rocketmq</module>
+        <module>ateng-boot-sample-observability</module>
     </modules>
 
     <properties>

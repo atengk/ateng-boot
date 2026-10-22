@@ -1,0 +1,54 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-observability
+  datasource:
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:mem:sample_obs;DB_CLOSE_DELAY=-1;MODE=MySQL
+    username: sa
+    password: ""
+
+ateng:
+  boot:
+    # 可观测性底座配置
+    observability:
+      enabled: true
+      metrics:
+        prometheus:
+          enabled: true
+        thread-pool:
+          enabled: true
+      health:
+        timeout: 2s
+        storage:
+          enabled: true
+        dynamic-datasource:
+          enabled: true
+        rocketmq:
+          enabled: false
+        realtime:
+          enabled: false
+      security:
+        lockdown-enabled: true
+        token: "obs-admin-secret-token"
+
+    # 存储底座配置（本地目录模式）
+    storage:
+      primary: local
+      local:
+        base-path: ${java.io.tmpdir}/ateng-sample-storage
+
+# Actuator 暴露端点配置（暴露 env 和 beans 用于自验安全守卫拦截）
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: "health,info,prometheus,env,beans"
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
