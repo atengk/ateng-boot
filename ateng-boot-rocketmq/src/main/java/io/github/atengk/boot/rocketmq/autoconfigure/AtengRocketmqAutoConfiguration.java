@@ -1,12 +1,24 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
+import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
+import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.apis.ClientConfiguration;
+import org.apache.rocketmq.client.apis.ClientConfigurationBuilder;
+import org.apache.rocketmq.client.apis.ClientException;
+import org.apache.rocketmq.client.apis.ClientServiceProvider;
+import org.apache.rocketmq.client.apis.StaticSessionCredentialsProvider;
 import org.apache.rocketmq.client.apis.producer.Producer;
+import org.apache.rocketmq.client.apis.producer.ProducerBuilder;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.util.StringUtils;
 
 /**
@@ -36,5 +48,55 @@ public class AtengRocketmqAutoConfiguration {
         } else {
             log.warn("[ateng-boot-rocketmq] 未配置 ateng.boot.rocketmq.endpoints，RocketMQ 增强底座已平滑静默跳过物理客户端初始化");
         }
+    }
+
+    /**
+     * RocketMQ 客户端基础连接配置
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.rocketmq", name = "endpoints")
+    public ClientConfiguration rocketmqClientConfiguration(AtengRocketmqProperties properties) {
+        ClientConfigurationBuilder builder = ClientConfiguration.newBuilder()
+                .setEndpoints(properties.getEndpoints())
+                .setRequestTimeout(properties.getRequestTimeout());
+
+        if (StringUtils.hasText(properties.getAccessKey()) && StringUtils.hasText(properties.getSecretKey())) {
+            builder.setCredentialProvider(new StaticSessionCredentialsProvider(
+                    properties.getAccessKey().trim(),
+                    properties.getSecretKey().trim()));
+        }
+        return builder.build();
+    }
+
+    /**
+     * RocketMQ 原生底层 Producer
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(ClientConfiguration.class)
+    public Producer rocketmqProducer(ClientConfiguration clientConfiguration, AtengRocketmqProperties properties) throws ClientException {
+        ClientServiceProvider provider = ClientServiceProvider.loadService();
+        ProducerBuilder builder = provider.newProducerBuilder()
+                .setClientConfiguration(clientConfiguration)
+                .setMaxAttempts(properties.getProducer().getMaxAttempts());
+
+        if (properties.getProducer().getTopics() != null && !properties.getProducer().getTopics().isEmpty()) {
+            builder.setTopics(properties.getProducer().getTopics().toArray(new String[0]));
+        }
+        return builder.build();
+    }
+
+    /**
+     * RocketMQ 生产端高阶增强门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(Producer.class)
+    public RocketmqTemplate rocketmqTemplate(
+            Producer producer,
+            AtengRocketmqProperties properties,
+            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider) {
+        return new RocketmqTemplate(producer, properties, failureCallbackProvider);
     }
 }

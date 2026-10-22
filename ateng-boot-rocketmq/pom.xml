@@ -29,6 +29,12 @@
             <artifactId>rocketmq-client-java</artifactId>
         </dependency>
 
+        <!-- Spring 事务支持 (用于 sendAfterCommit 本地事务生命周期感知) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
         <!-- Spring Boot 自动装配支持 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
