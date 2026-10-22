@@ -50,7 +50,7 @@ public class SshOperationException extends BusinessException {
      * @param cause      原始异常
      */
     public SshOperationException(IResultCode resultCode, String msg, Throwable cause) {
-        super(resolveResultCode(resultCode), msg, cause, cause != null);
+        super(resolveResultCode(resultCode), msg, cause);
     }
 
     private static IResultCode resolveResultCode(IResultCode resultCode) {

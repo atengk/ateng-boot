@@ -1,5 +1,8 @@
 package io.github.atengk.boot.ssh.enums;
 
+import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
+import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
+
 /**
  * SSH 服务端公钥指纹校验安全策略枚举
  *
@@ -21,5 +24,15 @@ public enum HostKeyPolicy {
     /**
      * 全局忽略模式：跳过任何服务端主机公钥指纹检查（仅建议用于可信纯内网或自动化测试环境）
      */
-    IGNORE
+    IGNORE;
+
+    /**
+     * 根据当前策略创建对应的纯内存服务端公钥指纹校验器
+     *
+     * @return 纯内存校验器实例
+     */
+    public ServerKeyVerifier toVerifier() {
+        return new InMemoryServerKeyVerifier(this);
+    }
 }
+
