@@ -28,7 +28,7 @@
 | **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)` | `BusinessAssertTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分布式发号器** | 2026 纪元雪花发号器与无锁短 ID | `IdUtil`, `Snowflake` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `CoreContextScenarioServiceTest.java` |
-| **异步受管配置** | 自适应平台与虚拟线程池自动装配 | `AsyncProperties`, `AtengAsyncAutoConfiguration` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `wait-for-tasks-to-complete-on-shutdown`, `await-termination` | `AtengAsyncAutoConfiguration` 初始化上下文感知线程池并提供优雅停机钩子 | `AtengAsyncAutoConfigurationTest.java`, `CoreContextScenarioServiceTest.java` |
+| **多业务异步底座** | 多业务受管线程池与自适应双模运行时 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy`, `pools.*` | 声明式配置驱动多业务受管线程池动态注册；主池标记 `@Primary` 兜底；子池自动装配 `${name}TaskExecutor` 及别名 `${name}`；自适应双模与智能前缀推导；四维上下文无损穿透与自动优雅停机 | `AtengAsyncAutoConfigurationTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
@@ -451,27 +451,114 @@ CompletableFuture.runAsync(AsyncContext.wrap(() -> {
 CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> {
     return billingService.calculateInvoice();
 }), taskExecutor);
+```
 
-// ==================== 4. 开箱即用自适应双模异步执行器 (AtengAsyncAutoConfiguration) ====================
-// 位于 core 底座，自动注入 ContextCopyingTaskDecorator，支持 Spring @Async 零配置开箱即用
-// 1. 默认平台线程池模式（前缀 ateng-async-）
-// 2. JDK 21+ 虚拟线程模式：配置 spring.threads.virtual.enabled=true 自动自适应切换为 SimpleAsyncTaskExecutor（前缀 ateng-vt-async-）
-// application.yml 配置项：
-// spring:
-//   threads:
-//     virtual:
-//       enabled: true # 开启虚拟线程（需 JDK 21+ 运行时，默认 false）
-// ateng:
-//   boot:
-//     async:
-//       core-pool-size: 8
-//       max-pool-size: 16
-//       queue-capacity: 1000
-//       keep-alive: 60s                               # 强类型 Duration 格式（默认 60s）
-//       thread-name-prefix: "ateng-async-"
-//       virtual-thread-name-prefix: "ateng-vt-async-" # 虚拟线程专属前缀
-//       concurrency-limit: 64                         # 虚拟线程并发限制（防下游连接池击穿，默认 -1 无界）
-//       await-termination: 60s                        # 优雅停机等待超时（默认 60s）
+### 多业务受管异步线程池与自适应双模运行时 (Multi-Pool)
+
+#### 1. 痛点与舱壁隔离 (Bulkhead Isolation)
+传统单一异步线程池容易导致耗时较长的大任务（如批量报表导出、大数据迁移）与高频在线轻量异步任务（如操作审计日志、事务后回调、事件通知）挤占同一工作队列，造成关键在线任务饥饿甚至被拒绝。`ateng-boot-core` 提供**声明式多业务受管线程池**，支持为不同业务模块按需划分物理隔离的线程池，消除相互挤占风险。
+
+#### 2. 开箱即用配置范式 (application.yml)
+既有存量配置 100% 保持向后兼容（直接配置在 `ateng.boot.async.*` 根路径下作为默认主池），通过 `pools` 字典即可按需声明业务专属子池：
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: false                # 默认平台线程，JDK 21+ 下设为 true 自动切换主池为虚拟线程
+
+ateng:
+  boot:
+    async:
+      enabled: true                 # 全局异步线程池总开关（默认 true）
+      core-pool-size: 4             # 主线程池核心线程数（默认 CPU 核心数）
+      max-pool-size: 8              # 主线程池最大线程数（默认 CPU 核心数 * 2）
+      queue-capacity: 100           # 主线程池工作队列容量（默认 1000）
+      keep-alive: 60s               # 空闲线程存活超时（强类型 Duration，默认 60s）
+      thread-name-prefix: sample-core-async- # 主线程池名称前缀（默认 ateng-async-）
+      virtual-thread-name-prefix: ateng-vt-async- # 虚拟线程前缀（默认 ateng-vt-async-）
+      concurrency-limit: -1         # 虚拟线程并发限制（防下游击穿，默认 -1 无界）
+      wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时等待任务完成（默认 true）
+      await-termination: 60s        # 优雅停机最大等待时间（强类型 Duration，默认 60s）
+      # 业务专属受管子池声明（舱壁隔离）
+      pools:
+        export:                     # 自动注册 Bean: exportTaskExecutor，并注册同名别名 export
+          core-pool-size: 2
+          max-pool-size: 4
+          queue-capacity: 50
+          thread-name-prefix: sample-export-async- # 缺省时自动推导为 ateng-async-export-
+          mode: PLATFORM            # 执行模式: PLATFORM(平台线程) | VIRTUAL(虚拟线程) | AUTO(跟随全局)
+          rejected-policy: CALLER_RUNS # 饱和拒绝策略: CALLER_RUNS | ABORT | DISCARD | DISCARD_OLDEST
+```
+
+#### 3. 业务专属服务与 @Async 声明式调度
+直接通过 `@Async("export")` 或 `@Async("exportTaskExecutor")` 精准路由至专属业务子池执行：
+
+```java
+package io.github.atengk.boot.sample.core.service;
+
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
+@Slf4j
+@Service
+public class CoreReportExportScenarioService {
+
+    /**
+     * 调度 export 专属线程池异步生成报表，并验证四维上下文流转与执行线程名称
+     */
+    @Async("export")
+    public CompletableFuture<Map<String, String>> exportReportAsync(String reportName) {
+        String currentThread = Thread.currentThread().getName();
+        String traceId = MDC.get("traceId");
+        String userId = UserContextHolder.getUserId();
+        String tenantId = TenantContextHolder.getTenantId();
+        boolean ignoreTenant = TenantContextHolder.isIgnoreTenant();
+
+        log.info("专属 export 线程池异步导出报表 [{}], 工作线程: {}, 上下文: traceId={}, userId={}, tenantId={}, ignoreTenant={}",
+                reportName, currentThread, traceId, userId, tenantId, ignoreTenant);
+
+        return CompletableFuture.completedFuture(Map.of(
+                "threadName", currentThread,
+                "reportName", reportName,
+                "traceId", traceId != null ? traceId : "",
+                "userId", userId != null ? userId : "",
+                "tenantId", tenantId != null ? tenantId : "",
+                "ignoreTenant", String.valueOf(ignoreTenant)
+        ));
+    }
+}
+```
+
+#### 4. 实测控制台输出与四维上下文透传呈现
+> 100% 逆向提取自 `CoreReportExportScenarioServiceTest` 本地集成测试执行日志：
+
+```text
+2026-10-22 20:25:41.308 INFO [-export-async-1] [trace-export-9999] .b.s.c.s.CoreReportExportScenarioService : 专属 export 线程池异步导出报表 [月度财务报表.xlsx], 工作线程: sample-export-async-1, 上下文: traceId=trace-export-9999, userId=user-reporter-888, tenantId=tenant-finance-01, ignoreTenant=false
+```
+
+#### 5. 生产扩展与接管机制 (Extensibility)
+- **别名映射与双模检索**：动态注册器将声明的 `pools.<name>` 注册为主 Bean 名称 `<name>TaskExecutor`，并同时挂载别名 `<name>`。调用方既可通过 `@Async("export")` 简写调度，亦可通过 `@Qualifier("exportTaskExecutor")` 或 `@Qualifier("export")` 显式注入；
+- **自适应与独立模式选型 (`mode`)**：
+  - `AUTO`（默认）：跟随全局 `spring.threads.virtual.enabled` 环境自适应决策；
+  - `PLATFORM`：强制使用平台线程池（`ThreadPoolTaskExecutor`），适用于 CPU 密集型计算或大批量数据处理；
+  - `VIRTUAL`：在 JDK 21+ 下强制使用虚拟线程（`SimpleAsyncTaskExecutor`），适用于高并发 IO 密集型调用；若当前环境低于 JDK 21 则自动安全降级为平台线程并输出告警，保障编译与运行时平滑兼容；
+- **强类型饱和拒绝策略 (`rejected-policy`)**：
+  - `CALLER_RUNS`（默认）：调用方线程同步回退执行，提供天然的背压削峰能力；
+  - `ABORT`：抛出 `RejectedExecutionException` 立即快速失败，防止上游过载；
+  - `DISCARD` / `DISCARD_OLDEST`：静默丢弃当前任务或移除工作队列队头任务；
+- **全生命周期优雅停机**：所有动态装配的子池统一步调注册 Spring 容器销毁钩子（平台线程委托 `shutdown()`，虚拟线程委托 `close()`），保障进程关闭时在 `await-termination` 超时内平滑排空存量任务。
+
+#### 6. 核心生产边界与非功能语义 (Production Boundary)
+- **`@Primary` 兜底路由守卫**：多业务池共存场景下，主池 `taskExecutor` 统一显式标注 `@Primary`。开发者直接 `@Autowired Executor defaultExecutor` 或无参数 `@Async` 方法稳定命中主池，彻底消除 Spring 多候选 Bean 导致的 `NoUniqueBeanDefinitionException`；
+- **“四维上下文快照”无损穿透与零污染保证**：所有受管子池统一强制挂载 `ContextCopyingTaskDecorator`。在任务执行前捕获调用方父线程的 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照并在工作线程精准还原；任务执行完毕后在 `finally` 块中严格恢复原始工作线程现场，杜绝线程复用污染与跨租户越权漏洞。
 ```
 
 ---
