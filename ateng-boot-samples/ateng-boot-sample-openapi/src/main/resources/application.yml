@@ -1,0 +1,57 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-openapi
+
+ateng:
+  boot:
+    web:
+      enabled: true
+      shutdown:
+        drain-timeout: 0s
+      trace:
+        enabled: true
+    openapi:
+      enabled: true
+      title: "ateng-boot OpenAPI 生产级契约沙箱"
+      description: "面向企业级生产环境的接口契约治理、安全守卫与多业务域分组沙箱"
+      version: "1.0.0"
+      terms-of-service: "https://github.com/atengk/ateng-boot"
+      contact:
+        name: "Ateng"
+        url: "https://github.com/atengk"
+        email: "admin@example.com"
+      license:
+        name: "Apache-2.0"
+        url: "https://www.apache.org/licenses/LICENSE-2.0"
+      servers:
+        - url: "/"
+          description: "本地开发与网关直连环境"
+        - url: "https://api.example.com"
+          description: "生产反向代理网关环境"
+      headers:
+        trace-id: true
+        tenant-id: true
+      guard:
+        mode: NONE
+        basic:
+          username: "admin"
+          password: "admin123"
+      show-result-codes: true
+      standard-responses: true
+      redirect-docs: true
+      groups:
+        - group: "admin"
+          display-name: "运营管理端 (Admin API)"
+          paths-to-match:
+            - "/api/admin/**"
+          packages-to-scan:
+            - "io.github.atengk.boot.sample.openapi.controller.admin"
+        - group: "app"
+          display-name: "移动端服务 (App API)"
+          paths-to-match:
+            - "/api/app/**"
+          packages-to-scan:
+            - "io.github.atengk.boot.sample.openapi.controller.app"

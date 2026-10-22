@@ -31,6 +31,7 @@
         <module>ateng-boot-sample-kafka</module>
         <module>ateng-boot-sample-rocketmq</module>
         <module>ateng-boot-sample-observability</module>
+        <module>ateng-boot-sample-openapi</module>
     </modules>
 
     <properties>
