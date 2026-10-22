@@ -168,13 +168,10 @@ public class KafkaReliableTemplate {
         Assert.hasText(topic, "topic 不能为空");
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
-        ProducerRecord<Object, Object> record = prepareRecord(topic, partition, key, payload, bizKey);
-        String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
-        String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
-        int payloadSize = calculatePayloadSize(payload);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
 
-        return doSendReliableSync(record, effectiveBizKey, traceId, payloadSize, effectiveTimeout);
+        return doSendReliableSync(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize(), effectiveTimeout);
     }
 
     // =========================================================================
@@ -221,12 +218,9 @@ public class KafkaReliableTemplate {
         Assert.hasText(topic, "topic 不能为空");
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
-        ProducerRecord<Object, Object> record = prepareRecord(topic, partition, key, payload, bizKey);
-        String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
-        String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
-        int payloadSize = calculatePayloadSize(payload);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
 
-        return doSendInternal(record, effectiveBizKey, traceId, payloadSize);
+        return doSendInternal(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize());
     }
 
     // =========================================================================
@@ -282,10 +276,7 @@ public class KafkaReliableTemplate {
         Assert.notNull(payload, "payload 消息载荷不能为空");
 
         // 1. 预构建 ProducerRecord 并执行 Fail-Fast 大小校验与四维上下文捕获
-        ProducerRecord<Object, Object> record = prepareRecord(topic, partition, key, payload, bizKey);
-        String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
-        String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
-        int payloadSize = calculatePayloadSize(payload);
+        PreparedRecord prepared = prepareRecord(topic, partition, key, payload, bizKey);
         Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
 
         // 2. 检测是否存在活跃本地事务
@@ -294,24 +285,69 @@ public class KafkaReliableTemplate {
                 @Override
                 public void afterCommit() {
                     try {
-                        doSendReliableSync(record, effectiveBizKey, traceId, payloadSize, effectiveTimeout);
+                        doSendReliableSync(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize(), effectiveTimeout);
                     } catch (Throwable ex) {
                         log.error("{} 本地事务提交后异步发信失败: topic={}, partition={}, key={}, bizKey={}, traceId={}, error={}",
                                 KafkaConstants.LOG_TX_POST_COMMIT_FAILED_PREFIX,
-                                topic, partition, key, effectiveBizKey, traceId, ex.getMessage(), ex);
-                        invokeTransactionFailureCallback(topic, partition, key, payload, effectiveBizKey, traceId, ex);
+                                topic, partition, key, prepared.bizKey(), prepared.traceId(), ex.getMessage(), ex);
+                        invokeTransactionFailureCallback(topic, partition, key, payload, prepared.bizKey(), prepared.traceId(), ex);
                     }
                 }
             });
         } else {
             // 无活跃事务，立即执行同步可靠发送
-            doSendReliableSync(record, effectiveBizKey, traceId, payloadSize, effectiveTimeout);
+            doSendReliableSync(prepared.record(), prepared.bizKey(), prepared.traceId(), prepared.payloadSize(), effectiveTimeout);
         }
     }
 
     // =========================================================================
     // 4. 批量可靠发送 (sendBatch)
     // =========================================================================
+
+    /**
+     * 批量可靠发送消息载荷集合（每个载荷自适应提取 bizKey 并由 Kafka 默认路由分区）
+     *
+     * @param topic    目标 Topic
+     * @param payloads 消息体集合
+     * @return 批量发送结果
+     */
+    public List<SendResult<Object, Object>> sendBatch(String topic, List<?> payloads) {
+        return sendBatch(topic, payloads, properties.getProducer().getSendTimeout());
+    }
+
+    /**
+     * 批量可靠发送消息载荷集合，携带超时时间
+     */
+    public List<SendResult<Object, Object>> sendBatch(String topic, List<?> payloads, Duration timeout) {
+        return sendBatch(topic, null, payloads, timeout);
+    }
+
+    /**
+     * 批量可靠发送消息载荷集合，指定分区键 key（同 key 消息投递至同一分区保序）
+     *
+     * @param topic    目标 Topic
+     * @param key      分区键（用于 Hash 保序）
+     * @param payloads 消息体集合
+     * @return 批量发送结果
+     */
+    public List<SendResult<Object, Object>> sendBatch(String topic, String key, List<?> payloads) {
+        return sendBatch(topic, key, payloads, properties.getProducer().getSendTimeout());
+    }
+
+    /**
+     * 批量可靠发送消息载荷集合，指定分区键 key 与超时时间
+     */
+    public List<SendResult<Object, Object>> sendBatch(String topic, String key, List<?> payloads, Duration timeout) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.notNull(payloads, "payloads 不能为空");
+
+        List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(payloads.size());
+        for (Object payload : payloads) {
+            futures.add(sendReliableAsync(topic, key, payload));
+        }
+
+        return waitBatchFutures(topic, futures, timeout);
+    }
 
     /**
      * 批量发送消息键值映射集合
@@ -336,27 +372,7 @@ public class KafkaReliableTemplate {
             futures.add(sendReliableAsync(topic, entry.getKey(), entry.getValue()));
         }
 
-        Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
-        List<SendResult<Object, Object>> results = new ArrayList<>(futures.size());
-        for (CompletableFuture<SendResult<Object, Object>> future : futures) {
-            try {
-                results.add(future.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS));
-            } catch (TimeoutException e) {
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        "Kafka 批量发信超时 (等待 " + effectiveTimeout.toMillis() + "ms): " + e.getMessage(), e);
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        CommonResultCode.INTERNAL_SERVER_ERROR,
-                        "Kafka 批量发送消息底层异常: " + cause.getMessage(), cause);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
-                        CommonResultCode.INTERNAL_SERVER_ERROR,
-                        "Kafka 批量发送线程被中断: " + e.getMessage(), e);
-            }
-        }
-        return results;
+        return waitBatchFutures(topic, futures, timeout);
     }
 
     /**
@@ -367,35 +383,62 @@ public class KafkaReliableTemplate {
     }
 
     /**
-     * 批量发送 ProducerRecord 集合，携带超时时间
+     * 批量发送 ProducerRecord 集合，携带超时时间（加固 1MB 报文防御与四维上下文补全）
      */
     public List<SendResult<Object, Object>> sendBatchRecords(List<ProducerRecord<Object, Object>> records, Duration timeout) {
         Assert.notNull(records, "records 不能为空");
 
         List<CompletableFuture<SendResult<Object, Object>>> futures = new ArrayList<>(records.size());
         for (ProducerRecord<Object, Object> record : records) {
+            // 防卫 1: 报文体积 Fail-Fast 校验
+            int size = calculatePayloadSize(record.value());
+            long maxPayloadSize = properties.getProducer().getMaxPayloadSize().toBytes();
+            if (size > maxPayloadSize) {
+                String bizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
+                throw new MessageDeliveryException(
+                        MQ_TYPE_KAFKA,
+                        record.topic(),
+                        bizKey,
+                        CommonResultCode.BAD_REQUEST,
+                        String.format("出站消息报文体积超出最大限制: %d 字节 (最大限制: %d 字节, payload=%s)",
+                                size, maxPayloadSize, record.value() != null ? record.value().getClass().getSimpleName() : "null"),
+                        null);
+            }
+
+            // 防卫 2: 四维上下文防御性补全 (若外部 Record 未携带，则自动注入)
+            ensureContextHeaders(record);
+
             String effectiveBizKey = extractHeaderString(record, MessageHeaderConstants.BIZ_KEY);
             String traceId = extractHeaderString(record, MessageHeaderConstants.TRACE_ID);
-            int size = calculatePayloadSize(record.value());
             futures.add(doSendInternal(record, effectiveBizKey, traceId, size));
         }
 
+        return waitBatchFutures(null, futures, timeout);
+    }
+
+    /**
+     * 统一阻塞等待批量发送 Future 确认，消除重复异常转译模板代码
+     */
+    private List<SendResult<Object, Object>> waitBatchFutures(
+            String topic,
+            List<CompletableFuture<SendResult<Object, Object>>> futures,
+            Duration timeout) {
         Duration effectiveTimeout = timeout != null ? timeout : properties.getProducer().getSendTimeout();
         List<SendResult<Object, Object>> results = new ArrayList<>(futures.size());
         for (CompletableFuture<SendResult<Object, Object>> future : futures) {
             try {
                 results.add(future.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS));
             } catch (TimeoutException e) {
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, null, null,
+                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
                         "Kafka 批量发信超时 (等待 " + effectiveTimeout.toMillis() + "ms): " + e.getMessage(), e);
             } catch (ExecutionException e) {
                 Throwable cause = e.getCause() != null ? e.getCause() : e;
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, null, null,
+                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
                         CommonResultCode.INTERNAL_SERVER_ERROR,
                         "Kafka 批量发送消息底层异常: " + cause.getMessage(), cause);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new MessageDeliveryException(MQ_TYPE_KAFKA, null, null,
+                throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null,
                         CommonResultCode.INTERNAL_SERVER_ERROR,
                         "Kafka 批量发送线程被中断: " + e.getMessage(), e);
             }
@@ -408,9 +451,19 @@ public class KafkaReliableTemplate {
     // =========================================================================
 
     /**
+     * 内部解析完毕的出站消息元数据载体，消除重复计算与参数泥团 (Data Clumps)
+     */
+    private record PreparedRecord(
+            ProducerRecord<Object, Object> record,
+            String bizKey,
+            String traceId,
+            int payloadSize
+    ) {}
+
+    /**
      * 构建 ProducerRecord 对象并执行四维上下文注入与报文体积 Fail-Fast 校验
      */
-    private ProducerRecord<Object, Object> prepareRecord(
+    private PreparedRecord prepareRecord(
             String topic,
             Integer partition,
             String key,
@@ -445,7 +498,31 @@ public class KafkaReliableTemplate {
                     null);
         }
 
-        return new ProducerRecord<>(topic, partition, key, payload, headers);
+        Object traceIdObj = contextHeaders.get(MessageHeaderConstants.TRACE_ID);
+        String traceId = traceIdObj != null ? traceIdObj.toString() : null;
+
+        ProducerRecord<Object, Object> record = new ProducerRecord<>(topic, partition, key, payload, headers);
+        return new PreparedRecord(record, resolvedBizKey, traceId, rawSize);
+    }
+
+    /**
+     * 防御性补全外部 ProducerRecord 缺失的四维上下文头
+     */
+    private void ensureContextHeaders(ProducerRecord<Object, Object> record) {
+        if (record == null || record.headers() == null) {
+            return;
+        }
+        if (record.headers().lastHeader(MessageHeaderConstants.TRACE_ID) == null) {
+            String keyStr = record.key() != null ? record.key().toString() : null;
+            String resolvedBizKey = resolveBizKey(record.value(), keyStr, null);
+            Map<String, Object> contextHeaders = new HashMap<>();
+            MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
+            for (Map.Entry<String, Object> entry : contextHeaders.entrySet()) {
+                if (entry.getValue() != null && record.headers().lastHeader(entry.getKey()) == null) {
+                    record.headers().add(new RecordHeader(entry.getKey(), entry.getValue().toString().getBytes(StandardCharsets.UTF_8)));
+                }
+            }
+        }
     }
 
     /**
@@ -566,7 +643,7 @@ public class KafkaReliableTemplate {
                 return reflectiveId;
             }
         }
-        String mdcTraceId = MDC.get(MessageHeaderConstants.TRACE_ID);
+        String mdcTraceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
         if (StringUtils.hasText(mdcTraceId)) {
             return mdcTraceId;
         }
@@ -641,10 +718,10 @@ public class KafkaReliableTemplate {
             String status,
             long cost,
             String reason) {
-        String prevTraceId = MDC.get(MessageHeaderConstants.TRACE_ID);
+        String prevTraceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
         try {
             if (traceId != null && !traceId.isBlank()) {
-                MDC.put(MessageHeaderConstants.TRACE_ID, traceId);
+                MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, traceId);
             }
             String partitionStr = partition != null ? String.valueOf(partition) : "*";
             if ("SUCCESS".equals(status)) {
@@ -656,9 +733,9 @@ public class KafkaReliableTemplate {
             }
         } finally {
             if (prevTraceId != null) {
-                MDC.put(MessageHeaderConstants.TRACE_ID, prevTraceId);
+                MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, prevTraceId);
             } else {
-                MDC.remove(MessageHeaderConstants.TRACE_ID);
+                MDC.remove(MessageContextPropagator.MDC_TRACE_ID_KEY);
             }
         }
     }

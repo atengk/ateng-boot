@@ -3,14 +3,12 @@ package io.github.atengk.boot.sample.kafka.service;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import io.github.atengk.boot.sample.kafka.config.KafkaScenarioTopologyConfig;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
-import lombok.Getter;
+import io.github.atengk.boot.sample.kafka.repository.MockOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -25,15 +23,13 @@ import java.util.List;
 public class KafkaOrderTransactionService {
 
     private final KafkaReliableTemplate kafkaReliableTemplate;
-
-    @Getter
-    private final List<String> localDbOrders = Collections.synchronizedList(new ArrayList<>());
+    private final MockOrderRepository mockOrderRepository;
 
     @Transactional
     public void createOrderWithSendAfterCommit(OrderMessage order) {
         // 1. 本地数据库模拟落库
         log.info("[DB-SAVE] 订单数据落库成功: orderId={}", order.getOrderId());
-        localDbOrders.add(order.getOrderId());
+        mockOrderRepository.save(order.getOrderId());
 
         // 2. 挂载事务提交后异步发信钩子
         kafkaReliableTemplate.sendAfterCommit(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order);
@@ -42,7 +38,7 @@ public class KafkaOrderTransactionService {
     @Transactional
     public void createOrderWithRollback(OrderMessage order) {
         // 1. 本地数据库模拟落库
-        localDbOrders.add(order.getOrderId());
+        mockOrderRepository.save(order.getOrderId());
 
         // 2. 挂载事务提交后异步发信钩子
         kafkaReliableTemplate.sendAfterCommit(KafkaScenarioTopologyConfig.TOPIC_ORDER, order.getOrderId(), order);
@@ -51,7 +47,11 @@ public class KafkaOrderTransactionService {
         throw new IllegalStateException("模拟业务校验失败，触发事务回滚: orderId=" + order.getOrderId());
     }
 
+    public List<String> getLocalDbOrders() {
+        return mockOrderRepository.findAll();
+    }
+
     public void clear() {
-        localDbOrders.clear();
+        mockOrderRepository.clear();
     }
 }

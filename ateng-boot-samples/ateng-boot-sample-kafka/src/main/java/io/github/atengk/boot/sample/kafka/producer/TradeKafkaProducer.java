@@ -40,11 +40,7 @@ public class TradeKafkaProducer {
     }
 
     public List<SendResult<Object, Object>> sendBatchOrders(List<OrderMessage> orders) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        for (OrderMessage order : orders) {
-            map.put(order.getOrderId(), order);
-        }
-        return kafkaReliableTemplate.sendBatch(KafkaScenarioTopologyConfig.TOPIC_BATCH, map);
+        return kafkaReliableTemplate.sendBatch(KafkaScenarioTopologyConfig.TOPIC_BATCH, orders);
     }
 
     public SendResult<Object, Object> sendLargePayload(byte[] payload) {

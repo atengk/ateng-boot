@@ -2,6 +2,7 @@ package io.github.atengk.boot.kafka.autoconfigure;
 
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.micrometer.observation.ObservationRegistry;
 import io.github.atengk.boot.kafka.executor.KafkaRecordExecutor;
 import io.github.atengk.boot.kafka.interceptor.KafkaBatchInterceptor;
 import io.github.atengk.boot.kafka.interceptor.KafkaRecordInterceptor;
@@ -176,7 +177,7 @@ public class AtengKafkaAutoConfiguration {
     }
 
     /**
-     * 默认单条消费监听器容器工厂（AckMode.RECORD，挂载单条拦截器，10s优雅停机，虚拟线程自适应）
+     * 默认单条消费监听器容器工厂（AckMode.RECORD，挂载单条拦截器，10s优雅停机，虚拟线程与 Observation 自适应）
      */
     @Bean(name = KafkaConstants.DEFAULT_CONTAINER_FACTORY)
     @ConditionalOnMissingBean(name = KafkaConstants.DEFAULT_CONTAINER_FACTORY)
@@ -187,6 +188,7 @@ public class AtengKafkaAutoConfiguration {
             KafkaRecordInterceptor kafkaRecordInterceptor,
             RecordMessageConverter kafkaMessageConverter,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
@@ -207,11 +209,12 @@ public class AtengKafkaAutoConfiguration {
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
         factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
         applyVirtualThreadIfEnabled(factory, environment);
+        applyObservationIfPresent(factory, observationRegistryProvider);
         return factory;
     }
 
     /**
-     * 专用批量消费监听器容器工厂（batchListener=true，挂载批量拦截器，10s优雅停机，虚拟线程自适应）
+     * 专用批量消费监听器容器工厂（batchListener=true，挂载批量拦截器，10s优雅停机，虚拟线程与 Observation 自适应）
      */
     @Bean(name = KafkaConstants.BATCH_CONTAINER_FACTORY)
     @ConditionalOnMissingBean(name = KafkaConstants.BATCH_CONTAINER_FACTORY)
@@ -222,6 +225,7 @@ public class AtengKafkaAutoConfiguration {
             KafkaBatchInterceptor kafkaBatchInterceptor,
             BatchMessageConverter kafkaBatchMessageConverter,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
@@ -242,6 +246,7 @@ public class AtengKafkaAutoConfiguration {
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
         factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
         applyVirtualThreadIfEnabled(factory, environment);
+        applyObservationIfPresent(factory, observationRegistryProvider);
         return factory;
     }
 
@@ -249,11 +254,13 @@ public class AtengKafkaAutoConfiguration {
      * 单条监听器容器工厂后置处理器（防御 Spring Boot 官方自动装配覆盖 AckMode 与拦截器）
      */
     @Bean
+    @ConditionalOnMissingBean(name = "kafkaListenerContainerFactoryPostProcessor")
     public static BeanPostProcessor kafkaListenerContainerFactoryPostProcessor(
             ObjectProvider<AtengKafkaProperties> propertiesProvider,
             ObjectProvider<KafkaRecordInterceptor> interceptorProvider,
             ObjectProvider<RecordMessageConverter> converterProvider,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider,
             Environment environment) {
         return new BeanPostProcessor() {
             @Override
@@ -283,6 +290,7 @@ public class AtengKafkaAutoConfiguration {
                     }
                     rawFactory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
                     applyVirtualThreadIfEnabled(rawFactory, environment);
+                    applyObservationIfPresent(rawFactory, observationRegistryProvider);
                 }
                 return bean;
             }
@@ -293,6 +301,7 @@ public class AtengKafkaAutoConfiguration {
      * KafkaAdmin 后置处理器：管控 autoCreateTopics 开关（只读账号安全防卫）
      */
     @Bean
+    @ConditionalOnMissingBean(name = "kafkaAdminPostProcessor")
     public static BeanPostProcessor kafkaAdminPostProcessor(ObjectProvider<AtengKafkaProperties> propertiesProvider) {
         return new BeanPostProcessor() {
             @Override
@@ -306,6 +315,14 @@ public class AtengKafkaAutoConfiguration {
                 return bean;
             }
         };
+    }
+
+    private static void applyObservationIfPresent(
+            ConcurrentKafkaListenerContainerFactory<?, ?> factory,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        if (factory != null && observationRegistryProvider != null) {
+            observationRegistryProvider.ifAvailable(registry -> factory.getContainerProperties().setObservationEnabled(true));
+        }
     }
 
     private static void applyVirtualThreadIfEnabled(ConcurrentKafkaListenerContainerFactory<?, ?> factory, Environment environment) {

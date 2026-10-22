@@ -1,8 +1,8 @@
 package io.github.atengk.boot.kafka.interceptor;
 
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.github.atengk.boot.kafka.executor.KafkaRecordExecutor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -32,7 +32,7 @@ public class KafkaBatchInterceptor implements BatchInterceptor<Object, Object> {
             return records;
         }
 
-        String batchTraceId = "batch-" + IdUtil.fastSimpleUUID();
+        String batchTraceId = KafkaRecordExecutor.generateBatchTraceId();
         MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, batchTraceId);
 
         BatchContext ctx = new BatchContext(System.currentTimeMillis(), batchTraceId, records.count());

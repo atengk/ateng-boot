@@ -2,20 +2,16 @@ package io.github.atengk.boot.kafka.interceptor;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
-import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.github.atengk.boot.kafka.helper.KafkaMessageHelper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.common.header.Header;
-import org.apache.kafka.common.header.internals.RecordHeader;
 import org.slf4j.MDC;
 import org.springframework.kafka.listener.RecordInterceptor;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -48,39 +44,18 @@ public class KafkaRecordInterceptor implements RecordInterceptor<Object, Object>
             return null;
         }
 
-        // 1. 提取并解码所有 Headers 转换为 Map
-        Map<String, Object> headerMap = new HashMap<>();
-        if (record.headers() != null) {
-            for (Header header : record.headers()) {
-                if (header != null && header.key() != null) {
-                    headerMap.put(header.key(), header.value());
-                }
-            }
-        }
-
-        // 2. 提取并补齐 bizKey
+        // 1. 提取 Headers 并自适应补齐 bizKey
+        Map<String, Object> headerMap = KafkaMessageHelper.extractAndEnsureHeaders(record);
         String bizKey = MessageContextPropagator.extractString(headerMap, MessageHeaderConstants.BIZ_KEY);
-        if (bizKey == null || bizKey.isBlank()) {
-            if (record.key() != null) {
-                bizKey = String.valueOf(record.key());
-            } else {
-                String traceId = MessageContextPropagator.extractString(headerMap, MessageHeaderConstants.TRACE_ID);
-                bizKey = (traceId != null && !traceId.isBlank()) ? traceId : IdUtil.fastSimpleUUID();
-            }
-            if (record.headers() != null) {
-                record.headers().add(new RecordHeader(MessageHeaderConstants.BIZ_KEY, bizKey.getBytes(StandardCharsets.UTF_8)));
-            }
-            headerMap.put(MessageHeaderConstants.BIZ_KEY, bizKey);
-        }
 
-        // 3. 激活四维上下文
+        // 2. 激活四维上下文
         MessageContextPropagator.ContextScope scope = MessageContextPropagator.activate(headerMap);
         String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
         if (traceId == null || traceId.isBlank()) {
             traceId = MessageContextPropagator.extractString(headerMap, MessageHeaderConstants.TRACE_ID);
         }
 
-        // 4. 入栈当前消费上下文信息
+        // 3. 入栈当前消费上下文信息
         ConsumeContext ctx = new ConsumeContext(scope, System.currentTimeMillis(), bizKey, traceId);
         pushContext(ctx);
 
@@ -100,6 +75,7 @@ public class KafkaRecordInterceptor implements RecordInterceptor<Object, Object>
         ConsumeContext ctx = peekContext();
         if (ctx != null) {
             ctx.failed = true;
+            ctx.idempotent = KafkaMessageHelper.isIdempotentException(exception);
             ctx.errorMessage = (exception != null) ? exception.getMessage() : "Unknown consumer error";
         }
     }
@@ -114,15 +90,27 @@ public class KafkaRecordInterceptor implements RecordInterceptor<Object, Object>
         try {
             long cost = Math.max(0, System.currentTimeMillis() - ctx.startTime);
             if (ctx.failed) {
-                log.error("{} mq=kafka topic={} partition={} offset={} bizKey={} traceId={} cost={}ms status=FAILED error={}",
-                        KafkaConstants.LOG_CONSUME_PREFIX,
-                        record != null ? record.topic() : "UNKNOWN",
-                        record != null ? record.partition() : -1,
-                        record != null ? record.offset() : -1,
-                        ctx.bizKey,
-                        ctx.traceId,
-                        cost,
-                        ctx.errorMessage);
+                if (ctx.idempotent) {
+                    log.warn("{} mq=kafka topic={} partition={} offset={} bizKey={} traceId={} cost={}ms status=IDEMPOTENT_SKIPPED message={}",
+                            KafkaConstants.LOG_CONSUME_PREFIX,
+                            record != null ? record.topic() : "UNKNOWN",
+                            record != null ? record.partition() : -1,
+                            record != null ? record.offset() : -1,
+                            ctx.bizKey,
+                            ctx.traceId,
+                            cost,
+                            ctx.errorMessage);
+                } else {
+                    log.error("{} mq=kafka topic={} partition={} offset={} bizKey={} traceId={} cost={}ms status=FAILED error={}",
+                            KafkaConstants.LOG_CONSUME_PREFIX,
+                            record != null ? record.topic() : "UNKNOWN",
+                            record != null ? record.partition() : -1,
+                            record != null ? record.offset() : -1,
+                            ctx.bizKey,
+                            ctx.traceId,
+                            cost,
+                            ctx.errorMessage);
+                }
             } else {
                 log.info("{} mq=kafka topic={} partition={} offset={} bizKey={} traceId={} cost={}ms status=SUCCESS",
                         KafkaConstants.LOG_CONSUME_PREFIX,
@@ -170,6 +158,7 @@ public class KafkaRecordInterceptor implements RecordInterceptor<Object, Object>
         private final String bizKey;
         private final String traceId;
         private boolean failed;
+        private boolean idempotent;
         private String errorMessage;
 
         ConsumeContext(MessageContextPropagator.ContextScope scope, long startTime, String bizKey, String traceId) {

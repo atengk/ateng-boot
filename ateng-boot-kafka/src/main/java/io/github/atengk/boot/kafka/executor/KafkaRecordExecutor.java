@@ -1,8 +1,9 @@
 package io.github.atengk.boot.kafka.executor;
 
-import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.github.atengk.boot.kafka.helper.KafkaMessageHelper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
@@ -208,34 +209,18 @@ public class KafkaRecordExecutor {
                         record.topic(), record.partition(), record.offset(), record.key(), handlerEx);
             }
         } else {
-            log.error("[MQ-CONSUME-BATCH] 批量单条记录处理异常且未指定 failureHandler: topic={} partition={} offset={} key={}",
-                    record.topic(), record.partition(), record.offset(), record.key(), ex);
+            if (KafkaMessageHelper.isIdempotentException(ex)) {
+                log.warn("{} mq=kafka topic={} partition={} offset={} key={} 消息已幂等处理，跳过后续执行",
+                        KafkaConstants.LOG_IDEMPOTENT_DUPLICATE_PREFIX,
+                        record.topic(), record.partition(), record.offset(), record.key());
+            } else {
+                log.error("[MQ-CONSUME-BATCH] 批量单条记录处理异常且未指定 failureHandler: topic={} partition={} offset={} key={}",
+                        record.topic(), record.partition(), record.offset(), record.key(), ex);
+            }
         }
     }
 
     private static <K, V> Map<String, Object> extractHeaderMap(ConsumerRecord<K, V> record) {
-        Map<String, Object> headerMap = new HashMap<>();
-        if (record.headers() != null) {
-            for (Header header : record.headers()) {
-                if (header != null && header.key() != null) {
-                    headerMap.put(header.key(), header.value());
-                }
-            }
-        }
-        // 确保有 bizKey
-        String bizKey = MessageContextPropagator.extractString(headerMap, MessageHeaderConstants.BIZ_KEY);
-        if (bizKey == null || bizKey.isBlank()) {
-            if (record.key() != null) {
-                bizKey = String.valueOf(record.key());
-            } else {
-                String traceId = MessageContextPropagator.extractString(headerMap, MessageHeaderConstants.TRACE_ID);
-                bizKey = (traceId != null && !traceId.isBlank()) ? traceId : IdUtil.fastSimpleUUID();
-            }
-            if (record.headers() != null) {
-                record.headers().add(new RecordHeader(MessageHeaderConstants.BIZ_KEY, bizKey.getBytes(StandardCharsets.UTF_8)));
-            }
-            headerMap.put(MessageHeaderConstants.BIZ_KEY, bizKey);
-        }
-        return headerMap;
+        return KafkaMessageHelper.extractAndEnsureHeaders(record);
     }
 }

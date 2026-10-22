@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.kafka.constant.KafkaConstants;
+import io.github.atengk.boot.kafka.helper.KafkaMessageHelper;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -31,15 +32,22 @@ import java.util.Map;
 @Slf4j
 public class AtengDeadLetterPublishingRecoverer extends DeadLetterPublishingRecoverer {
 
+    private final AtengKafkaProperties properties;
+
     public AtengDeadLetterPublishingRecoverer(KafkaOperations<?, ?> template, AtengKafkaProperties properties) {
         super(template, (record, exception) -> resolveDestination(record, exception, properties));
+        this.properties = properties;
     }
 
     /**
-     * 目标分区解析与防卫判定（使用默认配置）
+     * 目标分区解析与防卫判定（基于当前实例配置）
+     *
+     * @param record 消费记录
+     * @param exception 捕获异常
+     * @return 目标死信分区或 null（静默提交/终点拦截）
      */
-    public static TopicPartition resolveDestination(ConsumerRecord<?, ?> record, Exception exception) {
-        return resolveDestination(record, exception, null);
+    public TopicPartition resolveDestination(ConsumerRecord<?, ?> record, Exception exception) {
+        return resolveDestination(record, exception, this.properties);
     }
 
     /**
@@ -102,16 +110,7 @@ public class AtengDeadLetterPublishingRecoverer extends DeadLetterPublishingReco
     }
 
     private static boolean isIdempotentException(Throwable throwable) {
-        Throwable current = throwable;
-        int depth = 0;
-        while (current != null && depth < 30) {
-            if (current instanceof IdempotentException) {
-                return true;
-            }
-            current = current.getCause();
-            depth++;
-        }
-        return false;
+        return KafkaMessageHelper.isIdempotentException(throwable);
     }
 
     private static Map<String, Object> extractHeaders(ConsumerRecord<?, ?> record) {

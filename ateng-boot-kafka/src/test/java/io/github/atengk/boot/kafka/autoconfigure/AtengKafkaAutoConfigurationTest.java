@@ -157,6 +157,41 @@ class AtengKafkaAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("存在 ObservationRegistry 时双容器工厂自动开启 Observation 指标收集")
+    void testObservationEnabledWhenRegistryPresent() {
+        contextRunner
+                .withUserConfiguration(MockKafkaConsumerConfiguration.class, MockObservationConfiguration.class)
+                .run(context -> {
+                    ConcurrentKafkaListenerContainerFactory<?, ?> singleFactory =
+                            context.getBean(KafkaConstants.DEFAULT_CONTAINER_FACTORY, ConcurrentKafkaListenerContainerFactory.class);
+                    ConcurrentKafkaListenerContainerFactory<?, ?> batchFactory =
+                            context.getBean(KafkaConstants.BATCH_CONTAINER_FACTORY, ConcurrentKafkaListenerContainerFactory.class);
+
+                    assertThat(singleFactory.getContainerProperties().isObservationEnabled()).isTrue();
+                    assertThat(batchFactory.getContainerProperties().isObservationEnabled()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("后置处理器标配 @ConditionalOnMissingBean 支持下游平滑接管")
+    void testPostProcessorsConditionalOnMissingBean() {
+        contextRunner
+                .withUserConfiguration(MockKafkaConsumerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasBean("kafkaListenerContainerFactoryPostProcessor");
+                    assertThat(context).hasBean("kafkaAdminPostProcessor");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockObservationConfiguration {
+        @Bean
+        public io.micrometer.observation.ObservationRegistry observationRegistry() {
+            return io.micrometer.observation.ObservationRegistry.create();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class MockKafkaTemplateConfiguration {
         @Bean

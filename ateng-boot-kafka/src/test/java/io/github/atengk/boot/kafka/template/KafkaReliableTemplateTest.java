@@ -287,4 +287,89 @@ class KafkaReliableTemplateTest {
         assertThat(results).hasSize(3);
         verify(kafkaTemplate, times(3)).send(any(ProducerRecord.class));
     }
+
+    @Test
+    @DisplayName("批量发送：支持 List 载荷批量发信及同 Key 分区保序批量投递")
+    @SuppressWarnings("unchecked")
+    void testSendBatchListAndWithKey() {
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 1L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        // 1. 无指定 key 的 List 批量发送
+        List<String> listPayloads = List.of("m1", "m2");
+        List<SendResult<Object, Object>> listResults = template.sendBatch("batch.list.topic", listPayloads);
+        assertThat(listResults).hasSize(2);
+
+        // 2. 指定同 key 的 List 批量发送（同一分区保序）
+        List<String> orderEvents = List.of("CREATED", "PAID", "SHIPPED");
+        List<SendResult<Object, Object>> keyedResults = template.sendBatch("batch.order.topic", "order-8888", orderEvents);
+        assertThat(keyedResults).hasSize(3);
+
+        List<ProducerRecord<Object, Object>> records = recordCaptor.getAllValues();
+        // 后面 3 条 record 的 key 必须严格等于 "order-8888"
+        assertThat(records.subList(2, 5)).allMatch(rec -> "order-8888".equals(rec.key()));
+    }
+
+    @Test
+    @DisplayName("MDC TraceId 兜底业务键：当未显式指定 bizKey 且实体无 ID 时，优先使用 MDC traceId 兜底")
+    @SuppressWarnings("unchecked")
+    void testResolveBizKeyFallbackToMdcTraceId() {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-fixed-888");
+
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 0L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        // 发送纯文本消息，未传 key，未传 bizKey
+        template.sendReliable("test.bizkey.topic", "raw-content-message");
+
+        ProducerRecord<Object, Object> record = recordCaptor.getValue();
+        Header bizHeader = record.headers().lastHeader(MessageHeaderConstants.BIZ_KEY);
+        assertThat(bizHeader).isNotNull();
+        // bizKey 应当命中 MDC traceId 兜底逻辑
+        assertThat(new String(bizHeader.value(), StandardCharsets.UTF_8)).isEqualTo("trace-fixed-888");
+    }
+
+    @Test
+    @DisplayName("sendBatchRecords 大报文防御与上下文加固：超限时 Fail-Fast 阻断，正常时补全四维上下文")
+    @SuppressWarnings("unchecked")
+    void testSendBatchRecordsDefenses() {
+        properties.getProducer().setMaxPayloadSize(DataSize.ofKilobytes(5)); // 5KB 限制
+
+        // 1. 构造一条超限报文 (10KB > 5KB)
+        ProducerRecord<Object, Object> oversizedRecord = new ProducerRecord<>("batch.record.topic", "key1", new byte[10 * 1024]);
+        assertThatThrownBy(() -> template.sendBatchRecords(List.of(oversizedRecord)))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("出站消息报文体积超出最大限制");
+
+        // 2. 构造正常报文，未预置 headers，验证上下文自动补全
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-auto-ctx");
+        TenantContextHolder.setTenantId("tenant-auto");
+
+        ArgumentCaptor<ProducerRecord<Object, Object>> recordCaptor = ArgumentCaptor.forClass(ProducerRecord.class);
+        when(kafkaTemplate.send(recordCaptor.capture())).thenAnswer(invocation -> {
+            ProducerRecord<Object, Object> rec = invocation.getArgument(0);
+            RecordMetadata metadata = new RecordMetadata(new TopicPartition(rec.topic(), 0), 0L, 0, System.currentTimeMillis(), 0, 0);
+            return CompletableFuture.completedFuture(new SendResult<>(rec, metadata));
+        });
+
+        ProducerRecord<Object, Object> normalRecord = new ProducerRecord<>("batch.record.topic", "key-norm", "norm-payload");
+        List<SendResult<Object, Object>> results = template.sendBatchRecords(List.of(normalRecord));
+
+        assertThat(results).hasSize(1);
+        ProducerRecord<Object, Object> sent = recordCaptor.getValue();
+        Header traceHeader = sent.headers().lastHeader(MessageHeaderConstants.TRACE_ID);
+        Header tenantHeader = sent.headers().lastHeader(MessageHeaderConstants.TENANT_ID);
+        assertThat(traceHeader).isNotNull();
+        assertThat(new String(traceHeader.value(), StandardCharsets.UTF_8)).isEqualTo("trace-auto-ctx");
+        assertThat(tenantHeader).isNotNull();
+        assertThat(new String(tenantHeader.value(), StandardCharsets.UTF_8)).isEqualTo("tenant-auto");
+    }
 }

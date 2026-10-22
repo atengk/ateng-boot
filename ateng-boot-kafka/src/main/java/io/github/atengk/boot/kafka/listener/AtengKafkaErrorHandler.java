@@ -2,6 +2,7 @@ package io.github.atengk.boot.kafka.listener;
 
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
+import io.github.atengk.boot.kafka.helper.KafkaMessageHelper;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -83,20 +84,7 @@ public class AtengKafkaErrorHandler extends DefaultErrorHandler {
         if (exception == null) {
             return false;
         }
-        return FatalExceptionClassifier.isFatal(exception) || isIdempotent(exception);
-    }
-
-    private static boolean isIdempotent(Throwable throwable) {
-        Throwable current = throwable;
-        int depth = 0;
-        while (current != null && depth < 30) {
-            if (current instanceof IdempotentException) {
-                return true;
-            }
-            current = current.getCause();
-            depth++;
-        }
-        return false;
+        return FatalExceptionClassifier.isFatal(exception) || KafkaMessageHelper.isIdempotentException(exception);
     }
 
     private static ExponentialBackOffWithMaxRetries createExponentialBackOff(AtengKafkaProperties properties) {

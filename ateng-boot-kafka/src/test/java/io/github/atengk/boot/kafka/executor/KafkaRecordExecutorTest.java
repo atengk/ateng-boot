@@ -132,6 +132,27 @@ class KafkaRecordExecutorTest {
     }
 
     @Test
+    @DisplayName("processBatchSafely 捕获 IdempotentException 幂等异常并平滑跳过，不阻断批处理")
+    void testProcessBatchSafelyIdempotentHandling() {
+        ConsumerRecord<String, String> r1 = new ConsumerRecord<>("topic", 0, 1L, "k1", "ok-1");
+        ConsumerRecord<String, String> r2 = new ConsumerRecord<>("topic", 0, 2L, "k2", "dup-2");
+        ConsumerRecord<String, String> r3 = new ConsumerRecord<>("topic", 0, 3L, "k3", "ok-3");
+
+        List<ConsumerRecord<String, String>> batch = List.of(r1, r2, r3);
+        List<String> processed = new ArrayList<>();
+
+        // 不传递 failureHandler，由系统内部 handleRecordFailure 处理
+        KafkaRecordExecutor.processBatchSafely(batch, (rec, val) -> {
+            if ("dup-2".equals(val)) {
+                throw new io.github.atengk.boot.core.exception.IdempotentException("已处理");
+            }
+            processed.add(val);
+        });
+
+        assertThat(processed).containsExactly("ok-1", "ok-3");
+    }
+
+    @Test
     @DisplayName("processBatchSafely 空入参防卫测试")
     void testNullSafely() {
         // 不应抛出任何异常

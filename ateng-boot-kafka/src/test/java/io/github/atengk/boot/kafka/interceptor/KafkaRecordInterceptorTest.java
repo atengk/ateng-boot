@@ -114,6 +114,24 @@ class KafkaRecordInterceptorTest {
     }
 
     @Test
+    @DisplayName("消费命中幂等异常时，识别为幂等跳过并在 afterRecord 中正常记录与排空现场")
+    void testIdempotentExceptionHandling() {
+        ConsumerRecord<Object, Object> record = new ConsumerRecord<>("idemp.topic", 0, 8L, "k-idemp", "v-idemp");
+        interceptor.intercept(record);
+
+        // 模拟 listener 抛出嵌套在封装异常中的 IdempotentException
+        Exception wrappedEx = new RuntimeException("wrapped", new io.github.atengk.boot.core.exception.IdempotentException("业务重复消费"));
+        interceptor.failure(record, wrappedEx, null);
+
+        // 触发 finally afterRecord
+        interceptor.afterRecord(record, null);
+
+        // 现场彻底还原
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
+    }
+
+    @Test
     @DisplayName("入参 record 为 null 时安全防卫")
     void testNullRecord() {
         ConsumerRecord<Object, Object> result = interceptor.intercept(null);

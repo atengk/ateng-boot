@@ -17,6 +17,7 @@ import io.github.atengk.boot.sample.kafka.consumer.*;
 import io.github.atengk.boot.sample.kafka.model.OrderMessage;
 import io.github.atengk.boot.sample.kafka.model.UserEventMessage;
 import io.github.atengk.boot.sample.kafka.producer.TradeKafkaProducer;
+import io.github.atengk.boot.sample.kafka.repository.MockOrderRepository;
 import io.github.atengk.boot.sample.kafka.service.KafkaOrderTransactionService;
 import jakarta.validation.ValidationException;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -31,10 +32,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.ResolvableType;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.messaging.Message;
@@ -113,6 +117,17 @@ class SampleKafkaE2eTest {
     @Autowired
     private KafkaReliableTemplate kafkaReliableTemplate;
 
+    @Autowired
+    private MockOrderRepository mockOrderRepository;
+
+    @Autowired
+    @Qualifier(KafkaConstants.DEFAULT_CONTAINER_FACTORY)
+    private ConcurrentKafkaListenerContainerFactory<?, ?> defaultKafkaListenerContainerFactory;
+
+    @Autowired
+    @Qualifier(KafkaConstants.BATCH_CONTAINER_FACTORY)
+    private ConcurrentKafkaListenerContainerFactory<?, ?> batchKafkaListenerContainerFactory;
+
     @BeforeEach
     void setUp() {
         orderSingleRecordConsumer.clear();
@@ -120,6 +135,7 @@ class SampleKafkaE2eTest {
         idempotentConsumer.clear();
         deadLetterAuditConsumer.clear();
         transactionService.clear();
+        mockOrderRepository.clear();
         sampleTxFailureCallback.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
@@ -203,12 +219,33 @@ class SampleKafkaE2eTest {
                 json.getBytes(StandardCharsets.UTF_8)
         );
 
+        // 1. 单对象推断反序列化
         Message<?> springMessage = converter.toMessage(rawRecord, null, null, OrderMessage.class);
         assertThat(springMessage.getPayload()).isInstanceOf(OrderMessage.class);
 
         OrderMessage convertedOrder = (OrderMessage) springMessage.getPayload();
         assertThat(convertedOrder.getOrderId()).isEqualTo("ORD-INFER-01");
         assertThat(convertedOrder.getAmount()).isEqualByComparingTo(new BigDecimal("123.45"));
+
+        // 2. 泛型集合推断反序列化（基于 ResolvableType，杜绝退化为 List<LinkedHashMap>）
+        String listJson = "[{\"orderId\":\"ORD-LIST-01\",\"amount\":100.00,\"userId\":\"u1\",\"tenantId\":\"t1\"},"
+                + "{\"orderId\":\"ORD-LIST-02\",\"amount\":200.00,\"userId\":\"u2\",\"tenantId\":\"t2\"}]";
+        ConsumerRecord<byte[], byte[]> listRecord = new ConsumerRecord<>(
+                KafkaScenarioTopologyConfig.TOPIC_ORDER, 0, 11L,
+                "list-key".getBytes(StandardCharsets.UTF_8),
+                listJson.getBytes(StandardCharsets.UTF_8)
+        );
+        java.lang.reflect.Type listOfOrdersType = ResolvableType
+                .forClassWithGenerics(List.class, OrderMessage.class).getType();
+        Message<?> listMessage = converter.toMessage(listRecord, null, null, listOfOrdersType);
+        assertThat(listMessage.getPayload()).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        List<OrderMessage> orderList = (List<OrderMessage>) listMessage.getPayload();
+        assertThat(orderList).hasSize(2);
+        assertThat(orderList.get(0)).isInstanceOf(OrderMessage.class);
+        assertThat(orderList.get(0).getOrderId()).isEqualTo("ORD-LIST-01");
+        assertThat(orderList.get(1)).isInstanceOf(OrderMessage.class);
+        assertThat(orderList.get(1).getOrderId()).isEqualTo("ORD-LIST-02");
     }
 
     @Test
@@ -216,13 +253,15 @@ class SampleKafkaE2eTest {
     void testScenario4_IdempotentDuplicateSilentCommit() {
         OrderMessage order = new OrderMessage("ORD-IDEMP-001", new BigDecimal("88.00"), "u-1", "t-1");
 
-        // 1. 首次消费：成功
-        idempotentConsumer.processOrderWithIdempotentCheck(order);
+        // 1. 首次消费：正常调用监听方法，消费成功
+        idempotentConsumer.onOrderMessage(order);
         assertThat(idempotentConsumer.getProcessedOrderIds()).contains("ORD-IDEMP-001");
+        assertThat(idempotentConsumer.getIdempotentHitCount().get()).isEqualTo(0);
 
-        // 2. 第二次消费：触发 IdempotentException
-        assertThatThrownBy(() -> idempotentConsumer.processOrderWithIdempotentCheck(order))
+        // 2. 第二次消费：触发 IdempotentException 幂等拦截
+        assertThatThrownBy(() -> idempotentConsumer.onOrderMessage(order))
                 .isInstanceOf(IdempotentException.class);
+        assertThat(idempotentConsumer.getIdempotentHitCount().get()).isEqualTo(1);
 
         // 3. 验证 Recoverer 对 IdempotentException 静默提交且不进入 DLT
         ConsumerRecord<Object, Object> record = new ConsumerRecord<>(
@@ -258,6 +297,19 @@ class SampleKafkaE2eTest {
         );
         TopicPartition terminalDlt = recoverer.resolveDestination(dltRecord, new RuntimeException("DLT 消费异常"));
         assertThat(terminalDlt).isNull(); // 阻断死信循环反弹
+
+        // 5. 验证死信归档审计监听器 (DeadLetterAuditConsumer) 消费与字段提取
+        deadLetterAuditConsumer.onDeadLetter(
+                poisonRecord,
+                normalDlt.topic(),
+                "报文格式非法，触发 JSR-303 致命校验异常".getBytes(StandardCharsets.UTF_8)
+        );
+        assertThat(deadLetterAuditConsumer.getDeadLetters()).hasSize(1);
+        DeadLetterAuditConsumer.DeadLetterEntry entry = deadLetterAuditConsumer.getDeadLetters().get(0);
+        assertThat(entry.topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_POISON + ".DLT");
+        assertThat(entry.key()).isEqualTo("poison-k");
+        assertThat(entry.payload()).isEqualTo("CORRUPTED_POISON");
+        assertThat(entry.exceptionMessage()).contains("报文格式非法");
     }
 
     @Test
@@ -327,11 +379,17 @@ class SampleKafkaE2eTest {
         assertThat(sendResult).isNotNull();
         assertThat(sendResult.getRecordMetadata().topic()).isEqualTo(KafkaScenarioTopologyConfig.TOPIC_ORDER);
 
-        // 验证宏常量标识自洽
+        // 1. 验证宏常量标识自洽
         assertThat(KafkaConstants.LOG_SEND_PREFIX).isEqualTo("[MQ-SEND]");
         assertThat(KafkaConstants.LOG_CONSUME_PREFIX).isEqualTo("[MQ-CONSUME]");
         assertThat(KafkaConstants.LOG_CONSUME_BATCH_PREFIX).isEqualTo("[MQ-CONSUME-BATCH]");
         assertThat(KafkaConstants.LOG_DLT_FORWARD_PREFIX).isEqualTo("[MQ-DLT-FORWARD]");
+
+        // 2. 验证消费容器工厂开启了 Micrometer Observation 可观测性追踪
+        assertThat(defaultKafkaListenerContainerFactory).isNotNull();
+        assertThat(defaultKafkaListenerContainerFactory.getContainerProperties().isObservationEnabled()).isTrue();
+        assertThat(batchKafkaListenerContainerFactory).isNotNull();
+        assertThat(batchKafkaListenerContainerFactory.getContainerProperties().isObservationEnabled()).isTrue();
     }
 
     @TestConfiguration
@@ -346,11 +404,17 @@ class SampleKafkaE2eTest {
         }
 
         @Bean
+        public io.micrometer.observation.ObservationRegistry observationRegistry() {
+            return io.micrometer.observation.ObservationRegistry.create();
+        }
+
+        @Bean
         @Primary
         @SuppressWarnings("unchecked")
         public KafkaTemplate<Object, Object> mockKafkaTemplate(
                 org.springframework.beans.factory.ObjectProvider<OrderSingleRecordConsumer> orderConsumerProvider,
-                org.springframework.beans.factory.ObjectProvider<PoisonPillKafkaConsumer> poisonConsumerProvider) {
+                org.springframework.beans.factory.ObjectProvider<PoisonPillKafkaConsumer> poisonConsumerProvider,
+                org.springframework.beans.factory.ObjectProvider<DeadLetterAuditConsumer> deadLetterAuditConsumerProvider) {
             KafkaTemplate<Object, Object> mockTemplate = mock(KafkaTemplate.class);
 
             when(mockTemplate.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
@@ -382,6 +446,14 @@ class SampleKafkaE2eTest {
                             } catch (Exception ignored) {
                             }
                         }
+                    }
+                } else if (record.topic() != null && record.topic().endsWith(".DLT")) {
+                    DeadLetterAuditConsumer consumer = deadLetterAuditConsumerProvider.getIfAvailable();
+                    if (consumer != null) {
+                        ConsumerRecord<Object, Object> cr = new ConsumerRecord<>(
+                                record.topic(), partition, offset, record.key(), record.value()
+                        );
+                        consumer.onDeadLetter(cr, record.topic(), "模拟死信转发异常".getBytes(StandardCharsets.UTF_8));
                     }
                 }
 
