@@ -42,7 +42,12 @@ public enum MailResultCode implements IResultCode {
     /**
      * 邮件附件大小超出上限
      */
-    MAIL_ATTACHMENT_SIZE_EXCEEDED(40003, "邮件附件大小超出上限");
+    MAIL_ATTACHMENT_SIZE_EXCEEDED(40003, "邮件附件大小超出上限"),
+
+    /**
+     * 邮件模板渲染失败
+     */
+    MAIL_TEMPLATE_RENDER_ERROR(40004, "邮件模板渲染失败");
 
     private final Integer code;
     private final String msg;

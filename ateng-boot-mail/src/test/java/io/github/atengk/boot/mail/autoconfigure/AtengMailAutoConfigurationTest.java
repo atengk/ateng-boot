@@ -2,10 +2,14 @@ package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.template.MailTemplate;
+import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.thymeleaf.spring6.SpringTemplateEngine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,6 +103,31 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(MailTemplate.class);
                     assertThat(context).doesNotHaveBean(MailAccountRegistry.class);
+                });
+    }
+
+    @Test
+    @DisplayName("默认情况下自动装配 SimpleMailTemplateRenderer")
+    void testDefaultTemplateRenderer() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplateRenderer.class);
+                    assertThat(context.getBean(MailTemplateRenderer.class))
+                            .isInstanceOf(SimpleMailTemplateRenderer.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器中存在 SpringTemplateEngine 时自动装配 ThymeleafMailTemplateRenderer")
+    void testThymeleafTemplateRendererAutoConfigured() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean(SpringTemplateEngine.class, SpringTemplateEngine::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplateRenderer.class);
+                    assertThat(context.getBean(MailTemplateRenderer.class))
+                            .isInstanceOf(ThymeleafMailTemplateRenderer.class);
                 });
     }
 }

@@ -9,7 +9,10 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import jakarta.mail.internet.InternetAddress;
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -22,6 +25,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -38,10 +42,20 @@ public class MailTemplate {
     private final MailAccountRegistry accountRegistry;
     private final MailProperties properties;
 
+    @Getter
+    private final MailTemplateRenderer templateRenderer;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer());
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
+        this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
     }
+
+    // ==================== 纯文本邮件发送 ====================
 
     /**
      * 发送纯文本邮件（默认账号）
@@ -90,6 +104,121 @@ public class MailTemplate {
      * @return 发送结果回执
      */
     public MailSendResult sendText(String accountName, Collection<String> to, String subject, String text) {
+        return doSend(accountName, to, subject, text, false);
+    }
+
+    // ==================== 富文本 HTML 邮件发送 ====================
+
+    /**
+     * 发送 HTML 富文本邮件（默认账号）
+     *
+     * @param to      单个目标收件人
+     * @param subject 邮件主题
+     * @param html    HTML 正文
+     * @return 发送结果回执
+     */
+    public MailSendResult sendHtml(String to, String subject, String html) {
+        return sendHtml(null, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    /**
+     * 发送 HTML 富文本邮件（指定账号）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          单个目标收件人
+     * @param subject     邮件主题
+     * @param html        HTML 正文
+     * @return 发送结果回执
+     */
+    public MailSendResult sendHtml(String accountName, String to, String subject, String html) {
+        return sendHtml(accountName, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    /**
+     * 发送 HTML 富文本邮件给多个收件人（默认账号）
+     *
+     * @param to      目标收件人集合
+     * @param subject 邮件主题
+     * @param html    HTML 正文
+     * @return 发送结果回执
+     */
+    public MailSendResult sendHtml(Collection<String> to, String subject, String html) {
+        return sendHtml(null, to, subject, html);
+    }
+
+    /**
+     * 发送 HTML 富文本邮件给多个收件人（指定账号）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          目标收件人集合
+     * @param subject     邮件主题
+     * @param html        HTML 正文
+     * @return 发送结果回执
+     */
+    public MailSendResult sendHtml(String accountName, Collection<String> to, String subject, String html) {
+        return doSend(accountName, to, subject, html, true);
+    }
+
+    // ==================== 模板动态渲染邮件发送 ====================
+
+    /**
+     * 发送模板渲染邮件（默认账号）
+     *
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称（如 welcome、mail/verify-code 或内联模板字符串）
+     * @param model        数据模型字典
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    /**
+     * 发送模板渲染邮件（指定账号）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（默认账号）
+     *
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        return sendTemplate(null, to, subject, templateName, model);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（指定账号）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = templateRenderer.render(templateName, model);
+        return doSend(accountName, to, subject, renderedHtml, true);
+    }
+
+    // ==================== 核心统一发信底层执行逻辑 ====================
+
+    private MailSendResult doSend(String accountName, Collection<String> to, String subject, String content, boolean isHtml) {
         if (to == null || to.isEmpty()) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
@@ -109,8 +238,8 @@ public class MailTemplate {
         String domain = resolveDomain(account);
         String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
 
-        log.info("Sending plaintext email via account [{}] to [{}], subject: [{}], messageId: [{}]",
-                account.getName(), maskedTo, subject, messageId);
+        log.info("Sending {} email via account [{}] to [{}], subject: [{}], messageId: [{}]",
+                isHtml ? "HTML" : "plaintext", account.getName(), maskedTo, subject, messageId);
 
         try {
             TrackableMimeMessage mimeMessage = new TrackableMimeMessage(account.getSender().getSession(), messageId);
@@ -128,7 +257,7 @@ public class MailTemplate {
 
             helper.setTo(to.toArray(new String[0]));
             helper.setSubject(subject != null ? subject : "");
-            helper.setText(text != null ? text : "", false);
+            helper.setText(content != null ? content : "", isHtml);
 
             long start = System.nanoTime();
             account.getSender().send(mimeMessage);

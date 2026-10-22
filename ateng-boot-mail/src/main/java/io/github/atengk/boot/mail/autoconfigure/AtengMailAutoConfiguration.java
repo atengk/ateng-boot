@@ -5,17 +5,24 @@ import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.template.MailTemplate;
+import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.util.StringUtils;
+import org.thymeleaf.spring6.SpringTemplateEngine;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -84,10 +91,40 @@ public class AtengMailAutoConfiguration {
         return registry;
     }
 
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(SpringTemplateEngine.class)
+    public static class ThymeleafTemplateConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(MailTemplateRenderer.class)
+        @ConditionalOnBean(SpringTemplateEngine.class)
+        public MailTemplateRenderer thymeleafMailTemplateRenderer(SpringTemplateEngine templateEngine) {
+            return new ThymeleafMailTemplateRenderer(templateEngine);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(freemarker.template.Configuration.class)
+    public static class FreemarkerTemplateConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(MailTemplateRenderer.class)
+        @ConditionalOnBean(freemarker.template.Configuration.class)
+        public MailTemplateRenderer freemarkerMailTemplateRenderer(freemarker.template.Configuration configuration) {
+            return new FreemarkerMailTemplateRenderer(configuration);
+        }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(MailTemplateRenderer.class)
+    public MailTemplateRenderer simpleMailTemplateRenderer() {
+        return new SimpleMailTemplateRenderer();
+    }
+
     @Bean
     @ConditionalOnMissingBean
-    public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties) {
-        return new MailTemplate(registry, properties);
+    public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties, MailTemplateRenderer templateRenderer) {
+        return new MailTemplate(registry, properties, templateRenderer);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {
