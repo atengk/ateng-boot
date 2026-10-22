@@ -99,7 +99,14 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-mail</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-ftp</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -178,6 +185,12 @@
                         <artifactId>netty-nio-client</artifactId>
                     </exclusion>
                 </exclusions>
+            </dependency>
+            <!-- Apache Commons Net (FTP / FTPS 协议原生驱动) -->
+            <dependency>
+                <groupId>commons-net</groupId>
+                <artifactId>commons-net</artifactId>
+                <version>${commons-net.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

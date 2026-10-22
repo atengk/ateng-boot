@@ -52,6 +52,7 @@
         <module>ateng-boot-observability</module>
         <module>ateng-boot-openapi</module>
         <module>ateng-boot-mail</module>
+        <module>ateng-boot-ftp</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -72,6 +73,8 @@
         <awssdk.version>2.25.70</awssdk.version>
         <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
         <greenmail.version>2.1.2</greenmail.version>
+        <commons-net.version>3.11.1</commons-net.version>
+        <mockftpserver.version>3.2.0</mockftpserver.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -162,6 +165,21 @@
                 </exclusions>
             </dependency>
 
+            <!-- Apache Commons Net (FTP / FTPS 协议原生驱动) -->
+            <dependency>
+                <groupId>commons-net</groupId>
+                <artifactId>commons-net</artifactId>
+                <version>${commons-net.version}</version>
+            </dependency>
+
+            <!-- MockFtpServer (100% 离线自洽 FTP 测试服务器) -->
+            <dependency>
+                <groupId>org.mockftpserver</groupId>
+                <artifactId>MockFtpServer</artifactId>
+                <version>${mockftpserver.version}</version>
+                <scope>test</scope>
+            </dependency>
+
             <!-- ateng-boot 模块版本管控 -->
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -250,6 +268,10 @@
                 <scope>test</scope>
             </dependency>
             <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-ftp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-all</artifactId>
                 <version>${project.version}</version>
