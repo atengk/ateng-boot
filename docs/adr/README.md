@@ -49,6 +49,7 @@
 | **0039** | RocketMQ 5.x gRPC 生产增强与原生分布式事务架构决策 | `Accepted` | 基于 RocketMQ 5.x 官方 gRPC 瘦客户端基线 (5.2.2 Shaded)，受管高阶门面 RocketmqTemplate，原生 2PC 分布式事务半消息与 RocketmqTransactionChecker 统一回查路由分发，事务感知 sendAfterCommit 杜绝幽灵消息，声明式 @RocketmqListener 容器与推断反序列化解耦微服务契约，消费端幂等静默确认与毒丸快速丢弃阻断自旋，大报文 4MB 前置防御与 4KB 透明压缩，SmartLifecycle 确定性停机排空与 100% 离线自洽 TestDouble 测试沙箱 | `ateng-boot-rocketmq` / `core` | [查看](./0039-rocketmq-grpc-and-native-transaction-architecture.md) |
 | **0040** | 云原生可观测性探针与 Actuator 生产级加固架构决策 | `Accepted` | 官方原生 Actuator 与 Micrometer Prometheus 基线，黄金解耦 Liveness 与 Readiness，弱依赖探针超时熔断熔断保护，高危端点 Token 鉴权，受管线程池动态打标与黄金指标采集 | `ateng-boot-observability` / `core` | [查看](./0040-cloud-native-observability-probes-and-actuator-hardening-architecture.md) |
 | **0041** | 纯原生 SpringDoc 架构选型与接口文档生产治理防护决策 | `Accepted` | 全面拥抱 SpringDoc 官方原生生态（Swagger UI 5.x），彻底告别停更类库；生产 404 物理切断与 Basic/Sa-Token 运行时双模访问守卫；全链路追踪与多租户标头自动注入；Sa-Token 锁头鉴权自动注册；状态码全景字典注入与标准响应补全；配置驱动多业务分组路由与 /docs 极简重定向 | `ateng-boot-openapi` / `core` / `web` | [查看](./0041-pure-springdoc-openapi-and-production-guard-architecture.md) |
+| **0042** | 工业级异步邮件与模板通知底座架构设计决策 | `Accepted` | 专注出站 SMTP 生产加固；多命名账号注册表与动态多租户解析；受管异步与四维快照透传；模板 SPI 解耦与极简正则保底；流式大附件防 OOM 与 RFC 6266 中文规范；本地事务感知 sendAfterCommit 与三重失败补偿安全网；MDC traceId 与 Message-ID 双向追踪；GreenMail 100% 离线自洽单测沙箱 | `ateng-boot-mail` / `core` | [查看](./0042-industrial-grade-asynchronous-mail-and-template-architecture.md) |
 
 ---
 

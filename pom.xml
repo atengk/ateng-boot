@@ -51,6 +51,7 @@
         <module>ateng-boot-rocketmq</module>
         <module>ateng-boot-observability</module>
         <module>ateng-boot-openapi</module>
+        <module>ateng-boot-mail</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -70,6 +71,7 @@
         <springdoc.version>2.6.0</springdoc.version>
         <awssdk.version>2.25.70</awssdk.version>
         <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
+        <greenmail.version>2.1.2</greenmail.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -235,6 +237,17 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-openapi</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-mail</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.icegreen</groupId>
+                <artifactId>greenmail-junit5</artifactId>
+                <version>${greenmail.version}</version>
+                <scope>test</scope>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
