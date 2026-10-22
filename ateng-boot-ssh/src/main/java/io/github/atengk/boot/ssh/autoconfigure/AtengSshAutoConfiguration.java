@@ -10,12 +10,16 @@ import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+
+import java.util.concurrent.Executor;
 
 /**
  * SSH 远程治理与通信基础设施防御性自动装配
@@ -127,8 +131,9 @@ public class AtengSshAutoConfiguration {
     @ConditionalOnMissingBean
     public SshTemplate sshTemplate(SshSessionPool sshSessionPool,
                                    SshClientRegistry sshClientRegistry,
-                                   SshProperties properties) {
-        return new SshTemplate(sshSessionPool, sshClientRegistry, properties);
+                                   SshProperties properties,
+                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new SshTemplate(sshSessionPool, sshClientRegistry, properties, taskExecutorProvider.getIfAvailable());
     }
 }
 

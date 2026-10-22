@@ -1,5 +1,6 @@
 package io.github.atengk.boot.ssh.template;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.core.SshCommandExecutor;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
@@ -12,24 +13,35 @@ import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.Assert;
 
 import java.time.Duration;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * SSH 核心操作门面 (SshTemplate)
  * <p>
  * 1. 深度融通四位一体路由：透明支持缺省节点、YAML 命名注册表、线程上下文 (SshContextHolder) 与 CMDB 动态直连描述符 (SshServerInfo)；<br>
  * 2. 对称涵盖同步短命令 (exec)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript) 与瞬态单次任务隔离 (execOnce)；<br>
- * 3. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
+ * 3. 创新落地原生 Sudo 提权安全管道 (execSudo) 与密码即时内存擦除抹零 (In-Memory Scrubbing)；<br>
+ * 4. 深度联动 Core 受管线程池 (ThreadPoolTaskExecutor) 与四维上下文快照 (MDC/User/Tenant) 实现集群多节点高并发批量巡检 (execBatch)；<br>
+ * 5. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
  * </p>
  *
  * @author Ateng
  * @since 2026-10-23
  */
 @Slf4j
-public class SshTemplate {
+public class SshTemplate implements AutoCloseable, DisposableBean {
 
     @Getter
     private final SshSessionPool sessionPool;
@@ -40,14 +52,26 @@ public class SshTemplate {
     @Getter
     private final SshProperties properties;
 
+    private final Executor executor;
+
+    private volatile ThreadPoolTaskExecutor internalExecutor;
+
     public SshTemplate(SshSessionPool sessionPool,
                        SshClientRegistry clientRegistry,
                        SshProperties properties) {
+        this(sessionPool, clientRegistry, properties, null);
+    }
+
+    public SshTemplate(SshSessionPool sessionPool,
+                       SshClientRegistry clientRegistry,
+                       SshProperties properties,
+                       Executor executor) {
         Assert.notNull(sessionPool, "SshSessionPool must not be null");
         Assert.notNull(clientRegistry, "SshClientRegistry must not be null");
         this.sessionPool = sessionPool;
         this.clientRegistry = clientRegistry;
         this.properties = properties != null ? properties : new SshProperties();
+        this.executor = executor;
     }
 
     // ==========================================
@@ -333,6 +357,475 @@ public class SshTemplate {
      */
     public void execute(SshServerInfo serverInfo, SshSessionAction action) {
         sessionPool.executeAction(resolveServerInfo(serverInfo), action);
+    }
+
+    // ==========================================
+    // 6. 原生 Sudo 提权安全管道契约 (execSudo)
+    // ==========================================
+
+    /**
+     * 在当前解析的目标服务器上以管理员提权身份执行命令（口令字符串）
+     *
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String command, String sudoPassword) {
+        return execSudo(command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在当前解析的目标服务器上以管理员提权身份执行命令（口令字符串 + 扩展配置）
+     *
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String command, String sudoPassword, SshExecOptions options) {
+        return execSudo((SshServerInfo) null, command, sudoPassword, options);
+    }
+
+    /**
+     * 在当前解析的目标服务器上以管理员提权身份执行命令（字符数组口令，传输完毕就地抹零）
+     *
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String command, char[] sudoPassword) {
+        return execSudo(command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在当前解析的目标服务器上以管理员提权身份执行命令（字符数组口令 + 扩展配置）
+     *
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String command, char[] sudoPassword, SshExecOptions options) {
+        return execSudo((SshServerInfo) null, command, sudoPassword, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上以管理员提权身份执行命令
+     *
+     * @param serverName   节点名称
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String serverName, String command, String sudoPassword) {
+        return execSudo(serverName, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上以管理员提权身份执行命令（携带扩展配置）
+     *
+     * @param serverName   节点名称
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String serverName, String command, String sudoPassword, SshExecOptions options) {
+        return execSudo(resolveServerInfo(serverName), command, sudoPassword, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上以管理员提权身份执行命令（字符数组口令）
+     *
+     * @param serverName   节点名称
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String serverName, String command, char[] sudoPassword) {
+        return execSudo(serverName, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上以管理员提权身份执行命令（字符数组口令 + 扩展配置）
+     *
+     * @param serverName   节点名称
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(String serverName, String command, char[] sudoPassword, SshExecOptions options) {
+        return execSudo(resolveServerInfo(serverName), command, sudoPassword, options);
+    }
+
+    /**
+     * 在指定目标描述符服务器上以管理员提权身份执行命令（字符串口令）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(SshServerInfo serverInfo, String command, String sudoPassword) {
+        return execSudo(serverInfo, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上以管理员提权身份执行命令（字符串口令 + 扩展配置）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(SshServerInfo serverInfo, String command, String sudoPassword, SshExecOptions options) {
+        char[] chars = sudoPassword != null ? sudoPassword.toCharArray() : null;
+        return execSudo(serverInfo, command, chars, options);
+    }
+
+    /**
+     * 在指定目标描述符服务器上以管理员提权身份执行命令（字符数组口令）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(SshServerInfo serverInfo, String command, char[] sudoPassword) {
+        return execSudo(serverInfo, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上以管理员提权身份执行命令（字符数组口令 + 扩展配置）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudo(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        Duration timeout = resolveDefaultTimeout(target);
+        return sessionPool.execute(target, session ->
+                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+    }
+
+    /**
+     * 在指定目标描述符服务器上瞬态隔离执行 Sudo 提权命令（用后即断，零池化残留）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, String sudoPassword) {
+        return execSudoOnce(serverInfo, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上瞬态隔离执行 Sudo 提权命令（携带扩展配置）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, String sudoPassword, SshExecOptions options) {
+        char[] chars = sudoPassword != null ? sudoPassword.toCharArray() : null;
+        return execSudoOnce(serverInfo, command, chars, options);
+    }
+
+    /**
+     * 在指定目标描述符服务器上瞬态隔离执行 Sudo 提权命令（字符数组口令）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, char[] sudoPassword) {
+        return execSudoOnce(serverInfo, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上瞬态隔离执行 Sudo 提权命令（字符数组口令 + 扩展配置）
+     *
+     * @param serverInfo   目标描述符
+     * @param command      待执行命令
+     * @param sudoPassword 提权口令字符数组（内存擦除抹零守护）
+     * @param options      扩展配置选项
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execSudoOnce(SshServerInfo serverInfo, String command, char[] sudoPassword, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        Duration timeout = resolveDefaultTimeout(target);
+        return sessionPool.executeOnce(target, session ->
+                SshCommandExecutor.executeSudo(session, command, sudoPassword, options, timeout));
+    }
+
+    // ==========================================
+    // 7. 集群批量并发巡检契约 (execBatch)
+    // ==========================================
+
+    /**
+     * 在多个目标服务器上并发执行命令（开箱即用，透传四维上下文）
+     *
+     * @param servers 目标服务器集合
+     * @param command 待巡检执行命令
+     * @return 每个目标主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execBatch(Collection<SshServerInfo> servers, String command) {
+        return execBatch(servers, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在多个目标服务器上并发执行命令（携带扩展参数，具备节点异常隔离能力）
+     *
+     * @param servers 目标服务器集合
+     * @param command 待巡检执行命令
+     * @param options 扩展配置选项
+     * @return 每个目标主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execBatch(Collection<SshServerInfo> servers,
+                                                       String command,
+                                                       SshExecOptions options) {
+        if (servers == null || servers.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Assert.hasText(command, "command must not be blank");
+
+        Executor targetExecutor = getEffectiveExecutor();
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+
+        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
+
+        for (SshServerInfo server : servers) {
+            if (server == null) {
+                continue;
+            }
+            Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
+                long start = System.currentTimeMillis();
+                try {
+                    return exec(server, command, effectiveOptions);
+                } catch (Exception e) {
+                    log.warn("ateng-boot-ssh: 批量执行节点异常隔离 [{}]: {}", server.toSessionKey(), e.getMessage());
+                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
+                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    return SshExecResult.builder()
+                            .exitCode(-1)
+                            .stderr(errorMsg)
+                            .duration(duration)
+                            .build();
+                }
+            });
+
+            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
+        }
+
+        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
+
+        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
+        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
+            try {
+                resultMap.put(entry.getKey(), entry.getValue().join());
+            } catch (Exception e) {
+                resultMap.put(entry.getKey(), SshExecResult.builder()
+                        .exitCode(-1)
+                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
+                        .build());
+            }
+        }
+        return resultMap;
+    }
+
+    /**
+     * 在多个具名节点上并发执行命令
+     *
+     * @param serverNames 节点名称集合
+     * @param command     待巡检执行命令
+     * @return 节点名称与执行结果映射字典
+     */
+    public Map<String, SshExecResult> execBatchNamed(Collection<String> serverNames, String command) {
+        return execBatchNamed(serverNames, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在多个具名节点上并发执行命令（携带扩展参数）
+     *
+     * @param serverNames 节点名称集合
+     * @param command     待巡检执行命令
+     * @param options     扩展配置选项
+     * @return 节点名称与执行结果映射字典
+     */
+    public Map<String, SshExecResult> execBatchNamed(Collection<String> serverNames,
+                                                     String command,
+                                                     SshExecOptions options) {
+        if (serverNames == null || serverNames.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, SshServerInfo> nameToServer = new LinkedHashMap<>();
+        for (String name : serverNames) {
+            if (name != null) {
+                nameToServer.put(name, resolveServerInfo(name));
+            }
+        }
+        Map<SshServerInfo, SshExecResult> batchResult = execBatch(nameToServer.values(), command, options);
+        Map<String, SshExecResult> resultMap = new LinkedHashMap<>();
+        for (Map.Entry<String, SshServerInfo> entry : nameToServer.entrySet()) {
+            resultMap.put(entry.getKey(), batchResult.get(entry.getValue()));
+        }
+        return resultMap;
+    }
+
+    /**
+     * 在多个目标服务器上并发执行 Sudo 提权命令（字符串口令）
+     *
+     * @param servers      目标服务器集合
+     * @param command      待执行提权命令
+     * @param sudoPassword 提权口令
+     * @return 每个主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execSudoBatch(Collection<SshServerInfo> servers,
+                                                           String command,
+                                                           String sudoPassword) {
+        return execSudoBatch(servers, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在多个目标服务器上并发执行 Sudo 提权命令（字符串口令 + 扩展配置）
+     *
+     * @param servers      目标服务器集合
+     * @param command      待执行提权命令
+     * @param sudoPassword 提权口令
+     * @param options      扩展配置选项
+     * @return 每个主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execSudoBatch(Collection<SshServerInfo> servers,
+                                                           String command,
+                                                           String sudoPassword,
+                                                           SshExecOptions options) {
+        if (servers == null || servers.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Assert.hasText(command, "command must not be blank");
+
+        Executor targetExecutor = getEffectiveExecutor();
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+
+        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
+
+        for (SshServerInfo server : servers) {
+            if (server == null) {
+                continue;
+            }
+            Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
+                long start = System.currentTimeMillis();
+                try {
+                    return execSudo(server, command, sudoPassword, effectiveOptions);
+                } catch (Exception e) {
+                    log.warn("ateng-boot-ssh: 批量 Sudo 执行节点异常隔离 [{}]: {}", server.toSessionKey(), e.getMessage());
+                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
+                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    return SshExecResult.builder()
+                            .exitCode(-1)
+                            .stderr(errorMsg)
+                            .duration(duration)
+                            .build();
+                }
+            });
+
+            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
+        }
+
+        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
+
+        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
+        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
+            try {
+                resultMap.put(entry.getKey(), entry.getValue().join());
+            } catch (Exception e) {
+                resultMap.put(entry.getKey(), SshExecResult.builder()
+                        .exitCode(-1)
+                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
+                        .build());
+            }
+        }
+        return resultMap;
+    }
+
+    /**
+     * 在多个目标服务器上并发执行 Sudo 提权命令（字符数组口令）
+     *
+     * @param servers      目标服务器集合
+     * @param command      待执行提权命令
+     * @param sudoPassword 提权口令字符数组
+     * @return 每个主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execSudoBatch(Collection<SshServerInfo> servers,
+                                                           String command,
+                                                           char[] sudoPassword) {
+        return execSudoBatch(servers, command, sudoPassword, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在多个目标服务器上并发执行 Sudo 提权命令（字符数组口令 + 扩展配置）
+     *
+     * @param servers      目标服务器集合
+     * @param command      待执行提权命令
+     * @param sudoPassword 提权口令字符数组
+     * @param options      扩展配置选项
+     * @return 每个主机的执行结果映射字典
+     */
+    public Map<SshServerInfo, SshExecResult> execSudoBatch(Collection<SshServerInfo> servers,
+                                                           String command,
+                                                           char[] sudoPassword,
+                                                           SshExecOptions options) {
+        String pwdStr = sudoPassword != null ? new String(sudoPassword) : null;
+        try {
+            return execSudoBatch(servers, command, pwdStr, options);
+        } finally {
+            if (sudoPassword != null) {
+                java.util.Arrays.fill(sudoPassword, '\0');
+            }
+        }
+    }
+
+    @Override
+    public void destroy() {
+        close();
+    }
+
+    @Override
+    public void close() {
+        if (internalExecutor != null) {
+            internalExecutor.shutdown();
+        }
+    }
+
+    private Executor getEffectiveExecutor() {
+        if (this.executor != null) {
+            return this.executor;
+        }
+        if (this.internalExecutor == null) {
+            synchronized (this) {
+                if (this.internalExecutor == null) {
+                    ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+                    exec.setCorePoolSize(Math.max(2, Runtime.getRuntime().availableProcessors()));
+                    exec.setMaxPoolSize(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+                    exec.setQueueCapacity(200);
+                    exec.setThreadNamePrefix("ssh-batch-");
+                    exec.setWaitForTasksToCompleteOnShutdown(true);
+                    exec.setAwaitTerminationSeconds(5);
+                    exec.initialize();
+                    this.internalExecutor = exec;
+                }
+            }
+        }
+        return this.internalExecutor;
     }
 
     // ==========================================

@@ -14,9 +14,13 @@ import org.springframework.util.Assert;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
@@ -50,10 +54,37 @@ public final class SshCommandExecutor {
      * @param defaultTimeout 默认超时时长
      * @return 强类型命令执行结果
      */
+    /**
+     * 同步执行单条远程命令并捕获完整输出结果
+     *
+     * @param session        活跃客户端会话
+     * @param rawCommand     待执行的原始命令
+     * @param options        扩展配置选项（可为 null）
+     * @param defaultTimeout 默认超时时长
+     * @return 强类型命令执行结果
+     */
     public static SshExecResult executeSync(ClientSession session,
                                             String rawCommand,
                                             SshExecOptions options,
                                             Duration defaultTimeout) {
+        return executeSyncWithStdin(session, rawCommand, null, options, defaultTimeout);
+    }
+
+    /**
+     * 同步执行远程命令（支持向通道标准输入写入字节流，如 sudo 提权密码管道）
+     *
+     * @param session        活跃客户端会话
+     * @param rawCommand     待执行的原始命令
+     * @param stdinBytes     标准输入字节数据（写入后立即冲刷关闭输入管道，可为 null）
+     * @param options        扩展配置选项（可为 null）
+     * @param defaultTimeout 默认超时时长
+     * @return 强类型命令执行结果
+     */
+    public static SshExecResult executeSyncWithStdin(ClientSession session,
+                                                     String rawCommand,
+                                                     byte[] stdinBytes,
+                                                     SshExecOptions options,
+                                                     Duration defaultTimeout) {
         Assert.notNull(session, "ClientSession must not be null");
         Assert.hasText(rawCommand, "command must not be blank");
 
@@ -77,6 +108,16 @@ public final class SshCommandExecutor {
 
             // 开启通道并等待服务端确认
             channel.open().verify(timeout);
+
+            // 若存在标准输入数据，安全写入并立即冲刷关闭管道
+            if (stdinBytes != null && stdinBytes.length > 0) {
+                try (OutputStream in = channel.getInvertedIn()) {
+                    if (in != null) {
+                        in.write(stdinBytes);
+                        in.flush();
+                    }
+                }
+            }
 
             // 等待远程进程执行结束
             Set<ClientChannelEvent> events = channel.waitFor(EnumSet.of(ClientChannelEvent.CLOSED), timeout);
@@ -107,6 +148,91 @@ public final class SshCommandExecutor {
         } finally {
             closeChannelQuietly(channel);
         }
+    }
+
+    /**
+     * 执行原生 Sudo 提权命令（基于 -S -p '' 标准输入安全管道与即时内存擦除抹零）
+     *
+     * @param session        活跃客户端会话
+     * @param rawCommand     待以管理员权限执行的命令
+     * @param sudoPassword   提权密码（char 数组，传输完毕后由系统无条件就地擦除清零）
+     * @param options        扩展配置选项
+     * @param defaultTimeout 默认超时时长
+     * @return 强类型命令执行结果
+     */
+    public static SshExecResult executeSudo(ClientSession session,
+                                            String rawCommand,
+                                            char[] sudoPassword,
+                                            SshExecOptions options,
+                                            Duration defaultTimeout) {
+        Assert.notNull(session, "ClientSession must not be null");
+        Assert.hasText(rawCommand, "command must not be blank");
+
+        String sudoCommand = buildSudoCommand(rawCommand);
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        Charset charset = effectiveOptions.getCharset() != null ? effectiveOptions.getCharset() : StandardCharsets.UTF_8;
+
+        byte[] passwordBytes = null;
+        try {
+            if (sudoPassword != null && sudoPassword.length > 0) {
+                passwordBytes = encodePasswordWithNewline(sudoPassword, charset);
+            }
+            return executeSyncWithStdin(session, sudoCommand, passwordBytes, effectiveOptions, defaultTimeout);
+        } finally {
+            // 提权凭据内存绝对擦除抹零 (In-Memory Scrubbing)
+            if (passwordBytes != null) {
+                Arrays.fill(passwordBytes, (byte) 0);
+            }
+            if (sudoPassword != null) {
+                Arrays.fill(sudoPassword, '\0');
+            }
+        }
+    }
+
+    /**
+     * 执行原生 Sudo 提权命令（字符串密码重载）
+     *
+     * @param session        活跃客户端会话
+     * @param rawCommand     待以管理员权限执行的命令
+     * @param sudoPassword   提权密码字符串
+     * @param options        扩展配置选项
+     * @param defaultTimeout 默认超时时长
+     * @return 强类型命令执行结果
+     */
+    public static SshExecResult executeSudo(ClientSession session,
+                                            String rawCommand,
+                                            String sudoPassword,
+                                            SshExecOptions options,
+                                            Duration defaultTimeout) {
+        char[] chars = sudoPassword != null ? sudoPassword.toCharArray() : null;
+        return executeSudo(session, rawCommand, chars, options, defaultTimeout);
+    }
+
+    /**
+     * 构建非交互式标准 sudo 命令格式：自动挂载 -S（从标准输入读取密码）与 -p ''（屏蔽密码提示）
+     *
+     * @param rawCommand 原始命令
+     * @return 规整后的 sudo 执行命令
+     */
+    public static String buildSudoCommand(String rawCommand) {
+        Assert.hasText(rawCommand, "command must not be blank");
+        String trimmed = rawCommand.trim();
+        if (trimmed.startsWith("sudo -S -p '' ")) {
+            return trimmed;
+        }
+        if (trimmed.startsWith("sudo ")) {
+            return "sudo -S -p '' " + trimmed.substring(5).trim();
+        }
+        return "sudo -S -p '' " + trimmed;
+    }
+
+    private static byte[] encodePasswordWithNewline(char[] password, Charset charset) {
+        ByteBuffer byteBuffer = charset.encode(CharBuffer.wrap(password));
+        int len = byteBuffer.remaining();
+        byte[] bytes = new byte[len + 1];
+        byteBuffer.get(bytes, 0, len);
+        bytes[len] = '\n';
+        return bytes;
     }
 
     /**

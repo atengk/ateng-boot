@@ -108,4 +108,20 @@ class AtengSshAutoConfigurationTest {
                     assertThat(context.getBean(SshClient.class)).isSameAs(customClient);
                 });
     }
+
+    @Test
+    @DisplayName("测试当容器存在 taskExecutor 时平滑注入 SshTemplate")
+    void testTaskExecutorInjection() {
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor executor = new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        executor.initialize();
+        try {
+            contextRunner
+                    .withBean("taskExecutor", java.util.concurrent.Executor.class, () -> executor)
+                    .run(context -> {
+                        assertThat(context).hasSingleBean(io.github.atengk.boot.ssh.template.SshTemplate.class);
+                    });
+        } finally {
+            executor.shutdown();
+        }
+    }
 }
