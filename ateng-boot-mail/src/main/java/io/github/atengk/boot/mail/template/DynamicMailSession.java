@@ -260,4 +260,124 @@ public class DynamicMailSession {
         String renderedHtml = template.getTemplateRenderer().render(templateName, model);
         return sendHtmlAsync(to, subject, renderedHtml);
     }
+
+    // ==================== 本地事务感知发信门面 ====================
+
+    /**
+     * 事务提交后发信（当且仅当当前 Spring 物理事务 Commit 成功后触发）
+     *
+     * @param message 邮件消息模型
+     */
+    public void sendAfterCommit(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        template.sendAfterCommitWithAccount(account, message);
+    }
+
+    /**
+     * 事务提交后发信（函数式 DSL 方式）
+     *
+     * @param messageConfigurer 消息配置器
+     */
+    public void sendAfterCommit(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        sendAfterCommit(message);
+    }
+
+    /**
+     * 事务提交后异步发信（当且仅当当前 Spring 物理事务 Commit 成功后在受管线程池中触发）
+     *
+     * @param message 邮件消息模型
+     */
+    public void sendAsyncAfterCommit(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        template.sendAsyncAfterCommitWithAccount(account, message);
+    }
+
+    /**
+     * 事务提交后异步发信（函数式 DSL 方式）
+     *
+     * @param messageConfigurer 消息配置器
+     */
+    public void sendAsyncAfterCommit(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        sendAsyncAfterCommit(message);
+    }
+
+    public void sendTextAfterCommit(String to, String subject, String text) {
+        sendTextAfterCommit(to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAfterCommit(Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        sendAfterCommit(message);
+    }
+
+    public void sendHtmlAfterCommit(String to, String subject, String html) {
+        sendHtmlAfterCommit(to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAfterCommit(Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        sendAfterCommit(message);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendHtmlAfterCommit(to, subject, renderedHtml);
+    }
+
+    public void sendTextAsyncAfterCommit(String to, String subject, String text) {
+        sendTextAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAsyncAfterCommit(Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        sendAsyncAfterCommit(message);
+    }
+
+    public void sendHtmlAsyncAfterCommit(String to, String subject, String html) {
+        sendHtmlAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAsyncAfterCommit(Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        sendAsyncAfterCommit(message);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendHtmlAsyncAfterCommit(to, subject, renderedHtml);
+    }
 }

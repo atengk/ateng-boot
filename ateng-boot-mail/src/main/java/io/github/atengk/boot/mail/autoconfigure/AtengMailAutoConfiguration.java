@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
+import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
@@ -21,6 +22,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
@@ -31,6 +33,7 @@ import org.springframework.util.StringUtils;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
@@ -139,12 +142,16 @@ public class AtengMailAutoConfiguration {
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
                                      MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver,
                                      @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                     ObjectProvider<Executor> genericExecutorProvider) {
+                                     ObjectProvider<Executor> genericExecutorProvider,
+                                     ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+                                     ObjectProvider<List<MailSendFailureHandler>> failureHandlersProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable();
         if (executor == null) {
             executor = genericExecutorProvider.getIfAvailable();
         }
-        return new MailTemplate(registry, properties, templateRenderer, accountResolver, executor);
+        ApplicationEventPublisher eventPublisher = eventPublisherProvider.getIfAvailable();
+        List<MailSendFailureHandler> failureHandlers = failureHandlersProvider.getIfAvailable();
+        return new MailTemplate(registry, properties, templateRenderer, accountResolver, executor, eventPublisher, failureHandlers);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {

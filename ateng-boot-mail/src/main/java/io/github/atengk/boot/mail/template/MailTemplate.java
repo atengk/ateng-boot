@@ -4,8 +4,14 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.mail.event.MailSendEvent;
+import io.github.atengk.boot.mail.event.MailSendFailedEvent;
+import io.github.atengk.boot.mail.event.MailSendingEvent;
+import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailInlineResource;
@@ -13,6 +19,7 @@ import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.properties.MailRetryProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -24,15 +31,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.ClassUtils;
 
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,8 +58,9 @@ import java.util.stream.Collectors;
  * 邮件通信核心操作门面
  * <p>
  * 提供高层次命令式与函数式 DSL 发信接口，整合强类型 {@link MailMessage} 领域对象，
- * 支持多账号路由、受管异步发信与四维上下文透传、纯文本、HTML 与动态模板渲染、
- * RFC 6266 大附件流式防爆挂载、正交内联资源 (Inline CID) 以及确定性资源清理与因果异常转译。
+ * 支持多账号路由、受管异步发信与四维上下文透传、本地事务感知发信（{@code sendAfterCommit}）、
+ * 纯文本、HTML 与动态模板渲染、RFC 6266 大附件流式防爆挂载、正交内联资源 (Inline CID)、
+ * 弹性指数退避重试（{@link RetryUtil}）、三重失败补偿安全网（日志/事件/SPI）以及确定性资源清理。
  * </p>
  *
  * @author Ateng
@@ -56,6 +69,11 @@ import java.util.stream.Collectors;
 public class MailTemplate implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(MailTemplate.class);
+
+    private static final boolean SPRING_TX_PRESENT = ClassUtils.isPresent(
+            "org.springframework.transaction.support.TransactionSynchronizationManager",
+            MailTemplate.class.getClassLoader()
+    );
 
     private final MailAccountRegistry accountRegistry;
     private final MailProperties properties;
@@ -71,19 +89,29 @@ public class MailTemplate implements DisposableBean {
 
     private final boolean defaultExecutorCreated;
 
+    @Getter
+    private final ApplicationEventPublisher eventPublisher;
+
+    @Getter
+    private final List<MailSendFailureHandler> failureHandlers;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
-        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null);
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
-        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null);
+        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, executor, null, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
@@ -95,6 +123,8 @@ public class MailTemplate implements DisposableBean {
             this.executor = createDefaultExecutor();
             this.defaultExecutorCreated = true;
         }
+        this.eventPublisher = eventPublisher;
+        this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -169,6 +199,42 @@ public class MailTemplate implements DisposableBean {
         String domain = resolveDomain(account);
         String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
 
+        publishEvent(new MailSendingEvent(this, message));
+
+        try {
+            MailSendResult result;
+            MailRetryProperties retryProps = properties.getRetry();
+            if (retryProps != null && retryProps.isEnabled()) {
+                RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                        .maxAttempts(retryProps.getMaxAttempts())
+                        .delay(retryProps.getDelay())
+                        .multiplier(retryProps.getMultiplier())
+                        .maxDelay(retryProps.getMaxDelay())
+                        .jitter(retryProps.isJitter())
+                        .retryPredicate(this::isRetryableException)
+                        .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
+                                maskedTo, attempt, error.getMessage()))
+                        .build();
+                result = RetryUtil.execute(() -> doSendPhysical(account, message, maskedTo, traceId, messageId), retryConfig);
+            } else {
+                result = doSendPhysical(account, message, maskedTo, traceId, messageId);
+            }
+
+            publishEvent(new MailSentEvent(this, message, result));
+            return result;
+        } catch (Throwable t) {
+            triggerFailureSafetyNet(message, maskedTo, t);
+            if (t instanceof MailSendException mse) {
+                throw mse;
+            }
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送失败: " + t.getMessage(), t);
+        } finally {
+            // 确定性资源清理：释放所有流句柄与临时文件
+            message.close();
+        }
+    }
+
+    private MailSendResult doSendPhysical(MailAccount account, MailMessage message, String maskedTo, String traceId, String messageId) {
         log.info("Sending {} email via account [{}] to [{}], subject: [{}], messageId: [{}], attachments: {}, inlines: {}",
                 message.isHtml() ? "HTML" : "plaintext", account.getName(), maskedTo, message.getSubject(), messageId,
                 message.getAttachments() != null ? message.getAttachments().size() : 0,
@@ -266,9 +332,6 @@ public class MailTemplate implements DisposableBean {
         } catch (Exception e) {
             log.error("Unexpected error while sending email to [{}]: {}", maskedTo, e.getMessage(), e);
             throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送异常: " + e.getMessage(), e);
-        } finally {
-            // 确定性资源清理：释放所有流句柄与临时文件
-            message.close();
         }
     }
 
@@ -690,6 +753,334 @@ public class MailTemplate implements DisposableBean {
         return sendHtmlAsync(accountName, to, subject, renderedHtml);
     }
 
+    // ==================== 本地事务感知发信门面 (sendAfterCommit) ====================
+
+    /**
+     * 事务提交后发信（当且仅当当前 Spring 物理事务 Commit 成功后同步触发，事务回滚则自动取消防幽灵邮件）
+     * 若当前处于非事务上下文或未激活事务同步器，则平滑降级为立即执行发信。
+     *
+     * @param message 邮件消息模型
+     */
+    public void sendAfterCommit(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        if (isTxSynchronizationActive()) {
+            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                    try {
+                        parentSnapshot.apply();
+                        send(message);
+                    } catch (Throwable t) {
+                        log.error("Failed to execute sendAfterCommit to [{}]: {}", message.getTo(), t.getMessage(), t);
+                    } finally {
+                        previous.apply();
+                    }
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        String masked = (message.getTo() != null)
+                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                                : "";
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled mail delivery to [{}], subject: [{}]",
+                                status, masked, message.getSubject());
+                    }
+                }
+            });
+        } else {
+            send(message);
+        }
+    }
+
+    /**
+     * 指定发信账号在物理事务提交后发信
+     *
+     * @param account 发信账号模型
+     * @param message 邮件消息模型
+     */
+    public void sendAfterCommitWithAccount(MailAccount account, MailMessage message) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        if (isTxSynchronizationActive()) {
+            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                    try {
+                        parentSnapshot.apply();
+                        sendWithAccount(account, message);
+                    } catch (Throwable t) {
+                        log.error("Failed to execute sendAfterCommitWithAccount to [{}]: {}", message.getTo(), t.getMessage(), t);
+                    } finally {
+                        previous.apply();
+                    }
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        String masked = (message.getTo() != null)
+                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                                : "";
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled mail delivery to [{}], subject: [{}]",
+                                status, masked, message.getSubject());
+                    }
+                }
+            });
+        } else {
+            sendWithAccount(account, message);
+        }
+    }
+
+    /**
+     * 事务提交后发信（函数式 DSL 方式）
+     *
+     * @param messageConfigurer 邮件消息配置器
+     */
+    public void sendAfterCommit(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        sendAfterCommit(message);
+    }
+
+    /**
+     * 事务提交后异步发信（当且仅当当前 Spring 物理事务 Commit 成功后在受管线程池中触发）
+     * 若当前处于非事务上下文或未激活事务同步器，则平滑降级为立即执行异步发信。
+     *
+     * @param message 邮件消息模型
+     */
+    public void sendAsyncAfterCommit(MailMessage message) {
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        if (isTxSynchronizationActive()) {
+            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    executor.execute(() -> {
+                        AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                        try {
+                            parentSnapshot.apply();
+                            send(message);
+                        } catch (Throwable t) {
+                            log.error("Failed to execute sendAsyncAfterCommit to [{}]: {}", message.getTo(), t.getMessage(), t);
+                        } finally {
+                            previous.apply();
+                        }
+                    });
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        String masked = (message.getTo() != null)
+                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                                : "";
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled async mail delivery to [{}], subject: [{}]",
+                                status, masked, message.getSubject());
+                    }
+                }
+            });
+        } else {
+            sendAsync(message);
+        }
+    }
+
+    /**
+     * 指定发信账号在物理事务提交后异步发信
+     *
+     * @param account 发信账号模型
+     * @param message 邮件消息模型
+     */
+    public void sendAsyncAfterCommitWithAccount(MailAccount account, MailMessage message) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        if (isTxSynchronizationActive()) {
+            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    executor.execute(() -> {
+                        AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                        try {
+                            parentSnapshot.apply();
+                            sendWithAccount(account, message);
+                        } catch (Throwable t) {
+                            log.error("Failed to execute sendAsyncAfterCommitWithAccount to [{}]: {}", message.getTo(), t.getMessage(), t);
+                        } finally {
+                            previous.apply();
+                        }
+                    });
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                        String masked = (message.getTo() != null)
+                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                                : "";
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled async mail delivery to [{}], subject: [{}]",
+                                status, masked, message.getSubject());
+                    }
+                }
+            });
+        } else {
+            sendAsyncWithAccount(account, message);
+        }
+    }
+
+    /**
+     * 事务提交后异步发信（函数式 DSL 方式）
+     *
+     * @param messageConfigurer 邮件消息配置器
+     */
+    public void sendAsyncAfterCommit(Consumer<MailMessage> messageConfigurer) {
+        if (messageConfigurer == null) {
+            throw new IllegalArgumentException("messageConfigurer must not be null");
+        }
+        MailMessage message = new MailMessage();
+        messageConfigurer.accept(message);
+        sendAsyncAfterCommit(message);
+    }
+
+    // ==================== 事务感知发信快捷门面 ====================
+
+    public void sendTextAfterCommit(String to, String subject, String text) {
+        sendTextAfterCommit(null, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAfterCommit(String accountName, String to, String subject, String text) {
+        sendTextAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAfterCommit(Collection<String> to, String subject, String text) {
+        sendTextAfterCommit(null, to, subject, text);
+    }
+
+    public void sendTextAfterCommit(String accountName, Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        sendAfterCommit(message);
+    }
+
+    public void sendHtmlAfterCommit(String to, String subject, String html) {
+        sendHtmlAfterCommit(null, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAfterCommit(String accountName, String to, String subject, String html) {
+        sendHtmlAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAfterCommit(Collection<String> to, String subject, String html) {
+        sendHtmlAfterCommit(null, to, subject, html);
+    }
+
+    public void sendHtmlAfterCommit(String accountName, Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        sendAfterCommit(message);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAfterCommit(null, to, subject, templateName, model);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = templateRenderer.render(templateName, model);
+        sendHtmlAfterCommit(accountName, to, subject, renderedHtml);
+    }
+
+    public void sendTextAsyncAfterCommit(String to, String subject, String text) {
+        sendTextAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAsyncAfterCommit(String accountName, String to, String subject, String text) {
+        sendTextAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, text);
+    }
+
+    public void sendTextAsyncAfterCommit(Collection<String> to, String subject, String text) {
+        sendTextAsyncAfterCommit(null, to, subject, text);
+    }
+
+    public void sendTextAsyncAfterCommit(String accountName, Collection<String> to, String subject, String text) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .text(text);
+        sendAsyncAfterCommit(message);
+    }
+
+    public void sendHtmlAsyncAfterCommit(String to, String subject, String html) {
+        sendHtmlAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAsyncAfterCommit(String accountName, String to, String subject, String html) {
+        sendHtmlAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, html);
+    }
+
+    public void sendHtmlAsyncAfterCommit(Collection<String> to, String subject, String html) {
+        sendHtmlAsyncAfterCommit(null, to, subject, html);
+    }
+
+    public void sendHtmlAsyncAfterCommit(String accountName, Collection<String> to, String subject, String html) {
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to != null ? new ArrayList<>(to) : new ArrayList<>())
+                .subject(subject)
+                .html(html);
+        sendAsyncAfterCommit(message);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
+        String renderedHtml = templateRenderer.render(templateName, model);
+        sendHtmlAsyncAfterCommit(accountName, to, subject, renderedHtml);
+    }
+
     // ==================== 内部防御性校验与辅助逻辑 ====================
 
     /**
@@ -774,6 +1165,55 @@ public class MailTemplate implements DisposableBean {
             current = current.getCause();
         }
         return false;
+    }
+
+    private void publishEvent(MailSendEvent event) {
+        if (eventPublisher != null) {
+            try {
+                eventPublisher.publishEvent(event);
+            } catch (Throwable t) {
+                log.warn("Failed to publish mail event [{}]: {}", event.getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
+    }
+
+    private void triggerFailureSafetyNet(MailMessage message, String maskedTo, Throwable cause) {
+        log.error("[MailSafetyNet] Physical mail delivery to [{}] failed critically for subject [{}]: {}",
+                maskedTo, message.getSubject(), cause.getMessage(), cause);
+
+        publishEvent(new MailSendFailedEvent(this, message, cause));
+
+        if (!failureHandlers.isEmpty()) {
+            for (MailSendFailureHandler handler : failureHandlers) {
+                try {
+                    handler.onFailure(message, cause);
+                } catch (Throwable handlerEx) {
+                    log.error("[MailSafetyNet] MailSendFailureHandler [{}] executed with error: {}",
+                            handler.getClass().getName(), handlerEx.getMessage(), handlerEx);
+                }
+            }
+        }
+    }
+
+    private boolean isRetryableException(Throwable throwable) {
+        if (throwable instanceof MailAuthenticationException) {
+            return false;
+        }
+        if (throwable instanceof MailSendException mse) {
+            if (mse.getResultCode() == MailResultCode.MAIL_AUTHENTICATION_ERROR
+                    || mse.getResultCode() == MailResultCode.MAIL_ACCOUNT_NOT_FOUND
+                    || mse.getResultCode() == MailResultCode.MAIL_RECIPIENT_EMPTY
+                    || mse.getResultCode() == MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED
+                    || mse.getResultCode() == MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isTxSynchronizationActive() {
+        return SPRING_TX_PRESENT && TransactionSynchronizationManager.isActualTransactionActive()
+                && TransactionSynchronizationManager.isSynchronizationActive();
     }
 
     @Override

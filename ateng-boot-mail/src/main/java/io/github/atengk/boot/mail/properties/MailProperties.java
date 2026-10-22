@@ -114,4 +114,10 @@ public class MailProperties {
      */
     @NestedConfigurationProperty
     private Map<String, MailAccountProperties> accounts = new LinkedHashMap<>();
+
+    /**
+     * 物理发信网络抖动指数退避重试配置
+     */
+    @NestedConfigurationProperty
+    private MailRetryProperties retry = new MailRetryProperties();
 }

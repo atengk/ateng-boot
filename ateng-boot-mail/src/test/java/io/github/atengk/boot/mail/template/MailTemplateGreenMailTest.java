@@ -5,8 +5,13 @@ import com.icegreen.greenmail.junit5.GreenMailExtension;
 import com.icegreen.greenmail.util.ServerSetupTest;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mail.event.MailSendEvent;
+import io.github.atengk.boot.mail.event.MailSendFailedEvent;
+import io.github.atengk.boot.mail.event.MailSendingEvent;
+import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -25,12 +30,16 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.MDC;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.unit.DataSize;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +47,8 @@ import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -124,6 +135,10 @@ class MailTemplateGreenMailTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        TransactionSynchronizationManager.setActualTransactionActive(false);
         accountRegistry.clearDynamic();
         if (mailTemplate != null) {
             mailTemplate.destroy();
@@ -724,5 +739,243 @@ class MailTemplateGreenMailTest {
         assertInstanceOf(MailSendException.class, ex.getCause());
         MailSendException mailEx = (MailSendException) ex.getCause();
         assertEquals(MailResultCode.MAIL_RECIPIENT_EMPTY, mailEx.getResultCode());
+    }
+
+    @Test
+    @DisplayName("测试事务提交后发信(sendAfterCommit)：仅在事务物理提交后发出邮件")
+    void testSendAfterCommitWithTransactionCommitted() throws Exception {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        try {
+            mailTemplate.sendTextAfterCommit("tx-success@example.com", "事务成功通知", "订单已创建成功！");
+
+            // 尚未触发 afterCommit，此时不应发出任何物理邮件
+            assertEquals(0, greenMail.getReceivedMessages().length);
+
+            // 模拟 Spring 事务提交完成
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+                sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+
+            // 验证已物理发信成功
+            assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+            MimeMessage[] msgs = greenMail.getReceivedMessages();
+            assertEquals(1, msgs.length);
+            assertEquals("事务成功通知", msgs[0].getSubject());
+            assertEquals("tx-success@example.com", msgs[0].getAllRecipients()[0].toString());
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    @DisplayName("测试事务回滚发信(sendAfterCommit)：事务回滚自动取消发信，邮件数为0")
+    void testSendAfterCommitWithTransactionRolledBack() throws Exception {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        try {
+            mailTemplate.sendTextAfterCommit("tx-fail@example.com", "幽灵邮件测试", "该邮件绝不能被发送！");
+
+            // 尚未触发提交或回滚
+            assertEquals(0, greenMail.getReceivedMessages().length);
+
+            // 模拟 Spring 事务发生异常回滚
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+            }
+
+            // 等待并验证绝对没有收到任何邮件
+            assertFalse(greenMail.waitForIncomingEmail(1000, 1));
+            assertEquals(0, greenMail.getReceivedMessages().length, "事务回滚时必须彻底取消发信，杜绝幽灵邮件");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    @DisplayName("测试事务提交后异步发信(sendAsyncAfterCommit)：提交后在受管线程池中成功发送")
+    void testSendAsyncAfterCommitWithTransactionCommitted() throws Exception {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        try {
+            mailTemplate.sendTextAsyncAfterCommit("tx-async@example.com", "事务异步通知", "异步发信测试");
+
+            assertEquals(0, greenMail.getReceivedMessages().length);
+
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+                sync.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+            }
+
+            assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+            MimeMessage[] msgs = greenMail.getReceivedMessages();
+            assertEquals(1, msgs.length);
+            assertEquals("事务异步通知", msgs[0].getSubject());
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    @Test
+    @DisplayName("测试无事务上下文时 sendAfterCommit 平滑降级立即物理发信")
+    void testSendAfterCommitWithoutTransactionFallback() throws Exception {
+        assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+
+        mailTemplate.sendTextAfterCommit("no-tx@example.com", "无事务通知", "无事务降级发信");
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(1, msgs.length);
+        assertEquals("无事务通知", msgs[0].getSubject());
+    }
+
+    @Test
+    @DisplayName("测试物理发信网络抖动时联动 RetryUtil 执行指数退避重试并成功恢复")
+    void testRetryOnTemporaryFailureAndRecover() throws Exception {
+        mailProperties.getRetry().setEnabled(true);
+        mailProperties.getRetry().setMaxAttempts(3);
+        mailProperties.getRetry().setDelay(Duration.ofMillis(50));
+        mailProperties.getRetry().setMultiplier(1.5);
+        mailProperties.getRetry().setJitter(false);
+
+        int smtpPort = greenMail.getSmtp().getPort();
+        JavaMailSenderImpl realSender = new JavaMailSenderImpl();
+        realSender.setHost("127.0.0.1");
+        realSender.setPort(smtpPort);
+        realSender.setUsername("test@atengk.com");
+        realSender.setPassword("password");
+
+        AtomicInteger attemptCounter = new AtomicInteger(0);
+        MailAccount retryAccount = MailAccount.builder()
+                .name("retry-account")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("retry@atengk.com")
+                .sender(new JavaMailSenderImpl() {
+                    @Override
+                    public void send(jakarta.mail.internet.MimeMessage mimeMessage) {
+                        if (attemptCounter.incrementAndGet() < 2) {
+                            throw new org.springframework.mail.MailSendException("Connection reset by peer (mock network glitch)");
+                        }
+                        realSender.send(mimeMessage);
+                    }
+                })
+                .build();
+        accountRegistry.register(retryAccount);
+
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .account("retry-account")
+                .to("retry-user@example.com")
+                .subject("重试成功通知")
+                .text("网络抖动后重试成功"));
+
+        assertTrue(result.isSuccess());
+        assertEquals(2, attemptCounter.get(), "应在第 2 次尝试重试成功");
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(1, msgs.length);
+        assertEquals("重试成功通知", msgs[0].getSubject());
+    }
+
+    @Test
+    @DisplayName("测试物理发信最终失败时触发三重安全网：脱敏日志、事件广播与 SPI 回调")
+    void testFailureSafetyNetTriggered() {
+        AtomicReference<MailMessage> failedMsgHolder = new AtomicReference<>();
+        AtomicReference<Throwable> failedCauseHolder = new AtomicReference<>();
+
+        MailSendFailureHandler failureHandler = (msg, cause) -> {
+            failedMsgHolder.set(msg);
+            failedCauseHolder.set(cause);
+        };
+
+        AtomicReference<MailSendFailedEvent> eventHolder = new AtomicReference<>();
+        ApplicationEventPublisher eventPublisher = event -> {
+            if (event instanceof MailSendFailedEvent failedEvent) {
+                eventHolder.set(failedEvent);
+            }
+        };
+
+        MailTemplate customTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                eventPublisher, List.of(failureHandler));
+
+        MailAccount deadAccount = MailAccount.builder()
+                .name("dead-account")
+                .host("127.0.0.1")
+                .port(59999)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .sender(new JavaMailSenderImpl() {
+                    @Override
+                    public void send(jakarta.mail.internet.MimeMessage mimeMessage) {
+                        throw new org.springframework.mail.MailSendException("Connection refused");
+                    }
+                })
+                .build();
+        accountRegistry.register(deadAccount);
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                customTemplate.send(msg -> msg
+                        .account("dead-account")
+                        .to("dead-target@example.com")
+                        .subject("失败测试")
+                        .text("必然失败内容")));
+
+        assertNotNull(ex);
+
+        // 验证 SPI 回调被成功触发
+        assertNotNull(failedMsgHolder.get(), "三重安全网之 MailSendFailureHandler SPI 必须被成功触发");
+        assertEquals("dead-account", failedMsgHolder.get().getAccount());
+        assertNotNull(failedCauseHolder.get(), "SPI 回调必须完整保留原始失败因果链");
+
+        // 验证 Spring 事件被广播
+        assertNotNull(eventHolder.get(), "三重安全网之 MailSendFailedEvent 事件必须被成功广播");
+        assertEquals("dead-account", eventHolder.get().getMessage().getAccount());
+        assertEquals(failedCauseHolder.get(), eventHolder.get().getCause());
+
+        customTemplate.destroy();
+    }
+
+    @Test
+    @DisplayName("测试发信生命周期事件正常发布：MailSendingEvent 与 MailSentEvent")
+    void testLifecycleEventsPublished() throws Exception {
+        AtomicBoolean sendingEventFired = new AtomicBoolean(false);
+        AtomicReference<MailSentEvent> sentEventHolder = new AtomicReference<>();
+
+        ApplicationEventPublisher eventPublisher = event -> {
+            if (event instanceof MailSendingEvent) {
+                sendingEventFired.set(true);
+            } else if (event instanceof MailSentEvent sentEvent) {
+                sentEventHolder.set(sentEvent);
+            }
+        };
+
+        MailTemplate eventTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                eventPublisher, List.of());
+
+        MailSendResult result = eventTemplate.sendText("event-user@example.com", "生命周期测试", "测试发信事件发布");
+
+        assertTrue(result.isSuccess());
+        assertTrue(sendingEventFired.get(), "发信前必须发布 MailSendingEvent");
+        assertNotNull(sentEventHolder.get(), "发信成功后必须发布 MailSentEvent");
+        assertEquals(result, sentEventHolder.get().getResult(), "MailSentEvent 回执必须与发信返回结果一致");
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+        eventTemplate.destroy();
     }
 }

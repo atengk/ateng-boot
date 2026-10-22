@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
+import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -178,6 +179,20 @@ class AtengMailAutoConfigurationTest {
                     MailTemplate template = context.getBean(MailTemplate.class);
                     assertThat(template.getExecutor()).isNotNull();
                     assertThat(template.getExecutor()).isInstanceOf(ThreadPoolTaskExecutor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义声明 MailSendFailureHandler 时自动注入 MailTemplate")
+    void testMailSendFailureHandlerInjected() {
+        MailSendFailureHandler customHandler = (msg, cause) -> {};
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean("customFailureHandler", MailSendFailureHandler.class, () -> customHandler)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getFailureHandlers()).contains(customHandler);
                 });
     }
 }
