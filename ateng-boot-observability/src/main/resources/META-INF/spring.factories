@@ -1,0 +1,3 @@
+# EnvironmentPostProcessors
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  io.github.atengk.boot.observability.env.ObservabilityEnvironmentPostProcessor
