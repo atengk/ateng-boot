@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 依赖聚合全家桶（一键全量引入 core、web、mybatis-plus、redis、excel、satoken、storage、http、kafka）</description>
+    <description>ateng-boot 依赖聚合全家桶（一键全量引入 core、web、mybatis-plus、redis、excel、satoken、storage、http、realtime）</description>
 
     <dependencies>
         <dependency>
@@ -51,7 +51,7 @@
         </dependency>
         <dependency>
             <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-kafka</artifactId>
+            <artifactId>ateng-boot-realtime</artifactId>
         </dependency>
     </dependencies>
 </project>

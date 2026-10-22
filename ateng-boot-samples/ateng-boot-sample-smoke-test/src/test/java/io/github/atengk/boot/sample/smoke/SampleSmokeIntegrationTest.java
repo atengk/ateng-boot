@@ -8,6 +8,8 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.smoke.entity.SmokeRecordEntity;
 import io.github.atengk.boot.sample.smoke.mapper.SmokeRecordMapper;
+import io.github.atengk.boot.http.template.HttpTemplate;
+import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import io.github.atengk.boot.storage.template.StorageTemplate;
 import jakarta.validation.Validator;
 import org.junit.jupiter.api.AfterEach;
@@ -59,6 +61,12 @@ class SampleSmokeIntegrationTest {
     @Autowired
     private StorageTemplate storageTemplate;
 
+    @Autowired
+    private HttpTemplate httpTemplate;
+
+    @Autowired
+    private RealtimeTemplate realtimeTemplate;
+
     @BeforeEach
     @AfterEach
     void resetContexts() {
@@ -74,6 +82,9 @@ class SampleSmokeIntegrationTest {
         assertThat(validator).isNotNull();
         assertThat(smokeRecordMapper).isNotNull();
         assertThat(storageTemplate).isNotNull();
+        assertThat(httpTemplate).isNotNull();
+        assertThat(realtimeTemplate).isNotNull();
+        assertThat(realtimeTemplate.getOnlineUserCount()).isEqualTo(0);
         assertThat(SaManager.getStpInterface()).isNotNull();
         assertThat(SaManager.getConfig()).isNotNull();
     }

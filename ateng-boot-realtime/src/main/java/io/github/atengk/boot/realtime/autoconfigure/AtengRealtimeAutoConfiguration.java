@@ -266,13 +266,30 @@ public class AtengRealtimeAutoConfiguration {
 
         /**
          * 自动调优底座容器缓冲区（64KB 文本/二进制缓冲区，10s 异步发送超时）
+         * 防御性探测 ServletContext 是否挂载真实 ServerContainer，兼容 MockMvc 测试环境
          */
         @Bean
         @ConditionalOnMissingBean(ServletServerContainerFactoryBean.class)
         @ConditionalOnClass(ServletServerContainerFactoryBean.class)
         @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
         public ServletServerContainerFactoryBean createWebSocketContainer(RealtimeProperties properties) {
-            ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+            ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean() {
+                private jakarta.servlet.ServletContext context;
+
+                @Override
+                public void setServletContext(jakarta.servlet.ServletContext servletContext) {
+                    this.context = servletContext;
+                    super.setServletContext(servletContext);
+                }
+
+                @Override
+                public void afterPropertiesSet() {
+                    if (this.context != null && this.context.getAttribute("jakarta.websocket.server.ServerContainer") == null) {
+                        return;
+                    }
+                    super.afterPropertiesSet();
+                }
+            };
             container.setMaxTextMessageBufferSize((int) properties.getWebsocket().getMaxTextMessageBufferSize().toBytes());
             container.setMaxBinaryMessageBufferSize((int) properties.getWebsocket().getMaxBinaryMessageBufferSize().toBytes());
             container.setAsyncSendTimeout(properties.getWebsocket().getAsyncSendTimeout().toMillis());
