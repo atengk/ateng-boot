@@ -1,8 +1,11 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
+import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.model.MailAccount;
+import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -287,6 +290,38 @@ class AtengMailAutoConfigurationTest {
                     assertThat(context).hasSingleBean(MailTemplate.class);
                     MailTemplate template = context.getBean(MailTemplate.class);
                     assertThat(template.getInterceptors()).contains(customInterceptor);
+                });
+    }
+
+    @Test
+    @DisplayName("广播 MailAccountEvictEvent 领域事件通过 Spring 事件总线派发并精准注销动态账号")
+    void testMailAccountEvictEventDispatchedViaSpringEventBus() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
+                    MailProperties properties = context.getBean(MailProperties.class);
+
+                    // 编程式注册动态账号
+                    MailAccount dynamicAcc = MailAccount.builder()
+                            .name("event-test-acc")
+                            .host("smtp.dynamic.com")
+                            .port(465)
+                            .username("dynamic@dynamic.com")
+                            .password("secret")
+                            .build();
+                    registry.getOrCreateDynamic("event-test-acc", dynamicAcc, properties);
+                    assertThat(registry.getDynamic("event-test-acc")).isNotNull();
+
+                    // 1. 发布指定账号的驱逐事件
+                    context.publishEvent(new MailAccountEvictEvent(this, "event-test-acc"));
+                    assertThat(registry.getDynamic("event-test-acc")).isNull();
+
+                    // 2. 再次注册并测试全量驱逐事件
+                    registry.getOrCreateDynamic("event-test-acc-2", dynamicAcc, properties);
+                    assertThat(registry.dynamicSize()).isGreaterThan(0);
+                    context.publishEvent(new MailAccountEvictEvent(this, null));
+                    assertThat(registry.dynamicSize()).isEqualTo(0);
                 });
     }
 }

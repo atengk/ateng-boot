@@ -48,19 +48,16 @@ public class MailAccountRegistry {
                 ? defaultAccountName
                 : "default";
         this.maxDynamicAccounts = maxDynamicAccounts > 0 ? maxDynamicAccounts : 100;
-        this.dynamicAccountLruCache = Collections.synchronizedMap(
+        this.dynamicAccountLruCache = createLruMap(this.maxDynamicAccounts);
+        this.dynamicAccountByNameCache = createLruMap(this.maxDynamicAccounts);
+    }
+
+    private static <K, V> Map<K, V> createLruMap(int maxCapacity) {
+        return Collections.synchronizedMap(
                 new LinkedHashMap<>(16, 0.75f, true) {
                     @Override
-                    protected boolean removeEldestEntry(Map.Entry<String, MailAccount> eldest) {
-                        return size() > MailAccountRegistry.this.maxDynamicAccounts;
-                    }
-                }
-        );
-        this.dynamicAccountByNameCache = Collections.synchronizedMap(
-                new LinkedHashMap<>(16, 0.75f, true) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<String, MailAccount> eldest) {
-                        return size() > MailAccountRegistry.this.maxDynamicAccounts;
+                    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                        return size() > maxCapacity;
                     }
                 }
         );
@@ -233,6 +230,14 @@ public class MailAccountRegistry {
         MailAccount removed = dynamicAccountByNameCache.remove(name);
         if (removed != null) {
             dynamicAccountLruCache.remove(removed.toFingerprint());
+        } else {
+            // 防御性补偿：若 nameCache 已被淘汰但指纹缓存仍残留该名称的 Sender 账号，遍历移除
+            synchronized (dynamicAccountLruCache) {
+                dynamicAccountLruCache.entrySet().removeIf(entry -> {
+                    MailAccount acc = entry.getValue();
+                    return acc != null && name.equals(acc.getName());
+                });
+            }
         }
         return removed;
     }

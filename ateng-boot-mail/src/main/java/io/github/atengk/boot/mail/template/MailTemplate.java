@@ -186,7 +186,7 @@ public class MailTemplate implements DisposableBean {
 
     private MailAccount resolveAccount(MailMessage message) {
         String explicitAccountName = message.getAccount();
-        if (explicitAccountName != null && !explicitAccountName.isBlank()) {
+        if (explicitAccountName != null) {
             // 显式指定账号：三级检索（静态表 -> 动态LRU -> Provider懒加载）
             MailAccount account = findAccount(explicitAccountName);
             if (account == null) {
@@ -1281,22 +1281,14 @@ public class MailTemplate implements DisposableBean {
 
     @Override
     public void destroy() {
-        if (defaultExecutorCreated) {
-            if (executor instanceof ThreadPoolTaskExecutor taskExecutor) {
-                log.info("Shutting down default mail ThreadPoolTaskExecutor");
-                taskExecutor.destroy();
-            } else if (executor instanceof AutoCloseable closeable) {
-                try {
-                    closeable.close();
-                } catch (Exception e) {
-                    log.warn("Error closing default mail executor: {}", e.getMessage(), e);
-                }
-            }
+        if (defaultExecutorCreated && executor instanceof ThreadPoolTaskExecutor taskExecutor) {
+            log.info("Shutting down default mail ThreadPoolTaskExecutor");
+            taskExecutor.destroy();
         }
     }
 
     private static ThreadPoolTaskExecutor createDefaultExecutor(AsyncPoolProperties pool) {
-        ThreadPoolTaskExecutor executor = AsyncExecutorFactory.createPlatformExecutor("mail-async-", pool);
+        ThreadPoolTaskExecutor executor = AsyncExecutorFactory.createPlatformExecutor("mail", pool);
         executor.initialize();
         return executor;
     }

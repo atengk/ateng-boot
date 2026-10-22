@@ -5,10 +5,13 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
 import io.github.atengk.boot.sample.mail.service.MailScenarioService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.concurrent.CompletableFuture;
@@ -25,6 +28,7 @@ import java.util.concurrent.CompletableFuture;
 @RestController
 @RequestMapping("/api/mail")
 @RequiredArgsConstructor
+@Validated
 public class MailScenarioController {
 
     private final MailScenarioService mailScenarioService;
@@ -103,14 +107,7 @@ public class MailScenarioController {
      */
     @PostMapping("/account")
     public Result<MailSendResult> sendByAccount(@Valid @RequestBody SendMailRequest request) {
-        MailSendResult result = mailScenarioService.sendByAccount(
-                request.getAccount(),
-                request.getTo(),
-                request.getSubject(),
-                request.getContent(),
-                request.getFrom(),
-                request.getFromName()
-        );
+        MailSendResult result = mailScenarioService.sendByAccount(request);
         return Result.success(result);
     }
 
@@ -121,7 +118,7 @@ public class MailScenarioController {
      * @return 驱逐结果
      */
     @PostMapping("/evict")
-    public Result<Boolean> evictDynamicAccount(String accountName) {
+    public Result<Boolean> evictDynamicAccount(@RequestParam @NotBlank(message = "账号标识不能为空") String accountName) {
         mailScenarioService.evictDynamicAccount(accountName);
         return Result.success(true);
     }
@@ -133,7 +130,7 @@ public class MailScenarioController {
      * @return 广播结果
      */
     @PostMapping("/broadcast-evict")
-    public Result<Boolean> broadcastEvict(String accountName) {
+    public Result<Boolean> broadcastEvict(@RequestParam(required = false) String accountName) {
         mailScenarioService.publishEvictEvent(accountName);
         return Result.success(true);
     }

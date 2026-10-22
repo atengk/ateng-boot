@@ -6,6 +6,7 @@ import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
+import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,6 +146,20 @@ public class MailScenarioService {
     public MailSendResult sendWithDynamicAccount(MailAccount account, String to, String subject, String text) {
         log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), to);
         return mailTemplate.forDynamicAccount(account).sendText(to, subject, text);
+    }
+
+    /**
+     * 指定发信请求模型发送邮件（结构化入参收敛，杜绝长参数数据泥团）
+     *
+     * @param request 发信请求参数
+     * @return 发信结果
+     */
+    public MailSendResult sendByAccount(SendMailRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("SendMailRequest must not be null");
+        }
+        return sendByAccount(request.getAccount(), request.getTo(), request.getSubject(),
+                request.getContent(), request.getFrom(), request.getFromName());
     }
 
     /**

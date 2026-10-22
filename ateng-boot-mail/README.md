@@ -221,7 +221,7 @@ public MailAccountResolver customAccountResolver() {
 ```
 
 ### 3.5 外部介质动态发件账号供给 SPI (`MailAccountProvider`)
-当发信账号存储在数据库、分布式配置中心或秘密管理器中时，实现 `MailAccountProvider` 并注入为 Spring Bean。业务方在持久层读取密文后自行解密并向框架传递真明文凭据（捍卫 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md) 内存真明文契约）：
+当发信账号存储在数据库、分布式配置中心或秘密管理器中时，实现 `MailAccountProvider` 并注入为 Spring Bean。业务方在持久层读取密文后自行解密并向框架传递真明文凭据（捍卫 [ADR-0012](../docs/adr/0012-lifecycle-separated-data-security.md) 内存真明文契约）：
 
 ```java
 @Component
@@ -237,8 +237,8 @@ public class DatabaseMailAccountProvider implements MailAccountProvider {
             return null;
         }
 
-        // 业务层自主解密存储密文，框架内始终保持内存真明文
-        String plainPassword = AesUtil.decrypt(entity.getEncryptedPassword());
+        // 业务层自主解密存储密文（例如通过 Core 的 CryptoUtil 或业务解密方法），框架内始终保持内存真明文
+        String plainPassword = CryptoUtil.aesDecrypt(entity.getEncryptedPassword(), secretKey);
 
         return MailAccount.builder()
                 .name(entity.getAccountName())

@@ -63,13 +63,22 @@ public class SampleDatabaseMailAccountProvider implements MailAccountProvider {
     }
 
     /**
+     * 向模拟数据库保存或更新账号记录（对象聚合方式）
+     */
+    public void saveAccount(DbAccountRecord record) {
+        if (record != null && record.accountName() != null) {
+            mockDatabase.put(record.accountName(), record);
+            log.info("Saved dynamic account [{}] to mock database", record.accountName());
+        }
+    }
+
+    /**
      * 向模拟数据库保存或更新账号记录
      */
     public void saveAccount(String accountName, String host, int port, String username, String plainPassword,
                             boolean ssl, String defaultFrom, String defaultFromName) {
         String encrypted = encryptPassword(plainPassword);
-        mockDatabase.put(accountName, new DbAccountRecord(accountName, host, port, username, encrypted, ssl, defaultFrom, defaultFromName));
-        log.info("Saved dynamic account [{}] to mock database with encrypted password", accountName);
+        saveAccount(new DbAccountRecord(accountName, host, port, username, encrypted, ssl, defaultFrom, defaultFromName));
     }
 
     /**

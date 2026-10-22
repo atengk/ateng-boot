@@ -42,6 +42,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.MDC;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.unit.DataSize;
@@ -787,6 +788,43 @@ class MailTemplateGreenMailTest {
     }
 
     @Test
+    @DisplayName("测试异步发信执行器线程名前缀标识及停机销毁清理")
+    void testAsyncExecutorThreadPrefixAndShutdownCleanup() throws Exception {
+        AtomicReference<String> asyncThreadName = new AtomicReference<>();
+        MailSendInterceptor interceptor = message -> {
+            asyncThreadName.set(Thread.currentThread().getName());
+            return true;
+        };
+
+        MailTemplate customTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), null, null, null, null, List.of(interceptor)
+        );
+
+        try {
+            CompletableFuture<MailSendResult> future = customTemplate.sendTextAsync(
+                    "thread-test@example.com", "线程名验证", "正文内容");
+            MailSendResult result = future.join();
+            assertTrue(result.isSuccess());
+
+            assertNotNull(asyncThreadName.get(), "拦截器必须捕获到异步发信线程");
+            assertTrue(asyncThreadName.get().startsWith("mail-async-"),
+                    "异步执行器线程名必须以 mail-async- 为前缀，实际为: " + asyncThreadName.get());
+
+            // 验证执行器为受管 ThreadPoolTaskExecutor 且未关闭
+            assertTrue(customTemplate.getExecutor() instanceof ThreadPoolTaskExecutor);
+            ThreadPoolTaskExecutor taskExecutor = (ThreadPoolTaskExecutor) customTemplate.getExecutor();
+            assertFalse(taskExecutor.getThreadPoolExecutor().isShutdown(), "销毁前底层线程池必须活跃");
+
+            // 停机销毁验证
+            customTemplate.destroy();
+            assertTrue(taskExecutor.getThreadPoolExecutor().isShutdown(), "调用 destroy 后底层线程池必须被物理关闭");
+        } finally {
+            customTemplate.destroy();
+        }
+    }
+
+    @Test
     @DisplayName("测试动态编程式账号的异步发信门面与 LRU 缓存复用")
     void testDynamicMailSessionAsync() throws Exception {
         int smtpPort = greenMail.getSmtp().getPort();
@@ -1282,6 +1320,20 @@ class MailTemplateGreenMailTest {
         assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, ex.getResultCode(), "显式指定不存在账号必须抛出 MAIL_ACCOUNT_NOT_FOUND");
         assertTrue(ex.getMessage().contains("non-existent-vip-account"));
         assertEquals(0, greenMail.getReceivedMessages().length, "防张冠李戴防线生效：严禁回退错发至全局默认系统邮箱");
+    }
+
+    @Test
+    @DisplayName("测试显式指定空白账号名同样严格快速失败防错发（双轨防张冠李戴防线）")
+    void testExplicitBlankAccountNotFoundFailFast() {
+        MailMessage message = new MailMessage()
+                .account("   ")
+                .to("client@example.com")
+                .subject("机密财报")
+                .text("测试空白显式账号");
+
+        MailSendException ex = assertThrows(MailSendException.class, () -> mailTemplate.send(message));
+        assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, ex.getResultCode(), "显式指定空白账号同样必须抛出 MAIL_ACCOUNT_NOT_FOUND");
+        assertEquals(0, greenMail.getReceivedMessages().length, "严禁将显式空白账号穿透回退至默认系统邮箱");
     }
 
     @Test
