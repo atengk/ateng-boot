@@ -10,7 +10,12 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import jakarta.mail.BodyPart;
+import jakarta.mail.Multipart;
+import jakarta.mail.Part;
 import jakarta.mail.internet.MimeMessage;
+import jakarta.mail.internet.MimeMultipart;
+import jakarta.mail.internet.MimeUtility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -18,11 +23,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.MDC;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
+import org.springframework.util.unit.DataSize;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -217,5 +226,190 @@ class MailTemplateGreenMailTest {
         MailSendException ex = assertThrows(MailSendException.class, () ->
                 mailTemplate.sendText("non-existent-account", "test@test.com", "标题", "内容"));
         assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("测试发送带中文附件与普通文件的多附件邮件并验证物理报文")
+    void testSendMailMessageWithAttachments() throws Exception {
+        byte[] excelContent = "xlsx fake binary content".getBytes(StandardCharsets.UTF_8);
+        byte[] textContent = "hello text attachment".getBytes(StandardCharsets.UTF_8);
+
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .to("attach-recipient@example.com")
+                .subject("月度业务与财务汇总")
+                .text("请查收附件详情。")
+                .attach("财务报表_202610.xlsx", excelContent)
+                .attach("readme.txt", textContent));
+
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+
+        assertEquals("月度业务与财务汇总", message.getSubject());
+        assertTrue(message.getContent() instanceof MimeMultipart);
+        MimeMultipart multipart = (MimeMultipart) message.getContent();
+
+        boolean foundExcel = false;
+        boolean foundTxt = false;
+
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            String rawFileName = part.getFileName();
+            if (rawFileName != null) {
+                String decodedName = MimeUtility.decodeText(rawFileName);
+                if (decodedName.contains("财务报表_202610.xlsx")) {
+                    foundExcel = true;
+                } else if (decodedName.contains("readme.txt")) {
+                    foundTxt = true;
+                }
+            }
+        }
+
+        assertTrue(foundExcel, "应在邮件报文中解析出中文附件 财务报表_202610.xlsx");
+        assertTrue(foundTxt, "应在邮件报文中解析出附件 readme.txt");
+    }
+
+    @Test
+    @DisplayName("测试发送带正交内嵌图片 CID 资源的富文本 HTML 邮件")
+    void testSendMailMessageWithInlineResource() throws Exception {
+        byte[] imageBytes = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+        String htmlContent = "<h1>企业通知</h1><img src='cid:companyLogo' alt='Logo'/><p>欢迎体验。</p>";
+
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .to("inline-user@example.com")
+                .subject("带图通知")
+                .html(htmlContent)
+                .inline("companyLogo", imageBytes, "image/png"));
+
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+
+        boolean foundCid = findPart(message, part -> {
+            try {
+                String[] contentIdHeader = part.getHeader("Content-ID");
+                if (contentIdHeader != null && contentIdHeader.length > 0) {
+                    return contentIdHeader[0].contains("companyLogo");
+                }
+            } catch (Exception ignored) {
+            }
+            return false;
+        });
+
+        assertTrue(foundCid, "应在邮件多部分中正确找到绑定 cid:companyLogo 的内嵌图片资源");
+    }
+
+    private boolean findPart(Part part, PartPredicate predicate) throws Exception {
+        if (predicate.test(part)) {
+            return true;
+        }
+        if (part.isMimeType("multipart/*")) {
+            Multipart mp = (Multipart) part.getContent();
+            for (int i = 0; i < mp.getCount(); i++) {
+                if (findPart(mp.getBodyPart(i), predicate)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    @FunctionalInterface
+    private interface PartPredicate {
+        boolean test(Part part) throws Exception;
+    }
+
+    @Test
+    @DisplayName("测试函数式 DSL 构造邮件并验证抄送、密送与自定义标头")
+    void testSendMailMessageDslWithCcBccAndHeaders() throws Exception {
+        MailSendResult result = mailTemplate.send(msg -> msg
+                .from("custom-sender@atengk.com", "自定义发件人")
+                .to("to-user@example.com")
+                .cc("cc-user@example.com")
+                .bcc("bcc-user@example.com")
+                .replyTo("reply@atengk.com")
+                .subject("DSL 全能测试")
+                .text("这是通过 DSL 构建的测试邮件")
+                .header("X-Custom-Trace", "trace-xyz-999"));
+
+        assertTrue(result.isSuccess());
+        // GreenMail 会为每一个收件人/抄送/密送投递一份副本（总计 3 份）
+        assertTrue(greenMail.waitForIncomingEmail(5000, 3));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertTrue(messages.length >= 3);
+        MimeMessage sampleMsg = messages[0];
+
+        assertEquals("DSL 全能测试", sampleMsg.getSubject());
+        assertEquals("reply@atengk.com", sampleMsg.getReplyTo()[0].toString());
+        assertEquals("trace-xyz-999", sampleMsg.getHeader("X-Custom-Trace")[0]);
+        String fromHeader = MimeUtility.decodeText(sampleMsg.getFrom()[0].toString());
+        assertTrue(fromHeader.contains("自定义发件人"));
+        assertTrue(fromHeader.contains("custom-sender@atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试单个附件大小超限时 Fail-Fast 抛出 MAIL_ATTACHMENT_SIZE_EXCEEDED")
+    void testMaxAttachmentSizeExceeded() {
+        mailProperties.setMaxAttachmentSize(DataSize.ofBytes(50));
+
+        byte[] largeData = new byte[100]; // 100 > 50
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("overflow@example.com")
+                        .subject("附件超限测试")
+                        .text("正文")
+                        .attach("big-file.bin", largeData)));
+
+        assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED.getCode(), ex.getCode());
+        assertTrue(ex.getMessage().contains("big-file.bin"));
+    }
+
+    @Test
+    @DisplayName("测试邮件总体积超限时 Fail-Fast 抛出 MAIL_TOTAL_SIZE_EXCEEDED")
+    void testMaxTotalSizeExceeded() {
+        mailProperties.setMaxAttachmentSize(DataSize.ofBytes(100));
+        mailProperties.setMaxTotalSize(DataSize.ofBytes(120));
+
+        byte[] part1 = new byte[70]; // 单个未超限
+        byte[] part2 = new byte[70]; // 单个未超限，但 70 + 70 = 140 > 120
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("overflow@example.com")
+                        .subject("总大小超限测试")
+                        .text("正文")
+                        .attach("part1.bin", part1)
+                        .attach("part2.bin", part2)));
+
+        assertEquals(MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("测试发信生命周期资源清理（确定性 close 机制）")
+    void testDeterministicResourceCleanup() {
+        AtomicBoolean closed = new AtomicBoolean(false);
+        ByteArrayInputStream bais = new ByteArrayInputStream("stream attachment".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                closed.set(true);
+                super.close();
+            }
+        };
+
+        mailTemplate.send(msg -> msg
+                .to("cleanup-test@example.com")
+                .subject("资源清理测试")
+                .text("测试流关闭")
+                .attach("stream.txt", bais));
+
+        assertTrue(closed.get(), "发信完成后挂载的附件流必须被确定性关闭");
     }
 }

@@ -29,5 +29,6 @@ class MailResultCodeTest {
         assertEquals(40002, MailResultCode.MAIL_ACCOUNT_NOT_FOUND.getCode());
         assertEquals(40003, MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED.getCode());
         assertEquals(40004, MailResultCode.MAIL_TEMPLATE_RENDER_ERROR.getCode());
+        assertEquals(40005, MailResultCode.MAIL_TOTAL_SIZE_EXCEEDED.getCode());
     }
 }
