@@ -23,9 +23,7 @@ import org.mockftpserver.fake.filesystem.UnixFakeFileSystem;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.util.unit.DataSize;
 
-import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -231,5 +229,164 @@ class FtpTemplateTest {
 
         // 恢复默认配置
         properties.setControlEncoding("UTF-8");
+    }
+
+    @Test
+    @DisplayName("测试原子上传成功后临时文件无残留且目标文件存在")
+    void testAtomicUploadSuccessAndTempClean() {
+        properties.setAtomicUpload(true);
+        String targetPath = "/test/atomic_ok.txt";
+        byte[] payload = "Atomic payload content".getBytes(StandardCharsets.UTF_8);
+
+        boolean uploaded = ftpTemplate.upload(targetPath, payload);
+        assertThat(uploaded).isTrue();
+
+        // 验证目标文件已存在且临时文件 .tmp 不存在
+        assertThat(ftpTemplate.exists(targetPath)).isTrue();
+        assertThat(ftpTemplate.exists(targetPath + ".tmp")).isFalse();
+
+        byte[] downloaded = ftpTemplate.downloadToBytes(targetPath);
+        assertThat(downloaded).isEqualTo(payload);
+    }
+
+    @Test
+    @DisplayName("测试原子上传异常中断时自动物理清理 .tmp 临时文件")
+    void testAtomicUploadCompensationOnStreamError() {
+        properties.setAtomicUpload(true);
+        String targetPath = "/test/broken.txt";
+
+        // 模拟读取中途发生 IO 异常断流
+        InputStream brokenIn = new InputStream() {
+            private int count = 0;
+
+            @Override
+            public int read() throws IOException {
+                if (++count > 5) {
+                    throw new IOException("Simulated network stream break during upload");
+                }
+                return 'X';
+            }
+        };
+
+        assertThatThrownBy(() -> ftpTemplate.upload(targetPath, brokenIn))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.UPLOAD_FAILED.getCode());
+
+        // 验证补偿清理逻辑生效：临时文件与目标文件均不存在
+        assertThat(ftpTemplate.exists(targetPath)).isFalse();
+        assertThat(ftpTemplate.exists(targetPath + ".tmp")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试路径防穿越安全清洗拦截各种跨目录序列")
+    void testPathTraversalGuardOnOperations() {
+        byte[] payload = "attack payload".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 上传路径穿越
+        assertThatThrownBy(() -> ftpTemplate.upload("/test/../secret.txt", payload))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        assertThatThrownBy(() -> ftpTemplate.upload("..\\evil.txt", payload))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        // 2. 下载路径穿越
+        assertThatThrownBy(() -> ftpTemplate.download("../etc/passwd", new ByteArrayOutputStream()))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        // 3. exists 路径穿越
+        assertThatThrownBy(() -> ftpTemplate.exists("/test/.."))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        // 4. deleteFile 路径穿越
+        assertThatThrownBy(() -> ftpTemplate.deleteFile("../escape.txt"))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+
+        // 5. rename 路径穿越
+        assertThatThrownBy(() -> ftpTemplate.rename("/test/normal.txt", "../escape.txt"))
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.INVALID_PATH.getCode());
+    }
+
+    @Test
+    @DisplayName("测试上传深层目录时自动递归创建父目录")
+    void testAutoCreateDirectoriesOnDeepUpload() {
+        properties.setAutoCreateDirectories(true);
+        String deepFile = "/test/auto_dir/2026/10/22/report.txt";
+        byte[] content = "deep path upload report".getBytes(StandardCharsets.UTF_8);
+
+        boolean uploaded = ftpTemplate.upload(deepFile, content);
+        assertThat(uploaded).isTrue();
+
+        assertThat(ftpTemplate.exists(deepFile)).isTrue();
+        assertThat(ftpTemplate.exists("/test/auto_dir/2026/10/22")).isTrue();
+
+        byte[] downloaded = ftpTemplate.downloadToBytes(deepFile);
+        assertThat(new String(downloaded, StandardCharsets.UTF_8)).isEqualTo("deep path upload report");
+    }
+
+    @Test
+    @DisplayName("测试高级文件系统操作 API 完整生命周期")
+    void testAdvancedFileSystemOperations() {
+        // 1. makeDirectories 递归级联建目录
+        boolean dirsCreated = ftpTemplate.makeDirectories("/test/nested/l1/l2");
+        assertThat(dirsCreated).isTrue();
+        assertThat(ftpTemplate.exists("/test/nested/l1/l2")).isTrue();
+
+        // 2. exists 与 getFileInfo
+        ftpTemplate.upload("/test/nested/l1/l2/info.txt", "info content".getBytes(StandardCharsets.UTF_8));
+        assertThat(ftpTemplate.exists("/test/nested/l1/l2/info.txt")).isTrue();
+        assertThat(ftpTemplate.exists("/test/nested/not_found.txt")).isFalse();
+
+        FtpFileInfo info = ftpTemplate.getFileInfo("/test/nested/l1/l2/info.txt");
+        assertThat(info).isNotNull();
+        assertThat(info.getName()).isEqualTo("info.txt");
+        assertThat(info.isFile()).isTrue();
+        assertThat(info.isDirectory()).isFalse();
+        assertThat(info.getSize()).isGreaterThan(0);
+
+        FtpFileInfo notFoundInfo = ftpTemplate.getFileInfo("/test/not_exist.txt");
+        assertThat(notFoundInfo).isNull();
+
+        // 3. listDirectories
+        List<String> directories = ftpTemplate.listDirectories("/test/nested");
+        assertThat(directories).isNotEmpty();
+
+        // 4. rename
+        boolean renamed = ftpTemplate.rename("/test/nested/l1/l2/info.txt", "/test/nested/l1/l2/info_renamed.txt");
+        assertThat(renamed).isTrue();
+        assertThat(ftpTemplate.exists("/test/nested/l1/l2/info.txt")).isFalse();
+        assertThat(ftpTemplate.exists("/test/nested/l1/l2/info_renamed.txt")).isTrue();
+
+        // 5. move
+        boolean moved = ftpTemplate.move("/test/nested/l1/l2/info_renamed.txt", "/test/moved_target");
+        assertThat(moved).isTrue();
+        assertThat(ftpTemplate.exists("/test/nested/l1/l2/info_renamed.txt")).isFalse();
+        assertThat(ftpTemplate.exists("/test/moved_target/info_renamed.txt")).isTrue();
+
+        // 6. deleteFile
+        boolean fileDeleted = ftpTemplate.deleteFile("/test/moved_target/info_renamed.txt");
+        assertThat(fileDeleted).isTrue();
+        assertThat(ftpTemplate.exists("/test/moved_target/info_renamed.txt")).isFalse();
+
+        // 7. deleteDirectory 递归清空删除非空目录
+        ftpTemplate.upload("/test/dir_to_del/sub/a.txt", "a".getBytes(StandardCharsets.UTF_8));
+        ftpTemplate.upload("/test/dir_to_del/sub/b.txt", "b".getBytes(StandardCharsets.UTF_8));
+        assertThat(ftpTemplate.exists("/test/dir_to_del/sub/a.txt")).isTrue();
+
+        boolean dirDeleted = ftpTemplate.deleteDirectory("/test/dir_to_del", true);
+        assertThat(dirDeleted).isTrue();
+        assertThat(ftpTemplate.exists("/test/dir_to_del")).isFalse();
     }
 }
