@@ -96,9 +96,7 @@ public class SqlLogInterceptor implements Interceptor {
             Configuration configuration = (mappedStatement != null) ? mappedStatement.getConfiguration() : null;
             BoundSql boundSql = statementHandler.getBoundSql();
 
-            String sql = SqlParameterFormatter.formatSql(boundSql, configuration, properties.isMaskSensitive(), properties.isFormatSql());
-            sql = applyTruncation(sql, boundSql);
-
+            String sql = formatAndTruncateSql(boundSql, configuration);
             String rowDesc = resolveRowDescription(methodName, result);
             String callLocation = properties.isShowCallLocation() ? MybatisInterceptorUtil.resolveCallLocation() : null;
 
@@ -127,9 +125,7 @@ public class SqlLogInterceptor implements Interceptor {
             Configuration configuration = (mappedStatement != null) ? mappedStatement.getConfiguration() : null;
             BoundSql boundSql = statementHandler.getBoundSql();
 
-            String sql = SqlParameterFormatter.formatSql(boundSql, configuration, properties.isMaskSensitive(), properties.isFormatSql());
-            sql = applyTruncation(sql, boundSql);
-
+            String sql = formatAndTruncateSql(boundSql, configuration);
             String callLocation = properties.isShowCallLocation() ? MybatisInterceptorUtil.resolveCallLocation() : null;
             String errorMessage = (t != null) ? (t.getClass().getSimpleName() + ": " + t.getMessage()) : "UNKNOWN ERROR";
 
@@ -148,6 +144,21 @@ public class SqlLogInterceptor implements Interceptor {
         } catch (Throwable ex) {
             log.error("输出 SQL 执行失败现场日志异常", ex);
         }
+    }
+
+    private String formatAndTruncateSql(BoundSql boundSql, Configuration configuration) {
+        if (boundSql == null) {
+            return "";
+        }
+        boolean shouldFormat = properties.isFormatSql();
+        int maxLen = properties.getMaxSqlLength();
+        String rawSql = boundSql.getSql();
+        // 性能短路熔断：原始 SQL 长度超出最大截断阈值时，自动短路跳过多行美化分段，直接单行紧凑压缩输出
+        if (shouldFormat && maxLen > 0 && rawSql != null && rawSql.length() > maxLen) {
+            shouldFormat = false;
+        }
+        String sql = SqlParameterFormatter.formatSql(boundSql, configuration, properties.isMaskSensitive(), shouldFormat);
+        return applyTruncation(sql, boundSql);
     }
 
     private String resolveRowDescription(String methodName, Object result) {

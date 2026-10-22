@@ -441,4 +441,87 @@ class SqlParameterFormatterTest {
             assertThat(prettified).contains("\n    AND status = 1");
         }
     }
+
+    @Nested
+    @DisplayName("5. 工业级生产加固与极端边界防御测试")
+    class ProductionHardeningTest {
+
+        public static class MalformedParam {
+            public String getBrokenProp() {
+                throw new RuntimeException("Simulated reflection failure");
+            }
+        }
+
+        @Test
+        @DisplayName("Fail-Safe: 参数对象属性提取异常时应优雅降级为 NULL 而不阻断链路")
+        void testExtractParametersFailSafe() {
+            Configuration configuration = new Configuration();
+            String sql = "SELECT * FROM t_user WHERE id = ? AND name = ?";
+
+            List<ParameterMapping> mappings = new ArrayList<>();
+            mappings.add(new ParameterMapping.Builder(configuration, "brokenProp", String.class).build());
+            mappings.add(new ParameterMapping.Builder(configuration, "otherProp", String.class).build());
+
+            BoundSql boundSql = new BoundSql(configuration, sql, mappings, new MalformedParam());
+
+            // 遇到模拟反射异常时，绝不抛出未受控异常，而是优雅降级为 NULL
+            String result = SqlParameterFormatter.formatSql(boundSql, configuration, true);
+            assertThat(result).isEqualTo("SELECT * FROM t_user WHERE id = NULL AND name = NULL");
+        }
+
+        @Test
+        @DisplayName("PII 敏感字段: 手机号、身份证、银行卡等常见个人敏感信息应默认自动脱敏")
+        void testPiiKeywordsMasking() {
+            Configuration configuration = new Configuration();
+            String sql = "INSERT INTO t_user (phone, mobile, id_card, bank_card, cvv) VALUES (?, ?, ?, ?, ?)";
+
+            List<ParameterMapping> mappings = new ArrayList<>();
+            mappings.add(new ParameterMapping.Builder(configuration, "phone", String.class).build());
+            mappings.add(new ParameterMapping.Builder(configuration, "mobile", String.class).build());
+            mappings.add(new ParameterMapping.Builder(configuration, "id_card", String.class).build());
+            mappings.add(new ParameterMapping.Builder(configuration, "bank_card", String.class).build());
+            mappings.add(new ParameterMapping.Builder(configuration, "cvv", String.class).build());
+
+            Map<String, Object> paramMap = Map.of(
+                    "phone", "13800138000",
+                    "mobile", "13911112222",
+                    "id_card", "110101199001011234",
+                    "bank_card", "6222021234567890",
+                    "cvv", "123"
+            );
+
+            BoundSql boundSql = new BoundSql(configuration, sql, mappings, paramMap);
+
+            String result = SqlParameterFormatter.formatSql(boundSql, configuration, true);
+            assertThat(result).contains("'******'");
+            assertThat(result).doesNotContain("13800138000");
+            assertThat(result).doesNotContain("110101199001011234");
+            assertThat(result).doesNotContain("6222021234567890");
+        }
+
+        @Test
+        @DisplayName("超长大 SQL: 超过 32KB 阈值时自动短路跳过多行分词美化，直接单行紧凑输出")
+        void testPrettifyLargeSqlShortCircuit() {
+            // 构造超过 32KB 的大 SQL（10000 项约 60KB）
+            StringBuilder sb = new StringBuilder("SELECT id, name FROM t_user WHERE id IN (1");
+            for (int i = 2; i <= 10000; i++) {
+                sb.append(", ").append(i);
+            }
+            sb.append(")");
+            String largeSql = sb.toString();
+            assertThat(largeSql.length()).isGreaterThan(32768);
+
+            // 验证超长短路：不会出现关键字换行，而是快速单行紧凑返回
+            String prettified = SqlParameterFormatter.prettify(largeSql);
+            assertThat(prettified).doesNotContain("\n  FROM");
+            assertThat(prettified).contains("SELECT id, name FROM t_user WHERE id IN (1, 2");
+        }
+
+        @Test
+        @DisplayName("Clob 类型支持: 应安全格式化为 '<BLOB>' 字面量")
+        void testFormatClob() {
+            java.sql.Clob mockClob = org.mockito.Mockito.mock(java.sql.Clob.class);
+            assertThat(SqlParameterFormatter.formatValue(mockClob)).isEqualTo("'<BLOB>'");
+        }
+    }
 }

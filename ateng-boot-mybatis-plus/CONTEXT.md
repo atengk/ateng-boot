@@ -212,5 +212,9 @@ _Avoid_: CursorInjector, StreamMethod, SelectCursorMethod
 _Avoid_: P6SpyInterceptor, SqlPrintPlugin, MybatisLogInterceptor, DruidLogFilter
 
 **SqlParameterFormatter**:
-纯原生字符流 SQL 参数安全反填与敏感脱敏引擎，采用零依赖 Token 状态机流式逐字符扫描，智能跳过字符串常量与注释内的占位符，安全映射 JDBC 字面量，彻底杜绝正则替换特殊字符异常，并自适应对 @FieldEncrypt 属性与密码凭据关键字执行掩码。
+纯原生字符流 SQL 参数安全反填与敏感脱敏引擎，采用零依赖 Token 状态机流式逐字符扫描，智能跳过字符串常量与注释内的占位符，安全映射 JDBC 字面量，彻底杜绝正则替换特殊字符异常；内置属性提取 Fail-Safe 容错兜底、缓存容量上限守卫、超长 SQL 性能熔断旁路与 PII 个人敏感凭据脱敏。
 _Avoid_: SqlFormatter, ParamReplacer, RegexSqlPaster, P6SpyFormatter
+
+**MybatisInterceptorUtil**:
+持久层底层拦截器基础设施工具类，提供兼容 JDK 17 强封装模块化的递归代理拆包（Plugin 物理目标还原）与智能穿透切面/容器的真实业务调用栈位置解析能力。
+_Avoid_: InterceptorHelper, ProxyUnwrapper, StackTraceLocator

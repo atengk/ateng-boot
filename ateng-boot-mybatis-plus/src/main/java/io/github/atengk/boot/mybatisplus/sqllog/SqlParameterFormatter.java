@@ -49,6 +49,16 @@ public final class SqlParameterFormatter {
      */
     private static final Map<String, Boolean> FIELD_ENCRYPT_CACHE = new ConcurrentHashMap<>();
 
+    /**
+     * 实体加密缓存最大容量上限，防范极端动态生成类或脚本类导致的无界内存泄漏
+     */
+    private static final int MAX_CACHE_CAPACITY = 4096;
+
+    /**
+     * 单条 SQL 多行排版美化性能阈值（32KB），超出时短路降级为单行压缩，避免超长报文引发 GC 抖动
+     */
+    private static final int MAX_PRETTIFY_LENGTH = 32768;
+
     private SqlParameterFormatter() {
         // 工具类私有构造
     }
@@ -96,7 +106,7 @@ public final class SqlParameterFormatter {
         if (value instanceof Date utilDate) {
             return "'" + DATETIME_FORMATTER.format(Instant.ofEpochMilli(utilDate.getTime()).atZone(ZoneId.systemDefault())) + "'";
         }
-        if (value instanceof byte[] || value instanceof Byte[] || value instanceof Blob) {
+        if (value instanceof byte[] || value instanceof Byte[] || value instanceof Blob || value instanceof java.sql.Clob) {
             return "'<BLOB>'";
         }
         if (value instanceof Enum<?> e) {
@@ -300,20 +310,29 @@ public final class SqlParameterFormatter {
         for (ParameterMapping mapping : parameterMappings) {
             String propName = mapping.getProperty();
             Object value = null;
-            if (boundSql.hasAdditionalParameter(propName)) {
-                value = boundSql.getAdditionalParameter(propName);
-            } else if (parameterObject != null) {
-                if (configuration != null && configuration.getTypeHandlerRegistry().hasTypeHandler(parameterObject.getClass())) {
-                    value = parameterObject;
-                } else if (metaParam != null && metaParam.hasGetter(propName)) {
-                    value = metaParam.getValue(propName);
-                } else if (parameterMappings.size() == 1 && configuration != null) {
-                    value = parameterObject;
+            try {
+                if (boundSql.hasAdditionalParameter(propName)) {
+                    value = boundSql.getAdditionalParameter(propName);
+                } else if (parameterObject != null) {
+                    if (configuration != null && configuration.getTypeHandlerRegistry().hasTypeHandler(parameterObject.getClass())) {
+                        value = parameterObject;
+                    } else if (metaParam != null && metaParam.hasGetter(propName)) {
+                        value = metaParam.getValue(propName);
+                    } else if (parameterMappings.size() == 1 && configuration != null) {
+                        value = parameterObject;
+                    }
                 }
+            } catch (Throwable ignored) {
+                // 防御性容错降级：属性提取异常时保底为 null，绝不阻断业务事务执行
+                value = null;
             }
 
-            if (maskSensitive && isSensitive(mapping, parameterObject, propName)) {
-                value = SENSITIVE_MASK;
+            try {
+                if (maskSensitive && isSensitive(mapping, parameterObject, propName)) {
+                    value = SENSITIVE_MASK;
+                }
+            } catch (Throwable ignored) {
+                // 脱敏判定遇异常时安全兜底
             }
             result.add(value);
         }
@@ -342,7 +361,7 @@ public final class SqlParameterFormatter {
             return true;
         }
 
-        // 3. 检查属性名是否包含密码/凭据敏感关键字
+        // 3. 检查属性名是否包含密码/凭据或常见个人敏感隐私关键字
         if (propName != null && !propName.isBlank()) {
             String lower = propName.toLowerCase();
             return lower.contains("password") ||
@@ -350,6 +369,13 @@ public final class SqlParameterFormatter {
                     lower.contains("secret") ||
                     lower.contains("token") ||
                     lower.contains("credential") ||
+                    lower.contains("idcard") ||
+                    lower.contains("id_card") ||
+                    lower.contains("phone") ||
+                    lower.contains("mobile") ||
+                    lower.contains("bankcard") ||
+                    lower.contains("bank_card") ||
+                    lower.contains("cvv") ||
                     (lower.contains("key") && lower.contains("private"));
         }
 
@@ -367,6 +393,10 @@ public final class SqlParameterFormatter {
     public static String prettify(String sql) {
         if (sql == null || sql.isBlank()) {
             return "";
+        }
+        // 超出性能阈值时短路降级为单行压缩，避免超长报文引发 GC 抖动
+        if (sql.length() > MAX_PRETTIFY_LENGTH) {
+            return compress(sql);
         }
         // 先进行字面量保护的单行规范化
         String compressed = compress(sql);
@@ -587,38 +617,42 @@ public final class SqlParameterFormatter {
         if (parameterObject == null || propName == null || propName.isBlank()) {
             return false;
         }
-        Class<?> targetClass = parameterObject.getClass();
-        String fieldName = propName;
+        try {
+            Class<?> targetClass = parameterObject.getClass();
+            String fieldName = propName;
 
-        if (propName.contains(".")) {
-            String[] parts = propName.split("\\.");
-            Object currentObj = parameterObject;
-            for (int i = 0; i < parts.length - 1; i++) {
-                if (currentObj instanceof Map<?, ?> map) {
-                    currentObj = map.get(parts[i]);
-                } else if (currentObj != null) {
-                    try {
-                        MetaObject mo = SystemMetaObject.forObject(currentObj);
-                        if (mo.hasGetter(parts[i])) {
-                            currentObj = mo.getValue(parts[i]);
-                        } else {
+            if (propName.contains(".")) {
+                String[] parts = propName.split("\\.");
+                Object currentObj = parameterObject;
+                for (int i = 0; i < parts.length - 1; i++) {
+                    if (currentObj instanceof Map<?, ?> map) {
+                        currentObj = map.get(parts[i]);
+                    } else if (currentObj != null) {
+                        try {
+                            MetaObject mo = SystemMetaObject.forObject(currentObj);
+                            if (mo.hasGetter(parts[i])) {
+                                currentObj = mo.getValue(parts[i]);
+                            } else {
+                                currentObj = null;
+                            }
+                        } catch (Exception ignored) {
                             currentObj = null;
                         }
-                    } catch (Exception ignored) {
-                        currentObj = null;
+                    }
+                    if (currentObj == null) {
+                        break;
                     }
                 }
-                if (currentObj == null) {
-                    break;
+                if (currentObj != null) {
+                    targetClass = currentObj.getClass();
                 }
+                fieldName = parts[parts.length - 1];
             }
-            if (currentObj != null) {
-                targetClass = currentObj.getClass();
-            }
-            fieldName = parts[parts.length - 1];
-        }
 
-        return checkFieldEncryptAnnotation(targetClass, fieldName);
+            return checkFieldEncryptAnnotation(targetClass, fieldName);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static boolean checkFieldEncryptAnnotation(Class<?> entityClass, String propName) {
@@ -626,6 +660,9 @@ public final class SqlParameterFormatter {
             return false;
         }
         String cacheKey = entityClass.getName() + "#" + propName;
+        if (FIELD_ENCRYPT_CACHE.size() >= MAX_CACHE_CAPACITY) {
+            FIELD_ENCRYPT_CACHE.clear();
+        }
         return FIELD_ENCRYPT_CACHE.computeIfAbsent(cacheKey, k -> {
             Class<?> current = entityClass;
             while (current != null && current != Object.class) {

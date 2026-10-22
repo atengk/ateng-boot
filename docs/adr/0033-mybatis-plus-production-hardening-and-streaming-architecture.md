@@ -100,7 +100,10 @@ flowchart TD
   - 采用逐字符流式扫描，精准识别并跳过单引号常量、SQL 转义引号、双引号/反引号标识符及 SQL 注释内部的 `?` 占位符；
   - 按 ANSI SQL JDBC 规范安全格式化：`null` $\rightarrow$ `NULL`，数值/布尔 $\rightarrow$ 原生字面量，字符串/字符/枚举 $\rightarrow$ 转义单引号包裹，时间类型 $\rightarrow$ 标准时间字符串，字节数组/Blob $\rightarrow$ `'<BLOB>'`；
   - 纯 `StringBuilder` 字符流反填，彻底杜绝 `String.replaceFirst` 正则替换，消除参数含 `$` 或反斜杠时的正则解析异常；
-- **自适应敏感数据脱敏 (`mask-sensitive: true`)**：自动感知 `@FieldEncrypt` 实体属性、`EncryptTypeHandler` 及密码凭据敏感词（`password`、`secret`、`token` 等），默认反填 `'******'`，兼顾调试便捷与数据安全；支持本地测试显式关闭输出真明文；
+  - **属性提取 Fail-Safe 容错防崩铁律**：参数反射提取与分级属性导航挂载局部安全防御，遇异常优雅回退保底，坚守“诊断日志绝不能反噬或阻断业务主链路”铁律；
+  - **反射缓存容量上限守卫**：`FIELD_ENCRYPT_CACHE` 限制 4096 条容量上限，达到上限自动清空保护，杜绝动态类或极端代理类导致的无界内存泄漏；
+  - **超长 SQL 性能熔断旁路**：当 SQL 字符长度超过 `max-sql-length` 阈值时，自动短路跳过深层多行分段排版，直接单行截断输出，避免大报文下的无谓 CPU 与 GC 压力；
+- **自适应敏感数据脱敏 (`mask-sensitive: true`)**：自动感知 `@FieldEncrypt` 实体属性、`EncryptTypeHandler`、密码凭据（`password`、`secret`、`token` 等）及常见个人敏感隐私字段（`idcard`、`phone`、`mobile`、`bankcard` 等），默认反填 `'******'`，兼顾调试便捷与数据安全；支持本地测试显式关闭输出真明文；
 - **原生批量插入单条完整输出与截断防爆 (`max-sql-length: 4096`)**：
   - 对 `batch(Statement)`（传统循环 `addBatch()`）执行静默放行，杜绝循环单条刷屏；配合 `BatchUtil.insertBatch` 原生多值 SQL 单条执行，仅在控制台输出 1 条完整大 SQL；
   - 超出 `max-sql-length` 时优雅截断并标注参数组数摘要，防御开发终端缓冲区爆满；
