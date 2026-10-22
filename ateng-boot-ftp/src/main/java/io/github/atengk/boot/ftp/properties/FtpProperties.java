@@ -82,6 +82,11 @@ public class FtpProperties {
     private DataSize bufferSize = DataSize.ofKilobytes(64);
 
     /**
+     * 内存字节下载最大允许容量（默认 50MB，超过阈值抛出异常防止 OOM 堆内存溢出）
+     */
+    private DataSize maxDownloadBytes = DataSize.ofMegabytes(50);
+
+    /**
      * 是否开启原子上传机制（先写入 .tmp 临时文件，成功后原子 rename，杜绝下游读取残缺半截文件）
      */
     private boolean atomicUpload = true;
