@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mybatisplus.sqllog;
 
 import io.github.atengk.boot.mybatisplus.properties.SqlLogProperties;
+import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import org.apache.ibatis.cursor.Cursor;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
@@ -8,7 +9,6 @@ import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.plugin.Interceptor;
 import org.apache.ibatis.plugin.Intercepts;
 import org.apache.ibatis.plugin.Invocation;
-import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
@@ -17,8 +17,6 @@ import org.apache.ibatis.session.ResultHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Proxy;
 import java.sql.Statement;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
@@ -65,7 +63,7 @@ public class SqlLogInterceptor implements Interceptor {
             return invocation.proceed();
         }
 
-        Object target = realTarget(invocation.getTarget());
+        Object target = MybatisInterceptorUtil.realTarget(invocation.getTarget());
         if (!(target instanceof StatementHandler statementHandler)) {
             return invocation.proceed();
         }
@@ -102,7 +100,7 @@ public class SqlLogInterceptor implements Interceptor {
             sql = applyTruncation(sql, boundSql);
 
             String rowDesc = resolveRowDescription(methodName, result);
-            String callLocation = properties.isShowCallLocation() ? resolveCallLocation() : null;
+            String callLocation = properties.isShowCallLocation() ? MybatisInterceptorUtil.resolveCallLocation() : null;
 
             StringBuilder sb = new StringBuilder(sql.length() + 256);
             sb.append("\n====== [MyBatis-Plus SQL 执行诊断] ======\n");
@@ -132,7 +130,7 @@ public class SqlLogInterceptor implements Interceptor {
             String sql = SqlParameterFormatter.formatSql(boundSql, configuration, properties.isMaskSensitive(), properties.isFormatSql());
             sql = applyTruncation(sql, boundSql);
 
-            String callLocation = properties.isShowCallLocation() ? resolveCallLocation() : null;
+            String callLocation = properties.isShowCallLocation() ? MybatisInterceptorUtil.resolveCallLocation() : null;
             String errorMessage = (t != null) ? (t.getClass().getSimpleName() + ": " + t.getMessage()) : "UNKNOWN ERROR";
 
             StringBuilder sb = new StringBuilder(sql.length() + 256);
@@ -192,7 +190,7 @@ public class SqlLogInterceptor implements Interceptor {
             }
         }
         if (isError) {
-            log.error(message);
+            log.warn(message);
         } else if ("DEBUG".equalsIgnoreCase(properties.getLevel())) {
             log.debug(message);
         } else {
@@ -207,52 +205,5 @@ public class SqlLogInterceptor implements Interceptor {
             return (MappedStatement) metaObject.getValue("mappedStatement");
         }
         return null;
-    }
-
-    private static String resolveCallLocation() {
-        StackTraceElement[] elements = Thread.currentThread().getStackTrace();
-        for (StackTraceElement element : elements) {
-            String className = element.getClassName();
-            if (isFrameworkClass(className)) {
-                continue;
-            }
-            return className + "." + element.getMethodName() + "(" + element.getFileName() + ":" + element.getLineNumber() + ")";
-        }
-        return "UNKNOWN";
-    }
-
-    private static boolean isFrameworkClass(String className) {
-        if (className.contains("Test")) {
-            return false;
-        }
-        return className.startsWith("java.") ||
-                className.startsWith("jdk.") ||
-                className.startsWith("sun.") ||
-                className.startsWith("org.apache.ibatis.") ||
-                className.startsWith("com.baomidou.mybatisplus.") ||
-                className.startsWith("io.github.atengk.boot.mybatisplus.sqllog.") ||
-                className.startsWith("io.github.atengk.boot.mybatisplus.slowsql.") ||
-                className.startsWith("org.springframework.") ||
-                className.startsWith("org.apache.tomcat.") ||
-                className.startsWith("org.apache.catalina.") ||
-                className.startsWith("org.apache.maven.") ||
-                className.startsWith("org.junit.") ||
-                className.contains("$$");
-    }
-
-    private static Object realTarget(Object target) {
-        if (target == null) {
-            return null;
-        }
-        if (Proxy.isProxyClass(target.getClass())) {
-            InvocationHandler handler = Proxy.getInvocationHandler(target);
-            if (handler instanceof Plugin) {
-                MetaObject metaObject = SystemMetaObject.forObject(handler);
-                if (metaObject.hasGetter("target")) {
-                    return realTarget(metaObject.getValue("target"));
-                }
-            }
-        }
-        return target;
     }
 }

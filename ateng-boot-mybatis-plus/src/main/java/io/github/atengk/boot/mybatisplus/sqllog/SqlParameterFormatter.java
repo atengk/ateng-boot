@@ -358,6 +358,8 @@ public final class SqlParameterFormatter {
 
     /**
      * 对 SQL 进行多行缩进美化排版
+     * 智能识别并绝对保护字符串字面量、双引号标识符与 SQL 注释，
+     * 仅对外部 SQL 关键字执行格式化与缩进，彻底杜绝破坏字面量内部内容。
      *
      * @param sql 原始 SQL
      * @return 美化后的 SQL
@@ -366,15 +368,26 @@ public final class SqlParameterFormatter {
         if (sql == null || sql.isBlank()) {
             return "";
         }
-        String cleaned = sql.trim().replaceAll("\\s+", " ");
-        return cleaned
-                .replaceAll("(?i)\\b(SELECT|FROM|WHERE|GROUP BY|HAVING|ORDER BY|LIMIT|INSERT INTO|VALUES|UPDATE|SET|DELETE FROM)\\b", "\n  $1")
-                .replaceAll("(?i)\\b(AND|OR)\\b", "\n    $1")
-                .trim();
+        // 先进行字面量保护的单行规范化
+        String compressed = compress(sql);
+        List<SqlSegment> segments = splitSegments(compressed);
+        StringBuilder sb = new StringBuilder(compressed.length() + 64);
+        for (SqlSegment seg : segments) {
+            if (seg.isLiteral()) {
+                sb.append(seg.text());
+            } else {
+                String formatted = seg.text()
+                        .replaceAll("(?i)\\b(SELECT|FROM|WHERE|GROUP BY|HAVING|ORDER BY|LIMIT|INSERT INTO|VALUES|UPDATE|SET|DELETE FROM)\\b", "\n  $1")
+                        .replaceAll("(?i)\\b(AND|OR)\\b", "\n    $1");
+                sb.append(formatted);
+            }
+        }
+        return sb.toString().trim();
     }
 
     /**
      * 将 SQL 压缩为紧凑单行格式
+     * 智能识别并绝对保护字符串字面量、双引号标识符与 SQL 注释内部的连续空白，仅压缩外部多余空白。
      *
      * @param sql 原始 SQL
      * @return 单行压缩 SQL
@@ -383,7 +396,177 @@ public final class SqlParameterFormatter {
         if (sql == null || sql.isBlank()) {
             return "";
         }
-        return sql.trim().replaceAll("\\s+", " ");
+        List<SqlSegment> segments = splitSegments(sql);
+        StringBuilder sb = new StringBuilder(sql.length());
+        for (SqlSegment seg : segments) {
+            if (seg.isLiteral()) {
+                sb.append(seg.text());
+            } else {
+                String code = seg.text().replaceAll("\\s+", " ");
+                if (!sb.isEmpty() && Character.isWhitespace(sb.charAt(sb.length() - 1)) && code.startsWith(" ")) {
+                    code = code.substring(1);
+                }
+                sb.append(code);
+            }
+        }
+        while (!sb.isEmpty() && Character.isWhitespace(sb.charAt(0))) {
+            sb.deleteCharAt(0);
+        }
+        while (!sb.isEmpty() && Character.isWhitespace(sb.charAt(sb.length() - 1))) {
+            sb.deleteCharAt(sb.length() - 1);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * SQL 语法片段，区分普通代码区与字面量保护区
+     *
+     * @param text 片段文本
+     * @param isLiteral 是否为字面量（字符串常量、标识符、SQL 注释）
+     */
+    private record SqlSegment(String text, boolean isLiteral) {}
+
+    /**
+     * 将 SQL 字符串拆分为代码片段与字面量片段序列
+     */
+    private static List<SqlSegment> splitSegments(String sql) {
+        if (sql == null || sql.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SqlSegment> segments = new ArrayList<>();
+        int len = sql.length();
+        int i = 0;
+        int codeStart = 0;
+
+        while (i < len) {
+            char c = sql.charAt(i);
+
+            // 1. 检查单行注释 --
+            if (c == '-' && i + 1 < len && sql.charAt(i + 1) == '-') {
+                if (i > codeStart) {
+                    segments.add(new SqlSegment(sql.substring(codeStart, i), false));
+                }
+                int literalStart = i;
+                i += 2;
+                while (i < len && sql.charAt(i) != '\n') {
+                    i++;
+                }
+                if (i < len && sql.charAt(i) == '\n') {
+                    i++;
+                }
+                segments.add(new SqlSegment(sql.substring(literalStart, i), true));
+                codeStart = i;
+                continue;
+            }
+
+            // 2. 检查多行注释 /* ... */
+            if (c == '/' && i + 1 < len && sql.charAt(i + 1) == '*') {
+                if (i > codeStart) {
+                    segments.add(new SqlSegment(sql.substring(codeStart, i), false));
+                }
+                int literalStart = i;
+                i += 2;
+                while (i + 1 < len && !(sql.charAt(i) == '*' && sql.charAt(i + 1) == '/')) {
+                    i++;
+                }
+                if (i + 1 < len) {
+                    i += 2;
+                } else {
+                    i = len;
+                }
+                segments.add(new SqlSegment(sql.substring(literalStart, i), true));
+                codeStart = i;
+                continue;
+            }
+
+            // 3. 检查单引号字符串常量 '...'
+            if (c == '\'') {
+                if (i > codeStart) {
+                    segments.add(new SqlSegment(sql.substring(codeStart, i), false));
+                }
+                int literalStart = i;
+                i++;
+                while (i < len) {
+                    char ch = sql.charAt(i);
+                    if (ch == '\\' && i + 1 < len) {
+                        i += 2;
+                        continue;
+                    }
+                    if (ch == '\'') {
+                        if (i + 1 < len && sql.charAt(i + 1) == '\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                segments.add(new SqlSegment(sql.substring(literalStart, i), true));
+                codeStart = i;
+                continue;
+            }
+
+            // 4. 检查双引号标识符 "..."
+            if (c == '"') {
+                if (i > codeStart) {
+                    segments.add(new SqlSegment(sql.substring(codeStart, i), false));
+                }
+                int literalStart = i;
+                i++;
+                while (i < len) {
+                    char ch = sql.charAt(i);
+                    if (ch == '\\' && i + 1 < len) {
+                        i += 2;
+                        continue;
+                    }
+                    if (ch == '"') {
+                        if (i + 1 < len && sql.charAt(i + 1) == '"') {
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                segments.add(new SqlSegment(sql.substring(literalStart, i), true));
+                codeStart = i;
+                continue;
+            }
+
+            // 5. 检查反引号标识符 `...`
+            if (c == '`') {
+                if (i > codeStart) {
+                    segments.add(new SqlSegment(sql.substring(codeStart, i), false));
+                }
+                int literalStart = i;
+                i++;
+                while (i < len) {
+                    char ch = sql.charAt(i);
+                    if (ch == '`') {
+                        if (i + 1 < len && sql.charAt(i + 1) == '`') {
+                            i += 2;
+                            continue;
+                        }
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                segments.add(new SqlSegment(sql.substring(literalStart, i), true));
+                codeStart = i;
+                continue;
+            }
+
+            i++;
+        }
+
+        if (codeStart < len) {
+            segments.add(new SqlSegment(sql.substring(codeStart, len), false));
+        }
+
+        return segments;
     }
 
     private static String escapeSql(String s) {

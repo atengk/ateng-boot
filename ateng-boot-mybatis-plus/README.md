@@ -46,6 +46,7 @@
 | **SQL 日志诊断** | SQL 日志打印与可执行带参诊断拦截器 | `SqlLogInterceptor` | `ateng.boot.mybatis-plus.sql-log.enabled`<br>`ateng.boot.mybatis-plus.sql-log.level`<br>`ateng.boot.mybatis-plus.sql-log.format-sql`<br>`ateng.boot.mybatis-plus.sql-log.mask-sensitive`<br>`ateng.boot.mybatis-plus.sql-log.show-call-location`<br>`ateng.boot.mybatis-plus.sql-log.max-sql-length` | 拦截 `StatementHandler` 物理终态，输出带参完整可执行 SQL、毫秒耗时、行数影响与代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获 | `SqlLogInterceptorTest` / `SqlLogIntegrationTest` |
 | **SQL 日志诊断** | 字符流参数安全反填与敏感脱敏引擎 | `SqlParameterFormatter` | - | `formatSql` / `formatValue` / `prettify` / `compress` / `extractParameters`，零依赖字符流 Token 状态机智能跳过常量与注释内问号，安全映射 ANSI JDBC 字面量，杜绝正则异常，自动探测 `@FieldEncrypt` 与敏感凭据脱敏 | `SqlParameterFormatterTest` |
 | **SQL 日志诊断** | SQL 日志诊断强类型配置模型 | `SqlLogProperties` | `ateng.boot.mybatis-plus.sql-log.*` | 强类型配置模型，提供 `enabled`、`level`、`formatSql`、`maskSensitive`、`showCallLocation`、`maxSqlLength` 6 大核心配置项及安全默认值 | `SqlLogPropertiesTest` / `AtengMybatisPlusAutoConfigurationTest` |
+| **持久层底座** | 拦截器解包与调用栈穿透工具 | `MybatisInterceptorUtil` | - | `realTarget`（JDK 17 原生递归拆解 MyBatis Plugin 物理代理）/ `resolveCallLocation`（穿透持久层框架与切面，定位首个业务代码位置）/ `isFrameworkClass` | `MybatisInterceptorUtilTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系、单表/多表动态查询及存在性判断（`existsDynamic`），以及乐观锁高并发自旋重试（`updateWithOptimisticRetry`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `AtengBaseServiceOptimisticLockTest` / `TenantOrderDomainIntegrationTest` |
@@ -1327,31 +1328,31 @@ ateng:
 ##### 示例一：单表 INSERT 操作（自动脱敏与美化）
 
 ```text
-2026-10-22 13:11:09.859 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
+2026-10-22 13:42:07.857 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
 ====== [MyBatis-Plus SQL 执行诊断] ======
 MappedStatement : io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper.insert
-实际执行耗时   : 3 ms
+实际执行耗时   : 1 ms
 执行结果影响   : 1 行
-代码调用位置   : io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.intercept(DataChangeAuditInterceptor.java:117)
+代码调用位置   : io.github.atengk.boot.sample.mybatisplus.SqlLogIntegrationTest.testInsertAndMaskSensitive(SqlLogIntegrationTest.java:55)
 执行 SQL 语句  :
 INSERT INTO sys_user (id, name, age, email, phone, dept_id, create_by, update_by, create_time, update_time) 
-  VALUES (106620338692284416, '张三', 25, '******', '******', 100, 'admin-operator', 'admin-operator', '2026-10-22 13:11:09', '2026-10-22 13:11:09')
+  VALUES (106628132531200000, '张三', 25, '******', '******', 100, 'admin-operator', 'admin-operator', '2026-10-22 13:42:07', '2026-10-22 13:42:07')
 =========================================
 ```
 
 ##### 示例二：单表 SELECT 查询（自动带参反填与租户/逻辑删除改写）
 
 ```text
-2026-10-22 13:11:09.928 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
+2026-10-22 13:42:07.867 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
 ====== [MyBatis-Plus SQL 执行诊断] ======
 MappedStatement : io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper.selectById
-实际执行耗时   : 3 ms
+实际执行耗时   : 1 ms
 执行结果影响   : 1 行
-代码调用位置   : org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:333)
+代码调用位置   : io.github.atengk.boot.sample.mybatisplus.SqlLogIntegrationTest.testSelectUserById(SqlLogIntegrationTest.java:68)
 执行 SQL 语句  :
 SELECT id, name, age, email, phone, dept_id, version, deleted, create_by, update_by, create_time, update_time 
   FROM sys_user 
-  WHERE id = 106620338692284416 
+  WHERE id = 106628132531200000 
     AND deleted = 0
 =========================================
 ```

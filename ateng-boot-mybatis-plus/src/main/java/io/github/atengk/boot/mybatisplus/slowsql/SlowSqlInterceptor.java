@@ -2,6 +2,8 @@ package io.github.atengk.boot.mybatisplus.slowsql;
 
 import io.github.atengk.boot.mybatisplus.annotation.FieldEncrypt;
 import io.github.atengk.boot.mybatisplus.handler.EncryptTypeHandler;
+import io.github.atengk.boot.mybatisplus.sqllog.SqlParameterFormatter;
+import io.github.atengk.boot.mybatisplus.util.MybatisInterceptorUtil;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
@@ -9,7 +11,6 @@ import org.apache.ibatis.mapping.ParameterMapping;
 import org.apache.ibatis.plugin.Interceptor;
 import org.apache.ibatis.plugin.Intercepts;
 import org.apache.ibatis.plugin.Invocation;
-import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
@@ -20,8 +21,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Proxy;
 import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
@@ -124,7 +123,7 @@ public class SlowSqlInterceptor implements Interceptor {
 
     private void processSlowSql(Invocation invocation, long elapsedNanos) {
         try {
-            Object target = realTarget(invocation.getTarget());
+            Object target = MybatisInterceptorUtil.realTarget(invocation.getTarget());
             if (!(target instanceof StatementHandler statementHandler)) {
                 return;
             }
@@ -140,7 +139,7 @@ public class SlowSqlInterceptor implements Interceptor {
             String statementId = (mappedStatement != null) ? mappedStatement.getId() : "UNKNOWN";
             BoundSql boundSql = statementHandler.getBoundSql();
             String rawSql = (boundSql != null) ? boundSql.getSql() : "";
-            String finalSql = (formatSql) ? formatSql(rawSql) : rawSql.trim().replaceAll("\\s+", " ");
+            String finalSql = (formatSql) ? formatSql(rawSql) : SqlParameterFormatter.compress(rawSql);
 
             Configuration configuration = (mappedStatement != null) ? mappedStatement.getConfiguration() : null;
             List<Object> parameters = extractParameters(boundSql, configuration);
@@ -148,7 +147,7 @@ public class SlowSqlInterceptor implements Interceptor {
             Duration elapsed = Duration.ofNanos(elapsedNanos);
             Instant triggerTime = Instant.now();
             String threadName = Thread.currentThread().getName();
-            String callLocation = resolveCallLocation();
+            String callLocation = MybatisInterceptorUtil.resolveCallLocation();
 
             SlowSqlEvent event = new SlowSqlEvent(
                     this,
@@ -330,59 +329,6 @@ public class SlowSqlInterceptor implements Interceptor {
     }
 
     static String formatSql(String sql) {
-        if (sql == null || sql.isBlank()) {
-            return "";
-        }
-        String cleaned = sql.trim().replaceAll("\\s+", " ");
-        return cleaned
-                .replaceAll("(?i)\\b(SELECT|FROM|WHERE|GROUP BY|HAVING|ORDER BY|LIMIT|INSERT INTO|VALUES|UPDATE|SET|DELETE FROM)\\b", "\n  $1")
-                .replaceAll("(?i)\\b(AND|OR)\\b", "\n    $1")
-                .trim();
-    }
-
-    private static String resolveCallLocation() {
-        StackTraceElement[] elements = Thread.currentThread().getStackTrace();
-        for (StackTraceElement element : elements) {
-            String className = element.getClassName();
-            if (isFrameworkClass(className)) {
-                continue;
-            }
-            return className + "." + element.getMethodName() + "(" + element.getFileName() + ":" + element.getLineNumber() + ")";
-        }
-        return "UNKNOWN";
-    }
-
-    private static boolean isFrameworkClass(String className) {
-        if (className.contains("Test")) {
-            return false;
-        }
-        return className.startsWith("java.") ||
-                className.startsWith("jdk.") ||
-                className.startsWith("sun.") ||
-                className.startsWith("org.apache.ibatis.") ||
-                className.startsWith("com.baomidou.mybatisplus.") ||
-                className.startsWith("io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor") ||
-                className.startsWith("org.springframework.") ||
-                className.startsWith("org.apache.tomcat.") ||
-                className.startsWith("org.apache.catalina.") ||
-                className.startsWith("org.apache.maven.") ||
-                className.startsWith("org.junit.") ||
-                className.contains("$$");
-    }
-
-    private static Object realTarget(Object target) {
-        if (target == null) {
-            return null;
-        }
-        if (Proxy.isProxyClass(target.getClass())) {
-            InvocationHandler handler = Proxy.getInvocationHandler(target);
-            if (handler instanceof Plugin) {
-                MetaObject metaObject = SystemMetaObject.forObject(handler);
-                if (metaObject.hasGetter("target")) {
-                    return realTarget(metaObject.getValue("target"));
-                }
-            }
-        }
-        return target;
+        return SqlParameterFormatter.prettify(sql);
     }
 }

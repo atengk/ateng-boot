@@ -410,5 +410,35 @@ class SqlParameterFormatterTest {
             String compressed = SqlParameterFormatter.compress(multiline);
             assertThat(compressed).isEqualTo("SELECT id, username FROM t_user WHERE status = 1");
         }
+
+        @Test
+        @DisplayName("prettify 与 compress 必须绝对保护单引号字面量内部的空格与 SQL 关键字")
+        void testPrettifyAndCompressLiteralPreservation() {
+            String sql = "SELECT * FROM t_user WHERE memo = 'Cat AND Dog   and fish' AND title = 'SELECT 1 FROM dual WHERE id = 1'";
+            String compressed = SqlParameterFormatter.compress(sql);
+            assertThat(compressed).isEqualTo("SELECT * FROM t_user WHERE memo = 'Cat AND Dog   and fish' AND title = 'SELECT 1 FROM dual WHERE id = 1'");
+
+            String prettified = SqlParameterFormatter.prettify(sql);
+            // 确保字面量内部保持原样：没有换行，没有压缩内部 3 个空格
+            assertThat(prettified).contains("'Cat AND Dog   and fish'");
+            assertThat(prettified).contains("'SELECT 1 FROM dual WHERE id = 1'");
+            // 外部的关键字换行排版正常生效
+            assertThat(prettified).contains("\n  WHERE memo = 'Cat AND Dog   and fish'");
+            assertThat(prettified).contains("\n    AND title = 'SELECT 1 FROM dual WHERE id = 1'");
+        }
+
+        @Test
+        @DisplayName("prettify 与 compress 应正确处理转义单引号与注释中的关键字")
+        void testPrettifyWithEscapedQuotesAndComments() {
+            String sql = "SELECT id FROM t_user WHERE name = 'It''s a cat AND dog' /* comment with SELECT */ AND status = 1";
+            String compressed = SqlParameterFormatter.compress(sql);
+            assertThat(compressed).contains("'It''s a cat AND dog'");
+            assertThat(compressed).contains("/* comment with SELECT */");
+
+            String prettified = SqlParameterFormatter.prettify(sql);
+            assertThat(prettified).contains("'It''s a cat AND dog'");
+            assertThat(prettified).contains("/* comment with SELECT */");
+            assertThat(prettified).contains("\n    AND status = 1");
+        }
     }
 }
