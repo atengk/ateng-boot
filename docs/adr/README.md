@@ -50,6 +50,7 @@
 | **0040** | 云原生可观测性探针与 Actuator 生产级加固架构决策 | `Accepted` | 官方原生 Actuator 与 Micrometer Prometheus 基线，黄金解耦 Liveness 与 Readiness，弱依赖探针超时熔断熔断保护，高危端点 Token 鉴权，受管线程池动态打标与黄金指标采集 | `ateng-boot-observability` / `core` | [查看](./0040-cloud-native-observability-probes-and-actuator-hardening-architecture.md) |
 | **0041** | 纯原生 SpringDoc 架构选型与接口文档生产治理防护决策 | `Accepted` | 全面拥抱 SpringDoc 官方原生生态（Swagger UI 5.x），彻底告别停更类库；生产 404 物理切断与 Basic/Sa-Token 运行时双模访问守卫；全链路追踪与多租户标头自动注入；Sa-Token 锁头鉴权自动注册；状态码全景字典注入与标准响应补全；配置驱动多业务分组路由与 /docs 极简重定向 | `ateng-boot-openapi` / `core` / `web` | [查看](./0041-pure-springdoc-openapi-and-production-guard-architecture.md) |
 | **0042** | 工业级异步邮件与模板通知底座架构设计决策 | `Accepted` | 专注出站 SMTP 生产加固；多命名账号注册表与动态多租户解析；受管异步与四维快照透传；模板 SPI 解耦与极简正则保底；流式大附件防 OOM 与 RFC 6266 中文规范；本地事务感知 sendAfterCommit 与三重失败补偿安全网；MDC traceId 与 Message-ID 双向追踪；GreenMail 100% 离线自洽单测沙箱 | `ateng-boot-mail` / `core` | [查看](./0042-industrial-grade-asynchronous-mail-and-template-architecture.md) |
+| **0043** | FTP/FTPS 双模远程文件传输与连接池韧性治理架构决策 | `Accepted` | 基于 Apache Commons Net 与 Commons Pool2 构建零臃肿 FTP/FTPS 传输底座，对称门面 FtpTemplate，命名多节点注册表与 FtpContextHolder 动态切源，RFC 2640 编码探测与协议线缆转码防乱码，原子临时上传与路径防穿越，RFC 3659 MLSD 机器目录探测与时区矫正，NAT 假冒穿透与控制通道保活及连接池 100% 状态重置安全防串目录 | `ateng-boot-ftp` / `core` | [查看](./0043-ftp-and-ftps-connection-pooling-and-resilient-client-architecture.md) |
 
 ---
 

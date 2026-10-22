@@ -1,0 +1,46 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-ftp
+
+# ==========================================
+# ateng-boot FTP Starter 配置
+# ==========================================
+ateng:
+  boot:
+    ftp:
+      enabled: true
+      host: 127.0.0.1
+      port: 2121
+      username: admin
+      password: password123
+      encoding: UTF-8
+      passive-mode: true
+      connect-timeout: 5s
+      data-timeout: 10s
+      control-keep-alive-timeout: 30s
+      buffer-size: 64KB
+      pool:
+        max-total: 10
+        max-idle: 8
+        min-idle: 2
+        max-wait: 3s
+        min-evictable-idle-time: 60s
+        time-between-eviction-runs: 30s
+        test-on-borrow: true
+        test-on-return: false
+        test-while-idle: true
+      servers:
+        backup:
+          host: 127.0.0.1
+          port: 2122
+          username: backup_user
+          password: backup_password
+          encoding: UTF-8
+          passive-mode: true
+          pool:
+            max-total: 5
+            max-idle: 4
+            min-idle: 1
