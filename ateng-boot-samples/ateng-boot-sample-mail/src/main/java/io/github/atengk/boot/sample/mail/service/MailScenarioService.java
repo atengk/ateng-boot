@@ -1,0 +1,131 @@
+package io.github.atengk.boot.sample.mail.service;
+
+import io.github.atengk.boot.mail.model.MailAttachment;
+import io.github.atengk.boot.mail.model.MailMessage;
+import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.mail.template.MailTemplate;
+import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
+/**
+ * 邮件场景化业务服务
+ * <p>
+ * 演示 {@link MailTemplate} 的文本发信、多账号路由、动态模板渲染、流式附件挂载、
+ * 受管异步发信与事务感知发信（{@code sendAfterCommit}）等多种业务场景。
+ * </p>
+ *
+ * @author Ateng
+ * @since 2026-10-22
+ */
+@Service
+@RequiredArgsConstructor
+public class MailScenarioService {
+
+    private static final Logger log = LoggerFactory.getLogger(MailScenarioService.class);
+
+    private final MailTemplate mailTemplate;
+
+    /**
+     * 发送简单纯文本邮件（默认通道）
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param text    正文
+     * @return 发信结果
+     */
+    public MailSendResult sendSimpleText(String to, String subject, String text) {
+        log.info("Sending simple text email to [{}]", to);
+        return mailTemplate.sendText(to, subject, text);
+    }
+
+    /**
+     * 发送多账号路由邮件（切换指定运维 ops 通道）
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param text    正文
+     * @return 发信结果
+     */
+    public MailSendResult sendMultiAccountOps(String to, String subject, String text) {
+        log.info("Sending ops channel email to [{}]", to);
+        return mailTemplate.sendText("ops", to, subject, text);
+    }
+
+    /**
+     * 发送动态 Thymeleaf 模板邮件
+     *
+     * @param to         收件人
+     * @param subject    主题
+     * @param username   用户名
+     * @param verifyCode 动态验证码
+     * @return 发信结果
+     */
+    public MailSendResult sendHtmlTemplate(String to, String subject, String username, String verifyCode) {
+        log.info("Sending html template email to [{}]", to);
+        Map<String, Object> model = new HashMap<>();
+        model.put("username", username);
+        model.put("code", verifyCode);
+        return mailTemplate.sendTemplate(to, subject, "mail/verify-code", model);
+    }
+
+    /**
+     * 发送带附件的邮件
+     *
+     * @param to       收件人
+     * @param subject  主题
+     * @param text     正文
+     * @param fileName 附件文件名
+     * @param content  附件字节数据
+     * @return 发信结果
+     */
+    public MailSendResult sendWithAttachment(String to, String subject, String text, String fileName, byte[] content) {
+        log.info("Sending email with attachment [{}] to [{}]", fileName, to);
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .text(text)
+                .attachment(MailAttachment.of(fileName, content));
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 受管异步发信（依托 Core 线程池与全链路四维上下文自动透传）
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param text    正文
+     * @return 异步回执 CompletableFuture
+     */
+    public CompletableFuture<MailSendResult> sendAsync(String to, String subject, String text) {
+        log.info("Sending async email to [{}]", to);
+        return mailTemplate.sendTextAsync(to, subject, text);
+    }
+
+    /**
+     * 本地事务感知发信（事务提交后同步触发，事务回滚则防幽灵取消）
+     *
+     * @param to      收件人
+     * @param subject 主题
+     * @param text    正文
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void sendTransactional(String to, String subject, String text, boolean shouldRollback) {
+        log.info("Triggering sendTransactional to [{}], will rollback: {}", to, shouldRollback);
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .text(text);
+        mailTemplate.sendAfterCommit(message);
+
+        if (shouldRollback) {
+            throw new IllegalStateException("Simulated business transaction rollback");
+        }
+    }
+}

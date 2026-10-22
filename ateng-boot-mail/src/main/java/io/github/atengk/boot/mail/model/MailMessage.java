@@ -321,6 +321,16 @@ public class MailMessage implements AutoCloseable, Serializable {
     }
 
     /**
+     * 添加流式附件（attach 别名门面）
+     *
+     * @param attachment 附件对象
+     * @return 当前消息构建对象
+     */
+    public MailMessage attachment(MailAttachment attachment) {
+        return attach(attachment);
+    }
+
+    /**
      * 基于本地文件添加附件
      *
      * @param filename 显示文件名

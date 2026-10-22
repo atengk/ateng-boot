@@ -12,6 +12,7 @@ import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailInlineResource;
@@ -32,6 +33,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -95,23 +97,30 @@ public class MailTemplate implements DisposableBean {
     @Getter
     private final List<MailSendFailureHandler> failureHandlers;
 
+    @Getter
+    private final List<MailSendInterceptor> interceptors;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
-        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null);
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
-        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null, null, null);
+        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, null, null, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, executor, null, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, executor, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, executor, eventPublisher, failureHandlers, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
@@ -125,6 +134,13 @@ public class MailTemplate implements DisposableBean {
         }
         this.eventPublisher = eventPublisher;
         this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
+        if (interceptors != null) {
+            List<MailSendInterceptor> sortedInterceptors = new ArrayList<>(interceptors);
+            AnnotationAwareOrderComparator.sort(sortedInterceptors);
+            this.interceptors = Collections.unmodifiableList(sortedInterceptors);
+        } else {
+            this.interceptors = Collections.emptyList();
+        }
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -139,6 +155,27 @@ public class MailTemplate implements DisposableBean {
         if (message == null) {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
+
+        // 发信拦截器链前置执行
+        if (!interceptors.isEmpty()) {
+            for (MailSendInterceptor interceptor : interceptors) {
+                try {
+                    boolean proceed = interceptor.preSend(message);
+                    if (!proceed) {
+                        log.warn("Mail sending blocked by interceptor [{}], subject: [{}]",
+                                interceptor.getClass().getSimpleName(), message.getSubject());
+                        throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                                "邮件发送被拦截器阻断: " + interceptor.getClass().getSimpleName());
+                    }
+                } catch (MailSendException mse) {
+                    throw mse;
+                } catch (Throwable t) {
+                    throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                            "邮件拦截器执行异常: " + t.getMessage(), t);
+                }
+            }
+        }
+
         if (message.getTo() == null || message.getTo().isEmpty()) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }

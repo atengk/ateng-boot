@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -193,6 +194,20 @@ class AtengMailAutoConfigurationTest {
                     assertThat(context).hasSingleBean(MailTemplate.class);
                     MailTemplate template = context.getBean(MailTemplate.class);
                     assertThat(template.getFailureHandlers()).contains(customHandler);
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义声明 MailSendInterceptor 时自动注入 MailTemplate")
+    void testMailSendInterceptorInjected() {
+        MailSendInterceptor customInterceptor = msg -> true;
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean("customInterceptor", MailSendInterceptor.class, () -> customInterceptor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailTemplate.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getInterceptors()).contains(customInterceptor);
                 });
     }
 }

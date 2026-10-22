@@ -32,6 +32,7 @@
         <module>ateng-boot-sample-rocketmq</module>
         <module>ateng-boot-sample-observability</module>
         <module>ateng-boot-sample-openapi</module>
+        <module>ateng-boot-sample-mail</module>
     </modules>
 
     <properties>

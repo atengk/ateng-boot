@@ -12,6 +12,7 @@ import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -977,5 +978,56 @@ class MailTemplateGreenMailTest {
 
         assertTrue(greenMail.waitForIncomingEmail(5000, 1));
         eventTemplate.destroy();
+    }
+
+    @Test
+    @DisplayName("测试发信拦截器 MailSendInterceptor 黑名单拦截阻断发信")
+    void testMailSendInterceptorBlocked() {
+        MailSendInterceptor blacklistInterceptor = message -> {
+            if (message.getTo() != null && message.getTo().contains("blocked@blacklist.com")) {
+                return false;
+            }
+            return true;
+        };
+
+        MailTemplate interceptedTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                null, List.of(), List.of(blacklistInterceptor));
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                interceptedTemplate.sendText("blocked@blacklist.com", "违规邮件", "该邮件应被拦截"));
+
+        assertTrue(ex.getMessage().contains("邮件发送被拦截器阻断"));
+        assertEquals(0, greenMail.getReceivedMessages().length);
+
+        interceptedTemplate.destroy();
+    }
+
+    @Test
+    @DisplayName("测试发信拦截器 MailSendInterceptor 动态修改邮件标头并在 GreenMail 中生效")
+    void testMailSendInterceptorHeaderModification() throws Exception {
+        MailSendInterceptor headerInterceptor = message -> {
+            message.header("X-Custom-Audit-Id", "audit-998877");
+            return true;
+        };
+
+        MailTemplate interceptedTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                null, List.of(), List.of(headerInterceptor));
+
+        MailSendResult result = interceptedTemplate.sendText("header-target@example.com", "标头测试", "包含自定义标头");
+
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage msg = greenMail.getReceivedMessages()[0];
+        String[] auditHeaders = msg.getHeader("X-Custom-Audit-Id");
+        assertNotNull(auditHeaders);
+        assertEquals(1, auditHeaders.length);
+        assertEquals("audit-998877", auditHeaders[0]);
+
+        interceptedTemplate.destroy();
     }
 }
