@@ -119,8 +119,19 @@ class AtengKafkaAutoConfigurationTest {
                 .run(context -> {
                     ConcurrentKafkaListenerContainerFactory<?, ?> singleFactory =
                             context.getBean(KafkaConstants.DEFAULT_CONTAINER_FACTORY, ConcurrentKafkaListenerContainerFactory.class);
-                    // 只要当前运行环境支持 Thread.ofVirtual()，listenerTaskExecutor 就会被设置为虚拟线程执行器
-                    assertThat(singleFactory.getContainerProperties().getListenerTaskExecutor()).isNotNull();
+                    boolean isVirtualAvailable;
+                    try {
+                        isVirtualAvailable = Thread.class.getMethod("ofVirtual") != null;
+                    } catch (Throwable ex) {
+                        isVirtualAvailable = false;
+                    }
+                    if (isVirtualAvailable) {
+                        // JDK 21+ 环境自动接入虚拟线程执行器
+                        assertThat(singleFactory.getContainerProperties().getListenerTaskExecutor()).isNotNull();
+                    } else {
+                        // JDK 17 生产基线环境安全降级回退
+                        assertThat(singleFactory.getContainerProperties().getListenerTaskExecutor()).isNull();
+                    }
                 });
     }
 
