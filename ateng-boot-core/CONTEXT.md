@@ -145,7 +145,7 @@ _Avoid_: DynamicExecutorRegistrar, MultiThreadPoolRegistrar, AsyncBeanRegistrar
 _Avoid_: ThreadMode, ExecutorMode, ExecutionType
 
 **AsyncRejectedPolicy**:
-平台线程池任务饱和饱和拒绝策略枚举，映射 JDK 标准拒绝策略（CALLER_RUNS、ABORT、DISCARD、DISCARD_OLDEST）。
+平台线程池任务饱和拒绝策略枚举，映射 JDK 标准拒绝策略（CALLER_RUNS、ABORT、DISCARD、DISCARD_OLDEST）。
 _Avoid_: RejectPolicy, RejectionHandlerType, RejectedStrategy
 
 **CarrierPinning**:

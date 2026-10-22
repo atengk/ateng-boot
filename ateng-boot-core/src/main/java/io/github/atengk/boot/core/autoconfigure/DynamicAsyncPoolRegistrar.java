@@ -1,6 +1,5 @@
 package io.github.atengk.boot.core.autoconfigure;
 
-import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.core.enums.AsyncExecutionMode;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.properties.AsyncProperties;
@@ -18,7 +17,6 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
 
 import java.util.Map;
-import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * 配置驱动的多业务受管线程池动态注册器
@@ -80,21 +78,22 @@ public class DynamicAsyncPoolRegistrar implements ImportBeanDefinitionRegistrar,
             if (virtualMode) {
                 builder = BeanDefinitionBuilder.genericBeanDefinition(
                         SimpleAsyncTaskExecutor.class,
-                        () -> createVirtualTaskExecutor(effectivePoolName, pool)
+                        () -> AsyncExecutorFactory.createVirtualExecutor(effectivePoolName, pool)
                 );
                 builder.setDestroyMethodName("close");
             } else {
                 builder = BeanDefinitionBuilder.genericBeanDefinition(
                         ThreadPoolTaskExecutor.class,
-                        () -> createPlatformTaskExecutor(effectivePoolName, pool)
+                        () -> AsyncExecutorFactory.createPlatformExecutor(effectivePoolName, pool)
                 );
                 builder.setDestroyMethodName("shutdown");
             }
 
             registry.registerBeanDefinition(beanName, builder.getBeanDefinition());
 
-            // 注册便于简写的别名（如别名 export 对应 Bean exportTaskExecutor）
-            if (StringUtils.hasText(alias) && !alias.equals(beanName) && !registry.containsBeanDefinition(alias)) {
+            // 注册便于简写的别名（如别名 export 对应 Bean exportTaskExecutor），防卫既有 BeanDefinition 与既有 Alias 冲突
+            if (StringUtils.hasText(alias) && !alias.equals(beanName)
+                    && !registry.containsBeanDefinition(alias) && !registry.isAlias(alias)) {
                 registry.registerAlias(beanName, alias);
             }
 
@@ -123,50 +122,5 @@ public class DynamicAsyncPoolRegistrar implements ImportBeanDefinitionRegistrar,
             case PLATFORM -> false;
             case AUTO -> Threading.VIRTUAL.isActive(environment);
         };
-    }
-
-    /**
-     * 创建并初始化平台线程池
-     *
-     * @param poolName 线程池名称
-     * @param pool     线程池配置参数
-     * @return 已初始化的 ThreadPoolTaskExecutor
-     */
-    private static ThreadPoolTaskExecutor createPlatformTaskExecutor(String poolName, AsyncPoolProperties pool) {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(pool.getCorePoolSize());
-        executor.setMaxPoolSize(pool.getMaxPoolSize());
-        executor.setQueueCapacity(pool.getQueueCapacity());
-        executor.setKeepAliveSeconds(pool.getKeepAliveSeconds());
-        executor.setThreadNamePrefix(pool.resolveThreadNamePrefix(poolName));
-        executor.setRejectedExecutionHandler(pool.getRejectedPolicy() != null
-                ? pool.getRejectedPolicy().getHandler()
-                : new ThreadPoolExecutor.CallerRunsPolicy());
-        executor.setWaitForTasksToCompleteOnShutdown(pool.isWaitForTasksToCompleteOnShutdown());
-        executor.setAwaitTerminationSeconds(pool.getAwaitTerminationSeconds());
-        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-        executor.initialize();
-        return executor;
-    }
-
-    /**
-     * 创建虚拟线程执行器
-     *
-     * @param poolName 线程池名称
-     * @param pool     线程池配置参数
-     * @return SimpleAsyncTaskExecutor 实例
-     */
-    private static SimpleAsyncTaskExecutor createVirtualTaskExecutor(String poolName, AsyncPoolProperties pool) {
-        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
-        executor.setVirtualThreads(true);
-        executor.setThreadNamePrefix(pool.resolveVirtualThreadNamePrefix(poolName));
-        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-        if (pool.isWaitForTasksToCompleteOnShutdown() && pool.getAwaitTermination() != null) {
-            executor.setTaskTerminationTimeout(pool.getAwaitTermination().toMillis());
-        }
-        if (pool.getConcurrencyLimit() >= 0) {
-            executor.setConcurrencyLimit(pool.getConcurrencyLimit());
-        }
-        return executor;
     }
 }

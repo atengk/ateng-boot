@@ -480,6 +480,26 @@ class AtengAsyncAutoConfigurationTest {
         });
     }
 
+    @Test
+    @DisplayName("当子池别名已作为 BeanDefinition 存在时动态注册器具备防御性跳过别名绑定以防冲突")
+    void shouldDefensivelySkipAliasWhenAlreadyRegistered() {
+        contextRunner.withUserConfiguration(ExistingBeanConfig.class)
+                .withPropertyValues(
+                        "ateng.boot.async.pools.order.core-pool-size=2"
+                ).run(context -> {
+                    assertThat(context).hasBean("orderTaskExecutor");
+                    assertThat(context.getBean("order")).isEqualTo("existing-order-bean");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ExistingBeanConfig {
+        @Bean(name = "order")
+        public String existingOrderBean() {
+            return "existing-order-bean";
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomExecutorConfig {
         static final ThreadPoolTaskExecutor CUSTOM_EXECUTOR = new ThreadPoolTaskExecutor();

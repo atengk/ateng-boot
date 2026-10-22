@@ -1,6 +1,5 @@
 package io.github.atengk.boot.core.autoconfigure;
 
-import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.core.properties.AsyncProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
@@ -23,7 +22,6 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.Arrays;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * 上下文感知自适应双模受管异步任务执行器自动装配
@@ -63,17 +61,7 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
         @Primary
         @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
         public SimpleAsyncTaskExecutor virtualTaskExecutor(AsyncProperties asyncProperties) {
-            SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
-            executor.setVirtualThreads(true);
-            executor.setThreadNamePrefix(asyncProperties.getVirtualThreadNamePrefix());
-            executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-            if (asyncProperties.isWaitForTasksToCompleteOnShutdown() && asyncProperties.getAwaitTermination() != null) {
-                executor.setTaskTerminationTimeout(asyncProperties.getAwaitTermination().toMillis());
-            }
-            if (asyncProperties.getConcurrencyLimit() >= 0) {
-                executor.setConcurrencyLimit(asyncProperties.getConcurrencyLimit());
-            }
-            return executor;
+            return AsyncExecutorFactory.createVirtualExecutor(null, asyncProperties);
         }
     }
 
@@ -88,20 +76,7 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
         @Primary
         @ConditionalOnMissingBean(name = {"taskExecutor", "applicationTaskExecutor"})
         public ThreadPoolTaskExecutor platformTaskExecutor(AsyncProperties asyncProperties) {
-            ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-            executor.setCorePoolSize(asyncProperties.getCorePoolSize());
-            executor.setMaxPoolSize(asyncProperties.getMaxPoolSize());
-            executor.setQueueCapacity(asyncProperties.getQueueCapacity());
-            executor.setKeepAliveSeconds(asyncProperties.getKeepAliveSeconds());
-            executor.setThreadNamePrefix(asyncProperties.getThreadNamePrefix());
-            executor.setRejectedExecutionHandler(asyncProperties.getRejectedPolicy() != null
-                    ? asyncProperties.getRejectedPolicy().getHandler()
-                    : new ThreadPoolExecutor.CallerRunsPolicy());
-            executor.setWaitForTasksToCompleteOnShutdown(asyncProperties.isWaitForTasksToCompleteOnShutdown());
-            executor.setAwaitTerminationSeconds(asyncProperties.getAwaitTerminationSeconds());
-            executor.setTaskDecorator(new ContextCopyingTaskDecorator());
-            executor.initialize();
-            return executor;
+            return AsyncExecutorFactory.createPlatformExecutor(null, asyncProperties);
         }
     }
 

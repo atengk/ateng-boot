@@ -471,6 +471,7 @@ ateng:
   boot:
     async:
       enabled: true                 # 全局异步线程池总开关（默认 true）
+      mode: AUTO                    # 线程运行模式（默认 AUTO：跟随全局 spring.threads.virtual.enabled；支持 AUTO / PLATFORM / VIRTUAL）
       core-pool-size: 4             # 主线程池核心线程数（默认 CPU 核心数）
       max-pool-size: 8              # 主线程池最大线程数（默认 CPU 核心数 * 2）
       queue-capacity: 100           # 主线程池工作队列容量（默认 1000）
@@ -478,17 +479,32 @@ ateng:
       thread-name-prefix: sample-core-async- # 主线程池名称前缀（默认 ateng-async-）
       virtual-thread-name-prefix: ateng-vt-async- # 虚拟线程前缀（默认 ateng-vt-async-）
       concurrency-limit: -1         # 虚拟线程并发限制（防下游击穿，默认 -1 无界）
+      rejected-policy: CALLER_RUNS  # 平台线程饱和拒绝策略（默认 CALLER_RUNS；支持 CALLER_RUNS / ABORT / DISCARD / DISCARD_OLDEST）
       wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时等待任务完成（默认 true）
       await-termination: 60s        # 优雅停机最大等待时间（强类型 Duration，默认 60s）
-      # 业务专属受管子池声明（舱壁隔离）
+      # 业务专属受管子池声明（舱壁物理隔离）
       pools:
+        # 1. 平台线程池示例：针对批处理、耗时计算或重报表导出任务，支持核心数与队列精细调优
         export:                     # 自动注册 Bean: exportTaskExecutor，并注册同名别名 export
           core-pool-size: 2
           max-pool-size: 4
           queue-capacity: 50
+          keep-alive: 60s
           thread-name-prefix: sample-export-async- # 缺省时自动推导为 ateng-async-export-
-          mode: PLATFORM            # 执行模式: PLATFORM(平台线程) | VIRTUAL(虚拟线程) | AUTO(跟随全局)
+          mode: PLATFORM            # 执行模式: PLATFORM(平台线程)
           rejected-policy: CALLER_RUNS # 饱和拒绝策略: CALLER_RUNS | ABORT | DISCARD | DISCARD_OLDEST
+          wait-for-tasks-to-complete-on-shutdown: true
+          await-termination: 60s
+        # 2. 虚拟线程池示例：针对高并发轻量 I/O、HTTP 调用或通知发送（JDK 21+）
+        notification:               # 自动注册 Bean: notificationTaskExecutor，并注册同名别名 notification
+          mode: VIRTUAL             # 执行模式: VIRTUAL(强制虚拟线程，低于 JDK 21 自动安全降级)
+          virtual-thread-name-prefix: sample-notify-vt- # 缺省时自动推导为 ateng-vt-async-notification-
+          concurrency-limit: 64     # 虚拟线程并发任务限制数（信号量背压限流，防下游连接池击穿，默认 -1 无界）
+          wait-for-tasks-to-complete-on-shutdown: true
+          await-termination: 30s
+        # 3. 禁用子池示例：支持按环境开闭特定子池
+        disabledPool:
+          enabled: false            # 设为 false 则跳过该子池的动态装配
 ```
 
 #### 3. 业务专属服务与 @Async 声明式调度
@@ -559,7 +575,6 @@ public class CoreReportExportScenarioService {
 #### 6. 核心生产边界与非功能语义 (Production Boundary)
 - **`@Primary` 兜底路由守卫**：多业务池共存场景下，主池 `taskExecutor` 统一显式标注 `@Primary`。开发者直接 `@Autowired Executor defaultExecutor` 或无参数 `@Async` 方法稳定命中主池，彻底消除 Spring 多候选 Bean 导致的 `NoUniqueBeanDefinitionException`；
 - **“四维上下文快照”无损穿透与零污染保证**：所有受管子池统一强制挂载 `ContextCopyingTaskDecorator`。在任务执行前捕获调用方父线程的 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照并在工作线程精准还原；任务执行完毕后在 `finally` 块中严格恢复原始工作线程现场，杜绝线程复用污染与跨租户越权漏洞。
-```
 
 ---
 
@@ -962,20 +977,23 @@ List<String> shuffled = RandomUtil.shuffleNew(users);
 
 ## 13. 模块配置属性参考 (`application.yml`)
 
-`ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，可在 `application.yml` 中按需定制配置：
+`ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，并原生支持多业务受管线程池（Multi-Pool）舱壁隔离，可在 `application.yml` 中按需定制配置：
 
 ```yaml
 # 开启 Spring Boot 官方虚拟线程（仅在 JDK 21+ 运行时生效，默认 false）
 spring:
   threads:
     virtual:
-      enabled: true
+      enabled: false
 
 ateng:
   boot:
     async:
+      # ==================== 1. 全局默认主线程池配置 (taskExecutor) ====================
       # 是否启用受管异步执行器装配（默认 true）
       enabled: true
+      # 线程运行模式（默认 AUTO：跟随全局 spring.threads.virtual.enabled 环境自适应；支持 AUTO / PLATFORM / VIRTUAL）
+      mode: AUTO
       # 核心线程数（平台线程模式，默认可用 CPU 核心数）
       core-pool-size: 8
       # 最大线程数（平台线程模式，默认可用 CPU 核心数 * 2）
@@ -984,14 +1002,44 @@ ateng:
       queue-capacity: 1000
       # 空闲线程存活时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 keep-alive-seconds: 60）
       keep-alive: 60s
-      # 平台线程工作线程名前缀（默认 ateng-async-）
+      # 平台线程工作线程名前缀（主池默认 "ateng-async-"）
       thread-name-prefix: "ateng-async-"
-      # 虚拟线程工作线程名前缀（默认 ateng-vt-async-，虚拟线程模式下生效）
+      # 虚拟线程工作线程名前缀（主池默认 "ateng-vt-async-"，虚拟线程模式下生效）
       virtual-thread-name-prefix: "ateng-vt-async-"
       # 虚拟线程并发任务限制数（默认 -1 即无界；可按需配置限制防下游 HikariCP 连接池击穿）
       concurrency-limit: -1
+      # 平台线程饱和拒绝策略（默认 CALLER_RUNS；支持 CALLER_RUNS / ABORT / DISCARD / DISCARD_OLDEST）
+      rejected-policy: CALLER_RUNS
       # 容器关闭时是否等待任务执行完成（优雅停机，默认 true）
       wait-for-tasks-to-complete-on-shutdown: true
       # 优雅停机等待超时时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 await-termination-seconds: 60）
       await-termination: 60s
+
+      # ==================== 2. 多业务专属受管子池声明 (pools: 舱壁物理隔离) ====================
+      pools:
+        # 业务专属子池 1：平台线程池（适用于计算密集型、大数据批处理或耗时报表流式导出）
+        export:
+          enabled: true                 # 是否启用当前子池（默认 true）
+          mode: PLATFORM                # 强制平台线程池（装配为 ThreadPoolTaskExecutor）
+          core-pool-size: 2             # 专属核心线程数（默认 CPU 核心数）
+          max-pool-size: 4              # 专属最大线程数（默认 CPU 核心数 * 2）
+          queue-capacity: 50            # 专属阻塞队列容量（默认 1000）
+          keep-alive: 60s               # 空闲线程存活时间（强类型 Duration，默认 60s）
+          thread-name-prefix: "sample-export-async-" # 专属线程名前缀（缺省时自动推导为 ateng-async-export-）
+          rejected-policy: CALLER_RUNS  # 饱和拒绝策略（CALLER_RUNS / ABORT / DISCARD / DISCARD_OLDEST）
+          wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时是否等待任务执行完毕（默认 true）
+          await-termination: 60s        # 优雅停机最大等待时间（强类型 Duration，默认 60s）
+
+        # 业务专属子池 2：虚拟线程执行器（适用于高并发轻量 I/O、HTTP 调用或通知发送，JDK 21+）
+        notification:
+          enabled: true                 # 是否启用当前子池（默认 true）
+          mode: VIRTUAL                 # 强制虚拟线程（装配为 SimpleAsyncTaskExecutor，低于 JDK 21 自动安全降级）
+          virtual-thread-name-prefix: "sample-notify-vt-" # 专属虚拟线程名前缀（缺省自动推导为 ateng-vt-async-notification-）
+          concurrency-limit: 64         # 虚拟线程并发任务限制数（信号量背压限流，防下游连接池击穿，默认 -1 无界）
+          wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时是否等待任务执行完毕（默认 true）
+          await-termination: 30s        # 优雅停机最大等待时间（强类型 Duration，默认 60s）
+
+        # 业务专属子池 3：按需禁用的子池（支持多环境灵活切换）
+        disabledPool:
+          enabled: false                # 设为 false 则跳过该子池的动态装配
 ```
