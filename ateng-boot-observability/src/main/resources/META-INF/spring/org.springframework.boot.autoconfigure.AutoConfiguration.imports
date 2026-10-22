@@ -1,1 +1,2 @@
 io.github.atengk.boot.observability.autoconfigure.AtengObservabilityAutoConfiguration
+io.github.atengk.boot.observability.autoconfigure.AtengMetricsAutoConfiguration
