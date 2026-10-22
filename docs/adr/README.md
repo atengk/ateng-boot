@@ -51,6 +51,7 @@
 | **0041** | 纯原生 SpringDoc 架构选型与接口文档生产治理防护决策 | `Accepted` | 全面拥抱 SpringDoc 官方原生生态（Swagger UI 5.x），彻底告别停更类库；生产 404 物理切断与 Basic/Sa-Token 运行时双模访问守卫；全链路追踪与多租户标头自动注入；Sa-Token 锁头鉴权自动注册；状态码全景字典注入与标准响应补全；配置驱动多业务分组路由与 /docs 极简重定向 | `ateng-boot-openapi` / `core` / `web` | [查看](./0041-pure-springdoc-openapi-and-production-guard-architecture.md) |
 | **0042** | 工业级异步邮件与模板通知底座架构设计决策 | `Accepted` | 专注出站 SMTP 生产加固；多命名账号注册表与动态多租户解析；受管异步与四维快照透传；模板 SPI 解耦与极简正则保底；流式大附件防 OOM 与 RFC 6266 中文规范；本地事务感知 sendAfterCommit 与三重失败补偿安全网；MDC traceId 与 Message-ID 双向追踪；GreenMail 100% 离线自洽单测沙箱 | `ateng-boot-mail` / `core` | [查看](./0042-industrial-grade-asynchronous-mail-and-template-architecture.md) |
 | **0043** | FTP/FTPS 双模远程文件传输与连接池韧性治理架构决策 | `Accepted` | 基于 Apache Commons Net 与 Commons Pool2 构建零臃肿 FTP/FTPS 传输底座，对称门面 FtpTemplate，命名多节点注册表与 FtpContextHolder 动态切源，RFC 2640 编码探测与协议线缆转码防乱码，原子临时上传与路径防穿越，RFC 3659 MLSD 机器目录探测与时区矫正，NAT 假冒穿透与控制通道保活及连接池 100% 状态重置安全防串目录 | `ateng-boot-ftp` / `core` | [查看](./0043-ftp-and-ftps-connection-pooling-and-resilient-client-architecture.md) |
+| **0044** | SSH 远程命令执行与安全文件传输基础设施架构决策 | `Accepted` | 基于 Apache MINA SSHD 构建的工业级 SSH/SFTP 双模底座，对称门面 SshTemplate 与 SftpTemplate，动静四位一体拓扑，受管 LRU/TTL 会话池，4 种认证凭据（含纯内存私钥），K8s 只读容器免崩纯内存指纹，双模 Exec（同步与流式按行消费），execSudo 提权管道，超时终止孤儿进程防卫，原子上传与递归目录同步，大文件进度监听，本地端口转发受管句柄与 WebSSH 交互句柄 | `ateng-boot-ssh` / `core` | [查看](./0044-ssh-and-sftp-remote-governance-architecture.md) |
 
 ---
 

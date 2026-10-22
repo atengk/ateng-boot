@@ -53,6 +53,7 @@
         <module>ateng-boot-openapi</module>
         <module>ateng-boot-mail</module>
         <module>ateng-boot-ftp</module>
+        <module>ateng-boot-ssh</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -75,6 +76,7 @@
         <greenmail.version>2.1.2</greenmail.version>
         <commons-net.version>3.11.1</commons-net.version>
         <mockftpserver.version>3.2.0</mockftpserver.version>
+        <sshd.version>2.14.0</sshd.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -271,6 +273,21 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-ftp</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-ssh</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.sshd</groupId>
+                <artifactId>sshd-core</artifactId>
+                <version>${sshd.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.sshd</groupId>
+                <artifactId>sshd-sftp</artifactId>
+                <version>${sshd.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
