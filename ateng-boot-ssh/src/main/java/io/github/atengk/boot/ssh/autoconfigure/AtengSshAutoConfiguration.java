@@ -5,6 +5,7 @@ import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
+import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
@@ -112,6 +113,22 @@ public class AtengSshAutoConfiguration {
     @ConditionalOnMissingBean
     public SshLifecycleManager sshLifecycleManager(SshSessionPool sshSessionPool, SshClient sshClient) {
         return new SshLifecycleManager(sshSessionPool, sshClient);
+    }
+
+    /**
+     * 自动装配 SSH 核心操作门面 SshTemplate（同步、流式、脚本与瞬态执行）
+     *
+     * @param sshSessionPool    会话缓存池
+     * @param sshClientRegistry 命名多主机注册表
+     * @param properties        全局配置属性
+     * @return SshTemplate 门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SshTemplate sshTemplate(SshSessionPool sshSessionPool,
+                                   SshClientRegistry sshClientRegistry,
+                                   SshProperties properties) {
+        return new SshTemplate(sshSessionPool, sshClientRegistry, properties);
     }
 }
 

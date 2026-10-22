@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * SSH 工业级受管会话缓存池
@@ -166,7 +167,7 @@ public class SshSessionPool implements AutoCloseable {
      * @param serverInfo 目标服务器描述符
      * @param action     会话执行逻辑
      */
-    public void execute(SshServerInfo serverInfo, SshSessionAction action) {
+    public void executeAction(SshServerInfo serverInfo, SshSessionAction action) {
         Assert.notNull(action, "SshSessionAction must not be null");
         execute(serverInfo, session -> {
             action.doInSession(session);
@@ -214,7 +215,7 @@ public class SshSessionPool implements AutoCloseable {
      * @param serverInfo 目标服务器描述符
      * @param action     会话执行逻辑
      */
-    public void executeOnce(SshServerInfo serverInfo, SshSessionAction action) {
+    public void executeOnceAction(SshServerInfo serverInfo, SshSessionAction action) {
         Assert.notNull(action, "SshSessionAction must not be null");
         executeOnce(serverInfo, session -> {
             action.doInSession(session);
@@ -340,12 +341,12 @@ public class SshSessionPool implements AutoCloseable {
         }
 
         String oldestKey = null;
-        long oldestAccessTime = Long.MAX_VALUE;
+        long oldestAccessOrder = Long.MAX_VALUE;
 
         for (Map.Entry<String, PooledSessionHolder> entry : pool.entrySet()) {
-            long lastAccess = entry.getValue().getLastAccessTime();
-            if (lastAccess < oldestAccessTime) {
-                oldestAccessTime = lastAccess;
+            long order = entry.getValue().getAccessOrder();
+            if (order < oldestAccessOrder) {
+                oldestAccessOrder = order;
                 oldestKey = entry.getKey();
             }
         }
@@ -412,11 +413,14 @@ public class SshSessionPool implements AutoCloseable {
     @Getter
     private static class PooledSessionHolder {
 
+        private static final AtomicLong ACCESS_SEQUENCE = new AtomicLong();
+
         private final String poolKey;
         private final SshServerInfo serverInfo;
         private final ClientSession session;
         private final long creationTime;
         private volatile long lastAccessTime;
+        private volatile long accessOrder;
 
         PooledSessionHolder(String poolKey, SshServerInfo serverInfo, ClientSession session) {
             this.poolKey = poolKey;
@@ -424,6 +428,7 @@ public class SshSessionPool implements AutoCloseable {
             this.session = session;
             this.creationTime = System.currentTimeMillis();
             this.lastAccessTime = this.creationTime;
+            this.accessOrder = ACCESS_SEQUENCE.incrementAndGet();
         }
 
         boolean isAlive() {
@@ -437,12 +442,13 @@ public class SshSessionPool implements AutoCloseable {
 
         void touch() {
             this.lastAccessTime = System.currentTimeMillis();
+            this.accessOrder = ACCESS_SEQUENCE.incrementAndGet();
         }
 
         void close() {
             try {
                 if (session != null && session.isOpen()) {
-                    session.close(true);
+                    session.close(true).await(Duration.ofSeconds(1));
                 }
             } catch (Exception e) {
                 log.debug("ateng-boot-ssh: 关闭池化底层会话完成: {}", e.getMessage());
