@@ -221,7 +221,7 @@ public class MailAccountRegistry {
     }
 
     /**
-     * 精准驱逐指定逻辑名称的动态账号缓存
+     * 精准驱逐指定逻辑名称的动态账号缓存并释放对应底层物理 Sender
      *
      * @param name 账号逻辑名称
      * @return 被移除的动态账号实例，若不存在返回 null
@@ -230,7 +230,11 @@ public class MailAccountRegistry {
         if (name == null || name.isBlank()) {
             return null;
         }
-        return dynamicAccountByNameCache.remove(name);
+        MailAccount removed = dynamicAccountByNameCache.remove(name);
+        if (removed != null) {
+            dynamicAccountLruCache.remove(removed.toFingerprint());
+        }
+        return removed;
     }
 
     /**

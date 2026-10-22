@@ -5,6 +5,7 @@ import com.icegreen.greenmail.junit5.GreenMailExtension;
 import com.icegreen.greenmail.util.ServerSetupTest;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.event.MailSendEvent;
 import io.github.atengk.boot.mail.event.MailSendFailedEvent;
 import io.github.atengk.boot.mail.event.MailSendingEvent;
@@ -13,6 +14,7 @@ import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
@@ -1333,5 +1335,123 @@ class MailTemplateGreenMailTest {
         jakarta.mail.internet.InternetAddress from = (jakarta.mail.internet.InternetAddress) fromAddresses[0];
         assertEquals("custom-service@atengk.com", from.getAddress(), "发信地址必须与 message.from 覆盖值一致");
         assertEquals("阿腾特服专家", from.getPersonal(), "发信中文昵称必须与 message.fromName 覆盖值一致");
+    }
+
+    @Test
+    @DisplayName("测试通过 MailTemplate 门面 API (evictDynamicAccount/clearDynamicAccounts) 精准注销动态账号并重新触发懒加载")
+    void testEvictDynamicAccountViaFacadeAndReload() {
+        int smtpPort = greenMail.getSmtp().getPort();
+        AtomicInteger providerCallCount = new AtomicInteger(0);
+
+        MailAccountProvider provider = accountName -> {
+            providerCallCount.incrementAndGet();
+            if ("db-sales".equals(accountName)) {
+                return MailAccount.builder()
+                        .name("db-sales")
+                        .host("127.0.0.1")
+                        .port(smtpPort)
+                        .username("test@atengk.com")
+                        .password("password")
+                        .ssl(false)
+                        .defaultFrom("sales@atengk.com")
+                        .defaultFromName("销售业务中心")
+                        .build();
+            }
+            return null;
+        };
+
+        MailTemplate template = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), provider
+        );
+
+        MailMessage message = new MailMessage()
+                .account("db-sales")
+                .to("lead@customer.com")
+                .subject("商机推介")
+                .text("欢迎咨询销售业务");
+
+        // 1. 首次发信，触发 provider 懒加载
+        template.send(message);
+        assertEquals(1, providerCallCount.get());
+        assertEquals(1, accountRegistry.dynamicSize());
+        assertNotNull(accountRegistry.getDynamic("db-sales"));
+
+        // 2. 调用门面精准驱逐动态账号
+        MailAccount evicted = template.evictDynamicAccount("db-sales");
+        assertNotNull(evicted);
+        assertEquals("db-sales", evicted.getName());
+        assertNull(accountRegistry.getDynamic("db-sales"));
+
+        // 3. 再次发信，因缓存已驱逐，必须重新触发 Provider 懒加载
+        template.send(message);
+        assertEquals(2, providerCallCount.get(), "精准驱逐后再次发信必须重新触发 Provider 懒加载");
+        assertEquals(1, accountRegistry.dynamicSize());
+
+        // 4. 调用门面全量清理动态账号
+        template.clearDynamicAccounts();
+        assertEquals(0, accountRegistry.dynamicSize());
+        assertNull(accountRegistry.getDynamic("db-sales"));
+
+        // 5. 再次发信，再次触发懒加载
+        template.send(message);
+        assertEquals(3, providerCallCount.get(), "全量清空后再次发信必须重新触发 Provider 懒加载");
+    }
+
+    @Test
+    @DisplayName("测试通过 Spring 原生领域事件 (MailAccountEvictEvent) 广播驱动动态账号热驱逐")
+    void testEvictDynamicAccountViaEventBroadcast() {
+        int smtpPort = greenMail.getSmtp().getPort();
+        AtomicInteger providerCallCount = new AtomicInteger(0);
+
+        MailAccountProvider provider = accountName -> {
+            providerCallCount.incrementAndGet();
+            if ("db-vip".equals(accountName)) {
+                return MailAccount.builder()
+                        .name("db-vip")
+                        .host("127.0.0.1")
+                        .port(smtpPort)
+                        .username("test@atengk.com")
+                        .password("password")
+                        .ssl(false)
+                        .defaultFrom("vip@atengk.com")
+                        .defaultFromName("VIP贵宾服务")
+                        .build();
+            }
+            return null;
+        };
+
+        MailAccountEvictListener evictListener = new MailAccountEvictListener(accountRegistry);
+        MailTemplate template = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), provider
+        );
+
+        MailMessage message = new MailMessage()
+                .account("db-vip")
+                .to("vip@customer.com")
+                .subject("贵宾私享会")
+                .text("欢迎参加贵宾私享会");
+
+        // 1. 首次发信，加载进动态缓存
+        template.send(message);
+        assertEquals(1, providerCallCount.get());
+        assertEquals(1, accountRegistry.dynamicSize());
+
+        // 2. 模拟分布式集群或本地事件总线广播精准驱逐事件
+        evictListener.onMailAccountEvict(new MailAccountEvictEvent(this, "db-vip"));
+        assertNull(accountRegistry.getDynamic("db-vip"));
+
+        // 3. 再次发信，验证重新触发懒加载
+        template.send(message);
+        assertEquals(2, providerCallCount.get(), "收到单账号驱逐事件后再次发信必须重新触发 Provider 懒加载");
+
+        // 4. 广播全量清空事件
+        evictListener.onMailAccountEvict(new MailAccountEvictEvent(this, null));
+        assertEquals(0, accountRegistry.dynamicSize());
+
+        // 5. 再次发信，验证重新触发懒加载
+        template.send(message);
+        assertEquals(3, providerCallCount.get(), "收到全量清空事件后再次发信必须重新触发 Provider 懒加载");
     }
 }

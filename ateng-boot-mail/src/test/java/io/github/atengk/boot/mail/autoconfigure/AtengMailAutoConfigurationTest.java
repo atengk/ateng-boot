@@ -2,6 +2,7 @@ package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -53,6 +54,7 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(MailTemplate.class);
                     assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    assertThat(context).hasSingleBean(MailAccountEvictListener.class);
                     assertThat(context).hasSingleBean(MailAccountResolver.class);
                     assertThat(context.getBean(MailAccountResolver.class)).isInstanceOf(TenantMailAccountResolver.class);
                     MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);

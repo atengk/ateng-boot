@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
@@ -172,6 +173,12 @@ public class AtengMailAutoConfiguration {
     @ConditionalOnMissingBean(MailAccountResolver.class)
     public MailAccountResolver mailAccountResolver() {
         return new TenantMailAccountResolver();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MailAccountEvictListener mailAccountEvictListener(MailAccountRegistry registry) {
+        return new MailAccountEvictListener(registry);
     }
 
     /**

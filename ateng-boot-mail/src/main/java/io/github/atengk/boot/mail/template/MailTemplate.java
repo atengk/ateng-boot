@@ -457,6 +457,23 @@ public class MailTemplate implements DisposableBean {
         return new DynamicMailSession(this, managedAccount);
     }
 
+    /**
+     * 精准驱逐指定逻辑名称的动态账号缓存及其底层物理 Sender
+     *
+     * @param accountName 动态账号逻辑标识
+     * @return 被移除的动态账号实例，若不存在返回 null
+     */
+    public MailAccount evictDynamicAccount(String accountName) {
+        return accountRegistry.evictDynamic(accountName);
+    }
+
+    /**
+     * 清空全部动态发件账号缓存并释放底层所有物理 Sender
+     */
+    public void clearDynamicAccounts() {
+        accountRegistry.clearDynamic();
+    }
+
     // ==================== 纯文本邮件发送快捷门面 ====================
 
     /**
