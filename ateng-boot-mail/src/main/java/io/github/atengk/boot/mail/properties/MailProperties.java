@@ -55,6 +55,11 @@ public class MailProperties {
     private DataSize maxTotalSize = DataSize.ofMegabytes(50);
 
     /**
+     * 动态编程式发信账号 LRU 缓存容量上限，默认 100
+     */
+    private int maxDynamicAccounts = 100;
+
+    /**
      * 顶级单账号快捷配置：SMTP 服务器主机地址
      */
     private String host;

@@ -84,4 +84,19 @@ public class MailAccount {
      * 底层池化物理发送器实例
      */
     private JavaMailSenderImpl sender;
+
+    /**
+     * 生成账号核心连接参数的唯一指纹（用于动态账号 Sender 的 LRU 缓存复用）
+     *
+     * @return 账号指纹字符串
+     */
+    public String toFingerprint() {
+        return (host != null ? host : "") + ":"
+                + port + ":"
+                + (username != null ? username : "") + ":"
+                + (password != null ? password.hashCode() : 0) + ":"
+                + (protocol != null ? protocol : "smtp") + ":"
+                + ssl + ":"
+                + starttls;
+    }
 }

@@ -3,6 +3,7 @@ package io.github.atengk.boot.mail.template;
 import com.icegreen.greenmail.configuration.GreenMailConfiguration;
 import com.icegreen.greenmail.junit5.GreenMailExtension;
 import com.icegreen.greenmail.util.ServerSetupTest;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
@@ -45,7 +46,9 @@ class MailTemplateGreenMailTest {
 
     @RegisterExtension
     static GreenMailExtension greenMail = new GreenMailExtension(ServerSetupTest.SMTP.dynamicPort())
-            .withConfiguration(GreenMailConfiguration.aConfig().withUser("test@atengk.com", "password"));
+            .withConfiguration(GreenMailConfiguration.aConfig()
+                    .withUser("test@atengk.com", "password")
+                    .withUser("ops@atengk.com", "password"));
 
     private MailTemplate mailTemplate;
     private MailAccountRegistry accountRegistry;
@@ -94,12 +97,28 @@ class MailTemplateGreenMailTest {
         accountRegistry = new MailAccountRegistry("default");
         accountRegistry.register(account);
 
+        // 注册专职运维告警的 ops 账号
+        MailAccount opsAccount = MailAccount.builder()
+                .name("ops")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("ops@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("ops@atengk.com")
+                .defaultFromName("运维告警中心")
+                .sender(sender)
+                .build();
+        accountRegistry.register(opsAccount);
+
         mailTemplate = new MailTemplate(accountRegistry, mailProperties, new SimpleMailTemplateRenderer());
     }
 
     @AfterEach
     void tearDown() {
         MDC.clear();
+        TenantContextHolder.clear();
+        accountRegistry.clearDynamic();
         greenMail.reset();
     }
 
@@ -411,5 +430,97 @@ class MailTemplateGreenMailTest {
                 .attach("stream.txt", bais));
 
         assertTrue(closed.get(), "发信完成后挂载的附件流必须被确定性关闭");
+    }
+
+    @Test
+    @DisplayName("测试指定多命名账号发信及发件人身份物理隔离")
+    void testSendViaMultipleNamedAccounts() throws Exception {
+        // 使用 ops 账号发信
+        MailSendResult resultOps = mailTemplate.send(msg -> msg
+                .account("ops")
+                .to("recipient-ops@example.com")
+                .subject("集群报警")
+                .text("CPU 持续 95% 异常告警"));
+
+        assertTrue(resultOps.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(1, msgs.length);
+        String fromHeader = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
+        assertTrue(fromHeader.contains("运维告警中心"), "应为 ops 账号的发件人昵称");
+        assertTrue(fromHeader.contains("ops@atengk.com"), "应为 ops 账号的发件人邮箱");
+    }
+
+    @Test
+    @DisplayName("测试基于 TenantContextHolder 的租户自动寻址与未命中平滑回退")
+    void testTenantAdaptiveRoutingWithFallback() throws Exception {
+        // 1. 设置租户上下文为 "ops"，发信未显式指定账号时应自适应路由至 "ops"
+        TenantContextHolder.setTenantId("ops");
+
+        MailSendResult result1 = mailTemplate.sendText("tenant-ops-user@example.com", "租户通知", "租户路由内容");
+        assertTrue(result1.isSuccess());
+
+        // 2. 设置未在注册表中配置的未知租户，应安全平滑回退至 default 账号而不引发崩溃
+        TenantContextHolder.setTenantId("unknown-tenant-888");
+
+        MailSendResult result2 = mailTemplate.sendText("fallback-user@example.com", "回退通知", "平滑回退默认账号");
+        assertTrue(result2.isSuccess());
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(2, msgs.length);
+        String from1 = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
+        assertTrue(from1.contains("ops@atengk.com"), "命中租户上下文 ops 时应自动路由至 ops 发件账号");
+
+        String from2 = MimeUtility.decodeText(msgs[1].getFrom()[0].toString());
+        assertTrue(from2.contains("test@atengk.com"), "未配置租户账号时必须平滑回退至默认账号");
+        assertTrue(from2.contains("阿腾通知系统"));
+    }
+
+    @Test
+    @DisplayName("测试编程式动态账号发信及 LRU 缓存复用底层物理 Sender")
+    void testDynamicAccountWithLruCache() throws Exception {
+        int smtpPort = greenMail.getSmtp().getPort();
+
+        // 构造动态账号（未预先绑定物理 Sender）
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name("dynamic-tenant-finance")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .defaultFrom("finance@dynamic.atengk.com")
+                .defaultFromName("动态财务专线")
+                .build();
+
+        assertEquals(0, accountRegistry.dynamicSize());
+
+        // 1. 首次使用动态账号发信
+        MailSendResult result1 = mailTemplate.forDynamicAccount(dynamicAccount)
+                .sendText("client@dynamic.com", "电子对账单", "请查收您的本月对账单。");
+        assertTrue(result1.isSuccess());
+
+        // 验证动态账号已成功进入受管 LRU 缓存
+        assertEquals(1, accountRegistry.dynamicSize());
+
+        // 2. 第二次发信，应复用 LRU 缓存中的底层 Sender
+        MailSendResult result2 = mailTemplate.forDynamicAccount(dynamicAccount)
+                .send(msg -> msg
+                        .to("client2@dynamic.com")
+                        .subject("第二份对账单")
+                        .text("第二份对账单内容"));
+
+        assertTrue(result2.isSuccess());
+        assertEquals(1, accountRegistry.dynamicSize(), "相同指纹的动态账号必须复用 LRU 缓存，不得重复膨胀");
+
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+        MimeMessage[] msgs = greenMail.getReceivedMessages();
+        assertEquals(2, msgs.length);
+        String from = MimeUtility.decodeText(msgs[0].getFrom()[0].toString());
+        assertTrue(from.contains("动态财务专线"));
+        assertTrue(from.contains("finance@dynamic.atengk.com"));
     }
 }

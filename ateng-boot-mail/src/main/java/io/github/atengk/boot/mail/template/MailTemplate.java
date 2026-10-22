@@ -12,6 +12,8 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.resolver.MailAccountResolver;
+import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import jakarta.mail.internet.InternetAddress;
@@ -54,14 +56,22 @@ public class MailTemplate {
     @Getter
     private final MailTemplateRenderer templateRenderer;
 
+    @Getter
+    private final MailAccountResolver accountResolver;
+
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
-        this(accountRegistry, properties, new SimpleMailTemplateRenderer());
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver());
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
+        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver());
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
+        this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
     }
 
     // ==================== 全能领域对象与函数式 DSL 发信 ====================
@@ -80,10 +90,48 @@ public class MailTemplate {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
 
-        MailAccount account = accountRegistry.get(message.getAccount());
+        MailAccount account;
+        String explicitAccountName = message.getAccount();
+        if (explicitAccountName != null && !explicitAccountName.isBlank()) {
+            // 显式指定账号：找不到则直接抛出受控异常 Fail-Fast
+            account = accountRegistry.get(explicitAccountName);
+            if (account == null) {
+                throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND,
+                        "未找到指定的发信账号: [" + explicitAccountName + "]");
+            }
+        } else {
+            // 未显式指定账号：触发动态路由解析器（如多租户上下文）
+            String resolvedName = accountResolver.resolveAccount(message);
+            if (resolvedName != null && !resolvedName.isBlank()) {
+                account = accountRegistry.get(resolvedName);
+            } else {
+                account = null;
+            }
+            // 未命中对应租户账号时，平滑安全回退至全局默认发信账号
+            if (account == null) {
+                account = accountRegistry.getDefault();
+            }
+        }
+
+        return sendWithAccount(account, message);
+    }
+
+    /**
+     * 指定发信账号物理发送邮件
+     *
+     * @param account 发信账号（需已包含物理 Sender）
+     * @param message 邮件消息模型
+     * @return 发送结果回执
+     */
+    public MailSendResult sendWithAccount(MailAccount account, MailMessage message) {
         if (account == null) {
-            throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND,
-                    "未找到发信账号: [" + (message.getAccount() != null ? message.getAccount() : accountRegistry.getDefaultAccountName()) + "]");
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("MailMessage must not be null");
+        }
+        if (message.getTo() == null || message.getTo().isEmpty()) {
+            throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
 
         // 容量防爆安全校验
@@ -214,6 +262,20 @@ public class MailTemplate {
         MailMessage message = new MailMessage();
         messageConfigurer.accept(message);
         return send(message);
+    }
+
+    /**
+     * 基于编程式临时账号发起邮件发送会话（底层复用受控容量的 LRU 物理 Sender，防范内存泄漏与重复连接）
+     *
+     * @param account 动态发信账号模型
+     * @return 动态账号发信会话门面
+     */
+    public DynamicMailSession forDynamicAccount(MailAccount account) {
+        if (account == null) {
+            throw new IllegalArgumentException("Dynamic MailAccount must not be null");
+        }
+        MailAccount managedAccount = accountRegistry.getOrCreateDynamic(account, properties);
+        return new DynamicMailSession(this, managedAccount);
     }
 
     // ==================== 纯文本邮件发送快捷门面 ====================

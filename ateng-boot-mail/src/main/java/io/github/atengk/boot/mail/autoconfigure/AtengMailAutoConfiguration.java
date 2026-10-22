@@ -4,6 +4,8 @@ import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.resolver.MailAccountResolver;
+import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.MailTemplate;
 import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
@@ -44,7 +46,7 @@ public class AtengMailAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public MailAccountRegistry mailAccountRegistry(MailProperties properties, Environment env) {
-        MailAccountRegistry registry = new MailAccountRegistry(properties.getDefaultAccount());
+        MailAccountRegistry registry = new MailAccountRegistry(properties.getDefaultAccount(), properties.getMaxDynamicAccounts());
         Map<String, MailAccountProperties> accountMap = properties.getAccounts();
 
         if (accountMap != null && !accountMap.isEmpty()) {
@@ -122,37 +124,20 @@ public class AtengMailAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(MailAccountResolver.class)
+    public MailAccountResolver mailAccountResolver() {
+        return new TenantMailAccountResolver();
+    }
+
+    @Bean
     @ConditionalOnMissingBean
-    public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties, MailTemplateRenderer templateRenderer) {
-        return new MailTemplate(registry, properties, templateRenderer);
+    public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
+                                     MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
+        return new MailTemplate(registry, properties, templateRenderer, accountResolver);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {
-        JavaMailSenderImpl sender = new JavaMailSenderImpl();
-        sender.setHost(accountProps.getHost());
-        sender.setPort(accountProps.getPort() != null ? accountProps.getPort() : 465);
-        sender.setUsername(accountProps.getUsername());
-        sender.setPassword(accountProps.getPassword());
-        sender.setDefaultEncoding(StandardCharsets.UTF_8.name());
-
-        Properties props = sender.getJavaMailProperties();
-        props.put("mail.transport.protocol", accountProps.getProtocol() != null ? accountProps.getProtocol() : "smtp");
-        props.put("mail.smtp.auth", "true");
-        props.put("mail.smtp.connectiontimeout", String.valueOf(globalProps.getConnectionTimeout().toMillis()));
-        props.put("mail.smtp.timeout", String.valueOf(globalProps.getReadTimeout().toMillis()));
-        props.put("mail.smtp.writetimeout", String.valueOf(globalProps.getWriteTimeout().toMillis()));
-
-        if (accountProps.isSsl()) {
-            props.put("mail.smtp.ssl.enable", "true");
-        }
-        if (accountProps.isStarttls()) {
-            props.put("mail.smtp.starttls.enable", "true");
-        }
-        if (accountProps.getProperties() != null) {
-            props.putAll(accountProps.getProperties());
-        }
-
-        return MailAccount.builder()
+        MailAccount account = MailAccount.builder()
                 .name(name)
                 .host(accountProps.getHost())
                 .port(accountProps.getPort() != null ? accountProps.getPort() : 465)
@@ -164,7 +149,10 @@ public class AtengMailAutoConfiguration {
                 .defaultFrom(accountProps.getDefaultFrom())
                 .defaultFromName(accountProps.getDefaultFromName())
                 .properties(accountProps.getProperties())
-                .sender(sender)
                 .build();
+
+        JavaMailSenderImpl sender = MailAccountRegistry.createSender(account, globalProps);
+        account.setSender(sender);
+        return account;
     }
 }

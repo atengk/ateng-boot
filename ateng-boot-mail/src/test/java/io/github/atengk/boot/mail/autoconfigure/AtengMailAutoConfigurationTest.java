@@ -1,6 +1,8 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.resolver.MailAccountResolver;
+import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.MailTemplate;
 import io.github.atengk.boot.mail.template.renderer.MailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
@@ -45,6 +47,8 @@ class AtengMailAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(MailTemplate.class);
                     assertThat(context).hasSingleBean(MailAccountRegistry.class);
+                    assertThat(context).hasSingleBean(MailAccountResolver.class);
+                    assertThat(context.getBean(MailAccountResolver.class)).isInstanceOf(TenantMailAccountResolver.class);
                     MailAccountRegistry registry = context.getBean(MailAccountRegistry.class);
                     assertThat(registry.size()).isEqualTo(1);
                     assertThat(registry.getDefault().getHost()).isEqualTo("smtp.example.com");
@@ -128,6 +132,21 @@ class AtengMailAutoConfigurationTest {
                     assertThat(context).hasSingleBean(MailTemplateRenderer.class);
                     assertThat(context.getBean(MailTemplateRenderer.class))
                             .isInstanceOf(ThymeleafMailTemplateRenderer.class);
+                });
+    }
+
+    @Test
+    @DisplayName("用户自定义声明 MailAccountResolver 时平滑覆盖默认解析器")
+    void testCustomMailAccountResolverOverride() {
+        MailAccountResolver customResolver = msg -> "custom-account";
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .withBean(MailAccountResolver.class, () -> customResolver)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailAccountResolver.class);
+                    assertThat(context.getBean(MailAccountResolver.class)).isSameAs(customResolver);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    assertThat(template.getAccountResolver()).isSameAs(customResolver);
                 });
     }
 }
