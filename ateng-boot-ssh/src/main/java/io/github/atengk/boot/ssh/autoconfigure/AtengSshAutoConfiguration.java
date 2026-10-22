@@ -132,8 +132,10 @@ public class AtengSshAutoConfiguration {
     public SshTemplate sshTemplate(SshSessionPool sshSessionPool,
                                    SshClientRegistry sshClientRegistry,
                                    SshProperties properties,
-                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-        return new SshTemplate(sshSessionPool, sshClientRegistry, properties, taskExecutorProvider.getIfAvailable());
+                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                   ObjectProvider<SshLifecycleManager> lifecycleManagerProvider) {
+        return new SshTemplate(sshSessionPool, sshClientRegistry, properties,
+                taskExecutorProvider.getIfAvailable(), lifecycleManagerProvider.getIfAvailable());
     }
 }
 

@@ -1,10 +1,13 @@
 package io.github.atengk.boot.ssh.lifecycle;
 
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
+import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.springframework.context.SmartLifecycle;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -24,6 +27,7 @@ public class SshLifecycleManager implements SmartLifecycle {
 
     private final SshSessionPool sessionPool;
     private final SshClient sshClient;
+    private final CopyOnWriteArrayList<SshTunnelHandle> activeTunnels = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Runnable> tunnelCleanupHooks = new CopyOnWriteArrayList<>();
 
     private volatile boolean running = false;
@@ -31,6 +35,37 @@ public class SshLifecycleManager implements SmartLifecycle {
     public SshLifecycleManager(SshSessionPool sessionPool, SshClient sshClient) {
         this.sessionPool = sessionPool;
         this.sshClient = sshClient;
+    }
+
+    /**
+     * 纳管活跃的本地端口转发隧道（保障停机时优先优雅释放监听端口）
+     *
+     * @param tunnel 端口转发隧道句柄
+     */
+    public void registerTunnel(SshTunnelHandle tunnel) {
+        if (tunnel != null) {
+            activeTunnels.add(tunnel);
+        }
+    }
+
+    /**
+     * 注销已关闭的本地端口转发隧道
+     *
+     * @param tunnel 端口转发隧道句柄
+     */
+    public void unregisterTunnel(SshTunnelHandle tunnel) {
+        if (tunnel != null) {
+            activeTunnels.remove(tunnel);
+        }
+    }
+
+    /**
+     * 获取当前生命周期纳管的活跃端口转发隧道列表
+     *
+     * @return 活跃隧道只读列表
+     */
+    public List<SshTunnelHandle> getActiveTunnels() {
+        return Collections.unmodifiableList(activeTunnels);
     }
 
     /**
@@ -58,12 +93,24 @@ public class SshLifecycleManager implements SmartLifecycle {
         log.info("ateng-boot-ssh: 正在执行确定性三步优雅停机时序...");
 
         // 步骤 1/3：释放并关闭所有活跃的端口转发隧道
-        log.debug("ateng-boot-ssh: [停机时序 1/3] 正在确认并释放活跃端口转发隧道 (共 {} 个钩子)...", tunnelCleanupHooks.size());
+        log.debug("ateng-boot-ssh: [停机时序 1/3] 正在确认并释放活跃端口转发隧道 (隧道数={}, 钩子数={})...",
+                activeTunnels.size(), tunnelCleanupHooks.size());
+        for (SshTunnelHandle tunnel : activeTunnels) {
+            try {
+                if (tunnel != null && tunnel.isAlive()) {
+                    tunnel.close();
+                }
+            } catch (Exception e) {
+                log.warn("ateng-boot-ssh: 停机释放端口转发隧道异常: {}", e.getMessage());
+            }
+        }
+        activeTunnels.clear();
+
         for (Runnable hook : tunnelCleanupHooks) {
             try {
                 hook.run();
             } catch (Exception e) {
-                log.warn("ateng-boot-ssh: 释放端口转发隧道异常: {}", e.getMessage());
+                log.warn("ateng-boot-ssh: 释放端口转发隧道钩子异常: {}", e.getMessage());
             }
         }
         tunnelCleanupHooks.clear();

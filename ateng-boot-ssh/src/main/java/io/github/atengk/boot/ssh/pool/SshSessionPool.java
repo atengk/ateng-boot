@@ -5,10 +5,13 @@ import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.properties.SshPoolProperties;
+import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
+import org.apache.sshd.common.util.net.SshdSocketAddress;
 import org.apache.sshd.core.CoreModuleProperties;
 import org.springframework.util.Assert;
 
@@ -309,10 +312,53 @@ public class SshSessionPool implements AutoCloseable {
     }
 
     private ClientSession createAndAuthenticateSession(SshServerInfo serverInfo) {
+        ExplicitPortForwardingTracker jumpTracker = null;
         try {
-            ClientSession session = sshClient.connect(serverInfo.getUsername(), serverInfo.getHost(), serverInfo.getPort())
-                    .verify(serverInfo.getConnectTimeout())
-                    .getSession();
+            ClientSession session;
+            if (serverInfo.hasJumpHost()) {
+                // 1. ProxyJump 跳板机穿透拓扑：递归解析并获取跳板机会话
+                ClientSession jumpSession = acquire(serverInfo.getJumpHost());
+                // 2. 在跳板机会话上建立本地动态端口转发（绑定本地随机可用端口 0，代理到目标 host:port）
+                jumpTracker = jumpSession.createLocalPortForwardingTracker(
+                        new SshdSocketAddress("127.0.0.1", 0),
+                        new SshdSocketAddress(serverInfo.getHost(), serverInfo.getPort())
+                );
+                int boundPort = jumpTracker.getBoundAddress().getPort();
+                log.debug("ateng-boot-ssh: ProxyJump 跳板机穿透本地临时转发就绪 [127.0.0.1:{} -> {} via {}]",
+                        boundPort, serverInfo.toHostPortKey(), serverInfo.getJumpHost().toSessionKey());
+
+                // 3. 通过本地代理端口与目标服务器握手建连
+                session = sshClient.connect(serverInfo.getUsername(), "127.0.0.1", boundPort)
+                        .verify(serverInfo.getConnectTimeout())
+                        .getSession();
+
+                // 4. 双向级联生命周期监听：目标会话关闭时即刻释放跳板机上的临时端口；跳板机会话关闭时级联切断目标会话
+                ExplicitPortForwardingTracker finalTracker = jumpTracker;
+                session.addCloseFutureListener(f -> {
+                    try {
+                        finalTracker.close();
+                    } catch (Exception ex) {
+                        log.debug("ateng-boot-ssh: 关闭跳板机临时转发隧道完成: {}", ex.getMessage());
+                    }
+                });
+                jumpSession.addCloseFutureListener(f -> {
+                    try {
+                        if (session.isOpen()) {
+                            session.close(true);
+                        }
+                    } catch (Exception ex) {
+                        log.debug("ateng-boot-ssh: 跳板机会话关闭触发目标会话断开: {}", ex.getMessage());
+                    }
+                });
+            } else {
+                // 普通直连拓扑
+                session = sshClient.connect(serverInfo.getUsername(), serverInfo.getHost(), serverInfo.getPort())
+                        .verify(serverInfo.getConnectTimeout())
+                        .getSession();
+            }
+
+            // 注入真实目标服务器地址属性，供指纹校验器等设施透明识别
+            session.setAttribute(InMemoryServerKeyVerifier.TARGET_HOST_KEY, serverInfo.toHostPortKey());
 
             // 若服务器描述符指定了特定的主机公钥策略，覆盖默认校验器
             if (serverInfo.getHostKeyPolicy() != null) {
@@ -331,6 +377,12 @@ public class SshSessionPool implements AutoCloseable {
 
             return session;
         } catch (Exception e) {
+            if (jumpTracker != null) {
+                try {
+                    jumpTracker.close();
+                } catch (Exception ignored) {
+                }
+            }
             throw translateException(e, serverInfo);
         }
     }

@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
 import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.common.AttributeRepository.AttributeKey;
 import org.apache.sshd.common.config.keys.KeyUtils;
 
 import java.net.InetSocketAddress;
@@ -26,6 +27,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
+
+    /**
+     * 目标真实服务器路由键属性标识（专职服务于 ProxyJump 跳板机穿透场景，避免按动态代理端口记录指纹）
+     */
+    public static final AttributeKey<String> TARGET_HOST_KEY = new AttributeKey<>();
 
     @Getter
     private final HostKeyPolicy policy;
@@ -153,6 +159,12 @@ public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
      * @return "host:port" 格式字符串
      */
     public static String resolveAddressKey(SocketAddress remoteAddress, ClientSession session) {
+        if (session != null) {
+            String target = session.getAttribute(TARGET_HOST_KEY);
+            if (target != null && !target.isBlank()) {
+                return target;
+            }
+        }
         if (remoteAddress instanceof InetSocketAddress inetSocketAddress) {
             return inetSocketAddress.getHostString() + ":" + inetSocketAddress.getPort();
         }

@@ -3,6 +3,9 @@ package io.github.atengk.boot.ssh.template;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.core.SshCommandExecutor;
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
@@ -11,11 +14,17 @@ import io.github.atengk.boot.ssh.pool.SshSessionCallback;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
+import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
+import org.apache.sshd.common.util.net.SshdSocketAddress;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.Assert;
+
+import java.io.IOException;
 
 import java.time.Duration;
 import java.util.Collection;
@@ -54,24 +63,36 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
 
     private final Executor executor;
 
+    @Getter
+    private final SshLifecycleManager lifecycleManager;
+
     private volatile ThreadPoolTaskExecutor internalExecutor;
 
     public SshTemplate(SshSessionPool sessionPool,
                        SshClientRegistry clientRegistry,
                        SshProperties properties) {
-        this(sessionPool, clientRegistry, properties, null);
+        this(sessionPool, clientRegistry, properties, null, null);
     }
 
     public SshTemplate(SshSessionPool sessionPool,
                        SshClientRegistry clientRegistry,
                        SshProperties properties,
                        Executor executor) {
+        this(sessionPool, clientRegistry, properties, executor, null);
+    }
+
+    public SshTemplate(SshSessionPool sessionPool,
+                       SshClientRegistry clientRegistry,
+                       SshProperties properties,
+                       Executor executor,
+                       SshLifecycleManager lifecycleManager) {
         Assert.notNull(sessionPool, "SshSessionPool must not be null");
         Assert.notNull(clientRegistry, "SshClientRegistry must not be null");
         this.sessionPool = sessionPool;
         this.clientRegistry = clientRegistry;
         this.properties = properties != null ? properties : new SshProperties();
         this.executor = executor;
+        this.lifecycleManager = lifecycleManager;
     }
 
     // ==========================================
@@ -803,6 +824,103 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public void close() {
         if (internalExecutor != null) {
             internalExecutor.shutdown();
+        }
+    }
+
+    // ==========================================
+    // 6. 本地端口转发受管隧道契约 (openLocalTunnel)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上开启本地端口转发隧道
+     *
+     * @param localPort  本地监听绑定端口（传 0 由操作系统动态分配可用随机端口）
+     * @param remoteHost 目标远端服务主机名或 IP
+     * @param remotePort 目标远端服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄
+     */
+    public SshTunnelHandle openLocalTunnel(int localPort, String remoteHost, int remotePort) {
+        return openLocalTunnel((SshServerInfo) null, localPort, remoteHost, remotePort);
+    }
+
+    /**
+     * 在指定具名服务器节点上开启本地端口转发隧道
+     *
+     * @param serverName 节点名称
+     * @param localPort  本地监听绑定端口（传 0 由操作系统动态分配可用随机端口）
+     * @param remoteHost 目标远端服务主机名或 IP
+     * @param remotePort 目标远端服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄
+     */
+    public SshTunnelHandle openLocalTunnel(String serverName, int localPort, String remoteHost, int remotePort) {
+        return openLocalTunnel(resolveServerInfo(serverName), localPort, remoteHost, remotePort);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启本地端口转发隧道
+     *
+     * @param serverInfo 目标描述符（作为端口转发中继/跳板节点）
+     * @param localPort  本地监听绑定端口（传 0 由操作系统动态分配可用随机端口）
+     * @param remoteHost 目标远端服务主机名或 IP
+     * @param remotePort 目标远端服务端口
+     * @return 实现了 AutoCloseable 的受管隧道句柄
+     */
+    public SshTunnelHandle openLocalTunnel(SshServerInfo serverInfo, int localPort, String remoteHost, int remotePort) {
+        Assert.isTrue(localPort >= 0 && localPort <= 65535, "localPort must be between 0 and 65535");
+        Assert.hasText(remoteHost, "remoteHost must not be blank");
+        Assert.isTrue(remotePort > 0 && remotePort <= 65535, "remotePort must be between 1 and 65535");
+
+        SshdSocketAddress local = new SshdSocketAddress("127.0.0.1", localPort);
+        SshdSocketAddress remote = new SshdSocketAddress(remoteHost.trim(), remotePort);
+        return openLocalTunnel(serverInfo, local, remote);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启本地端口转发隧道（支持指定本地监听地址与远端套接字）
+     *
+     * @param serverInfo 目标描述符
+     * @param local      本地监听网络地址
+     * @param remote     远端目标网络地址
+     * @return 实现了 AutoCloseable 的受管隧道句柄
+     */
+    public SshTunnelHandle openLocalTunnel(SshServerInfo serverInfo, SshdSocketAddress local, SshdSocketAddress remote) {
+        Assert.notNull(local, "Local socket address must not be null");
+        Assert.notNull(remote, "Remote socket address must not be null");
+
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        ClientSession session = sessionPool.acquire(target);
+
+        try {
+            ExplicitPortForwardingTracker tracker = session.createLocalPortForwardingTracker(local, remote);
+            SshdSocketAddress bound = tracker.getBoundAddress();
+            int boundPort = bound.getPort();
+            String boundHost = bound.getHostName();
+
+            SshTunnelHandle handle = new SshTunnelHandle(
+                    target,
+                    tracker,
+                    boundHost,
+                    boundPort,
+                    remote.getHostName(),
+                    remote.getPort(),
+                    tunnel -> {
+                        if (lifecycleManager != null) {
+                            lifecycleManager.unregisterTunnel(tunnel);
+                        }
+                    }
+            );
+
+            // 注册到生命周期管理器，保障停机时优先自动注销
+            if (lifecycleManager != null) {
+                lifecycleManager.registerTunnel(handle);
+            }
+
+            log.info("ateng-boot-ssh: 本地端口转发隧道已开启 [{}:{} -> {}:{} via {}]",
+                    boundHost, boundPort, remote.getHostName(), remote.getPort(), target.toSessionKey());
+            return handle;
+        } catch (IOException e) {
+            throw new SshOperationException(SshResultCode.TUNNEL_FAILED,
+                    "开启本地端口转发失败 [" + local + " -> " + remote + " via " + target.toSessionKey() + "]: " + e.getMessage(), e);
         }
     }
 
