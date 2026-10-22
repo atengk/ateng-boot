@@ -57,7 +57,7 @@ public class AtengFtpAutoConfiguration {
         if (servers != null && !servers.isEmpty()) {
             servers.forEach((name, nodeProps) -> {
                 if (nodeProps != null && !FtpClientRegistry.DEFAULT_SERVER.equalsIgnoreCase(name)) {
-                    mergeDefaultProperties(properties, nodeProps);
+                    nodeProps.mergeFrom(properties);
                     ObjectPool<FTPClient> nodePool = createObjectPool(nodeProps);
                     FtpTemplate nodeTemplate = new FtpTemplate(nodePool, nodeProps, registry, name);
                     registry.register(name, nodeTemplate, nodePool);
@@ -103,20 +103,5 @@ public class AtengFtpAutoConfiguration {
         config.setMinEvictableIdleDuration(poolProps.getMinEvictableIdleTime());
 
         return new GenericObjectPool<>(factory, config);
-    }
-
-    /**
-     * 合并默认配置项至子节点（若子节点未独立定义则继承全局属性）
-     *
-     * @param parent 全局配置
-     * @param child  子节点配置
-     */
-    private void mergeDefaultProperties(FtpProperties parent, FtpProperties child) {
-        if (child.getPool() == null) {
-            child.setPool(parent.getPool());
-        }
-        if (child.getFtps() == null) {
-            child.setFtps(parent.getFtps());
-        }
     }
 }

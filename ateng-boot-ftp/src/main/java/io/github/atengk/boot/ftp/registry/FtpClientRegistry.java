@@ -109,8 +109,11 @@ public class FtpClientRegistry implements AutoCloseable {
      */
     public ObjectPool<FTPClient> getDefaultPool() {
         ObjectPool<FTPClient> defaultPool = pools.get(DEFAULT_SERVER);
-        if (defaultPool == null && !pools.isEmpty()) {
-            return pools.values().iterator().next();
+        if (defaultPool == null) {
+            if (!pools.isEmpty()) {
+                return pools.values().iterator().next();
+            }
+            throw new FtpException(FtpResultCode.SERVER_NOT_FOUND, "FTP 注册表中未配置任何可用服务节点连接池");
         }
         return defaultPool;
     }

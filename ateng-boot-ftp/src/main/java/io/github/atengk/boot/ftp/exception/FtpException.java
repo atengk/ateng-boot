@@ -50,7 +50,7 @@ public class FtpException extends BusinessException {
      * @param cause      原始异常
      */
     public FtpException(IResultCode resultCode, String msg, Throwable cause) {
-        super(resolveResultCode(resultCode), msg, cause);
+        super(resolveResultCode(resultCode), msg, cause, cause != null);
     }
 
     private static IResultCode resolveResultCode(IResultCode resultCode) {

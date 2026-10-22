@@ -122,4 +122,21 @@ public class FtpProperties {
      * 命名多服务器节点配置（主配置自动作为 default 节点）
      */
     private Map<String, FtpProperties> servers = new LinkedHashMap<>();
+
+    /**
+     * 将缺省的通用配置属性从父级默认配置合并到当前实例中
+     *
+     * @param defaults 父级默认配置
+     */
+    public void mergeFrom(FtpProperties defaults) {
+        if (defaults == null) {
+            return;
+        }
+        if (this.pool == null) {
+            this.pool = defaults.getPool();
+        }
+        if (this.ftps == null) {
+            this.ftps = defaults.getFtps();
+        }
+    }
 }

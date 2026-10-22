@@ -1,8 +1,10 @@
 package io.github.atengk.boot.sample.ftp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.ftp.context.FtpContextHolder;
 import io.github.atengk.boot.sample.ftp.dto.FtpRenameRequest;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -102,6 +104,11 @@ public class SampleFtpIntegrationTest {
         if (backupServer != null) {
             backupServer.stop();
         }
+    }
+
+    @AfterEach
+    void tearDown() {
+        FtpContextHolder.clear();
     }
 
     @Test

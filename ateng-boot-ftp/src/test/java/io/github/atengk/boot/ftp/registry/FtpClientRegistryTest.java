@@ -93,4 +93,20 @@ class FtpClientRegistryTest {
         verify(pool2).close();
         assertThat(registry.getServerNames()).isEmpty();
     }
+
+    @Test
+    @DisplayName("测试空注册表获取默认模板或连接池抛出受管异常")
+    void testEmptyRegistryThrowsException() {
+        FtpClientRegistry registry = new FtpClientRegistry();
+
+        assertThatThrownBy(registry::getDefaultTemplate)
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.SERVER_NOT_FOUND.getCode());
+
+        assertThatThrownBy(registry::getDefaultPool)
+                .isInstanceOf(FtpException.class)
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.SERVER_NOT_FOUND.getCode());
+    }
 }

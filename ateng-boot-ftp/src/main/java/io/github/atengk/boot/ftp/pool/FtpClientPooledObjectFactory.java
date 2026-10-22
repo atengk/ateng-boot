@@ -76,7 +76,11 @@ public class FtpClientPooledObjectFactory extends BasePooledObjectFactory<FTPCli
         if (client != null && client.isConnected()) {
             try {
                 // 1. 强制重置回根目录，彻底杜绝多线程高并发下的串目录灾难
-                client.changeWorkingDirectory("/");
+                boolean cwdSuccess = client.changeWorkingDirectory("/");
+                if (!cwdSuccess) {
+                    throw new FtpException(FtpResultCode.OPERATION_FAILED,
+                            "FTP 连接归还连接池重置根目录失败，服务端响应码: " + client.getReplyCode());
+                }
                 // 2. 复位传输数据类型为配置的默认值
                 applyFileType(client);
             } catch (Exception e) {
@@ -92,7 +96,7 @@ public class FtpClientPooledObjectFactory extends BasePooledObjectFactory<FTPCli
         safeDisconnect(client);
     }
 
-    private FTPClient createClientInstance() {
+    FTPClient createClientInstance() {
         FtpsProperties ftps = properties.getFtps();
         if (ftps != null && ftps.isEnabled()) {
             String protocol = ftps.getProtocol() != null ? ftps.getProtocol() : "TLSv1.3";
@@ -129,13 +133,11 @@ public class FtpClientPooledObjectFactory extends BasePooledObjectFactory<FTPCli
         client.connect(properties.getHost(), properties.getPort());
         int replyCode = client.getReplyCode();
         if (!FTPReply.isPositiveCompletion(replyCode)) {
-            client.disconnect();
             throw new FtpException(FtpResultCode.CONNECT_FAILED, "FTP 服务端拒绝连接，返回响应码: " + replyCode);
         }
 
         boolean loginSuccess = client.login(properties.getUsername(), properties.getPassword());
         if (!loginSuccess) {
-            client.disconnect();
             throw new FtpException(FtpResultCode.AUTH_FAILED, "FTP 鉴权登录失败，用户: " + properties.getUsername());
         }
     }

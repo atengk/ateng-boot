@@ -123,9 +123,10 @@ public class FtpTemplate {
             client = pool.borrowObject();
             return action.doInFtp(client);
         } catch (Exception e) {
-            // 防御性连接治理：凡涉及底层 IO/网络异常，该连接状态已不可信，强制标记失效物理销毁
+            // 防御性连接治理：凡涉及底层 IO/网络异常，或连接已处于断开/不可用状态，强制标记失效物理销毁
+            boolean connectionBroken = (client == null) || !client.isConnected() || !client.isAvailable();
             boolean hasIoError = (e instanceof IOException) || (e.getCause() instanceof IOException);
-            if (hasIoError && client != null) {
+            if ((hasIoError || connectionBroken) && client != null) {
                 try {
                     pool.invalidateObject(client);
                     invalidated = true;
@@ -163,23 +164,29 @@ public class FtpTemplate {
         Assert.notNull(in, "InputStream must not be null");
         String safePath = cleanAndValidatePath(remotePath);
 
-        return execute(client -> {
-            // 1. 父级多级目录自动递归创建 (mkdir -p)
-            if (properties.isAutoCreateDirectories()) {
-                String parentDir = getParentPath(safePath);
-                if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
-                    makeDirectoriesInternal(client, parentDir);
+        boolean isAtomic = properties.isAtomicUpload();
+        String suffix = properties.getTempFileSuffix() != null ? properties.getTempFileSuffix() : ".tmp";
+        String uploadPath = isAtomic ? safePath + suffix : safePath;
+        String wireUploadPath = toWirePath(uploadPath);
+        String wireTargetPath = toWirePath(safePath);
+
+        try {
+            return execute(client -> {
+                // 1. 父级多级目录自动递归创建 (mkdir -p)
+                if (properties.isAutoCreateDirectories()) {
+                    String parentDir = getParentPath(safePath);
+                    if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
+                        makeDirectoriesInternal(client, parentDir);
+                    }
                 }
-            }
 
-            boolean isAtomic = properties.isAtomicUpload();
-            String suffix = properties.getTempFileSuffix() != null ? properties.getTempFileSuffix() : ".tmp";
-            String uploadPath = isAtomic ? safePath + suffix : safePath;
-            String wireUploadPath = toWirePath(uploadPath);
-            String wireTargetPath = toWirePath(safePath);
-
-            try {
-                boolean success = client.storeFile(wireUploadPath, in);
+                boolean success;
+                try {
+                    success = client.storeFile(wireUploadPath, in);
+                } catch (Exception e) {
+                    throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                            "FTP 文件写入异常: " + safePath + ", 原因: " + e.getMessage(), e);
+                }
                 if (!success) {
                     int reply = client.getReplyCode();
                     throw new FtpException(FtpResultCode.UPLOAD_FAILED,
@@ -202,25 +209,25 @@ public class FtpTemplate {
                     }
                 }
                 return true;
-            } catch (Exception e) {
-                // 异常补偿机制：若开启原子上传且未完整闭合，在独立干净会话中物理清理残留的临时脏文件
-                if (isAtomic) {
-                    try {
-                        execute(cleanClient -> {
-                            cleanClient.deleteFile(toWirePath(uploadPath));
-                            return true;
-                        });
-                        log.debug("FTP 原子上传异常中断，已自动物理清理临时文件: {}", uploadPath);
-                    } catch (Exception ex) {
-                        log.warn("FTP 原子上传异常清理临时文件失败: {}, 原因: {}", uploadPath, ex.getMessage());
-                    }
+            });
+        } catch (Exception e) {
+            // 异常补偿机制：此时外层 execute 已经退出并完全释放了借出的连接，绝无嵌套持有连接自死锁风险
+            if (isAtomic) {
+                try {
+                    execute(cleanClient -> {
+                        cleanClient.deleteFile(wireUploadPath);
+                        return true;
+                    });
+                    log.debug("FTP 原子上传异常中断，已自动物理清理临时文件: {}", uploadPath);
+                } catch (Exception ex) {
+                    log.warn("FTP 原子上传异常清理临时文件失败: {}, 原因: {}", uploadPath, ex.getMessage());
                 }
-                if (e instanceof FtpException fe) {
-                    throw fe;
-                }
-                throw new FtpException(FtpResultCode.UPLOAD_FAILED, "FTP 上传文件异常: " + safePath + ", 原因: " + e.getMessage(), e);
             }
-        });
+            if (e instanceof FtpException fe) {
+                throw fe;
+            }
+            throw new FtpException(FtpResultCode.UPLOAD_FAILED, "FTP 上传文件异常: " + safePath + ", 原因: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -370,22 +377,23 @@ public class FtpTemplate {
             try (OutputStream limitedOut = new OutputStream() {
                 private long count = 0;
 
-                @Override
-                public void write(int b) throws IOException {
-                    if (++count > maxBytes) {
+                private void checkLimit(long delta) {
+                    count += delta;
+                    if (count > maxBytes) {
                         throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
                                 "FTP 下载文件大小超过内存安全阈值: " + maxBytes + " bytes");
                     }
+                }
+
+                @Override
+                public void write(int b) throws IOException {
+                    checkLimit(1);
                     out.write(b);
                 }
 
                 @Override
                 public void write(byte[] b, int off, int len) throws IOException {
-                    count += len;
-                    if (count > maxBytes) {
-                        throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
-                                "FTP 下载文件大小超过内存安全阈值: " + maxBytes + " bytes");
-                    }
+                    checkLimit(len);
                     out.write(b, off, len);
                 }
             }) {
@@ -440,6 +448,7 @@ public class FtpTemplate {
         execute(client -> {
             String wirePath = toWirePath(safePath);
             InputStream in = null;
+            boolean commandCompleted = false;
             try {
                 in = client.retrieveFileStream(wirePath);
                 if (in == null) {
@@ -454,11 +463,21 @@ public class FtpTemplate {
                         in.close();
                     } catch (IOException ignored) {
                     }
+                    try {
+                        commandCompleted = client.completePendingCommand();
+                    } catch (Exception e) {
+                        log.debug("FTP completePendingCommand 闭合异常: {}", e.getMessage());
+                    }
+                    if (!commandCompleted) {
+                        // 若挂起指令未能正常闭合，连接协议状态已不可信，主动断开以触发连接池销毁防卫
+                        try {
+                            client.disconnect();
+                        } catch (Exception ignored) {
+                        }
+                    }
                 }
             }
-            // 关键：在关闭流后必须调用 completePendingCommand() 闭合传输指令
-            boolean completed = client.completePendingCommand();
-            if (!completed) {
+            if (!commandCompleted) {
                 log.warn("FTP 挂起数据读取指令未正常结束: {}", safePath);
                 throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "完成 FTP 数据读取挂起指令失败: " + safePath);
             }
@@ -529,14 +548,49 @@ public class FtpTemplate {
                 ftpFile = client.mlistFile(wirePath);
             } catch (Exception ignored) {
             }
-            // 2. 平滑降级为 listFiles
+            // 2. 平滑降级：优先从父目录枚举匹配自身元数据（彻底杜绝将目录下首个子文件误当目录自身的缺陷）
             if (ftpFile == null) {
+                if ("/".equals(safePath) || safePath.isEmpty()) {
+                    return FtpFileInfo.builder()
+                            .name("/")
+                            .path("/")
+                            .size(0)
+                            .directory(true)
+                            .file(false)
+                            .build();
+                }
+                String parentDir = getParentPath(safePath);
+                String targetName = getFileName(safePath);
                 try {
-                    FTPFile[] files = client.listFiles(wirePath);
-                    if (files != null && files.length > 0) {
-                        ftpFile = files[0];
+                    String lookupDir = (parentDir != null && !parentDir.isBlank()) ? parentDir : "/";
+                    FTPFile[] siblings = client.listFiles(toWirePath(lookupDir));
+                    if (siblings != null) {
+                        for (FTPFile sibling : siblings) {
+                            if (sibling == null) {
+                                continue;
+                            }
+                            String decodedSibling = fromWirePath(sibling.getName());
+                            if (targetName.equals(decodedSibling) || targetName.equals(sibling.getName())) {
+                                ftpFile = sibling;
+                                break;
+                            }
+                        }
                     }
                 } catch (Exception ignored) {
+                }
+
+                // 3. 若从父级未定位到，尝试直接 listFiles 探测单文件自身
+                if (ftpFile == null) {
+                    try {
+                        FTPFile[] files = client.listFiles(wirePath);
+                        if (files != null && files.length == 1) {
+                            String firstDecoded = fromWirePath(files[0].getName());
+                            if (targetName.equals(firstDecoded) || targetName.equals(files[0].getName())) {
+                                ftpFile = files[0];
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
                 }
             }
             if (ftpFile == null) {
@@ -907,7 +961,19 @@ public class FtpTemplate {
             String wireDirPath = toWirePath(dirPath);
             client.makeDirectory(wireDirPath);
         }
-        return true;
+        // 最终校验：目标目录是否真实存在并可进入（彻底防御由于权限不足等原因导致的虚假成功）
+        String wireTarget = toWirePath(remoteDir);
+        String currentDir = client.printWorkingDirectory();
+        try {
+            if (client.changeWorkingDirectory(wireTarget)) {
+                if (currentDir != null) {
+                    client.changeWorkingDirectory(currentDir);
+                }
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
     }
 
     private boolean deleteDirectoryInternal(FTPClient client, String remoteDir, boolean recursive) throws IOException {

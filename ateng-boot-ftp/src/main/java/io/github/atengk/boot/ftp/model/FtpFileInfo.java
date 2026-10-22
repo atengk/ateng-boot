@@ -40,15 +40,35 @@ public class FtpFileInfo implements Serializable {
     /**
      * 是否为目录
      */
-    private boolean isDirectory;
+    private boolean directory;
 
     /**
      * 是否为普通文件
      */
-    private boolean isFile;
+    private boolean file;
 
     /**
      * 最后修改时间戳 (UTC Instant)
      */
     private Instant lastModified;
+
+    public boolean isDirectory() {
+        return directory;
+    }
+
+    public boolean isFile() {
+        return file;
+    }
+
+    public static class FtpFileInfoBuilder {
+        public FtpFileInfoBuilder isDirectory(boolean isDirectory) {
+            this.directory = isDirectory;
+            return this;
+        }
+
+        public FtpFileInfoBuilder isFile(boolean isFile) {
+            this.file = isFile;
+            return this;
+        }
+    }
 }

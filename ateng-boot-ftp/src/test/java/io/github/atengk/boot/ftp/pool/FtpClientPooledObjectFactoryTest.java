@@ -174,19 +174,66 @@ class FtpClientPooledObjectFactoryTest {
     }
 
     @Test
-    @DisplayName("测试 FTPS 客户端模式创建实例类型正确性")
+    @DisplayName("测试连接对端断开后通过 testOnBorrow 自动剔除死连接并重建自愈")
+    void testConnectionSelfHealingOnDisconnect() throws Exception {
+        // 1. 借出连接并归还，确保连接留在池中作为空闲连接
+        FTPClient client1 = pool.borrowObject();
+        pool.returnObject(client1);
+        assertThat(pool.getNumIdle()).isGreaterThanOrEqualTo(1);
+
+        // 2. 模拟网络闪断或对端强行关闭底层连接（直接物理关闭底层 socket）
+        client1.disconnect();
+        assertThat(client1.isConnected()).isFalse();
+
+        // 3. 再次借出连接：由于配置了 testOnBorrow=true，连接池探针将检测到 client1 已失效并销毁它，
+        //    随后自动触发工厂 create() 重新创建全新健康连接
+        FTPClient client2 = pool.borrowObject();
+        try {
+            assertThat(client2).isNotNull();
+            assertThat(client2).isNotSameAs(client1);
+            assertThat(client2.isConnected()).isTrue();
+            assertThat(client2.isAvailable()).isTrue();
+            assertThat(client2.sendNoOp()).isTrue();
+        } finally {
+            pool.returnObject(client2);
+        }
+    }
+
+    @Test
+    @DisplayName("测试 passivateObject 当重置根目录失败时抛出受管异常防卫受污连接")
+    void testPassivateObjectFailureThrowsException() throws Exception {
+        FTPClient mockClient = org.mockito.Mockito.mock(FTPClient.class);
+        org.mockito.Mockito.when(mockClient.isConnected()).thenReturn(true);
+        org.mockito.Mockito.when(mockClient.changeWorkingDirectory("/")).thenReturn(false);
+        org.mockito.Mockito.when(mockClient.getReplyCode()).thenReturn(550);
+
+        DefaultPooledObject<FTPClient> pooled = new DefaultPooledObject<>(mockClient);
+        assertThatThrownBy(() -> factory.passivateObject(pooled))
+                .isInstanceOf(FtpException.class)
+                .hasMessageContaining("重置根目录失败")
+                .extracting(e -> ((FtpException) e).getCode())
+                .isEqualTo(FtpResultCode.OPERATION_FAILED.getCode());
+    }
+
+    @Test
+    @DisplayName("测试 FTPS 客户端模式创建实例类型与安全策略正确性")
     void testFtpsClientCreation() {
         properties.getFtps().setEnabled(true);
         properties.getFtps().setProtocol("TLSv1.3");
+        properties.getFtps().setImplicit(false);
         properties.getFtps().setTrustAll(true);
 
         FtpClientPooledObjectFactory ftpsFactory = new FtpClientPooledObjectFactory(properties);
-        // 通过反射或者安全校验客户端创建
-        FTPClient client = null;
+        FTPClient client = ftpsFactory.createClientInstance();
         try {
-            // 对 FTPS 模式下的实例化单独测试（未连接只测试 Client 类型）
-            client = new FTPSClient("TLSv1.3", false);
+            assertThat(client).isNotNull();
             assertThat(client).isInstanceOf(FTPSClient.class);
+
+            // 验证未开启 FTPS 时为普通 FTPClient
+            properties.getFtps().setEnabled(false);
+            FtpClientPooledObjectFactory plainFactory = new FtpClientPooledObjectFactory(properties);
+            FTPClient plainClient = plainFactory.createClientInstance();
+            assertThat(plainClient).isNotInstanceOf(FTPSClient.class);
         } finally {
             if (client != null && client.isConnected()) {
                 try {

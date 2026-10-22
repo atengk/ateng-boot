@@ -2,6 +2,8 @@ package io.github.atengk.boot.sample.ftp.controller;
 
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.ftp.context.FtpContextHolder;
+import io.github.atengk.boot.ftp.exception.FtpException;
+import io.github.atengk.boot.ftp.exception.FtpResultCode;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
 import io.github.atengk.boot.ftp.template.FtpTemplate;
 import io.github.atengk.boot.sample.ftp.dto.FtpRenameRequest;
@@ -59,26 +61,24 @@ public class FtpSampleController {
     public Result<Boolean> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "remotePath", required = false) String remotePath,
-            @RequestParam(value = "server", required = false) String server) throws IOException {
+            @RequestParam(value = "server", required = false) String server) {
         String targetPath = remotePath != null && !remotePath.isBlank()
                 ? remotePath
                 : "/" + file.getOriginalFilename();
 
-        if (server != null && !server.isBlank()) {
-            return FtpContextHolder.runWith(server, () -> {
-                try (InputStream in = file.getInputStream()) {
-                    boolean success = ftpTemplate.upload(targetPath, in);
-                    return Result.success(success);
-                } catch (IOException e) {
-                    throw new RuntimeException("读取上传文件流失败", e);
-                }
-            });
-        }
+        java.util.function.Supplier<Result<Boolean>> uploadAction = () -> {
+            try (InputStream in = file.getInputStream()) {
+                boolean success = ftpTemplate.upload(targetPath, in);
+                return Result.success(success);
+            } catch (IOException e) {
+                throw new FtpException(FtpResultCode.UPLOAD_FAILED, "读取待上传文件流失败: " + e.getMessage(), e);
+            }
+        };
 
-        try (InputStream in = file.getInputStream()) {
-            boolean success = ftpTemplate.upload(targetPath, in);
-            return Result.success(success);
+        if (server != null && !server.isBlank()) {
+            return FtpContextHolder.runWith(server, uploadAction);
         }
+        return uploadAction.get();
     }
 
     /**

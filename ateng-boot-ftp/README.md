@@ -22,10 +22,10 @@
 | **路径穿越安全清洗** | 路径遍历漏洞前置拦截 | `FtpTemplate` | - | `cleanAndValidatePath(String)`，统一转义分隔符，严格拦截 `..` 越权逃逸序列与 `\0` 空字符注入，防范任意文件读取或覆盖 | `FtpTemplateTest` / `SampleFtpIntegrationTest` |
 | **原生会话逃逸舱** | 底层原生 FTPClient 会话透传 | `FtpTemplate`<br>`FtpClientCallback<T>` | - | `execute(FtpClientCallback<T>)`，从受管池安全借用原生客户端，支持执行任意底层协议指令并在 finally 绝对归还 | `FtpTemplateTest` / `SampleFtpIntegrationTest` |
 | **动态切源路由上下文** | 线程级多数据源动态切换 | `FtpContextHolder` | `servers.*` | `setServer(String)` / `getServer()` / `clear()` / `runWith(String, Runnable)` / `runWith(String, Supplier<T>)`，支持栈式嵌套作用域并在 finally 确定性复位现场 | `FtpContextHolderTest` / `SampleFtpIntegrationTest` |
-| **多节点受管注册表** | 具名连接池与模板注册表 | `FtpClientRegistry` | `servers.*` | `getTemplate(String)` / `getDefaultTemplate()` / `getPool(String)` / `register(...)` / `destroy(...)` / `close()`，支持停机确定性销毁所有连接池 | `FtpClientRegistryTest` / `FtpDynamicRoutingAndAutoConfigurationTest` |
+| **多节点受管注册表** | 具名连接池与模板注册表 | `FtpClientRegistry` | `servers.*` | `getTemplate(String)` / `getDefaultTemplate()` / `getPool(String)` / `getDefaultPool()` / `contains(String)` / `getServerNames()` / `register(...)` / `close()`，支持停机确定性销毁所有连接池 | `FtpClientRegistryTest` / `FtpDynamicRoutingAndAutoConfigurationTest` |
 | **连接池心跳与复位** | 借还生命周期与断线自愈 | `FtpClientPooledObjectFactory`<br>`FtpPoolProperties` | `pool.*` | 基于 Commons Pool2 实现，借出归还双重 `cwd("/")` 复位防串目录；借出校验 `NOOP` 存活心跳；IO 异常主动标记 `invalidateObject` 剔除坏连接 | `FtpPoolAndFactoryTest` |
 | **FTPS 安全加密传输** | SSL / TLS 传输层安全通道 | `FtpsProperties`<br>`FtpClientPooledObjectFactory` | `ftps.*` | 支持显式与隐式 FTPS（`AUTH TLS`）、支持客户端证书双向认证与 TrustStore/KeyStore 配置 | `FtpPoolAndFactoryTest` |
-| **因果异常体系** | 语义化异常与统一错误码 | `FtpException`<br>`FtpResultCode` | - | 转译底层 Socket/Commons Net 异常为语义化业务异常，赋予规范错误码（`51001`~`51007`）并 100% 保留原始因果堆栈 | `FtpTemplateTest` / `SampleFtpIntegrationTest` |
+| **因果异常体系** | 语义化异常与统一错误码 | `FtpException`<br>`FtpResultCode` | - | 转译底层 Socket/Commons Net 异常为语义化业务异常，赋予规范错误码（`51001`~`51010`）并 100% 保留原始因果堆栈 | `FtpTemplateTest` / `SampleFtpIntegrationTest` |
 
 ---
 
@@ -179,7 +179,7 @@ public class CustomFtpConfig {
 ateng:
   boot:
     ftp:
-      enabled: true                               # 是否启用 FTP 自动装配（默认 false）
+      enabled: true                               # 是否启用 FTP 自动装配（默认 true）
       host: 127.0.0.1                             # FTP 服务端主机地址或域名（默认 localhost）
       port: 21                                    # FTP 服务端端口（标准 FTP 默认 21，隐式 FTPS 默认 990）
       username: anonymous                         # 认证用户名（默认 anonymous）

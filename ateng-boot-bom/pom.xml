@@ -99,8 +99,6 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
-            <dependency>
-                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-mail</artifactId>
                 <version>${project.version}</version>
             </dependency>

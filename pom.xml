@@ -272,6 +272,7 @@
                 <artifactId>ateng-boot-ftp</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-all</artifactId>
                 <version>${project.version}</version>

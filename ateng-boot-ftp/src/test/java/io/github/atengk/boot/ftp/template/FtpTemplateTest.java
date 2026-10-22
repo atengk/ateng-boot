@@ -356,6 +356,17 @@ class FtpTemplateTest {
         assertThat(info.isDirectory()).isFalse();
         assertThat(info.getSize()).isGreaterThan(0);
 
+        // 验证目录的 getFileInfo 正确识别为目录且名字为 l2，彻底防御误将首个子文件 info.txt 当作目录元数据
+        FtpFileInfo dirInfo = ftpTemplate.getFileInfo("/test/nested/l1/l2");
+        assertThat(dirInfo).isNotNull();
+        assertThat(dirInfo.getName()).isEqualTo("l2");
+        assertThat(dirInfo.isDirectory()).isTrue();
+        assertThat(dirInfo.isFile()).isFalse();
+
+        FtpFileInfo rootInfo = ftpTemplate.getFileInfo("/");
+        assertThat(rootInfo).isNotNull();
+        assertThat(rootInfo.isDirectory()).isTrue();
+
         FtpFileInfo notFoundInfo = ftpTemplate.getFileInfo("/test/not_exist.txt");
         assertThat(notFoundInfo).isNull();
 
@@ -388,5 +399,61 @@ class FtpTemplateTest {
         boolean dirDeleted = ftpTemplate.deleteDirectory("/test/dir_to_del", true);
         assertThat(dirDeleted).isTrue();
         assertThat(ftpTemplate.exists("/test/dir_to_del")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试原子上传失败补偿在 maxTotal=1 单连接池场景下绝无死锁")
+    void testAtomicUploadDeadlockFreeWithSingleConnectionPool() {
+        GenericObjectPoolConfig<FTPClient> singleConfig = new GenericObjectPoolConfig<>();
+        singleConfig.setMaxTotal(1);
+        singleConfig.setMaxIdle(1);
+        singleConfig.setMinIdle(1);
+        FtpClientPooledObjectFactory singleFactory = new FtpClientPooledObjectFactory(properties);
+        GenericObjectPool<FTPClient> singlePool = new GenericObjectPool<>(singleFactory, singleConfig);
+        FtpTemplate singleTemplate = new FtpTemplate(singlePool, properties);
+
+        try {
+            // 构造一个在读取中途抛出 IOException 的损坏流模拟上传异常中断
+            InputStream brokenStream = new InputStream() {
+                private int readCount = 0;
+
+                @Override
+                public int read() throws IOException {
+                    if (++readCount > 5) {
+                        throw new IOException("Simulated network stream break");
+                    }
+                    return 'A';
+                }
+            };
+
+            // 触发上传，中途写入中断，触发异常补偿逻辑执行 deleteFile(.tmp)
+            assertThatThrownBy(() -> singleTemplate.upload("/test/deadlock_test.txt", brokenStream))
+                    .isInstanceOf(FtpException.class);
+
+            // 随后在相同连接池中再次执行普通上传，断言能够正常借还连接，证明未发生连接池自死锁且临时脏文件已被清理
+            boolean ok = singleTemplate.upload("/test/deadlock_recovered.txt", "recovered".getBytes(StandardCharsets.UTF_8));
+            assertThat(ok).isTrue();
+            assertThat(singleTemplate.exists("/test/deadlock_recovered.txt")).isTrue();
+            assertThat(singleTemplate.exists("/test/deadlock_test.txt.tmp")).isFalse();
+        } finally {
+            singlePool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 downloadStream 消费者抛出业务异常时协议正常闭合且后续连接池可用")
+    void testDownloadStreamConsumerThrowsException() {
+        String testPath = "/test/stream_err_test.txt";
+        ftpTemplate.upload(testPath, "test payload".getBytes(StandardCharsets.UTF_8));
+
+        // 回调中故意抛出运行时异常
+        assertThatThrownBy(() -> ftpTemplate.downloadStream(testPath, in -> {
+            throw new RuntimeException("Simulated business callback error");
+        })).isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Simulated business callback error");
+
+        // 断言后续 FTP 操作仍能正常执行，连接池未受污染
+        byte[] downloaded = ftpTemplate.downloadToBytes(testPath);
+        assertThat(new String(downloaded, StandardCharsets.UTF_8)).isEqualTo("test payload");
     }
 }
