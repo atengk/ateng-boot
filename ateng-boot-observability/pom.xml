@@ -42,6 +42,34 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Storage 对象存储底座 (用于编译与装配 StorageHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-storage</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：RocketMQ 5.x 消息底座 (用于编译与装配 RocketmqHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-rocketmq</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Realtime 实时通信底座 (用于编译与装配 RealtimeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-realtime</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：MyBatis-Plus 持久层底座 (用于编译与装配 DynamicDatasourceHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot 自动装配支持 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
