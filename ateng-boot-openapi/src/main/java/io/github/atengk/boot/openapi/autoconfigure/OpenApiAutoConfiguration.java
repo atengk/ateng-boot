@@ -1,5 +1,7 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
+import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -134,5 +136,32 @@ public class OpenApiAutoConfiguration {
         registration.setOrder(OpenApiGuardFilter.ORDER);
         registration.addUrlPatterns("/*");
         return registration;
+    }
+
+    /**
+     * 注册全局请求头自动注入定制器 (OperationCustomizer)
+     *
+     * @param properties 配置属性
+     * @return 全局请求头定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public GlobalHeaderCustomizer globalHeaderCustomizer(OpenApiProperties properties) {
+        return new GlobalHeaderCustomizer(properties);
+    }
+
+    /**
+     * 注册 Sa-Token 锁头鉴权定制器 (OpenApiCustomizer)
+     * <p>仅当引入 Sa-Token 依赖且 OpenAPI 启用时激活</p>
+     *
+     * @return Sa-Token 锁头鉴权定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "cn.dev33.satoken.SaManager")
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenSecurityCustomizer saTokenSecurityCustomizer() {
+        return new SaTokenSecurityCustomizer();
     }
 }

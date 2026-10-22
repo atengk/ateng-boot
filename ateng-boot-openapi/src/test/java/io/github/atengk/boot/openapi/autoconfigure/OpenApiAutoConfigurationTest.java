@@ -1,5 +1,7 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
+import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
@@ -32,6 +34,8 @@ class OpenApiAutoConfigurationTest {
             assertThat(context).hasSingleBean(OpenAPI.class);
             assertThat(context).hasBean("openApiWebMvcConfigurer");
             assertThat(context).hasSingleBean(OpenApiProperties.class);
+            assertThat(context).hasSingleBean(GlobalHeaderCustomizer.class);
+            assertThat(context).hasSingleBean(SaTokenSecurityCustomizer.class);
 
             OpenAPI openAPI = context.getBean(OpenAPI.class);
             Info info = openAPI.getInfo();
@@ -51,6 +55,8 @@ class OpenApiAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(OpenAPI.class);
                     assertThat(context).doesNotHaveBean("openApiWebMvcConfigurer");
+                    assertThat(context).doesNotHaveBean(GlobalHeaderCustomizer.class);
+                    assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
                 });
     }
 
@@ -109,6 +115,32 @@ class OpenApiAutoConfigurationTest {
                     OpenAPI openAPI = context.getBean(OpenAPI.class);
                     assertThat(openAPI.getInfo().getTitle()).isEqualTo("User Overridden API");
                 });
+    }
+
+    @Test
+    @DisplayName("测试用户自定义 GlobalHeaderCustomizer 支持平滑覆盖 (@ConditionalOnMissingBean)")
+    void testCustomHeaderCustomizerOverride() {
+        contextRunner
+                .withUserConfiguration(CustomHeaderCustomizerConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(GlobalHeaderCustomizer.class);
+                    GlobalHeaderCustomizer customizer = context.getBean(GlobalHeaderCustomizer.class);
+                    assertThat(customizer).isInstanceOf(SubHeaderCustomizer.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomHeaderCustomizerConfig {
+        @Bean
+        public GlobalHeaderCustomizer globalHeaderCustomizer(OpenApiProperties properties) {
+            return new SubHeaderCustomizer(properties);
+        }
+    }
+
+    static class SubHeaderCustomizer extends GlobalHeaderCustomizer {
+        public SubHeaderCustomizer(OpenApiProperties properties) {
+            super(properties);
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
