@@ -48,6 +48,7 @@
         <module>ateng-boot-realtime</module>
         <module>ateng-boot-rabbitmq</module>
         <module>ateng-boot-kafka</module>
+        <module>ateng-boot-rocketmq</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -66,6 +67,7 @@
         <sa-token.version>1.46.0</sa-token.version>
         <springdoc.version>2.6.0</springdoc.version>
         <awssdk.version>2.25.70</awssdk.version>
+        <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -210,6 +212,16 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-kafka</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.rocketmq</groupId>
+                <artifactId>rocketmq-client-java</artifactId>
+                <version>${rocketmq-client-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-rocketmq</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
