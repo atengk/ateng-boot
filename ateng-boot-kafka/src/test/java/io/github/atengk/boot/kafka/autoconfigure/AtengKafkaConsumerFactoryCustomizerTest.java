@@ -2,6 +2,8 @@ package io.github.atengk.boot.kafka.autoconfigure;
 
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.CooperativeStickyAssignor;
+import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -40,14 +42,17 @@ class AtengKafkaConsumerFactoryCustomizerTest {
 
         assertThat(configs.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG)).isEqualTo(ErrorHandlingDeserializer.class);
         assertThat(configs.get(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS)).isEqualTo(ByteArrayDeserializer.class.getName());
+
+        assertThat(configs.get(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG)).isEqualTo(CooperativeStickyAssignor.class.getName());
     }
 
     @Test
-    @DisplayName("用户显式配置反序列化器时保持最高优先级，不被框架覆盖")
+    @DisplayName("用户显式配置反序列化器与分配策略时保持最高优先级，不被框架覆盖")
     void testUserConfigPrecedence() {
         Map<String, Object> initialConfigs = new HashMap<>();
         initialConfigs.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class);
         initialConfigs.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        initialConfigs.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, RoundRobinAssignor.class.getName());
 
         DefaultKafkaConsumerFactory<Object, Object> factory = new DefaultKafkaConsumerFactory<>(initialConfigs);
         customizer.customize(factory);
@@ -57,5 +62,6 @@ class AtengKafkaConsumerFactoryCustomizerTest {
         // 保持用户原有配置
         assertThat(configs.get(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG)).isEqualTo(IntegerDeserializer.class);
         assertThat(configs.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG)).isEqualTo(StringDeserializer.class);
+        assertThat(configs.get(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG)).isEqualTo(RoundRobinAssignor.class.getName());
     }
 }

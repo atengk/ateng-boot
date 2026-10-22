@@ -4,6 +4,7 @@ import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.CooperativeStickyAssignor;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.boot.autoconfigure.kafka.DefaultKafkaConsumerFactoryCustomizer;
@@ -44,6 +45,11 @@ public class AtengKafkaConsumerFactoryCustomizer implements DefaultKafkaConsumer
         if (!existingConfigs.containsKey(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG)) {
             updates.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
             updates.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, ByteArrayDeserializer.class.getName());
+        }
+
+        // 3. 默认推荐渐进式协作重平衡分配策略 (CooperativeStickyAssignor)
+        if (!existingConfigs.containsKey(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG)) {
+            updates.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, CooperativeStickyAssignor.class.getName());
         }
 
         if (!updates.isEmpty()) {

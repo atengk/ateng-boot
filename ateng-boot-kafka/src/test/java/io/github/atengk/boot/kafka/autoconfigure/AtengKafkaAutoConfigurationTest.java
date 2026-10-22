@@ -16,10 +16,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.CommonErrorHandler;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.support.converter.BatchMessageConverter;
 import org.springframework.kafka.support.converter.RecordMessageConverter;
+
+import java.util.HashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -37,7 +42,7 @@ class AtengKafkaAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengKafkaAutoConfiguration.class));
 
     @Test
-    @DisplayName("默认配置下成功自动装配配置类、定制器、拦截器、转换器与执行器")
+    @DisplayName("默认配置下成功自动装配配置类、定制器、拦截器、转换器、错误处理器与执行器")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(AtengKafkaProperties.class);
@@ -62,11 +67,14 @@ class AtengKafkaAutoConfigurationTest {
             // 消息转换器
             assertThat(context).hasSingleBean(RecordMessageConverter.class);
             assertThat(context).hasSingleBean(BatchMessageConverter.class);
+
+            // 错误处理器
+            assertThat(context).hasSingleBean(CommonErrorHandler.class);
         });
     }
 
     @Test
-    @DisplayName("存在 ConsumerFactory 时成功装配单条与批量双容器工厂并生效不同 AckMode 与并发度")
+    @DisplayName("存在 ConsumerFactory 时成功装配单条与批量双容器工厂并生效不同 AckMode、并发度与优雅停机")
     void testDualContainerFactoriesAutoConfiguration() {
         contextRunner
                 .withUserConfiguration(MockKafkaConsumerConfiguration.class)
@@ -82,23 +90,52 @@ class AtengKafkaAutoConfigurationTest {
                     // 单条容器工厂校验
                     assertThat(singleFactory.isBatchListener()).isFalse();
                     assertThat(singleFactory.getContainerProperties().getAckMode()).isEqualTo(ContainerProperties.AckMode.RECORD);
+                    assertThat(singleFactory.getContainerProperties().getShutdownTimeout()).isEqualTo(10000L);
 
                     // 批量容器工厂校验
                     assertThat(batchFactory.isBatchListener()).isTrue();
                     assertThat(batchFactory.getContainerProperties().getAckMode()).isEqualTo(ContainerProperties.AckMode.BATCH);
+                    assertThat(batchFactory.getContainerProperties().getShutdownTimeout()).isEqualTo(10000L);
                 });
     }
 
     @Test
-    @DisplayName("存在 KafkaTemplate Bean 时成功自动装配 KafkaReliableTemplate 门面")
-    void testKafkaReliableTemplateAutoConfiguration() {
+    @DisplayName("存在 KafkaTemplate Bean 时成功自动装配 KafkaReliableTemplate 与 ConsumerRecordRecoverer")
+    void testKafkaReliableTemplateAndRecovererAutoConfiguration() {
         contextRunner
                 .withUserConfiguration(MockKafkaTemplateConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(KafkaReliableTemplate.class);
-                    KafkaReliableTemplate template = context.getBean(KafkaReliableTemplate.class);
-                    assertThat(template).isNotNull();
-                    assertThat(template.getKafkaTemplate()).isNotNull();
+                    assertThat(context).hasSingleBean(ConsumerRecordRecoverer.class);
+                });
+    }
+
+    @Test
+    @DisplayName("配置 spring.threads.virtual.enabled=true 时适配虚拟线程执行器")
+    void testVirtualThreadTaskExecutorAdaptation() {
+        contextRunner
+                .withPropertyValues("spring.threads.virtual.enabled=true")
+                .withUserConfiguration(MockKafkaConsumerConfiguration.class)
+                .run(context -> {
+                    ConcurrentKafkaListenerContainerFactory<?, ?> singleFactory =
+                            context.getBean(KafkaConstants.DEFAULT_CONTAINER_FACTORY, ConcurrentKafkaListenerContainerFactory.class);
+                    // 只要当前运行环境支持 Thread.ofVirtual()，listenerTaskExecutor 就会被设置为虚拟线程执行器
+                    assertThat(singleFactory.getContainerProperties().getListenerTaskExecutor()).isNotNull();
+                });
+    }
+
+    @Test
+    @DisplayName("配置 ateng.boot.kafka.auto-create-topics=false 时后置处理 KafkaAdmin 禁用自动创建")
+    void testKafkaAdminAutoCreateTopicsDisabled() {
+        contextRunner
+                .withPropertyValues("ateng.boot.kafka.auto-create-topics=false")
+                .withUserConfiguration(MockKafkaAdminConfiguration.class)
+                .run(context -> {
+                    KafkaAdmin kafkaAdmin = context.getBean(KafkaAdmin.class);
+                    java.lang.reflect.Field field = KafkaAdmin.class.getDeclaredField("autoCreate");
+                    field.setAccessible(true);
+                    boolean autoCreate = (boolean) field.get(kafkaAdmin);
+                    assertThat(autoCreate).isFalse();
                 });
     }
 
@@ -115,6 +152,7 @@ class AtengKafkaAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(KafkaRecordInterceptor.class);
                     assertThat(context).doesNotHaveBean(KafkaBatchInterceptor.class);
                     assertThat(context).doesNotHaveBean(KafkaRecordExecutor.class);
+                    assertThat(context).doesNotHaveBean(CommonErrorHandler.class);
                     assertThat(context).doesNotHaveBean(KafkaReliableTemplate.class);
                 });
     }
@@ -134,6 +172,14 @@ class AtengKafkaAutoConfigurationTest {
         @SuppressWarnings("unchecked")
         public ConsumerFactory<Object, Object> kafkaConsumerFactory() {
             return mock(ConsumerFactory.class);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockKafkaAdminConfiguration {
+        @Bean
+        public KafkaAdmin kafkaAdmin() {
+            return new KafkaAdmin(new HashMap<>());
         }
     }
 }
