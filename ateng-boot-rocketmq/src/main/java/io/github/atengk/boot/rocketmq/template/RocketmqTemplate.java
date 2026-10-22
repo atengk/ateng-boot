@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * RocketMQ 5.x 生产端高阶增强门面
@@ -161,18 +162,12 @@ public class RocketmqTemplate {
 
     public SendReceipt sendDelayed(String topic, String tag, String bizKey, Object payload, Duration delay) {
         Assert.notNull(delay, "delay 不能为空");
-        long deliveryTimestamp = System.currentTimeMillis() + delay.toMillis();
-        String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, null);
-        return doSendSync(message, topic, tag, finalBizKey);
+        return sendDeliverAt(topic, tag, bizKey, payload, Instant.now().plus(delay));
     }
 
     public CompletableFuture<SendReceipt> sendDelayedAsync(String topic, String tag, String bizKey, Object payload, Duration delay) {
         Assert.notNull(delay, "delay 不能为空");
-        long deliveryTimestamp = System.currentTimeMillis() + delay.toMillis();
-        String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, null, deliveryTimestamp, null);
-        return doSendAsync(message, topic, tag, finalBizKey);
+        return sendDeliverAtAsync(topic, tag, bizKey, payload, Instant.now().plus(delay));
     }
 
     public SendReceipt sendDeliverAt(String topic, Object payload, Instant deliverAt) {
@@ -323,10 +318,6 @@ public class RocketmqTemplate {
         try {
             receipt = producer.send(message, transaction);
         } catch (Exception ex) {
-            long cost = System.currentTimeMillis() - startTime;
-            log.error("[MQ-TRANSACTION-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=HALF_SEND_FAILED cost={}ms error={}",
-                    topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
-                    bodySize, cost, ex.getMessage(), ex);
             try {
                 transaction.rollback();
             } catch (Exception rbEx) {
@@ -348,14 +339,10 @@ public class RocketmqTemplate {
                 resolution = TransactionResolution.UNKNOWN;
             }
         } catch (Throwable t) {
-            long cost = System.currentTimeMillis() - startTime;
-            log.error("[MQ-TRANSACTION-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=LOCAL_TX_EXCEPTION cost={}ms error={}",
-                    topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
-                    bodySize, cost, t.getMessage(), t);
             try {
                 transaction.rollback();
             } catch (Exception rbEx) {
-                log.error("[MQ-TRANSACTION-SEND] 本地事务异常触发回滚失败: topic={}, bizKey={}", topic, finalBizKey, rbEx);
+                log.warn("[MQ-TRANSACTION-SEND] 本地事务异常触发回滚失败: topic={}, bizKey={}, error={}", topic, finalBizKey, rbEx.getMessage());
             }
             if (t instanceof RuntimeException re) {
                 throw re;
@@ -377,9 +364,6 @@ public class RocketmqTemplate {
                         topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
                         bodySize, cost, receipt.getMessageId());
             } catch (Exception ex) {
-                log.error("[MQ-TRANSACTION-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=COMMIT_FAILED cost={}ms error={}",
-                        topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
-                        bodySize, cost, ex.getMessage(), ex);
                 throw new MessageDeliveryException(
                         RocketmqConstants.MQ_TYPE,
                         topic,
@@ -395,9 +379,6 @@ public class RocketmqTemplate {
                         topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
                         bodySize, cost, receipt.getMessageId());
             } catch (Exception ex) {
-                log.error("[MQ-TRANSACTION-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=ROLLBACK_FAILED cost={}ms error={}",
-                        topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
-                        bodySize, cost, ex.getMessage(), ex);
                 throw new MessageDeliveryException(
                         RocketmqConstants.MQ_TYPE,
                         topic,
@@ -428,6 +409,11 @@ public class RocketmqTemplate {
             Long deliveryTimestamp,
             Map<String, String> customProperties) {
         Assert.hasText(topic, "topic 不能为空");
+        if (!RocketmqConstants.TOPIC_PATTERN.matcher(topic).matches()) {
+            throw new IllegalArgumentException(String.format(
+                    "RocketMQ Topic 名称 [%s] 格式非法，必须符合正则 [%s]，严禁包含点号等特殊字符！",
+                    topic, RocketmqConstants.TOPIC_REGEX));
+        }
 
         // 1. 序列化为字节数组
         byte[] bodyBytes = RocketmqMessageHelper.toPayloadBytes(payload);
@@ -506,10 +492,6 @@ public class RocketmqTemplate {
                     bodySize, cost, receipt.getMessageId());
             return receipt;
         } catch (Exception ex) {
-            long cost = System.currentTimeMillis() - startTime;
-            log.error("[MQ-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
-                    topic, tag != null ? tag : "", bizKey, traceId != null ? traceId : "",
-                    bodySize, cost, ex.getMessage(), ex);
             throw new MessageDeliveryException(
                     RocketmqConstants.MQ_TYPE,
                     topic,
@@ -525,18 +507,30 @@ public class RocketmqTemplate {
         String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
         int bodySize = message.getBody().remaining();
 
-        return producer.sendAsync(message)
+        CompletableFuture<SendReceipt> resultFuture = new CompletableFuture<>();
+        producer.sendAsync(message)
                 .whenComplete((receipt, ex) -> {
                     long cost = System.currentTimeMillis() - startTime;
                     if (ex != null) {
-                        log.error("[MQ-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
+                        Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+                        log.warn("[MQ-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
                                 topic, tag != null ? tag : "", bizKey, traceId != null ? traceId : "",
-                                bodySize, cost, ex.getMessage(), ex);
+                                bodySize, cost, cause.getMessage());
+                        MessageDeliveryException deliveryException = new MessageDeliveryException(
+                                RocketmqConstants.MQ_TYPE,
+                                topic,
+                                bizKey,
+                                CommonResultCode.INTERNAL_SERVER_ERROR,
+                                "RocketMQ 异步消息发送失败: " + cause.getMessage(),
+                                cause);
+                        resultFuture.completeExceptionally(deliveryException);
                     } else {
                         log.info("[MQ-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=SUCCESS cost={}ms messageId={}",
                                 topic, tag != null ? tag : "", bizKey, traceId != null ? traceId : "",
                                 bodySize, cost, receipt.getMessageId());
+                        resultFuture.complete(receipt);
                     }
                 });
+        return resultFuture;
     }
 }

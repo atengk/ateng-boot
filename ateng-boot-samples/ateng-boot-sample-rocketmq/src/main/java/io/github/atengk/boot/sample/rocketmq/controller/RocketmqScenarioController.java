@@ -30,9 +30,11 @@ public class RocketmqScenarioController {
     private final RocketmqOrderTransactionService transactionService;
 
     @PostMapping("/order/sync")
-    public Result<String> sendSync(@RequestBody @Valid OrderMessage order) {
-        SendReceipt receipt = producer.sendOrder(order);
-        return Result.success("同步发送成功: messageId=" + receipt.getMessageId());
+    public Result<String> sendSync(
+            @RequestBody @Valid OrderMessage order,
+            @RequestParam(defaultValue = "create") String tag) {
+        SendReceipt receipt = producer.sendOrderWithTag(order, tag);
+        return Result.success("同步发送成功: messageId=" + receipt.getMessageId() + ", tag=" + tag);
     }
 
     @PostMapping("/order/async")

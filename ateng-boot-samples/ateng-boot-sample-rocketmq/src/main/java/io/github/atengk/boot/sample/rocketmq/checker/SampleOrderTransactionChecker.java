@@ -1,6 +1,6 @@
 package io.github.atengk.boot.sample.rocketmq.checker;
 
-import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.sample.rocketmq.producer.TradeRocketmqProducer;
 import lombok.Getter;
@@ -9,7 +9,6 @@ import org.apache.rocketmq.client.apis.message.MessageView;
 import org.apache.rocketmq.client.apis.producer.TransactionResolution;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,7 +39,7 @@ public class SampleOrderTransactionChecker implements RocketmqLocalTransactionCh
     @Override
     public TransactionResolution check(MessageView messageView) {
         checkCount.incrementAndGet();
-        String bizKey = resolveBizKey(messageView);
+        String bizKey = RocketmqMessageHelper.extractBizKey(messageView);
         log.info("[SAMPLE-TX-CHECKER] 收到 Broker 事务半消息回查: topic={}, bizKey={}", getTopic(), bizKey);
 
         if (committedOrders.contains(bizKey)) {
@@ -69,19 +68,5 @@ public class SampleOrderTransactionChecker implements RocketmqLocalTransactionCh
         committedOrders.clear();
         rolledBackOrders.clear();
         checkCount.set(0);
-    }
-
-    private String resolveBizKey(MessageView messageView) {
-        Map<String, String> properties = messageView.getProperties();
-        if (properties != null) {
-            String bizKey = properties.get(MessageHeaderConstants.BIZ_KEY);
-            if (bizKey != null && !bizKey.isBlank()) {
-                return bizKey;
-            }
-        }
-        if (messageView.getKeys() != null && !messageView.getKeys().isEmpty()) {
-            return messageView.getKeys().iterator().next();
-        }
-        return "";
     }
 }

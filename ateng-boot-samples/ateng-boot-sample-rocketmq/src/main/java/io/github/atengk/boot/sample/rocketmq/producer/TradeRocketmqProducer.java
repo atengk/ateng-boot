@@ -33,7 +33,11 @@ public class TradeRocketmqProducer {
     private final RocketmqTemplate rocketmqTemplate;
 
     public SendReceipt sendOrder(OrderMessage order) {
-        return rocketmqTemplate.send(TOPIC_ORDER, "create", order.getOrderId(), order);
+        return sendOrderWithTag(order, "create");
+    }
+
+    public SendReceipt sendOrderWithTag(OrderMessage order, String tag) {
+        return rocketmqTemplate.send(TOPIC_ORDER, tag, order.getOrderId(), order);
     }
 
     public CompletableFuture<SendReceipt> sendOrderAsync(OrderMessage order) {

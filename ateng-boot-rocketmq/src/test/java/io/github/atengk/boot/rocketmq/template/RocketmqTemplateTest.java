@@ -187,6 +187,18 @@ class RocketmqTemplateTest {
     }
 
     @Test
+    @DisplayName("验证 Topic 命名正则防卫：非法 Topic 抛出 IllegalArgumentException")
+    void testTopicRegexValidation() {
+        assertThatThrownBy(() -> rocketmqTemplate.send("invalid.topic", "payload"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("必须符合正则");
+
+        assertThatThrownBy(() -> rocketmqTemplate.send("invalid@topic", "payload"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("必须符合正则");
+    }
+
+    @Test
     @DisplayName("验证异常转译：底层 ClientException 被转译为 MessageDeliveryException 并保留 cause")
     void testExceptionTranslation() throws Exception {
         when(producer.send(any(Message.class))).thenThrow(new ClientException("Broker connection timeout"));
@@ -195,6 +207,25 @@ class RocketmqTemplateTest {
                 .isInstanceOf(MessageDeliveryException.class)
                 .hasMessageContaining("Broker connection timeout")
                 .hasCauseInstanceOf(ClientException.class);
+    }
+
+    @Test
+    @DisplayName("验证异步发送异常转译：底层 ClientException 被转译为 MessageDeliveryException 并保留 cause")
+    void testSendAsyncExceptionTranslation() {
+        CompletableFuture<SendReceipt> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new ClientException("Async broker timeout"));
+        when(producer.sendAsync(any(Message.class))).thenReturn(failedFuture);
+
+        CompletableFuture<SendReceipt> future = rocketmqTemplate.sendAsync("async_topic", "payload");
+        assertThat(future).isCompletedExceptionally();
+
+        assertThatThrownBy(future::join)
+                .hasCauseInstanceOf(MessageDeliveryException.class)
+                .satisfies(ex -> {
+                    MessageDeliveryException mde = (MessageDeliveryException) ex.getCause();
+                    assertThat(mde.getMessage()).contains("Async broker timeout");
+                    assertThat(mde.getCause()).isInstanceOf(ClientException.class);
+                });
     }
 
     @Test

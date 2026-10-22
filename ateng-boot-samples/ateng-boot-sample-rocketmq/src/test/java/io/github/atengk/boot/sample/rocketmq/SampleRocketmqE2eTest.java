@@ -188,6 +188,34 @@ class SampleRocketmqE2eTest {
         assertThat(standardConsumer.getReceivedOrders().get(0).getOrderId()).isEqualTo("ORD-ASYNC-002");
     }
 
+    @Test
+    @DisplayName("场景 1.3：Tag 逻辑或多分支过滤 (create || pay) -> 验证 pay 标签消费与未匹配标签安全过滤")
+    void testTagLogicalOrFiltering() {
+        // 1. 发送 tag = "pay" 消息 -> 预期命中 "create || pay" 被 OrderStandardConsumer 成功消费
+        OrderMessage payOrder = OrderMessage.builder()
+                .orderId("ORD-TAG-PAY-001")
+                .amount(888.0)
+                .customerName("王五")
+                .status("PAID")
+                .build();
+        SendReceipt receiptPay = producer.sendOrderWithTag(payOrder, "pay");
+        assertThat(receiptPay).isNotNull();
+        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+        assertThat(standardConsumer.getReceivedOrders().get(0).getOrderId()).isEqualTo("ORD-TAG-PAY-001");
+
+        // 2. 发送 tag = "cancel" 消息 -> 预期不符合 "create || pay" 白名单，被服务端过滤丢弃
+        OrderMessage cancelOrder = OrderMessage.builder()
+                .orderId("ORD-TAG-CANCEL-002")
+                .amount(100.0)
+                .customerName("赵六")
+                .status("CANCELLED")
+                .build();
+        SendReceipt receiptCancel = producer.sendOrderWithTag(cancelOrder, "cancel");
+        assertThat(receiptCancel).isNotNull();
+        // 消费端接收列表仍只有之前的 1 条，未收到 cancel 消息
+        assertThat(standardConsumer.getReceivedOrders()).hasSize(1);
+    }
+
     // =========================================================================
     // 场景 2：毫秒级延时与定时消息调度投递
     // =========================================================================

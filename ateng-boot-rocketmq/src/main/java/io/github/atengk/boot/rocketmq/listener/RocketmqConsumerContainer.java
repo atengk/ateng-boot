@@ -1,6 +1,8 @@
 package io.github.atengk.boot.rocketmq.listener;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.rocketmq.annotation.RocketmqListener;
+import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import jakarta.validation.Validator;
@@ -25,11 +27,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.StringValueResolver;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.Pattern;
 
 /**
  * RocketMQ 5.x 声明式消费端监听容器与生命周期管理器
@@ -50,8 +52,6 @@ public class RocketmqConsumerContainer implements
         EmbeddedValueResolverAware,
         ApplicationContextAware,
         DisposableBean {
-
-    private static final Pattern TOPIC_PATTERN = Pattern.compile("^[%a-zA-Z0-9_-]+$");
 
     private final AtengRocketmqProperties properties;
     private final ObjectProvider<ClientConfiguration> clientConfigurationProvider;
@@ -141,10 +141,10 @@ public class RocketmqConsumerContainer implements
         String topic = rawTopic.trim();
         String consumerGroup = rawGroup.trim();
 
-        if (!TOPIC_PATTERN.matcher(topic).matches()) {
+        if (!RocketmqConstants.TOPIC_PATTERN.matcher(topic).matches()) {
             throw new IllegalArgumentException(String.format(
                     "RocketMQ Topic 名称 [%s] 格式非法，必须符合正则 [%s]，严禁包含点号等特殊字符！",
-                    topic, TOPIC_PATTERN.pattern()));
+                    topic, RocketmqConstants.TOPIC_REGEX));
         }
 
         int threadCount = annotation.consumptionThreadCount() > 0
@@ -269,13 +269,33 @@ public class RocketmqConsumerContainer implements
         this.running = false;
         log.info("[ateng-boot-rocketmq] 开始优雅停止 RocketMQ 消费监听容器，排空在途消费 (共 {} 个 PushConsumer)...", activeConsumers.size());
 
-        for (PushConsumer consumer : activeConsumers) {
-            try {
-                consumer.close();
-            } catch (Exception ex) {
-                log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 出现异常: {}", ex.getMessage());
+        Duration closeTimeout = properties.getConsumer().getCloseTimeout();
+        long timeoutMillis = (closeTimeout != null && !closeTimeout.isNegative() && !closeTimeout.isZero())
+                ? closeTimeout.toMillis()
+                : 15_000L;
+
+        Thread shutdownThread = new NamedThreadFactory("rocketmq-consumer-shutdown-", true).newThread(() -> {
+            for (PushConsumer consumer : activeConsumers) {
+                try {
+                    consumer.close();
+                } catch (Exception ex) {
+                    log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 出现异常: {}", ex.getMessage());
+                }
             }
+        });
+        shutdownThread.start();
+
+        try {
+            shutdownThread.join(timeoutMillis);
+            if (shutdownThread.isAlive()) {
+                log.warn("[ateng-boot-rocketmq] 优雅关闭 PushConsumer 超时 (已等待 {}ms)，强制放弃等待", timeoutMillis);
+                shutdownThread.interrupt();
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            log.warn("[ateng-boot-rocketmq] 关闭 PushConsumer 线程被中断: {}", ex.getMessage());
         }
+
         activeConsumers.clear();
 
         if (callback != null) {

@@ -1,9 +1,11 @@
 package io.github.atengk.boot.rocketmq.helper;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.apache.rocketmq.client.apis.message.MessageView;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,8 +13,13 @@ import org.slf4j.MDC;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * RocketmqMessageHelper 单元测试
@@ -58,7 +65,7 @@ class RocketmqMessageHelperTest {
                 .isEqualTo("CODE-888");
 
         // 3. MDC traceId 兜底
-        MDC.put(MessageHeaderConstants.TRACE_ID, "trace-xyz-123");
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "trace-xyz-123");
         assertThat(RocketmqMessageHelper.resolveBizKey(null, "plain-string"))
                 .isEqualTo("trace-xyz-123");
 
@@ -84,6 +91,27 @@ class RocketmqMessageHelperTest {
 
         byte[] decompressed = RocketmqMessageHelper.decompressGzip(compressed);
         assertThat(new String(decompressed, StandardCharsets.UTF_8)).isEqualTo(rawText);
+    }
+
+    @Test
+    @DisplayName("从入站 MessageView 对称提取 bizKey 测试")
+    void testExtractBizKey() {
+        assertThat(RocketmqMessageHelper.extractBizKey(null)).isEqualTo("");
+
+        MessageView mockView = mock(MessageView.class);
+
+        // 1. 优先提取 X-Biz-Key
+        when(mockView.getProperties()).thenReturn(Map.of(MessageHeaderConstants.BIZ_KEY, "BIZ-HEADER-001"));
+        assertThat(RocketmqMessageHelper.extractBizKey(mockView)).isEqualTo("BIZ-HEADER-001");
+
+        // 2. 兜底提取原生 Keys
+        when(mockView.getProperties()).thenReturn(Collections.emptyMap());
+        when(mockView.getKeys()).thenReturn(List.of("RAW-KEY-002"));
+        assertThat(RocketmqMessageHelper.extractBizKey(mockView)).isEqualTo("RAW-KEY-002");
+
+        // 3. 无任何标识返回空字符串
+        when(mockView.getKeys()).thenReturn(Collections.emptyList());
+        assertThat(RocketmqMessageHelper.extractBizKey(mockView)).isEqualTo("");
     }
 
     @Data

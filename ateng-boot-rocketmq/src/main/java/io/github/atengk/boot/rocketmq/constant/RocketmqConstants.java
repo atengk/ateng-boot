@@ -30,4 +30,14 @@ public final class RocketmqConstants {
      * 默认通配符 Tag
      */
     public static final String TAG_ALL = "*";
+
+    /**
+     * Topic 命名正则表达式（只允许英文字母、数字、中划线、下划线及百分号）
+     */
+    public static final String TOPIC_REGEX = "^[%a-zA-Z0-9_-]+$";
+
+    /**
+     * Topic 命名正则 Pattern 预编译实例
+     */
+    public static final java.util.regex.Pattern TOPIC_PATTERN = java.util.regex.Pattern.compile(TOPIC_REGEX);
 }

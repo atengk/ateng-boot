@@ -28,6 +28,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+
 /**
  * RocketMQ 5.x 生产级增强基础设施自动装配核心类
  *
@@ -64,9 +66,13 @@ public class AtengRocketmqAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.rocketmq", name = "endpoints")
     public ClientConfiguration rocketmqClientConfiguration(AtengRocketmqProperties properties) {
+        Duration effectiveTimeout = properties.getProducer().getSendTimeout() != null
+                ? properties.getProducer().getSendTimeout()
+                : properties.getRequestTimeout();
+
         ClientConfigurationBuilder builder = ClientConfiguration.newBuilder()
                 .setEndpoints(properties.getEndpoints())
-                .setRequestTimeout(properties.getRequestTimeout());
+                .setRequestTimeout(effectiveTimeout != null ? effectiveTimeout : properties.getRequestTimeout());
 
         if (StringUtils.hasText(properties.getAccessKey()) && StringUtils.hasText(properties.getSecretKey())) {
             builder.setCredentialProvider(new StaticSessionCredentialsProvider(

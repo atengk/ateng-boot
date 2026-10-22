@@ -1,9 +1,11 @@
 package io.github.atengk.boot.rocketmq.helper;
 
 import io.github.atengk.boot.core.constant.MessageHeaderConstants;
+import io.github.atengk.boot.core.context.MessageContextPropagator;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.apis.message.MessageView;
 import org.slf4j.MDC;
 import org.springframework.util.StringUtils;
 
@@ -12,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -84,14 +87,47 @@ public final class RocketmqMessageHelper {
             }
         }
 
-        // 读取 MDC traceId
-        String traceId = MDC.get(MessageHeaderConstants.TRACE_ID);
+        // 读取 MDC traceId 兜底（对齐 Core MessageContextPropagator 统一规范）
+        String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
         if (StringUtils.hasText(traceId)) {
             return traceId.trim();
         }
 
         // 保底生成 UUID
         return IdUtil.fastSimpleUUID();
+    }
+
+    /**
+     * 从入站 MessageView 中对称提取确定性的业务唯一标识 bizKey
+     *
+     * <ol>
+     *   <li>优先从用户扩展属性 {@code X-Biz-Key} 提取；</li>
+     *   <li>若属性不存在，从 RocketMQ 原生 Keys 集合中获取首个有效 Key；</li>
+     *   <li>若仍无有效标识，保底返回空字符串（""）。</li>
+     * </ol>
+     *
+     * @param messageView 入站消息视图
+     * @return 业务唯一标识（不为 null）
+     */
+    public static String extractBizKey(MessageView messageView) {
+        if (messageView == null) {
+            return "";
+        }
+        Map<String, String> properties = messageView.getProperties();
+        if (properties != null) {
+            String bizKey = properties.get(MessageHeaderConstants.BIZ_KEY);
+            if (StringUtils.hasText(bizKey)) {
+                return bizKey.trim();
+            }
+        }
+        if (messageView.getKeys() != null && !messageView.getKeys().isEmpty()) {
+            for (String key : messageView.getKeys()) {
+                if (StringUtils.hasText(key)) {
+                    return key.trim();
+                }
+            }
+        }
+        return "";
     }
 
     /**
