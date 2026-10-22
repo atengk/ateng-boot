@@ -1,10 +1,14 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
+import io.github.atengk.boot.rocketmq.consumer.DefaultPushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
+import jakarta.validation.Validator;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.ClientConfigurationBuilder;
@@ -120,5 +124,31 @@ public class AtengRocketmqAutoConfiguration {
             AtengRocketmqProperties properties,
             ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider) {
         return new RocketmqTemplate(producer, properties, failureCallbackProvider);
+    }
+
+    /**
+     * RocketMQ PushConsumer 构造工厂
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PushConsumerFactory pushConsumerFactory() {
+        return new DefaultPushConsumerFactory();
+    }
+
+    /**
+     * RocketMQ 声明式消费端监听容器与生命周期管理器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RocketmqConsumerContainer rocketmqConsumerContainer(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            PushConsumerFactory pushConsumerFactory,
+            ObjectProvider<Validator> validatorProvider) {
+        return new RocketmqConsumerContainer(
+                properties,
+                clientConfigurationProvider,
+                pushConsumerFactory,
+                validatorProvider);
     }
 }
