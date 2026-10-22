@@ -9,7 +9,7 @@
 _Avoid_: FatSampleModule, MonolithicSample
 
 **SampleScenarioModule**:
-专一场景自验子模块（`ateng-boot-sample-core`、`ateng-boot-sample-web`、`ateng-boot-sample-mybatis-plus`、`ateng-boot-sample-redis`、`ateng-boot-sample-excel`、`ateng-boot-sample-satoken`、`ateng-boot-sample-storage`、`ateng-boot-sample-http`、`ateng-boot-sample-realtime`、`ateng-boot-sample-rabbitmq`、`ateng-boot-sample-kafka`），与各 Starter 严格 1:1 映射，100% 自包含并恪守零共享代码（Zero-Shared-Code）不变量。
+专一场景自验子模块（`ateng-boot-sample-core`、`ateng-boot-sample-web`、`ateng-boot-sample-mybatis-plus`、`ateng-boot-sample-redis`、`ateng-boot-sample-excel`、`ateng-boot-sample-satoken`、`ateng-boot-sample-storage`、`ateng-boot-sample-http`、`ateng-boot-sample-realtime`、`ateng-boot-sample-rabbitmq`、`ateng-boot-sample-kafka`、`ateng-boot-sample-rocketmq`），与各 Starter 严格 1:1 映射，100% 自包含并恪守零共享代码（Zero-Shared-Code）不变量。
 _Avoid_: SharedCommonSample, CrossSampleCoupling, SampleBasicMixed
 
 **SampleCoverageInvariant**:

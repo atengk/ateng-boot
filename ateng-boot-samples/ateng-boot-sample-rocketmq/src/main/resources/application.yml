@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-rocketmq
+
+ateng:
+  boot:
+    rocketmq:
+      enabled: true
+      endpoints: "127.0.0.1:8081"
+      request-timeout: 3s
+      producer:
+        max-attempts: 3
+        max-payload-size: 4MB
+        compression-threshold: 4KB
+        topics:
+          - sample_order_topic
+          - sample_delay_topic
+          - sample_fifo_topic
+          - sample_tx_topic
+          - sample_sql_topic
+      consumer:
+        consumption-thread-count: 20
+        max-cache-message-count: 1024
+
+logging:
+  level:
+    root: INFO
+    io.github.atengk.boot.rocketmq: INFO

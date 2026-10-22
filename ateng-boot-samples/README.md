@@ -18,6 +18,7 @@
 | **`ateng-boot-sample-satoken`** | **专一 Sa-Token 鉴权与会话 Demo**<br/>登录注销、路由拦截白名单、方法级 `@SaCheckRole`、审计人/租户全链路自动打通 | Sa-Token / MP / H2 | H2 内存库 | [查看](./ateng-boot-sample-satoken/README.md) |
 | **`ateng-boot-sample-storage`** | **专一对象存储与文件清洗 Demo**<br/>本地文件存储与 S3/MinIO 适配、断点续传分片上传、文件名安全清洗、ZIP 批量打包下载 | Storage / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-storage/README.md) |
 | **`ateng-boot-sample-kafka`** | **专一 Kafka 高吞吐消息流与位移治理 Demo**<br/>可靠发信 `KafkaReliableTemplate`、事务后发信 `sendAfterCommit`、毒丸 0-Retry 进 DLT、`@Idempotent` 幂等去重防重复消费、批量消费多租户隔离 `KafkaRecordExecutor`、四维上下文链路追踪 | Kafka / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-kafka/README.md) |
+| **`ateng-boot-sample-rocketmq`** | **专一 RocketMQ 原生 2PC 分布式事务与 gRPC 监听 Demo**<br/>高阶门面 `RocketmqTemplate`、原生 2PC 分布式事务半消息与统一回查分发 `RocketmqTransactionChecker`、事务感知发信 `sendAfterCommit`、声明式 `@RocketmqListener`、微服务推断反序列化解耦、毒丸安全丢弃、`@Idempotent` 幂等静默确认 | RocketMQ / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-rocketmq/README.md) |
 | **`ateng-boot-sample-smoke-test`** | **全家桶 CI 冒烟准出门禁**<br/>全量 Starter 无冲突自动装配校验与端到端核心链路冒烟验收（耗时 ≤ 8s） | All / H2 / OpenAPI | H2 内存库 | [查看](./ateng-boot-sample-smoke-test/README.md) |
 
 ---
@@ -47,6 +48,9 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-storage spring-boot:run
 
 # 启动 7：Kafka 高吞吐消息流与位移治理演示
 mvn -pl ateng-boot-samples/ateng-boot-sample-kafka spring-boot:run
+
+# 启动 8：RocketMQ 原生 2PC 分布式事务与 gRPC 监听演示
+mvn -pl ateng-boot-samples/ateng-boot-sample-rocketmq spring-boot:run
 ```
 
 ---
@@ -80,7 +84,10 @@ mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am
 # 场景 H：修改了 ateng-boot-kafka，定向联动自验
 mvn test -pl ateng-boot-kafka,ateng-boot-samples/ateng-boot-sample-kafka -am -T 1C
 
-# 场景 I：发版前或全反应堆构建时，全家桶极速冒烟准出
+# 场景 I：修改了 ateng-boot-rocketmq，定向联动自验
+mvn test -pl ateng-boot-rocketmq,ateng-boot-samples/ateng-boot-sample-rocketmq -am -T 1C
+
+# 场景 J：发版前或全反应堆构建时，全家桶极速冒烟准出
 mvn test -pl ateng-boot-samples/ateng-boot-sample-smoke-test -am -T 1C
 ```
 
