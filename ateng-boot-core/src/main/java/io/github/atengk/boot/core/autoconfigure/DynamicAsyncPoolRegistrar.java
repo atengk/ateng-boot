@@ -74,18 +74,19 @@ public class DynamicAsyncPoolRegistrar implements ImportBeanDefinitionRegistrar,
             }
 
             boolean virtualMode = isVirtualMode(pool, environment);
+            String effectivePoolName = StringUtils.hasText(alias) ? alias : poolName;
             BeanDefinitionBuilder builder;
 
             if (virtualMode) {
                 builder = BeanDefinitionBuilder.genericBeanDefinition(
                         SimpleAsyncTaskExecutor.class,
-                        () -> createVirtualTaskExecutor(poolName, pool)
+                        () -> createVirtualTaskExecutor(effectivePoolName, pool)
                 );
                 builder.setDestroyMethodName("close");
             } else {
                 builder = BeanDefinitionBuilder.genericBeanDefinition(
                         ThreadPoolTaskExecutor.class,
-                        () -> createPlatformTaskExecutor(poolName, pool)
+                        () -> createPlatformTaskExecutor(effectivePoolName, pool)
                 );
                 builder.setDestroyMethodName("shutdown");
             }
