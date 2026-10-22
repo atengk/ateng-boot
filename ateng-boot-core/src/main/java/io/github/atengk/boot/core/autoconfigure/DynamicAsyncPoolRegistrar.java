@@ -1,12 +1,10 @@
 package io.github.atengk.boot.core.autoconfigure;
 
-import io.github.atengk.boot.core.enums.AsyncExecutionMode;
 import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.properties.AsyncProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
-import org.springframework.boot.autoconfigure.thread.Threading;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.EnvironmentAware;
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
@@ -71,7 +69,7 @@ public class DynamicAsyncPoolRegistrar implements ImportBeanDefinitionRegistrar,
                 continue;
             }
 
-            boolean virtualMode = isVirtualMode(pool, environment);
+            boolean virtualMode = AsyncExecutorFactory.isVirtualMode(pool, environment);
             String effectivePoolName = StringUtils.hasText(alias) ? alias : poolName;
             BeanDefinitionBuilder builder;
 
@@ -100,27 +98,5 @@ public class DynamicAsyncPoolRegistrar implements ImportBeanDefinitionRegistrar,
             log.info("ateng-boot: 成功动态注册业务受管异步线程池 [beanName={}, alias={}, mode={}]",
                     beanName, alias, virtualMode ? "VIRTUAL" : "PLATFORM");
         }
-    }
-
-    /**
-     * 判断当前线程池是否应当启用虚拟线程
-     *
-     * @param pool        线程池配置
-     * @param environment Spring 运行时环境
-     * @return 是否启用虚拟线程
-     */
-    private static boolean isVirtualMode(AsyncPoolProperties pool, Environment environment) {
-        AsyncExecutionMode mode = pool.getMode() != null ? pool.getMode() : AsyncExecutionMode.AUTO;
-        return switch (mode) {
-            case VIRTUAL -> {
-                if (Runtime.version().feature() < 21) {
-                    log.warn("ateng-boot: 当前 JVM 版本 [{}] 低于 JDK 21，无法使用虚拟线程，线程池将回退为平台线程", Runtime.version().feature());
-                    yield false;
-                }
-                yield true;
-            }
-            case PLATFORM -> false;
-            case AUTO -> Threading.VIRTUAL.isActive(environment);
-        };
     }
 }
