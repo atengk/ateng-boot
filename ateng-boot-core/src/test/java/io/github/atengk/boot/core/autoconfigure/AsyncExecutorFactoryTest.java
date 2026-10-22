@@ -9,6 +9,8 @@ import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledForJreRange;
+import org.junit.jupiter.api.condition.JRE;
 import org.slf4j.MDC;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.mock.env.MockEnvironment;
@@ -21,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * 受管异步执行器实例构建工厂单测
@@ -97,6 +100,7 @@ class AsyncExecutorFactoryTest {
     }
 
     @Test
+    @EnabledForJreRange(min = JRE.JAVA_21)
     @DisplayName("createVirtualExecutor 成功应用自定义配置并启用虚拟线程与上下文透传")
     void shouldCreateVirtualExecutorWithCustomProperties() throws Exception {
         AsyncPoolProperties pool = new AsyncPoolProperties();
@@ -136,11 +140,20 @@ class AsyncExecutorFactoryTest {
     }
 
     @Test
+    @EnabledForJreRange(min = JRE.JAVA_21)
     @DisplayName("createVirtualExecutor 传入 null 配置时能防御性应用默认参数")
     void shouldCreateVirtualExecutorWithNullPropertiesDefensively() {
         SimpleAsyncTaskExecutor executor = AsyncExecutorFactory.createVirtualExecutor(null, null);
         assertThat(executor).isNotNull();
         executor.close();
+    }
+
+    @Test
+    @EnabledForJreRange(max = JRE.JAVA_20)
+    @DisplayName("JDK < 21 时直接调用 createVirtualExecutor 抛出 UnsupportedOperationException")
+    void shouldThrowWhenCreateVirtualExecutorOnJdkBelow21() {
+        assertThrows(UnsupportedOperationException.class, () ->
+                AsyncExecutorFactory.createVirtualExecutor("myVtPool", null));
     }
 
     @Test
