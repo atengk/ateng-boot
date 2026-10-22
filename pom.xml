@@ -50,6 +50,7 @@
         <module>ateng-boot-kafka</module>
         <module>ateng-boot-rocketmq</module>
         <module>ateng-boot-observability</module>
+        <module>ateng-boot-openapi</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -228,6 +229,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-observability</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-openapi</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
