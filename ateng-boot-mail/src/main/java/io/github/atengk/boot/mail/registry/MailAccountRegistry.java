@@ -69,6 +69,19 @@ public class MailAccountRegistry {
     }
 
     /**
+     * 注销并移除已注册的发信账号（保障门面操作的对称语义完备性）
+     *
+     * @param name 账号名称
+     * @return 被移除的账号实例，若不存在返回 null
+     */
+    public MailAccount unregister(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        return accountMap.remove(name);
+    }
+
+    /**
      * 根据名称获取已注册发信账号
      *
      * @param name 账号名称
@@ -223,19 +236,6 @@ public class MailAccountRegistry {
     }
 
     private MailAccount copyWithSender(MailAccount source, JavaMailSenderImpl sender) {
-        return MailAccount.builder()
-                .name(source.getName() != null ? source.getName() : "dynamic")
-                .host(source.getHost())
-                .port(source.getPort())
-                .username(source.getUsername())
-                .password(source.getPassword())
-                .protocol(source.getProtocol())
-                .ssl(source.isSsl())
-                .starttls(source.isStarttls())
-                .defaultFrom(source.getDefaultFrom())
-                .defaultFromName(source.getDefaultFromName())
-                .properties(source.getProperties())
-                .sender(sender)
-                .build();
+        return source.withSender(sender);
     }
 }

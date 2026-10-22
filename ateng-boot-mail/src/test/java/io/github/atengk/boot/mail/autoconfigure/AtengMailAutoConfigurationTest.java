@@ -81,14 +81,16 @@ class AtengMailAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("仅配置 Spring 官方原生配置时平滑纳管保底")
+    @DisplayName("仅配置 Spring 官方原生配置时平滑纳管保底并完整透传扩展属性")
     void testAutoConfigurationWithSpringMailFallback() {
         contextRunner
                 .withPropertyValues(
                         "spring.mail.host=smtp.springfallback.com",
                         "spring.mail.username=spring@test.com",
                         "spring.mail.password=springpwd",
-                        "spring.mail.port=587"
+                        "spring.mail.port=587",
+                        "spring.mail.properties.mail.smtp.auth=true",
+                        "spring.mail.properties.mail.custom.param=ateng-value"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(MailTemplate.class);
@@ -96,6 +98,9 @@ class AtengMailAutoConfigurationTest {
                     assertThat(registry.size()).isEqualTo(1);
                     assertThat(registry.getDefault().getHost()).isEqualTo("smtp.springfallback.com");
                     assertThat(registry.getDefault().getPort()).isEqualTo(587);
+                    assertThat(registry.getDefault().getProperties())
+                            .containsEntry("mail.smtp.auth", "true")
+                            .containsEntry("mail.custom.param", "ateng-value");
                 });
     }
 

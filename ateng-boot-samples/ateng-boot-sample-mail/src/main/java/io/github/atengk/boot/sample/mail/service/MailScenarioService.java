@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mail.service;
 
+import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -127,5 +128,19 @@ public class MailScenarioService {
         if (shouldRollback) {
             throw new IllegalStateException("Simulated business transaction rollback");
         }
+    }
+
+    /**
+     * 编程式动态临时账号发信（演示 LRU 物理池化复用与 DynamicMailSession 门面）
+     *
+     * @param account 动态账号模型
+     * @param to      收件人
+     * @param subject 主题
+     * @param text    正文
+     * @return 发信结果
+     */
+    public MailSendResult sendWithDynamicAccount(MailAccount account, String to, String subject, String text) {
+        log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), to);
+        return mailTemplate.forDynamicAccount(account).sendText(to, subject, text);
     }
 }

@@ -34,6 +34,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
+import org.springframework.core.io.InputStreamSource;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -41,6 +42,10 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.ClassUtils;
 
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -53,6 +58,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -156,26 +162,6 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
 
-        // 发信拦截器链前置执行
-        if (!interceptors.isEmpty()) {
-            for (MailSendInterceptor interceptor : interceptors) {
-                try {
-                    boolean proceed = interceptor.preSend(message);
-                    if (!proceed) {
-                        log.warn("Mail sending blocked by interceptor [{}], subject: [{}]",
-                                interceptor.getClass().getSimpleName(), message.getSubject());
-                        throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
-                                "邮件发送被拦截器阻断: " + interceptor.getClass().getSimpleName());
-                    }
-                } catch (MailSendException mse) {
-                    throw mse;
-                } catch (Throwable t) {
-                    throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
-                            "邮件拦截器执行异常: " + t.getMessage(), t);
-                }
-            }
-        }
-
         if (message.getTo() == null || message.getTo().isEmpty()) {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
@@ -224,21 +210,23 @@ public class MailTemplate implements DisposableBean {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
 
-        // 容量防爆安全校验
-        enforceSizeLimits(message);
-
-        String maskedTo = message.getTo().stream()
-                .filter(Objects::nonNull)
-                .map(DesensitizeUtil::email)
-                .collect(Collectors.joining(","));
-
-        String traceId = resolveTraceId();
-        String domain = resolveDomain(account);
-        String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
-
-        publishEvent(new MailSendingEvent(this, message));
+        String maskedTo = (message.getTo() != null)
+                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                : "";
 
         try {
+            // 容量防爆安全校验
+            enforceSizeLimits(message);
+
+            // 发信拦截器链前置执行
+            applyInterceptors(message);
+
+            String traceId = resolveTraceId();
+            String domain = resolveDomain(account);
+            String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
+
+            publishEvent(new MailSendingEvent(this, message));
+
             MailSendResult result;
             MailRetryProperties retryProps = properties.getRetry();
             if (retryProps != null && retryProps.isEnabled()) {
@@ -340,15 +328,30 @@ public class MailTemplate implements DisposableBean {
             }
 
             // 7. 附件流式挂载
+            AtomicReference<MailSendException> sizeLimitException = new AtomicReference<>();
             if (message.hasAttachments()) {
+                long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
+                        ? properties.getMaxAttachmentSize().toBytes()
+                        : Long.MAX_VALUE;
                 for (MailAttachment attachment : message.getAttachments()) {
-                    helper.addAttachment(attachment.getFilename(), attachment.getSource(), attachment.getContentType());
+                    InputStreamSource source = attachment.getSource();
+                    // 若附件容量预先未知，挂载流式计数防爆数据源，严防无界裸流耗尽物理内存
+                    if (attachment.getSize() == null && maxAttachmentBytes < Long.MAX_VALUE && source != null) {
+                        source = wrapBoundedSource(attachment.getFilename(), source, maxAttachmentBytes, sizeLimitException);
+                    }
+                    helper.addAttachment(attachment.getFilename(), source, attachment.getContentType());
                 }
             }
 
             // 8. 物理发送
             long start = System.nanoTime();
             account.getSender().send(mimeMessage);
+
+            // 防御性熔断：若流式读取组装过程中检测到容量超限（包括被底层 MIME 编码探测吞咽的异常），立即阻断并抛出
+            if (sizeLimitException.get() != null) {
+                throw sizeLimitException.get();
+            }
+
             Duration duration = Duration.ofNanos(System.nanoTime() - start);
 
             log.info("Email sent successfully to [{}] in {} ms, messageId: [{}]",
@@ -356,10 +359,12 @@ public class MailTemplate implements DisposableBean {
 
             return MailSendResult.success(messageId, new ArrayList<>(message.getTo()), duration);
         } catch (MailAuthenticationException e) {
-            log.error("Mail authentication failed for account [{}], to: [{}]", account.getName(), maskedTo, e);
             throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR, "邮件服务器身份认证失败: " + e.getMessage(), e);
         } catch (org.springframework.mail.MailSendException e) {
-            log.error("Failed to deliver email to [{}]: {}", maskedTo, e.getMessage(), e);
+            MailSendException nestedMse = findNestedMailSendException(e);
+            if (nestedMse != null) {
+                throw nestedMse;
+            }
             if (isTimeoutException(e)) {
                 throw new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT, "邮件服务器连接或读写超时: " + e.getMessage(), e);
             }
@@ -367,7 +372,10 @@ public class MailTemplate implements DisposableBean {
         } catch (MailSendException e) {
             throw e;
         } catch (Exception e) {
-            log.error("Unexpected error while sending email to [{}]: {}", maskedTo, e.getMessage(), e);
+            MailSendException nestedMse = findNestedMailSendException(e);
+            if (nestedMse != null) {
+                throw nestedMse;
+            }
             throw new MailSendException(MailResultCode.MAIL_SEND_ERROR, "邮件发送异常: " + e.getMessage(), e);
         }
     }
@@ -803,32 +811,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                    try {
-                        parentSnapshot.apply();
-                        send(message);
-                    } catch (Throwable t) {
-                        log.error("Failed to execute sendAfterCommit to [{}]: {}", message.getTo(), t.getMessage(), t);
-                    } finally {
-                        previous.apply();
-                    }
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
-                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled mail delivery to [{}], subject: [{}]",
-                                status, masked, message.getSubject());
-                    }
-                }
-            });
+            registerAfterCommitSynchronization(message, () -> send(message), false);
         } else {
             send(message);
         }
@@ -848,32 +831,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                    try {
-                        parentSnapshot.apply();
-                        sendWithAccount(account, message);
-                    } catch (Throwable t) {
-                        log.error("Failed to execute sendAfterCommitWithAccount to [{}]: {}", message.getTo(), t.getMessage(), t);
-                    } finally {
-                        previous.apply();
-                    }
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
-                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled mail delivery to [{}], subject: [{}]",
-                                status, masked, message.getSubject());
-                    }
-                }
-            });
+            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), false);
         } else {
             sendWithAccount(account, message);
         }
@@ -904,34 +862,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    executor.execute(() -> {
-                        AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                        try {
-                            parentSnapshot.apply();
-                            send(message);
-                        } catch (Throwable t) {
-                            log.error("Failed to execute sendAsyncAfterCommit to [{}]: {}", message.getTo(), t.getMessage(), t);
-                        } finally {
-                            previous.apply();
-                        }
-                    });
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
-                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled async mail delivery to [{}], subject: [{}]",
-                                status, masked, message.getSubject());
-                    }
-                }
-            });
+            registerAfterCommitSynchronization(message, () -> send(message), true);
         } else {
             sendAsync(message);
         }
@@ -951,34 +882,7 @@ public class MailTemplate implements DisposableBean {
             throw new IllegalArgumentException("MailMessage must not be null");
         }
         if (isTxSynchronizationActive()) {
-            AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    executor.execute(() -> {
-                        AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                        try {
-                            parentSnapshot.apply();
-                            sendWithAccount(account, message);
-                        } catch (Throwable t) {
-                            log.error("Failed to execute sendAsyncAfterCommitWithAccount to [{}]: {}", message.getTo(), t.getMessage(), t);
-                        } finally {
-                            previous.apply();
-                        }
-                    });
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                        String masked = (message.getTo() != null)
-                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
-                                : "";
-                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled async mail delivery to [{}], subject: [{}]",
-                                status, masked, message.getSubject());
-                    }
-                }
-            });
+            registerAfterCommitSynchronization(message, () -> sendWithAccount(account, message), true);
         } else {
             sendAsyncWithAccount(account, message);
         }
@@ -1180,13 +1084,7 @@ public class MailTemplate implements DisposableBean {
     }
 
     private String resolveDomain(MailAccount account) {
-        if (account.getUsername() != null && account.getUsername().contains("@")) {
-            return account.getUsername().substring(account.getUsername().indexOf('@') + 1);
-        }
-        if (account.getHost() != null && !account.getHost().isBlank()) {
-            return account.getHost();
-        }
-        return "ateng-boot.local";
+        return account != null ? account.getDomain() : "ateng-boot.local";
     }
 
     private boolean isTimeoutException(Throwable throwable) {
@@ -1248,6 +1146,69 @@ public class MailTemplate implements DisposableBean {
         return true;
     }
 
+    private void applyInterceptors(MailMessage message) {
+        if (!interceptors.isEmpty()) {
+            for (MailSendInterceptor interceptor : interceptors) {
+                try {
+                    boolean proceed = interceptor.preSend(message);
+                    if (!proceed) {
+                        log.warn("Mail sending blocked by interceptor [{}], subject: [{}]",
+                                interceptor.getClass().getSimpleName(), message.getSubject());
+                        throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                                "邮件发送被拦截器阻断: " + interceptor.getClass().getSimpleName());
+                    }
+                } catch (MailSendException mse) {
+                    throw mse;
+                } catch (Throwable t) {
+                    throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                            "邮件拦截器执行异常: " + t.getMessage(), t);
+                }
+            }
+        }
+    }
+
+    private void registerAfterCommitSynchronization(MailMessage message, Runnable deliveryTask, boolean isAsync) {
+        AsyncContext.ContextSnapshot parentSnapshot = AsyncContext.ContextSnapshot.capture();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                if (isAsync) {
+                    executor.execute(() -> executeDeliveryWithContext(parentSnapshot, deliveryTask));
+                } else {
+                    executeDeliveryWithContext(parentSnapshot, deliveryTask);
+                }
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    try {
+                        String masked = (message.getTo() != null)
+                                ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                                : "";
+                        log.warn("Transaction uncommitted or rolled back (status: {}), canceled {}mail delivery to [{}], subject: [{}]",
+                                status, isAsync ? "async " : "", masked, message.getSubject());
+                    } finally {
+                        // 确定性资源清理：物理事务未提交或回滚时，释放邮件消息中挂载的所有流句柄与临时文件
+                        message.close();
+                    }
+                }
+            }
+        });
+    }
+
+    private void executeDeliveryWithContext(AsyncContext.ContextSnapshot parentSnapshot, Runnable deliveryTask) {
+        AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+        try {
+            parentSnapshot.apply();
+            deliveryTask.run();
+        } catch (Throwable t) {
+            log.warn("Delivery after commit failed: {}", t.getMessage());
+        } finally {
+            previous.apply();
+        }
+    }
+
     private boolean isTxSynchronizationActive() {
         return SPRING_TX_PRESENT && TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive();
@@ -1274,5 +1235,123 @@ public class MailTemplate implements DisposableBean {
         executor.setTaskDecorator(new ContextCopyingTaskDecorator());
         executor.initialize();
         return executor;
+    }
+
+    private InputStreamSource wrapBoundedSource(String filename, InputStreamSource originalSource, long maxBytes,
+                                                AtomicReference<MailSendException> sizeLimitExceptionRef) {
+        return () -> {
+            InputStream in = originalSource.getInputStream();
+            return new BoundedInputStream(in, maxBytes, filename, sizeLimitExceptionRef);
+        };
+    }
+
+    private MailSendException findNestedMailSendException(Throwable throwable) {
+        if (throwable instanceof org.springframework.mail.MailSendException springEx) {
+            Exception[] messageExceptions = springEx.getMessageExceptions();
+            if (messageExceptions != null) {
+                for (Exception me : messageExceptions) {
+                    MailSendException found = findNestedMailSendException(me);
+                    if (found != null) {
+                        return found;
+                    }
+                }
+            }
+        }
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof MailSendException mse) {
+                return mse;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    /**
+     * 流式附件读取容量上限守护流，严密防范未知容量裸流耗尽物理内存
+     */
+    private static class BoundedInputStream extends FilterInputStream {
+        private final long maxBytes;
+        private final String filename;
+        private final AtomicReference<MailSendException> sizeLimitExceptionRef;
+        private long bytesRead = 0;
+
+        public BoundedInputStream(InputStream in, long maxBytes, String filename,
+                                  AtomicReference<MailSendException> sizeLimitExceptionRef) {
+            super(in);
+            this.maxBytes = maxBytes;
+            this.filename = filename;
+            this.sizeLimitExceptionRef = sizeLimitExceptionRef;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            if (b != -1) {
+                checkLimit(1);
+            }
+            return b;
+        }
+
+        @Override
+        public int read(byte[] b) throws IOException {
+            return read(b, 0, b.length);
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int read = super.read(b, off, len);
+            if (read > 0) {
+                checkLimit(read);
+            }
+            return read;
+        }
+
+        @Override
+        public long transferTo(OutputStream out) throws IOException {
+            byte[] buffer = new byte[8192];
+            long transferred = 0;
+            int read;
+            while ((read = this.read(buffer, 0, buffer.length)) >= 0) {
+                out.write(buffer, 0, read);
+                transferred += read;
+            }
+            return transferred;
+        }
+
+        @Override
+        public byte[] readAllBytes() throws IOException {
+            byte[] bytes = super.readAllBytes();
+            checkLimit(bytes.length);
+            return bytes;
+        }
+
+        @Override
+        public byte[] readNBytes(int len) throws IOException {
+            byte[] bytes = super.readNBytes(len);
+            checkLimit(bytes.length);
+            return bytes;
+        }
+
+        @Override
+        public int readNBytes(byte[] b, int off, int len) throws IOException {
+            int read = super.readNBytes(b, off, len);
+            if (read > 0) {
+                checkLimit(read);
+            }
+            return read;
+        }
+
+        private void checkLimit(int newlyRead) throws IOException {
+            bytesRead += newlyRead;
+            if (bytesRead > maxBytes) {
+                MailSendException ex = new MailSendException(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED,
+                        "邮件附件 [" + filename + "] 流式读取体积超过单个附件上限 (" + maxBytes + " 字节)");
+                if (sizeLimitExceptionRef != null) {
+                    sizeLimitExceptionRef.compareAndSet(null, ex);
+                }
+                throw ex;
+            }
+        }
     }
 }

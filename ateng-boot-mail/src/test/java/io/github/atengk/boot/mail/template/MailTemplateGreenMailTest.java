@@ -14,11 +14,16 @@ import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.MailAccount;
+import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
+import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
+import org.thymeleaf.spring6.SpringTemplateEngine;
+import org.thymeleaf.templateresolver.ClassLoaderTemplateResolver;
 import jakarta.mail.BodyPart;
 import jakarta.mail.Multipart;
 import jakarta.mail.Part;
@@ -231,6 +236,63 @@ class MailTemplateGreenMailTest {
     }
 
     @Test
+    @DisplayName("测试集成 Thymeleaf 模板引擎通过 GreenMail 端到端发送与报文断言")
+    void testSendTemplateWithThymeleafEngine() throws Exception {
+        SpringTemplateEngine engine = new SpringTemplateEngine();
+        ClassLoaderTemplateResolver resolver = new ClassLoaderTemplateResolver();
+        resolver.setPrefix("templates/mail/");
+        resolver.setSuffix(".html");
+        resolver.setCharacterEncoding("UTF-8");
+        resolver.setTemplateMode("HTML");
+        engine.setTemplateResolver(resolver);
+
+        ThymeleafMailTemplateRenderer thymeleafRenderer = new ThymeleafMailTemplateRenderer(engine);
+        MailTemplate customTemplate = new MailTemplate(accountRegistry, mailProperties, thymeleafRenderer,
+                new io.github.atengk.boot.mail.resolver.TenantMailAccountResolver(), null, null, null, null);
+
+        Map<String, Object> model = Map.of("username", "钱七", "platform", "Ateng Boot");
+        MailSendResult result = customTemplate.sendTemplate("thymeleaf-user@example.com", "Thymeleaf 欢迎函", "thymeleaf-welcome", model);
+
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+        assertEquals("Thymeleaf 欢迎函", message.getSubject());
+        assertTrue(message.getContentType().contains("text/html"));
+        assertTrue(message.getContent().toString().contains("欢迎, 钱七!"));
+    }
+
+    @Test
+    @DisplayName("测试集成 FreeMarker 模板引擎通过 GreenMail 端到端发送与报文断言")
+    void testSendTemplateWithFreemarkerEngine() throws Exception {
+        freemarker.template.Configuration cfg = new freemarker.template.Configuration(freemarker.template.Configuration.VERSION_2_3_32);
+        freemarker.cache.StringTemplateLoader loader = new freemarker.cache.StringTemplateLoader();
+        loader.putTemplate("notice.ftl", "<h1>通知: ${title}</h1><p>${content}</p>");
+        cfg.setTemplateLoader(loader);
+        cfg.setDefaultEncoding("UTF-8");
+
+        FreemarkerMailTemplateRenderer freemarkerRenderer = new FreemarkerMailTemplateRenderer(cfg);
+        MailTemplate customTemplate = new MailTemplate(accountRegistry, mailProperties, freemarkerRenderer,
+                new io.github.atengk.boot.mail.resolver.TenantMailAccountResolver(), null, null, null, null);
+
+        Map<String, Object> model = Map.of("title", "系统升级通知", "content", "系统将于今晚执行滚动发布");
+        MailSendResult result = customTemplate.sendTemplate("freemarker-user@example.com", "系统维护提醒", "notice", model);
+
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(1, messages.length);
+        MimeMessage message = messages[0];
+        assertEquals("系统维护提醒", message.getSubject());
+        assertTrue(message.getContentType().contains("text/html"));
+        assertTrue(message.getContent().toString().contains("通知: 系统升级通知"));
+        assertTrue(message.getContent().toString().contains("系统将于今晚执行滚动发布"));
+    }
+
+    @Test
     @DisplayName("测试发送纯文本邮件至多个收件人")
     void testSendTextMultipleRecipients() throws Exception {
         List<String> recipients = List.of("user1@example.com", "user2@example.com");
@@ -414,6 +476,28 @@ class MailTemplateGreenMailTest {
 
         assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED.getCode(), ex.getCode());
         assertTrue(ex.getMessage().contains("big-file.bin"));
+    }
+
+    @Test
+    @DisplayName("测试未知长度流式附件超限时在读取阶段被 BoundedInputStream 拦截抛出 MAIL_ATTACHMENT_SIZE_EXCEEDED")
+    void testMaxAttachmentSizeExceededWithUnknownStreamSize() {
+        mailProperties.setMaxAttachmentSize(DataSize.ofBytes(50));
+
+        byte[] largeData = new byte[100]; // 100 > 50
+        ByteArrayInputStream in = new ByteArrayInputStream(largeData);
+        // 使用 InputStream 构建附件，初始 size 为 null
+        MailAttachment streamAttachment = MailAttachment.of("stream-file.bin", in);
+        assertNull(streamAttachment.getSize());
+
+        MailSendException ex = assertThrows(MailSendException.class, () ->
+                mailTemplate.send(msg -> msg
+                        .to("stream-overflow@example.com")
+                        .subject("流式超限测试")
+                        .text("正文")
+                        .attachment(streamAttachment)));
+
+        assertEquals(MailResultCode.MAIL_ATTACHMENT_SIZE_EXCEEDED.getCode(), ex.getCode());
+        assertTrue(ex.getMessage().contains("stream-file.bin"));
     }
 
     @Test
@@ -1029,5 +1113,94 @@ class MailTemplateGreenMailTest {
         assertEquals("audit-998877", auditHeaders[0]);
 
         interceptedTemplate.destroy();
+    }
+
+    @Test
+    @DisplayName("测试发信拦截器 MailSendInterceptor 在 sendWithAccount 及 DynamicMailSession 等全渠道均生效")
+    void testMailSendInterceptorAcrossAllChannels() {
+        MailSendInterceptor blockingInterceptor = message -> {
+            if (message.getSubject() != null && message.getSubject().contains("敏感主题")) {
+                return false;
+            }
+            return true;
+        };
+
+        MailTemplate interceptedTemplate = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                mailTemplate.getAccountResolver(), mailTemplate.getExecutor(),
+                null, List.of(), List.of(blockingInterceptor));
+
+        MailAccount defaultAccount = accountRegistry.getDefault();
+
+        // 1. 测试 sendWithAccount 通道受拦截器防护
+        MailMessage msg1 = new MailMessage()
+                .to("channel-test1@example.com")
+                .subject("敏感主题-测试1")
+                .text("内容1");
+        MailSendException ex1 = assertThrows(MailSendException.class, () ->
+                interceptedTemplate.sendWithAccount(defaultAccount, msg1));
+        assertTrue(ex1.getMessage().contains("邮件发送被拦截器阻断"));
+
+        // 2. 测试 DynamicMailSession 通道受拦截器防护
+        int smtpPort = greenMail.getSmtp().getPort();
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name("channel-dyn-account")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .build();
+        MailMessage msg2 = new MailMessage()
+                .to("channel-test2@example.com")
+                .subject("敏感主题-测试2")
+                .text("内容2");
+        MailSendException ex2 = assertThrows(MailSendException.class, () ->
+                interceptedTemplate.forDynamicAccount(dynamicAccount).send(msg2));
+        assertTrue(ex2.getMessage().contains("邮件发送被拦截器阻断"));
+
+        assertEquals(0, greenMail.getReceivedMessages().length);
+        interceptedTemplate.destroy();
+    }
+
+    @Test
+    @DisplayName("测试事务感知发信在物理事务回滚时确定性关闭流资源并释放句柄")
+    void testSendAfterCommitRolledBackDeterministicResourceCleanup() throws Exception {
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+
+        AtomicBoolean closed = new AtomicBoolean(false);
+        ByteArrayInputStream bais = new ByteArrayInputStream("tx attachment content".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                closed.set(true);
+                super.close();
+            }
+        };
+
+        try {
+            MailMessage message = new MailMessage()
+                    .to("tx-rollback-cleanup@example.com")
+                    .subject("事务回滚资源清理测试")
+                    .text("当事务回滚时，挂载的流必须被确定性关闭")
+                    .attach("tx-file.txt", bais);
+
+            mailTemplate.sendAfterCommit(message);
+
+            // 尚未触发 completion 前流尚未关闭
+            assertFalse(closed.get());
+
+            // 模拟 Spring 事务发生异常并回滚
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+            }
+
+            // 验证未发出任何邮件，且附件流被确定性释放关闭
+            assertEquals(0, greenMail.getReceivedMessages().length);
+            assertTrue(closed.get(), "物理事务回滚取消发信时，必须确定性触发 message.close() 释放资源句柄");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
     }
 }

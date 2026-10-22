@@ -32,6 +32,10 @@ _Avoid_: AccountManager, MailSenderPool, EmailRegistry
 发件账号动态路由解析器 SPI，支持依据多租户上下文（`TenantContextHolder`）或自定义业务标签动态解析发信账号。
 _Avoid_: AccountRouter, MailSelector, TenantAccountProvider
 
+**MailAccountProvider**:
+发件账号动态加载供给器 SPI，提供依据逻辑账号标识从外部数据源（数据库、配置中心等）按需懒加载 `MailAccount` 领域模型的能力。
+_Avoid_: AccountRepository, MailConfigLoader, AccountFetcher, MailAccountService
+
 **MailSendFailureHandler**:
 事务感知发信（`sendAfterCommit`）与受管异步发信失败补偿处理器 SPI，提供最终失败时的可靠持久化或告警降级入口。
 _Avoid_: FailureCallback, MailCompensator, ErrorHandler
@@ -51,6 +55,10 @@ _Avoid_: SendResult, EmailResponse, MailStatus
 **MailSendEvent**:
 Spring 原生邮件发信生命周期事件基类（含 `MailSendingEvent`、`MailSentEvent` 与 `MailSendFailedEvent`），提供纯净的业务持久化审计台账与告警广播解耦。
 _Avoid_: EmailEvent, MailAuditRecord, SendCallback
+
+**MailAccountEvictEvent**:
+Spring 原生发信账号缓存驱逐领域事件，支持单机或分布式集群（通过消息总线广播）联动清理动态加载的 `MailAccount` 及其物理 Sender 缓存。
+_Avoid_: AccountCacheClearEvent, MailAccountInvalidateEvent, AccountEvictEvent
 
 **MailSendInterceptor**:
 物理发信拦截器 SPI，支持发信前置黑名单过滤、标头动态改写与频控配额拦截。

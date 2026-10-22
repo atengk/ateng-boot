@@ -8,8 +8,10 @@ import com.icegreen.greenmail.util.ServerSetup;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.mail.exception.MailSendException;
+import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
+import io.github.atengk.boot.sample.mail.handler.SampleMailFailureHandler;
 import io.github.atengk.boot.sample.mail.interceptor.SampleAuditMailInterceptor;
 import io.github.atengk.boot.sample.mail.listener.SampleMailEventListener;
 import io.github.atengk.boot.sample.mail.service.MailScenarioService;
@@ -98,11 +100,15 @@ class SampleMailIntegrationTest {
     @Autowired
     private SampleMailEventListener eventListener;
 
+    @Autowired
+    private SampleMailFailureHandler failureHandler;
+
     @BeforeEach
     @AfterEach
     void cleanState() throws Exception {
         greenMail.purgeEmailFromAllMailboxes();
         eventListener.reset();
+        failureHandler.reset();
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
@@ -269,6 +275,11 @@ class SampleMailIntegrationTest {
 
         // GreenMail 不应收到任何邮件
         assertThat(greenMail.getReceivedMessages()).isEmpty();
+
+        // 校验失败补偿处理器回调
+        assertThat(failureHandler.getFailureCount().get()).isEqualTo(1);
+        assertThat(failureHandler.getLastFailedMessage().get().getTo()).contains(SampleAuditMailInterceptor.BLOCKED_EMAIL);
+        assertThat(failureHandler.getLastCause().get()).isInstanceOf(MailSendException.class);
     }
 
     @Test
@@ -301,5 +312,34 @@ class SampleMailIntegrationTest {
         MimeMessage[] messages = greenMail.getReceivedMessages();
         assertThat(messages).hasSize(1);
         assertThat(messages[0].getSubject()).contains("账户注册成功通知");
+    }
+
+    @Test
+    @DisplayName("9. 编程式动态账号发信：演示 DynamicMailSession 与 LRU 物理 Sender 复用")
+    void shouldSendMailViaDynamicAccount() throws Exception {
+        MailAccount dynamicAccount = MailAccount.builder()
+                .name("dynamic-sample-channel")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("default@example.com")
+                .password("secret-password-placeholder")
+                .ssl(false)
+                .defaultFrom("dynamic-sender@example.com")
+                .defaultFromName("动态专属客服")
+                .build();
+
+        MailSendResult result = mailScenarioService.sendWithDynamicAccount(
+                dynamicAccount,
+                "recipient-dynamic@example.com",
+                "动态账号专属优惠券",
+                "请查收您的专属代金券"
+        );
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(1);
+        assertThat(messages[0].getSubject()).isEqualTo("动态账号专属优惠券");
+        assertThat(messages[0].getFrom()[0].toString()).contains("dynamic-sender@example.com");
     }
 }

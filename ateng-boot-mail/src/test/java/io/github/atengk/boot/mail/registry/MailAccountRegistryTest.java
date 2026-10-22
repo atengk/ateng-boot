@@ -36,6 +36,17 @@ class MailAccountRegistryTest {
         assertSame(account1, registry.get("primary"));
         assertSame(account2, registry.get("ops"));
         assertSame(account1, registry.getDefault());
+
+        // 验证对称注销
+        MailAccount removed = registry.unregister("ops");
+        assertSame(account2, removed);
+        assertEquals(1, registry.size());
+        assertFalse(registry.contains("ops"));
+        assertNull(registry.get("ops"));
+
+        // 注销不存在的账号返回 null
+        assertNull(registry.unregister("non-existent"));
+        assertNull(registry.unregister(null));
     }
 
     @Test
@@ -85,5 +96,38 @@ class MailAccountRegistryTest {
         // 5. 测试清理
         registry.clearDynamic();
         assertEquals(0, registry.dynamicSize());
+    }
+
+    @Test
+    @DisplayName("测试动态账号指纹计算纳管 properties 扩展配置，防御 Sender 碰撞误复用")
+    void testDynamicAccountFingerprintIncludesProperties() {
+        MailAccountRegistry registry = new MailAccountRegistry("default", 10);
+
+        java.util.Map<String, String> propsA = java.util.Map.of("mail.smtp.timeout", "3000");
+        java.util.Map<String, String> propsB = java.util.Map.of("mail.smtp.timeout", "8000");
+
+        MailAccount accountA = MailAccount.builder()
+                .host("smtp.shared.com")
+                .port(465)
+                .username("shared-user")
+                .password("pwd")
+                .properties(propsA)
+                .build();
+
+        MailAccount accountB = MailAccount.builder()
+                .host("smtp.shared.com")
+                .port(465)
+                .username("shared-user")
+                .password("pwd")
+                .properties(propsB)
+                .build();
+
+        assertNotEquals(accountA.toFingerprint(), accountB.toFingerprint(), "不同 properties 的账号指纹必须互异");
+
+        MailAccount managedA = registry.getOrCreateDynamic(accountA, null);
+        MailAccount managedB = registry.getOrCreateDynamic(accountB, null);
+
+        assertNotSame(managedA.getSender(), managedB.getSender(), "不同 properties 的动态账号严禁复用相同的物理 Sender");
+        assertEquals(2, registry.dynamicSize());
     }
 }

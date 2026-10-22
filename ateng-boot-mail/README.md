@@ -8,7 +8,7 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **多账号路由** | 多通道隔离与动态路由 | `MailTemplate`<br>`MailAccountRegistry`<br>`MailAccountResolver` | `ateng.boot.mail.default-account`<br>`ateng.boot.mail.accounts.*` | `sendWithAccount(String, ...)` / `sendWithAccount(MailAccount, ...)` / `forDynamicAccount(MailAccount)`，支持租户上下文动态寻址与动态临时账号 LRU 物理复用 | `MailAccountRegistryTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
+| **多账号路由** | 多通道隔离与动态路由 | `MailTemplate`<br>`MailAccountRegistry`<br>`MailAccountResolver` | `ateng.boot.mail.default-account`<br>`ateng.boot.mail.accounts.*` | `MailAccountRegistry`: `register(account)` / `unregister(name)` / `get(name)` / `getOrCreateDynamic(account, props)`；`MailTemplate`: `sendWithAccount(MailAccount, ...)` / `forDynamicAccount(MailAccount)`，支持租户上下文动态寻址与动态临时账号 LRU 物理复用 | `MailAccountRegistryTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **纯文本发信** | 简单文本邮件同步发送 | `MailTemplate` | `ateng.boot.mail.accounts.*.host`<br>`ateng.boot.mail.accounts.*.port`<br>`ateng.boot.mail.accounts.*.ssl` | `sendText(to, subject, text)` / `sendText(account, to, subject, text)` / `sendText(Collection<String>, subject, text)` / `sendText(account, Collection<String>, subject, text)` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **富文本发信** | HTML 富文本邮件同步发送 | `MailTemplate` | `ateng.boot.mail.accounts.*.from`<br>`ateng.boot.mail.accounts.*.from-name` | `sendHtml(to, subject, html)` / `sendHtml(account, to, subject, html)` / `sendHtml(Collection<String>, subject, html)` / `sendHtml(account, Collection<String>, subject, html)` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **模板渲染** | 多引擎解耦动态模板发信 | `MailTemplate`<br>`MailTemplateRenderer` | `ateng.boot.mail.template.type`<br>`ateng.boot.mail.template.cache` | `sendTemplate(to, subject, templateName, Map<String, Object>)` 及 account/集合重载，自动集成 Thymeleaf / FreeMarker 或内联占位符引擎 | `ThymeleafMailTemplateRendererTest`<br>`FreemarkerMailTemplateRendererTest`<br>`SampleMailIntegrationTest` |
@@ -19,7 +19,7 @@
 | **弹性指数重试** | 弹性网络重试退避 | `MailTemplate`<br>`RetryUtil` | `ateng.boot.mail.retry.enabled`<br>`ateng.boot.mail.retry.max-attempts`<br>`ateng.boot.mail.retry.delay`<br>`ateng.boot.mail.retry.multiplier`<br>`ateng.boot.mail.retry.max-delay`<br>`ateng.boot.mail.retry.jitter` | 智能识别 Socket 超时与瞬态连接抖动，基于指数退避加随机抖动重试，排除不可重试的认证失败与语法错误 | `MailTemplateGreenMailTest` |
 | **发信拦截器** | 发信前置拦截与合规治理 SPI | `MailSendInterceptor` | - | `boolean preSend(MailMessage message)`，支持 `Ordered` 排序，实现收件人黑名单阻断、全局水印注入或动态合规标头（如 `X-Audit-Trace`）重写 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **生命周期事件** | 原生 Spring 领域事件广播 | `MailSendingEvent`<br>`MailSentEvent`<br>`MailSendFailedEvent` | - | 依托 `ApplicationEventPublisher` 在发信前、成功送达与终态失败时发布原生领域事件，便于生产审计、大盘监控与外部告警联动 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
-| **三重失败补偿** | 失败安全网补偿处理 SPI | `MailSendFailureHandler`<br>`MailProperties` | - | 发信终态失败时触发：1. 脱敏脱密安全日志记录；2. 发布 `MailSendFailedEvent`；3. 回调已注入的 `MailSendFailureHandler` 列表执行业务落地兜底 | `MailTemplateGreenMailTest` |
+| **三重失败补偿** | 失败安全网补偿处理 SPI | `MailSendFailureHandler`<br>`MailProperties` | - | 发信终态失败时触发：1. 脱敏脱密安全日志记录；2. 发布 `MailSendFailedEvent`；3. 回调已注入的 `MailSendFailureHandler` 列表执行业务落地兜底 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **确定性资源清理**| 句柄与流瞬态物理资源销毁 | `MailMessage`<br>`MailAttachment` | - | 实现 `AutoCloseable` 接口，在 `finally` 块中确定性释放附件流（`InputStream`）、临时文件与底层资源，杜绝磁盘膨胀与文件句柄泄露 | `MailMessageTest`<br>`MailAttachmentTest` |
 | **因果异常体系** | 语义化异常与统一错误码 | `MailSendException`<br>`MailResultCode` | - | 转译底层 JavaMail / 连接异常为框架语义化 `MailSendException` 并 100% 传递原始 `cause`，枚举提供 `MAIL_CONNECT_TIMEOUT`、`MAIL_AUTHENTICATION_ERROR`、`MAIL_RECIPIENT_EMPTY` 等强类型错误码 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 
@@ -195,7 +195,7 @@ public class MailMetricsEventListener {
 public class DatabaseBackupFailureHandler implements MailSendFailureHandler {
 
     @Override
-    public void handleFailure(MailMessage message, Throwable cause) {
+    public void onFailure(MailMessage message, Throwable cause) {
         // 将发信失败的邮件持久化至 mail_failed_record 补偿表，由定时任务对账重试
     }
 }

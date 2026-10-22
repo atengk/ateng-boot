@@ -93,8 +93,13 @@ flowchart TB
 
 ### 2. 多发件源拓扑与多租户动态路由 (Multi-Account & Tenancy Routing)
 - **多命名账号注册表**：配置前缀 `ateng.boot.mail.accounts.<name>.*`，支持配置多套独立的发件源，启动时统一注册至 `MailAccountRegistry` 并预热连接池；
-- **多租户自适应解析**：提供 `MailAccountResolver` SPI，发信时若未显式指定账号，默认联动 `TenantContextHolder.getTenantId()` 动态匹配租户发件源，找不到则平滑回退至 `default-account`；
-- **编程式动态账号与 LRU 缓存**：支持 `mailTemplate.forDynamicAccount(account).send(...)`，对运行时临时传入的动态配置（如数据库中保存的租户 SMTP）采用带容量上限的 LRU 缓存管理物理 Sender，兼顾性能与防内存泄漏；
+- **多租户自适应解析**：提供 `MailAccountResolver` SPI，发信时若未显式指定账号，默认联动 `TenantContextHolder.getTenantId()` 动态匹配租户发件源；
+- **外部介质动态加载 SPI (`MailAccountProvider`)**：面向数据库、配置中心等外部动态介质，提供 `MailAccountProvider` SPI，支持依据账号逻辑标识按需懒加载 `MailAccount` 领域模型并绑定受管物理池化 Sender；业务实现方在持久层读取后自主完成密码解密，严格捍卫内存真明文契约；
+- **防张冠李戴双轨降级防御**：当请求账号在静态注册表与动态缓存均未命中且 Provider 返回 null 时：
+  - 若属于业务显式指定（`message.setAccount(...)`），强制 Fail-Fast 抛出 `MailSendException(MAIL_ACCOUNT_NOT_FOUND)`，杜绝错发至默认邮箱造成越权或客诉；
+  - 若属于隐式推断（由 `MailAccountResolver` 动态解析），则平滑降级回退至全局 `default` 账号；
+- **编程式动态会话与受管 LRU 缓存**：支持 `mailTemplate.forDynamicAccount(account).send(...)`，对运行时临时传入的动态配置采用带容量上限的 LRU 缓存管理物理 Sender，兼顾性能与防内存泄漏；
+- **动态缓存注销与分布式热刷新 (`MailAccountEvictEvent`)**：在 `MailAccountRegistry` 与 `MailTemplate` 暴露 `evictDynamicAccount(accountName)` 与 `clearDynamicAccounts()` 门面，并配套发布/监听 Spring 原生 `MailAccountEvictEvent` 领域事件，支持单机与跨节点广播联动热刷新；
 - **官方配置平滑纳管**：优先识别 `ateng.boot.mail.*`，当仅存在 Spring 官方 `spring.mail.*` 时自动将其转换为 `default` 账号纳管，保证存量应用零侵入升级。
 
 ### 3. 双模对称门面与四维上下文透传 (Symmetric Facades & 4D Context)

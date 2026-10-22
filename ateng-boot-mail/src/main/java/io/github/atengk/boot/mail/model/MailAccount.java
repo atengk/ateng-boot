@@ -97,6 +97,45 @@ public class MailAccount {
                 + (password != null ? password.hashCode() : 0) + ":"
                 + (protocol != null ? protocol : "smtp") + ":"
                 + ssl + ":"
-                + starttls;
+                + starttls + ":"
+                + (properties != null ? properties.hashCode() : 0);
+    }
+
+    /**
+     * 基于当前账号模型快速衍生绑定指定物理 Sender 的新账号实例（消除外部 Feature Envy）
+     *
+     * @param sender 物理 JavaMailSenderImpl 发送器
+     * @return 绑定了物理 Sender 的新账号实例
+     */
+    public MailAccount withSender(JavaMailSenderImpl sender) {
+        return MailAccount.builder()
+                .name(this.name != null ? this.name : "dynamic")
+                .host(this.host)
+                .port(this.port)
+                .username(this.username)
+                .password(this.password)
+                .protocol(this.protocol)
+                .ssl(this.ssl)
+                .starttls(this.starttls)
+                .defaultFrom(this.defaultFrom)
+                .defaultFromName(this.defaultFromName)
+                .properties(this.properties != null ? new LinkedHashMap<>(this.properties) : new LinkedHashMap<>())
+                .sender(sender)
+                .build();
+    }
+
+    /**
+     * 推导当前账号的邮件发信域名（用于 RFC 5322 Message-ID 生成）
+     *
+     * @return 域名字符串
+     */
+    public String getDomain() {
+        if (username != null && username.contains("@")) {
+            return username.substring(username.indexOf('@') + 1);
+        }
+        if (host != null && !host.isBlank()) {
+            return host;
+        }
+        return "ateng-boot.local";
     }
 }
