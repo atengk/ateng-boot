@@ -214,6 +214,23 @@ public final class SshServerInfo {
     }
 
     /**
+     * 计算当前连接描述符在会话连接池中的唯一路由键值
+     * <p>
+     * 结合目标坐标、用户名、多元凭据哈希与跳板机拓扑，确保不同凭据或不同跳板机的会话绝对物理隔离。
+     * </p>
+     *
+     * @return 会话池路由键值
+     */
+    public String toPoolKey() {
+        int credHash = java.util.Objects.hash(password, privateKey, privateKeyPath, passphrase, keyPair);
+        String base = username + "@" + host + ":" + port + "#" + Integer.toHexString(credHash);
+        if (jumpHost != null) {
+            base += "->via(" + jumpHost.toPoolKey() + ")";
+        }
+        return base;
+    }
+
+    /**
      * 是否配置了密码
      *
      * @return true 若密码非空

@@ -1,6 +1,8 @@
 package io.github.atengk.boot.ssh.autoconfigure;
 
+import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
@@ -27,17 +29,22 @@ class AtengSshAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengSshAutoConfiguration.class));
 
     @Test
-    @DisplayName("测试默认配置下成功装配 SshProperties、ServerKeyVerifier、SshClientRegistry 与 SshClient")
+    @DisplayName("测试默认配置下成功装配全部 SSH 基础设施组件")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(SshProperties.class);
             assertThat(context).hasSingleBean(ServerKeyVerifier.class);
             assertThat(context).hasSingleBean(SshClientRegistry.class);
             assertThat(context).hasSingleBean(SshClient.class);
+            assertThat(context).hasSingleBean(SshSessionPool.class);
+            assertThat(context).hasSingleBean(SshLifecycleManager.class);
 
             SshClient client = context.getBean(SshClient.class);
             assertThat(client.isStarted()).isTrue();
             assertThat(client.getServerKeyVerifier()).isInstanceOf(InMemoryServerKeyVerifier.class);
+
+            SshLifecycleManager lifecycleManager = context.getBean(SshLifecycleManager.class);
+            assertThat(lifecycleManager.isRunning()).isTrue();
         });
     }
 
@@ -77,6 +84,8 @@ class AtengSshAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ServerKeyVerifier.class);
                     assertThat(context).doesNotHaveBean(SshClientRegistry.class);
                     assertThat(context).doesNotHaveBean(SshClient.class);
+                    assertThat(context).doesNotHaveBean(SshSessionPool.class);
+                    assertThat(context).doesNotHaveBean(SshLifecycleManager.class);
                 });
     }
 

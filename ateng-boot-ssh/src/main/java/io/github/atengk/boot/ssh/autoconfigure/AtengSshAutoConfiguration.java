@@ -1,6 +1,8 @@
 package io.github.atengk.boot.ssh.autoconfigure;
 
+import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
@@ -18,7 +20,7 @@ import org.springframework.context.annotation.Bean;
  * SSH 远程治理与通信基础设施防御性自动装配
  * <p>
  * 严格遵循 Spring Boot 3 自动装配规范，提供底层 Apache MINA SshClient 生命周期纳管、
- * 命名多主机注册表及纯内存服务端指纹校验器装配。
+ * 命名多主机注册表、纯内存服务端指纹校验器、受管会话缓存池与三步确定性停机治理协调器。
  * </p>
  *
  * @author Ateng
@@ -85,5 +87,32 @@ public class AtengSshAutoConfiguration {
         log.info("ateng-boot-ssh: Apache MINA SshClient 自动装配启动完成");
         return client;
     }
+
+    /**
+     * 自动装配受管会话缓存池 SshSessionPool（具备 LRU、TTL 与心跳保活）
+     *
+     * @param sshClient  底座 SshClient 客户端
+     * @param properties 全局配置属性
+     * @return 会话池实例
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean
+    public SshSessionPool sshSessionPool(SshClient sshClient, SshProperties properties) {
+        return new SshSessionPool(sshClient, properties.getPool());
+    }
+
+    /**
+     * 自动装配 SSH 基础设施生命周期受管治理协调器（确定性三步优雅停机）
+     *
+     * @param sshSessionPool 会话缓存池
+     * @param sshClient      底座 SshClient 客户端
+     * @return 生命周期协调器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SshLifecycleManager sshLifecycleManager(SshSessionPool sshSessionPool, SshClient sshClient) {
+        return new SshLifecycleManager(sshSessionPool, sshClient);
+    }
 }
+
 
