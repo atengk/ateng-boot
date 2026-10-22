@@ -17,8 +17,10 @@ import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
+import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
 import io.github.atengk.boot.mail.template.renderer.FreemarkerMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.SimpleMailTemplateRenderer;
 import io.github.atengk.boot.mail.template.renderer.ThymeleafMailTemplateRenderer;
@@ -1202,5 +1204,134 @@ class MailTemplateGreenMailTest {
             TransactionSynchronizationManager.clearSynchronization();
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
+    }
+
+    @Test
+    @DisplayName("测试动态发件账号供给 SPI (MailAccountProvider) 懒加载与 LRU 缓存复用")
+    void testDynamicMailAccountProviderLazyLoadingAndLruReuse() {
+        int smtpPort = greenMail.getSmtp().getPort();
+        AtomicInteger providerCallCount = new AtomicInteger(0);
+
+        MailAccountProvider provider = accountName -> {
+            providerCallCount.incrementAndGet();
+            if ("db-marketing".equals(accountName)) {
+                return MailAccount.builder()
+                        .name("db-marketing")
+                        .host("127.0.0.1")
+                        .port(smtpPort)
+                        .username("test@atengk.com")
+                        .password("password")
+                        .ssl(false)
+                        .defaultFrom("marketing@atengk.com")
+                        .defaultFromName("市场营销中心")
+                        .build();
+            }
+            return null;
+        };
+
+        MailTemplate templateWithProvider = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), provider
+        );
+
+        // 第一次发送：静态表无此账号，触发 provider 懒加载，并纳入 LRU 缓存
+        MailMessage message1 = new MailMessage()
+                .account("db-marketing")
+                .to("lead1@customer.com")
+                .subject("营销活动推介 1")
+                .text("欢迎参与阿腾活动");
+
+        MailSendResult result1 = templateWithProvider.send(message1);
+        assertNotNull(result1);
+        assertEquals(1, providerCallCount.get(), "首次发信必须触发 Provider 懒加载");
+        assertEquals(1, accountRegistry.dynamicSize(), "动态账号成功加载后必须被纳入 LRU 缓存");
+        assertNotNull(accountRegistry.getDynamic("db-marketing"), "通过 getDynamic 能够直接检索到受管动态账号");
+
+        // 第二次发送：应命中 LRU 缓存，不再穿透调用 Provider
+        MailMessage message2 = new MailMessage()
+                .account("db-marketing")
+                .to("lead2@customer.com")
+                .subject("营销活动推介 2")
+                .text("欢迎再次参与阿腾活动");
+
+        MailSendResult result2 = templateWithProvider.send(message2);
+        assertNotNull(result2);
+        assertEquals(1, providerCallCount.get(), "二次发信命中动态 LRU 缓存，严禁重复穿透外部 Provider 查库");
+        assertEquals(2, greenMail.getReceivedMessages().length);
+    }
+
+    @Test
+    @DisplayName("测试显式指定不存在的账号且 Provider 返回 null 时强制快速失败（双轨防张冠李戴防线）")
+    void testExplicitAccountNotFoundFailFast() {
+        MailAccountProvider provider = accountName -> null; // 模拟外部数据库查无此账号
+
+        MailTemplate templateWithProvider = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), provider
+        );
+
+        MailMessage message = new MailMessage()
+                .account("non-existent-vip-account")
+                .to("client@example.com")
+                .subject("机密财报")
+                .text("请查收机密附件");
+
+        MailSendException ex = assertThrows(MailSendException.class, () -> templateWithProvider.send(message));
+        assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, ex.getResultCode(), "显式指定不存在账号必须抛出 MAIL_ACCOUNT_NOT_FOUND");
+        assertTrue(ex.getMessage().contains("non-existent-vip-account"));
+        assertEquals(0, greenMail.getReceivedMessages().length, "防张冠李戴防线生效：严禁回退错发至全局默认系统邮箱");
+    }
+
+    @Test
+    @DisplayName("测试隐式多租户推断账号不存在且 Provider 返回 null 时平滑降级至默认账号")
+    void testImplicitTenantAccountNotFoundGracefulFallback() throws Exception {
+        TenantContextHolder.setTenantId("unconfigured-tenant");
+        MailAccountProvider provider = accountName -> null; // 外部 Provider 亦无此租户账号
+
+        MailTemplate templateWithProvider = new MailTemplate(
+                accountRegistry, mailProperties, new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(), provider
+        );
+
+        try {
+            MailMessage message = new MailMessage()
+                    // 未显式指定 account，由 TenantMailAccountResolver 隐式推断为 unconfigured-tenant
+                    .to("tenant-user@example.com")
+                    .subject("租户通知")
+                    .text("租户降级发信测试");
+
+            MailSendResult result = templateWithProvider.send(message);
+            assertNotNull(result);
+            assertEquals(1, greenMail.getReceivedMessages().length, "隐式推断未命中时应平滑降级至默认账号发信成功");
+            MimeMessage received = greenMail.getReceivedMessages()[0];
+            jakarta.mail.internet.InternetAddress from = (jakarta.mail.internet.InternetAddress) received.getFrom()[0];
+            assertEquals("test@atengk.com", from.getAddress());
+        } finally {
+            TenantContextHolder.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("测试在复用物理 Sender 前提下依据 message.from/fromName 动态覆盖发件人别名")
+    void testDynamicSenderAliasOverride() throws Exception {
+        MailMessage message = new MailMessage()
+                .to("alias-test@example.com")
+                .subject("别名动态覆盖测试")
+                .text("测试复用连接池时覆盖 From 身份")
+                .from("custom-service@atengk.com")
+                .fromName("阿腾特服专家");
+
+        MailSendResult result = mailTemplate.send(message);
+        assertNotNull(result);
+
+        assertEquals(1, greenMail.getReceivedMessages().length);
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        jakarta.mail.Address[] fromAddresses = received.getFrom();
+        assertNotNull(fromAddresses);
+        assertEquals(1, fromAddresses.length);
+
+        jakarta.mail.internet.InternetAddress from = (jakarta.mail.internet.InternetAddress) fromAddresses[0];
+        assertEquals("custom-service@atengk.com", from.getAddress(), "发信地址必须与 message.from 覆盖值一致");
+        assertEquals("阿腾特服专家", from.getPersonal(), "发信中文昵称必须与 message.fromName 覆盖值一致");
     }
 }

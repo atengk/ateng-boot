@@ -22,6 +22,7 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.properties.MailRetryProperties;
+import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -94,6 +95,9 @@ public class MailTemplate implements DisposableBean {
     private final MailAccountResolver accountResolver;
 
     @Getter
+    private final MailAccountProvider accountProvider;
+
+    @Getter
     private final Executor executor;
 
     private final boolean defaultExecutorCreated;
@@ -108,30 +112,39 @@ public class MailTemplate implements DisposableBean {
     private final List<MailSendInterceptor> interceptors;
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties) {
-        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null);
+        this(accountRegistry, properties, new SimpleMailTemplateRenderer(), new TenantMailAccountResolver(), null, null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer) {
-        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null, null, null, null);
+        this(accountRegistry, properties, templateRenderer, new TenantMailAccountResolver(), null, null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, null, null, null, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, null, null, null, null);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, accountProvider, null, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, executor, null, null, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, executor, null, null, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers) {
-        this(accountRegistry, properties, templateRenderer, accountResolver, executor, eventPublisher, failureHandlers, null);
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, executor, eventPublisher, failureHandlers, null);
     }
 
     public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
+        this(accountRegistry, properties, templateRenderer, accountResolver, null, executor, eventPublisher, failureHandlers, interceptors);
+    }
+
+    public MailTemplate(MailAccountRegistry accountRegistry, MailProperties properties, MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver, MailAccountProvider accountProvider, Executor executor, ApplicationEventPublisher eventPublisher, List<MailSendFailureHandler> failureHandlers, List<MailSendInterceptor> interceptors) {
         this.accountRegistry = Objects.requireNonNull(accountRegistry, "accountRegistry must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.templateRenderer = templateRenderer != null ? templateRenderer : new SimpleMailTemplateRenderer();
         this.accountResolver = accountResolver != null ? accountResolver : new TenantMailAccountResolver();
+        this.accountProvider = accountProvider;
         if (executor != null) {
             this.executor = executor;
             this.defaultExecutorCreated = false;
@@ -167,30 +180,64 @@ public class MailTemplate implements DisposableBean {
             throw new MailSendException(MailResultCode.MAIL_RECIPIENT_EMPTY, "收件人列表不能为空");
         }
 
-        MailAccount account;
+        MailAccount account = resolveAccount(message);
+        return sendWithAccount(account, message);
+    }
+
+    private MailAccount resolveAccount(MailMessage message) {
         String explicitAccountName = message.getAccount();
         if (explicitAccountName != null && !explicitAccountName.isBlank()) {
-            // 显式指定账号：找不到则直接抛出受控异常 Fail-Fast
-            account = accountRegistry.get(explicitAccountName);
+            // 显式指定账号：三级检索（静态表 -> 动态LRU -> Provider懒加载）
+            MailAccount account = findAccount(explicitAccountName);
             if (account == null) {
+                // 双轨防张冠李戴红线：显式指定未命中必须立即 Fail-Fast，严禁回退错发默认系统账号
                 throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND,
                         "未找到指定的发信账号: [" + explicitAccountName + "]");
             }
-        } else {
-            // 未显式指定账号：触发动态路由解析器（如多租户上下文）
-            String resolvedName = accountResolver.resolveAccount(message);
-            if (resolvedName != null && !resolvedName.isBlank()) {
-                account = accountRegistry.get(resolvedName);
-            } else {
-                account = null;
-            }
-            // 未命中对应租户账号时，平滑安全回退至全局默认发信账号
-            if (account == null) {
-                account = accountRegistry.getDefault();
+            return account;
+        }
+
+        // 未显式指定账号：触发动态路由解析器（如多租户上下文）
+        String resolvedName = accountResolver.resolveAccount(message);
+        if (resolvedName != null && !resolvedName.isBlank()) {
+            MailAccount account = findAccount(resolvedName);
+            if (account != null) {
+                return account;
             }
         }
 
-        return sendWithAccount(account, message);
+        // 隐式推断未命中对应账号时，平滑安全回退至全局默认发信账号
+        return accountRegistry.getDefault();
+    }
+
+    /**
+     * 按账号名称检索发信账号（顺序：静态注册表 -> 动态 LRU 缓存 -> MailAccountProvider 外部懒加载）
+     *
+     * @param name 账号逻辑标识
+     * @return 绑定物理 Sender 的发信账号，若未找到返回 null
+     */
+    private MailAccount findAccount(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        // 1. 静态注册表
+        MailAccount account = accountRegistry.get(name);
+        if (account != null) {
+            return account;
+        }
+        // 2. 动态 LRU 缓存
+        account = accountRegistry.getDynamic(name);
+        if (account != null) {
+            return account;
+        }
+        // 3. MailAccountProvider 外部懒加载
+        if (accountProvider != null) {
+            MailAccount loaded = accountProvider.loadAccount(name);
+            if (loaded != null) {
+                return accountRegistry.getOrCreateDynamic(name, loaded, properties);
+            }
+        }
+        return null;
     }
 
     /**

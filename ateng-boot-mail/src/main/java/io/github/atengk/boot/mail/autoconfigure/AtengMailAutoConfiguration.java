@@ -7,6 +7,7 @@ import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailAccountProperties;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
 import io.github.atengk.boot.mail.resolver.MailAccountResolver;
 import io.github.atengk.boot.mail.resolver.TenantMailAccountResolver;
@@ -192,6 +193,7 @@ public class AtengMailAutoConfiguration {
     @ConditionalOnMissingBean
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
                                      MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver,
+                                     ObjectProvider<MailAccountProvider> mailAccountProviderProvider,
                                      @Qualifier("mailTaskExecutor") ObjectProvider<Executor> mailTaskExecutorProvider,
                                      @Qualifier("taskExecutor") ObjectProvider<Executor> genericTaskExecutorProvider,
                                      ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
@@ -201,10 +203,11 @@ public class AtengMailAutoConfiguration {
         if (executor == null) {
             executor = genericTaskExecutorProvider.getIfAvailable();
         }
+        MailAccountProvider accountProvider = mailAccountProviderProvider.getIfAvailable();
         ApplicationEventPublisher eventPublisher = eventPublisherProvider.getIfAvailable();
         List<MailSendFailureHandler> failureHandlers = failureHandlersProvider.getIfAvailable();
         List<MailSendInterceptor> interceptors = interceptorsProvider.getIfAvailable();
-        return new MailTemplate(registry, properties, templateRenderer, accountResolver, executor, eventPublisher, failureHandlers, interceptors);
+        return new MailTemplate(registry, properties, templateRenderer, accountResolver, accountProvider, executor, eventPublisher, failureHandlers, interceptors);
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {

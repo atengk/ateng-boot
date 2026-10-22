@@ -130,4 +130,35 @@ class MailAccountRegistryTest {
         assertNotSame(managedA.getSender(), managedB.getSender(), "不同 properties 的动态账号严禁复用相同的物理 Sender");
         assertEquals(2, registry.dynamicSize());
     }
+
+    @Test
+    @DisplayName("测试动态账号按逻辑名称存取、检索与精准驱逐")
+    void testDynamicAccountByNameAndEviction() {
+        MailAccountRegistry registry = new MailAccountRegistry("default", 10);
+
+        MailAccount rawAccount = MailAccount.builder()
+                .host("smtp.dynamic.com")
+                .port(465)
+                .username("dynamic-user")
+                .password("pwd")
+                .build();
+
+        // 初始不存在
+        assertNull(registry.getDynamic("tenant-dynamic"));
+
+        // 注册到动态缓存
+        MailAccount managed = registry.getOrCreateDynamic("tenant-dynamic", rawAccount, null);
+        assertNotNull(managed);
+        assertNotNull(managed.getSender());
+        assertEquals("tenant-dynamic", managed.getName());
+
+        // 按名称检索
+        MailAccount fetched = registry.getDynamic("tenant-dynamic");
+        assertSame(managed, fetched);
+
+        // 精准驱逐
+        MailAccount evicted = registry.evictDynamic("tenant-dynamic");
+        assertSame(managed, evicted);
+        assertNull(registry.getDynamic("tenant-dynamic"));
+    }
 }
