@@ -17,6 +17,7 @@ import org.springframework.util.Assert;
 import org.springframework.util.unit.DataSize;
 
 import java.io.*;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -276,6 +277,32 @@ public class FtpTemplate {
         }
     }
 
+    /**
+     * 便捷写入纯文本内容（默认使用 UTF-8 字符集）
+     *
+     * @param remotePath 远程文件目标路径
+     * @param content    待写入的文本内容
+     * @return 写入成功返回 true
+     */
+    public boolean writeString(String remotePath, String content) {
+        return writeString(remotePath, content, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 便捷写入纯文本内容（指定字符集）
+     *
+     * @param remotePath 远程文件目标路径
+     * @param content    待写入的文本内容
+     * @param charset    字符编码
+     * @return 写入成功返回 true
+     */
+    public boolean writeString(String remotePath, String content, Charset charset) {
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(content, "content must not be null");
+        Charset targetCharset = charset != null ? charset : StandardCharsets.UTF_8;
+        return upload(remotePath, content.getBytes(targetCharset));
+    }
+
     // ==========================================
     // 下载对称操作 (Symmetric Download)
     // ==========================================
@@ -372,6 +399,29 @@ public class FtpTemplate {
             return true;
         });
         return out.toByteArray();
+    }
+
+    /**
+     * 便捷读取远程文件为纯文本字符串（默认使用 UTF-8 字符集）
+     *
+     * @param remotePath 远程文件路径
+     * @return 文本内容字符串
+     */
+    public String readString(String remotePath) {
+        return readString(remotePath, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 便捷读取远程文件为纯文本字符串（指定字符集）
+     *
+     * @param remotePath 远程文件路径
+     * @param charset    字符编码
+     * @return 文本内容字符串
+     */
+    public String readString(String remotePath, Charset charset) {
+        byte[] bytes = downloadToBytes(remotePath);
+        Charset targetCharset = charset != null ? charset : StandardCharsets.UTF_8;
+        return new String(bytes, targetCharset);
     }
 
     /**
@@ -622,6 +672,16 @@ public class FtpTemplate {
             }
             return success;
         });
+    }
+
+    /**
+     * 递归删除远程目录及其所有子文件与子目录
+     *
+     * @param remoteDir 远程目录路径
+     * @return 删除成功返回 true
+     */
+    public boolean deleteDirectory(String remoteDir) {
+        return deleteDirectory(remoteDir, true);
     }
 
     /**
