@@ -82,6 +82,16 @@ public class OpenApiProperties {
     @NestedConfigurationProperty
     private List<Group> groups = new ArrayList<>();
 
+    /**
+     * 是否在文档描述中自动追加系统状态码字典（默认 true）
+     */
+    private boolean showResultCodes = true;
+
+    /**
+     * 是否自动向所有接口追加 HTTP 200/400/401/500 标准响应语义说明（默认 true）
+     */
+    private boolean standardResponses = true;
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -176,6 +186,22 @@ public class OpenApiProperties {
 
     public void setGroups(List<Group> groups) {
         this.groups = groups != null ? groups : new ArrayList<>();
+    }
+
+    public boolean isShowResultCodes() {
+        return showResultCodes;
+    }
+
+    public void setShowResultCodes(boolean showResultCodes) {
+        this.showResultCodes = showResultCodes;
+    }
+
+    public boolean isStandardResponses() {
+        return standardResponses;
+    }
+
+    public void setStandardResponses(boolean standardResponses) {
+        this.standardResponses = standardResponses;
     }
 
     /**

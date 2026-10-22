@@ -1,7 +1,9 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
+import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
@@ -36,6 +38,8 @@ class OpenApiAutoConfigurationTest {
             assertThat(context).hasSingleBean(OpenApiProperties.class);
             assertThat(context).hasSingleBean(GlobalHeaderCustomizer.class);
             assertThat(context).hasSingleBean(SaTokenSecurityCustomizer.class);
+            assertThat(context).hasSingleBean(ResultCodeDictionaryCustomizer.class);
+            assertThat(context).hasSingleBean(StandardApiResponseCustomizer.class);
 
             OpenAPI openAPI = context.getBean(OpenAPI.class);
             Info info = openAPI.getInfo();
@@ -57,6 +61,8 @@ class OpenApiAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("openApiWebMvcConfigurer");
                     assertThat(context).doesNotHaveBean(GlobalHeaderCustomizer.class);
                     assertThat(context).doesNotHaveBean(SaTokenSecurityCustomizer.class);
+                    assertThat(context).doesNotHaveBean(ResultCodeDictionaryCustomizer.class);
+                    assertThat(context).doesNotHaveBean(StandardApiResponseCustomizer.class);
                 });
     }
 

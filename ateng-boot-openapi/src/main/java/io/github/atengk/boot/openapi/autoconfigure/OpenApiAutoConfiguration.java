@@ -1,7 +1,10 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
+import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
+import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
+import io.github.atengk.boot.openapi.group.DynamicGroupedOpenApiRegistrar;
 import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
@@ -17,6 +20,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -33,6 +37,7 @@ import java.util.List;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(OpenAPI.class)
 @EnableConfigurationProperties(OpenApiProperties.class)
+@Import(DynamicGroupedOpenApiRegistrar.class)
 public class OpenApiAutoConfiguration {
 
     /**
@@ -163,5 +168,31 @@ public class OpenApiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaTokenSecurityCustomizer saTokenSecurityCustomizer() {
         return new SaTokenSecurityCustomizer();
+    }
+
+    /**
+     * 注册系统通用状态码全景字典注入定制器 (OpenApiCustomizer)
+     *
+     * @param properties 配置属性
+     * @return 状态码字典定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ResultCodeDictionaryCustomizer resultCodeDictionaryCustomizer(OpenApiProperties properties) {
+        return new ResultCodeDictionaryCustomizer(properties);
+    }
+
+    /**
+     * 注册通用标准 HTTP 响应说明定制器 (OperationCustomizer)
+     *
+     * @param properties 配置属性
+     * @return 标准响应说明定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StandardApiResponseCustomizer standardApiResponseCustomizer(OpenApiProperties properties) {
+        return new StandardApiResponseCustomizer(properties);
     }
 }
