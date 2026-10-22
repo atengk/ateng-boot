@@ -125,12 +125,28 @@ _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 _Avoid_: FileHelper, IoHelper, PathUtil
 
 **AtengAsyncAutoConfiguration**:
-位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
+位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配主虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
 _Avoid_: AsyncConfig, ThreadPoolAutoConfiguration, VirtualThreadAutoConfiguration
 
 **AsyncProperties**:
-受管异步执行器运行时增强配置属性类，以 `ateng.boot.async.*` 命名空间统管平台线程池容量、队列缓冲、并发限制阈值（concurrencyLimit）、平台/虚拟线程专属命名规范与优雅停机策略。
-_Avoid_: ThreadPoolProperties, AsyncConfigProperties
+受管异步执行器根级配置属性类，继承自 AsyncPoolProperties 并作为默认主线程池参数，同时通过 `pools` 字典统管下游多业务独立线程池配置。
+_Avoid_: ThreadPoolProperties, AsyncConfigProperties, MultiAsyncProperties
+
+**AsyncPoolProperties**:
+单线程池运行时增强配置属性实体，定义核心/最大线程数、队列缓冲、存活时间、优雅停机、并发阈值、执行模式与拒绝策略。
+_Avoid_: PoolConfig, ThreadPoolConfig, ExecutorProperties
+
+**DynamicAsyncPoolRegistrar**:
+基于 Spring 原生 ImportBeanDefinitionRegistrar 实现的多业务受管线程池动态注册器，解析 `ateng.boot.async.pools` 字典并向容器动态注入各命名的受管执行器与别名。
+_Avoid_: DynamicExecutorRegistrar, MultiThreadPoolRegistrar, AsyncBeanRegistrar
+
+**AsyncExecutionMode**:
+异步执行器线程运行模式枚举，包含跟随全局环境自适应（AUTO）、强制平台线程池（PLATFORM）与强制虚拟线程执行器（VIRTUAL）。
+_Avoid_: ThreadMode, ExecutorMode, ExecutionType
+
+**AsyncRejectedPolicy**:
+平台线程池任务饱和饱和拒绝策略枚举，映射 JDK 标准拒绝策略（CALLER_RUNS、ABORT、DISCARD、DISCARD_OLDEST）。
+_Avoid_: RejectPolicy, RejectionHandlerType, RejectedStrategy
 
 **CarrierPinning**:
 在 JDK 21+ 虚拟线程运行中，因在同步代码块（`synchronized`）内部执行阻塞调用或休眠导致虚拟线程锁定底层操作系统载体线程引发调度饥饿的现象，框架内通过 `ReentrantLock` 彻底杜绝。

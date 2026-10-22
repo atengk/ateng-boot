@@ -87,7 +87,9 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
             executor.setQueueCapacity(asyncProperties.getQueueCapacity());
             executor.setKeepAliveSeconds(asyncProperties.getKeepAliveSeconds());
             executor.setThreadNamePrefix(asyncProperties.getThreadNamePrefix());
-            executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+            executor.setRejectedExecutionHandler(asyncProperties.getRejectedPolicy() != null
+                    ? asyncProperties.getRejectedPolicy().getHandler()
+                    : new ThreadPoolExecutor.CallerRunsPolicy());
             executor.setWaitForTasksToCompleteOnShutdown(asyncProperties.isWaitForTasksToCompleteOnShutdown());
             executor.setAwaitTerminationSeconds(asyncProperties.getAwaitTerminationSeconds());
             executor.setTaskDecorator(new ContextCopyingTaskDecorator());
