@@ -28,6 +28,7 @@
         <module>ateng-boot-sample-http</module>
         <module>ateng-boot-sample-realtime</module>
         <module>ateng-boot-sample-rabbitmq</module>
+        <module>ateng-boot-sample-kafka</module>
     </modules>
 
     <properties>

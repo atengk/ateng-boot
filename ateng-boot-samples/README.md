@@ -17,6 +17,7 @@
 | **`ateng-boot-sample-excel`** | **专一流式 Excel 处理 Demo**<br/>Apache Fesod 流式导出、`@ExcelSensitive` 导出动态脱敏、导入行级校验与红字批注回写、防呆模板 | Excel / Fesod / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-excel/README.md) |
 | **`ateng-boot-sample-satoken`** | **专一 Sa-Token 鉴权与会话 Demo**<br/>登录注销、路由拦截白名单、方法级 `@SaCheckRole`、审计人/租户全链路自动打通 | Sa-Token / MP / H2 | H2 内存库 | [查看](./ateng-boot-sample-satoken/README.md) |
 | **`ateng-boot-sample-storage`** | **专一对象存储与文件清洗 Demo**<br/>本地文件存储与 S3/MinIO 适配、断点续传分片上传、文件名安全清洗、ZIP 批量打包下载 | Storage / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-storage/README.md) |
+| **`ateng-boot-sample-kafka`** | **专一 Kafka 高吞吐消息流与位移治理 Demo**<br/>可靠发信 `KafkaReliableTemplate`、事务后发信 `sendAfterCommit`、毒丸 0-Retry 进 DLT、`@Idempotent` 幂等去重防重复消费、批量消费多租户隔离 `KafkaRecordExecutor`、四维上下文链路追踪 | Kafka / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-kafka/README.md) |
 | **`ateng-boot-sample-smoke-test`** | **全家桶 CI 冒烟准出门禁**<br/>全量 Starter 无冲突自动装配校验与端到端核心链路冒烟验收（耗时 ≤ 8s） | All / H2 / OpenAPI | H2 内存库 | [查看](./ateng-boot-sample-smoke-test/README.md) |
 
 ---
@@ -43,6 +44,9 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-satoken spring-boot:run
 
 # 启动 6：对象存储与文件清洗演示
 mvn -pl ateng-boot-samples/ateng-boot-sample-storage spring-boot:run
+
+# 启动 7：Kafka 高吞吐消息流与位移治理演示
+mvn -pl ateng-boot-samples/ateng-boot-sample-kafka spring-boot:run
 ```
 
 ---
@@ -73,7 +77,10 @@ mvn test -pl ateng-boot-satoken,ateng-boot-samples/ateng-boot-sample-satoken -am
 # 场景 G：修改了 ateng-boot-storage，定向联动自验
 mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C
 
-# 场景 H：发版前或全反应堆构建时，全家桶极速冒烟准出
+# 场景 H：修改了 ateng-boot-kafka，定向联动自验
+mvn test -pl ateng-boot-kafka,ateng-boot-samples/ateng-boot-sample-kafka -am -T 1C
+
+# 场景 I：发版前或全反应堆构建时，全家桶极速冒烟准出
 mvn test -pl ateng-boot-samples/ateng-boot-sample-smoke-test -am -T 1C
 ```
 

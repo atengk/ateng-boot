@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-kafka
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: sample-kafka-group
+      auto-offset-reset: earliest
+    listener:
+      auto-startup: false
+
+ateng:
+  boot:
+    kafka:
+      enabled: true
+      send-timeout: 5s
+      max-payload-size: 1MB
+      auto-create-topics: true
+      producer:
+        compression-type: snappy
+        batch-size: 32KB
+        linger-ms: 10ms
+      consumer:
+        max-retries: 3
+        retry-interval: 1s
+        retry-multiplier: 2.0
+      logging:
+        enabled: true
+        payload-max-length: 1024

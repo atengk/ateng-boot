@@ -36,6 +36,13 @@ public class AtengDeadLetterPublishingRecoverer extends DeadLetterPublishingReco
     }
 
     /**
+     * 目标分区解析与防卫判定（使用默认配置）
+     */
+    public static TopicPartition resolveDestination(ConsumerRecord<?, ?> record, Exception exception) {
+        return resolveDestination(record, exception, null);
+    }
+
+    /**
      * 目标分区解析与防卫判定
      */
     public static TopicPartition resolveDestination(ConsumerRecord<?, ?> record, Exception exception, AtengKafkaProperties properties) {
