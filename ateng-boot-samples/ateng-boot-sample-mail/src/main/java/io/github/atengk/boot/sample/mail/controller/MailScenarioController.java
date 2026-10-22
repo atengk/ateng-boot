@@ -94,4 +94,47 @@ public class MailScenarioController {
                 request.getContent()
         ).thenApply(Result::success);
     }
+
+    /**
+     * 指定发件账号发信（支持外部数据源动态懒加载与发件人别名动态覆盖）
+     *
+     * @param request 发信请求参数
+     * @return 强类型发信回执结果
+     */
+    @PostMapping("/account")
+    public Result<MailSendResult> sendByAccount(@Valid @RequestBody SendMailRequest request) {
+        MailSendResult result = mailScenarioService.sendByAccount(
+                request.getAccount(),
+                request.getTo(),
+                request.getSubject(),
+                request.getContent(),
+                request.getFrom(),
+                request.getFromName()
+        );
+        return Result.success(result);
+    }
+
+    /**
+     * 精准驱逐指定动态账号缓存
+     *
+     * @param accountName 待驱逐的动态账号标识
+     * @return 驱逐结果
+     */
+    @PostMapping("/evict")
+    public Result<Boolean> evictDynamicAccount(String accountName) {
+        mailScenarioService.evictDynamicAccount(accountName);
+        return Result.success(true);
+    }
+
+    /**
+     * 广播发布动态账号驱逐领域事件
+     *
+     * @param accountName 待驱逐的账号标识（可为空）
+     * @return 广播结果
+     */
+    @PostMapping("/broadcast-evict")
+    public Result<Boolean> broadcastEvict(String accountName) {
+        mailScenarioService.publishEvictEvent(accountName);
+        return Result.success(true);
+    }
 }

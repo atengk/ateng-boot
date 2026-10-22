@@ -7,6 +7,7 @@ import com.icegreen.greenmail.util.GreenMailUtil;
 import com.icegreen.greenmail.util.ServerSetup;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailSendResult;
@@ -14,6 +15,7 @@ import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
 import io.github.atengk.boot.sample.mail.handler.SampleMailFailureHandler;
 import io.github.atengk.boot.sample.mail.interceptor.SampleAuditMailInterceptor;
 import io.github.atengk.boot.sample.mail.listener.SampleMailEventListener;
+import io.github.atengk.boot.sample.mail.provider.SampleDatabaseMailAccountProvider;
 import io.github.atengk.boot.sample.mail.service.MailScenarioService;
 import jakarta.mail.BodyPart;
 import jakarta.mail.Multipart;
@@ -41,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -103,12 +106,19 @@ class SampleMailIntegrationTest {
     @Autowired
     private SampleMailFailureHandler failureHandler;
 
+    @Autowired
+    private SampleDatabaseMailAccountProvider databaseMailAccountProvider;
+
     @BeforeEach
     @AfterEach
     void cleanState() throws Exception {
         greenMail.purgeEmailFromAllMailboxes();
         eventListener.reset();
         failureHandler.reset();
+        mailScenarioService.clearDynamicAccounts();
+        if (databaseMailAccountProvider != null) {
+            databaseMailAccountProvider.resetQueryCount();
+        }
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
@@ -341,5 +351,192 @@ class SampleMailIntegrationTest {
         assertThat(messages).hasSize(1);
         assertThat(messages[0].getSubject()).isEqualTo("动态账号专属优惠券");
         assertThat(messages[0].getFrom()[0].toString()).contains("dynamic-sender@example.com");
+    }
+
+    @Test
+    @DisplayName("10. 外部数据库动态发信账号供给 (MailAccountProvider) 懒加载与 LRU 缓存复用实测")
+    void shouldSendMailViaDynamicProviderFromDatabaseAndCacheSender() throws Exception {
+        // 1. 模拟在数据库中配置并加密保存动态账号
+        databaseMailAccountProvider.saveAccount(
+                "db-vip",
+                "127.0.0.1",
+                smtpPort,
+                "default@example.com",
+                "secret-password-placeholder",
+                false,
+                "vip-center@example.com",
+                "阿腾VIP服务中心"
+        );
+
+        SendMailRequest req = SendMailRequest.builder()
+                .account("db-vip")
+                .to("client-vip@example.com")
+                .subject("VIP尊享权益推介")
+                .content("尊敬的贵宾客户，您的专属权益已就绪")
+                .build();
+
+        // 2. 首次通过 Controller 发信，触发数据库懒加载
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1);
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+        MimeMessage[] messages1 = greenMail.getReceivedMessages();
+        assertThat(messages1).hasSize(1);
+        assertThat(messages1[0].getSubject()).isEqualTo("VIP尊享权益推介");
+        assertThat(messages1[0].getFrom()[0].toString()).contains("vip-center@example.com");
+
+        greenMail.purgeEmailFromAllMailboxes();
+
+        // 3. 二次发信，验证命中受管 LRU 缓存，不再重复查库
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1); // 保持为 1
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+    }
+
+    @Test
+    @DisplayName("11. 双轨防张冠李戴防线：显式指定未命中外部数据库账号强制快速失败，严禁错发默认系统邮箱")
+    void shouldFailFastWhenExplicitAccountNotFoundPreventingWrongDelivery() throws Exception {
+        SendMailRequest req = SendMailRequest.builder()
+                .account("non-existent-secret-account")
+                .to("leak-target@example.com")
+                .subject("绝密内部审计报告")
+                .content("敏感数据严禁外泄")
+                .build();
+
+        // 显式指定账号不存在时，必须抛出受控业务异常并在响应中返回 40002 错误码快速失败，严禁静默降级到默认邮箱
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(MailResultCode.MAIL_ACCOUNT_NOT_FOUND.getCode()))
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.msg").value(containsString("未找到指定的发信账号")));
+
+        // 确保没有任何邮件发出
+        assertThat(greenMail.getReceivedMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("12. 门面注销 API (evictDynamicAccount) 驱逐缓存后再次发信重新触发懒加载")
+    void shouldEvictDynamicAccountViaFacadeAndReloadFromDatabase() throws Exception {
+        databaseMailAccountProvider.saveAccount(
+                "db-sales",
+                "127.0.0.1",
+                smtpPort,
+                "default@example.com",
+                "secret-password-placeholder",
+                false,
+                "sales@example.com",
+                "销售业务中心"
+        );
+
+        SendMailRequest req = SendMailRequest.builder()
+                .account("db-sales")
+                .to("customer@example.com")
+                .subject("商机通知")
+                .content("最新产品方案")
+                .build();
+
+        // 1. 首次发信，加载缓存
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1);
+
+        // 2. 调用驱逐接口注销 db-sales
+        mockMvc.perform(post("/api/mail/evict")
+                        .param("accountName", "db-sales"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        greenMail.purgeEmailFromAllMailboxes();
+
+        // 3. 再次发信，验证重新从数据库懒加载
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("13. 领域事件 (MailAccountEvictEvent) 广播驱动动态账号热驱逐")
+    void shouldEvictDynamicAccountViaEventBroadcast() throws Exception {
+        databaseMailAccountProvider.saveAccount(
+                "db-mkt",
+                "127.0.0.1",
+                smtpPort,
+                "default@example.com",
+                "secret-password-placeholder",
+                false,
+                "mkt@example.com",
+                "市场营销部"
+        );
+
+        SendMailRequest req = SendMailRequest.builder()
+                .account("db-mkt")
+                .to("subscriber@example.com")
+                .subject("优惠活动")
+                .content("双十一大促开启")
+                .build();
+
+        // 1. 首次发信
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(1);
+
+        // 2. 模拟分布式总线或本地发布 MailAccountEvictEvent 广播
+        mockMvc.perform(post("/api/mail/broadcast-evict")
+                        .param("accountName", "db-mkt"))
+                .andExpect(status().isOk());
+
+        greenMail.purgeEmailFromAllMailboxes();
+
+        // 3. 再次发信，重新触发数据库加载
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+        assertThat(databaseMailAccountProvider.getQueryCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("14. 复用物理 Sender 前提下依据 message.from/fromName 动态覆盖发件人别名")
+    void shouldOverrideSenderAliasDynamically() throws Exception {
+        SendMailRequest req = SendMailRequest.builder()
+                .account("default")
+                .to("alias-target@example.com")
+                .subject("别名动态覆盖测试")
+                .content("测试动态自定义 From 身份")
+                .from("custom-support@example.com")
+                .fromName("专属客户经理")
+                .build();
+
+        mockMvc.perform(post("/api/mail/account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(1);
+        jakarta.mail.Address[] from = messages[0].getFrom();
+        assertThat(from).hasSize(1);
+        jakarta.mail.internet.InternetAddress addr = (jakarta.mail.internet.InternetAddress) from[0];
+        assertThat(addr.getAddress()).isEqualTo("custom-support@example.com");
+        assertThat(addr.getPersonal()).isEqualTo("专属客户经理");
     }
 }

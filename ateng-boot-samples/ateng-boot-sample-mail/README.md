@@ -34,6 +34,8 @@
 | **安全合规拦截器** | `MailSendInterceptor` | `SampleAuditMailInterceptor` | 黑名单前置阻断防卫，放行邮件自动注入全链路审计标头 `X-Audit-Trace` |
 | **全生命周期事件广播** | `@EventListener` | `SampleMailEventListener` | 监听发信前、成功、失败领域事件，对接监控告警与发信大盘 |
 | **事务感知发信防幽灵** | `MailTemplate.sendAfterCommit` | `MailScenarioService.sendTransactional` | 严格绑定 Spring 物理事务提交，事务异常回滚时自动取消防幽灵邮件 |
+| **外部介质动态账号供给** | `MailAccountProvider` | `SampleDatabaseMailAccountProvider` / `POST /api/mail/account` | 模拟从数据库按需懒加载发信账号真明文配置，受管 LRU 缓存池化底层 Sender，支持别名覆盖与防张冠李戴 |
+| **缓存热驱逐与领域事件** | `MailAccountEvictEvent` / `evictDynamicAccount` | `POST /api/mail/evict` / `POST /api/mail/broadcast-evict` | 暴露门面 API 与 Spring 原生领域事件，支持单机调用与分布式集群消息广播联动热注销动态账号 |
 
 ---
 

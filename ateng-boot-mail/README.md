@@ -8,11 +8,13 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **多账号路由** | 多通道隔离与动态路由 | `MailTemplate`<br>`MailAccountRegistry`<br>`MailAccountResolver` | `ateng.boot.mail.default-account`<br>`ateng.boot.mail.accounts.*` | `MailAccountRegistry`: `register(account)` / `unregister(name)` / `get(name)` / `getOrCreateDynamic(account, props)`；`MailTemplate`: `sendWithAccount(MailAccount, ...)` / `forDynamicAccount(MailAccount)`，支持租户上下文动态寻址与动态临时账号 LRU 物理复用 | `MailAccountRegistryTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
+| **多账号路由** | 多通道隔离与动态路由 | `MailTemplate`<br>`MailAccountRegistry`<br>`MailAccountResolver` | `ateng.boot.mail.default-account`<br>`ateng.boot.mail.accounts.*`<br>`ateng.boot.mail.max-dynamic-accounts` | `MailAccountRegistry`: `register(account)` / `unregister(name)` / `get(name)` / `getDynamic(name)` / `getOrCreateDynamic(account, props)`；`MailTemplate`: `sendWithAccount(MailAccount, ...)` / `forDynamicAccount(MailAccount)`，支持租户上下文动态寻址与动态临时账号 LRU 物理复用 | `MailAccountRegistryTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
+| **动态账号供给** | 外部介质动态加载发信账号 SPI | `MailAccountProvider`<br>`MailTemplate`<br>`MailAccountRegistry` | `ateng.boot.mail.max-dynamic-accounts` | `MailAccountProvider`: `loadAccount(String accountName)`；`MailTemplate`: `send(MailMessage)` 执行静态表 $\rightarrow$ 动态LRU $\rightarrow$ Provider 懒加载并池化 Sender；落实双轨防张冠李戴防线（显式指定未命中 Fail-Fast 抛出 `MAIL_ACCOUNT_NOT_FOUND`，隐式推断未命中平滑回退至默认账号）；支持 `message.from` / `fromName` 动态别名覆盖 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
+| **缓存热驱逐** | 动态账号缓存注销与领域事件 | `MailAccountRegistry`<br>`MailTemplate`<br>`MailAccountEvictEvent`<br>`MailAccountEvictListener` | - | `MailAccountRegistry`: `evictDynamic(name)` / `clearDynamic()`；`MailTemplate`: `evictDynamicAccount(name)` / `clearDynamicAccounts()`；Spring 原生事件 `MailAccountEvictEvent` 驱动单机或分布式集群消息广播联动热注销 | `MailAccountRegistryTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **纯文本发信** | 简单文本邮件同步发送 | `MailTemplate` | `ateng.boot.mail.accounts.*.host`<br>`ateng.boot.mail.accounts.*.port`<br>`ateng.boot.mail.accounts.*.ssl` | `sendText(to, subject, text)` / `sendText(account, to, subject, text)` / `sendText(Collection<String>, subject, text)` / `sendText(account, Collection<String>, subject, text)` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **富文本发信** | HTML 富文本邮件同步发送 | `MailTemplate` | `ateng.boot.mail.accounts.*.from`<br>`ateng.boot.mail.accounts.*.from-name` | `sendHtml(to, subject, html)` / `sendHtml(account, to, subject, html)` / `sendHtml(Collection<String>, subject, html)` / `sendHtml(account, Collection<String>, subject, html)` | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **模板渲染** | 多引擎解耦动态模板发信 | `MailTemplate`<br>`MailTemplateRenderer` | `ateng.boot.mail.template.type`<br>`ateng.boot.mail.template.cache` | `sendTemplate(to, subject, templateName, Map<String, Object>)` 及 account/集合重载，自动集成 Thymeleaf / FreeMarker 或内联占位符引擎 | `ThymeleafMailTemplateRendererTest`<br>`FreemarkerMailTemplateRendererTest`<br>`SampleMailIntegrationTest` |
-| **受管异步发信** | 非阻塞受管异步发信 | `MailTemplate`<br>`ThreadPoolTaskExecutor` | `ateng.boot.mail.async.core-pool-size`<br>`ateng.boot.mail.async.max-pool-size`<br>`ateng.boot.mail.async.queue-capacity`<br>`ateng.boot.mail.async.keep-alive`<br>`ateng.boot.mail.async.thread-name-prefix` | `sendAsync(MailMessage)` / `sendAsync(Consumer<MailMessage>)` / `sendTextAsync(...)` / `sendHtmlAsync(...)` / `sendTemplateAsync(...)`，四维上下文 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 自动透传 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
+| **受管异步发信** | 双模自适应受管异步发信 | `MailTemplate`<br>`mailTaskExecutor`<br>`Executor` | `ateng.boot.mail.async.enabled`<br>`ateng.boot.mail.async.core-pool-size`<br>`ateng.boot.mail.async.max-pool-size`<br>`ateng.boot.mail.async.queue-capacity`<br>`ateng.boot.mail.async.keep-alive`<br>`ateng.boot.mail.async.thread-name-prefix` | 专职 `@Bean("mailTaskExecutor")`，解除虚拟线程类型窄化；依据配置自适应构建平台线程池或虚拟线程（Java 21+），自动挂载四维上下文透传装饰器；`sendAsync(MailMessage)` / `sendTextAsync(...)` / `sendHtmlAsync(...)` / `sendTemplateAsync(...)` 自动透传 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AtengMailAutoConfigurationTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **事务感知发信** | 事务提交后发信（防幽灵邮件）| `MailTemplate` | - | `sendAfterCommit(MailMessage)` / `sendAfterCommit(Consumer<MailMessage>)` / `sendAfterCommitWithAccount(...)` / `sendAsyncAfterCommit(...)`，Spring 物理事务 Commit 成功后触发，Rollback 自动安全取消 | `MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **大附件流式挂载** | RFC 6266 标准流式附件 | `MailMessage`<br>`MailAttachment` | `ateng.boot.mail.max-attachment-size`<br>`ateng.boot.mail.max-total-attachments-size` | `MailAttachment.of(String, File)` / `of(File)` / `of(String, byte[])` / `of(String, InputStreamSource)`；`message.attach(MailAttachment)` / `message.attachment(MailAttachment)` / `attach(String, File)` / `attach(String, byte[])`，容量超限前置 Fail-Fast 防爆与流确定性关闭 | `MailAttachmentTest`<br>`MailTemplateGreenMailTest`<br>`SampleMailIntegrationTest` |
 | **正交内联资源** | 正交内联资源 (Inline CID) | `MailMessage`<br>`MailInlineResource` | - | `MailInlineResource.of(contentId, File)` / `of(contentId, byte[])` / `of(contentId, Resource)`；`message.inline(MailInlineResource)` / `inline(contentId, File)` / `inline(contentId, byte[])`，支持 HTML 正文通过 `cid:...` 极速图文混排 | `MailInlineResourceTest`<br>`MailTemplateGreenMailTest` |
@@ -59,6 +61,7 @@ ateng:
     mail:
       enabled: true
       default-account: default
+      max-dynamic-accounts: 100
       accounts:
         default:
           host: smtp.example.com
@@ -85,9 +88,11 @@ ateng:
         delay: 100ms
         multiplier: 2.0
       async:
+        enabled: true
         core-pool-size: 2
         max-pool-size: 8
         queue-capacity: 100
+        keep-alive: 60s
         thread-name-prefix: mail-async-
 ```
 
@@ -215,6 +220,71 @@ public MailAccountResolver customAccountResolver() {
 }
 ```
 
+### 3.5 外部介质动态发件账号供给 SPI (`MailAccountProvider`)
+当发信账号存储在数据库、分布式配置中心或秘密管理器中时，实现 `MailAccountProvider` 并注入为 Spring Bean。业务方在持久层读取密文后自行解密并向框架传递真明文凭据（捍卫 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md) 内存真明文契约）：
+
+```java
+@Component
+public class DatabaseMailAccountProvider implements MailAccountProvider {
+
+    @Autowired
+    private SysMailAccountRepository accountRepository;
+
+    @Override
+    public MailAccount loadAccount(String accountName) {
+        SysMailAccountEntity entity = accountRepository.findByAccountName(accountName);
+        if (entity == null) {
+            return null;
+        }
+
+        // 业务层自主解密存储密文，框架内始终保持内存真明文
+        String plainPassword = AesUtil.decrypt(entity.getEncryptedPassword());
+
+        return MailAccount.builder()
+                .name(entity.getAccountName())
+                .host(entity.getHost())
+                .port(entity.getPort())
+                .username(entity.getUsername())
+                .password(plainPassword)
+                .ssl(entity.isSsl())
+                .defaultFrom(entity.getDefaultFrom())
+                .defaultFromName(entity.getDefaultFromName())
+                .build();
+    }
+}
+```
+
+发信时支持动态覆盖发件人别名，底层自动复用池化物理 Sender：
+```java
+MailMessage message = new MailMessage()
+        .account("db-vip")
+        .to("client@example.com")
+        .subject("尊享服务提醒")
+        .text("尊敬的贵宾客户，您的专属经理已上线")
+        .from("vip-agent@example.com")
+        .fromName("专属客户经理");
+
+mailTemplate.send(message);
+```
+
+### 3.6 动态账号缓存精准热注销与分布式领域事件 (`MailAccountEvictEvent`)
+当外部介质中的账号凭据或连接配置变更时，可通过门面 API 就地驱逐本地缓存，或广播发布 Spring 原生领域事件驱动单机及分布式集群（结合消息总线）联动热刷新：
+
+```java
+// 方式一：编程式门面直接驱逐（单机内存）
+mailTemplate.evictDynamicAccount("db-vip");   // 精准驱逐单个账号
+mailTemplate.clearDynamicAccounts();          // 清空全部动态账号
+
+// 方式二：广播发布 Spring 原生领域事件（单机监听或集群总线广播）
+@Autowired
+private ApplicationEventPublisher eventPublisher;
+
+public void refreshAccount(String accountName) {
+    // 广播精准驱逐事件，框架内置 MailAccountEvictListener 自动响应清理
+    eventPublisher.publishEvent(new MailAccountEvictEvent(this, accountName));
+}
+```
+
 ---
 
 ## 4. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
@@ -292,6 +362,20 @@ class SampleMailIntegrationTest {
     }
 }
 ```
+
+### 4.5 外部介质动态加载与双轨防张冠李戴降级防线
+当发信账号通过 `MailAccountProvider` 动态从外部数据源加载时，框架构建了三级寻址链路与双轨降级防护：
+1. **三级检索链条**：静态注册表（`accounts.*`） $\rightarrow$ 动态 LRU 池化缓存 $\rightarrow$ 外部 `MailAccountProvider.loadAccount(name)` 懒加载并池化物理 Sender；
+2. **显式指定账号快速失败（防张冠李戴红线）**：
+   - 当业务在消息体中显式指定账号（`message.getAccount() != null`），若在三级链路中均未命中，**框架强制抛出 `MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND)`** 快速失败；
+   - 坚决杜绝越权回退或错发至全局默认系统邮箱，杜绝张冠李戴导致的客户隐私泄露与业务事故；
+3. **隐式多租户推断平滑回退**：
+   - 当发信消息未指定账号，且多租户解析器（`MailAccountResolver`）推断出的租户账号未配置且未被外部 Provider 加载时，框架平滑安全回退至全局 `default` 账号发信，兼顾企业级灵活性与高可用。
+
+### 4.6 虚拟线程双模自适应与受管异步执行器
+- **专职 Bean 治理**：自动装配专职的受管异步执行器 `@Bean("mailTaskExecutor")`，并向 `MailTemplate` 注入多态 `Executor` 接口，彻底解除底层虚拟线程类型窄化；
+- **双模自适应构建**：依据 `ateng.boot.mail.async.*` 参数并联动 Core 模块 `AsyncExecutorFactory`，在 JDK 21+ 虚拟线程模式下自动启用轻量级虚拟线程，在标准 JDK 17 下自动启用池化 `ThreadPoolTaskExecutor`；
+- **全链路四维快照透传**：异步发信统一挂载 `ContextCopyingTaskDecorator`，确保 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 全流程无缝穿透并在任务完成后确定性清理现场。
 
 ---
 

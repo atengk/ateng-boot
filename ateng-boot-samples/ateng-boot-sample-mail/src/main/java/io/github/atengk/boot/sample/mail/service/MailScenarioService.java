@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mail.service;
 
+import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
@@ -8,6 +9,7 @@ import io.github.atengk.boot.mail.template.MailTemplate;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +34,7 @@ public class MailScenarioService {
     private static final Logger log = LoggerFactory.getLogger(MailScenarioService.class);
 
     private final MailTemplate mailTemplate;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 发送简单纯文本邮件（默认通道）
@@ -142,5 +145,57 @@ public class MailScenarioService {
     public MailSendResult sendWithDynamicAccount(MailAccount account, String to, String subject, String text) {
         log.info("Sending email via dynamic account [{}] to [{}]", account.getName(), to);
         return mailTemplate.forDynamicAccount(account).sendText(to, subject, text);
+    }
+
+    /**
+     * 指定发信账号并支持动态覆盖发件人别名发送邮件（演示外部介质懒加载与双轨防张冠李戴）
+     *
+     * @param accountName 账号逻辑名称
+     * @param to          收件人
+     * @param subject     主题
+     * @param text        正文
+     * @param from        动态发件人邮箱（可为 null）
+     * @param fromName    动态发件人中文昵称（可为 null）
+     * @return 发信结果
+     */
+    public MailSendResult sendByAccount(String accountName, String to, String subject, String text, String from, String fromName) {
+        log.info("Sending email via accountName [{}] to [{}], customFrom: [{}], customFromName: [{}]", accountName, to, from, fromName);
+        MailMessage message = new MailMessage()
+                .account(accountName)
+                .to(to)
+                .subject(subject)
+                .text(text)
+                .from(from)
+                .fromName(fromName);
+        return mailTemplate.send(message);
+    }
+
+    /**
+     * 通过门面精准驱逐指定动态账号缓存
+     *
+     * @param accountName 账号逻辑名称
+     * @return 被移除的动态账号模型，若不存在返回 null
+     */
+    public MailAccount evictDynamicAccount(String accountName) {
+        log.info("Evicting dynamic account cache for [{}]", accountName);
+        return mailTemplate.evictDynamicAccount(accountName);
+    }
+
+    /**
+     * 通过门面清空全部动态账号缓存
+     */
+    public void clearDynamicAccounts() {
+        log.info("Clearing all dynamic account caches");
+        mailTemplate.clearDynamicAccounts();
+    }
+
+    /**
+     * 广播发布 Spring 原生 MailAccountEvictEvent 领域事件（单机或分布式集群热刷新）
+     *
+     * @param accountName 待驱逐的账号名称（若为 null 则清空全部）
+     */
+    public void publishEvictEvent(String accountName) {
+        log.info("Publishing MailAccountEvictEvent for accountName: [{}]", accountName);
+        eventPublisher.publishEvent(new MailAccountEvictEvent(this, accountName));
     }
 }

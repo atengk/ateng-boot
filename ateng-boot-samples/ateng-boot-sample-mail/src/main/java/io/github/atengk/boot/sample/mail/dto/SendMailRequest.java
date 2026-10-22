@@ -56,4 +56,14 @@ public class SendMailRequest implements Serializable {
      * 业务验证码 (用于模板邮件渲染)
      */
     private String verifyCode;
+
+    /**
+     * 动态覆盖发件人电子邮箱（可选，为空时采用账号默认发件人）
+     */
+    private String from;
+
+    /**
+     * 动态覆盖发件人中文昵称（可选，为空时采用账号默认昵称）
+     */
+    private String fromName;
 }
