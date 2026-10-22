@@ -1,9 +1,14 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
+import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
+import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
+import org.apache.rocketmq.client.apis.message.MessageView;
 import org.apache.rocketmq.client.apis.producer.Producer;
+import org.apache.rocketmq.client.apis.producer.TransactionChecker;
+import org.apache.rocketmq.client.apis.producer.TransactionResolution;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -46,7 +51,7 @@ class AtengRocketmqAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("显式配置 endpoints 时成功激活 ClientConfiguration")
+    @DisplayName("显式配置 endpoints 时成功激活 ClientConfiguration 与 RocketmqTransactionChecker")
     void testAutoConfigurationWithEndpoints() {
         contextRunner
                 .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081",
@@ -55,10 +60,39 @@ class AtengRocketmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AtengRocketmqAutoConfiguration.class);
                     assertThat(context).hasSingleBean(AtengRocketmqProperties.class);
                     assertThat(context).hasSingleBean(ClientConfiguration.class);
+                    assertThat(context).hasSingleBean(RocketmqTransactionChecker.class);
 
                     AtengRocketmqProperties properties = context.getBean(AtengRocketmqProperties.class);
                     assertThat(properties.getEndpoints()).isEqualTo("127.0.0.1:8081");
                     assertThat(properties.getRequestTimeout().toSeconds()).isEqualTo(5);
+                });
+    }
+
+    @Test
+    @DisplayName("自定义 TransactionChecker 存在时默认 RocketmqTransactionChecker 平滑避让")
+    void testCustomTransactionCheckerOverride() {
+        contextRunner
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withUserConfiguration(CustomTransactionCheckerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(TransactionChecker.class);
+                    assertThat(context).doesNotHaveBean(RocketmqTransactionChecker.class);
+                    assertThat(context.getBean(TransactionChecker.class))
+                            .isSameAs(context.getBean(CustomTransactionCheckerConfiguration.class).customChecker);
+                });
+    }
+
+    @Test
+    @DisplayName("容器中定义的 RocketmqLocalTransactionChecker 被 RocketmqTransactionChecker 自动收集管理")
+    void testTransactionCheckerCollectsLocalCheckers() {
+        contextRunner
+                .withPropertyValues("ateng.boot.rocketmq.endpoints=127.0.0.1:8081")
+                .withUserConfiguration(LocalCheckersConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RocketmqTransactionChecker.class);
+                    RocketmqTransactionChecker checker = context.getBean(RocketmqTransactionChecker.class);
+                    assertThat(checker.getCheckers()).hasSize(1);
+                    assertThat(checker.getCheckers().get(0).getTopic()).isEqualTo("order_topic");
                 });
     }
 
@@ -92,6 +126,34 @@ class AtengRocketmqAutoConfigurationTest {
         @Bean
         public Producer customProducer() {
             return mock(Producer.class);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomTransactionCheckerConfiguration {
+        final TransactionChecker customChecker = mock(TransactionChecker.class);
+
+        @Bean
+        public TransactionChecker transactionChecker() {
+            return customChecker;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class LocalCheckersConfiguration {
+        @Bean
+        public RocketmqLocalTransactionChecker orderTransactionChecker() {
+            return new RocketmqLocalTransactionChecker() {
+                @Override
+                public String getTopic() {
+                    return "order_topic";
+                }
+
+                @Override
+                public TransactionResolution check(MessageView messageView) {
+                    return TransactionResolution.COMMIT;
+                }
+            };
         }
     }
 }

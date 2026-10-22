@@ -1,6 +1,8 @@
 package io.github.atengk.boot.rocketmq.autoconfigure;
 
+import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
+import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +13,7 @@ import org.apache.rocketmq.client.apis.ClientServiceProvider;
 import org.apache.rocketmq.client.apis.StaticSessionCredentialsProvider;
 import org.apache.rocketmq.client.apis.producer.Producer;
 import org.apache.rocketmq.client.apis.producer.ProducerBuilder;
+import org.apache.rocketmq.client.apis.producer.TransactionChecker;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -70,16 +73,35 @@ public class AtengRocketmqAutoConfiguration {
     }
 
     /**
+     * RocketMQ 全局统一事务回查分发器
+     */
+    @Bean
+    @ConditionalOnMissingBean(TransactionChecker.class)
+    @ConditionalOnBean(ClientConfiguration.class)
+    public RocketmqTransactionChecker rocketmqTransactionChecker(
+            ObjectProvider<RocketmqLocalTransactionChecker> checkerProvider) {
+        return new RocketmqTransactionChecker(checkerProvider);
+    }
+
+    /**
      * RocketMQ 原生底层 Producer
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     @ConditionalOnBean(ClientConfiguration.class)
-    public Producer rocketmqProducer(ClientConfiguration clientConfiguration, AtengRocketmqProperties properties) throws ClientException {
+    public Producer rocketmqProducer(
+            ClientConfiguration clientConfiguration,
+            AtengRocketmqProperties properties,
+            ObjectProvider<TransactionChecker> transactionCheckerProvider) throws ClientException {
         ClientServiceProvider provider = ClientServiceProvider.loadService();
         ProducerBuilder builder = provider.newProducerBuilder()
                 .setClientConfiguration(clientConfiguration)
                 .setMaxAttempts(properties.getProducer().getMaxAttempts());
+
+        TransactionChecker checker = transactionCheckerProvider.getIfAvailable();
+        if (checker != null) {
+            builder.setTransactionChecker(checker);
+        }
 
         if (properties.getProducer().getTopics() != null && !properties.getProducer().getTopics().isEmpty()) {
             builder.setTopics(properties.getProducer().getTopics().toArray(new String[0]));

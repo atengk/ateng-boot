@@ -13,6 +13,8 @@ import org.apache.rocketmq.client.apis.message.Message;
 import org.apache.rocketmq.client.apis.message.MessageId;
 import org.apache.rocketmq.client.apis.producer.Producer;
 import org.apache.rocketmq.client.apis.producer.SendReceipt;
+import org.apache.rocketmq.client.apis.producer.Transaction;
+import org.apache.rocketmq.client.apis.producer.TransactionResolution;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -237,5 +239,145 @@ class RocketmqTemplateTest {
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：本地事务返回 COMMIT 时自动提交半消息")
+    void testSendTransactionCommit() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+
+        SendReceipt receipt = rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-001",
+                Collections.singletonMap("amount", 100),
+                r -> TransactionResolution.COMMIT);
+
+        assertThat(receipt).isSameAs(mockReceipt);
+        verify(producer).beginTransaction();
+        verify(producer).send(any(Message.class), eq(mockTx));
+        verify(mockTx).commit();
+        verify(mockTx, never()).rollback();
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：本地事务返回 ROLLBACK 时自动回滚半消息")
+    void testSendTransactionRollback() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+
+        SendReceipt receipt = rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-002",
+                Collections.singletonMap("amount", 200),
+                r -> TransactionResolution.ROLLBACK);
+
+        assertThat(receipt).isSameAs(mockReceipt);
+        verify(producer).beginTransaction();
+        verify(producer).send(any(Message.class), eq(mockTx));
+        verify(mockTx, never()).commit();
+        verify(mockTx).rollback();
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：本地事务返回 UNKNOWN 时不显式 Commit 或 Rollback，等待回查")
+    void testSendTransactionUnknown() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+
+        SendReceipt receipt = rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-003",
+                Collections.singletonMap("amount", 300),
+                r -> TransactionResolution.UNKNOWN);
+
+        assertThat(receipt).isSameAs(mockReceipt);
+        verify(producer).beginTransaction();
+        verify(producer).send(any(Message.class), eq(mockTx));
+        verify(mockTx, never()).commit();
+        verify(mockTx, never()).rollback();
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：本地事务执行异常时触发回滚并向外抛出异常")
+    void testSendTransactionExecutorThrowsException() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-004",
+                Collections.singletonMap("amount", 400),
+                r -> {
+                    throw new IllegalStateException("余额不足");
+                }))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("余额不足");
+
+        verify(mockTx).rollback();
+        verify(mockTx, never()).commit();
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：半消息投递失败时回滚事务句柄并抛出 MessageDeliveryException")
+    void testSendTransactionHalfMessageSendFailed() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenThrow(new RuntimeException("Broker rejected"));
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-005",
+                Collections.singletonMap("amount", 500),
+                r -> TransactionResolution.COMMIT))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("RocketMQ 事务半消息投递失败");
+
+        verify(mockTx).rollback();
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：事务提交失败抛出 MessageDeliveryException")
+    void testSendTransactionCommitFailed() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+        doThrow(new RuntimeException("Commit timeout")).when(mockTx).commit();
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-006",
+                Collections.singletonMap("amount", 600),
+                r -> TransactionResolution.COMMIT))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("RocketMQ 事务提交失败");
+    }
+
+    @Test
+    @DisplayName("验证原生 2PC 分布式事务：事务回滚失败抛出 MessageDeliveryException")
+    void testSendTransactionRollbackFailed() throws Exception {
+        Transaction mockTx = mock(Transaction.class);
+        when(producer.beginTransaction()).thenReturn(mockTx);
+        when(producer.send(any(Message.class), eq(mockTx))).thenReturn(mockReceipt);
+        doThrow(new RuntimeException("Rollback timeout")).when(mockTx).rollback();
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendTransaction(
+                "tx_order_topic",
+                "create",
+                "TX-ORD-007",
+                Collections.singletonMap("amount", 700),
+                r -> TransactionResolution.ROLLBACK))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("RocketMQ 事务回滚失败");
     }
 }
