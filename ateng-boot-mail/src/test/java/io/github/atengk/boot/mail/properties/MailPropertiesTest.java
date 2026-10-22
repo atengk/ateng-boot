@@ -28,6 +28,12 @@ class MailPropertiesTest {
         assertEquals(Duration.ofSeconds(10), properties.getWriteTimeout());
         assertEquals(DataSize.ofMegabytes(20), properties.getMaxAttachmentSize());
         assertEquals(DataSize.ofMegabytes(50), properties.getMaxTotalSize());
+        assertEquals(100, properties.getMaxDynamicAccounts());
+
+        assertNotNull(properties.getAsync());
+        assertTrue(properties.getAsync().isEnabled());
+        assertEquals("mail-async-", properties.getAsync().getThreadNamePrefix());
+        assertEquals("mail-vt-async-", properties.getAsync().getVirtualThreadNamePrefix());
 
         assertEquals(465, properties.getPort());
         assertEquals("smtp", properties.getProtocol());

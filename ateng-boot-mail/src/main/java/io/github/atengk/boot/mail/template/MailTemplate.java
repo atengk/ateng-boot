@@ -1,7 +1,8 @@
 package io.github.atengk.boot.mail.template;
 
+import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
-import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
@@ -135,7 +136,7 @@ public class MailTemplate implements DisposableBean {
             this.executor = executor;
             this.defaultExecutorCreated = false;
         } else {
-            this.executor = createDefaultExecutor();
+            this.executor = createDefaultExecutor(properties != null ? properties.getAsync() : null);
             this.defaultExecutorCreated = true;
         }
         this.eventPublisher = eventPublisher;
@@ -1216,23 +1217,22 @@ public class MailTemplate implements DisposableBean {
 
     @Override
     public void destroy() {
-        if (defaultExecutorCreated && executor instanceof ThreadPoolTaskExecutor taskExecutor) {
-            log.info("Shutting down default mail ThreadPoolTaskExecutor");
-            taskExecutor.destroy();
+        if (defaultExecutorCreated) {
+            if (executor instanceof ThreadPoolTaskExecutor taskExecutor) {
+                log.info("Shutting down default mail ThreadPoolTaskExecutor");
+                taskExecutor.destroy();
+            } else if (executor instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception e) {
+                    log.warn("Error closing default mail executor: {}", e.getMessage(), e);
+                }
+            }
         }
     }
 
-    private static ThreadPoolTaskExecutor createDefaultExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(Math.max(2, Runtime.getRuntime().availableProcessors()));
-        executor.setMaxPoolSize(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
-        executor.setQueueCapacity(1024);
-        executor.setKeepAliveSeconds(60);
-        executor.setThreadNamePrefix("ateng-mail-async-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        executor.setWaitForTasksToCompleteOnShutdown(true);
-        executor.setAwaitTerminationSeconds(30);
-        executor.setTaskDecorator(new ContextCopyingTaskDecorator());
+    private static ThreadPoolTaskExecutor createDefaultExecutor(AsyncPoolProperties pool) {
+        ThreadPoolTaskExecutor executor = AsyncExecutorFactory.createPlatformExecutor("mail-async-", pool);
         executor.initialize();
         return executor;
     }

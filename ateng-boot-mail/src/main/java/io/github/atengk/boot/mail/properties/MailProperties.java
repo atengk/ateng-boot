@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.properties;
 
+import io.github.atengk.boot.core.properties.AsyncPoolProperties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
@@ -58,6 +59,12 @@ public class MailProperties {
      * 动态编程式发信账号 LRU 缓存容量上限，默认 100
      */
     private int maxDynamicAccounts = 100;
+
+    /**
+     * 专职受管异步发信执行器配置（支持平台线程池与虚拟线程双模自适应）
+     */
+    @NestedConfigurationProperty
+    private AsyncPoolProperties async = new AsyncPoolProperties();
 
     /**
      * 顶级单账号快捷配置：SMTP 服务器主机地址
@@ -120,4 +127,9 @@ public class MailProperties {
      */
     @NestedConfigurationProperty
     private MailRetryProperties retry = new MailRetryProperties();
+
+    public MailProperties() {
+        this.async.setThreadNamePrefix("mail-async-");
+        this.async.setVirtualThreadNamePrefix("mail-vt-async-");
+    }
 }

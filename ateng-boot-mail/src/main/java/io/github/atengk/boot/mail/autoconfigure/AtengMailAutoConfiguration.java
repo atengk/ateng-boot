@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mail.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
@@ -33,7 +34,6 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.PropertySource;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.StringUtils;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
@@ -173,18 +173,33 @@ public class AtengMailAutoConfiguration {
         return new TenantMailAccountResolver();
     }
 
+    /**
+     * 注册专职邮件受管异步执行器 Bean
+     * 依据 ateng.boot.mail.async 配置参数构建，双模自适应平台线程池与虚拟线程，自动挂载四维上下文透传装饰器
+     *
+     * @param properties  邮件模块全局配置
+     * @param environment Spring 运行时环境
+     * @return 受管异步执行器实例
+     */
+    @Bean(name = "mailTaskExecutor")
+    @ConditionalOnMissingBean(name = "mailTaskExecutor")
+    @ConditionalOnProperty(prefix = "ateng.boot.mail.async", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public Executor mailTaskExecutor(MailProperties properties, Environment environment) {
+        return AsyncExecutorFactory.createExecutor("mail", properties.getAsync(), environment);
+    }
+
     @Bean
     @ConditionalOnMissingBean
     public MailTemplate mailTemplate(MailAccountRegistry registry, MailProperties properties,
                                      MailTemplateRenderer templateRenderer, MailAccountResolver accountResolver,
-                                     @Qualifier("taskExecutor") ObjectProvider<ThreadPoolTaskExecutor> taskExecutorProvider,
-                                     ObjectProvider<ThreadPoolTaskExecutor> genericThreadPoolTaskExecutorProvider,
+                                     @Qualifier("mailTaskExecutor") ObjectProvider<Executor> mailTaskExecutorProvider,
+                                     @Qualifier("taskExecutor") ObjectProvider<Executor> genericTaskExecutorProvider,
                                      ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
                                      ObjectProvider<List<MailSendFailureHandler>> failureHandlersProvider,
                                      ObjectProvider<List<MailSendInterceptor>> interceptorsProvider) {
-        ThreadPoolTaskExecutor executor = taskExecutorProvider.getIfAvailable();
+        Executor executor = mailTaskExecutorProvider.getIfAvailable();
         if (executor == null) {
-            executor = genericThreadPoolTaskExecutorProvider.getIfAvailable();
+            executor = genericTaskExecutorProvider.getIfAvailable();
         }
         ApplicationEventPublisher eventPublisher = eventPublisherProvider.getIfAvailable();
         List<MailSendFailureHandler> failureHandlers = failureHandlersProvider.getIfAvailable();
