@@ -1,5 +1,6 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
+import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Contact;
@@ -12,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
@@ -28,7 +30,6 @@ import java.util.List;
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(OpenAPI.class)
-@ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(OpenApiProperties.class)
 public class OpenApiAutoConfiguration {
 
@@ -40,6 +41,7 @@ public class OpenApiAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public OpenAPI customOpenAPI(OpenApiProperties properties) {
         OpenAPI openAPI = new OpenAPI();
 
@@ -99,7 +101,7 @@ public class OpenApiAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(name = "openApiWebMvcConfigurer")
-    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "redirect-docs", havingValue = "true", matchIfMissing = true)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("${ateng.boot.openapi.enabled:true} and ${ateng.boot.openapi.redirect-docs:true}")
     public WebMvcConfigurer openApiWebMvcConfigurer(OpenApiProperties properties) {
         return new WebMvcConfigurer() {
             @Override
@@ -110,5 +112,27 @@ public class OpenApiAutoConfiguration {
                 }
             }
         };
+    }
+
+    /**
+     * 注册高优先级 OpenAPI 生产安全守卫过滤器
+     * <p>
+     * 无论是否启用 OpenAPI 均全局生效：
+     * - {@code enabled=false} 时执行物理切断拦截，响应 HTTP 404；
+     * - {@code enabled=true} 且开启守卫时执行 Basic / Sa-Token 访问认证。
+     * </p>
+     *
+     * @param properties 配置属性
+     * @return 过滤器注册 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "openApiGuardFilterRegistration")
+    public FilterRegistrationBean<OpenApiGuardFilter> openApiGuardFilterRegistration(OpenApiProperties properties) {
+        OpenApiGuardFilter filter = new OpenApiGuardFilter(properties);
+        FilterRegistrationBean<OpenApiGuardFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setName("openApiGuardFilter");
+        registration.setOrder(OpenApiGuardFilter.ORDER);
+        registration.addUrlPatterns("/*");
+        return registration;
     }
 }
