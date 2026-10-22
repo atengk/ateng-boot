@@ -487,5 +487,67 @@ class AtengMybatisPlusAutoConfigurationTest {
                     assertThat(context.getBean(io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate.class)).isSameAs(customTemplate);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下不装配 SqlLogInterceptor (enabled=false 防灾默认关闭)")
+    void shouldNotAutoConfigureSqlLogInterceptorByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+        });
+    }
+
+    @Test
+    @DisplayName("显式配置 ateng.boot.mybatis-plus.sql-log.enabled=true 时成功装配 SqlLogInterceptor")
+    void shouldAutoConfigureSqlLogInterceptorWhenEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.sql-log.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+                    io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor interceptor =
+                            context.getBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+                    assertThat(interceptor.getProperties().isEnabled()).isTrue();
+                    assertThat(interceptor.getProperties().getLevel()).isEqualTo("INFO");
+                    assertThat(interceptor.getProperties().isFormatSql()).isTrue();
+                    assertThat(interceptor.getProperties().isMaskSensitive()).isTrue();
+                    assertThat(interceptor.getProperties().isShowCallLocation()).isTrue();
+                    assertThat(interceptor.getProperties().getMaxSqlLength()).isEqualTo(4096);
+                });
+    }
+
+    @Test
+    @DisplayName("当配置自定义 sql-log 属性时正确绑定至 SqlLogInterceptor 实例")
+    void shouldBindCustomSqlLogProperties() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.sql-log.enabled=true",
+                "ateng.boot.mybatis-plus.sql-log.level=DEBUG",
+                "ateng.boot.mybatis-plus.sql-log.format-sql=false",
+                "ateng.boot.mybatis-plus.sql-log.mask-sensitive=false",
+                "ateng.boot.mybatis-plus.sql-log.show-call-location=false",
+                "ateng.boot.mybatis-plus.sql-log.max-sql-length=1024"
+        ).run(context -> {
+            assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+            io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor interceptor =
+                    context.getBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+            assertThat(interceptor.getProperties().isEnabled()).isTrue();
+            assertThat(interceptor.getProperties().getLevel()).isEqualTo("DEBUG");
+            assertThat(interceptor.getProperties().isFormatSql()).isFalse();
+            assertThat(interceptor.getProperties().isMaskSensitive()).isFalse();
+            assertThat(interceptor.getProperties().isShowCallLocation()).isFalse();
+            assertThat(interceptor.getProperties().getMaxSqlLength()).isEqualTo(1024);
+        });
+    }
+
+    @Test
+    @DisplayName("当业务显式提供自定义 SqlLogInterceptor 时优先使用业务自定义 Bean")
+    void shouldPreferCustomSqlLogInterceptorBean() {
+        io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor customInterceptor =
+                new io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor(new io.github.atengk.boot.mybatisplus.properties.SqlLogProperties());
+
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.sql-log.enabled=true")
+                .withBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class, () -> customInterceptor)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class);
+                    assertThat(context.getBean(io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor.class)).isSameAs(customInterceptor);
+                });
+    }
 }
 

@@ -107,6 +107,12 @@ public class MybatisPlusProperties {
     @NestedConfigurationProperty
     private AuditChangeProperties auditChange = new AuditChangeProperties();
 
+    /**
+     * SQL 日志打印与耗时诊断拦截器配置
+     */
+    @NestedConfigurationProperty
+    private SqlLogProperties sqlLog = new SqlLogProperties();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -225,6 +231,14 @@ public class MybatisPlusProperties {
 
     public void setAuditChange(AuditChangeProperties auditChange) {
         this.auditChange = auditChange;
+    }
+
+    public SqlLogProperties getSqlLog() {
+        return sqlLog;
+    }
+
+    public void setSqlLog(SqlLogProperties sqlLog) {
+        this.sqlLog = sqlLog;
     }
 
 

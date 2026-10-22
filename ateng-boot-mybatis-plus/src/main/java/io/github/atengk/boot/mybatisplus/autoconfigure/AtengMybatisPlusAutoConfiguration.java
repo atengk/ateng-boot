@@ -48,6 +48,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlAlertProvider;
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
+import io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditProvider;
 import java.util.concurrent.Executor;
@@ -334,6 +335,18 @@ public class AtengMybatisPlusAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
     public SmartInitializingSingleton dynamicSqlInitializer(DynamicSqlRegistry dynamicSqlRegistry) {
         return dynamicSqlRegistry::loadAndRegisterAll;
+    }
+
+    /**
+     * 注册 SQL 日志打印与可执行带参诊断拦截器
+     *
+     * @return SQL 日志拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SqlLogInterceptor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.sql-log", name = "enabled", havingValue = "true")
+    public SqlLogInterceptor sqlLogInterceptor() {
+        return new SqlLogInterceptor(properties.getSqlLog());
     }
 
     /**
