@@ -206,3 +206,11 @@ _Avoid_: SqlAliasParser, ColumnExtractor, ProjectionMapper
 **SelectCursor**:
 继承 MyBatis-Plus `AbstractMethod` 的受管游标查询 SQL 注入器节点，为 Mapper 动态注入生成原生 `Cursor<T>` 游标的 MappedStatement，显式配置建议 FetchSize（1000），赋予持久层原生分批拉取防 OOM 能力。
 _Avoid_: CursorInjector, StreamMethod, SelectCursorMethod
+
+**SqlLogInterceptor**:
+持久层物理终态 SQL 日志打印与可执行带参诊断拦截器，拦截 MyBatis 原生 StatementHandler 物理执行，输出带参可执行 SQL、毫秒耗时、影响行数与业务代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获。
+_Avoid_: P6SpyInterceptor, SqlPrintPlugin, MybatisLogInterceptor, DruidLogFilter
+
+**SqlParameterFormatter**:
+纯原生字符流 SQL 参数安全反填与敏感脱敏引擎，采用零依赖 Token 状态机流式逐字符扫描，智能跳过字符串常量与注释内的占位符，安全映射 JDBC 字面量，彻底杜绝正则替换特殊字符异常，并自适应对 @FieldEncrypt 属性与密码凭据关键字执行掩码。
+_Avoid_: SqlFormatter, ParamReplacer, RegexSqlPaster, P6SpyFormatter

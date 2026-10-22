@@ -8,6 +8,7 @@ import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.plugin.Interceptor;
 import org.apache.ibatis.plugin.Intercepts;
 import org.apache.ibatis.plugin.Invocation;
+import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
@@ -16,6 +17,7 @@ import org.apache.ibatis.session.ResultHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.sql.Statement;
 import java.util.Collection;
@@ -239,10 +241,16 @@ public class SqlLogInterceptor implements Interceptor {
     }
 
     private static Object realTarget(Object target) {
+        if (target == null) {
+            return null;
+        }
         if (Proxy.isProxyClass(target.getClass())) {
-            MetaObject metaObject = SystemMetaObject.forObject(target);
-            if (metaObject.hasGetter("h.target")) {
-                return realTarget(metaObject.getValue("h.target"));
+            InvocationHandler handler = Proxy.getInvocationHandler(target);
+            if (handler instanceof Plugin) {
+                MetaObject metaObject = SystemMetaObject.forObject(handler);
+                if (metaObject.hasGetter("target")) {
+                    return realTarget(metaObject.getValue("target"));
+                }
             }
         }
         return target;

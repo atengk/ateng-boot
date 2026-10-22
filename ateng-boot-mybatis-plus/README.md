@@ -43,6 +43,9 @@
 | **动态 SQL** | 外部 SQL 资源自动加载器 | `ExternalSqlLoader` / `ResourceExternalSqlLoader` | `ateng.boot.mybatis-plus.dynamic-sql.locations` | 外部 SQL 资源加载 SPI 与默认实现，启动时自动扫描指定路径并注册至 `DynamicSqlRegistry` | `ResourceExternalSqlLoaderTest` |
 | **流式游标** | 原生游标 SQL 注入器 | `SelectCursor` | - | 自动向 Mapper 注入 `selectCursor` MappedStatement，底层强制设置 `fetchSize = 1000`，杜绝内存溢出 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **流式游标** | 受管流式游标查询模板 | `StreamingQueryTemplate` | - | `forEach` / `forEachBatch` / `forEachWhile` / `execute`，强制只读事务守护，`try-with-resources` 确定性闭合游标与连接归还，支持 Predicate 提前短路退出与不可变切片防卫 | `StreamingQueryTemplateTest` / `TenantOrderDomainIntegrationTest` |
+| **SQL 日志诊断** | SQL 日志打印与可执行带参诊断拦截器 | `SqlLogInterceptor` | `ateng.boot.mybatis-plus.sql-log.enabled`<br>`ateng.boot.mybatis-plus.sql-log.level`<br>`ateng.boot.mybatis-plus.sql-log.format-sql`<br>`ateng.boot.mybatis-plus.sql-log.mask-sensitive`<br>`ateng.boot.mybatis-plus.sql-log.show-call-location`<br>`ateng.boot.mybatis-plus.sql-log.max-sql-length` | 拦截 `StatementHandler` 物理终态，输出带参完整可执行 SQL、毫秒耗时、行数影响与代码行号看板，内建批量防刷屏、游标只读防卫与失败现场捕获 | `SqlLogInterceptorTest` / `SqlLogIntegrationTest` |
+| **SQL 日志诊断** | 字符流参数安全反填与敏感脱敏引擎 | `SqlParameterFormatter` | - | `formatSql` / `formatValue` / `prettify` / `compress` / `extractParameters`，零依赖字符流 Token 状态机智能跳过常量与注释内问号，安全映射 ANSI JDBC 字面量，杜绝正则异常，自动探测 `@FieldEncrypt` 与敏感凭据脱敏 | `SqlParameterFormatterTest` |
+| **SQL 日志诊断** | SQL 日志诊断强类型配置模型 | `SqlLogProperties` | `ateng.boot.mybatis-plus.sql-log.*` | 强类型配置模型，提供 `enabled`、`level`、`formatSql`、`maskSensitive`、`showCallLocation`、`maxSqlLength` 6 大核心配置项及安全默认值 | `SqlLogPropertiesTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **多数据源协同** | 多数据源诊断探针与上下文守卫 | `DynamicDatasourceGuard` | `ateng.boot.mybatis-plus.guard.dynamic-datasource` | 启动期轻量感知 Spring 容器多数据源或动态路由特征，输出多租户与事务协同建议；提供 `validateContextIsolated()` 静态断言防卫活跃事务假切源与上下文污染 | `DynamicDatasourceGuardTest` / `AtengMybatisPlusAutoConfigurationTest` |
 | **基础扩展** | 通用 BaseMapper 增强门面 | `AtengBaseMapper<T>` | - | 继承 MyBatis-Plus `BaseMapper`，标配挂载批量方法与 `Cursor<T> selectCursor(@Param(Constants.WRAPPER) Wrapper<T> queryWrapper)` 原生流式游标查询 | `AtengSqlInjectorTest` / `TenantOrderDomainIntegrationTest` |
 | **基础扩展** | 通用 Service 增强实现基类 | `AtengBaseService<T>` / `AtengServiceImpl<M, T>` | - | 继承 MyBatis-Plus `IService`，提供零实体泄露基础 VO 投影（`getById` / `listByIds` / `list` / `getOne`）、批量写入、受管流式查询体系、单表/多表动态查询及存在性判断（`existsDynamic`），以及乐观锁高并发自旋重试（`updateWithOptimisticRetry`），支持严格 `throwEx` 快速失败、分批切片与短路退出 | `AtengBaseServiceBatchTest` / `AtengBaseServiceStreamTest` / `AtengBaseServiceDynamicTest` / `AtengBaseServiceOptimisticLockTest` / `TenantOrderDomainIntegrationTest` |
@@ -1291,19 +1294,145 @@ public class AuditEventListener {
 
 ---
 
-## 18. 模块配置属性参考 (`application.yml`)
+## 18. SQL 日志打印与可执行带参诊断引擎 (`SqlLogInterceptor` & `SqlParameterFormatter`)
+
+### 1. 痛点场景与最小起步 (Happy Path & Out-of-the-Box)
+
+在日常研发联调与问题排查中，原生 MyBatis 日志将 SQL 与参数分离输出（`Preparing: ...` 与 `Parameters: 1(Long), "张三"(String)`），遇到多参数复杂 SQL 时，开发者必须手动数问号下标在数据库客户端拼装，耗时极长且极易拼错。引入 P6Spy 等外部驱动代理包不仅笨重臃肿，还容易与连接池或多数据源代理产生冲突。
+
+`ateng-boot-mybatis-plus` 原生提供 **`SqlLogInterceptor` + `SqlParameterFormatter`** 纯原生诊断引擎：
+- **终态物理执行切入**：拦截 MyBatis `StatementHandler` 物理执行终态，捕获包含多租户、数据权限作用域与分页改写后的 100% 最终真实物理 SQL；
+- **字符流状态机反填**：自研零依赖 Token 状态机流式逐字符扫描，智能跳过静态字符串常量与注释内部的 `?` 占位符，安全按 ANSI JDBC 规范反填字面量；杜绝 `String.replaceFirst`，彻底消除入参包含 `$` 或反斜杠时的正则解析异常；
+- **自适应数据安全脱敏**：自动感知 `@FieldEncrypt` 实体属性、`EncryptTypeHandler` 以及密码凭据敏感词（`password`、`secret`、`token` 等），默认反填 `'******'`，绝不让敏感明文外泄至控制台；
+- **批量防刷屏与超长截断**：抑制传统循环 `addBatch()` 逐条刷屏，配合 `BatchUtil.insertBatch` 原生多值 SQL 单条执行仅输出 1 条完整大 SQL，超长时优雅截断防爆缓冲区；
+- **游标流式只读防卫**：遇到 `Cursor<?>` 流式游标时严格禁止提前遍历消费，安全标注 `[Cursor 延迟游标流]`。
+
+#### 最小开箱配置 (`application.yml`)
+
+```yaml
+ateng:
+  boot:
+    mybatis-plus:
+      sql-log:
+        enabled: true           # 开启 SQL 日志打印与可执行带参诊断（默认 false）
+        level: INFO             # 日志级别，支持 INFO 与 DEBUG（默认 INFO）
+        format-sql: true        # 是否进行多行缩进美化（默认 true，false 为单行压缩）
+        mask-sensitive: true    # 是否对加密属性与密码凭据进行脱敏（默认 true）
+        show-call-location: true # 是否输出业务代码调用位置与行号（默认 true）
+        max-sql-length: 4096    # 单条 SQL 最大字符截断长度（默认 4096，<= 0 不限制）
+```
+
+#### 真实控制台输出示例（1:1 截取自 `SqlLogIntegrationTest` 真实运行结果）
+
+##### 示例一：单表 INSERT 操作（自动脱敏与美化）
+
+```text
+2026-10-22 13:11:09.859 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
+====== [MyBatis-Plus SQL 执行诊断] ======
+MappedStatement : io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper.insert
+实际执行耗时   : 3 ms
+执行结果影响   : 1 行
+代码调用位置   : io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor.intercept(DataChangeAuditInterceptor.java:117)
+执行 SQL 语句  :
+INSERT INTO sys_user (id, name, age, email, phone, dept_id, create_by, update_by, create_time, update_time) 
+  VALUES (106620338692284416, '张三', 25, '******', '******', 100, 'admin-operator', 'admin-operator', '2026-10-22 13:11:09', '2026-10-22 13:11:09')
+=========================================
+```
+
+##### 示例二：单表 SELECT 查询（自动带参反填与租户/逻辑删除改写）
+
+```text
+2026-10-22 13:11:09.928 INFO  [           main] [NO-TRACE] i.g.a.b.m.sqllog.SqlLogInterceptor       : 
+====== [MyBatis-Plus SQL 执行诊断] ======
+MappedStatement : io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper.selectById
+实际执行耗时   : 3 ms
+执行结果影响   : 1 行
+代码调用位置   : org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:333)
+执行 SQL 语句  :
+SELECT id, name, age, email, phone, dept_id, version, deleted, create_by, update_by, create_time, update_time 
+  FROM sys_user 
+  WHERE id = 106620338692284416 
+    AND deleted = 0
+=========================================
+```
+
+---
+
+### 2. 生产扩展与定制接管 (Customization & Extensibility)
+
+#### 方案一：编程式调用参数安全反填引擎 (`SqlParameterFormatter`)
+
+`SqlParameterFormatter` 是纯原生、无状态的静态工具引擎，对外暴露了完备的公共方法，支持在任何自定义切面或运维监控逻辑中直接复用：
+
+```java
+// 1. 将包含 ? 占位符的原始 SQL 与参数列表安全拼装为可执行 SQL（智能跳过字符串常量内部的问号）
+String executableSql = SqlParameterFormatter.formatSql("SELECT * FROM t_faq WHERE title = 'what?' AND user_id = ?", List.of(99L));
+// 输出: SELECT * FROM t_faq WHERE title = 'what?' AND user_id = 99
+
+// 2. 将单个 Java 对象格式化为 ANSI SQL 字面量（自动转义内部单引号，时间日期格式化）
+String strVal = SqlParameterFormatter.formatValue("it's a test"); // 'it''s a test'
+String dateVal = SqlParameterFormatter.formatValue(LocalDateTime.now()); // '2026-10-22 13:11:09'
+String nullVal = SqlParameterFormatter.formatValue(null); // NULL
+
+// 3. 从 MyBatis BoundSql 提取参数并安全反填（支持敏感脱敏与美化切换）
+String sql = SqlParameterFormatter.formatSql(boundSql, configuration, true, true);
+```
+
+#### 方案二：自定义接管 `SqlLogInterceptor` Bean
+
+自动装配标配 `@ConditionalOnMissingBean(SqlLogInterceptor.class)`，业务可自由声明自定义 Bean 接管或装饰：
+
+```java
+@Configuration
+public class CustomSqlLogConfiguration {
+
+    @Bean
+    public SqlLogInterceptor customSqlLogInterceptor(MybatisPlusProperties properties) {
+        SqlLogProperties config = properties.getSqlLog();
+        // 支持传入自定义 Consumer<String> 接收格式化看板日志（如投递至专职日志队列或 APM）
+        return new SqlLogInterceptor(config, formattedMessage -> {
+            // 自定义消费逻辑
+        });
+    }
+}
+```
+
+---
+
+### 3. 核心生产边界与非功能语义 (Production Boundary & Invariants)
+
+1. **生产防灾默认关闭 (`enabled: false`)**：
+   全量 SQL 日志涉及参数反射提取、类型映射与控制台 IO 输出。生产环境严禁默认开启，配置属性类严格设定 `enabled = false`。仅需在 `application-dev.yml` 或测试环境中开启即可开箱即用。
+2. **字符流 Token 状态机防误伤不变量**：
+   SQL 中如果包含静态字符串常量（如 `WHERE question = 'How are you?'`）、转义单引号（`'It''s fine?'`）、双引号标识符（`"col?"`）或 SQL 注释（`/* why? */` / `-- line ?\n`），状态机将精准识别并跳过其中的问号，绝不会被误判定为参数占位符。
+3. **消除正则替换隐患**：
+   参数值若包含 `$`（如价格 `$100`）或反斜杠 `\`（如 Windows 路径 `C:\Windows\System32`），使用 Java 原生 `String.replaceFirst` 会将其作为正则表达式的分组引用与转义符而崩溃报错。`SqlParameterFormatter` 坚持纯 `StringBuilder` 字符流拼装，彻底消除此类隐患。
+4. **受管流式游标只读防卫不变量**：
+   对 `selectCursor` 返回的 `Cursor<?>` 流式游标，拦截器严格禁止提前执行 `iterator()` 或 `forEach`，仅在看板输出 `执行结果影响 : [Cursor 延迟游标流]`，绝对不提前消费游标，确保下游流式大表导出业务正常。
+5. **异常失败现场完整捕获与因果链保全**：
+   当 SQL 执行遇到语法错误、主键冲突或外键死锁抛出 `SQLException` 异常时，拦截器在 `catch` 块中捕获执行失败现场，以 `ERROR` 级别打印 `[MyBatis-Plus SQL 执行失败诊断]` 看板，随后**原样向外抛出原始异常**，完整保留异常因果链，恪守“严禁吞咽异常”铁律。
+
+---
+
+## 19. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
   boot:
     mybatis-plus:
       enabled: true               # 是否启用持久层增强装配（默认 true）
+      sql-log:
+        enabled: false            # 是否启用 SQL 日志打印与可执行带参诊断拦截器（默认 false，按需在 dev 开启）
+        level: "INFO"             # 日志级别，支持 INFO 与 DEBUG（默认 INFO）
+        format-sql: true          # 是否对 SQL 文本进行多行缩进美化（默认 true）
+        mask-sensitive: true      # 是否对加密属性与密码凭据进行脱敏（默认 true）
+        show-call-location: true  # 是否在控制台看板输出业务代码调用位置与行号（默认 true）
+        max-sql-length: 4096      # 单条 SQL 打印最大字符长度（默认 4096，防超长 SQL 爆终端，<= 0 不限制）
       batch:
         default-size: 1000        # 原生批量插入默认单批次切片容量（默认 1000）
       audit:
         default-operator: "SYSTEM"# 无法获取操作人时的审计兜底操作人标识
       pagination:
-        enabled: true             # 是否装配通用分页插件（默认 true）
         max-limit: 500            # 单页允许查询的最大记录上限（默认 500）
         overflow: false           # 溢出总页数后是否进行处理（默认 false，继续请求）
         db-type: ""               # 数据库方言类型（默认留空，框架自动推导）

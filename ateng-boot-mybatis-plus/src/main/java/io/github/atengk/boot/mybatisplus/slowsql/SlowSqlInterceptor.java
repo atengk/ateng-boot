@@ -9,6 +9,7 @@ import org.apache.ibatis.mapping.ParameterMapping;
 import org.apache.ibatis.plugin.Interceptor;
 import org.apache.ibatis.plugin.Intercepts;
 import org.apache.ibatis.plugin.Invocation;
+import org.apache.ibatis.plugin.Plugin;
 import org.apache.ibatis.plugin.Signature;
 import org.apache.ibatis.reflection.MetaObject;
 import org.apache.ibatis.reflection.SystemMetaObject;
@@ -19,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.sql.Statement;
 import java.time.Duration;
@@ -369,9 +371,17 @@ public class SlowSqlInterceptor implements Interceptor {
     }
 
     private static Object realTarget(Object target) {
+        if (target == null) {
+            return null;
+        }
         if (Proxy.isProxyClass(target.getClass())) {
-            MetaObject metaObject = SystemMetaObject.forObject(target);
-            return realTarget(metaObject.getValue("h.target"));
+            InvocationHandler handler = Proxy.getInvocationHandler(target);
+            if (handler instanceof Plugin) {
+                MetaObject metaObject = SystemMetaObject.forObject(handler);
+                if (metaObject.hasGetter("target")) {
+                    return realTarget(metaObject.getValue("target"));
+                }
+            }
         }
         return target;
     }

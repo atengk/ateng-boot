@@ -23,6 +23,13 @@ mybatis-plus:
 ateng:
   boot:
     mybatis-plus:
+      sql-log:
+        enabled: true
+        level: INFO
+        format-sql: true
+        mask-sensitive: true
+        show-call-location: true
+        max-sql-length: 4096
       crypto:
         secret-key: "1234567890123456"
       tenant:

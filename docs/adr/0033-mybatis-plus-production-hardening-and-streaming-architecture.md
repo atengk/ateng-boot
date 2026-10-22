@@ -94,6 +94,20 @@ flowchart TD
   - 检测到当前处于活跃事务中（`TransactionActive=true`）时立即拦截抛出 `IllegalStateException`，防御假切源与串库风险；
   - 检测到数据权限残留状态（`isSuperAdmin=true` 或 `isIgnore=true`）时立即阻断，防御跨库越权穿透。
 
+### 6. 可执行带参 SQL 日志打印与耗时诊断引擎 (`SqlLogInterceptor` + `SqlParameterFormatter`) (Phase 2.3)
+- **终态物理执行切入点 (`StatementHandler`)**：拦截 MyBatis 原生 `StatementHandler` 的 `query`、`update`、`batch` 与 `queryCursor` 方法，捕获在行级租户改写、数据权限作用域追加与分页改写之后的 100% 真实执行物理 SQL；
+- **自研零依赖字符流 Token 状态机反填 (`SqlParameterFormatter`)**：
+  - 采用逐字符流式扫描，精准识别并跳过单引号常量、SQL 转义引号、双引号/反引号标识符及 SQL 注释内部的 `?` 占位符；
+  - 按 ANSI SQL JDBC 规范安全格式化：`null` $\rightarrow$ `NULL`，数值/布尔 $\rightarrow$ 原生字面量，字符串/字符/枚举 $\rightarrow$ 转义单引号包裹，时间类型 $\rightarrow$ 标准时间字符串，字节数组/Blob $\rightarrow$ `'<BLOB>'`；
+  - 纯 `StringBuilder` 字符流反填，彻底杜绝 `String.replaceFirst` 正则替换，消除参数含 `$` 或反斜杠时的正则解析异常；
+- **自适应敏感数据脱敏 (`mask-sensitive: true`)**：自动感知 `@FieldEncrypt` 实体属性、`EncryptTypeHandler` 及密码凭据敏感词（`password`、`secret`、`token` 等），默认反填 `'******'`，兼顾调试便捷与数据安全；支持本地测试显式关闭输出真明文；
+- **原生批量插入单条完整输出与截断防爆 (`max-sql-length: 4096`)**：
+  - 对 `batch(Statement)`（传统循环 `addBatch()`）执行静默放行，杜绝循环单条刷屏；配合 `BatchUtil.insertBatch` 原生多值 SQL 单条执行，仅在控制台输出 1 条完整大 SQL；
+  - 超出 `max-sql-length` 时优雅截断并标注参数组数摘要，防御开发终端缓冲区爆满；
+- **游标流式只读防卫与失败现场捕获**：
+  - 遇 `Cursor<?>` 流式游标时严格禁止提前遍历消费，安全标注 `[Cursor 延迟游标流]`；
+  - SQL 执行抛出 `SQLException` 失败时，捕获 MappedStatement、耗时、调用栈、错误信息与 SQL 现场并输出 `[MyBatis-Plus SQL 执行失败诊断]` 看板后原样向外抛出因果异常。
+
 ---
 
 ## 影响与后果分析 (Consequences)
@@ -103,8 +117,10 @@ flowchart TD
 2. **原生批量插入 100% 零 null 入库**：无需业务层手工为批量集合循环补全雪花 ID 和审计时间，`BatchUtil` 自愈补偿杜绝空字段写入；
 3. **消除慢 SQL 生产隐患并守住安全底线**：精准定位业务行号与自动敏感脱敏，同时恪守严禁自动 EXPLAIN 防雪崩铁律；
 4. **彻底防御海量数据拉取导致的 OOM 与深分页瓶颈**：`StreamingQueryTemplate` 让开发者以最简洁的门面消费百万级游标数据，确定性保障连接池零泄漏；
-5. **多数据源协同零暗坑**：启动期主动自检排查，切源前静态断言 Fail-Fast，消除假切源与权限跨源污染风险。
+5. **多数据源协同零暗坑**：启动期主动自检排查，切源前静态断言 Fail-Fast，消除假切源与权限跨源污染风险；
+6. **一键可复制运行的 SQL 调试体验与数据安全闭环**：单开关 `ateng.boot.mybatis-plus.sql-log.enabled = true` 开箱即用带参 SQL 看板，消除参数拼装苦恼，兼备凭据脱敏、批量防刷屏与游标只读防卫。
 
 ### 权衡与取舍 (Trade-offs & Constraints)
 1. **`BaseDeleteIdEntity` 占用一个额外实体层级**：针对没有复合唯一索引的表，推荐依然采用标准 `BaseFullEntity`，以维持数据库 `deleted` 字段直观的 `0/1` 逻辑；
-2. **`StreamingQueryTemplate` 必须依赖事务管理器**：游标生命周期必须绑定在受管事务中，因此环境中需要提供 `PlatformTransactionManager`（自动装配通过 `@ConditionalOnBean` 进行了安全守卫）。
+2. **`StreamingQueryTemplate` 必须依赖事务管理器**：游标生命周期必须绑定在受管事务中，因此环境中需要提供 `PlatformTransactionManager`（自动装配通过 `@ConditionalOnBean` 进行了安全守卫）；
+3. **`SqlLogInterceptor` 默认强制关闭 (`enabled: false`)**：全量 SQL 参数反射提取与格式化存在微量 CPU/内存开销，生产环境必须严格遵循防灾默认关闭铁律，仅在开发与测试联调期按需开启。
