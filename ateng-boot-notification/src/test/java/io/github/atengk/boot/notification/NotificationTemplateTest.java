@@ -47,6 +47,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -74,6 +75,7 @@ class NotificationTemplateTest extends BaseNotificationTest {
     private SimpleNotificationTemplateRenderer templateRenderer;
     private List<ApplicationEvent> publishedEvents;
     private ApplicationEventPublisher eventPublisher;
+    private ExecutorService asyncExecutor;
     private NotificationTemplate template;
 
     @BeforeEach
@@ -135,6 +137,7 @@ class NotificationTemplateTest extends BaseNotificationTest {
             }
         };
 
+        this.asyncExecutor = Executors.newFixedThreadPool(4);
         template = new NotificationTemplate(
                 properties,
                 registry,
@@ -144,12 +147,15 @@ class NotificationTemplateTest extends BaseNotificationTest {
                 templateRenderer,
                 null,
                 eventPublisher,
-                Executors.newFixedThreadPool(4)
+                this.asyncExecutor
         );
     }
 
     @AfterEach
     void tearDownContext() {
+        if (this.asyncExecutor != null && !this.asyncExecutor.isShutdown()) {
+            this.asyncExecutor.shutdownNow();
+        }
         MDC.clear();
         UserContextHolder.clear();
         NotificationContextHolder.clear();

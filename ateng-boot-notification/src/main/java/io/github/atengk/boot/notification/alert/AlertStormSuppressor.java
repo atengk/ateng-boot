@@ -166,10 +166,25 @@ public class AlertStormSuppressor implements DisposableBean {
             return 0;
         }
         String declaringClassName = (method != null) ? method.getDeclaringClass().getName() : null;
-        for (StackTraceElement element : throwable.getStackTrace()) {
-            if (declaringClassName != null && element.getClassName().equals(declaringClassName)) {
-                return Math.max(0, element.getLineNumber());
+
+        // 穿透异常因果链（从外层向内层 cause 追溯），查找业务声明类所在的真实代码行号
+        Throwable current = throwable;
+        while (current != null) {
+            for (StackTraceElement element : current.getStackTrace()) {
+                if (declaringClassName != null && element.getClassName().equals(declaringClassName)) {
+                    return Math.max(0, element.getLineNumber());
+                }
             }
+            if (current.getCause() == null || current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+
+        // 若未匹配到声明类，优先取 rootCause 顶层行号，最后保底取外层首行
+        Throwable root = findRootCause(throwable);
+        if (root != null && root.getStackTrace().length > 0) {
+            return Math.max(0, root.getStackTrace()[0].getLineNumber());
         }
         if (throwable.getStackTrace().length > 0) {
             return Math.max(0, throwable.getStackTrace()[0].getLineNumber());
@@ -253,7 +268,13 @@ public class AlertStormSuppressor implements DisposableBean {
         CardMessage card = CardMessage.of("【告警汇总】" + alert.getTitle(), content)
                 .headerColor(CardColor.ORANGE);
 
-        notificationTemplate.send(channel, card);
+        // 异步非阻塞推送汇总卡片，彻底避免网络延迟阻塞单线程调度器
+        notificationTemplate.sendAsync(channel, card).whenComplete((res, ex) -> {
+            if (ex != null) {
+                log.error("告警风暴周期末汇总通报异步推送异常 [fingerprint={}]: {}",
+                        record.getAlert().getFingerprint(), ex.getMessage(), ex);
+            }
+        });
     }
 
     private String resolveAlertChannel(String explicitChannel) {

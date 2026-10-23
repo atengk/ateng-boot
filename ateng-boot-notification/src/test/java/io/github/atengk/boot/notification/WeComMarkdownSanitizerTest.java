@@ -60,6 +60,28 @@ class WeComMarkdownSanitizerTest {
     }
 
     @Test
+    @DisplayName("验证常规代码或数学比较表达式不被误杀为 HTML 标签")
+    void testMathComparisonNotStripped() {
+        String md = "监控阈值警告：if (cpuUsage < 80.0 && memoryUsage > 90.0) { alert(); }";
+        String sanitized = WeComMarkdownSanitizer.sanitize(md);
+        assertEquals(md, sanitized, "数学或代码比较符号绝对不能被误杀");
+    }
+
+    @Test
+    @DisplayName("验证带有尾部空单元格或缺省列的表格能够安全对齐")
+    void testTableSanitizationWithEmptyCells() {
+        String md = """
+                | 列1 | 列2 | 列3 |
+                |---|---|---|
+                | A | B | |
+                | X | |
+                """;
+        String sanitized = WeComMarkdownSanitizer.sanitize(md);
+        assertTrue(sanitized.contains("> **列1**: A | **列2**: B | **列3**: "));
+        assertTrue(sanitized.contains("> **列1**: X | **列2**:  | **列3**: "));
+    }
+
+    @Test
     @DisplayName("验证空字符串与常规 Markdown 安全直通")
     void testPlainMarkdownDirectPass() {
         assertNull(WeComMarkdownSanitizer.sanitize(null));

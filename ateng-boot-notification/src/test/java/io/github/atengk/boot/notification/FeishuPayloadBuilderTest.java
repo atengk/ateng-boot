@@ -119,6 +119,24 @@ class FeishuPayloadBuilderTest {
     }
 
     @Test
+    @DisplayName("验证仅配置手机号时飞书卡片自适应转译为 @手机号 文本标识且无裸换行")
+    @SuppressWarnings("unchecked")
+    void testBuildPayloadWithMobileMentions() {
+        MarkdownMessage md = MarkdownMessage.of("运维通知", "节点状态异常")
+                .atMobiles("13800138000");
+
+        Map<String, Object> payload = builder.buildPayload(md);
+        Map<String, Object> card = (Map<String, Object>) payload.get("card");
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) card.get("elements");
+        Map<String, Object> div = elements.get(0);
+        Map<String, String> textObj = (Map<String, String>) div.get("text");
+        String content = textObj.get("content");
+
+        assertTrue(content.contains("@13800138000"), "手机号应优雅转译为文本 @手机号");
+        assertFalse(content.endsWith("\n\n"), "不得产生孤立未消费的裸换行");
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生透传飞书特化报文")
     void testBuildRawPayload() {
         RawMessage raw = RawMessage.of(Map.of("msg_type", "image", "content", Map.of("image_key", "img_xxx")));

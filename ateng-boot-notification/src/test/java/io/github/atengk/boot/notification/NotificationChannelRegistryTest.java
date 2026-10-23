@@ -4,12 +4,15 @@ import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelProvider;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.channel.NotificationChannelResolver;
+import io.github.atengk.boot.notification.event.NotificationChannelEvictEvent;
 import io.github.atengk.boot.notification.exception.NotificationException;
 import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.Platform;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -134,5 +137,29 @@ class NotificationChannelRegistryTest {
                 .isInstanceOf(NotificationException.class)
                 .extracting(ex -> ((NotificationException) ex).getResultCode())
                 .isEqualTo(NotificationResultCode.NOTIFICATION_CHANNEL_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("测试注销渠道时自动发布 NotificationChannelEvictEvent 事件")
+    void testChannelUnregisterPublishesEvictEvent() {
+        AtomicReference<NotificationChannelEvictEvent> capturedEvent = new AtomicReference<>();
+        registry.setEventPublisher(event -> {
+            if (event instanceof NotificationChannelEvictEvent evictEvent) {
+                capturedEvent.set(evictEvent);
+            }
+        });
+
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("test-evict-channel")
+                .platform(Platform.FEISHU)
+                .webhook("https://open.feishu.cn/open-apis/bot/v2/hook/xxx")
+                .build();
+        registry.register(channel);
+
+        NotificationChannel removed = registry.unregister("test-evict-channel");
+        assertThat(removed).isEqualTo(channel);
+        assertThat(capturedEvent.get()).isNotNull();
+        assertThat(capturedEvent.get().getChannelName()).isEqualTo("test-evict-channel");
+        assertThat(capturedEvent.get().getEvictedChannel()).isEqualTo(channel);
     }
 }

@@ -109,6 +109,38 @@ class DingTalkPayloadBuilderTest {
     }
 
     @Test
+    @DisplayName("验证 CardMessage 携带 @人 时钉钉 ActionCard 正确生成 at 节点")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithMention() {
+        CardMessage card = CardMessage.of("发布单待确认", "v1.2.0 发布申请已提交")
+                .singleAction("进入控制台审批", "https://ops.example.com/deploy/1")
+                .atAll()
+                .atMobiles("13800000001");
+
+        Map<String, Object> payload = builder.buildPayload(card);
+
+        Map<String, Object> atObj = (Map<String, Object>) payload.get("at");
+        assertNotNull(atObj);
+        assertEquals(true, atObj.get("isAtAll"));
+        assertEquals(List.of("13800000001"), atObj.get("atMobiles"));
+    }
+
+    @Test
+    @DisplayName("验证 CardMessage 无任何按钮时自动降级为 singleAction 避免输出空 btns 触发协议错误")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithoutButtons() {
+        CardMessage card = CardMessage.of("纯展示通知", "无任何交互跳转按钮");
+
+        Map<String, Object> payload = builder.buildPayload(card);
+
+        assertEquals("actionCard", payload.get("msgtype"));
+        Map<String, Object> actionCard = (Map<String, Object>) payload.get("actionCard");
+        assertEquals("查看详情", actionCard.get("singleTitle"));
+        assertEquals("", actionCard.get("singleURL"));
+        assertNull(actionCard.get("btns"));
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生透传钉钉自定义报文")
     void testBuildRawPayload() {
         RawMessage raw = RawMessage.of(Map.of("msgtype", "feedCard", "feedCard", Map.of("links", List.of())));

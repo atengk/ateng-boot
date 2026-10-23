@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 public final class WeComMarkdownSanitizer {
 
     private static final Pattern IMAGE_PATTERN = Pattern.compile("!\\[(.*?)\\]\\((.*?)\\)");
-    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("</?(?!(?:font\\b|/font\\b))[^>]+>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HTML_TAG_PATTERN = Pattern.compile("</?(?!(?:font\\b|/font\\b))[a-zA-Z][a-zA-Z0-9]*(?:\\s+[^>]*)?/?>", Pattern.CASE_INSENSITIVE);
     private static final Pattern TABLE_DIVIDER_PATTERN = Pattern.compile("^\\s*\\|?\\s*[:\\-]+\\s*(\\|\\s*[:\\-]+\\s*)+\\|?\\s*$");
 
     private WeComMarkdownSanitizer() {
@@ -72,12 +72,12 @@ public final class WeComMarkdownSanitizer {
                 while (i < lines.length && isTableDataRow(lines[i])) {
                     List<String> cells = parseTableRow(lines[i]);
                     StringBuilder rowBuilder = new StringBuilder("> ");
-                    int minCols = Math.min(headers.size(), cells.size());
-                    for (int c = 0; c < minCols; c++) {
+                    for (int c = 0; c < headers.size(); c++) {
                         if (c > 0) {
                             rowBuilder.append(" | ");
                         }
-                        rowBuilder.append("**").append(headers.get(c)).append("**: ").append(cells.get(c));
+                        String cellVal = c < cells.size() ? cells.get(c) : "";
+                        rowBuilder.append("**").append(headers.get(c)).append("**: ").append(cellVal);
                     }
                     outputLines.add(rowBuilder.toString());
                     i++;
@@ -115,7 +115,7 @@ public final class WeComMarkdownSanitizer {
         if (trimmed.endsWith("|")) {
             trimmed = trimmed.substring(0, trimmed.length() - 1);
         }
-        return Arrays.stream(trimmed.split("\\|"))
+        return Arrays.stream(trimmed.split("\\|", -1))
                 .map(String::trim)
                 .toList();
     }

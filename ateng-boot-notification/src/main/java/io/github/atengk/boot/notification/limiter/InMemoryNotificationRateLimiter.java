@@ -153,7 +153,7 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
                 try {
                     long now = System.nanoTime();
                     cleanExpired(now);
-                    if (timestamps.size() + waitingCount < permits) {
+                    if (timestamps.size() < permits) {
                         timestamps.addLast(now);
                         return true;
                     }
@@ -177,11 +177,8 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
                     long now = System.nanoTime();
                     cleanExpired(now);
 
-                    int currentSize = timestamps.size();
-                    int claimIndex = (currentSize + waitingCount) - permits;
-
-                    // 场景一：当前窗口尚有空闲配额，直接占用并发放许可
-                    if (claimIndex < 0) {
+                    // 场景一：当前窗口尚有可用配额，直接占用并发放许可
+                    if (timestamps.size() < permits) {
                         timestamps.addLast(now);
                         return true;
                     }
@@ -193,16 +190,12 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
                         return false;
                     }
 
-                    // 场景二：当前窗口配额已被等待队列占满，需等待后续完整周期
-                    if (claimIndex >= currentSize) {
-                        if (windowNanos > remainingNanos) {
-                            return false;
-                        }
+                    // 场景二：配额已满，等待队首（最早占用的元素）过期释放
+                    Long oldestTimestamp = timestamps.peekFirst();
+                    if (oldestTimestamp == null) {
+                        continue;
                     }
-
-                    // 场景三：定位目标槽位释放时间并评估是否在超时预算内
-                    long targetTimestamp = getTimestampAt(Math.min(claimIndex, currentSize - 1));
-                    long waitNanos = windowNanos - (now - targetTimestamp);
+                    long waitNanos = windowNanos - (now - oldestTimestamp);
 
                     if (waitNanos <= 0L) {
                         continue;
@@ -232,7 +225,7 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             try {
                 long now = System.nanoTime();
                 cleanExpired(now);
-                return Math.max(0, permits - timestamps.size() - waitingCount);
+                return Math.max(0, permits - timestamps.size());
             } finally {
                 lock.unlock();
             }
@@ -252,20 +245,6 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             while (!timestamps.isEmpty() && (now - timestamps.peekFirst()) >= windowNanos) {
                 timestamps.pollFirst();
             }
-        }
-
-        private long getTimestampAt(int index) {
-            if (index < 0 || index >= timestamps.size()) {
-                return timestamps.peekFirst() != null ? timestamps.peekFirst() : 0L;
-            }
-            int i = 0;
-            for (Long ts : timestamps) {
-                if (i == index) {
-                    return ts;
-                }
-                i++;
-            }
-            return timestamps.peekLast() != null ? timestamps.peekLast() : 0L;
         }
     }
 }

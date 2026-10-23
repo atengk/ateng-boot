@@ -1,6 +1,5 @@
 package io.github.atengk.boot.notification.adapter;
 
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
@@ -164,27 +163,28 @@ public class FeishuPayloadBuilder implements NotificationPayloadBuilder {
         root.put("card", card);
     }
 
-    private void buildRawPayload(Map<String, Object> root, RawMessage msg) {
-        if (msg.getRawPayload() != null && !msg.getRawPayload().isEmpty()) {
-            root.putAll(msg.getRawPayload());
-        } else if (msg.getRawJson() != null && !msg.getRawJson().isBlank()) {
-            Map<String, Object> parsed = JsonUtil.parseMap(msg.getRawJson());
-            if (parsed != null) {
-                root.putAll(parsed);
-            }
-        }
-    }
-
     private void injectMentionTags(StringBuilder builder, MentionTarget mention) {
         if (mention == null || !mention.hasMentions()) {
             return;
         }
+        boolean hasAtAll = mention.isAtAll();
+        boolean hasUserIds = !mention.getAtUserIds().isEmpty();
+        boolean hasMobiles = !mention.getAtMobiles().isEmpty();
+
+        if (!hasAtAll && !hasUserIds && !hasMobiles) {
+            return;
+        }
+
         builder.append("\n\n");
-        if (mention.isAtAll()) {
+        if (hasAtAll) {
             builder.append("<at id=\"all\"></at> ");
         }
         for (String userId : mention.getAtUserIds()) {
             builder.append("<at id=\"").append(userId).append("\"></at> ");
+        }
+        // 飞书开放平台不支持直接以手机号作为 <at> 标签 id，自适应转译为文本标识 @手机号 避免静默丢失
+        for (String mobile : mention.getAtMobiles()) {
+            builder.append("@").append(mobile).append(" ");
         }
     }
 }

@@ -20,6 +20,7 @@ import java.time.Duration;
 public class SampleCustomNotificationChannelProvider implements NotificationChannelProvider {
 
     public static final String DYNAMIC_CHANNEL_NAME = "dynamic-security-bot";
+    public static volatile String dynamicWebhookUrl = "http://localhost:18080/webhook/dynamic-security";
 
     @Override
     public NotificationChannel loadChannel(String channelName) {
@@ -28,7 +29,7 @@ public class SampleCustomNotificationChannelProvider implements NotificationChan
             return NotificationChannel.builder()
                     .name(DYNAMIC_CHANNEL_NAME)
                     .platform(Platform.GENERIC)
-                    .webhook("http://localhost:18080/webhook/dynamic-security")
+                    .webhook(dynamicWebhookUrl)
                     .secret("DYNAMIC_SEC_KEY_8888")
                     .connectTimeout(Duration.ofSeconds(2))
                     .readTimeout(Duration.ofSeconds(3))

@@ -1,12 +1,14 @@
 package io.github.atengk.boot.notification.channel;
 
 import io.github.atengk.boot.core.util.BusinessAssert;
+import io.github.atengk.boot.notification.event.NotificationChannelEvictEvent;
 import io.github.atengk.boot.notification.exception.NotificationException;
 import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.util.NotificationDesensitizeUtil;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.Collections;
 import java.util.List;
@@ -30,6 +32,9 @@ public class NotificationChannelRegistry {
     private final ConcurrentMap<String, NotificationChannel> channels = new ConcurrentHashMap<>();
     private final List<NotificationChannelProvider> channelProviders = new CopyOnWriteArrayList<>();
     private final List<NotificationChannelResolver> channelResolvers = new CopyOnWriteArrayList<>();
+
+    @Setter
+    private ApplicationEventPublisher eventPublisher;
 
     /**
      * 默认渠道标识名称
@@ -70,8 +75,13 @@ public class NotificationChannelRegistry {
             return null;
         }
         NotificationChannel removed = channels.remove(channelName.trim());
-        if (removed != null && log.isDebugEnabled()) {
-            log.debug("Unregistered notification channel: name={}", channelName);
+        if (removed != null) {
+            if (log.isDebugEnabled()) {
+                log.debug("Unregistered notification channel: name={}", channelName);
+            }
+            if (eventPublisher != null) {
+                eventPublisher.publishEvent(new NotificationChannelEvictEvent(this, channelName.trim(), removed));
+            }
         }
         return removed;
     }

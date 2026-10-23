@@ -19,6 +19,7 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -60,6 +61,13 @@ class AlertStormSuppressorTest {
             NotificationMessage msg = invocation.getArgument(1);
             sentMessages.add(msg);
             return NotificationSendResult.success("msg-1", "ops-alert", Platform.DINGTALK, Duration.ofMillis(5), "ok");
+        });
+        when(mockTemplate.sendAsync(any(), any(NotificationMessage.class))).thenAnswer(invocation -> {
+            NotificationMessage msg = invocation.getArgument(1);
+            sentMessages.add(msg);
+            return CompletableFuture.completedFuture(
+                    NotificationSendResult.success("msg-1", "ops-alert", Platform.DINGTALK, Duration.ofMillis(5), "ok")
+            );
         });
 
         scheduler = Executors.newScheduledThreadPool(4);
@@ -272,5 +280,20 @@ class AlertStormSuppressorTest {
         assertEquals(2, sentMessages.size());
         CardMessage summaryCard = (CardMessage) sentMessages.get(1);
         assertThat(summaryCard.getContent()).contains("累计重复触发了 **499** 次");
+    }
+
+    @Test
+    @DisplayName("验证多层框架包装异常能够穿透至业务类提取真实首发行号")
+    void testFindFirstBusinessLineNumberWithNestedExceptions() throws NoSuchMethodException {
+        java.lang.reflect.Method testMethod = AlertStormSuppressorTest.class.getDeclaredMethod("testFindFirstBusinessLineNumberWithNestedExceptions");
+
+        // 模拟业务层抛出的 NPE（带有当前类的堆栈）
+        NullPointerException businessEx = new NullPointerException("真实业务异常");
+        // 外层被框架包裹两层
+        IllegalStateException wrapper1 = new IllegalStateException("框架包装异常 1", businessEx);
+        RuntimeException wrapper2 = new RuntimeException("框架包装异常 2", wrapper1);
+
+        int lineNo = AlertStormSuppressor.findFirstBusinessLineNumber(wrapper2, testMethod);
+        assertTrue(lineNo > 0, "应穿透到内部业务类的真实代码行号");
     }
 }

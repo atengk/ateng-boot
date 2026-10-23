@@ -2,6 +2,7 @@ package io.github.atengk.boot.notification.adapter;
 
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.model.NotificationMessage;
+import io.github.atengk.boot.notification.model.RawMessage;
 
 import java.util.Map;
 
@@ -30,5 +31,17 @@ public interface NotificationPayloadBuilder {
     default String buildJsonPayload(NotificationMessage message) {
         Map<String, Object> payload = buildPayload(message);
         return JsonUtil.toJsonString(payload);
+    }
+
+    /**
+     * 将原生逃生舱消息提取合并至目标平台根报文
+     *
+     * @param root 平台根报文容器
+     * @param msg  原生消息实例
+     */
+    default void buildRawPayload(Map<String, Object> root, RawMessage msg) {
+        if (root != null && msg != null) {
+            root.putAll(msg.toPayloadMap());
+        }
     }
 }

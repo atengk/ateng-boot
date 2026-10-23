@@ -145,6 +145,21 @@ class NotifyAlertAspectTest {
         verify(mockSuppressor, never()).processAlert(any());
     }
 
+    @Test
+    @DisplayName("验证非 JSON 格式（如 Map.toString 降级场景）敏感参数依然能够被严密脱敏")
+    void testMaskSensitiveWithMapFormat() {
+        assertThatThrownBy(() -> proxy.withComplexMap(java.util.Map.of("password", "real-password-123", "secret", "my-secret-key")))
+                .isInstanceOf(RuntimeException.class);
+
+        ArgumentCaptor<AlertContext> captor = ArgumentCaptor.forClass(AlertContext.class);
+        verify(mockSuppressor).processAlert(captor.capture());
+        AlertContext context = captor.getValue();
+
+        assertThat(context.getDesensitizedArgs()).doesNotContain("real-password-123");
+        assertThat(context.getDesensitizedArgs()).doesNotContain("my-secret-key");
+        assertThat(context.getDesensitizedArgs()).contains("\"******\"");
+    }
+
     static class TestAlertService {
 
         @NotifyAlert(title = "用户下单异常", channel = "order-channel")
@@ -171,6 +186,11 @@ class NotifyAlertAspectTest {
         @NotifyAlert(includeArgs = false)
         public void noArgs(String secret) {
             throw new RuntimeException("无入参测试");
+        }
+
+        @NotifyAlert(title = "复杂 Map 入参测试")
+        public void withComplexMap(java.util.Map<String, Object> params) {
+            throw new RuntimeException("Map 入参异常测试");
         }
     }
 }

@@ -70,6 +70,7 @@ class SampleNotificationIntegrationTest {
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
         String baseUrl = mockServer.url("").toString();
+        SampleCustomNotificationChannelProvider.dynamicWebhookUrl = baseUrl + "webhook/dynamic-security";
         // 动态覆盖各渠道的 Webhook 地址至 MockWebServer
         registry.add("ateng.boot.notification.channels.ops-alert.webhook", () -> baseUrl + "webhook/wecom");
         registry.add("ateng.boot.notification.channels.dingtalk-dev.webhook", () -> baseUrl + "webhook/dingtalk");
@@ -272,13 +273,131 @@ class SampleNotificationIntegrationTest {
     }
 
     @Test
-    @DisplayName("验证自定义渠道供给器 SPI (NotificationChannelProvider) 懒加载注入")
-    void testCustomChannelProviderLoaded() {
+    @DisplayName("验证自定义渠道供给器 SPI (NotificationChannelProvider) 懒加载注入并真正完成发信闭环")
+    void testCustomChannelProviderLoaded() throws Exception {
+        enqueueSuccessResponse();
+
         NotificationChannel channel = channelRegistry.get(SampleCustomNotificationChannelProvider.DYNAMIC_CHANNEL_NAME);
         assertNotNull(channel);
         assertEquals("dynamic-security-bot", channel.getName());
-        assertEquals("http://localhost:18080/webhook/dynamic-security", channel.getWebhook());
         assertEquals(30, channel.getPermitsPerMinute());
+
+        String payload = """
+                {
+                  "channel": "dynamic-security-bot",
+                  "content": "向动态懒加载渠道发送安全通报"
+                }
+                """;
+        mockMvc.perform(post("/api/v1/notification/text")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.channel").value("dynamic-security-bot"));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        assertThat(recorded.getPath()).startsWith("/webhook/dynamic-security");
+    }
+
+    @Test
+    @DisplayName("端到端验证动态模板变量渲染发信接口")
+    void testSendTemplateEndpoint() throws Exception {
+        enqueueSuccessResponse();
+
+        String varsJson = """
+                {
+                  "appName": "ateng-pay",
+                  "qps": 12500
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/notification/template")
+                        .param("channel", "dingtalk-dev")
+                        .param("templateContent", "服务 ${appName} 瞬时 QPS 达到 ${qps}")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(varsJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        String body = recorded.getBody().readUtf8();
+        assertThat(body).contains("服务 ateng-pay 瞬时 QPS 达到 12500");
+    }
+
+    @Test
+    @DisplayName("端到端验证原始特化 JSON 逃生舱发信接口")
+    void testSendRawMessageEndpoint() throws Exception {
+        enqueueSuccessResponse();
+
+        String rawJson = """
+                {
+                  "msgtype": "raw_special",
+                  "custom_node": {
+                    "token": "tok_123",
+                    "status": "APPROVED"
+                  }
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/notification/raw")
+                        .param("channel", "generic-monitor")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        String body = recorded.getBody().readUtf8();
+        assertThat(body).contains("raw_special").contains("APPROVED");
+    }
+
+    @Test
+    @DisplayName("端到端验证图片通知发信接口")
+    void testSendImageMessageEndpoint() throws Exception {
+        enqueueSuccessResponse();
+
+        mockMvc.perform(post("/api/v1/notification/image")
+                        .param("channel", "ops-alert")
+                        .param("base64", "aGVsbG8=")
+                        .param("md5", "5d41402abc4b2a76b9719d911017c592"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        String body = recorded.getBody().readUtf8();
+        assertThat(body).contains("image").contains("aGVsbG8=");
+    }
+
+    @Test
+    @DisplayName("端到端验证发信失败时自动触发 NotificationSendFailureHandler 补偿 SPI 回调")
+    void testSendFailureHandlerTriggered() throws Exception {
+        // 模拟 MockWebServer 返回 500 触发发信异常
+        mockServer.enqueue(new MockResponse().setResponseCode(500).setBody("Internal Error"));
+
+        int previousFailures = io.github.atengk.boot.sample.notification.handler.SampleNotificationSendFailureHandler.FAILURE_COUNT.get();
+
+        String payload = """
+                {
+                  "channel": "ops-alert",
+                  "content": "模拟异步发信失败以验证补偿回调"
+                }
+                """;
+
+        // 异步发信在受管线程池中抛出异常后会触发 NotificationSendFailureHandler
+        mockMvc.perform(post("/api/v1/notification/async")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        // 等待异步任务在线程池中执行并完成回调
+        TimeUnit.MILLISECONDS.sleep(800);
+
+        int currentFailures = io.github.atengk.boot.sample.notification.handler.SampleNotificationSendFailureHandler.FAILURE_COUNT.get();
+        assertThat(currentFailures).isGreaterThan(previousFailures);
     }
 
     @Test

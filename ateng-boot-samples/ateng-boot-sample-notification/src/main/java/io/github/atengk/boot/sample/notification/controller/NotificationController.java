@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -86,6 +87,41 @@ public class NotificationController {
             @RequestParam String targetChannel,
             @Valid @RequestBody TextMessageRequest request) {
         NotificationSendResult result = notificationService.sendWithSwitchedChannel(targetChannel, request);
+        return Result.success(result);
+    }
+
+    /**
+     * 动态模板渲染发信演示
+     */
+    @PostMapping("/template")
+    public Result<NotificationSendResult> sendTemplate(
+            @RequestParam(required = false) String channel,
+            @RequestParam String templateContent,
+            @RequestBody Map<String, Object> variables) {
+        NotificationSendResult result = notificationService.sendTemplate(channel, templateContent, variables);
+        return Result.success(result);
+    }
+
+    /**
+     * 原始特化逃生舱发信演示
+     */
+    @PostMapping("/raw")
+    public Result<NotificationSendResult> sendRaw(
+            @RequestParam(required = false) String channel,
+            @RequestBody Map<String, Object> rawPayload) {
+        NotificationSendResult result = notificationService.sendRaw(channel, rawPayload);
+        return Result.success(result);
+    }
+
+    /**
+     * 图片通知发信演示
+     */
+    @PostMapping("/image")
+    public Result<NotificationSendResult> sendImage(
+            @RequestParam(required = false) String channel,
+            @RequestParam String base64,
+            @RequestParam String md5) {
+        NotificationSendResult result = notificationService.sendImage(channel, base64, md5);
         return Result.success(result);
     }
 }

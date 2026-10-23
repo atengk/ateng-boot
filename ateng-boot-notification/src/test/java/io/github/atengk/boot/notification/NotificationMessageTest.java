@@ -125,12 +125,15 @@ class NotificationMessageTest {
         RawMessage jsonRaw = RawMessage.of("{\"msgtype\":\"text\",\"text\":{\"content\":\"raw\"}}");
         assertEquals(MessageType.RAW, jsonRaw.getMessageType());
         assertDoesNotThrow(jsonRaw::validate);
+        assertEquals("text", jsonRaw.toPayloadMap().get("msgtype"));
 
         RawMessage mapRaw = RawMessage.of(Map.of("custom_key", "custom_value"));
         assertEquals(MessageType.RAW, mapRaw.getMessageType());
         assertDoesNotThrow(mapRaw::validate);
+        assertEquals("custom_value", mapRaw.toPayloadMap().get("custom_key"));
 
         RawMessage emptyRaw = new RawMessage();
+        assertEquals(0, emptyRaw.toPayloadMap().size());
         NotificationException ex = assertThrows(NotificationException.class, emptyRaw::validate);
         assertEquals(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY.getCode(), ex.getCode());
     }

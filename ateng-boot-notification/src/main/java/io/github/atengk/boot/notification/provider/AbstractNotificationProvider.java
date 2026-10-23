@@ -18,6 +18,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 协同通知平台驱动抽象基类
@@ -30,6 +32,7 @@ import java.time.Duration;
 public abstract class AbstractNotificationProvider implements NotificationProvider {
 
     protected final Platform supportedPlatform;
+    private final ConcurrentMap<String, RestClient> customClientCache = new ConcurrentHashMap<>();
 
     protected AbstractNotificationProvider(Platform supportedPlatform) {
         this.supportedPlatform = supportedPlatform;
@@ -98,6 +101,12 @@ public abstract class AbstractNotificationProvider implements NotificationProvid
         }
         Duration connectTimeout = channel.getConnectTimeout() != null ? channel.getConnectTimeout() : Duration.ofSeconds(3);
         Duration readTimeout = channel.getReadTimeout() != null ? channel.getReadTimeout() : Duration.ofSeconds(5);
+        String cacheKey = channel.getName() + ":" + connectTimeout.toMillis() + ":" + readTimeout.toMillis();
+        return customClientCache.computeIfAbsent(cacheKey, key -> createCustomRestClient(channel, defaultClient, connectTimeout, readTimeout));
+    }
+
+    private RestClient createCustomRestClient(NotificationChannel channel, RestClient defaultClient,
+                                              Duration connectTimeout, Duration readTimeout) {
         try {
             HttpClient httpClient = HttpClient.newBuilder()
                     .connectTimeout(connectTimeout)

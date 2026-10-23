@@ -1,7 +1,7 @@
 package io.github.atengk.boot.notification.adapter;
 
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
@@ -100,8 +100,17 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
         boolean hasImage = msg.getMainImageUrl() != null && !msg.getMainImageUrl().isBlank();
         card.put("card_type", hasImage ? "news_notice" : "text_notice");
 
-        Map<String, String> source = new LinkedHashMap<>();
+        Map<String, Object> source = new LinkedHashMap<>();
         source.put("desc", "系统通知");
+        if (msg.getHeaderColor() != null) {
+            int descColor = switch (msg.getHeaderColor()) {
+                case RED, CARMINE, ORANGE -> 2;
+                case GREEN -> 3;
+                case GREY -> 0;
+                default -> 1;
+            };
+            source.put("desc_color", descColor);
+        }
         card.put("source", source);
 
         Map<String, String> mainTitle = new LinkedHashMap<>();
@@ -155,16 +164,5 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
         imageNode.put("base64", msg.getBase64());
         imageNode.put("md5", msg.getMd5());
         root.put("image", imageNode);
-    }
-
-    private void buildRawPayload(Map<String, Object> root, RawMessage msg) {
-        if (msg.getRawPayload() != null && !msg.getRawPayload().isEmpty()) {
-            root.putAll(msg.getRawPayload());
-        } else if (msg.getRawJson() != null && !msg.getRawJson().isBlank()) {
-            Map<String, Object> parsed = JsonUtil.parseMap(msg.getRawJson());
-            if (parsed != null) {
-                root.putAll(parsed);
-            }
-        }
     }
 }

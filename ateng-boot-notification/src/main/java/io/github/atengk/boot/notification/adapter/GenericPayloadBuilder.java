@@ -1,6 +1,5 @@
 package io.github.atengk.boot.notification.adapter;
 
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
@@ -32,12 +31,7 @@ public class GenericPayloadBuilder implements NotificationPayloadBuilder {
         Map<String, Object> root = new LinkedHashMap<>();
 
         if (message instanceof RawMessage raw) {
-            if (raw.getRawPayload() != null && !raw.getRawPayload().isEmpty()) {
-                return new LinkedHashMap<>(raw.getRawPayload());
-            } else if (raw.getRawJson() != null && !raw.getRawJson().isBlank()) {
-                Map<String, Object> parsed = JsonUtil.parseMap(raw.getRawJson());
-                return parsed != null ? parsed : Map.of();
-            }
+            return raw.toPayloadMap();
         }
 
         root.put("msgType", message.getMessageType().getCode());

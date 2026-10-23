@@ -114,7 +114,7 @@ public class NotifyAlertAspect {
             traceId = MDC.get("trace_id");
         }
         if (traceId == null || traceId.isBlank()) {
-            traceId = IdUtil.simpleUUID();
+            traceId = IdUtil.fastSimpleUUID();
         }
 
         String userId = UserContextHolder.get();
@@ -187,12 +187,13 @@ public class NotifyAlertAspect {
         if (keys == null || keys.isEmpty()) {
             keys = java.util.List.of("password", "secret", "token", "credential", "pwd", "passwd", "idcard", "mobile", "auth");
         }
-        String result = input;
-        for (String key : keys) {
-            String regex = "(?i)(\"" + java.util.regex.Pattern.quote(key) + "\"\\s*:\\s*)(\"[^\"]*\"|[^,\\s\\]\\}]+)";
-            result = result.replaceAll(regex, "$1\"******\"");
-        }
-        return result;
+        // 构建单条统一正则，兼容 JSON ("key": ...) 与 Java Map.toString (key=... 或 "key"=...) 两种结构
+        String keyPattern = keys.stream()
+                .map(java.util.regex.Pattern::quote)
+                .reduce((a, b) -> a + "|" + b)
+                .orElse("password");
+        String regex = "(?i)(\"?(" + keyPattern + ")\"?\\s*[:=]\\s*)(\"[^\"]*\"|[^,\\s\\]\\}]+)";
+        return input.replaceAll(regex, "$1\"******\"");
     }
 
     private boolean isExcludedArgType(Object arg) {

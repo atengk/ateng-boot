@@ -2,6 +2,7 @@ package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.WeComPayloadBuilder;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
@@ -132,6 +133,32 @@ class WeComPayloadBuilderTest {
         Map<String, String> imageObj = (Map<String, String>) payload.get("image");
         assertEquals("aGVsbG8=", imageObj.get("base64"));
         assertEquals("5d41402abc4b2a76b9719d911017c592", imageObj.get("md5"));
+    }
+
+    @Test
+    @DisplayName("验证 CardMessage 主题色自适应映射为企微 source.desc_color")
+    @SuppressWarnings("unchecked")
+    void testBuildTemplateCardHeaderColor() {
+        CardMessage redCard = CardMessage.of("系统严重故障", "数据库不可用")
+                .headerColor(CardColor.RED);
+        Map<String, Object> redPayload = builder.buildPayload(redCard);
+        Map<String, Object> redCardObj = (Map<String, Object>) redPayload.get("template_card");
+        Map<String, Object> redSource = (Map<String, Object>) redCardObj.get("source");
+        assertEquals(2, redSource.get("desc_color"));
+
+        CardMessage greenCard = CardMessage.of("发布成功", "v1.0 已上线")
+                .headerColor(CardColor.GREEN);
+        Map<String, Object> greenPayload = builder.buildPayload(greenCard);
+        Map<String, Object> greenCardObj = (Map<String, Object>) greenPayload.get("template_card");
+        Map<String, Object> greenSource = (Map<String, Object>) greenCardObj.get("source");
+        assertEquals(3, greenSource.get("desc_color"));
+
+        CardMessage greyCard = CardMessage.of("普通通知", "日终结算已完成")
+                .headerColor(CardColor.GREY);
+        Map<String, Object> greyPayload = builder.buildPayload(greyCard);
+        Map<String, Object> greyCardObj = (Map<String, Object>) greyPayload.get("template_card");
+        Map<String, Object> greySource = (Map<String, Object>) greyCardObj.get("source");
+        assertEquals(0, greySource.get("desc_color"));
     }
 
     @Test

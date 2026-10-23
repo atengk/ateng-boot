@@ -46,6 +46,10 @@ public class ImageMessage extends NotificationMessage {
         return new ImageMessage(base64, md5);
     }
 
+    public static ImageMessage ofBase64(String base64, String md5) {
+        return of(base64, md5);
+    }
+
     /**
      * 基于原始图片二进制字节数组自动计算 Base64 与 MD5
      *

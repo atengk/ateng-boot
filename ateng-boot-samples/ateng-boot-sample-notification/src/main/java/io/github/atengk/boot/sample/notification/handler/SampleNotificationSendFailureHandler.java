@@ -17,8 +17,11 @@ import org.springframework.stereotype.Component;
 @Component
 public class SampleNotificationSendFailureHandler implements NotificationSendFailureHandler {
 
+    public static final java.util.concurrent.atomic.AtomicInteger FAILURE_COUNT = new java.util.concurrent.atomic.AtomicInteger(0);
+
     @Override
     public void onFailure(NotificationChannel channel, NotificationMessage message, Throwable throwable) {
+        FAILURE_COUNT.incrementAndGet();
         String channelName = channel != null ? channel.getName() : "unknown";
         String msgType = message != null ? message.getMessageType().name() : "unknown";
         log.warn("SampleNotificationSendFailureHandler: 捕获通知发信失败补偿事件 [channel={}, msgType={}, error={}]",

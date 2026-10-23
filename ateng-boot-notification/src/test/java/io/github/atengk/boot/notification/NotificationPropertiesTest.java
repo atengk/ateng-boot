@@ -40,14 +40,6 @@ class NotificationPropertiesTest {
         assertEquals(Duration.ofSeconds(60), properties.getAlert().getSuppressWindow());
         assertTrue(properties.getAlert().isIncludeArgs());
 
-        // 重试默认值
-        assertNotNull(properties.getRetry());
-        assertTrue(properties.getRetry().isEnabled());
-        assertEquals(3, properties.getRetry().getMaxAttempts());
-        assertEquals(Duration.ofMillis(500), properties.getRetry().getInitialInterval());
-        assertEquals(2.0, properties.getRetry().getMultiplier());
-        assertEquals(Duration.ofSeconds(3), properties.getRetry().getMaxInterval());
-
         // 渠道映射默认为空非 null
         assertNotNull(properties.getChannels());
         assertTrue(properties.getChannels().isEmpty());

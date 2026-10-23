@@ -1,6 +1,5 @@
 package io.github.atengk.boot.notification.adapter;
 
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
@@ -89,7 +88,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
             }
             cardNode.put("singleTitle", singleTitle != null ? singleTitle : "查看详情");
             cardNode.put("singleURL", singleUrl != null ? singleUrl : "");
-        } else {
+        } else if (!msg.getButtons().isEmpty()) {
             cardNode.put("btnOrientation", "0"); // 默认竖直排列
             List<Map<String, String>> btnList = new ArrayList<>();
             for (CardButton btn : msg.getButtons()) {
@@ -99,20 +98,14 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
                 btnList.add(b);
             }
             cardNode.put("btns", btnList);
+        } else {
+            // 既非 singleAction 且按钮列表为空时，ActionCard 不得输出空 btns: []，自动降级为默认查看单按钮
+            cardNode.put("singleTitle", "查看详情");
+            cardNode.put("singleURL", "");
         }
 
         root.put("actionCard", cardNode);
-    }
-
-    private void buildRawPayload(Map<String, Object> root, RawMessage msg) {
-        if (msg.getRawPayload() != null && !msg.getRawPayload().isEmpty()) {
-            root.putAll(msg.getRawPayload());
-        } else if (msg.getRawJson() != null && !msg.getRawJson().isBlank()) {
-            Map<String, Object> parsed = JsonUtil.parseMap(msg.getRawJson());
-            if (parsed != null) {
-                root.putAll(parsed);
-            }
-        }
+        attachAt(root, msg.getMention());
     }
 
     private void attachAt(Map<String, Object> root, MentionTarget mention) {

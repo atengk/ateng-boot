@@ -51,12 +51,6 @@ public class NotificationProperties {
     private NotificationAlertProperties alert = new NotificationAlertProperties();
 
     /**
-     * 网络重试退避配置
-     */
-    @NestedConfigurationProperty
-    private NotificationRetryProperties retry = new NotificationRetryProperties();
-
-    /**
      * 多命名渠道配置映射表 (channelName -> NotificationChannelProperties)
      */
     private Map<String, NotificationChannelProperties> channels = new LinkedHashMap<>();

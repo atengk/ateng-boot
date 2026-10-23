@@ -1,5 +1,6 @@
 package io.github.atengk.boot.notification.autoconfigure;
 
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
 import io.github.atengk.boot.notification.aspect.NotifyAlertAspect;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
@@ -24,6 +25,7 @@ import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -50,6 +52,7 @@ import java.util.concurrent.Executor;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(RestClient.class)
 @ConditionalOnProperty(prefix = "ateng.boot.notification", name = "enabled", havingValue = "true", matchIfMissing = true)
 @Conditional(NotificationConfiguredCondition.class)
@@ -119,9 +122,11 @@ public class AtengNotificationAutoConfiguration {
     @ConditionalOnMissingBean
     public NotificationChannelRegistry notificationChannelRegistry(
             NotificationProperties properties,
-            ObjectProvider<List<NotificationChannelProvider>> providersProvider,
-            ObjectProvider<List<NotificationChannelResolver>> resolversProvider) {
+            ObjectProvider<NotificationChannelProvider> providersProvider,
+            ObjectProvider<NotificationChannelResolver> resolversProvider,
+            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
         NotificationChannelRegistry registry = new NotificationChannelRegistry(properties.getDefaultChannel());
+        eventPublisherProvider.ifAvailable(registry::setEventPublisher);
 
         if (properties.getChannels() != null) {
             properties.getChannels().forEach((name, channelProps) -> {
@@ -131,8 +136,8 @@ public class AtengNotificationAutoConfiguration {
             });
         }
 
-        providersProvider.ifAvailable(providers -> providers.forEach(registry::addProvider));
-        resolversProvider.ifAvailable(resolvers -> resolvers.forEach(registry::addResolver));
+        providersProvider.orderedStream().forEach(registry::addProvider);
+        resolversProvider.orderedStream().forEach(registry::addResolver);
 
         log.debug("Initialized NotificationChannelRegistry with {} pre-configured channels (defaultChannel={})",
                 registry.size(), properties.getDefaultChannel());

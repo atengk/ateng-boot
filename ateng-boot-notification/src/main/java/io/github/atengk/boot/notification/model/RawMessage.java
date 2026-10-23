@@ -1,5 +1,6 @@
 package io.github.atengk.boot.notification.model;
 
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.notification.exception.NotificationException;
 import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import lombok.Data;
@@ -7,6 +8,8 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -72,5 +75,23 @@ public class RawMessage extends NotificationMessage {
         if (!hasJson && !hasPayload) {
             throw new NotificationException(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY, "原生逃生舱 rawJson 或 rawPayload 至少一项不能为空");
         }
+    }
+
+    /**
+     * 将原始逃生舱报文提取或解析为键值映射表
+     *
+     * @return 报文 Map 结构；若为空或解析失败则返回空 Map
+     */
+    public Map<String, Object> toPayloadMap() {
+        if (rawPayload != null && !rawPayload.isEmpty()) {
+            return new LinkedHashMap<>(rawPayload);
+        }
+        if (rawJson != null && !rawJson.isBlank()) {
+            Map<String, Object> parsed = JsonUtil.parseMap(rawJson);
+            if (parsed != null) {
+                return parsed;
+            }
+        }
+        return Collections.emptyMap();
     }
 }

@@ -4,9 +4,11 @@ import io.github.atengk.boot.notification.context.NotificationContextHolder;
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.ImageMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
+import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
@@ -19,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -43,11 +46,7 @@ public class NotificationScenarioService {
         if (mentionTarget != null) {
             message.setMention(mentionTarget);
         }
-
-        if (StringUtils.hasText(request.getChannel())) {
-            return notificationTemplate.send(request.getChannel(), message);
-        }
-        return notificationTemplate.send(message);
+        return notificationTemplate.send(request.getChannel(), message);
     }
 
     /**
@@ -59,11 +58,7 @@ public class NotificationScenarioService {
         if (mentionTarget != null) {
             message.setMention(mentionTarget);
         }
-
-        if (StringUtils.hasText(request.getChannel())) {
-            return notificationTemplate.send(request.getChannel(), message);
-        }
-        return notificationTemplate.send(message);
+        return notificationTemplate.send(request.getChannel(), message);
     }
 
     /**
@@ -84,10 +79,7 @@ public class NotificationScenarioService {
             message.setMention(MentionTarget.ofUserIds(request.getAtUserIds().toArray(new String[0])));
         }
 
-        if (StringUtils.hasText(request.getChannel())) {
-            return notificationTemplate.send(request.getChannel(), message);
-        }
-        return notificationTemplate.send(message);
+        return notificationTemplate.send(request.getChannel(), message);
     }
 
     /**
@@ -95,10 +87,7 @@ public class NotificationScenarioService {
      */
     public CompletableFuture<NotificationSendResult> sendAsync(TextMessageRequest request) {
         TextMessage message = new TextMessage(request.getContent());
-        if (StringUtils.hasText(request.getChannel())) {
-            return notificationTemplate.sendAsync(request.getChannel(), message);
-        }
-        return notificationTemplate.sendAsync(message);
+        return notificationTemplate.sendAsync(request.getChannel(), message);
     }
 
     /**
@@ -107,17 +96,33 @@ public class NotificationScenarioService {
     @Transactional(rollbackFor = Exception.class)
     public String sendTransactional(TextMessageRequest request, boolean triggerRollback) {
         TextMessage message = new TextMessage(request.getContent());
-
-        if (StringUtils.hasText(request.getChannel())) {
-            notificationTemplate.sendAfterCommit(request.getChannel(), message);
-        } else {
-            notificationTemplate.sendAfterCommit(message);
-        }
+        notificationTemplate.sendAfterCommit(request.getChannel(), message);
 
         if (triggerRollback) {
             throw new IllegalStateException("模拟事务发生致命异常触发回滚，防范幽灵通知发送！");
         }
         return "事务提交成功，发信将在物理 commit 后触发";
+    }
+
+    /**
+     * 动态模板渲染发信
+     */
+    public NotificationSendResult sendTemplate(String channel, String templateContent, Map<String, Object> variables) {
+        return notificationTemplate.sendTemplate(channel, templateContent, variables);
+    }
+
+    /**
+     * 原生特化 JSON 逃生舱发信
+     */
+    public NotificationSendResult sendRaw(String channel, Map<String, Object> rawPayload) {
+        return notificationTemplate.send(channel, RawMessage.of(rawPayload));
+    }
+
+    /**
+     * 图片通知发信
+     */
+    public NotificationSendResult sendImage(String channel, String base64, String md5) {
+        return notificationTemplate.send(channel, ImageMessage.ofBase64(base64, md5));
     }
 
     /**
