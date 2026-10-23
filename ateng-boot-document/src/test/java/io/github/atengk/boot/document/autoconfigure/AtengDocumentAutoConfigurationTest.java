@@ -4,6 +4,7 @@ import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.word.WordTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -35,6 +36,7 @@ class AtengDocumentAutoConfigurationTest {
             assertThat(context).hasSingleBean(DocumentConverter.class);
             assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(DefaultDocumentConverter.class);
             assertThat(context).hasSingleBean(DocumentFontResolver.class);
+            assertThat(context).hasSingleBean(WordTemplate.class);
         });
     }
 
@@ -46,6 +48,7 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(DocumentProperties.class);
                     assertThat(context).doesNotHaveBean(DocumentConverter.class);
                     assertThat(context).doesNotHaveBean(DocumentFontResolver.class);
+                    assertThat(context).doesNotHaveBean(WordTemplate.class);
                 });
     }
 
@@ -57,6 +60,7 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context).hasSingleBean(DocumentConverter.class);
                     assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(CustomDocumentConverter.class);
                     assertThat(context).hasSingleBean(DocumentFontResolver.class);
+                    assertThat(context).hasSingleBean(WordTemplate.class);
                 });
     }
 
@@ -67,7 +71,30 @@ class AtengDocumentAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(DocumentFontResolver.class);
                     assertThat(context.getBean(DocumentFontResolver.class)).isInstanceOf(CustomDocumentFontResolver.class);
+                    assertThat(context).hasSingleBean(WordTemplate.class);
                 });
+    }
+
+    @Test
+    @DisplayName("测试用户自定义 WordTemplate 时缺省 Bean 平滑让位")
+    void testCustomWordTemplateOverride() {
+        contextRunner.withUserConfiguration(CustomWordTemplateConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(WordTemplate.class);
+                    assertThat(context.getBean(WordTemplate.class)).isInstanceOf(CustomWordTemplate.class);
+                });
+    }
+
+    @Configuration
+    static class CustomWordTemplateConfiguration {
+
+        @Bean
+        public WordTemplate customWordTemplate() {
+            return new CustomWordTemplate();
+        }
+    }
+
+    static class CustomWordTemplate extends WordTemplate {
     }
 
     @Configuration

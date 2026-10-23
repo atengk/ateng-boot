@@ -4,6 +4,7 @@ import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
+import io.github.atengk.boot.document.word.WordTemplate;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -42,5 +43,17 @@ public class AtengDocumentAutoConfiguration {
     @ConditionalOnMissingBean(DocumentFontResolver.class)
     public DocumentFontResolver documentFontResolver(DocumentProperties properties) {
         return new DocumentFontResolver(properties.getPdf());
+    }
+
+    /**
+     * 注册 Word 文档模板渲染统一操作门面
+     *
+     * @param properties 文档治理根配置属性
+     * @return WordTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(WordTemplate.class)
+    public WordTemplate wordTemplate(DocumentProperties properties) {
+        return new WordTemplate(properties.getWord());
     }
 }
