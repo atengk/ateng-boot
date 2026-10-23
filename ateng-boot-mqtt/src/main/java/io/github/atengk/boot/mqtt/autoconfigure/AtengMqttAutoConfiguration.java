@@ -7,6 +7,7 @@ import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcess
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
+import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -65,13 +66,24 @@ public class AtengMqttAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public MqttRequestReplyManager mqttRequestReplyManager(NamedMqttClientRegistry namedMqttClientRegistry,
+                                                           PayloadGuard mqttPayloadGuard,
+                                                           @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                                           @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+        Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
+        return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public MqttTemplate mqttTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
                                     PayloadGuard mqttPayloadGuard,
                                     MqttSendFailureHandler mqttSendFailureHandler,
+                                    MqttRequestReplyManager mqttRequestReplyManager,
                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                     @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        return new MqttTemplate(namedMqttClientRegistry, mqttPayloadGuard, mqttSendFailureHandler, executor);
+        return new MqttTemplate(namedMqttClientRegistry, mqttPayloadGuard, mqttSendFailureHandler, executor, mqttRequestReplyManager);
     }
 
     @Bean

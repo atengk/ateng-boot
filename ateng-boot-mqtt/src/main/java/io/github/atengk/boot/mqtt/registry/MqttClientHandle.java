@@ -17,6 +17,7 @@ public class MqttClientHandle {
     private final MqttAsyncClient asyncClient;
     private final MqttConnectionOptions connectionOptions;
     private final MqttClientProperties clientProperties;
+    private final String responseTopic;
 
     public MqttClientHandle(String clientName,
                             String actualClientId,
@@ -28,6 +29,7 @@ public class MqttClientHandle {
         this.asyncClient = asyncClient;
         this.connectionOptions = connectionOptions;
         this.clientProperties = clientProperties;
+        this.responseTopic = clientProperties != null ? clientProperties.resolveResponseTopic(actualClientId) : "sys/response/" + actualClientId;
     }
 
     public String getClientName() {
@@ -48,6 +50,10 @@ public class MqttClientHandle {
 
     public MqttClientProperties getClientProperties() {
         return clientProperties;
+    }
+
+    public String getResponseTopic() {
+        return responseTopic;
     }
 
     public boolean isConnected() {

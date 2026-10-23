@@ -109,6 +109,11 @@ public class MqttClientProperties {
     private Duration shutdownTimeout = Duration.ofSeconds(10);
 
     /**
+     * 请求-响应模式专用的聚合响应主题前缀（默认 "sys/response/"，实际订阅为 prefix + actualClientId）
+     */
+    private String responseTopicPrefix = "sys/response/";
+
+    /**
      * 遗嘱消息配置
      */
     @NestedConfigurationProperty
@@ -286,5 +291,29 @@ public class MqttClientProperties {
 
     public void setSsl(MqttSslProperties ssl) {
         this.ssl = ssl;
+    }
+
+    public String getResponseTopicPrefix() {
+        return responseTopicPrefix;
+    }
+
+    public void setResponseTopicPrefix(String responseTopicPrefix) {
+        this.responseTopicPrefix = responseTopicPrefix;
+    }
+
+    /**
+     * 解析当前客户端实际生效的私有聚合响应主题
+     *
+     * @param actualClientId 实际客户端唯一标识
+     * @return 聚合响应主题
+     */
+    public String resolveResponseTopic(String actualClientId) {
+        if (org.springframework.util.StringUtils.hasText(responseTopicPrefix)) {
+            if (responseTopicPrefix.contains("{clientId}")) {
+                return responseTopicPrefix.replace("{clientId}", actualClientId);
+            }
+            return responseTopicPrefix.endsWith("/") ? responseTopicPrefix + actualClientId : responseTopicPrefix + "/" + actualClientId;
+        }
+        return "sys/response/" + actualClientId;
     }
 }

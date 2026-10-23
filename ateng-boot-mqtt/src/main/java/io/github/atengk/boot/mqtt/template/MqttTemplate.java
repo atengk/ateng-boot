@@ -11,10 +11,12 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
+import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttActionListener;
 import org.eclipse.paho.mqttv5.client.MqttConnectionOptions;
@@ -40,7 +42,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -64,25 +69,35 @@ public class MqttTemplate {
     private final PayloadGuard payloadGuard;
     private final MqttSendFailureHandler failureHandler;
     private final Executor executor;
+    private final MqttRequestReplyManager requestReplyManager;
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry, PayloadGuard payloadGuard) {
-        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null);
+        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler) {
-        this(clientRegistry, payloadGuard, failureHandler, null);
+        this(clientRegistry, payloadGuard, failureHandler, null, null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler,
                         Executor executor) {
+        this(clientRegistry, payloadGuard, failureHandler, executor, null);
+    }
+
+    public MqttTemplate(NamedMqttClientRegistry clientRegistry,
+                        PayloadGuard payloadGuard,
+                        MqttSendFailureHandler failureHandler,
+                        Executor executor,
+                        MqttRequestReplyManager requestReplyManager) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.failureHandler = failureHandler != null ? failureHandler : new DefaultMqttSendFailureHandler();
         this.executor = executor;
+        this.requestReplyManager = requestReplyManager;
     }
 
     // ==================== 默认客户端同步发信接口 ====================
@@ -624,6 +639,278 @@ public class MqttTemplate {
             log.error("[MQTT] Dynamic unsubscribe failed on client [{}] from topic [{}]: {}", effectiveClient, topicFilter, e.getMessage(), e);
             throw new BusinessException("Failed to unsubscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
         }
+    }
+
+    // ==================== 请求-响应模式 (Request-Response Pattern) 双向控制闭环接口 ====================
+
+    /**
+     * 发送请求并同步阻塞等待回执响应（默认客户端，QoS 1）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param timeout 超时阈值
+     * @return 响应报文
+     */
+    public MqttMessage sendAndReceive(String topic, Object payload, Duration timeout) {
+        return sendAndReceive(null, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 发送请求并同步阻塞等待回执响应（默认客户端）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param qos     QoS 等级
+     * @param timeout 超时阈值
+     * @return 响应报文
+     */
+    public MqttMessage sendAndReceive(String topic, Object payload, int qos, Duration timeout) {
+        return sendAndReceive(null, topic, payload, qos, timeout);
+    }
+
+    /**
+     * 指定客户端发送请求并同步阻塞等待回执响应（QoS 1）
+     *
+     * @param clientName 客户端逻辑名称
+     * @param topic      目标请求主题
+     * @param payload    请求载荷
+     * @param timeout    超时阈值
+     * @return 响应报文
+     */
+    public MqttMessage sendAndReceive(String clientName, String topic, Object payload, Duration timeout) {
+        return sendAndReceive(clientName, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 指定客户端发送请求并同步阻塞等待回执响应
+     *
+     * @param clientName 客户端逻辑名称
+     * @param topic      目标请求主题
+     * @param payload    请求载荷
+     * @param qos        QoS 等级
+     * @param timeout    超时阈值
+     * @return 响应报文
+     */
+    public MqttMessage sendAndReceive(String clientName, String topic, Object payload, int qos, Duration timeout) {
+        try {
+            CompletableFuture<MqttMessage> future = sendAndReceiveAsync(clientName, topic, payload, qos, timeout);
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            throw new MqttTimeoutException("Request-Response timed out after " + timeout.toMillis() + "ms for topic [" + topic + "]", topic, null, timeout, e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new BusinessException("Request-Response execution failed for topic [" + topic + "]: " + cause.getMessage(), cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("Request-Response execution interrupted for topic [" + topic + "]", e);
+        }
+    }
+
+    /**
+     * 发送请求并同步阻塞等待响应，自动转译为期望的目标类型（默认客户端，QoS 1）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return 反序列化后的响应对象
+     */
+    public <T> T sendAndReceive(String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceive(null, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 发送请求并同步阻塞等待响应，自动转译为期望的目标类型（默认客户端）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return 反序列化后的响应对象
+     */
+    public <T> T sendAndReceive(String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        return sendAndReceive(null, topic, payload, qos, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发送请求并同步阻塞等待响应，自动转译为期望的目标类型（QoS 1）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return 反序列化后的响应对象
+     */
+    public <T> T sendAndReceive(String clientName, String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceive(clientName, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发送请求并同步阻塞等待响应，自动转译为期望的目标类型
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return 反序列化后的响应对象
+     */
+    public <T> T sendAndReceive(String clientName, String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        MqttMessage message = sendAndReceive(clientName, topic, payload, qos, timeout);
+        return convertResponse(message, responseType);
+    }
+
+    /**
+     * 异步非阻塞发起请求并返回响应 Future（默认客户端，QoS 1）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param timeout 超时阈值
+     * @return CompletableFuture 响应报文
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 异步非阻塞发起请求并返回响应 Future（默认客户端）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param qos     QoS 等级
+     * @param timeout 超时阈值
+     * @return CompletableFuture 响应报文
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, int qos, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, timeout);
+    }
+
+    /**
+     * 指定客户端异步非阻塞发起请求并返回响应 Future（QoS 1）
+     *
+     * @param clientName 客户端逻辑名称
+     * @param topic      目标请求主题
+     * @param payload    请求载荷
+     * @param timeout    超时阈值
+     * @return CompletableFuture 响应报文
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String clientName, String topic, Object payload, Duration timeout) {
+        return sendAndReceiveAsync(clientName, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 指定客户端异步非阻塞发起请求并返回响应 Future
+     *
+     * @param clientName 客户端逻辑名称
+     * @param topic      目标请求主题
+     * @param payload    请求载荷
+     * @param qos        QoS 等级
+     * @param timeout    超时阈值
+     * @return CompletableFuture 响应报文
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String clientName, String topic, Object payload, int qos, Duration timeout) {
+        String effectiveClient = resolveEffectiveClientName(clientName);
+        return getRequiredRequestReplyManager().sendAndReceiveAsync(effectiveClient, topic, payload, qos, timeout);
+    }
+
+    /**
+     * 异步非阻塞发起请求，并自动转译为目标类型（默认客户端，QoS 1）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return CompletableFuture 目标响应对象
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 异步非阻塞发起请求，并自动转译为目标类型（默认客户端）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return CompletableFuture 目标响应对象
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端异步非阻塞发起请求，并自动转译为目标类型（QoS 1）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return CompletableFuture 目标响应对象
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName, String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(clientName, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端异步非阻塞发起请求，并自动转译为目标类型
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      超时阈值
+     * @param <T>          泛型类型
+     * @return CompletableFuture 目标响应对象
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName, String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        Objects.requireNonNull(responseType, "responseType must not be null");
+        return sendAndReceiveAsync(clientName, topic, payload, qos, timeout)
+                .thenApply(msg -> convertResponse(msg, responseType));
+    }
+
+    private MqttRequestReplyManager getRequiredRequestReplyManager() {
+        if (requestReplyManager == null) {
+            throw new BusinessException("MqttRequestReplyManager is not configured. Request-Response pattern requires MqttRequestReplyManager Bean.");
+        }
+        return requestReplyManager;
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T convertResponse(MqttMessage message, Class<T> responseType) {
+        if (message == null || responseType == null) {
+            return null;
+        }
+        if (responseType.isAssignableFrom(MqttMessage.class)) {
+            return (T) message;
+        }
+        byte[] payload = message.getPayload();
+        if (responseType == byte[].class) {
+            return (T) (payload != null ? payload : new byte[0]);
+        }
+        if (responseType == String.class) {
+            return (T) (payload != null ? new String(payload, StandardCharsets.UTF_8) : "");
+        }
+        if (payload == null || payload.length == 0) {
+            return null;
+        }
+        return JsonUtil.parseObject(payload, responseType);
     }
 
     private Map<String, Object> extractHeaders(MqttMessage message) {
