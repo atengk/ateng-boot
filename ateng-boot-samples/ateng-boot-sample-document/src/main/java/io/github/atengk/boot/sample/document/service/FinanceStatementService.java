@@ -47,14 +47,17 @@ public class FinanceStatementService {
         UserContextHolder.set(effectiveName);
 
         try {
+            Map<String, Object> userMap = new HashMap<>();
+            userMap.put("name", effectiveName);
+            userMap.put("code", effectiveCode);
+            userMap.put("phone", effectivePhone);
+
             Map<String, Object> vars = new HashMap<>();
-            vars.put("user.name", effectiveName);
-            vars.put("user.code", effectiveCode);
-            vars.put("user.phone", effectivePhone);
+            vars.put("user", userMap);
 
             // 1. 添加动态操作人宏变量平铺暗水印
             WatermarkOptions watermarkOptions = WatermarkOptions.builder()
-                    .text("{user.name} ({user.code}) - {user.phone} {time:yyyy-MM-dd}")
+                    .text("#{user.name} (#{user.code}) - #{user.phone} #{now('yyyy-MM-dd')}")
                     .opacity(0.18f)
                     .rotation(-30.0f)
                     .fontSize(16.0f)

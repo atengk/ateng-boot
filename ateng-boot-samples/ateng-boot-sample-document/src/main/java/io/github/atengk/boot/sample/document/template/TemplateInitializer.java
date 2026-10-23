@@ -54,7 +54,14 @@ public class TemplateInitializer {
      * 确保所有场景模板物理文件已就绪
      */
     public static synchronized void ensureTemplatesExist() {
-        File dir = new File(TARGET_TEMPLATES_DIR);
+        ensureDirectoryAndFiles(new File(TARGET_TEMPLATES_DIR));
+        File targetClassesDir = new File("target/classes/templates");
+        if (targetClassesDir.getParentFile().exists()) {
+            ensureDirectoryAndFiles(targetClassesDir);
+        }
+    }
+
+    private static void ensureDirectoryAndFiles(File dir) {
         if (!dir.exists()) {
             dir.mkdirs();
         }
