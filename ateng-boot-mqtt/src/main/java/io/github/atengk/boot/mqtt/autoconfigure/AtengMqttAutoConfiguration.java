@@ -1,7 +1,11 @@
 package io.github.atengk.boot.mqtt.autoconfigure;
 
+import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
+import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -26,5 +30,25 @@ public class AtengMqttAutoConfiguration {
     @ConditionalOnMissingBean
     public NamedMqttClientRegistry namedMqttClientRegistry(AtengMqttProperties properties) {
         return new NamedMqttClientRegistry(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public PayloadGuard mqttPayloadGuard() {
+        return new PayloadGuard();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttSendFailureHandler mqttSendFailureHandler() {
+        return new DefaultMqttSendFailureHandler();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttTemplate mqttTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
+                                    PayloadGuard mqttPayloadGuard,
+                                    MqttSendFailureHandler mqttSendFailureHandler) {
+        return new MqttTemplate(namedMqttClientRegistry, mqttPayloadGuard, mqttSendFailureHandler);
     }
 }

@@ -164,6 +164,15 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     }
 
     /**
+     * 获取默认配置的 MQTT 客户端逻辑名称
+     *
+     * @return 默认客户端逻辑名称
+     */
+    public String getDefaultClientName() {
+        return properties.getDefaultClient();
+    }
+
+    /**
      * 获取默认配置的 MQTT 客户端句柄
      *
      * @return 默认客户端句柄

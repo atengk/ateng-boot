@@ -42,6 +42,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring 事务支持 (用于 sendAfterCommit 本地事务生命周期感知，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试依赖 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

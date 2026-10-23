@@ -59,6 +59,11 @@ public class MqttClientProperties {
     private Duration connectionTimeout = Duration.ofSeconds(10);
 
     /**
+     * 同步消息发布超时阈值
+     */
+    private Duration publishTimeout = Duration.ofSeconds(10);
+
+    /**
      * 心跳保活间隔
      */
     private Duration keepAliveInterval = Duration.ofSeconds(60);
@@ -185,6 +190,14 @@ public class MqttClientProperties {
 
     public void setConnectionTimeout(Duration connectionTimeout) {
         this.connectionTimeout = connectionTimeout;
+    }
+
+    public Duration getPublishTimeout() {
+        return publishTimeout;
+    }
+
+    public void setPublishTimeout(Duration publishTimeout) {
+        this.publishTimeout = publishTimeout;
     }
 
     public Duration getKeepAliveInterval() {

@@ -35,6 +35,57 @@ public class EmbeddedMqttBroker {
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
     private final AtomicInteger messageIdCounter = new AtomicInteger(1);
+    private final List<ReceivedMessage> receivedMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public static class ReceivedMessage {
+        private final String clientId;
+        private final String topic;
+        private final byte[] payload;
+        private final MqttQoS qos;
+        private final boolean retained;
+        private final io.netty.handler.codec.mqtt.MqttProperties properties;
+
+        public ReceivedMessage(String clientId, String topic, byte[] payload, MqttQoS qos, boolean retained, io.netty.handler.codec.mqtt.MqttProperties properties) {
+            this.clientId = clientId;
+            this.topic = topic;
+            this.payload = payload;
+            this.qos = qos;
+            this.retained = retained;
+            this.properties = properties;
+        }
+
+        public String getClientId() {
+            return clientId;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public byte[] getPayload() {
+            return payload;
+        }
+
+        public MqttQoS getQos() {
+            return qos;
+        }
+
+        public boolean isRetained() {
+            return retained;
+        }
+
+        public io.netty.handler.codec.mqtt.MqttProperties getProperties() {
+            return properties;
+        }
+    }
+
+    public List<ReceivedMessage> getReceivedMessages() {
+        return Collections.unmodifiableList(receivedMessages);
+    }
+
+    public void clearReceivedMessages() {
+        receivedMessages.clear();
+    }
 
     public EmbeddedMqttBroker() {
         this(0);
@@ -95,6 +146,7 @@ public class EmbeddedMqttBroker {
         }
         channelSubscriptions.clear();
         clientIds.clear();
+        receivedMessages.clear();
         log.info("[EmbeddedMqttBroker] Stopped In-Memory MQTT Broker successfully");
     }
 
@@ -124,7 +176,8 @@ public class EmbeddedMqttBroker {
                 case SUBSCRIBE -> handleSubscribe(ctx, (MqttSubscribeMessage) msg);
                 case UNSUBSCRIBE -> handleUnsubscribe(ctx, (MqttUnsubscribeMessage) msg);
                 case PUBLISH -> handlePublish(ctx, (MqttPublishMessage) msg);
-                case PUBACK, PUBREC, PUBREL, PUBCOMP -> {
+                case PUBREL -> handlePubRel(ctx, msg);
+                case PUBACK, PUBREC, PUBCOMP -> {
                     // 接收到 ACK 报文
                 }
                 default -> log.debug("[EmbeddedMqttBroker] Unhandled message type: {}", messageType);
@@ -189,6 +242,10 @@ public class EmbeddedMqttBroker {
 
             MqttQoS qos = msg.fixedHeader().qosLevel();
             int packetId = msg.variableHeader().packetId();
+            boolean retained = msg.fixedHeader().isRetain();
+            io.netty.handler.codec.mqtt.MqttProperties props = msg.variableHeader().properties();
+            String clientId = clientIds.get(ctx.channel());
+            receivedMessages.add(new ReceivedMessage(clientId, topic, payloadBytes, qos, retained, props));
 
             if (qos == MqttQoS.AT_LEAST_ONCE) {
                 MqttMessage pubAck = MqttMessageBuilders.pubAck().packetId(packetId).build();
@@ -201,6 +258,16 @@ public class EmbeddedMqttBroker {
 
             // 转发消息给匹配的订阅客户端
             broadcastMessage(topic, payloadBytes, qos);
+        }
+
+        private void handlePubRel(ChannelHandlerContext ctx, MqttMessage msg) {
+            int packetId = 0;
+            if (msg.variableHeader() instanceof MqttMessageIdVariableHeader idHeader) {
+                packetId = idHeader.messageId();
+            }
+            MqttFixedHeader compHeader = new MqttFixedHeader(MqttMessageType.PUBCOMP, false, MqttQoS.AT_MOST_ONCE, false, 0);
+            MqttMessageIdVariableHeader compVar = MqttMessageIdVariableHeader.from(packetId);
+            ctx.writeAndFlush(new MqttMessage(compHeader, compVar));
         }
 
         @Override
