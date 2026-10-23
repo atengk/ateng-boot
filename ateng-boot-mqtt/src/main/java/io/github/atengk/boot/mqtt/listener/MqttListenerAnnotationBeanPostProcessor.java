@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mqtt.listener;
 
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
+import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.aop.support.AopUtils;
@@ -25,9 +26,16 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
     private static final Logger log = LoggerFactory.getLogger(MqttListenerAnnotationBeanPostProcessor.class);
 
     private final MqttListenerEndpointRegistry endpointRegistry;
+    private final MqttMessageConverter messageConverter;
 
     public MqttListenerAnnotationBeanPostProcessor(MqttListenerEndpointRegistry endpointRegistry) {
+        this(endpointRegistry, null);
+    }
+
+    public MqttListenerAnnotationBeanPostProcessor(MqttListenerEndpointRegistry endpointRegistry,
+                                                   MqttMessageConverter messageConverter) {
         this.endpointRegistry = Objects.requireNonNull(endpointRegistry, "endpointRegistry must not be null");
+        this.messageConverter = messageConverter;
     }
 
     @Override
@@ -52,7 +60,7 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
 
     private void processListener(Object bean, String beanName, Method method, MqttListener listener) {
         String endpointId = beanName + "#" + method.getName();
-        MqttListenerEndpoint endpoint = new MqttListenerEndpoint(endpointId, bean, method, listener);
+        MqttListenerEndpoint endpoint = new MqttListenerEndpoint(endpointId, bean, method, listener, messageConverter);
         endpointRegistry.registerEndpoint(endpoint);
         log.debug("[MQTT] Discovered @MqttListener on [{}]", endpointId);
     }

@@ -6,6 +6,8 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mqtt.annotation.MqttHeader;
 import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
+import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
+import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
 import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
 import org.eclipse.paho.mqttv5.common.packet.UserProperty;
@@ -39,10 +41,16 @@ public class MqttListenerMethodAdapter {
     private final Object bean;
     private final Method method;
     private final Parameter[] parameters;
+    private final MqttMessageConverter messageConverter;
 
     public MqttListenerMethodAdapter(Object bean, Method method) {
+        this(bean, method, new CompositeMqttMessageConverter());
+    }
+
+    public MqttListenerMethodAdapter(Object bean, Method method, MqttMessageConverter messageConverter) {
         this.bean = Objects.requireNonNull(bean, "bean must not be null");
         this.method = Objects.requireNonNull(method, "method must not be null");
+        this.messageConverter = messageConverter != null ? messageConverter : new CompositeMqttMessageConverter();
         ReflectionUtils.makeAccessible(this.method);
         this.parameters = this.method.getParameters();
     }
@@ -103,17 +111,9 @@ public class MqttListenerMethodAdapter {
                 args[i] = convertType(val != null ? String.valueOf(val) : null, paramType);
             } else if (MqttMessage.class.isAssignableFrom(paramType)) {
                 args[i] = message;
-            } else if (byte[].class.equals(paramType)) {
-                args[i] = payloadBytes;
-            } else if (String.class.equals(paramType)) {
-                args[i] = payloadBytes != null ? new String(payloadBytes, StandardCharsets.UTF_8) : null;
             } else {
-                // POJO 反序列化
-                if (payloadBytes == null || payloadBytes.length == 0) {
-                    args[i] = null;
-                } else {
-                    args[i] = JsonUtil.parseObject(payloadBytes, paramType);
-                }
+                // 基于 MqttMessageConverter SPI 进行自适应类型编解码与转译
+                args[i] = messageConverter.fromMessage(message, paramType);
             }
         }
         return args;

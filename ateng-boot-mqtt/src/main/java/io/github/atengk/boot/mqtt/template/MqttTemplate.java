@@ -9,11 +9,13 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
@@ -70,22 +72,24 @@ public class MqttTemplate {
     private final MqttSendFailureHandler failureHandler;
     private final Executor executor;
     private final MqttRequestReplyManager requestReplyManager;
+    private final MqttMessageConverter messageConverter;
+    private final MqttMetrics metrics;
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry, PayloadGuard payloadGuard) {
-        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null);
+        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null, null, null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler) {
-        this(clientRegistry, payloadGuard, failureHandler, null, null);
+        this(clientRegistry, payloadGuard, failureHandler, null, null, null, null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler,
                         Executor executor) {
-        this(clientRegistry, payloadGuard, failureHandler, executor, null);
+        this(clientRegistry, payloadGuard, failureHandler, executor, null, null, null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
@@ -93,11 +97,23 @@ public class MqttTemplate {
                         MqttSendFailureHandler failureHandler,
                         Executor executor,
                         MqttRequestReplyManager requestReplyManager) {
+        this(clientRegistry, payloadGuard, failureHandler, executor, requestReplyManager, null, null);
+    }
+
+    public MqttTemplate(NamedMqttClientRegistry clientRegistry,
+                        PayloadGuard payloadGuard,
+                        MqttSendFailureHandler failureHandler,
+                        Executor executor,
+                        MqttRequestReplyManager requestReplyManager,
+                        MqttMessageConverter messageConverter,
+                        MqttMetrics metrics) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.failureHandler = failureHandler != null ? failureHandler : new DefaultMqttSendFailureHandler();
         this.executor = executor;
         this.requestReplyManager = requestReplyManager;
+        this.messageConverter = messageConverter;
+        this.metrics = metrics;
     }
 
     // ==================== 默认客户端同步发信接口 ====================
@@ -330,6 +346,9 @@ public class MqttTemplate {
             token.setActionCallback(new MqttActionListener() {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
+                    if (metrics != null) {
+                        metrics.recordPublished(effectiveClient, topic, qos);
+                    }
                     future.complete(null);
                 }
 
@@ -371,6 +390,9 @@ public class MqttTemplate {
         try {
             IMqttToken token = handle.getAsyncClient().publish(topic, message);
             token.waitForCompletion(timeoutMs);
+            if (metrics != null) {
+                metrics.recordPublished(handle.getClientName(), topic, qos);
+            }
         } catch (Throwable e) {
             throw createDeliveryException(handle.getClientName(), topic, e);
         }
@@ -478,6 +500,9 @@ public class MqttTemplate {
     private byte[] toPayloadBytes(Object payload) {
         if (payload == null) {
             throw new IllegalArgumentException("MQTT message payload must not be null");
+        }
+        if (messageConverter != null) {
+            return messageConverter.toPayload(payload);
         }
         if (payload instanceof byte[] bytes) {
             return bytes;

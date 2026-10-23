@@ -1,6 +1,7 @@
 package io.github.atengk.boot.mqtt.listener;
 
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
+import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
 
 import java.lang.reflect.Method;
@@ -24,11 +25,15 @@ public class MqttListenerEndpoint {
     private final List<MqttTopicPattern> patterns;
 
     public MqttListenerEndpoint(String id, Object bean, Method method, MqttListener annotation) {
+        this(id, bean, method, annotation, null);
+    }
+
+    public MqttListenerEndpoint(String id, Object bean, Method method, MqttListener annotation, MqttMessageConverter messageConverter) {
         this.id = id;
         this.bean = bean;
         this.method = method;
         this.annotation = annotation;
-        this.adapter = new MqttListenerMethodAdapter(bean, method);
+        this.adapter = new MqttListenerMethodAdapter(bean, method, messageConverter);
 
         List<MqttTopicPattern> list = new ArrayList<>();
         for (String topic : annotation.topics()) {

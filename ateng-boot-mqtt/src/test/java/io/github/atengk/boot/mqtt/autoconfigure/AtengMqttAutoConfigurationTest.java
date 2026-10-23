@@ -1,5 +1,7 @@
 package io.github.atengk.boot.mqtt.autoconfigure;
 
+import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
+import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
@@ -33,11 +35,13 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(NamedMqttClientRegistry.class);
             assertThat(context).hasSingleBean(PayloadGuard.class);
             assertThat(context).hasSingleBean(MqttSendFailureHandler.class);
+            assertThat(context).hasSingleBean(CompositeMqttMessageConverter.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
             assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
             assertThat(context).hasSingleBean(MqttTemplate.class);
             assertThat(context).hasSingleBean(MqttListenerEndpointRegistry.class);
             assertThat(context).hasSingleBean(MqttListenerAnnotationBeanPostProcessor.class);
+            assertThat(context).hasSingleBean(MqttHealthIndicator.class);
         });
     }
 

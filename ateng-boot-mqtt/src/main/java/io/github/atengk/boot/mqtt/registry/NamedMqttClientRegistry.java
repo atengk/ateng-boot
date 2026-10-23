@@ -5,6 +5,7 @@ import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
+import io.github.atengk.boot.mqtt.ssl.MqttSslSocketFactoryBuilder;
 import io.github.atengk.boot.mqtt.will.MqttWill;
 import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import org.eclipse.paho.mqttv5.client.DisconnectedBufferOptions;
@@ -195,6 +196,20 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             willMsg.setQos(clientProps.getLwt().getQos());
             willMsg.setRetained(clientProps.getLwt().isRetain());
             connOpts.setWill(clientProps.getLwt().getTopic(), willMsg);
+        }
+
+        // TLS / SSL 安全套接字配置
+        if (clientProps.getSsl() != null && clientProps.getSsl().isEnabled()) {
+            try {
+                javax.net.ssl.SSLSocketFactory socketFactory = MqttSslSocketFactoryBuilder.build(clientProps.getSsl());
+                if (socketFactory != null) {
+                    connOpts.setSocketFactory(socketFactory);
+                    log.info("[MQTT] Configured custom SSLSocketFactory for client [{}] with protocol [{}]",
+                            clientName, clientProps.getSsl().getProtocol());
+                }
+            } catch (Exception e) {
+                throw new BusinessException("Failed to initialize SSLSocketFactory for client [" + clientName + "]: " + e.getMessage(), e);
+            }
         }
 
         return connOpts;

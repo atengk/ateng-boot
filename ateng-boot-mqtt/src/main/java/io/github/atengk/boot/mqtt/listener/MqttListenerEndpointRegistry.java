@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
@@ -47,6 +48,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final NamedMqttClientRegistry clientRegistry;
     private final PayloadGuard payloadGuard;
     private final Executor executor;
+    private final MqttMetrics metrics;
 
     private final List<MqttListenerEndpoint> endpoints = new CopyOnWriteArrayList<>();
     private final Map<String, List<String>> subscribedTopicsByClient = new ConcurrentHashMap<>();
@@ -55,9 +57,17 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
                                         PayloadGuard payloadGuard,
                                         Executor executor) {
+        this(clientRegistry, payloadGuard, executor, null);
+    }
+
+    public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
+                                        PayloadGuard payloadGuard,
+                                        Executor executor,
+                                        MqttMetrics metrics) {
         this.clientRegistry = clientRegistry;
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.executor = executor;
+        this.metrics = metrics;
     }
 
     /**
@@ -81,6 +91,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     public void start() {
         if (running.compareAndSet(false, true)) {
             log.info("[MQTT] Starting MqttListenerEndpointRegistry, activating [{}] endpoints", endpoints.size());
+            if (metrics != null) {
+                metrics.bindClientRegistry(clientRegistry);
+            }
             // 为涉及的所有客户端绑定兜底回调，确保共享订阅（$share/...）等无本地 TopicFilter 命中的消息能被正确分发
             Set<String> targetClients = endpoints.stream()
                     .map(MqttListenerEndpoint::getClientName)
@@ -187,6 +200,10 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                                  String actualTopic,
                                  MqttMessage message,
                                  MqttClientHandle handle) {
+        if (metrics != null) {
+            metrics.recordReceived(handle.getClientName(), actualTopic);
+        }
+        long startNanos = System.nanoTime();
         try {
             Map<String, String> variables = pattern.matchAndExtract(actualTopic);
             if (variables == null) {
@@ -198,7 +215,13 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             }
             // 反射调用适配器
             endpoint.getAdapter().invoke(actualTopic, message, variables);
+            if (metrics != null) {
+                metrics.recordConsume(endpoint.getId(), actualTopic, true, System.nanoTime() - startNanos);
+            }
         } catch (Throwable e) {
+            if (metrics != null) {
+                metrics.recordConsume(endpoint.getId(), actualTopic, false, System.nanoTime() - startNanos);
+            }
             // 1. 消费端幂等静默确认 (Silent ACK Invariant)
             if (isIdempotentException(e)) {
                 log.info("[MQTT] Idempotent duplicate message detected on topic [{}] for endpoint [{}], submitting Silent ACK to terminate redelivery loop",
@@ -291,6 +314,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             dltMessage.setProperties(dltProperties);
 
             handle.getAsyncClient().publish(dltTopic, dltMessage);
+            if (metrics != null) {
+                metrics.recordDlt(endpoint.getId(), actualTopic);
+            }
             log.warn("[MQTT] Poison pill message on topic [{}] successfully transferred to DLT [{}] for endpoint [{}], submitted ACK to break redelivery loop",
                     actualTopic, dltTopic, endpoint.getId());
         } catch (Exception e) {
