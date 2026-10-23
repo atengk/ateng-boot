@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.autoconfigure;
 
+import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
@@ -29,5 +30,17 @@ public class AtengDocumentAutoConfiguration {
     @ConditionalOnMissingBean(DocumentConverter.class)
     public DocumentConverter documentConverter() {
         return new DefaultDocumentConverter();
+    }
+
+    /**
+     * 注册 CJK 中文字体云原生三级弹性探测解析器
+     *
+     * @param properties 文档治理根配置属性
+     * @return DocumentFontResolver 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DocumentFontResolver.class)
+    public DocumentFontResolver documentFontResolver(DocumentProperties properties) {
+        return new DocumentFontResolver(properties.getPdf());
     }
 }

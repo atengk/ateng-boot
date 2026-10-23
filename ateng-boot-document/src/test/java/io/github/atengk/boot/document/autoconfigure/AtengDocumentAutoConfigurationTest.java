@@ -1,5 +1,6 @@
 package io.github.atengk.boot.document.autoconfigure;
 
+import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
@@ -33,6 +34,7 @@ class AtengDocumentAutoConfigurationTest {
             assertThat(context).hasSingleBean(DocumentProperties.class);
             assertThat(context).hasSingleBean(DocumentConverter.class);
             assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(DefaultDocumentConverter.class);
+            assertThat(context).hasSingleBean(DocumentFontResolver.class);
         });
     }
 
@@ -43,6 +45,7 @@ class AtengDocumentAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(DocumentProperties.class);
                     assertThat(context).doesNotHaveBean(DocumentConverter.class);
+                    assertThat(context).doesNotHaveBean(DocumentFontResolver.class);
                 });
     }
 
@@ -53,7 +56,30 @@ class AtengDocumentAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(DocumentConverter.class);
                     assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(CustomDocumentConverter.class);
+                    assertThat(context).hasSingleBean(DocumentFontResolver.class);
                 });
+    }
+
+    @Test
+    @DisplayName("测试用户自定义 DocumentFontResolver 时缺省 Bean 平滑让位")
+    void testCustomFontResolverOverride() {
+        contextRunner.withUserConfiguration(CustomFontResolverConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DocumentFontResolver.class);
+                    assertThat(context.getBean(DocumentFontResolver.class)).isInstanceOf(CustomDocumentFontResolver.class);
+                });
+    }
+
+    @Configuration
+    static class CustomFontResolverConfiguration {
+
+        @Bean
+        public DocumentFontResolver customDocumentFontResolver() {
+            return new CustomDocumentFontResolver();
+        }
+    }
+
+    static class CustomDocumentFontResolver extends DocumentFontResolver {
     }
 
     @Configuration
