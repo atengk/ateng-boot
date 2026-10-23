@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -391,9 +392,11 @@ public class DocumentFontResolver {
 
         try {
             if (font.file() != null) {
-                return PDType0Font.load(document, font.file());
+                try (InputStream is = new FileInputStream(font.file())) {
+                    return PDType0Font.load(document, is, false);
+                }
             } else {
-                return PDType0Font.load(document, new ByteArrayInputStream(font.fontBytes()));
+                return PDType0Font.load(document, new ByteArrayInputStream(font.fontBytes()), false);
             }
         } catch (IOException e) {
             throw new DocumentFontException(DocumentResultCode.FONT_NOT_FOUND,
