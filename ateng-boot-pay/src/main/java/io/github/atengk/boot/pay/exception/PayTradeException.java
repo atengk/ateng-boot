@@ -28,21 +28,27 @@ public class PayTradeException extends PayException {
      */
     private final String rawErrorMessage;
 
+    /**
+     * HTTP 响应状态码 (若可用)
+     */
+    private final Integer httpStatus;
+
     public PayTradeException(String rawErrorCode, String rawErrorMessage) {
-        super(PayResultCode.PAY_TRADE_STATE_INVALID, "[" + rawErrorCode + "] " + rawErrorMessage);
-        this.rawErrorCode = rawErrorCode;
-        this.rawErrorMessage = rawErrorMessage;
+        this(PayResultCode.PAY_TRADE_STATE_INVALID, rawErrorCode, rawErrorMessage, null, null);
     }
 
     public PayTradeException(IResultCode resultCode, String rawErrorCode, String rawErrorMessage) {
-        super(resultCode, "[" + rawErrorCode + "] " + rawErrorMessage);
-        this.rawErrorCode = rawErrorCode;
-        this.rawErrorMessage = rawErrorMessage;
+        this(resultCode, rawErrorCode, rawErrorMessage, null, null);
     }
 
     public PayTradeException(IResultCode resultCode, String rawErrorCode, String rawErrorMessage, Throwable cause) {
+        this(resultCode, rawErrorCode, rawErrorMessage, null, cause);
+    }
+
+    public PayTradeException(IResultCode resultCode, String rawErrorCode, String rawErrorMessage, Integer httpStatus, Throwable cause) {
         super(resultCode, "[" + rawErrorCode + "] " + rawErrorMessage, cause);
         this.rawErrorCode = rawErrorCode;
         this.rawErrorMessage = rawErrorMessage;
+        this.httpStatus = httpStatus;
     }
 }

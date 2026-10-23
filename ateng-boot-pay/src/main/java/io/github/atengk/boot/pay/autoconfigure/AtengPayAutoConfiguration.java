@@ -1,6 +1,7 @@
 package io.github.atengk.boot.pay.autoconfigure;
 
 import io.github.atengk.boot.pay.config.properties.PayProperties;
+import io.github.atengk.boot.pay.core.WechatPayTemplate;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.spi.PayCertificateProvider;
@@ -46,5 +47,16 @@ public class AtengPayAutoConfiguration {
     @ConditionalOnMissingBean
     public WechatAutoCertificateManager wechatAutoCertificateManager() {
         return new WechatAutoCertificateManager();
+    }
+
+    /**
+     * 注册微信支付专有收单与高阶执行门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.pay.wechat", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public WechatPayTemplate wechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
+                                               WechatAutoCertificateManager wechatAutoCertificateManager) {
+        return new WechatPayTemplate(namedMerchantRegistry, wechatAutoCertificateManager);
     }
 }

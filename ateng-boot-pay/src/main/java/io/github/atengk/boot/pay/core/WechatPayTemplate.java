@@ -1,0 +1,1278 @@
+package io.github.atengk.boot.pay.core;
+
+import com.wechat.pay.java.core.AbstractRSAConfig;
+import com.wechat.pay.java.core.Config;
+import com.wechat.pay.java.core.certificate.CertificateProvider;
+import com.wechat.pay.java.core.exception.HttpException;
+import com.wechat.pay.java.core.exception.MalformedMessageException;
+import com.wechat.pay.java.core.exception.ServiceException;
+import com.wechat.pay.java.core.exception.ValidationException;
+import com.wechat.pay.java.core.http.*;
+import com.wechat.pay.java.service.payments.app.AppServiceExtension;
+import com.wechat.pay.java.service.payments.h5.H5Service;
+import com.wechat.pay.java.service.payments.h5.model.H5Info;
+import com.wechat.pay.java.service.payments.h5.model.SceneInfo;
+import com.wechat.pay.java.service.payments.jsapi.JsapiServiceExtension;
+import com.wechat.pay.java.service.payments.jsapi.model.CloseOrderRequest;
+import com.wechat.pay.java.service.payments.jsapi.model.Payer;
+import com.wechat.pay.java.service.payments.jsapi.model.PrepayWithRequestPaymentResponse;
+import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByIdRequest;
+import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByOutTradeNoRequest;
+import com.wechat.pay.java.service.payments.model.Transaction;
+import com.wechat.pay.java.service.payments.nativepay.NativePayService;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
+import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
+import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
+import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayResultCode;
+import io.github.atengk.boot.pay.enums.PayTradeState;
+import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.exception.PayException;
+import io.github.atengk.boot.pay.exception.PayNetworkException;
+import io.github.atengk.boot.pay.exception.PaySignException;
+import io.github.atengk.boot.pay.exception.PayTradeException;
+import io.github.atengk.boot.pay.model.request.WechatPayRequest;
+import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.WechatAppParams;
+import io.github.atengk.boot.pay.model.response.WechatJsapiParams;
+import io.github.atengk.boot.pay.util.CurrencyUtil;
+import io.github.atengk.boot.pay.util.PayKeyLoader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.math.BigDecimal;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.cert.X509Certificate;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+
+/**
+ * 微信支付专有收单与高阶能力执行门面
+ * <p>
+ * 基于腾讯官方新一代权威 {@code wechatpay-java:0.2.17} SDK 驱动，具备以下核心工业级特性：
+ * <ol>
+ *     <li><b>5 大核心收单场景全覆盖</b>：原生支持 Native（扫码）、JSAPI（小程序/公众号）、H5、App、条码付（被扫付款码）；</li>
+ *     <li><b>服务端全自动二次加签与封包</b>：针对 JSAPI 和 App 统一下单，全自动在服务端使用商户私钥计算数字签名并封包直达凭据；</li>
+ *     <li><b>直连商户与服务商双模自适应</b>：原生兼容直连商户号与服务商（ISV）特约子商户模式（{@code sub_mchid}）；</li>
+ *     <li><b>多商户与动态切源</b>：协同 {@link NamedMerchantRegistry} 与 {@link WechatAutoCertificateManager} 实现无缝切源与平台证书自动轮换；</li>
+ *     <li><b>全域强类型与因果异常转译</b>：入参统一 {@code BigDecimal} 元，底层驱动异常完整保留因果链转译为语义化业务异常；</li>
+ *     <li><b>官方客户端逃生舱</b>：随时可通过 {@link #getHttpClient(String)} 或 {@link #getWechatConfig(String)} 获取底层原生对象。</li>
+ * </ol>
+ * </p>
+ *
+ * @author Ateng
+ * @since 2026-10-23
+ */
+public class WechatPayTemplate {
+
+    private static final Logger log = LoggerFactory.getLogger(WechatPayTemplate.class);
+
+    private static final String DIRECT_CODEPAY_URL = "https://api.mch.weixin.qq.com/v3/pay/transactions/codepay";
+    private static final String PARTNER_CODEPAY_URL = "https://api.mch.weixin.qq.com/v3/pay/partner/transactions/codepay";
+
+    private final NamedMerchantRegistry namedMerchantRegistry;
+    private final WechatAutoCertificateManager wechatAutoCertificateManager;
+
+    /**
+     * 商户服务持有者缓存：商户配置键/商户号 -> WechatServiceHolder
+     */
+    private final ConcurrentHashMap<String, WechatServiceHolder> holderCache = new ConcurrentHashMap<>();
+
+    /**
+     * 自定义 HTTP 客户端（用于单元测试 MockWebServer 拦截或生产定制代理）
+     */
+    private volatile HttpClient customHttpClient;
+
+    public WechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
+                             WechatAutoCertificateManager wechatAutoCertificateManager) {
+        this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
+        this.wechatAutoCertificateManager = Objects.requireNonNull(wechatAutoCertificateManager, "WechatAutoCertificateManager 不能为空");
+    }
+
+    /**
+     * 设置自定义 HTTP 客户端（主要用于离线单测或定制网络代理）
+     *
+     * @param customHttpClient 自定义 HttpClient 实例
+     */
+    public void setCustomHttpClient(HttpClient customHttpClient) {
+        this.customHttpClient = customHttpClient;
+        this.holderCache.clear();
+    }
+
+    // =========================================================================
+    // 1. Native 扫码支付 (生成二维码链接由用户扫描)
+    // =========================================================================
+
+    /**
+     * 发起微信 Native 扫码收单
+     *
+     * @param request 微信收单请求参数
+     * @return 统一收单响应对象（qrCode 挂载 code_url 二维码链接）
+     */
+    public PayResponse payNative(WechatPayRequest request) {
+        validateCheckoutRequest(request);
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        String notifyUrl = resolveNotifyUrl(merchantProps, request);
+
+        return executeWithExceptionTranslation("payNative", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.nativepay.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.partnerpayments.nativepay.model.PrepayRequest();
+                prepayReq.setSpAppid(resolveSpAppId(merchantProps, request));
+                prepayReq.setSpMchid(resolveSpMchId(merchantProps, request));
+                prepayReq.setSubMchid(resolveSubMchId(merchantProps, request));
+                if (resolveSubAppId(merchantProps, request) != null) {
+                    prepayReq.setSubAppid(resolveSubAppId(merchantProps, request));
+                }
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.partnerpayments.nativepay.model.Amount amount =
+                        new com.wechat.pay.java.service.partnerpayments.nativepay.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                com.wechat.pay.java.service.partnerpayments.nativepay.model.PrepayResponse rawResp =
+                        holder.getPartnerNativePayService().prepay(prepayReq);
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.NATIVE)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .qrCode(rawResp.getCodeUrl())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户扫码支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                com.wechat.pay.java.service.payments.nativepay.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.payments.nativepay.model.PrepayRequest();
+                prepayReq.setAppid(resolveAppId(merchantProps, request));
+                prepayReq.setMchid(merchantProps.getMchId());
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.payments.nativepay.model.Amount amount =
+                        new com.wechat.pay.java.service.payments.nativepay.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                com.wechat.pay.java.service.payments.nativepay.model.PrepayResponse rawResp =
+                        holder.getNativePayService().prepay(prepayReq);
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.NATIVE)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .qrCode(rawResp.getCodeUrl())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户扫码支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            }
+        });
+    }
+
+    // =========================================================================
+    // 2. JSAPI 支付 (微信小程序 / 公众号网页，全自动服务端二次加签)
+    // =========================================================================
+
+    /**
+     * 发起微信 JSAPI / 小程序收单，并在服务端自动完成二次签名与 5 元素封包
+     *
+     * @param request 微信收单请求参数
+     * @return 统一收单响应对象（wechatJsapi 挂载可直接透传给 wx.requestPayment 的完整加签对象）
+     */
+    public PayResponse payJsapi(WechatPayRequest request) {
+        validateCheckoutRequest(request);
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        String notifyUrl = resolveNotifyUrl(merchantProps, request);
+
+        if (!isPartner && (request.getOpenid() == null || request.getOpenid().isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信直连商户 JSAPI 支付必须指定用户 [openid]");
+        }
+        if (isPartner && (request.getSubOpenid() == null || request.getSubOpenid().isBlank())
+                && (request.getOpenid() == null || request.getOpenid().isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信服务商 JSAPI 支付必须指定用户 [subOpenid] 或 [openid]");
+        }
+
+        return executeWithExceptionTranslation("payJsapi", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.partnerpayments.jsapi.model.PrepayRequest();
+                String spAppId = resolveSpAppId(merchantProps, request);
+                String subAppId = resolveSubAppId(merchantProps, request);
+                prepayReq.setSpAppid(spAppId);
+                prepayReq.setSpMchid(resolveSpMchId(merchantProps, request));
+                prepayReq.setSubMchid(resolveSubMchId(merchantProps, request));
+                if (subAppId != null) {
+                    prepayReq.setSubAppid(subAppId);
+                }
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.Amount amount =
+                        new com.wechat.pay.java.service.partnerpayments.jsapi.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.Payer payer =
+                        new com.wechat.pay.java.service.partnerpayments.jsapi.model.Payer();
+                if (request.getSubOpenid() != null && !request.getSubOpenid().isBlank()) {
+                    payer.setSubOpenid(request.getSubOpenid());
+                } else {
+                    payer.setSpOpenid(request.getOpenid());
+                }
+                prepayReq.setPayer(payer);
+
+                // 服务商二次调起签名 AppId：优先使用子商户 AppId，无则使用服务商 AppId
+                String signAppId = subAppId != null ? subAppId : spAppId;
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.PrepayWithRequestPaymentResponse rawResp =
+                        holder.getPartnerJsapiServiceExtension().prepayWithRequestPayment(prepayReq, signAppId);
+
+                WechatJsapiParams jsapiParams = WechatJsapiParams.builder()
+                        .appId(rawResp.getAppId())
+                        .timeStamp(rawResp.getTimeStamp())
+                        .nonceStr(rawResp.getNonceStr())
+                        .packageVal(rawResp.getPackageVal())
+                        .signType(rawResp.getSignType())
+                        .paySign(rawResp.getPaySign())
+                        .build();
+
+                String prepayId = extractPrepayId(rawResp.getPackageVal());
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.JSAPI)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .prepayId(prepayId)
+                        .wechatJsapi(jsapiParams)
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在微信端确认支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                com.wechat.pay.java.service.payments.jsapi.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.payments.jsapi.model.PrepayRequest();
+                String appId = resolveAppId(merchantProps, request);
+                prepayReq.setAppid(appId);
+                prepayReq.setMchid(merchantProps.getMchId());
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.payments.jsapi.model.Amount amount =
+                        new com.wechat.pay.java.service.payments.jsapi.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                Payer payer = new Payer();
+                payer.setOpenid(request.getOpenid());
+                prepayReq.setPayer(payer);
+
+                PrepayWithRequestPaymentResponse rawResp =
+                        holder.getJsapiServiceExtension().prepayWithRequestPayment(prepayReq);
+
+                WechatJsapiParams jsapiParams = WechatJsapiParams.builder()
+                        .appId(rawResp.getAppId())
+                        .timeStamp(rawResp.getTimeStamp())
+                        .nonceStr(rawResp.getNonceStr())
+                        .packageVal(rawResp.getPackageVal())
+                        .signType(rawResp.getSignType())
+                        .paySign(rawResp.getPaySign())
+                        .build();
+
+                String prepayId = extractPrepayId(rawResp.getPackageVal());
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.JSAPI)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .prepayId(prepayId)
+                        .wechatJsapi(jsapiParams)
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在微信端确认支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            }
+        });
+    }
+
+    // =========================================================================
+    // 3. H5 手机网页跳转支付
+    // =========================================================================
+
+    /**
+     * 发起微信 H5 手机网页收单
+     *
+     * @param request 微信收单请求参数
+     * @return 统一收单响应对象（payUrl 挂载 h5_url 跳转链接）
+     */
+    public PayResponse payH5(WechatPayRequest request) {
+        validateCheckoutRequest(request);
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        String notifyUrl = resolveNotifyUrl(merchantProps, request);
+
+        return executeWithExceptionTranslation("payH5", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.h5.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.partnerpayments.h5.model.PrepayRequest();
+                prepayReq.setSpAppid(resolveSpAppId(merchantProps, request));
+                prepayReq.setSpMchid(resolveSpMchId(merchantProps, request));
+                prepayReq.setSubMchid(resolveSubMchId(merchantProps, request));
+                if (resolveSubAppId(merchantProps, request) != null) {
+                    prepayReq.setSubAppid(resolveSubAppId(merchantProps, request));
+                }
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.partnerpayments.h5.model.Amount amount =
+                        new com.wechat.pay.java.service.partnerpayments.h5.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                com.wechat.pay.java.service.partnerpayments.h5.model.SceneInfo sceneInfo =
+                        new com.wechat.pay.java.service.partnerpayments.h5.model.SceneInfo();
+                sceneInfo.setPayerClientIp(request.getPayerClientIp() != null ? request.getPayerClientIp() : "127.0.0.1");
+                com.wechat.pay.java.service.partnerpayments.h5.model.H5Info h5Info =
+                        new com.wechat.pay.java.service.partnerpayments.h5.model.H5Info();
+                h5Info.setType(request.getH5Type() != null ? request.getH5Type() : "Wap");
+                sceneInfo.setH5Info(h5Info);
+                prepayReq.setSceneInfo(sceneInfo);
+
+                com.wechat.pay.java.service.partnerpayments.h5.model.PrepayResponse rawResp =
+                        holder.getPartnerH5Service().prepay(prepayReq);
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.H5)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .payUrl(rawResp.getH5Url())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在外部浏览器中跳转微信支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                com.wechat.pay.java.service.payments.h5.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.payments.h5.model.PrepayRequest();
+                prepayReq.setAppid(resolveAppId(merchantProps, request));
+                prepayReq.setMchid(merchantProps.getMchId());
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.payments.h5.model.Amount amount =
+                        new com.wechat.pay.java.service.payments.h5.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                SceneInfo sceneInfo = new SceneInfo();
+                sceneInfo.setPayerClientIp(request.getPayerClientIp() != null ? request.getPayerClientIp() : "127.0.0.1");
+                H5Info h5Info = new H5Info();
+                h5Info.setType(request.getH5Type() != null ? request.getH5Type() : "Wap");
+                sceneInfo.setH5Info(h5Info);
+                prepayReq.setSceneInfo(sceneInfo);
+
+                com.wechat.pay.java.service.payments.h5.model.PrepayResponse rawResp =
+                        holder.getH5Service().prepay(prepayReq);
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.H5)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .payUrl(rawResp.getH5Url())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在外部浏览器中跳转微信支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            }
+        });
+    }
+
+    // =========================================================================
+    // 4. App 客户端 SDK 调起支付
+    // =========================================================================
+
+    /**
+     * 发起微信 App 客户端收单并在服务端全自动完成调起参数加签封包
+     *
+     * @param request 微信收单请求参数
+     * @return 统一收单响应对象（wechatApp 挂载可直接传给 App 微信 SDK 的调起凭据）
+     */
+    public PayResponse payApp(WechatPayRequest request) {
+        validateCheckoutRequest(request);
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+        String notifyUrl = resolveNotifyUrl(merchantProps, request);
+
+        return executeWithExceptionTranslation("payApp", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.app.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.partnerpayments.app.model.PrepayRequest();
+                String spAppId = resolveSpAppId(merchantProps, request);
+                String subAppId = resolveSubAppId(merchantProps, request);
+                prepayReq.setSpAppid(spAppId);
+                prepayReq.setSpMchid(resolveSpMchId(merchantProps, request));
+                prepayReq.setSubMchid(resolveSubMchId(merchantProps, request));
+                if (subAppId != null) {
+                    prepayReq.setSubAppid(subAppId);
+                }
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.partnerpayments.app.model.Amount amount =
+                        new com.wechat.pay.java.service.partnerpayments.app.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                String signAppId = subAppId != null ? subAppId : spAppId;
+                com.wechat.pay.java.service.partnerpayments.app.model.PrepayWithRequestPaymentResponse rawResp =
+                        holder.getPartnerAppServiceExtension().prepayWithRequestPayment(prepayReq, signAppId);
+
+                WechatAppParams appParams = WechatAppParams.builder()
+                        .appid(rawResp.getAppid())
+                        .partnerid(rawResp.getPartnerId())
+                        .prepayid(rawResp.getPrepayId())
+                        .packageVal(rawResp.getPackageVal())
+                        .noncestr(rawResp.getNonceStr())
+                        .timestamp(rawResp.getTimestamp())
+                        .sign(rawResp.getSign())
+                        .build();
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.APP)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .prepayId(rawResp.getPrepayId())
+                        .orderString(rawResp.getPrepayId())
+                        .wechatApp(appParams)
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在 App 中拉起微信完成支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                com.wechat.pay.java.service.payments.app.model.PrepayRequest prepayReq =
+                        new com.wechat.pay.java.service.payments.app.model.PrepayRequest();
+                prepayReq.setAppid(resolveAppId(merchantProps, request));
+                prepayReq.setMchid(merchantProps.getMchId());
+                prepayReq.setDescription(request.getDescription());
+                prepayReq.setOutTradeNo(request.getOutTradeNo());
+                prepayReq.setTimeExpire(request.getTimeExpire());
+                prepayReq.setAttach(request.getAttach());
+                prepayReq.setNotifyUrl(notifyUrl);
+                prepayReq.setGoodsTag(request.getGoodsTag());
+
+                com.wechat.pay.java.service.payments.app.model.Amount amount =
+                        new com.wechat.pay.java.service.payments.app.model.Amount();
+                amount.setTotal((int) fen);
+                amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+                prepayReq.setAmount(amount);
+
+                com.wechat.pay.java.service.payments.app.model.PrepayWithRequestPaymentResponse rawResp =
+                        holder.getAppServiceExtension().prepayWithRequestPayment(prepayReq);
+
+                WechatAppParams appParams = WechatAppParams.builder()
+                        .appid(rawResp.getAppid())
+                        .partnerid(rawResp.getPartnerId())
+                        .prepayid(rawResp.getPrepayId())
+                        .packageVal(rawResp.getPackageVal())
+                        .noncestr(rawResp.getNonceStr())
+                        .timestamp(rawResp.getTimestamp())
+                        .sign(rawResp.getSign())
+                        .build();
+
+                return PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .tradeType(PayTradeType.APP)
+                        .outTradeNo(request.getOutTradeNo())
+                        .amount(request.getAmount())
+                        .prepayId(rawResp.getPrepayId())
+                        .orderString(rawResp.getPrepayId())
+                        .wechatApp(appParams)
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在 App 中拉起微信完成支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            }
+        });
+    }
+
+    // =========================================================================
+    // 5. 条码支付 / 当面付 (商户扫描用户付款码，MicroPay)
+    // =========================================================================
+
+    /**
+     * 发起微信条码支付（商户扫描用户微信付款码）
+     *
+     * @param request 微信条码收单请求参数
+     * @return 统一收单响应对象（可能直接返回 SUCCESS 或 USERPAYING 等待用户输入密码）
+     */
+    public PayResponse payBarcode(WechatPayRequest request) {
+        validateCheckoutRequest(request);
+        if (request.getAuthCode() == null || request.getAuthCode().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "条码付收单必须提供用户付款码 [authCode]");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+        long fen = CurrencyUtil.yuanToFen(request.getAmount());
+
+        return executeWithExceptionTranslation("payBarcode", () -> {
+            String url = isPartner ? PARTNER_CODEPAY_URL : DIRECT_CODEPAY_URL;
+
+            Map<String, Object> bodyMap = new LinkedHashMap<>();
+            if (isPartner) {
+                bodyMap.put("sp_appid", resolveSpAppId(merchantProps, request));
+                bodyMap.put("sp_mchid", resolveSpMchId(merchantProps, request));
+                bodyMap.put("sub_mchid", resolveSubMchId(merchantProps, request));
+                if (resolveSubAppId(merchantProps, request) != null) {
+                    bodyMap.put("sub_appid", resolveSubAppId(merchantProps, request));
+                }
+            } else {
+                bodyMap.put("appid", resolveAppId(merchantProps, request));
+                bodyMap.put("mchid", merchantProps.getMchId());
+            }
+            bodyMap.put("description", request.getDescription());
+            bodyMap.put("out_trade_no", request.getOutTradeNo());
+            if (request.getTimeExpire() != null) {
+                bodyMap.put("time_expire", request.getTimeExpire());
+            }
+            if (request.getAttach() != null) {
+                bodyMap.put("attach", request.getAttach());
+            }
+            if (request.getGoodsTag() != null) {
+                bodyMap.put("goods_tag", request.getGoodsTag());
+            }
+            bodyMap.put("amount", Map.of("total", fen, "currency", request.getCurrency() != null ? request.getCurrency() : "CNY"));
+            bodyMap.put("payer", Map.of("auth_code", request.getAuthCode()));
+
+            String jsonBody = JsonUtil.toJsonString(bodyMap);
+
+            HttpRequest httpRequest = new HttpRequest.Builder()
+                    .httpMethod(HttpMethod.POST)
+                    .url(url)
+                    .addHeader("Accept", "application/json")
+                    .addHeader("Content-Type", "application/json")
+                    .body(new JsonRequestBody.Builder().body(jsonBody).build())
+                    .build();
+
+            HttpResponse<Transaction> httpResp = holder.getHttpClient().execute(httpRequest, Transaction.class);
+            Transaction transaction = httpResp.getServiceResponse();
+
+            return toPayResponse(transaction, request, PayTradeType.BARCODE);
+        });
+    }
+
+    // =========================================================================
+    // 6. 订单状态查询 (queryOrder)
+    // =========================================================================
+
+    /**
+     * 查询微信支付订单状态
+     *
+     * @param request 查询请求参数（支持指定 outTradeNo 或 transactionId）
+     * @return 统一交易查询结果响应
+     */
+    public PayResponse queryOrder(WechatPayRequest request) {
+        if ((request.getOutTradeNo() == null || request.getOutTradeNo().isBlank())
+                && (request.getTransactionId() == null || request.getTransactionId().isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询订单必须提供 [outTradeNo] 或 [transactionId]");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+
+        return executeWithExceptionTranslation("queryOrder", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.Transaction transaction;
+                if (request.getTransactionId() != null && !request.getTransactionId().isBlank()) {
+                    com.wechat.pay.java.service.partnerpayments.jsapi.model.QueryOrderByIdRequest req =
+                            new com.wechat.pay.java.service.partnerpayments.jsapi.model.QueryOrderByIdRequest();
+                    req.setTransactionId(request.getTransactionId());
+                    req.setSpMchid(resolveSpMchId(merchantProps, request));
+                    req.setSubMchid(resolveSubMchId(merchantProps, request));
+                    transaction = holder.getPartnerJsapiServiceExtension().queryOrderById(req);
+                } else {
+                    com.wechat.pay.java.service.partnerpayments.jsapi.model.QueryOrderByOutTradeNoRequest req =
+                            new com.wechat.pay.java.service.partnerpayments.jsapi.model.QueryOrderByOutTradeNoRequest();
+                    req.setOutTradeNo(request.getOutTradeNo());
+                    req.setSpMchid(resolveSpMchId(merchantProps, request));
+                    req.setSubMchid(resolveSubMchId(merchantProps, request));
+                    transaction = holder.getPartnerJsapiServiceExtension().queryOrderByOutTradeNo(req);
+                }
+                return toPayResponse(transaction, request, null);
+            } else {
+                Transaction transaction;
+                if (request.getTransactionId() != null && !request.getTransactionId().isBlank()) {
+                    QueryOrderByIdRequest req = new QueryOrderByIdRequest();
+                    req.setTransactionId(request.getTransactionId());
+                    req.setMchid(merchantProps.getMchId());
+                    transaction = holder.getJsapiServiceExtension().queryOrderById(req);
+                } else {
+                    QueryOrderByOutTradeNoRequest req = new QueryOrderByOutTradeNoRequest();
+                    req.setOutTradeNo(request.getOutTradeNo());
+                    req.setMchid(merchantProps.getMchId());
+                    transaction = holder.getJsapiServiceExtension().queryOrderByOutTradeNo(req);
+                }
+                return toPayResponse(transaction, request, null);
+            }
+        });
+    }
+
+    /**
+     * 单标识符重载：根据商户订单号查询默认商户订单
+     *
+     * @param outTradeNo 商户订单号
+     * @return 统一交易查询结果响应
+     */
+    public PayResponse queryOrder(String outTradeNo) {
+        return queryOrder(WechatPayRequest.builder().outTradeNo(outTradeNo).build());
+    }
+
+    /**
+     * 单标识符重载：指定商户号/商户别名查询订单
+     *
+     * @param merchantKey 商户别名或商户号
+     * @param outTradeNo  商户订单号
+     * @return 统一交易查询结果响应
+     */
+    public PayResponse queryOrder(String merchantKey, String outTradeNo) {
+        return queryOrder(WechatPayRequest.builder().merchantKey(merchantKey).outTradeNo(outTradeNo).build());
+    }
+
+    // =========================================================================
+    // 7. 关闭订单 (closeOrder)
+    // =========================================================================
+
+    /**
+     * 关闭未付款的微信支付订单
+     *
+     * @param request 关闭请求参数（必须提供 outTradeNo）
+     * @return 关闭操作响应
+     */
+    public PayResponse closeOrder(WechatPayRequest request) {
+        if (request.getOutTradeNo() == null || request.getOutTradeNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "关闭订单必须提供商户订单号 [outTradeNo]");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+
+        return executeWithExceptionTranslation("closeOrder", () -> {
+            if (isPartner) {
+                com.wechat.pay.java.service.partnerpayments.jsapi.model.CloseOrderRequest req =
+                        new com.wechat.pay.java.service.partnerpayments.jsapi.model.CloseOrderRequest();
+                req.setOutTradeNo(request.getOutTradeNo());
+                req.setSpMchid(resolveSpMchId(merchantProps, request));
+                req.setSubMchid(resolveSubMchId(merchantProps, request));
+                holder.getPartnerJsapiServiceExtension().closeOrder(req);
+            } else {
+                CloseOrderRequest req = new CloseOrderRequest();
+                req.setOutTradeNo(request.getOutTradeNo());
+                req.setMchid(merchantProps.getMchId());
+                holder.getJsapiServiceExtension().closeOrder(req);
+            }
+
+            return PayResponse.builder()
+                    .channel(PayChannel.WECHAT_PAY)
+                    .outTradeNo(request.getOutTradeNo())
+                    .tradeState(PayTradeState.CLOSED)
+                    .rawTradeState(PayTradeState.CLOSED.getCode())
+                    .tradeStateDesc("订单已成功关闭")
+                    .success(true)
+                    .build();
+        });
+    }
+
+    /**
+     * 单标识符重载：关闭当前默认商户的未付款订单
+     *
+     * @param outTradeNo 商户订单号
+     * @return 关闭操作响应
+     */
+    public PayResponse closeOrder(String outTradeNo) {
+        return closeOrder(WechatPayRequest.builder().outTradeNo(outTradeNo).build());
+    }
+
+    /**
+     * 单标识符重载：指定商户号/商户别名关闭未付款订单
+     *
+     * @param merchantKey 商户别名或商户号
+     * @param outTradeNo  商户订单号
+     * @return 关闭操作响应
+     */
+    public PayResponse closeOrder(String merchantKey, String outTradeNo) {
+        return closeOrder(WechatPayRequest.builder().merchantKey(merchantKey).outTradeNo(outTradeNo).build());
+    }
+
+    // =========================================================================
+    // 8. 状态机与模型映射辅助工具 (Normalization)
+    // =========================================================================
+
+    /**
+     * 将微信原生交易状态转换为统一交易状态枚举
+     *
+     * @param tradeStateEnum 微信 SDK 原生枚举
+     * @return 标准化交易生命周期状态
+     */
+    public static PayTradeState mapTradeState(Transaction.TradeStateEnum tradeStateEnum) {
+        if (tradeStateEnum == null) {
+            return PayTradeState.NOTPAY;
+        }
+        return switch (tradeStateEnum) {
+            case SUCCESS -> PayTradeState.SUCCESS;
+            case REFUND -> PayTradeState.REFUND;
+            case NOTPAY -> PayTradeState.NOTPAY;
+            case CLOSED -> PayTradeState.CLOSED;
+            case REVOKED -> PayTradeState.REVOKED;
+            case USERPAYING, ACCEPT -> PayTradeState.USERPAYING;
+            case PAYERROR -> PayTradeState.PAYERROR;
+        };
+    }
+
+    /**
+     * 将字符串交易状态码转换为统一交易状态枚举
+     *
+     * @param rawState 原始状态字符串
+     * @return 标准化交易生命周期状态
+     */
+    public static PayTradeState mapTradeState(String rawState) {
+        if (rawState == null || rawState.isBlank()) {
+            return PayTradeState.NOTPAY;
+        }
+        try {
+            return mapTradeState(Transaction.TradeStateEnum.valueOf(rawState.toUpperCase()));
+        } catch (IllegalArgumentException e) {
+            return PayTradeState.PAYERROR;
+        }
+    }
+
+    /**
+     * 将微信原生交易场景类型映射为统一场景枚举
+     *
+     * @param tradeTypeEnum 微信 SDK 原生交易类型
+     * @return 标准化交易类型
+     */
+    public static PayTradeType mapTradeType(Transaction.TradeTypeEnum tradeTypeEnum) {
+        if (tradeTypeEnum == null) {
+            return null;
+        }
+        return switch (tradeTypeEnum) {
+            case NATIVE -> PayTradeType.NATIVE;
+            case JSAPI -> PayTradeType.JSAPI;
+            case MWEB -> PayTradeType.H5;
+            case APP -> PayTradeType.APP;
+            case MICROPAY, FACEPAY -> PayTradeType.BARCODE;
+        };
+    }
+
+    /**
+     * 将微信底层 Transaction 实体映射为统一 PayResponse
+     */
+    private PayResponse toPayResponse(Transaction transaction, WechatPayRequest request, PayTradeType defaultTradeType) {
+        if (transaction == null) {
+            return PayResponse.builder()
+                    .channel(PayChannel.WECHAT_PAY)
+                    .tradeType(defaultTradeType)
+                    .outTradeNo(request != null ? request.getOutTradeNo() : null)
+                    .tradeState(PayTradeState.NOTPAY)
+                    .success(false)
+                    .build();
+        }
+
+        PayTradeState tradeState = mapTradeState(transaction.getTradeState());
+        BigDecimal amount = null;
+        if (transaction.getAmount() != null && transaction.getAmount().getTotal() != null) {
+            amount = CurrencyUtil.fenToYuan(transaction.getAmount().getTotal().longValue());
+        } else if (request != null && request.getAmount() != null) {
+            amount = request.getAmount();
+        }
+
+        PayTradeType tradeType = mapTradeType(transaction.getTradeType());
+        if (tradeType == null) {
+            tradeType = defaultTradeType;
+        }
+
+        return PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .tradeType(tradeType)
+                .outTradeNo(transaction.getOutTradeNo() != null ? transaction.getOutTradeNo() : (request != null ? request.getOutTradeNo() : null))
+                .transactionId(transaction.getTransactionId())
+                .tradeState(tradeState)
+                .rawTradeState(transaction.getTradeState() != null ? transaction.getTradeState().name() : null)
+                .tradeStateDesc(transaction.getTradeStateDesc())
+                .amount(amount)
+                .success(tradeState.isSuccess())
+                .rawResponse(transaction)
+                .build();
+    }
+
+    /**
+     * 将服务商底层 Transaction 实体映射为统一 PayResponse
+     */
+    public static PayTradeState mapTradeState(com.wechat.pay.java.service.partnerpayments.jsapi.model.Transaction.TradeStateEnum tradeStateEnum) {
+        if (tradeStateEnum == null) {
+            return PayTradeState.NOTPAY;
+        }
+        return switch (tradeStateEnum) {
+            case SUCCESS -> PayTradeState.SUCCESS;
+            case REFUND -> PayTradeState.REFUND;
+            case NOTPAY -> PayTradeState.NOTPAY;
+            case CLOSED -> PayTradeState.CLOSED;
+            case REVOKED -> PayTradeState.REVOKED;
+            case USERPAYING, ACCEPT -> PayTradeState.USERPAYING;
+            case PAYERROR -> PayTradeState.PAYERROR;
+        };
+    }
+
+    public static PayTradeType mapTradeType(com.wechat.pay.java.service.partnerpayments.jsapi.model.Transaction.TradeTypeEnum tradeTypeEnum) {
+        if (tradeTypeEnum == null) {
+            return null;
+        }
+        return switch (tradeTypeEnum) {
+            case NATIVE -> PayTradeType.NATIVE;
+            case JSAPI -> PayTradeType.JSAPI;
+            case MWEB -> PayTradeType.H5;
+            case APP -> PayTradeType.APP;
+            case MICROPAY, FACEPAY -> PayTradeType.BARCODE;
+        };
+    }
+
+    private PayResponse toPayResponse(com.wechat.pay.java.service.partnerpayments.jsapi.model.Transaction transaction,
+                                      WechatPayRequest request,
+                                      PayTradeType defaultTradeType) {
+        if (transaction == null) {
+            return PayResponse.builder()
+                    .channel(PayChannel.WECHAT_PAY)
+                    .tradeType(defaultTradeType)
+                    .outTradeNo(request != null ? request.getOutTradeNo() : null)
+                    .tradeState(PayTradeState.NOTPAY)
+                    .success(false)
+                    .build();
+        }
+
+        PayTradeState tradeState = mapTradeState(transaction.getTradeState());
+        BigDecimal amount = null;
+        if (transaction.getAmount() != null && transaction.getAmount().getTotal() != null) {
+            amount = CurrencyUtil.fenToYuan(transaction.getAmount().getTotal().longValue());
+        } else if (request != null && request.getAmount() != null) {
+            amount = request.getAmount();
+        }
+
+        PayTradeType tradeType = mapTradeType(transaction.getTradeType());
+        if (tradeType == null) {
+            tradeType = defaultTradeType;
+        }
+
+        return PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .tradeType(tradeType)
+                .outTradeNo(transaction.getOutTradeNo() != null ? transaction.getOutTradeNo() : (request != null ? request.getOutTradeNo() : null))
+                .transactionId(transaction.getTransactionId())
+                .tradeState(tradeState)
+                .rawTradeState(transaction.getTradeState() != null ? transaction.getTradeState().name() : null)
+                .tradeStateDesc(transaction.getTradeStateDesc())
+                .amount(amount)
+                .success(tradeState.isSuccess())
+                .rawResponse(transaction)
+                .build();
+    }
+
+    // =========================================================================
+    // 9. 逃生舱 (Escape Hatches) 与服务持有者获取
+    // =========================================================================
+
+    /**
+     * 获取默认商户的微信配置对象（逃生舱）
+     */
+    public Config getWechatConfig() {
+        return getServiceHolder(resolveMerchant(null)).getConfig();
+    }
+
+    /**
+     * 获取指定商户的微信配置对象（逃生舱）
+     *
+     * @param merchantKey 商户别名或商户号
+     */
+    public Config getWechatConfig(String merchantKey) {
+        return getServiceHolder(namedMerchantRegistry.resolveWechatMerchant(merchantKey)).getConfig();
+    }
+
+    /**
+     * 获取默认商户的官方 HTTP 客户端（逃生舱）
+     */
+    public HttpClient getHttpClient() {
+        return getServiceHolder(resolveMerchant(null)).getHttpClient();
+    }
+
+    /**
+     * 获取指定商户的官方 HTTP 客户端（逃生舱）
+     *
+     * @param merchantKey 商户别名或商户号
+     */
+    public HttpClient getHttpClient(String merchantKey) {
+        return getServiceHolder(namedMerchantRegistry.resolveWechatMerchant(merchantKey)).getHttpClient();
+    }
+
+    /**
+     * 获取直连商户 JSAPI 支付服务扩展实例（逃生舱）
+     */
+    public JsapiServiceExtension getJsapiService() {
+        return getServiceHolder(resolveMerchant(null)).getJsapiServiceExtension();
+    }
+
+    /**
+     * 获取直连商户 Native 扫码支付服务实例（逃生舱）
+     */
+    public NativePayService getNativePayService() {
+        return getServiceHolder(resolveMerchant(null)).getNativePayService();
+    }
+
+    /**
+     * 获取直连商户 H5 手机网页支付服务实例（逃生舱）
+     */
+    public H5Service getH5Service() {
+        return getServiceHolder(resolveMerchant(null)).getH5Service();
+    }
+
+    /**
+     * 获取直连商户 App 支付服务扩展实例（逃生舱）
+     */
+    public AppServiceExtension getAppService() {
+        return getServiceHolder(resolveMerchant(null)).getAppServiceExtension();
+    }
+
+    // =========================================================================
+    // 10. 私有解析与因果异常转译机制
+    // =========================================================================
+
+    private WechatMerchantProperties resolveMerchant(WechatPayRequest request) {
+        String key = request != null ? (request.getMerchantKey() != null ? request.getMerchantKey() : request.getMchId()) : null;
+        return namedMerchantRegistry.resolveWechatMerchant(key);
+    }
+
+    private boolean isPartnerMode(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null) {
+            if (request.getSpMchId() != null && !request.getSpMchId().isBlank()) {
+                return true;
+            }
+            if (request.getSubMchId() != null && !request.getSubMchId().isBlank()) {
+                return true;
+            }
+        }
+        return merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank();
+    }
+
+    private String resolveAppId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null && request.getAppId() != null && !request.getAppId().isBlank()) {
+            return request.getAppId();
+        }
+        return merchantProps.getAppId();
+    }
+
+    private String resolveSpAppId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null && request.getSpAppId() != null && !request.getSpAppId().isBlank()) {
+            return request.getSpAppId();
+        }
+        if (merchantProps.getSpAppId() != null && !merchantProps.getSpAppId().isBlank()) {
+            return merchantProps.getSpAppId();
+        }
+        return resolveAppId(merchantProps, request);
+    }
+
+    private String resolveSpMchId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null && request.getSpMchId() != null && !request.getSpMchId().isBlank()) {
+            return request.getSpMchId();
+        }
+        if (merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank()) {
+            return merchantProps.getSpMchId();
+        }
+        return merchantProps.getMchId();
+    }
+
+    private String resolveSubMchId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null && request.getSubMchId() != null && !request.getSubMchId().isBlank()) {
+            return request.getSubMchId();
+        }
+        return merchantProps.getSubMchId();
+    }
+
+    private String resolveSubAppId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        if (request != null && request.getSubAppId() != null && !request.getSubAppId().isBlank()) {
+            return request.getSubAppId();
+        }
+        return merchantProps.getSubAppId();
+    }
+
+    private String resolveNotifyUrl(WechatMerchantProperties merchantProps, WechatPayRequest request) {
+        String notifyUrl = request != null && request.getNotifyUrl() != null && !request.getNotifyUrl().isBlank()
+                ? request.getNotifyUrl()
+                : merchantProps.getNotifyUrl();
+        if (notifyUrl == null || notifyUrl.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付回调地址 [notifyUrl] 不能为空，请在请求或配置中提供");
+        }
+        return notifyUrl;
+    }
+
+    private void validateCheckoutRequest(WechatPayRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付请求入参不能为空");
+        }
+        if (request.getOutTradeNo() == null || request.getOutTradeNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付商户订单号 [outTradeNo] 不能为空");
+        }
+        if (request.getDescription() == null || request.getDescription().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付商品描述 [description] 不能为空");
+        }
+        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID, "微信支付订单金额必须大于 0 元");
+        }
+    }
+
+    private String extractPrepayId(String packageVal) {
+        if (packageVal != null && packageVal.startsWith("prepay_id=")) {
+            return packageVal.substring("prepay_id=".length());
+        }
+        return packageVal;
+    }
+
+    private WechatServiceHolder getServiceHolder(WechatMerchantProperties props) {
+        String key = props.getMchId();
+        if (key == null || key.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信商户号 [mchId] 不能为空");
+        }
+        return holderCache.computeIfAbsent(key, k -> createServiceHolder(props));
+    }
+
+    private WechatServiceHolder createServiceHolder(WechatMerchantProperties props) {
+        String merchantId = props.getMchId();
+        String serialNumber = props.getMerchantSerialNumber();
+        if (serialNumber == null || serialNumber.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信商户证书序列号 [merchantSerialNumber] 不能为空");
+        }
+
+        String keySource = props.getPrivateKeyPem() != null && !props.getPrivateKeyPem().isBlank()
+                ? props.getPrivateKeyPem()
+                : props.getPrivateKeyPath();
+        if (keySource == null || keySource.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信商户私钥 [privateKeyPem / privateKeyPath] 不能为空");
+        }
+        PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
+
+        Config config;
+        if (props.getWechatPayPublicKey() != null && !props.getWechatPayPublicKey().isBlank()) {
+            String cleanPub = PayKeyLoader.cleanCertificatePem(props.getWechatPayPublicKey());
+            PublicKey pubKey;
+            try {
+                byte[] keyBytes = Base64.getDecoder().decode(cleanPub);
+                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+                pubKey = keyFactory.generatePublic(keySpec);
+            } catch (Exception e) {
+                throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "解析微信平台静态公钥失败: " + e.getMessage(), e);
+            }
+            config = new AbstractRSAConfig(merchantId, privateKey, serialNumber, pubKey, props.getWechatPayPublicKeyId()) {};
+        } else {
+            CertificateProvider certProvider = new CertificateProvider() {
+                @Override
+                public X509Certificate getCertificate(String serialNumber) {
+                    return wechatAutoCertificateManager.getCertificate(merchantId, serialNumber);
+                }
+
+                @Override
+                public X509Certificate getAvailableCertificate() {
+                    return wechatAutoCertificateManager.getAvailableCertificate(merchantId);
+                }
+            };
+            config = new AbstractRSAConfig(merchantId, privateKey, serialNumber, certProvider) {};
+        }
+
+        HttpClient httpClient = customHttpClient != null
+                ? customHttpClient
+                : new DefaultHttpClientBuilder().config(config).build();
+
+        return new WechatServiceHolder(config, httpClient);
+    }
+
+    private <T> T executeWithExceptionTranslation(String operation, Supplier<T> supplier) {
+        try {
+            return supplier.get();
+        } catch (ValidationException e) {
+            log.error("WeChat pay signature validation failed for [{}]: {}", operation, e.getMessage(), e);
+            throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付应答签名校验失败: " + e.getMessage(), e);
+        } catch (ServiceException e) {
+            log.error("WeChat pay service error for [{}]: code={}, message={}, httpStatus={}",
+                    operation, e.getErrorCode(), e.getErrorMessage(), e.getHttpStatusCode(), e);
+            PayResultCode resultCode = PayResultCode.PAY_GATEWAY_ERROR;
+            if ("ORDERNOTEXIST".equalsIgnoreCase(e.getErrorCode()) || "ORDER_NOT_EXIST".equalsIgnoreCase(e.getErrorCode())) {
+                resultCode = PayResultCode.PAY_ORDER_NOT_FOUND;
+            }
+            throw new PayTradeException(resultCode, e.getErrorCode(), e.getErrorMessage(), e.getHttpStatusCode(), e);
+        } catch (HttpException e) {
+            log.error("WeChat pay HTTP communication error for [{}]: {}", operation, e.getMessage(), e);
+            throw new PayNetworkException("微信支付网络通信异常: " + e.getMessage(), e);
+        } catch (MalformedMessageException e) {
+            log.error("WeChat pay message parsing error for [{}]: {}", operation, e.getMessage(), e);
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付响应报文格式异常: " + e.getMessage(), e);
+        } catch (PayException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("WeChat pay unexpected error for [{}]: {}", operation, e.getMessage(), e);
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付操作执行失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 单商户微信官方 SDK 客户端服务持有容器
+     */
+    private static class WechatServiceHolder {
+        private final Config config;
+        private final HttpClient httpClient;
+
+        // 直连服务
+        private final NativePayService nativePayService;
+        private final JsapiServiceExtension jsapiServiceExtension;
+        private final H5Service h5Service;
+        private final AppServiceExtension appServiceExtension;
+
+        // 服务商服务
+        private final com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService partnerNativePayService;
+        private final com.wechat.pay.java.service.partnerpayments.jsapi.JsapiServiceExtension partnerJsapiServiceExtension;
+        private final com.wechat.pay.java.service.partnerpayments.h5.H5Service partnerH5Service;
+        private final com.wechat.pay.java.service.partnerpayments.app.AppServiceExtension partnerAppServiceExtension;
+
+        public WechatServiceHolder(Config config, HttpClient httpClient) {
+            this.config = config;
+            this.httpClient = httpClient;
+
+            this.nativePayService = new NativePayService.Builder().config(config).httpClient(httpClient).build();
+            this.jsapiServiceExtension = new JsapiServiceExtension.Builder().config(config).httpClient(httpClient).build();
+            this.h5Service = new H5Service.Builder().config(config).httpClient(httpClient).build();
+            this.appServiceExtension = new AppServiceExtension.Builder().config(config).httpClient(httpClient).build();
+
+            this.partnerNativePayService = new com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService.Builder()
+                    .config(config).httpClient(httpClient).build();
+            this.partnerJsapiServiceExtension = new com.wechat.pay.java.service.partnerpayments.jsapi.JsapiServiceExtension.Builder()
+                    .config(config).httpClient(httpClient).build();
+            this.partnerH5Service = new com.wechat.pay.java.service.partnerpayments.h5.H5Service.Builder()
+                    .config(config).httpClient(httpClient).build();
+            this.partnerAppServiceExtension = new com.wechat.pay.java.service.partnerpayments.app.AppServiceExtension.Builder()
+                    .config(config).httpClient(httpClient).build();
+        }
+
+        public Config getConfig() {
+            return config;
+        }
+
+        public HttpClient getHttpClient() {
+            return httpClient;
+        }
+
+        public NativePayService getNativePayService() {
+            return nativePayService;
+        }
+
+        public JsapiServiceExtension getJsapiServiceExtension() {
+            return jsapiServiceExtension;
+        }
+
+        public H5Service getH5Service() {
+            return h5Service;
+        }
+
+        public AppServiceExtension getAppServiceExtension() {
+            return appServiceExtension;
+        }
+
+        public com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService getPartnerNativePayService() {
+            return partnerNativePayService;
+        }
+
+        public com.wechat.pay.java.service.partnerpayments.jsapi.JsapiServiceExtension getPartnerJsapiServiceExtension() {
+            return partnerJsapiServiceExtension;
+        }
+
+        public com.wechat.pay.java.service.partnerpayments.h5.H5Service getPartnerH5Service() {
+            return partnerH5Service;
+        }
+
+        public com.wechat.pay.java.service.partnerpayments.app.AppServiceExtension getPartnerAppServiceExtension() {
+            return partnerAppServiceExtension;
+        }
+    }
+}
