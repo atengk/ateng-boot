@@ -34,6 +34,7 @@
         <module>ateng-boot-sample-observability</module>
         <module>ateng-boot-sample-openapi</module>
         <module>ateng-boot-sample-mail</module>
+        <module>ateng-boot-sample-notification</module>
     </modules>
 
     <properties>

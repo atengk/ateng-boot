@@ -53,6 +53,7 @@
         <module>ateng-boot-openapi</module>
         <module>ateng-boot-mail</module>
         <module>ateng-boot-ftp</module>
+        <module>ateng-boot-notification</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -270,6 +271,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-ftp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-notification</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
