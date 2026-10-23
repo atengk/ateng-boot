@@ -18,12 +18,12 @@
 | **受管隧道生命周期句柄** | 端口转发长连接安全治理 | `SshTunnelHandle`<br>`AutoCloseable` | - | 实现 `AutoCloseable`，提供 `close()`、`isAlive()`、`isClosed()`、`getLocalPort()`、`getLocalHost()`、`getRemoteHost()`、`getRemotePort()`，幂等安全释放本地监听 Socket | `SshTunnelHandleTest` / `SshTemplateTunnelTest` |
 | **ProxyJump 跳板机穿透** | 级联多跳跳板机代理穿透 | `SshServerInfo`<br>`SshSessionPool` | `connect-timeout`<br>`auth-timeout` | `SshServerInfo.builder().jumpHost(...)`，递归解析级联跳板机拓扑，通过跳板机会话开启临时转发直连目标，双向生命周期级联清理 | `ProxyJumpCascadingTest` / `SampleSshIntegrationTest` |
 | **WebSSH 交互终端开启** | PTY 伪终端通道开辟门面 | `SshTemplate`<br>`SshShellHandle` | `command-timeout` | `openShell()` / `openShell(SshShellOptions)` / `openShell(String)` / `openShell(String, SshShellOptions)` / `openShell(SshServerInfo)` / `openShell(SshServerInfo, SshShellOptions)`，开辟 PTY 伪终端会话并返回受管句柄 | `SshTemplateShellTest` / `SampleSshIntegrationTest` |
-| **WebSSH 交互终端受管句柄** | 原生二进制双向终端管道 | `SshShellHandle`<br>`AutoCloseable` | - | 采用二进制字节流数据模型，提供 `sendInput(byte[])`、`sendInput(String)`、`onOutput(Consumer<byte[]>)`，支持 ANSI 控制序列与颜色无损传输 | `SshShellHandleTest` / `SampleSshIntegrationTest` |
+| **WebSSH 交互终端受管句柄** | 原生二进制双向终端管道 | `SshShellHandle`<br>`AutoCloseable` | - | 采用二进制字节流数据模型，提供 `sendInput(byte[])`、`sendInput(String)`、`onOutput(Consumer<byte[]>)`、`removeOutputListener(Consumer<byte[]>)`，支持 ANSI 控制序列与颜色无损传输 | `SshShellHandleTest` / `SampleSshIntegrationTest` |
 | **PTY 视口动态自适应重设** | 终端窗口改变协议协商 | `SshShellHandle` | - | `resize(int cols, int rows)` / `resize(int cols, int rows, int width, int height)`，底层封装发送 `SSH_MSG_CHANNEL_WINDOW_CHANGE` 协议包 | `SshShellHandleTest` / `SampleSshIntegrationTest` |
 | **远端进程退出与关闭监听** | 终端会话退出与断开通知 | `SshShellHandle` | - | `onExit(Consumer<Integer>)` 监听远端进程退出码；`onClose(Runnable)` 监听通道物理断开，联动上层 WebSocket 协同释放 | `SshShellHandleTest` / `SampleSshIntegrationTest` |
-| **终端规格富选项配置** | 强类型 PTY 终端规格模型 | `SshShellOptions` | - | `defaults()`（默认 `xterm-256color`，80x24 视口）、`ofSize(cols, rows)`、`ofTerm(term)`，支持环境变量字典、像素宽高与 `PtyMode` 声明 | `SshShellOptionsTest` |
-| **SFTP 核心操作门面** | 瞬态借还流式文件传输门面 | `SftpTemplate`<br>`SftpProperties` | `sftp.buffer-size`<br>`sftp.atomic-upload`<br>`sftp.temp-suffix` | `upload(...)`、`download(...)`、`exists(...)`、`stat(...)`、`delete(...)`、`chmod(...)`，遵循四位一体路由与路径防穿越清洗拦截 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
-| **SFTP 原子上传覆盖** | 临时文件上传原子 rename | `SftpTemplate` | `sftp.atomic-upload`<br>`sftp.temp-suffix` | 上传期间写入 `<target>.uploading.tmp`，完全闭合后原子执行 `rename`；若发生传输异常自动执行确定性反向清理补偿，根除下游脏读 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
+| **终端规格富选项配置** | 强类型 PTY 终端规格模型 | `SshShellOptions` | - | `defaults()`（默认 `xterm-256color`，80x24 视口）、`ofSize(cols, rows)`、`ofTerm(term)`、`applyTo(ChannelShell)`，支持环境变量字典、像素宽高与 `PtyMode` 声明 | `SshShellOptionsTest` |
+| **SFTP 核心操作门面** | 瞬态借还流式文件传输门面 | `SftpTemplate`<br>`SftpProperties` | `sftp.buffer-size`<br>`sftp.transfer-timeout`<br>`sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | `upload(...)`、`download(...)`、`exists(...)`、`stat(...)`、`delete(...)`、`chmod(...)`、`mkdir(...)`、`mkdirs(...)`，遵循四位一体路由与路径防穿越清洗拦截 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
+| **SFTP 原子上传覆盖** | 临时文件上传原子 rename | `SftpTemplate` | `sftp.atomic-upload-enabled`<br>`sftp.atomic-upload-suffix` | 上传期间写入 `<target>.uploading.tmp`，完全闭合后原子执行 `rename`；若发生传输异常自动执行确定性反向清理补偿，根除下游脏读 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
 | **SFTP 流式进度实时观测** | 传输字节进度函数式监听 | `SftpProgressListener` | `sftp.buffer-size` | 函数式接口 `onProgress(long transferred, long total)`，在 `upload` 与 `download` 全量重载中实时回调已传输字节数与文件总大小 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
 | **SFTP 目录项检索与元数据** | 只读不可变文件元数据载荷 | `SftpTemplate`<br>`SftpFileInfo` | - | `list(String remotePath)` 返回 `List<SftpFileInfo>`，封装文件名、绝对路径、大小、修改时间戳、POSIX 权限位与文件类型判定 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
 | **DFS 递归清空非空目录** | 深度优先递归删除目录树 | `SftpTemplate` | - | `deleteRecursively(String remotePath)`，深度优先后序遍历删除非空目录，白名单与敏感系统根目录黑名单防卫 | `SftpTemplateTest` / `SampleSshIntegrationTest` |
@@ -81,8 +81,9 @@ ateng:
         heartbeat-interval: 15s
       sftp:
         buffer-size: 32KB
-        atomic-upload: true
-        temp-suffix: .uploading.tmp
+        transfer-timeout: 10m
+        atomic-upload-enabled: true
+        atomic-upload-suffix: .uploading.tmp
 ```
 
 ### 2. 开箱即用 SFTP 文件传输示例
@@ -97,8 +98,8 @@ public class SftpDemoController {
 
     // 1. 原子上传文件并挂载实时进度监听
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public Result<Map<String, Object>> uploadFile(@RequestParam("file") MultipartFile file,
-                                                  @RequestParam("remotePath") String remotePath) throws IOException {
+    public Result<Map<String, Object>> uploadFile(@RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+                                                  @RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) throws IOException {
         AtomicLong lastTransferred = new AtomicLong(0);
         try (InputStream in = file.getInputStream()) {
             sftpTemplate.upload(remotePath, in, (transferred, total) -> {
@@ -114,7 +115,7 @@ public class SftpDemoController {
 
     // 2. 流式下载文件直传 HTTP 响应流
     @GetMapping("/download")
-    public void downloadFile(@RequestParam("remotePath") String remotePath,
+    public void downloadFile(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
                              HttpServletResponse response) throws IOException {
         String fileName = new File(remotePath).getName();
         response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
@@ -125,7 +126,7 @@ public class SftpDemoController {
 
     // 3. 深度优先 (DFS) 递归清空非空目录
     @PostMapping("/delete-directory")
-    public Result<Boolean> deleteDirectoryRecursively(@RequestParam("remotePath") String remotePath) {
+    public Result<Boolean> deleteDirectoryRecursively(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
         boolean deleted = sftpTemplate.deleteRecursively(remotePath);
         return Result.success(deleted);
     }
@@ -215,9 +216,10 @@ ateng:
   boot:
     ssh:
       sftp:
-        buffer-size: 64KB          # 单次流式读写缓冲大小（默认 32KB）
-        atomic-upload: true        # 是否开启 .uploading.tmp 原子重命名覆盖（默认 true）
-        temp-suffix: .tmp.uploading # 上传中临时文件后缀
+        buffer-size: 64KB                   # 单次流式读写缓冲大小（默认 32KB）
+        transfer-timeout: 15m               # 单文件传输超时阈值（默认 10m）
+        atomic-upload-enabled: true         # 是否开启原子重命名覆盖防脏读（默认 true）
+        atomic-upload-suffix: .tmp.uploading # 上传中临时文件后缀名
 ```
 
 ### 3. 自定义终端仿真规格与环境变量注入

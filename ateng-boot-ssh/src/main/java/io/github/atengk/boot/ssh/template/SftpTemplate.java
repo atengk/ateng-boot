@@ -7,16 +7,18 @@ import io.github.atengk.boot.ssh.listener.SftpProgressListener;
 import io.github.atengk.boot.ssh.model.SftpFileInfo;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
+import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.sshd.client.session.ClientSession;
+import org.apache.sshd.core.CoreModuleProperties;
 import org.apache.sshd.sftp.client.SftpClient;
 import org.apache.sshd.sftp.client.SftpClientFactory;
 import org.apache.sshd.sftp.common.SftpConstants;
 import org.apache.sshd.sftp.common.SftpException;
 import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -31,8 +33,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -130,7 +134,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 ensureParentDirectoryExists(sftp, normalizedPath);
                 doUploadStream(sftp, normalizedPath, inputStream, progressListener, -1L);
                 return null;
@@ -187,7 +191,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session);
+            try (SftpClient sftp = createSftpClient(session);
                  InputStream in = new FileInputStream(localFile)) {
                 ensureParentDirectoryExists(sftp, normalizedPath);
                 doUploadStream(sftp, normalizedPath, in, progressListener, localFile.length());
@@ -244,7 +248,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session);
+            try (SftpClient sftp = createSftpClient(session);
                  InputStream in = new ByteArrayInputStream(data)) {
                 ensureParentDirectoryExists(sftp, normalizedPath);
                 doUploadStream(sftp, normalizedPath, in, progressListener, (long) data.length);
@@ -305,7 +309,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session);
+            try (SftpClient sftp = createSftpClient(session);
                  InputStream in = sftp.read(normalizedPath)) {
                 long totalBytes = -1L;
                 try {
@@ -314,6 +318,7 @@ public class SftpTemplate {
                         totalBytes = attrs.getSize();
                     }
                 } catch (Exception ignore) {
+                    log.debug("ateng-boot-ssh: 无法获取远程文件大小用于进度计算 [{}]: {}", normalizedPath, ignore.getMessage());
                 }
                 copyStream(in, outputStream, progressListener, totalBytes);
                 outputStream.flush();
@@ -347,7 +352,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session);
+            try (SftpClient sftp = createSftpClient(session);
                  InputStream in = sftp.read(normalizedPath)) {
                 streamConsumer.accept(in);
                 return null;
@@ -460,7 +465,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         return sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 SftpClient.Attributes attrs = sftp.stat(normalizedPath);
                 return SftpFileInfo.fromAttributes(normalizedPath, attrs);
             } catch (Exception e) {
@@ -491,7 +496,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         return sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 sftp.stat(normalizedPath);
                 return true;
             } catch (SftpException e) {
@@ -527,7 +532,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         return sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 Iterable<SftpClient.DirEntry> entries = sftp.readDir(normalizedPath);
                 List<SftpFileInfo> result = new ArrayList<>();
                 for (SftpClient.DirEntry entry : entries) {
@@ -567,7 +572,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         return sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 SftpClient.Attributes attrs;
                 try {
                     attrs = sftp.stat(normalizedPath);
@@ -616,7 +621,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         return sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 return doDeleteRecursively(sftp, normalizedPath);
             } catch (Exception e) {
                 throw translateException(e, normalizedPath);
@@ -646,7 +651,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 SftpClient.Attributes attrs = new SftpClient.Attributes();
                 attrs.setPermissions(permissions);
                 sftp.setStat(normalizedPath, attrs);
@@ -677,7 +682,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 sftp.mkdir(normalizedPath);
                 return null;
             } catch (Exception e) {
@@ -706,7 +711,7 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 createDirectoriesRecursively(sftp, normalizedPath);
                 return null;
             } catch (Exception e) {
@@ -766,7 +771,7 @@ public class SftpTemplate {
         Path localBasePath = localDir.toPath();
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 createDirectoriesRecursively(sftp, normalizedRemoteDir);
 
                 Files.walkFileTree(localBasePath, new SimpleFileVisitor<Path>() {
@@ -791,6 +796,9 @@ public class SftpTemplate {
                         String targetFile = normalizedRemoteDir.endsWith("/") ? normalizedRemoteDir + relPath : normalizedRemoteDir + "/" + relPath;
                         try (InputStream in = Files.newInputStream(file)) {
                             doUploadStream(sftp, targetFile, in, null, attrs.size());
+                        } catch (Exception e) {
+                            throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                                    "目录同步上传文件失败 [" + file.toAbsolutePath() + " -> " + targetFile + "]: " + e.getMessage(), e);
                         }
                         return FileVisitResult.CONTINUE;
                     }
@@ -846,10 +854,11 @@ public class SftpTemplate {
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
-            try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
+            try (SftpClient sftp = createSftpClient(session)) {
                 Path localBasePath = localDir.toPath();
                 Files.createDirectories(localBasePath);
-                doDownloadDirectoryRecursively(sftp, normalizedRemoteDir, localBasePath);
+                Set<String> visitedPaths = new HashSet<>();
+                doDownloadDirectoryRecursively(sftp, normalizedRemoteDir, localBasePath, visitedPaths);
                 return null;
             } catch (Exception e) {
                 throw translateException(e, normalizedRemoteDir);
@@ -860,6 +869,17 @@ public class SftpTemplate {
     // ==========================================
     // 内部私有支撑方法
     // ==========================================
+
+    private SftpClient createSftpClient(ClientSession session) throws IOException {
+        SftpClient sftp = SftpClientFactory.instance().createSftpClient(session);
+        Duration timeout = properties.getSftp().getTransferTimeout();
+        if (timeout != null && !timeout.isZero()) {
+            CoreModuleProperties.IDLE_TIMEOUT.set(sftp.getClientChannel(), timeout);
+            CoreModuleProperties.NIO2_READ_TIMEOUT.set(sftp.getClientChannel(), timeout);
+            CoreModuleProperties.NIO2_MIN_WRITE_TIMEOUT.set(sftp.getClientChannel(), timeout);
+        }
+        return sftp;
+    }
 
     private void doUploadStream(SftpClient sftp, String remotePath, InputStream in, SftpProgressListener progressListener, long totalBytes) throws IOException {
         boolean atomic = properties.getSftp().isAtomicUploadEnabled();
@@ -918,7 +938,7 @@ public class SftpTemplate {
     private boolean doDeleteRecursively(SftpClient sftp, String path) throws IOException {
         SftpClient.Attributes attrs;
         try {
-            attrs = sftp.stat(path);
+            attrs = sftp.lstat(path);
         } catch (SftpException e) {
             if (e.getStatus() == SftpConstants.SSH_FX_NO_SUCH_FILE) {
                 return false;
@@ -926,7 +946,8 @@ public class SftpTemplate {
             throw e;
         }
 
-        if (!attrs.isDirectory()) {
+        // 若为符号链接（即使指向目录）或普通文件，直接单点删除链接本身，严禁 DFS 穿透删除目标源目录真实数据
+        if (attrs.isSymbolicLink() || !attrs.isDirectory()) {
             sftp.remove(path);
             return true;
         }
@@ -944,7 +965,18 @@ public class SftpTemplate {
         return true;
     }
 
-    private void doDownloadDirectoryRecursively(SftpClient sftp, String remotePath, Path localDir) throws IOException {
+    private void doDownloadDirectoryRecursively(SftpClient sftp, String remotePath, Path localDir, Set<String> visitedPaths) throws IOException {
+        String canonicalPath;
+        try {
+            canonicalPath = sftp.canonicalPath(remotePath);
+        } catch (Exception e) {
+            canonicalPath = remotePath;
+        }
+        if (!visitedPaths.add(canonicalPath)) {
+            log.warn("ateng-boot-ssh: 检测到 SFTP 目录符号链接成环或重复访问，跳过递归: {}", remotePath);
+            return;
+        }
+
         Iterable<SftpClient.DirEntry> entries = sftp.readDir(remotePath);
         for (SftpClient.DirEntry entry : entries) {
             String name = entry.getFilename();
@@ -954,20 +986,44 @@ public class SftpTemplate {
             String childRemote = remotePath.endsWith("/") ? remotePath + name : remotePath + "/" + name;
             Path childLocal = localDir.resolve(name);
 
-            if (entry.getAttributes().isDirectory()) {
-                Files.createDirectories(childLocal);
-                doDownloadDirectoryRecursively(sftp, childRemote, childLocal);
-            } else {
-                Path parent = childLocal.getParent();
-                if (parent != null) {
-                    Files.createDirectories(parent);
+            SftpClient.Attributes attrs = entry.getAttributes();
+            // 符号链接特殊处理：防范死循环与递归穿透
+            if (attrs.isSymbolicLink()) {
+                try {
+                    SftpClient.Attributes targetAttrs = sftp.stat(childRemote);
+                    if (targetAttrs.isDirectory()) {
+                        Files.createDirectories(childLocal);
+                        doDownloadDirectoryRecursively(sftp, childRemote, childLocal, visitedPaths);
+                    } else {
+                        downloadSingleFile(sftp, childRemote, childLocal, targetAttrs.getSize());
+                    }
+                } catch (Exception e) {
+                    log.warn("ateng-boot-ssh: 无法解析符号链接目标 [{}]: {}", childRemote, e.getMessage());
                 }
-                try (InputStream in = sftp.read(childRemote);
-                     OutputStream out = Files.newOutputStream(childLocal)) {
-                    copyStream(in, out, null, entry.getAttributes().getSize());
-                    out.flush();
-                }
+                continue;
             }
+
+            if (attrs.isDirectory()) {
+                Files.createDirectories(childLocal);
+                doDownloadDirectoryRecursively(sftp, childRemote, childLocal, visitedPaths);
+            } else {
+                downloadSingleFile(sftp, childRemote, childLocal, attrs.getSize());
+            }
+        }
+    }
+
+    private void downloadSingleFile(SftpClient sftp, String remotePath, Path localFile, long fileSize) throws IOException {
+        Path parent = localFile.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
+        try (InputStream in = sftp.read(remotePath);
+             OutputStream out = Files.newOutputStream(localFile)) {
+            copyStream(in, out, null, fileSize);
+            out.flush();
+        } catch (Exception e) {
+            throw new SshOperationException(SshResultCode.SFTP_TRANSFER_FAILED,
+                    "目录同步下载文件失败 [" + remotePath + " -> " + localFile.toAbsolutePath() + "]: " + e.getMessage(), e);
         }
     }
 
@@ -980,7 +1036,14 @@ public class SftpTemplate {
     }
 
     private void validatePathSafeForRecursiveDeletion(String path) {
-        if (HIGH_RISK_ROOT_PATHS.contains(path)) {
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("Remote path must not be null or blank");
+        }
+        String clean = path;
+        while (clean.length() > 1 && clean.endsWith("/")) {
+            clean = clean.substring(0, clean.length() - 1);
+        }
+        if (HIGH_RISK_ROOT_PATHS.contains(clean)) {
             throw new IllegalArgumentException("禁止递归删除系统关键受保护目录: " + path);
         }
     }
@@ -1028,6 +1091,7 @@ public class SftpTemplate {
                                 throw ex;
                             }
                         } catch (Exception ignore) {
+                            log.debug("ateng-boot-ssh: 并发校验已建目录异常 [{}]: {}", path, ignore.getMessage());
                             throw ex;
                         }
                     }
@@ -1045,14 +1109,7 @@ public class SftpTemplate {
      * @return 经过净化后的路径
      */
     public static String normalizeRemotePath(String remotePath) {
-        if (remotePath == null || remotePath.isBlank()) {
-            throw new IllegalArgumentException("Remote path must not be null or blank");
-        }
-        String cleaned = StringUtils.cleanPath(remotePath.replace('\\', '/'));
-        if (cleaned.contains("../") || cleaned.endsWith("/..") || cleaned.equals("..")) {
-            throw new IllegalArgumentException("检测到高危路径穿越 (Path Traversal) 尝试: " + remotePath);
-        }
-        return cleaned;
+        return FileUtil.cleanPath(remotePath);
     }
 
     /**

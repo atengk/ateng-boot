@@ -372,7 +372,7 @@ class SftpTemplateTest {
     }
 
     @Test
-    @DisplayName("测试 deleteRecursively 遇到高危受保护根目录时触发 Fail-Fast 异常拦截")
+    @DisplayName("测试 deleteRecursively 遇到高危受保护根目录时触发 Fail-Fast 异常拦截（包括尾斜杠绕过防卫）")
     void testDeleteRecursivelyHighRiskRootGuard() {
         assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -382,7 +382,19 @@ class SftpTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("禁止递归删除系统关键受保护目录");
 
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/etc/"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
         assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/root"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/root///"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/usr/"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("禁止递归删除系统关键受保护目录");
 

@@ -245,6 +245,104 @@ class SshShellHandleTest {
         }
     }
 
+    @Test
+    @DisplayName("测试 sendInput 边界前置校验防卫")
+    void testSendInputBoundaryCheck() throws Exception {
+        try (ClientSession session = sshClient.connect("shelluser", "127.0.0.1", serverPort)
+                .verify(Duration.ofSeconds(5))
+                .getSession()) {
+            session.addPasswordIdentity("shellpass");
+            session.auth().verify(Duration.ofSeconds(5));
+
+            ChannelShell channel = session.createShellChannel();
+            SshShellHandle handle = new SshShellHandle(null, channel, SshShellOptions.defaults(), null);
+            channel.open().verify(Duration.ofSeconds(5));
+
+            byte[] data = "Hello".getBytes(StandardCharsets.UTF_8);
+
+            assertThatThrownBy(() -> handle.sendInput(data, -1, 3))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("off must be non-negative");
+
+            assertThatThrownBy(() -> handle.sendInput(data, 0, -1))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("len must be non-negative");
+
+            assertThatThrownBy(() -> handle.sendInput(data, 2, 4))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("off + len must not exceed");
+
+            handle.close();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 removeOutputListener 对称注销监听器")
+    void testRemoveOutputListener() throws Exception {
+        try (ClientSession session = sshClient.connect("shelluser", "127.0.0.1", serverPort)
+                .verify(Duration.ofSeconds(5))
+                .getSession()) {
+            session.addPasswordIdentity("shellpass");
+            session.auth().verify(Duration.ofSeconds(5));
+
+            ChannelShell channel = session.createShellChannel();
+            SshShellHandle handle = new SshShellHandle(null, channel, SshShellOptions.defaults(), null);
+
+            java.util.function.Consumer<byte[]> listener = bytes -> {};
+            handle.onOutput(listener);
+            boolean removed = handle.removeOutputListener(listener);
+            assertThat(removed).isTrue();
+
+            boolean removedAgain = handle.removeOutputListener(listener);
+            assertThat(removedAgain).isFalse();
+
+            handle.close();
+        }
+    }
+
+    @Test
+    @DisplayName("测试通道关闭后注册多个 onClose 与 onExit 均能安全触发回放补偿")
+    void testMultipleCallbacksAfterCloseAndExit() throws Exception {
+        try (ClientSession session = sshClient.connect("shelluser", "127.0.0.1", serverPort)
+                .verify(Duration.ofSeconds(5))
+                .getSession()) {
+            session.addPasswordIdentity("shellpass");
+            session.auth().verify(Duration.ofSeconds(5));
+
+            ChannelShell channel = session.createShellChannel();
+            SshShellHandle handle = new SshShellHandle(null, channel, SshShellOptions.defaults(), null);
+            channel.open().verify(Duration.ofSeconds(5));
+
+            handle.sendInput("exit\n");
+            // 等待退出
+            awaitCondition(() -> handle.getExitStatus() != null, 3000);
+            handle.close();
+
+            assertThat(handle.isClosed()).isTrue();
+
+            // 通道关闭且远端退出后，连续注册多个 onClose 回调，均应立即触发
+            AtomicInteger closeCallCount = new AtomicInteger(0);
+            handle.onClose(closeCallCount::incrementAndGet);
+            handle.onClose(closeCallCount::incrementAndGet);
+            handle.onClose(closeCallCount::incrementAndGet);
+            assertThat(closeCallCount.get()).isEqualTo(3);
+
+            // 连续注册多个 onExit 回调，均应立即收到退出码
+            AtomicInteger exitCallCount = new AtomicInteger(0);
+            handle.onExit(code -> {
+                if (code == 0) {
+                    exitCallCount.incrementAndGet();
+                }
+            });
+            handle.onExit(code -> {
+                if (code == 0) {
+                    exitCallCount.incrementAndGet();
+                }
+            });
+            assertThat(exitCallCount.get()).isEqualTo(2);
+        }
+    }
+
     private void awaitCondition(java.util.function.BooleanSupplier condition, long maxWaitMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + maxWaitMs;
         while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {

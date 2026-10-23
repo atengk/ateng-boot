@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
+import org.apache.sshd.client.channel.ChannelShell;
 import org.apache.sshd.common.channel.PtyMode;
 import org.springframework.util.Assert;
 
@@ -160,5 +161,27 @@ public final class SshShellOptions {
     public static SshShellOptions ofTerm(String term) {
         Assert.hasText(term, "term must not be blank");
         return SshShellOptions.builder().term(term).build();
+    }
+
+    /**
+     * 将当前 PTY 伪终端规格参数配置应用到底层 ChannelShell 通道
+     *
+     * @param channel MINA SSHD 伪终端通道
+     */
+    public void applyTo(ChannelShell channel) {
+        if (channel == null) {
+            return;
+        }
+        channel.setPtyType(getTerm());
+        channel.setPtyColumns(getCols());
+        channel.setPtyLines(getRows());
+        channel.setPtyWidth(getWidth());
+        channel.setPtyHeight(getHeight());
+        if (getPtyModes() != null && !getPtyModes().isEmpty()) {
+            channel.setPtyModes(getPtyModes());
+        }
+        if (getEnv() != null && !getEnv().isEmpty()) {
+            getEnv().forEach(channel::setEnv);
+        }
     }
 }

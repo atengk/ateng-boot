@@ -975,17 +975,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         ChannelShell channel = null;
         try {
             channel = session.createShellChannel();
-            channel.setPtyType(effectiveOptions.getTerm());
-            channel.setPtyColumns(effectiveOptions.getCols());
-            channel.setPtyLines(effectiveOptions.getRows());
-            channel.setPtyWidth(effectiveOptions.getWidth());
-            channel.setPtyHeight(effectiveOptions.getHeight());
-            if (effectiveOptions.getPtyModes() != null && !effectiveOptions.getPtyModes().isEmpty()) {
-                channel.setPtyModes(effectiveOptions.getPtyModes());
-            }
-            if (effectiveOptions.getEnv() != null && !effectiveOptions.getEnv().isEmpty()) {
-                effectiveOptions.getEnv().forEach(channel::setEnv);
-            }
+            effectiveOptions.applyTo(channel);
 
             SshShellHandle handle = new SshShellHandle(
                     target,
@@ -1010,7 +1000,7 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                     target.toSessionKey(), effectiveOptions.getTerm(), effectiveOptions.getCols(), effectiveOptions.getRows());
             return handle;
         } catch (Exception e) {
-            if (channel != null && channel.isOpen()) {
+            if (channel != null) {
                 try {
                     channel.close(true);
                 } catch (Exception ignored) {

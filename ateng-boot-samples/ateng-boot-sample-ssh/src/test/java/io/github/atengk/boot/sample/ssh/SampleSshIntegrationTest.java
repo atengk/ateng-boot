@@ -562,6 +562,24 @@ class SampleSshIntegrationTest {
     }
 
     @Test
+    @DisplayName("测试 SFTP 传输层空白参数触发 JSR-303 Fail-Fast 校验拦截")
+    void testSftpValidationBlankPath() throws Exception {
+        // 1. 列表接口传入空白路径
+        mockMvc.perform(get("/api/sftp/list")
+                        .param("remotePath", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").isNumber())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+
+        // 2. 删除目录接口传入空字符串路径
+        mockMvc.perform(post("/api/sftp/delete-directory")
+                        .param("remotePath", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").isNumber())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
+
+    @Test
     @DisplayName("测试 WebSSH WebSocket 原生双向终端通信、视口调整与优雅关闭全链路")
     void testWebSshWebSocketPipeline() throws Exception {
         StandardWebSocketClient wsClient = new StandardWebSocketClient();

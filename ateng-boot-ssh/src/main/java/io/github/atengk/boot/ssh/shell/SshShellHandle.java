@@ -16,9 +16,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -51,12 +54,13 @@ public class SshShellHandle implements AutoCloseable {
     private volatile OutputStream in;
 
     private final CopyOnWriteArrayList<Consumer<byte[]>> outputListeners = new CopyOnWriteArrayList<>();
-    private final CopyOnWriteArrayList<Consumer<Integer>> exitCallbacks = new CopyOnWriteArrayList<>();
-    private final CopyOnWriteArrayList<Runnable> closeCallbacks = new CopyOnWriteArrayList<>();
+    private final List<Consumer<Integer>> exitCallbacks = new ArrayList<>();
+    private final List<Runnable> closeCallbacks = new ArrayList<>();
 
     private final AtomicBoolean closed = new AtomicBoolean(false);
-    private final AtomicBoolean exitNotified = new AtomicBoolean(false);
-    private final AtomicBoolean closeNotified = new AtomicBoolean(false);
+    private final AtomicBoolean exitTriggered = new AtomicBoolean(false);
+    private final AtomicBoolean closeTriggered = new AtomicBoolean(false);
+    private final AtomicReference<Integer> cachedExitStatus = new AtomicReference<>(null);
 
     private final Consumer<SshShellHandle> lifecycleUnregisterCallback;
 
@@ -112,7 +116,10 @@ public class SshShellHandle implements AutoCloseable {
      */
     public void sendInput(byte[] data, int off, int len) {
         Assert.notNull(data, "data must not be null");
-        if (len <= 0) {
+        Assert.isTrue(off >= 0, "off must be non-negative: " + off);
+        Assert.isTrue(len >= 0, "len must be non-negative: " + len);
+        Assert.isTrue(off + len <= data.length, "off + len must not exceed data length: " + (off + len) + " > " + data.length);
+        if (len == 0) {
             return;
         }
         if (!isAlive()) {
@@ -173,6 +180,16 @@ public class SshShellHandle implements AutoCloseable {
     }
 
     /**
+     * 移除已注册的远端终端输出监听器
+     *
+     * @param consumer 待移除的监听器函数
+     * @return true 若成功移除
+     */
+    public boolean removeOutputListener(Consumer<byte[]> consumer) {
+        return consumer != null && outputListeners.remove(consumer);
+    }
+
+    /**
      * 动态自适应调整伪终端视口字符行列尺寸（发送 SSH_MSG_CHANNEL_WINDOW_CHANGE 协议包）
      *
      * @param cols 字符列宽（大于 0）
@@ -212,20 +229,32 @@ public class SshShellHandle implements AutoCloseable {
 
     /**
      * 注册远端进程退出回调（当远端返回退出状态码时触发）
+     * <p>
+     * 具备即时回放语义：若通道此前已完成退出，新注册的回调将安全立即触发执行。
+     * </p>
      *
      * @param callback 退出码消费回调
      * @return 当前句柄
      */
     public SshShellHandle onExit(Consumer<Integer> callback) {
-        if (callback != null) {
-            exitCallbacks.add(callback);
-            Integer exitStatus = getExitStatus();
-            if (exitStatus != null && exitNotified.compareAndSet(false, true)) {
-                try {
-                    callback.accept(exitStatus);
-                } catch (Exception ex) {
-                    log.debug("ateng-boot-ssh: 执行终端即时退出回调异常: {}", ex.getMessage());
-                }
+        if (callback == null) {
+            return this;
+        }
+        boolean runImmediately = false;
+        Integer statusToRun = null;
+        synchronized (exitCallbacks) {
+            if (exitTriggered.get()) {
+                runImmediately = true;
+                statusToRun = cachedExitStatus.get();
+            } else {
+                exitCallbacks.add(callback);
+            }
+        }
+        if (runImmediately && statusToRun != null) {
+            try {
+                callback.accept(statusToRun);
+            } catch (Exception ex) {
+                log.debug("ateng-boot-ssh: 执行终端即时退出回调异常: {}", ex.getMessage());
             }
         }
         return this;
@@ -233,19 +262,30 @@ public class SshShellHandle implements AutoCloseable {
 
     /**
      * 注册终端通道关闭回调（当通道被关闭时触发）
+     * <p>
+     * 具备即时回放语义：若通道此前已完成关闭，新注册的回调将安全立即触发执行。
+     * </p>
      *
      * @param callback 关闭执行动作
      * @return 当前句柄
      */
     public SshShellHandle onClose(Runnable callback) {
-        if (callback != null) {
-            closeCallbacks.add(callback);
-            if (isClosed() && closeNotified.compareAndSet(false, true)) {
-                try {
-                    callback.run();
-                } catch (Exception ex) {
-                    log.debug("ateng-boot-ssh: 执行终端即时关闭回调异常: {}", ex.getMessage());
-                }
+        if (callback == null) {
+            return this;
+        }
+        boolean runImmediately = false;
+        synchronized (closeCallbacks) {
+            if (closeTriggered.get()) {
+                runImmediately = true;
+            } else {
+                closeCallbacks.add(callback);
+            }
+        }
+        if (runImmediately) {
+            try {
+                callback.run();
+            } catch (Exception ex) {
+                log.debug("ateng-boot-ssh: 执行终端即时关闭回调异常: {}", ex.getMessage());
             }
         }
         return this;
@@ -342,23 +382,45 @@ public class SshShellHandle implements AutoCloseable {
     }
 
     private void triggerExitAndCloseCallbacks() {
+        triggerExitCallbacks();
+        triggerCloseCallbacks();
+    }
+
+    private void triggerExitCallbacks() {
         Integer exitStatus = getExitStatus();
-        if (exitStatus != null && exitNotified.compareAndSet(false, true)) {
-            for (Consumer<Integer> callback : exitCallbacks) {
-                try {
-                    callback.accept(exitStatus);
-                } catch (Exception ex) {
-                    log.debug("ateng-boot-ssh: 触发终端退出回调异常: {}", ex.getMessage());
-                }
+        if (exitStatus == null) {
+            return;
+        }
+        List<Consumer<Integer>> toRun = new ArrayList<>();
+        synchronized (exitCallbacks) {
+            if (exitTriggered.compareAndSet(false, true)) {
+                cachedExitStatus.set(exitStatus);
+                toRun.addAll(exitCallbacks);
+                exitCallbacks.clear();
             }
         }
-        if (closeNotified.compareAndSet(false, true)) {
-            for (Runnable callback : closeCallbacks) {
-                try {
-                    callback.run();
-                } catch (Exception ex) {
-                    log.debug("ateng-boot-ssh: 触发终端关闭回调异常: {}", ex.getMessage());
-                }
+        for (Consumer<Integer> callback : toRun) {
+            try {
+                callback.accept(exitStatus);
+            } catch (Exception ex) {
+                log.debug("ateng-boot-ssh: 触发终端退出回调异常: {}", ex.getMessage());
+            }
+        }
+    }
+
+    private void triggerCloseCallbacks() {
+        List<Runnable> toRun = new ArrayList<>();
+        synchronized (closeCallbacks) {
+            if (closeTriggered.compareAndSet(false, true)) {
+                toRun.addAll(closeCallbacks);
+                closeCallbacks.clear();
+            }
+        }
+        for (Runnable callback : toRun) {
+            try {
+                callback.run();
+            } catch (Exception ex) {
+                log.debug("ateng-boot-ssh: 触发终端关闭回调异常: {}", ex.getMessage());
             }
         }
     }

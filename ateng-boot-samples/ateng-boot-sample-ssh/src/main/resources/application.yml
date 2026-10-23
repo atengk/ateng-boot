@@ -25,8 +25,9 @@ ateng:
       # SFTP 传输配置
       sftp:
         buffer-size: 32KB
-        atomic-upload: true
-        temp-suffix: .uploading.tmp
+        transfer-timeout: 10m
+        atomic-upload-enabled: true
+        atomic-upload-suffix: .uploading.tmp
       # 命名多主机节点字典
       servers:
         node1:

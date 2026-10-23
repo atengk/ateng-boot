@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.ssh.model.SftpFileInfo;
 import io.github.atengk.boot.ssh.template.SftpTemplate;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -53,8 +55,8 @@ public class SftpDemoController {
      * @return 上传结果元数据
      */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public Result<Map<String, Object>> uploadFile(@RequestParam("file") MultipartFile file,
-                                                  @RequestParam("remotePath") String remotePath) throws IOException {
+    public Result<Map<String, Object>> uploadFile(@RequestParam("file") @NotNull(message = "上传文件不能为空") MultipartFile file,
+                                                  @RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) throws IOException {
         AtomicLong lastReportedBytes = new AtomicLong(0);
         long fileSize = file.getSize();
 
@@ -81,7 +83,7 @@ public class SftpDemoController {
      * @param response   HTTP 响应载体
      */
     @GetMapping("/download")
-    public void downloadFile(@RequestParam("remotePath") String remotePath,
+    public void downloadFile(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath,
                              HttpServletResponse response) throws IOException {
         String fileName = new File(remotePath).getName();
         response.setContentType(MediaType.APPLICATION_OCTET_STREAM_VALUE);
@@ -99,7 +101,7 @@ public class SftpDemoController {
      * @return 强类型文件元数据列表
      */
     @GetMapping("/list")
-    public Result<List<SftpFileInfo>> listDirectory(@RequestParam("remotePath") String remotePath) {
+    public Result<List<SftpFileInfo>> listDirectory(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
         List<SftpFileInfo> entries = sftpTemplate.list(remotePath);
         return Result.success(entries);
     }
@@ -111,7 +113,7 @@ public class SftpDemoController {
      * @return 递归删除是否成功
      */
     @PostMapping("/delete-directory")
-    public Result<Boolean> deleteDirectoryRecursively(@RequestParam("remotePath") String remotePath) {
+    public Result<Boolean> deleteDirectoryRecursively(@RequestParam("remotePath") @NotBlank(message = "远程路径不能为空") String remotePath) {
         boolean deleted = sftpTemplate.deleteRecursively(remotePath);
         return Result.success(deleted);
     }
@@ -123,7 +125,7 @@ public class SftpDemoController {
      * @return 双向同步验证结果
      */
     @PostMapping("/sync-directory")
-    public Result<Map<String, Object>> syncDirectoryTree(@RequestParam("remoteDir") String remoteDir) throws IOException {
+    public Result<Map<String, Object>> syncDirectoryTree(@RequestParam("remoteDir") @NotBlank(message = "远程目录不能为空") String remoteDir) throws IOException {
         Path tempLocalUpload = Files.createTempDirectory("sftp-sync-upload-");
         Path tempLocalDownload = Files.createTempDirectory("sftp-sync-download-");
 
