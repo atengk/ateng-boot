@@ -32,4 +32,11 @@ public class NotificationAlertProperties {
      * 是否在告警卡片中包含经过脱敏的方法调用入参，默认开启
      */
     private boolean includeArgs = true;
+
+    /**
+     * 入参脱敏的敏感字段关键字列表，默认包含 password, secret, token, credential, idCard, mobile 等
+     */
+    private java.util.List<String> desensitizeKeys = new java.util.ArrayList<>(java.util.List.of(
+            "password", "secret", "token", "credential", "pwd", "passwd", "idcard", "mobile", "auth"
+    ));
 }

@@ -172,10 +172,27 @@ public class NotifyAlertAspect {
         }
 
         try {
-            return JsonUtil.toJsonString(map);
+            String json = JsonUtil.toJsonString(map);
+            return maskSensitiveJson(json);
         } catch (Throwable ex) {
-            return map.toString();
+            return maskSensitiveJson(map.toString());
         }
+    }
+
+    private String maskSensitiveJson(String input) {
+        if (input == null || input.isBlank()) {
+            return input;
+        }
+        java.util.List<String> keys = properties != null ? properties.getDesensitizeKeys() : null;
+        if (keys == null || keys.isEmpty()) {
+            keys = java.util.List.of("password", "secret", "token", "credential", "pwd", "passwd", "idcard", "mobile", "auth");
+        }
+        String result = input;
+        for (String key : keys) {
+            String regex = "(?i)(\"" + java.util.regex.Pattern.quote(key) + "\"\\s*:\\s*)(\"[^\"]*\"|[^,\\s\\]\\}]+)";
+            result = result.replaceAll(regex, "$1\"******\"");
+        }
+        return result;
     }
 
     private boolean isExcludedArgType(Object arg) {

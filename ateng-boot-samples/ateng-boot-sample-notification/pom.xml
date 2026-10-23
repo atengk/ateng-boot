@@ -29,6 +29,19 @@
             <artifactId>ateng-boot-web</artifactId>
         </dependency>
 
+        <!-- Spring 事务支持 (用于演示 sendAfterCommit 本地事务生命周期感知) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
+        <!-- Lombok (编译期代码生成) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- OkHttp MockWebServer (用于集成测试端到端自验) -->
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
