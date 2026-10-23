@@ -27,4 +27,24 @@ public class NotificationRateLimitProperties {
      * 突发超频时的最大微退避排队等待时长，默认 2 秒
      */
     private Duration maxWaitDuration = Duration.ofSeconds(2);
+
+    /**
+     * 钉钉群机器人默认基准频控配额（条/分钟），默认 20 条/分钟
+     */
+    private int defaultDingTalkPermits = 20;
+
+    /**
+     * 企业微信群机器人默认基准频控配额（条/分钟），默认 20 条/分钟
+     */
+    private int defaultWeComPermits = 20;
+
+    /**
+     * 飞书群机器人默认基准频控配额（条/分钟），默认 100 条/分钟
+     */
+    private int defaultFeishuPermits = 100;
+
+    /**
+     * 通用 Webhook 机器人默认基准频控配额（条/分钟），默认 60 条/分钟
+     */
+    private int defaultGenericPermits = 60;
 }

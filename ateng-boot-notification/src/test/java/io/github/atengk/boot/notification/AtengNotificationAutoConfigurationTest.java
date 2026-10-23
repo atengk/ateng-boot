@@ -2,6 +2,8 @@ package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.autoconfigure.AtengNotificationAutoConfiguration;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
+import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
+import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
@@ -42,6 +44,8 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             assertThat(context).hasBean("notificationClientHttpRequestFactory");
             assertThat(context).hasBean("notificationRestClient");
             assertThat(context).hasSingleBean(NotificationChannelRegistry.class);
+            assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+            assertInstanceOf(InMemoryNotificationRateLimiter.class, context.getBean(NotificationRateLimiter.class));
             assertThat(context).hasSingleBean(DingTalkNotificationProvider.class);
             assertThat(context).hasSingleBean(WeComNotificationProvider.class);
             assertThat(context).hasSingleBean(FeishuNotificationProvider.class);
@@ -98,6 +102,17 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
     }
 
     @Test
+    @DisplayName("验证 downstream 开启 distributed=true 时未注入分布式 Bean 则平滑回退单机内存版")
+    void testDistributedRateLimiterFallback() {
+        contextRunner
+                .withPropertyValues("ateng.boot.notification.rate-limit.distributed=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(NotificationRateLimiter.class);
+                    assertInstanceOf(InMemoryNotificationRateLimiter.class, context.getBean(NotificationRateLimiter.class));
+                });
+    }
+
+    @Test
     @DisplayName("验证下游开发者声明同名 Bean 时平滑无缝接管 (@ConditionalOnMissingBean)")
     void testCustomBeanOverride() {
         contextRunner
@@ -109,6 +124,10 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
 
                     RestClient restClient = context.getBean("notificationRestClient", RestClient.class);
                     assertNotNull(restClient);
+
+                    NotificationRateLimiter rateLimiter = context.getBean(NotificationRateLimiter.class);
+                    assertNotNull(rateLimiter);
+                    assertTrue(rateLimiter instanceof CustomTestRateLimiter);
                 });
     }
 
@@ -147,6 +166,23 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             factory.setConnectTimeout(1000);
             factory.setReadTimeout(2000);
             return factory;
+        }
+
+        @Bean
+        public NotificationRateLimiter customNotificationRateLimiter() {
+            return new CustomTestRateLimiter();
+        }
+    }
+
+    static class CustomTestRateLimiter implements NotificationRateLimiter {
+        @Override
+        public boolean tryAcquire(io.github.atengk.boot.notification.channel.NotificationChannel channel, Duration maxWaitDuration) {
+            return true;
+        }
+
+        @Override
+        public int resolvePermitsPerMinute(io.github.atengk.boot.notification.channel.NotificationChannel channel) {
+            return 999;
         }
     }
 }

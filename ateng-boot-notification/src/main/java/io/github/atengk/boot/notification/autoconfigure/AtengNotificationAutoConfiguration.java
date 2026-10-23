@@ -4,6 +4,8 @@ import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelProvider;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.channel.NotificationChannelResolver;
+import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
+import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
@@ -124,6 +126,23 @@ public class AtengNotificationAutoConfiguration {
         log.debug("Initialized NotificationChannelRegistry with {} pre-configured channels (defaultChannel={})",
                 registry.size(), properties.getDefaultChannel());
         return registry;
+    }
+
+    /**
+     * 自动装配客户端通道频控器
+     * 默认装配单机内存滑动窗口频控器 InMemoryNotificationRateLimiter
+     * 预留分布式扩展钩子，当注入第三方分布式实现或自定义 Bean 时自动优雅退让
+     *
+     * @param properties 全局通知配置属性
+     * @return NotificationRateLimiter 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(NotificationRateLimiter.class)
+    public NotificationRateLimiter notificationRateLimiter(NotificationProperties properties) {
+        if (properties.getRateLimit().isDistributed()) {
+            log.warn("协同通知频控配置启用了 distributed=true，但未检测到分布式 NotificationRateLimiter Bean，回退为 InMemoryNotificationRateLimiter 单机内存频控");
+        }
+        return new InMemoryNotificationRateLimiter(properties.getRateLimit());
     }
 
     /**
