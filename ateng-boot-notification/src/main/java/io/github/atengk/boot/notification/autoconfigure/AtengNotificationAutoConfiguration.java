@@ -1,5 +1,7 @@
 package io.github.atengk.boot.notification.autoconfigure;
 
+import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
+import io.github.atengk.boot.notification.aspect.NotifyAlertAspect;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelProvider;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
@@ -18,6 +20,7 @@ import io.github.atengk.boot.notification.renderer.NotificationTemplateRenderer;
 import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.extern.slf4j.Slf4j;
+import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -260,6 +263,42 @@ public class AtengNotificationAutoConfiguration {
                 eventPublisherProvider.getIfAvailable(),
                 asyncExecutorProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 自动装配防告警风暴聚合抑制引擎
+     * 实施“首发即时通报 + 窗口期原子计数拦截 + 周期末聚合通报”三阶抗洪算法
+     *
+     * @param notificationTemplate 协同通知操作核心门面
+     * @param properties           全局通知配置属性
+     * @return AlertStormSuppressor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AlertStormSuppressor alertStormSuppressor(
+            NotificationTemplate notificationTemplate,
+            NotificationProperties properties) {
+        log.debug("Initializing AlertStormSuppressor (suppressWindow={})", properties.getAlert().getSuppressWindow());
+        return new AlertStormSuppressor(notificationTemplate, properties.getAlert());
+    }
+
+    /**
+     * 自动装配声明式 @NotifyAlert 异常告警切面
+     * 当类路径存在 AspectJ 且 alert.enabled=true 时生效，安全提取 MDC TraceId、用户上下文与脱敏入参
+     *
+     * @param alertStormSuppressor 防风暴聚合抑制器
+     * @param properties           全局通知配置属性
+     * @return NotifyAlertAspect 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(Aspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.notification.alert", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public NotifyAlertAspect notifyAlertAspect(
+            AlertStormSuppressor alertStormSuppressor,
+            NotificationProperties properties) {
+        log.debug("Initializing NotifyAlertAspect for declarative @NotifyAlert interception");
+        return new NotifyAlertAspect(alertStormSuppressor, properties.getAlert());
     }
 }
 

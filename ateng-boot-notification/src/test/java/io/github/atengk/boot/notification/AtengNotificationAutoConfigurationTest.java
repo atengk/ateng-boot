@@ -1,5 +1,7 @@
 package io.github.atengk.boot.notification;
 
+import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
+import io.github.atengk.boot.notification.aspect.NotifyAlertAspect;
 import io.github.atengk.boot.notification.autoconfigure.AtengNotificationAutoConfiguration;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
@@ -56,6 +58,8 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             assertThat(context).hasSingleBean(NotificationTemplateRenderer.class);
             assertThat(context).hasSingleBean(NotificationSendFailureHandler.class);
             assertThat(context).hasSingleBean(NotificationTemplate.class);
+            assertThat(context).hasSingleBean(AlertStormSuppressor.class);
+            assertThat(context).hasSingleBean(NotifyAlertAspect.class);
 
             NotificationProperties properties = context.getBean(NotificationProperties.class);
             assertEquals("ops-alert", properties.getDefaultChannel());
