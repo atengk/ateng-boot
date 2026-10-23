@@ -342,6 +342,60 @@ class PayCallbackHandlerTest {
         payLockManager.unlock(lockKey);
     }
 
+    @Test
+    @DisplayName("支付宝回调: 防御不可变 Map 传参 (In-place Mutation)")
+    void testAlipayCallbackImmutableMap() throws Exception {
+        Map<String, String> mutableParams = buildAlipayParams("ALI_IMMUTABLE", "ALI_TX_IMMUTABLE", "88.00",
+                "2088009", "TRADE_SUCCESS", null);
+        Map<String, String> immutableParams = Map.copyOf(mutableParams);
+
+        // 验证不会因底层 remove("sign") 触发 UnsupportedOperationException
+        PayCallbackResponse response = assertDoesNotThrow(() -> handler.handleAlipay("default", immutableParams));
+        assertEquals(200, response.getHttpStatus());
+        assertEquals("success", response.getResponseBody());
+    }
+
+    @Test
+    @DisplayName("支付宝回调: 金额格式非法抛出异常防御")
+    void testAlipayCallbackInvalidAmount() throws Exception {
+        Map<String, String> params = buildAlipayParams("ALI_BAD_AMT", "ALI_TX_BAD_AMT", "invalid-amount",
+                "2088009", "TRADE_SUCCESS", null);
+
+        // handle 模式捕获异常回复 fail
+        PayCallbackResponse response = handler.handleAlipay("default", params);
+        assertEquals("fail", response.getResponseBody());
+        assertTrue(response.isFail());
+    }
+
+    @Test
+    @DisplayName("退款回调: 成功派发退款异步回调监听")
+    void testDispatchRefund() {
+        java.util.concurrent.atomic.AtomicBoolean called = new java.util.concurrent.atomic.AtomicBoolean(false);
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                return PayCallbackResult.success();
+            }
+
+            @Override
+            public PayCallbackResult onRefundSuccess(io.github.atengk.boot.pay.model.callback.RefundSuccessCallback callback) {
+                called.set(true);
+                return PayCallbackResult.success();
+            }
+        });
+
+        io.github.atengk.boot.pay.model.callback.RefundSuccessCallback refundCallback =
+                io.github.atengk.boot.pay.model.callback.RefundSuccessCallback.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .outRefundNo("REFUND_001")
+                        .refundAmount(new BigDecimal("10.00"))
+                        .build();
+
+        PayCallbackResult result = handler.dispatchRefund(refundCallback);
+        assertTrue(result.isSuccess());
+        assertTrue(called.get());
+    }
+
     // =========================================================================
     // 辅助工具方法
     // =========================================================================

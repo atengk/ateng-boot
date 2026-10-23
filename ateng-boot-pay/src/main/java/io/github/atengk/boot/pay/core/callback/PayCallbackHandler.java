@@ -4,8 +4,8 @@ import com.alipay.api.internal.util.AlipaySignature;
 import com.wechat.pay.java.core.exception.DecryptionException;
 import com.wechat.pay.java.core.exception.ValidationException;
 import com.wechat.pay.java.core.notification.NotificationParser;
-import com.wechat.pay.java.core.notification.RSACombinedNotificationConfig;
 import com.wechat.pay.java.core.notification.RSANotificationConfig;
+import com.wechat.pay.java.core.notification.RSAPublicKeyNotificationConfig;
 import com.wechat.pay.java.core.notification.RequestParam;
 import com.wechat.pay.java.service.payments.model.Transaction;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
@@ -22,6 +22,7 @@ import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.util.CurrencyUtil;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
@@ -37,6 +38,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.*;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * 支付异步 Webhook 回调网关处理门面
@@ -115,31 +118,24 @@ public class PayCallbackHandler {
         }
 
         String lockKey = PayChannel.WECHAT_PAY.name() + ":" + callback.getOutTradeNo();
-        Duration timeout = payProperties.getCallback() != null && payProperties.getCallback().getIdempotentTimeout() != null
-                ? payProperties.getCallback().getIdempotentTimeout()
-                : Duration.ofSeconds(10);
-
-        boolean locked = payLockManager.tryLock(lockKey, timeout);
-        if (!locked) {
-            log.warn("WeChat pay callback lock contention detected for key [{}], responding FAIL to trigger retry", lockKey);
-            return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
-                    "并发防重锁冲突，等待下一次重试", PayCallbackResult.fail("并发防重锁冲突"), callback);
-        }
-
-        try {
-            PayCallbackResult result = dispatch(callback);
-            if (result.isFail()) {
-                log.warn("WeChat pay callback listener returned FAIL for outTradeNo [{}], reason: {}",
-                        callback.getOutTradeNo(), result.getMessage());
-                return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
-                        result.getMessage(), result, callback);
-            }
-            return buildWechatResponse(HttpStatus.OK.value(), "SUCCESS", "成功", result, callback);
-        } finally {
-            if (locked) {
-                payLockManager.unlock(lockKey);
-            }
-        }
+        return processCallbackWithLock(
+                lockKey,
+                callback,
+                () -> {
+                    log.warn("WeChat pay callback lock contention detected for key [{}], responding FAIL to trigger retry", lockKey);
+                    return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                            "并发防重锁冲突，等待下一次重试", PayCallbackResult.fail("并发防重锁冲突"), callback);
+                },
+                result -> {
+                    if (result.isFail()) {
+                        log.warn("WeChat pay callback listener returned FAIL for outTradeNo [{}], reason: {}",
+                                callback.getOutTradeNo(), result.getMessage());
+                        return buildWechatResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(), "FAIL",
+                                result.getMessage(), result, callback);
+                    }
+                    return buildWechatResponse(HttpStatus.OK.value(), "SUCCESS", "成功", result, callback);
+                }
+        );
     }
 
     /**
@@ -228,7 +224,7 @@ public class PayCallbackHandler {
             String publicKeyId = merchant.getWechatPayPublicKeyId() != null && !merchant.getWechatPayPublicKeyId().isBlank()
                     ? merchant.getWechatPayPublicKeyId()
                     : serialNumber;
-            RSACombinedNotificationConfig config = new RSACombinedNotificationConfig.Builder()
+            RSAPublicKeyNotificationConfig config = new RSAPublicKeyNotificationConfig.Builder()
                     .publicKey(PayKeyLoader.cleanCertificatePem(merchant.getWechatPayPublicKey()))
                     .publicKeyId(publicKeyId)
                     .apiV3Key(merchant.getApiV3Key())
@@ -241,7 +237,8 @@ public class PayCallbackHandler {
         if (wechatAutoCertificateManager != null) {
             try {
                 cert = wechatAutoCertificateManager.getCertificate(merchant.getMchId(), serialNumber);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("WechatAutoCertificateManager certificate lookup skipped for serialNumber [{}]: {}", serialNumber, e.getMessage());
             }
         }
         if (cert == null && merchant.getPrivateKeyPath() != null) {
@@ -249,7 +246,8 @@ public class PayCallbackHandler {
             if (wechatAutoCertificateManager != null) {
                 try {
                     cert = wechatAutoCertificateManager.getAvailableCertificate(merchant.getMchId());
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    log.debug("WechatAutoCertificateManager fallback lookup skipped: {}", e.getMessage());
                 }
             }
         }
@@ -329,29 +327,22 @@ public class PayCallbackHandler {
         }
 
         String lockKey = PayChannel.ALIPAY.name() + ":" + callback.getOutTradeNo();
-        Duration timeout = payProperties.getCallback() != null && payProperties.getCallback().getIdempotentTimeout() != null
-                ? payProperties.getCallback().getIdempotentTimeout()
-                : Duration.ofSeconds(10);
-
-        boolean locked = payLockManager.tryLock(lockKey, timeout);
-        if (!locked) {
-            log.warn("Alipay callback lock contention detected for key [{}], responding fail to trigger retry", lockKey);
-            return buildAlipayResponse("fail", PayCallbackResult.fail("并发防重锁冲突"), callback);
-        }
-
-        try {
-            PayCallbackResult result = dispatch(callback);
-            if (result.isFail()) {
-                log.warn("Alipay callback listener returned FAIL for outTradeNo [{}], reason: {}",
-                        callback.getOutTradeNo(), result.getMessage());
-                return buildAlipayResponse("fail", result, callback);
-            }
-            return buildAlipayResponse("success", result, callback);
-        } finally {
-            if (locked) {
-                payLockManager.unlock(lockKey);
-            }
-        }
+        return processCallbackWithLock(
+                lockKey,
+                callback,
+                () -> {
+                    log.warn("Alipay callback lock contention detected for key [{}], responding fail to trigger retry", lockKey);
+                    return buildAlipayResponse("fail", PayCallbackResult.fail("并发防重锁冲突"), callback);
+                },
+                result -> {
+                    if (result.isFail()) {
+                        log.warn("Alipay callback listener returned FAIL for outTradeNo [{}], reason: {}",
+                                callback.getOutTradeNo(), result.getMessage());
+                        return buildAlipayResponse("fail", result, callback);
+                    }
+                    return buildAlipayResponse("success", result, callback);
+                }
+        );
     }
 
     /**
@@ -384,6 +375,9 @@ public class PayCallbackHandler {
         String charset = app.getCharset() != null && !app.getCharset().isBlank() ? app.getCharset() : "UTF-8";
         String signType = app.getSignType() != null && !app.getSignType().isBlank() ? app.getSignType() : "RSA2";
 
+        // 防御外部不可变 Map 以及 AlipaySignature.rsaCheckV1 内部破坏性移除 sign/sign_type
+        Map<String, String> verifyParams = new HashMap<>(params);
+
         boolean verified = false;
         try {
             if (app.isCertMode()) {
@@ -393,14 +387,14 @@ public class PayCallbackHandler {
                 }
                 X509Certificate cert = PayKeyLoader.loadCertificate(certPath);
                 String publicKey = Base64.getEncoder().encodeToString(cert.getPublicKey().getEncoded());
-                verified = AlipaySignature.rsaCheckV1(params, publicKey, charset, signType);
+                verified = AlipaySignature.rsaCheckV1(verifyParams, publicKey, charset, signType);
             } else {
                 String publicKey = app.getAlipayPublicKey();
                 if (publicKey == null || publicKey.isBlank()) {
                     throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "支付宝公钥未配置 (alipayPublicKey)");
                 }
                 String cleanKey = PayKeyLoader.cleanCertificatePem(publicKey);
-                verified = AlipaySignature.rsaCheckV1(params, cleanKey, charset, signType);
+                verified = AlipaySignature.rsaCheckV1(verifyParams, cleanKey, charset, signType);
             }
         } catch (PaySignException e) {
             throw e;
@@ -423,7 +417,9 @@ public class PayCallbackHandler {
         if (totalAmountStr != null && !totalAmountStr.isBlank()) {
             try {
                 amount = new BigDecimal(totalAmountStr);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                throw new PaySignException(PayResultCode.PAY_PARAM_INVALID,
+                        "支付宝回调金额解析失败: [total_amount=" + totalAmountStr + "]", e);
             }
         }
 
@@ -497,6 +493,66 @@ public class PayCallbackHandler {
             }
         }
         return lastResult;
+    }
+
+    /**
+     * 派发退款成功异步回调事件给业务监听器
+     *
+     * @param callback 标准化退款成功回调事件
+     * @return 业务处理结果
+     */
+    public PayCallbackResult dispatchRefund(RefundSuccessCallback callback) {
+        if (listeners.isEmpty()) {
+            log.info("No PayCallbackListener registered in application context, auto ACK refund callback for [{}]",
+                    callback.getOutRefundNo());
+            return PayCallbackResult.ignore("未注册任何回调监听器");
+        }
+
+        PayCallbackResult lastResult = PayCallbackResult.success();
+        for (PayCallbackListener listener : listeners) {
+            if (listener.supports(callback)) {
+                try {
+                    PayCallbackResult res = listener.onRefundSuccess(callback);
+                    if (res != null) {
+                        if (res.isFail()) {
+                            return res;
+                        }
+                        lastResult = res;
+                    }
+                } catch (Exception e) {
+                    log.error("PayCallbackListener [{}] threw exception processing refund for [{}]: {}",
+                            listener.getClass().getName(), callback.getOutRefundNo(), e.getMessage(), e);
+                    return PayCallbackResult.fail("退款监听器执行异常: " + e.getMessage());
+                }
+            }
+        }
+        return lastResult;
+    }
+
+    /**
+     * 通用受管防重并发锁执行模板
+     */
+    private PayCallbackResponse processCallbackWithLock(
+            String lockKey,
+            PaymentSuccessCallback callback,
+            Supplier<PayCallbackResponse> conflictResponseSupplier,
+            Function<PayCallbackResult, PayCallbackResponse> resultResponseFunction) {
+
+        Duration timeout = payProperties.getCallback() != null && payProperties.getCallback().getIdempotentTimeout() != null
+                ? payProperties.getCallback().getIdempotentTimeout()
+                : Duration.ofSeconds(10);
+
+        boolean locked = payLockManager.tryLock(lockKey, timeout);
+        if (!locked) {
+            return conflictResponseSupplier.get();
+        }
+
+        try {
+            PayCallbackResult result = dispatch(callback);
+            return resultResponseFunction.apply(result);
+        } finally {
+            payLockManager.unlock(lockKey);
+        }
     }
 
     // ==========================================

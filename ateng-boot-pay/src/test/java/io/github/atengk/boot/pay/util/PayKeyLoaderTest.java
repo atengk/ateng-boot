@@ -95,6 +95,13 @@ class PayKeyLoaderTest {
         PrivateKey privateKeyFromBase64 = PayKeyLoader.loadPrivateKey(cleanedPem);
         assertNotNull(privateKeyFromBase64);
         assertArrayEquals(privateKey.getEncoded(), privateKeyFromBase64.getEncoded());
+
+        // 公钥与证书 PEM 清洗验证
+        String rawPublicKeyPem = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\n-----END PUBLIC KEY-----";
+        String cleanedPublicKey = PayKeyLoader.loadPublicKeyPem(rawPublicKeyPem);
+        assertEquals("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA", cleanedPublicKey);
+        assertFalse(cleanedPublicKey.contains("-----BEGIN"));
+        assertFalse(cleanedPublicKey.contains("-----END"));
     }
 
     @Test

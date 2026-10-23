@@ -609,12 +609,28 @@ public class AlipayTemplate {
     }
 
     /**
+     * 统一客户端逃生舱别名：获取当前默认应用的官方原生 AlipayClient 实例
+     */
+    public AlipayClient getClient() {
+        return getAlipayClient();
+    }
+
+    /**
      * 获取指定应用配置键/AppId 对应的官方原生 AlipayClient 实例
      *
      * @param appKey 应用配置键或 AppId
      */
     public AlipayClient getAlipayClient(String appKey) {
         return getClientHolder(namedMerchantRegistry.resolveAlipayApp(appKey)).alipayClient();
+    }
+
+    /**
+     * 统一客户端逃生舱别名：获取指定应用配置键/AppId 对应的官方原生 AlipayClient 实例
+     *
+     * @param appKey 应用配置键或 AppId
+     */
+    public AlipayClient getClient(String appKey) {
+        return getAlipayClient(appKey);
     }
 
     /**
@@ -690,7 +706,7 @@ public class AlipayTemplate {
             }
         } else {
             if (properties.getAlipayPublicKey() != null && !properties.getAlipayPublicKey().isBlank()) {
-                config.setAlipayPublicKey(PayKeyLoader.loadPrivateKeyPem(properties.getAlipayPublicKey()));
+                config.setAlipayPublicKey(PayKeyLoader.loadPublicKeyPem(properties.getAlipayPublicKey()));
             }
         }
 

@@ -542,7 +542,30 @@ class AlipayTemplateTest {
         AlipayTemplate certTemplate = new AlipayTemplate(registry);
 
         assertNotNull(certTemplate.getAlipayClient("certApp"));
+        assertNotNull(certTemplate.getClient("certApp"));
         assertTrue(certTemplate.getAppProperties("certApp").isCertMode());
+    }
+
+    @Test
+    @DisplayName("公钥模式：公钥带 BEGIN PUBLIC KEY 标头时成功自适应清洗并初始化")
+    void testPublicKeyWithPemHeaders_initialization() {
+        PayProperties payProperties = new PayProperties();
+        AlipayPayProperties alipay = payProperties.getAlipay();
+        alipay.setDefaultApp("headerApp");
+
+        AlipayAppProperties headerApp = new AlipayAppProperties();
+        headerApp.setAppId("2021000000000088");
+        headerApp.setCertMode(false);
+        headerApp.setPrivateKey(merchantPrivateKeyPem);
+        headerApp.setAlipayPublicKey("-----BEGIN PUBLIC KEY-----\n" + alipayPublicKeyPem + "\n-----END PUBLIC KEY-----");
+        headerApp.setServerUrl(server.url("/gateway.do").toString());
+        alipay.getApps().put("headerApp", headerApp);
+
+        NamedMerchantRegistry registry = new NamedMerchantRegistry(payProperties);
+        AlipayTemplate headerTemplate = new AlipayTemplate(registry);
+
+        assertNotNull(headerTemplate.getClient());
+        assertNotNull(headerTemplate.getAlipayClient("headerApp"));
     }
 
     // =========================================================================

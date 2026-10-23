@@ -981,12 +981,28 @@ public class WechatPayTemplate {
     }
 
     /**
+     * 统一客户端逃生舱别名：获取默认商户的官方 HTTP 客户端
+     */
+    public HttpClient getClient() {
+        return getHttpClient();
+    }
+
+    /**
      * 获取指定商户的官方 HTTP 客户端（逃生舱）
      *
      * @param merchantKey 商户别名或商户号
      */
     public HttpClient getHttpClient(String merchantKey) {
         return getServiceHolder(namedMerchantRegistry.resolveWechatMerchant(merchantKey)).getHttpClient();
+    }
+
+    /**
+     * 统一客户端逃生舱别名：获取指定商户的官方 HTTP 客户端
+     *
+     * @param merchantKey 商户别名或商户号
+     */
+    public HttpClient getClient(String merchantKey) {
+        return getHttpClient(merchantKey);
     }
 
     /**
@@ -1173,26 +1189,20 @@ public class WechatPayTemplate {
         try {
             return supplier.get();
         } catch (ValidationException e) {
-            log.error("WeChat pay signature validation failed for [{}]: {}", operation, e.getMessage(), e);
             throw new PaySignException(PayResultCode.PAY_SIGN_VERIFY_ERROR, "微信支付应答签名校验失败: " + e.getMessage(), e);
         } catch (ServiceException e) {
-            log.error("WeChat pay service error for [{}]: code={}, message={}, httpStatus={}",
-                    operation, e.getErrorCode(), e.getErrorMessage(), e.getHttpStatusCode(), e);
             PayResultCode resultCode = PayResultCode.PAY_GATEWAY_ERROR;
             if ("ORDERNOTEXIST".equalsIgnoreCase(e.getErrorCode()) || "ORDER_NOT_EXIST".equalsIgnoreCase(e.getErrorCode())) {
                 resultCode = PayResultCode.PAY_ORDER_NOT_FOUND;
             }
             throw new PayTradeException(resultCode, e.getErrorCode(), e.getErrorMessage(), e.getHttpStatusCode(), e);
         } catch (HttpException e) {
-            log.error("WeChat pay HTTP communication error for [{}]: {}", operation, e.getMessage(), e);
             throw new PayNetworkException("微信支付网络通信异常: " + e.getMessage(), e);
         } catch (MalformedMessageException e) {
-            log.error("WeChat pay message parsing error for [{}]: {}", operation, e.getMessage(), e);
             throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付响应报文格式异常: " + e.getMessage(), e);
         } catch (PayException e) {
             throw e;
         } catch (Exception e) {
-            log.error("WeChat pay unexpected error for [{}]: {}", operation, e.getMessage(), e);
             throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付操作执行失败: " + e.getMessage(), e);
         }
     }

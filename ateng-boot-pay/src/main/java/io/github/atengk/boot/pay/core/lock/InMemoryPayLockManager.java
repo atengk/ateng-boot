@@ -1,7 +1,10 @@
 package io.github.atengk.boot.pay.core.lock;
 
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -10,6 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 在无分布式缓存或单体部署环境下作为绝对可靠的防重保底机制，
  * 采用时间戳原子比对防止并发死锁与重复穿透。
+ * 遵循严格的防御性锁释放范式：通过 ThreadLocal 记录当前线程持有的锁令牌，
+ * 在 {@link #unlock(String)} 时校验令牌一致性，杜绝因锁超时被后继线程重新获取后被原线程误删。
  * </p>
  *
  * @author Ateng
@@ -17,10 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class InMemoryPayLockManager implements PayLockManager {
 
+    private record LockHolder(String token, long expireAt) {}
+
     /**
-     * 锁映射表：锁标识键 -> 过期时间戳（毫秒）
+     * 锁映射表：锁标识键 -> 锁持有者记录
      */
-    private final ConcurrentHashMap<String, Long> lockMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, LockHolder> lockMap = new ConcurrentHashMap<>();
+    private final ThreadLocal<Map<String, String>> threadLocks = ThreadLocal.withInitial(HashMap::new);
 
     @Override
     public boolean tryLock(String lockKey, Duration expireTime) {
@@ -28,24 +36,40 @@ public class InMemoryPayLockManager implements PayLockManager {
         Duration duration = expireTime != null ? expireTime : Duration.ofSeconds(10);
         long now = System.currentTimeMillis();
         long expireAt = now + duration.toMillis();
+        String token = UUID.randomUUID().toString();
 
         AtomicBoolean acquired = new AtomicBoolean(false);
-        lockMap.compute(lockKey, (k, oldExpireAt) -> {
-            if (oldExpireAt == null || oldExpireAt <= now) {
+        lockMap.compute(lockKey, (k, old) -> {
+            if (old == null || old.expireAt() <= now) {
                 acquired.set(true);
-                return expireAt;
+                return new LockHolder(token, expireAt);
             }
-            return oldExpireAt;
+            return old;
         });
 
-        return acquired.get();
+        if (acquired.get()) {
+            threadLocks.get().put(lockKey, token);
+            return true;
+        }
+        return false;
     }
 
     @Override
     public void unlock(String lockKey) {
-        if (lockKey != null) {
-            lockMap.remove(lockKey);
+        if (lockKey == null) {
+            return;
         }
+        Map<String, String> locks = threadLocks.get();
+        String token = locks.remove(lockKey);
+        if (locks.isEmpty()) {
+            threadLocks.remove();
+        }
+        if (token == null) {
+            // 当前线程未持有该锁，严禁误删其他线程锁
+            return;
+        }
+
+        lockMap.computeIfPresent(lockKey, (k, old) -> Objects.equals(old.token(), token) ? null : old);
     }
 
     /**
@@ -53,5 +77,6 @@ public class InMemoryPayLockManager implements PayLockManager {
      */
     public void clear() {
         lockMap.clear();
+        threadLocks.remove();
     }
 }

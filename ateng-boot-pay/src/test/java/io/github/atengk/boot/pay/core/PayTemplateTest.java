@@ -573,9 +573,71 @@ class PayTemplateTest {
     }
 
     @Test
-    @DisplayName("专有门面逃生舱验证")
+    @DisplayName("专有门面与官方客户端逃生舱验证")
     void testEscapes() {
         assertSame(wechatPayTemplate, payTemplate.getWechatPayTemplate());
         assertSame(alipayTemplate, payTemplate.getAlipayTemplate());
+
+        when(wechatPayTemplate.getHttpClient()).thenReturn(mock(com.wechat.pay.java.core.http.HttpClient.class));
+        when(alipayTemplate.getAlipayClient()).thenReturn(mock(com.alipay.api.AlipayClient.class));
+
+        assertNotNull(payTemplate.getWechatClient());
+        assertNotNull(payTemplate.getAlipayClient());
+    }
+
+    @Test
+    @DisplayName("查单与关单参数校验 Fail-Fast: 缺失单号立即拦截")
+    void testQueryAndCloseFailFast() {
+        // 查单参数为空
+        assertThrows(PayException.class, () -> payTemplate.queryOrder(null));
+
+        // 查单既无 outTradeNo 又无 transactionId
+        PayException qEx = assertThrows(PayException.class, () -> payTemplate.queryOrder(
+                UnifiedQueryRequest.builder().channel(PayChannel.ALIPAY).build()));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, qEx.getResultCode());
+
+        // 关单参数为空
+        assertThrows(PayException.class, () -> payTemplate.closeOrder(null));
+
+        // 关单缺少 outTradeNo
+        PayException cEx = assertThrows(PayException.class, () -> payTemplate.closeOrder(
+                UnifiedCloseRequest.builder().channel(PayChannel.ALIPAY).build()));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, cEx.getResultCode());
+    }
+
+    @Test
+    @DisplayName("统一撤销订单 cancelOrder: 支付宝撤销与微信关单冲正")
+    void testCancelOrder() {
+        // 1. 支付宝撤销
+        PayResponse aliResp = PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("ALI_CANCEL_001")
+                .tradeState(PayTradeState.REVOKED)
+                .success(true)
+                .build();
+        when(alipayTemplate.cancelOrder(any(AlipayPayRequest.class))).thenReturn(aliResp);
+
+        PayResponse respAli = payTemplate.cancelOrder(PayChannel.ALIPAY, "ALI_CANCEL_001");
+        assertNotNull(respAli);
+        assertEquals(PayTradeState.REVOKED, respAli.getTradeState());
+        assertTrue(respAli.isSuccess());
+
+        // 2. 微信关单冲正
+        PayResponse wxResp = PayResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("WX_CANCEL_001")
+                .tradeState(PayTradeState.CLOSED)
+                .success(true)
+                .build();
+        when(wechatPayTemplate.closeOrder(any(WechatPayRequest.class))).thenReturn(wxResp);
+
+        PayResponse respWx = payTemplate.cancelOrder(PayChannel.WECHAT_PAY, "WX_CANCEL_001");
+        assertNotNull(respWx);
+        assertEquals(PayTradeState.REVOKED, respWx.getTradeState());
+        assertTrue(respWx.isSuccess());
+
+        // 3. 撤销缺少单号拦截
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder(
+                UnifiedCancelRequest.builder().channel(PayChannel.ALIPAY).build()));
     }
 }

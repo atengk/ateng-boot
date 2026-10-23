@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.controller;
 
 import io.github.atengk.boot.pay.core.callback.PayCallbackHandler;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
+import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -56,21 +57,29 @@ public class PayWebhookController {
         log.info("Received incoming payment webhook notification: channel=[{}], merchantId=[{}]",
                 channel, effectiveMerchantId);
 
-        String normalizedChannel = channel != null ? channel.trim().toLowerCase() : "";
-        PayCallbackResponse response;
-
-        switch (normalizedChannel) {
-            case "wechat", "wechatpay", "wechat_pay", "wxpay", "wx" ->
-                    response = payCallbackHandler.handleWechat(effectiveMerchantId, request);
-            case "alipay", "ali", "alipay_trade" ->
-                    response = payCallbackHandler.handleAlipay(effectiveMerchantId, request);
-            default -> {
-                log.warn("Unsupported payment webhook channel: [{}]", channel);
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body("Unsupported payment callback channel: " + channel);
-            }
+        PayChannel payChannel = resolveChannel(channel);
+        if (payChannel == null) {
+            log.warn("Unsupported payment webhook channel: [{}]", channel);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("Unsupported payment callback channel: " + channel);
         }
 
+        PayCallbackResponse response = switch (payChannel) {
+            case WECHAT_PAY -> payCallbackHandler.handleWechat(effectiveMerchantId, request);
+            case ALIPAY -> payCallbackHandler.handleAlipay(effectiveMerchantId, request);
+        };
+
         return response.toResponseEntity();
+    }
+
+    private static PayChannel resolveChannel(String channelStr) {
+        if (channelStr == null || channelStr.isBlank()) {
+            return null;
+        }
+        return switch (channelStr.trim().toLowerCase()) {
+            case "wechat", "wechatpay", "wechat_pay", "wxpay", "wx" -> PayChannel.WECHAT_PAY;
+            case "alipay", "ali", "alipay_trade" -> PayChannel.ALIPAY;
+            default -> null;
+        };
     }
 }

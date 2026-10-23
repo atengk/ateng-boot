@@ -1,11 +1,15 @@
 package io.github.atengk.boot.pay.core;
 
+import com.alipay.api.AlipayClient;
+import com.wechat.pay.java.core.http.HttpClient;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayResultCode;
+import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedCancelRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedCloseRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedPayRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedQueryRequest;
@@ -21,12 +25,12 @@ import java.util.Objects;
 /**
  * 顶层轻量统一收单门面
  * <p>
- * 抹平微信支付与支付宝渠道底层协议差异，提供高直觉统一收单入口（{@link #pay}、{@link #queryOrder}、{@link #closeOrder}）：
+ * 抹平微信支付与支付宝渠道底层协议差异，提供高直觉统一收单入口（{@link #pay}、{@link #queryOrder}、{@link #closeOrder}、{@link #cancelOrder}）：
  * <ol>
  *     <li><b>双渠道智能路由</b>：依据入参 {@code channel} 或上下文 {@link PayContextHolder#getChannel()} 自动分发至专有底层门面；</li>
  *     <li><b>扁平直达凭据出参</b>：统一返回扁平化 {@link PayResponse}，场景凭据（{@code qrCode}、{@code payUrl}、{@code formHtml}、{@code wechatJsapi}、{@code orderString}）直接消费，杜绝 {@code instanceof} 强转；</li>
  *     <li><b>严格货币与元精度治理</b>：全域强制校验 {@link BigDecimal}（元）精度（小数位严禁超过 2 位），确保分/元转换数学绝对精确；</li>
- *     <li><b>官方专有门面逃生舱</b>：随时可通过 {@link #getWechatPayTemplate()} 或 {@link #getAlipayTemplate()} 下沉至专有渠道执行深度定制能力。</li>
+ *     <li><b>官方专有门面与客户端逃生舱</b>：随时可通过 {@link #getWechatPayTemplate()}、{@link #getAlipayTemplate()} 或直接通过 {@link #getWechatClient()}、{@link #getAlipayClient()} 下沉至专有渠道执行深度定制能力。</li>
  * </ol>
  * </p>
  *
@@ -143,6 +147,11 @@ public class PayTemplate {
         if (request == null) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查单请求参数不能为空");
         }
+        boolean hasOutTradeNo = request.getOutTradeNo() != null && !request.getOutTradeNo().isBlank();
+        boolean hasTransactionId = request.getTransactionId() != null && !request.getTransactionId().isBlank();
+        if (!hasOutTradeNo && !hasTransactionId) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查单必须提供商户订单号 [outTradeNo] 或渠道交易号 [transactionId]");
+        }
         PayChannel channel = resolveChannel(request.getChannel());
 
         return switch (channel) {
@@ -210,6 +219,9 @@ public class PayTemplate {
         if (request == null) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "关单请求参数不能为空");
         }
+        if (request.getOutTradeNo() == null || request.getOutTradeNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "关单必须提供商户订单号 [outTradeNo]");
+        }
         PayChannel channel = resolveChannel(request.getChannel());
 
         return switch (channel) {
@@ -262,7 +274,89 @@ public class PayTemplate {
     }
 
     // =========================================================================
-    // 4. 专有门面逃生舱
+    // 4. 统一订单撤销 (cancelOrder)
+    // =========================================================================
+
+    /**
+     * 撤销/超时冲正未完成的交易订单（主要用于条码付/当面付超时未决场景）
+     *
+     * @param request 统一撤销请求入参
+     * @return 撤销操作响应
+     */
+    public PayResponse cancelOrder(UnifiedCancelRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "撤销请求参数不能为空");
+        }
+        boolean hasOutTradeNo = request.getOutTradeNo() != null && !request.getOutTradeNo().isBlank();
+        boolean hasTransactionId = request.getTransactionId() != null && !request.getTransactionId().isBlank();
+        if (!hasOutTradeNo && !hasTransactionId) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "撤销订单必须提供商户订单号 [outTradeNo] 或渠道交易号 [transactionId]");
+        }
+        PayChannel channel = resolveChannel(request.getChannel());
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                if (!hasOutTradeNo) {
+                    throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付撤销/关单必须提供商户订单号 [outTradeNo]");
+                }
+                WechatPayRequest wechatReq = WechatPayRequest.builder()
+                        .merchantKey(request.getMerchantKey())
+                        .outTradeNo(request.getOutTradeNo())
+                        .subMchId(request.getSubMchId())
+                        .build();
+                PayResponse closeResp = wechatPayTemplate.closeOrder(wechatReq);
+                yield PayResponse.builder()
+                        .channel(PayChannel.WECHAT_PAY)
+                        .outTradeNo(request.getOutTradeNo())
+                        .tradeState(PayTradeState.REVOKED)
+                        .tradeStateDesc("微信订单已撤销关闭")
+                        .success(closeResp.isSuccess())
+                        .rawResponse(closeResp.getRawResponse())
+                        .build();
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
+                }
+                AlipayPayRequest alipayReq = AlipayPayRequest.builder()
+                        .appKey(request.getMerchantKey())
+                        .outTradeNo(request.getOutTradeNo())
+                        .tradeNo(request.getTransactionId())
+                        .appAuthToken(request.getAppAuthToken())
+                        .build();
+                yield alipayTemplate.cancelOrder(alipayReq);
+            }
+        };
+    }
+
+    /**
+     * 单标识符重载：根据渠道与商户订单号撤销订单
+     *
+     * @param channel    支付渠道
+     * @param outTradeNo 商户订单号
+     * @return 撤销操作响应
+     */
+    public PayResponse cancelOrder(PayChannel channel, String outTradeNo) {
+        return cancelOrder(UnifiedCancelRequest.builder().channel(channel).outTradeNo(outTradeNo).build());
+    }
+
+    /**
+     * 单标识符重载：根据渠道、商户别名与商户订单号撤销订单
+     *
+     * @param channel     支付渠道
+     * @param merchantKey 商户/应用别名
+     * @param outTradeNo  商户订单号
+     * @return 撤销操作响应
+     */
+    public PayResponse cancelOrder(PayChannel channel, String merchantKey, String outTradeNo) {
+        return cancelOrder(UnifiedCancelRequest.builder().channel(channel).merchantKey(merchantKey).outTradeNo(outTradeNo).build());
+    }
+
+    // =========================================================================
+    // 5. 专有门面与官方客户端逃生舱
     // =========================================================================
 
     /**
@@ -277,6 +371,20 @@ public class PayTemplate {
      */
     public AlipayTemplate getAlipayTemplate() {
         return alipayTemplate;
+    }
+
+    /**
+     * 便捷逃生舱：获取当前底层微信官方原生客户端 HttpClient（无则返回 null）
+     */
+    public HttpClient getWechatClient() {
+        return wechatPayTemplate != null ? wechatPayTemplate.getHttpClient() : null;
+    }
+
+    /**
+     * 便捷逃生舱：获取当前底层支付宝官方原生客户端 AlipayClient（无则返回 null）
+     */
+    public AlipayClient getAlipayClient() {
+        return alipayTemplate != null ? alipayTemplate.getAlipayClient() : null;
     }
 
     // =========================================================================

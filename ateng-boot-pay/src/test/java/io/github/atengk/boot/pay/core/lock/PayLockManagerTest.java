@@ -88,10 +88,10 @@ class PayLockManagerTest {
     // ==========================================
 
     @Test
-    @DisplayName("Redis: 基于 SETNX 的分布式锁获取与释放")
+    @DisplayName("Redis: 基于 SETNX 的分布式锁安全获取与持有者防御性释放")
     void testRedisLockAndUnlock() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.setIfAbsent(eq("ateng:pay:lock:WECHAT_PAY:ORDER_3003"), eq("LOCKED"), any(Duration.class)))
+        when(valueOperations.setIfAbsent(eq("ateng:pay:lock:WECHAT_PAY:ORDER_3003"), anyString(), any(Duration.class)))
                 .thenReturn(Boolean.TRUE)
                 .thenReturn(Boolean.FALSE);
 
@@ -105,9 +105,13 @@ class PayLockManagerTest {
         // 2. 二次并发获取失败
         assertFalse(redisLockManager.tryLock(lockKey, Duration.ofSeconds(10)));
 
-        // 3. 释放锁
+        // 3. 持有者安全释放锁
         redisLockManager.unlock(lockKey);
-        verify(redisTemplate, times(1)).delete("ateng:pay:lock:WECHAT_PAY:ORDER_3003");
+        verify(redisTemplate, times(1)).execute(any(), eq(java.util.Collections.singletonList("ateng:pay:lock:WECHAT_PAY:ORDER_3003")), anyString());
+
+        // 4. 未持有锁时再次释放不应再执行 Redis 解锁
+        redisLockManager.unlock(lockKey);
+        verify(redisTemplate, times(1)).execute(any(), anyList(), anyString());
     }
 
     @Test

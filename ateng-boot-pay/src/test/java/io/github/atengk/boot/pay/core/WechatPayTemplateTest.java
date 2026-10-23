@@ -494,6 +494,14 @@ class WechatPayTemplateTest {
         assertEquals(404, ex.getHttpStatus());
     }
 
+    @Test
+    @DisplayName("官方客户端逃生舱：获取底层 HttpClient 与 getClient 别名")
+    void testClientEscapeHatch() {
+        assertNotNull(payTemplate.getHttpClient());
+        assertNotNull(payTemplate.getClient());
+        assertEquals(payTemplate.getHttpClient(), payTemplate.getClient());
+    }
+
     // =========================================================================
     // 辅助工具方法
     // =========================================================================

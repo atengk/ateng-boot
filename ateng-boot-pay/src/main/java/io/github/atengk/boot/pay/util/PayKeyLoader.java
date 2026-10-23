@@ -227,6 +227,28 @@ public final class PayKeyLoader {
     }
 
     /**
+     * 自适应加载清洗后的 RSA 公钥或证书文本（无任何 BEGIN/END 标头与换行空白，适用于支付宝 SDK）
+     *
+     * @param locationOrContent 资源路径、PEM 字符串或自定义标识符
+     * @return 清洗后的标准 Base64 公钥或证书字符串
+     */
+    public static String loadPublicKeyPem(String locationOrContent) {
+        return loadPublicKeyPem(locationOrContent, null);
+    }
+
+    /**
+     * 自适应加载清洗后的 RSA 公钥或证书文本
+     *
+     * @param locationOrContent 资源路径、PEM 字符串或自定义标识符
+     * @param customProvider    特定自定义 SPI 提供者（可为 null）
+     * @return 清洗后的标准 Base64 公钥或证书字符串
+     */
+    public static String loadPublicKeyPem(String locationOrContent, PayCertificateProvider customProvider) {
+        String keyString = loadString(locationOrContent, customProvider);
+        return cleanCertificatePem(keyString);
+    }
+
+    /**
      * 自适应加载 X.509 证书
      *
      * @param locationOrContent 资源路径、PEM 字符串或自定义标识符
