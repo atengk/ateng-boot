@@ -55,6 +55,7 @@
         <module>ateng-boot-ftp</module>
         <module>ateng-boot-ssh</module>
         <module>ateng-boot-notification</module>
+        <module>ateng-boot-document</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -78,6 +79,8 @@
         <commons-net.version>3.11.1</commons-net.version>
         <mockftpserver.version>3.2.0</mockftpserver.version>
         <sshd.version>2.14.0</sshd.version>
+        <poi-tl.version>1.12.2</poi-tl.version>
+        <pdfbox.version>3.0.4</pdfbox.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -293,6 +296,21 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-notification</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.deepoove</groupId>
+                <artifactId>poi-tl</artifactId>
+                <version>${poi-tl.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-document</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
