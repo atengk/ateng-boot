@@ -48,6 +48,58 @@ public final class FileUtil {
     }
 
     /**
+     * 安全规范化并清洗文件路径（防御路径穿越攻击 Path Traversal）
+     * <p>
+     * 1. 过滤空字符 \0 与首尾空白；<br>
+     * 2. 统一将 Windows 反斜杠 \ 转换为标准正斜杠 /；<br>
+     * 3. 规范化并消除冗余相对路径（. 与 ..）；<br>
+     * 4. 严防超出根路径或恶意穿越提权（若检测到相对路径逃逸、包含残留 ../ 或以 /.. 结尾则抛出 IllegalArgumentException）。
+     * </p>
+     *
+     * @param path 原始路径
+     * @return 经过净化后的标准路径
+     * @throws IllegalArgumentException 若路径为 null、空白或检测到恶意路径穿越
+     */
+    public static String cleanPath(String path) {
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("Path must not be null or blank");
+        }
+        String clean = path.replace("\0", "").replace('\\', '/').trim();
+        boolean startsWithSlash = clean.startsWith("/");
+        String[] rawSegments = clean.split("/+");
+        java.util.List<String> segments = new java.util.ArrayList<>();
+        for (String segment : rawSegments) {
+            if (segment.isEmpty() || ".".equals(segment)) {
+                continue;
+            }
+            if ("..".equals(segment)) {
+                if (!segments.isEmpty() && !"..".equals(segments.get(segments.size() - 1))) {
+                    segments.remove(segments.size() - 1);
+                } else {
+                    if (startsWithSlash) {
+                        throw new IllegalArgumentException("检测到高危路径穿越 (Path Traversal) 尝试: " + path);
+                    }
+                    segments.add("..");
+                }
+            } else {
+                segments.add(segment);
+            }
+        }
+        if (segments.contains("..")) {
+            throw new IllegalArgumentException("检测到高危路径穿越 (Path Traversal) 尝试: " + path);
+        }
+        StringBuilder result = new StringBuilder();
+        if (startsWithSlash) {
+            result.append("/");
+        }
+        result.append(String.join("/", segments));
+        if (clean.endsWith("/") && result.length() > (startsWithSlash ? 1 : 0)) {
+            result.append("/");
+        }
+        return result.length() == 0 ? (startsWithSlash ? "/" : "") : result.toString();
+    }
+
+    /**
      * 提取文件扩展名（不带点，全小写）
      * 例如："report.PDF" -> "pdf", "archive.tar.gz" -> "gz", "README" -> ""
      *

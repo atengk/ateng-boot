@@ -27,6 +27,27 @@ class FileUtilTest {
     }
 
     @Test
+    @DisplayName("cleanPath: 安全规范化清洗路径并拦截恶意穿越提权")
+    void shouldCleanPathAndBlockTraversal() {
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/log/app.log"));
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/log/./app.log"));
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/tmp/../log/app.log"));
+        assertEquals("/var/log/", FileUtil.cleanPath("/var/log/"));
+        assertEquals("/", FileUtil.cleanPath("/"));
+        assertEquals("/", FileUtil.cleanPath("///"));
+        assertEquals("a/b/c", FileUtil.cleanPath("a\\b\\c"));
+        assertEquals("/etc/passwd.png", FileUtil.cleanPath("/etc/passwd\0.png"));
+
+        // 恶意越界穿越测试
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath(null));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("   "));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath(".."));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("/.."));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("/sub/../../etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("../secret.key"));
+    }
+
+    @Test
     @DisplayName("getExtName: 提取扩展名并统一转小写")
     void shouldExtractExtensionNames() {
         assertEquals("png", FileUtil.getExtName("avatar.PNG"));

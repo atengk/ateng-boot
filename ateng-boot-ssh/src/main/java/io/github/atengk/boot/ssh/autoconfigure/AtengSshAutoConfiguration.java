@@ -5,11 +5,13 @@ import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
+import io.github.atengk.boot.ssh.template.SftpTemplate;
 import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
+import org.apache.sshd.sftp.client.SftpClientFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -143,6 +145,23 @@ public class AtengSshAutoConfiguration {
                                    ObjectProvider<SshLifecycleManager> lifecycleManagerProvider) {
         return new SshTemplate(sshSessionPool, sshClientRegistry, properties,
                 taskExecutorProvider.getIfAvailable(), lifecycleManagerProvider.getIfAvailable());
+    }
+
+    /**
+     * 自动装配 SFTP 工业级文件传输门面 SftpTemplate
+     *
+     * @param sshSessionPool    会话缓存池
+     * @param sshClientRegistry 命名多主机注册表
+     * @param properties        全局配置属性
+     * @return SftpTemplate 门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(SftpClientFactory.class)
+    public SftpTemplate sftpTemplate(SshSessionPool sshSessionPool,
+                                     SshClientRegistry sshClientRegistry,
+                                     SshProperties properties) {
+        return new SftpTemplate(sshSessionPool, sshClientRegistry, properties);
     }
 }
 

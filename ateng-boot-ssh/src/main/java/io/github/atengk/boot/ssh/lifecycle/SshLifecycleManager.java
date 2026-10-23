@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ssh.lifecycle;
 
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
+import io.github.atengk.boot.ssh.shell.SshShellHandle;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
@@ -14,7 +15,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * SSH 基础设施生命周期受管治理协调器
  * <p>
  * 遵循确定性三步优雅停机时序：<br>
- * 【时序 1/3】关闭活跃端口转发隧道（释放本地监听端口）；<br>
+ * 【时序 1/3】关闭活跃交互式 PTY 终端与端口转发隧道（释放终端会话与本地监听端口）；<br>
  * 【时序 2/3】安全注销并断开受管会话缓存池（{@link SshSessionPool}）；<br>
  * 【时序 3/3】停止底层 NIO 异步驱动客户端引擎（{@link SshClient}）。
  * </p>
@@ -28,6 +29,7 @@ public class SshLifecycleManager implements SmartLifecycle {
     private final SshSessionPool sessionPool;
     private final SshClient sshClient;
     private final CopyOnWriteArrayList<SshTunnelHandle> activeTunnels = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<SshShellHandle> activeShells = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<Runnable> tunnelCleanupHooks = new CopyOnWriteArrayList<>();
 
     private volatile boolean running = false;
@@ -35,6 +37,37 @@ public class SshLifecycleManager implements SmartLifecycle {
     public SshLifecycleManager(SshSessionPool sessionPool, SshClient sshClient) {
         this.sessionPool = sessionPool;
         this.sshClient = sshClient;
+    }
+
+    /**
+     * 纳管活跃的交互式 PTY 终端会话（保障停机时优先优雅释放）
+     *
+     * @param shell 终端会话句柄
+     */
+    public void registerShell(SshShellHandle shell) {
+        if (shell != null) {
+            activeShells.add(shell);
+        }
+    }
+
+    /**
+     * 注销已关闭的交互式 PTY 终端会话
+     *
+     * @param shell 终端会话句柄
+     */
+    public void unregisterShell(SshShellHandle shell) {
+        if (shell != null) {
+            activeShells.remove(shell);
+        }
+    }
+
+    /**
+     * 获取当前生命周期纳管的活跃终端会话列表
+     *
+     * @return 活跃终端只读列表
+     */
+    public List<SshShellHandle> getActiveShells() {
+        return Collections.unmodifiableList(activeShells);
     }
 
     /**
@@ -92,9 +125,20 @@ public class SshLifecycleManager implements SmartLifecycle {
         }
         log.info("ateng-boot-ssh: 正在执行确定性三步优雅停机时序...");
 
-        // 步骤 1/3：释放并关闭所有活跃的端口转发隧道
-        log.debug("ateng-boot-ssh: [停机时序 1/3] 正在确认并释放活跃端口转发隧道 (隧道数={}, 钩子数={})...",
-                activeTunnels.size(), tunnelCleanupHooks.size());
+        // 步骤 1/3：释放并关闭所有活跃的交互式 PTY 终端与端口转发隧道
+        log.debug("ateng-boot-ssh: [停机时序 1/3] 正在确认并释放活跃 PTY 终端与端口转发隧道 (终端数={}, 隧道数={}, 钩子数={})...",
+                activeShells.size(), activeTunnels.size(), tunnelCleanupHooks.size());
+        for (SshShellHandle shell : activeShells) {
+            try {
+                if (shell != null && shell.isAlive()) {
+                    shell.close();
+                }
+            } catch (Exception e) {
+                log.warn("ateng-boot-ssh: 停机释放 PTY 终端会话异常: {}", e.getMessage());
+            }
+        }
+        activeShells.clear();
+
         for (SshTunnelHandle tunnel : activeTunnels) {
             try {
                 if (tunnel != null && tunnel.isAlive()) {

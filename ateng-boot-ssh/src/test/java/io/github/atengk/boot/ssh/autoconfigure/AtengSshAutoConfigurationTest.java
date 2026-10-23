@@ -39,6 +39,7 @@ class AtengSshAutoConfigurationTest {
             assertThat(context).hasSingleBean(SshSessionPool.class);
             assertThat(context).hasSingleBean(SshLifecycleManager.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.ssh.template.SshTemplate.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.ssh.template.SftpTemplate.class);
 
             SshClient client = context.getBean(SshClient.class);
             assertThat(client.isStarted()).isTrue();

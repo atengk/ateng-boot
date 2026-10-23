@@ -29,6 +29,12 @@
             <artifactId>ateng-boot-ssh</artifactId>
         </dependency>
 
+        <!-- Spring Boot 原生 WebSocket 支撑 WebSSH 实时双向管道 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator 健康检查与监控 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

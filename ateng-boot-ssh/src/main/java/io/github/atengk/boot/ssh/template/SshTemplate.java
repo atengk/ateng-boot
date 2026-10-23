@@ -9,14 +9,17 @@ import io.github.atengk.boot.ssh.lifecycle.SshLifecycleManager;
 import io.github.atengk.boot.ssh.model.SshExecOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.model.SshShellOptions;
 import io.github.atengk.boot.ssh.pool.SshSessionAction;
 import io.github.atengk.boot.ssh.pool.SshSessionCallback;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
 import io.github.atengk.boot.ssh.properties.SshProperties;
 import io.github.atengk.boot.ssh.registry.SshClientRegistry;
+import io.github.atengk.boot.ssh.shell.SshShellHandle;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.sshd.client.channel.ChannelShell;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
 import org.apache.sshd.common.util.net.SshdSocketAddress;
@@ -43,7 +46,9 @@ import java.util.function.Supplier;
  * 2. 对称涵盖同步短命令 (exec)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript) 与瞬态单次任务隔离 (execOnce)；<br>
  * 3. 创新落地原生 Sudo 提权安全管道 (execSudo) 与密码即时内存擦除抹零 (In-Memory Scrubbing)；<br>
  * 4. 深度联动 Core 受管线程池 (ThreadPoolTaskExecutor) 与四维上下文快照 (MDC/User/Tenant) 实现集群多节点高并发批量巡检 (execBatch)；<br>
- * 5. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
+ * 5. 开箱即用支持本地端口转发受管隧道 (openLocalTunnel) 与跳板机中继穿透；<br>
+ * 6. 深度支持交互式 PTY 伪终端受管句柄 (openShell)，与 WebSSH / xterm.js 协同并联动生命周期自动停机排空；<br>
+ * 7. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
  * </p>
  *
  * @author Ateng
@@ -898,6 +903,111 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         } catch (IOException e) {
             throw new SshOperationException(SshResultCode.TUNNEL_FAILED,
                     "开启本地端口转发失败 [" + local + " -> " + remote + " via " + target.toSessionKey() + "]: " + e.getMessage(), e);
+        }
+    }
+
+    // ==========================================
+    // 7. 交互式 PTY 伪终端受管句柄契约 (openShell)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上开启默认交互式 PTY 伪终端
+     *
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell() {
+        return openShell((SshServerInfo) null, (SshShellOptions) null);
+    }
+
+    /**
+     * 在上下文解析的目标服务器上开启指定规格的交互式 PTY 伪终端
+     *
+     * @param options 终端规格配置（行列尺寸、仿真类型、环境变量等）
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell(SshShellOptions options) {
+        return openShell((SshServerInfo) null, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上开启默认交互式 PTY 伪终端
+     *
+     * @param serverName 节点名称
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell(String serverName) {
+        return openShell(resolveServerInfo(serverName), (SshShellOptions) null);
+    }
+
+    /**
+     * 在指定具名服务器节点上开启指定规格的交互式 PTY 伪终端
+     *
+     * @param serverName 节点名称
+     * @param options    终端规格配置
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell(String serverName, SshShellOptions options) {
+        return openShell(resolveServerInfo(serverName), options);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启默认交互式 PTY 伪终端
+     *
+     * @param serverInfo 目标描述符
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell(SshServerInfo serverInfo) {
+        return openShell(serverInfo, (SshShellOptions) null);
+    }
+
+    /**
+     * 在指定的目标服务器描述符上开启指定规格的交互式 PTY 伪终端
+     *
+     * @param serverInfo 目标描述符
+     * @param options    终端规格配置
+     * @return 实现了 AutoCloseable 的受管终端句柄
+     */
+    public SshShellHandle openShell(SshServerInfo serverInfo, SshShellOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        SshShellOptions effectiveOptions = options != null ? options : SshShellOptions.defaults();
+
+        ClientSession session = sessionPool.acquire(target);
+        ChannelShell channel = null;
+        try {
+            channel = session.createShellChannel();
+            effectiveOptions.applyTo(channel);
+
+            SshShellHandle handle = new SshShellHandle(
+                    target,
+                    channel,
+                    effectiveOptions,
+                    shell -> {
+                        if (lifecycleManager != null) {
+                            lifecycleManager.unregisterShell(shell);
+                        }
+                    }
+            );
+
+            // 开启通道并等待服务端确认
+            channel.open().verify(effectiveOptions.getTimeout());
+
+            // 注册到生命周期管理器，保障停机时优先自动排空
+            if (lifecycleManager != null) {
+                lifecycleManager.registerShell(handle);
+            }
+
+            log.info("ateng-boot-ssh: 交互式 PTY 伪终端已开启 [via {}, term={}, size={}x{}]",
+                    target.toSessionKey(), effectiveOptions.getTerm(), effectiveOptions.getCols(), effectiveOptions.getRows());
+            return handle;
+        } catch (Exception e) {
+            if (channel != null) {
+                try {
+                    channel.close(true);
+                } catch (Exception ignored) {
+                }
+            }
+            throw new SshOperationException(SshResultCode.SHELL_OPEN_FAILED,
+                    "开启 SSH 交互式终端失败 [" + target.toSessionKey() + "]: " + e.getMessage(), e);
         }
     }
 

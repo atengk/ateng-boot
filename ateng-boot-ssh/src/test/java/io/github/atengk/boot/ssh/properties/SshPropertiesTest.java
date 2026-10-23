@@ -35,5 +35,13 @@ class SshPropertiesTest {
         assertThat(pool.getMaxSessions()).isEqualTo(64);
         assertThat(pool.getIdleTimeout()).isEqualTo(Duration.ofMinutes(5));
         assertThat(pool.getHeartbeatInterval()).isEqualTo(Duration.ofSeconds(15));
+
+        // SFTP 默认配置
+        SftpProperties sftp = properties.getSftp();
+        assertThat(sftp).isNotNull();
+        assertThat(sftp.getBufferSize().toKilobytes()).isEqualTo(32);
+        assertThat(sftp.getTransferTimeout()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(sftp.isAtomicUploadEnabled()).isTrue();
+        assertThat(sftp.getAtomicUploadSuffix()).isEqualTo(".uploading.tmp");
     }
 }

@@ -21,31 +21,47 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.socket.BinaryMessage;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.client.standard.StandardWebSocketClient;
+import org.springframework.web.socket.handler.AbstractWebSocketHandler;
 
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * SSH 场景样例服务 100% 真实端到端集成测试
  * <p>
- * 全自洽离线验证 Spec 1 的所有核心场景：<br>
+ * 全自洽离线验证 Spec 1 与 Spec 2 的所有核心场景：<br>
  * 1. 同步短命令执行 (exec)<br>
  * 2. 原生 Sudo 提权安全管道 (execSudo)<br>
  * 3. 集群多主机高并发批量巡检 (execBatch)<br>
@@ -55,16 +71,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 7. 瞬态单次隔离任务 (execOnce)<br>
  * 8. 本地端口转发真实 TCP 流量交互与生命周期释放 (openLocalTunnel)<br>
  * 9. 多行复杂运维脚本管道执行 (execScript)<br>
- * 10. JSR-303 参数格式校验 Fail-Fast 防御
+ * 10. JSR-303 参数格式校验 Fail-Fast 防御<br>
+ * 11. SFTP 流式上传带进度监听、目录列表与流式下载<br>
+ * 12. SFTP 目录树双向同步与 DFS 深度优先递归删除<br>
+ * 13. WebSSH WebSocket 原生双向终端通信与自适应尺寸调整管道
  * </p>
  *
  * @author Ateng
  * @since 2026-10-23
  */
-@SpringBootTest
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @DisplayName("SSH 场景样例服务端到端集成测试")
 class SampleSshIntegrationTest {
+
+    @LocalServerPort
+    private int localServerPort;
 
     private static SshServer defaultServer;
     private static SshServer node1Server;
@@ -180,6 +202,17 @@ class SampleSshIntegrationTest {
         server.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(sharedTempDir.resolve(keyFile)));
         server.setPasswordAuthenticator((u, p, s) -> expectedUser.equals(u) && expectedPass.equals(p));
         server.setForwardingFilter(AcceptAllForwardingFilter.INSTANCE);
+
+        if ("testuser".equals(expectedUser)) {
+            Path sftpRoot = sharedTempDir.resolve("sftp-storage");
+            try {
+                Files.createDirectories(sftpRoot);
+            } catch (IOException ignored) {
+            }
+            server.setSubsystemFactories(Collections.singletonList(new org.apache.sshd.sftp.server.SftpSubsystemFactory()));
+            server.setFileSystemFactory(new org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory(sftpRoot));
+            server.setShellFactory(channelSession -> new SampleEchoShellCommand());
+        }
 
         server.setCommandFactory((channel, command) -> new Command() {
             private InputStream in;
@@ -477,5 +510,177 @@ class SampleSshIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").isNumber())
                 .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(0)));
+    }
+
+    @Test
+    @DisplayName("测试 SFTP 流式文件上传带进度监听、目录检索与流式下载端到端全链路")
+    void testSftpUploadAndListAndDownload() throws Exception {
+        byte[] content = "Hello SFTP Stream Engine In Ateng-Boot".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile("file", "demo-file.txt", "text/plain", content);
+
+        // 1. 上传文件带进度
+        mockMvc.perform(multipart("/api/sftp/upload")
+                        .file(file)
+                        .param("remotePath", "/upload/demo-file.txt"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.exists").value(true))
+                .andExpect(jsonPath("$.data.transferredBytes").value(content.length));
+
+        // 2. 检索目录列表
+        mockMvc.perform(get("/api/sftp/list")
+                        .param("remotePath", "/upload"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0].filename").value("demo-file.txt"))
+                .andExpect(jsonPath("$.data[0].size").value(content.length));
+
+        // 3. 流式下载文件
+        mockMvc.perform(get("/api/sftp/download")
+                        .param("remotePath", "/upload/demo-file.txt"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_OCTET_STREAM_VALUE))
+                .andExpect(content().bytes(content));
+    }
+
+    @Test
+    @DisplayName("测试 SFTP 目录树双向同步与 DFS 递归清空非空目录")
+    void testSftpDirectorySyncAndRecursiveDelete() throws Exception {
+        // 1. 执行整包双向同步
+        mockMvc.perform(post("/api/sftp/sync-directory")
+                        .param("remoteDir", "/sync-tree-test"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        // 2. DFS 递归删除目录
+        mockMvc.perform(post("/api/sftp/delete-directory")
+                        .param("remotePath", "/sync-tree-test"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("测试 SFTP 传输层空白参数触发 JSR-303 Fail-Fast 校验拦截")
+    void testSftpValidationBlankPath() throws Exception {
+        // 1. 列表接口传入空白路径
+        mockMvc.perform(get("/api/sftp/list")
+                        .param("remotePath", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").isNumber())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+
+        // 2. 删除目录接口传入空字符串路径
+        mockMvc.perform(post("/api/sftp/delete-directory")
+                        .param("remotePath", ""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").isNumber())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(200)));
+    }
+
+    @Test
+    @DisplayName("测试 WebSSH WebSocket 原生双向终端通信、视口调整与优雅关闭全链路")
+    void testWebSshWebSocketPipeline() throws Exception {
+        StandardWebSocketClient wsClient = new StandardWebSocketClient();
+        CountDownLatch connectLatch = new CountDownLatch(1);
+        CountDownLatch receiveLatch = new CountDownLatch(1);
+        CountDownLatch closeLatch = new CountDownLatch(1);
+        ByteArrayOutputStream receivedStream = new ByteArrayOutputStream();
+
+        AbstractWebSocketHandler clientHandler = new AbstractWebSocketHandler() {
+            @Override
+            public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+                connectLatch.countDown();
+                // 1. 发送视口 resize 消息
+                session.sendMessage(new TextMessage("{\"action\":\"resize\",\"cols\":100,\"rows\":30}"));
+                // 2. 发送普通字符输入
+                session.sendMessage(new TextMessage("WEBSOCKET_TEST\n"));
+            }
+
+            @Override
+            protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) throws Exception {
+                ByteBuffer payload = message.getPayload();
+                byte[] bytes = new byte[payload.remaining()];
+                payload.get(bytes);
+                synchronized (receivedStream) {
+                    receivedStream.writeBytes(bytes);
+                    String current = receivedStream.toString(StandardCharsets.UTF_8);
+                    if (current.contains("WEBSOCKET_TEST")) {
+                        receiveLatch.countDown();
+                        // 收到回显后发送退出
+                        session.sendMessage(new TextMessage("exit\n"));
+                    }
+                }
+            }
+
+            @Override
+            public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+                closeLatch.countDown();
+            }
+        };
+
+        String wsUrl = "ws://127.0.0.1:" + localServerPort + "/ws/ssh";
+        WebSocketSession clientSession = wsClient.execute(clientHandler, wsUrl).get(5, TimeUnit.SECONDS);
+
+        assertThat(connectLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(receiveLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(closeLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(clientSession.isOpen()).isFalse();
+    }
+
+    private static class SampleEchoShellCommand implements Command, org.apache.sshd.server.SignalListener {
+        private InputStream in;
+        private OutputStream out;
+        private ExitCallback callback;
+        private Thread worker;
+        private Environment environment;
+
+        @Override
+        public void setInputStream(InputStream in) { this.in = in; }
+        @Override
+        public void setOutputStream(OutputStream out) { this.out = out; }
+        @Override
+        public void setErrorStream(OutputStream err) {}
+        @Override
+        public void setExitCallback(ExitCallback callback) { this.callback = callback; }
+
+        @Override
+        public void start(ChannelSession channel, Environment env) {
+            this.environment = env;
+            env.addSignalListener(this, org.apache.sshd.server.Signal.WINCH);
+            worker = new Thread(() -> {
+                byte[] buf = new byte[1024];
+                int n;
+                try {
+                    while ((n = in.read(buf)) != -1) {
+                        String s = new String(buf, 0, n, StandardCharsets.UTF_8);
+                        if (s.contains("exit")) {
+                            out.write("exit\n".getBytes(StandardCharsets.UTF_8));
+                            out.flush();
+                            callback.onExit(0);
+                            return;
+                        }
+                        out.write(buf, 0, n);
+                        out.flush();
+                    }
+                    callback.onExit(0);
+                } catch (IOException e) {
+                    callback.onExit(1);
+                }
+            });
+            worker.start();
+        }
+
+        @Override
+        public void destroy(ChannelSession channel) {
+            if (worker != null) {
+                worker.interrupt();
+            }
+        }
+
+        @Override
+        public void signal(org.apache.sshd.common.channel.Channel channel, org.apache.sshd.server.Signal signal) {
+        }
     }
 }
