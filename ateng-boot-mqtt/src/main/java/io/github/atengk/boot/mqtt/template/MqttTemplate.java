@@ -30,8 +30,6 @@ import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 
@@ -286,20 +284,7 @@ public class MqttTemplate {
                     throw e;
                 }
             });
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    deliveryTask.run();
-                }
-
-                @Override
-                public void afterCompletion(int status) {
-                    if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                        log.warn("[MQTT] Transaction uncommitted or rolled back (status: {}), canceled delivery to topic [{}] on client [{}]",
-                                status, topic, effectiveClient);
-                    }
-                }
-            });
+            TxSynchronizationDelegate.registerAfterCommit(deliveryTask, topic, effectiveClient);
         } else {
             doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained);
         }
@@ -526,7 +511,35 @@ public class MqttTemplate {
     }
 
     private boolean isTxActive() {
-        return SPRING_TX_PRESENT && TransactionSynchronizationManager.isSynchronizationActive();
+        return SPRING_TX_PRESENT && TxSynchronizationDelegate.isSynchronizationActive();
+    }
+
+    /**
+     * 事务同步隔离委托类（当且仅当 Spring 事务相关类在 classpath 存在时才会被类加载器加载）
+     */
+    private static class TxSynchronizationDelegate {
+        static boolean isSynchronizationActive() {
+            return org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive();
+        }
+
+        static void registerAfterCommit(Runnable deliveryTask, String topic, String effectiveClient) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            deliveryTask.run();
+                        }
+
+                        @Override
+                        public void afterCompletion(int status) {
+                            if (status != org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED) {
+                                log.warn("[MQTT] Transaction uncommitted or rolled back (status: {}), canceled delivery to topic [{}] on client [{}]",
+                                        status, topic, effectiveClient);
+                            }
+                        }
+                    }
+            );
+        }
     }
 
     private void triggerFailureHandler(String clientName, String topic, byte[] payload, int qos, boolean retained, Throwable cause) {

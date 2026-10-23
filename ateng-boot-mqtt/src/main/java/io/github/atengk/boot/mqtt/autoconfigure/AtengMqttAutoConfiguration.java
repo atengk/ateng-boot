@@ -20,6 +20,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -39,6 +40,10 @@ import java.util.concurrent.Executor;
  * @since 2026-10-23
  */
 @AutoConfiguration
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration"
+})
 @ConditionalOnClass(MqttAsyncClient.class)
 @ConditionalOnProperty(prefix = "ateng.boot.mqtt", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengMqttProperties.class)
@@ -161,8 +166,11 @@ public class AtengMqttAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         @ConditionalOnBean(MeterRegistry.class)
-        public MqttMetrics mqttMetrics(MeterRegistry meterRegistry) {
-            return new MqttMetrics(meterRegistry);
+        public MqttMetrics mqttMetrics(MeterRegistry meterRegistry,
+                                       ObjectProvider<NamedMqttClientRegistry> namedMqttClientRegistry) {
+            MqttMetrics metrics = new MqttMetrics(meterRegistry);
+            metrics.bindClientRegistry(namedMqttClientRegistry.getIfAvailable());
+            return metrics;
         }
     }
 }

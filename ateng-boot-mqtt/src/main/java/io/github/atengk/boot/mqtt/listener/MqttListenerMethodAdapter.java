@@ -104,7 +104,7 @@ public class MqttListenerMethodAdapter {
                 args[i] = convertType(rawVal, paramType);
             } else if (param.isAnnotationPresent(MqttHeader.class)) {
                 MqttHeader headerAnno = param.getAnnotation(MqttHeader.class);
-                Object val = headers != null ? headers.get(headerAnno.value()) : null;
+                Object val = findHeader(headers, headerAnno.value());
                 if (val == null && headerAnno.required()) {
                     throw new BusinessException("Required MQTT header [" + headerAnno.value() + "] is missing");
                 }
@@ -146,6 +146,22 @@ public class MqttListenerMethodAdapter {
             return Boolean.valueOf(value);
         }
         return value;
+    }
+
+    private Object findHeader(Map<String, Object> headers, String headerName) {
+        if (headers == null || headers.isEmpty() || headerName == null) {
+            return null;
+        }
+        Object direct = headers.get(headerName);
+        if (direct != null) {
+            return direct;
+        }
+        for (Map.Entry<String, Object> entry : headers.entrySet()) {
+            if (headerName.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> extractHeaders(MqttMessage message) {

@@ -37,6 +37,7 @@
         <module>ateng-boot-sample-ssh</module>
         <module>ateng-boot-sample-notification</module>
         <module>ateng-boot-sample-document</module>
+        <module>ateng-boot-sample-mqtt</module>
     </modules>
 
     <properties>
