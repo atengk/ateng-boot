@@ -36,7 +36,12 @@ public enum PayTradeType {
     /**
      * 条码支付 / 当面付（商户扫描用户手机付款码，MicroPay）
      */
-    BARCODE("BARCODE", "付款码条码支付");
+    BARCODE("BARCODE", "付款码条码支付"),
+
+    /**
+     * 电脑网站支付（PC 端 Web 浏览器跳转收银台）
+     */
+    PAGE("PAGE", "电脑网站支付");
 
     /**
      * 场景代码
