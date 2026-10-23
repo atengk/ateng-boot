@@ -31,6 +31,8 @@ class SshExceptionAndResultCodeTest {
         assertThat(SshResultCode.JUMP_HOST_FAILED.getCode()).isEqualTo(56010);
         assertThat(SshResultCode.SERVER_NOT_FOUND.getCode()).isEqualTo(56011);
         assertThat(SshResultCode.OPERATION_FAILED.getCode()).isEqualTo(56012);
+        assertThat(SshResultCode.SHELL_OPEN_FAILED.getCode()).isEqualTo(56013);
+        assertThat(SshResultCode.SHELL_OPERATION_FAILED.getCode()).isEqualTo(56014);
     }
 
     @Test

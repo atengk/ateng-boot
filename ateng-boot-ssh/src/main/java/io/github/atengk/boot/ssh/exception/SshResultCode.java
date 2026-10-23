@@ -72,7 +72,17 @@ public enum SshResultCode implements IResultCode {
     /**
      * SSH 通用操作执行失败
      */
-    OPERATION_FAILED(56012, "SSH通用操作执行失败");
+    OPERATION_FAILED(56012, "SSH通用操作执行失败"),
+
+    /**
+     * SSH 交互式终端创建失败
+     */
+    SHELL_OPEN_FAILED(56013, "SSH交互式终端创建失败"),
+
+    /**
+     * SSH 交互式终端操作失败
+     */
+    SHELL_OPERATION_FAILED(56014, "SSH交互式终端操作失败");
 
     /**
      * 业务状态码
