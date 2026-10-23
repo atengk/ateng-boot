@@ -54,6 +54,7 @@
         <module>ateng-boot-mail</module>
         <module>ateng-boot-ftp</module>
         <module>ateng-boot-ssh</module>
+        <module>ateng-boot-notification</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -288,6 +289,11 @@
                 <groupId>org.apache.sshd</groupId>
                 <artifactId>sshd-sftp</artifactId>
                 <version>${sshd.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-notification</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>

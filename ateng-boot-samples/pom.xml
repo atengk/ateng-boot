@@ -35,6 +35,7 @@
         <module>ateng-boot-sample-openapi</module>
         <module>ateng-boot-sample-mail</module>
         <module>ateng-boot-sample-ssh</module>
+        <module>ateng-boot-sample-notification</module>
     </modules>
 
     <properties>
