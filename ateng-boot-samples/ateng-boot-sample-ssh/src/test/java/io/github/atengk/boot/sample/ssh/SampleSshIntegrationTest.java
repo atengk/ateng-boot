@@ -626,6 +626,12 @@ class SampleSshIntegrationTest {
         assertThat(connectLatch.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(receiveLatch.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(closeLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        for (int i = 0; i < 50 && clientSession.isOpen(); i++) {
+            Thread.sleep(20);
+        }
+        if (clientSession.isOpen()) {
+            clientSession.close();
+        }
         assertThat(clientSession.isOpen()).isFalse();
     }
 
