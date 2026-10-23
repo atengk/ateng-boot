@@ -257,7 +257,7 @@ public class EmbeddedMqttBroker {
             }
 
             // 转发消息给匹配的订阅客户端
-            broadcastMessage(topic, payloadBytes, qos);
+            broadcastMessage(topic, payloadBytes, qos, props);
         }
 
         private void handlePubRel(ChannelHandlerContext ctx, MqttMessage msg) {
@@ -289,7 +289,7 @@ public class EmbeddedMqttBroker {
         }
     }
 
-    private void broadcastMessage(String topic, byte[] payloadBytes, MqttQoS qos) {
+    private void broadcastMessage(String topic, byte[] payloadBytes, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties props) {
         for (Map.Entry<Channel, Set<String>> entry : channelSubscriptions.entrySet()) {
             Channel ch = entry.getKey();
             if (!ch.isActive()) {
@@ -305,19 +305,24 @@ public class EmbeddedMqttBroker {
                     }
                 }
                 if (isTopicMatch(effectiveFilter, topic)) {
-                    int nextId = messageIdCounter.getAndIncrement();
-                    if (nextId > 65535) {
-                        messageIdCounter.set(1);
-                        nextId = 1;
-                    }
-                    MqttPublishMessage forward = MqttMessageBuilders.publish()
+                    MqttMessageBuilders.PublishBuilder builder = MqttMessageBuilders.publish()
                             .topicName(topic)
                             .qos(qos)
                             .retained(false)
-                            .messageId(nextId)
-                            .payload(Unpooled.copiedBuffer(payloadBytes))
-                            .build();
-                    ch.writeAndFlush(forward);
+                            .payload(Unpooled.copiedBuffer(payloadBytes));
+
+                    if (qos != MqttQoS.AT_MOST_ONCE) {
+                        int nextId = messageIdCounter.getAndIncrement();
+                        if (nextId > 65535) {
+                            messageIdCounter.set(1);
+                            nextId = 1;
+                        }
+                        builder.messageId(nextId);
+                    }
+                    if (props != null) {
+                        builder.properties(props);
+                    }
+                    ch.writeAndFlush(builder.build());
                     break;
                 }
             }

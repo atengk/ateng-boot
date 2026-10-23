@@ -18,7 +18,9 @@ import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttActionListener;
 import org.eclipse.paho.mqttv5.client.MqttConnectionOptions;
+import org.eclipse.paho.mqttv5.common.MqttException;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
+import org.eclipse.paho.mqttv5.common.MqttSubscription;
 import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
 import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.slf4j.Logger;
@@ -32,9 +34,15 @@ import org.springframework.util.StringUtils;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * MQTT 核心发布与事务协同操作门面
@@ -55,17 +63,26 @@ public class MqttTemplate {
     private final NamedMqttClientRegistry clientRegistry;
     private final PayloadGuard payloadGuard;
     private final MqttSendFailureHandler failureHandler;
+    private final Executor executor;
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry, PayloadGuard payloadGuard) {
-        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler());
+        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null);
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler) {
+        this(clientRegistry, payloadGuard, failureHandler, null);
+    }
+
+    public MqttTemplate(NamedMqttClientRegistry clientRegistry,
+                        PayloadGuard payloadGuard,
+                        MqttSendFailureHandler failureHandler,
+                        Executor executor) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.failureHandler = failureHandler != null ? failureHandler : new DefaultMqttSendFailureHandler();
+        this.executor = executor;
     }
 
     // ==================== 默认客户端同步发信接口 ====================
@@ -490,5 +507,141 @@ public class MqttTemplate {
         String msg = String.format("Failed to publish MQTT message to topic [%s] on client [%s]: %s",
                 topic, clientName != null ? clientName : "unknown", cause.getMessage());
         return new MessageDeliveryException("mqtt", topic, traceId, msg, cause);
+    }
+
+    // ==================== 编程式动态订阅与退订管理接口 ====================
+
+    /**
+     * 编程式订阅指定主题
+     *
+     * @param topicFilter 订阅主题过滤器
+     * @param qos         QoS 等级 (0, 1, 2)
+     * @param callback    消息回调函数
+     */
+    public void subscribe(String topicFilter, int qos, Consumer<MqttMessage> callback) {
+        subscribeToClient(null, topicFilter, qos, callback);
+    }
+
+    /**
+     * 编程式订阅指定主题（双参数主题与载荷回调）
+     *
+     * @param topicFilter 订阅主题过滤器
+     * @param qos         QoS 等级 (0, 1, 2)
+     * @param callback    (topic, payload) 回调函数
+     */
+    public void subscribe(String topicFilter, int qos, BiConsumer<String, byte[]> callback) {
+        subscribeToClient(null, topicFilter, qos, callback);
+    }
+
+    /**
+     * 指定客户端编程式订阅指定主题
+     *
+     * @param clientName  客户端逻辑名称
+     * @param topicFilter 订阅主题过滤器
+     * @param qos         QoS 等级 (0, 1, 2)
+     * @param callback    消息回调函数
+     */
+    public void subscribeToClient(String clientName, String topicFilter, int qos, Consumer<MqttMessage> callback) {
+        validateTopic(topicFilter);
+        validateQos(qos);
+        Objects.requireNonNull(callback, "callback must not be null");
+
+        String effectiveClient = resolveEffectiveClientName(clientName);
+        MqttClientHandle handle = resolveClientHandle(effectiveClient);
+
+        try {
+            org.eclipse.paho.mqttv5.common.MqttSubscription subscription = new MqttSubscription(topicFilter, qos);
+            org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (actualTopic, message) -> {
+                Runnable task = () -> {
+                    Map<String, Object> headers = extractHeaders(message);
+                    MessageContextPropagator.runInContext(headers, () -> callback.accept(message));
+                };
+                if (executor != null) {
+                    executor.execute(task);
+                } else {
+                    task.run();
+                }
+            };
+            // 使用数组重载以规避 Paho 1.2.5 单参重载中的 subscriptionIdentifiers 空指针/越界 Bug
+            IMqttToken token = handle.getAsyncClient().subscribe(
+                    new org.eclipse.paho.mqttv5.common.MqttSubscription[]{subscription},
+                    null,
+                    null,
+                    new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{listener},
+                    null
+            );
+            long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
+            token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+            log.info("[MQTT] Client [{}] subscribed to [{}] with QoS [{}] dynamically", effectiveClient, topicFilter, qos);
+        } catch (MqttException e) {
+            log.error("[MQTT] Dynamic subscribe failed on client [{}] to topic [{}]: {}", effectiveClient, topicFilter, e.getMessage(), e);
+            throw new BusinessException("Failed to subscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 指定客户端编程式订阅指定主题（双参数回调）
+     *
+     * @param clientName  客户端逻辑名称
+     * @param topicFilter 订阅主题过滤器
+     * @param qos         QoS 等级 (0, 1, 2)
+     * @param callback    (topic, payload) 回调函数
+     */
+    public void subscribeToClient(String clientName, String topicFilter, int qos, BiConsumer<String, byte[]> callback) {
+        Objects.requireNonNull(callback, "callback must not be null");
+        subscribeToClient(clientName, topicFilter, qos, message -> {
+            byte[] payload = message != null ? message.getPayload() : new byte[0];
+            callback.accept(topicFilter, payload);
+        });
+    }
+
+    /**
+     * 退订指定主题
+     *
+     * @param topicFilter 订阅主题过滤器
+     */
+    public void unsubscribe(String topicFilter) {
+        unsubscribeFromClient(null, topicFilter);
+    }
+
+    /**
+     * 指定客户端退订指定主题
+     *
+     * @param clientName  客户端逻辑名称
+     * @param topicFilter 订阅主题过滤器
+     */
+    public void unsubscribeFromClient(String clientName, String topicFilter) {
+        validateTopic(topicFilter);
+        String effectiveClient = resolveEffectiveClientName(clientName);
+        MqttClientHandle handle = resolveClientHandle(effectiveClient);
+
+        try {
+            IMqttToken token = handle.getAsyncClient().unsubscribe(topicFilter);
+            long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
+            token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+            log.info("[MQTT] Client [{}] unsubscribed from [{}] dynamically", effectiveClient, topicFilter);
+        } catch (MqttException e) {
+            log.error("[MQTT] Dynamic unsubscribe failed on client [{}] from topic [{}]: {}", effectiveClient, topicFilter, e.getMessage(), e);
+            throw new BusinessException("Failed to unsubscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private Map<String, Object> extractHeaders(MqttMessage message) {
+        if (message == null) {
+            return Collections.emptyMap();
+        }
+        MqttProperties properties = message.getProperties();
+        if (properties == null || properties.getUserProperties() == null) {
+            return Collections.emptyMap();
+        }
+        List<UserProperty> userProperties = properties.getUserProperties();
+        if (userProperties.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Object> headers = new HashMap<>(userProperties.size());
+        for (UserProperty prop : userProperties) {
+            headers.put(prop.getKey(), prop.getValue());
+        }
+        return headers;
     }
 }
