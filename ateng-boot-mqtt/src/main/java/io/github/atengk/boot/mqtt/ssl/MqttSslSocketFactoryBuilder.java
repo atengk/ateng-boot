@@ -1,5 +1,6 @@
 package io.github.atengk.boot.mqtt.ssl;
 
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.mqtt.properties.MqttSslProperties;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
@@ -48,9 +49,9 @@ public final class MqttSslSocketFactoryBuilder {
      *
      * @param props SSL 配置属性
      * @return 构建完成的 SSLSocketFactory，若未启用则返回 null
-     * @throws Exception 证书解析或初始化异常
+     * @throws BusinessException 证书解析或初始化失败
      */
-    public static SSLSocketFactory build(MqttSslProperties props) throws Exception {
+    public static SSLSocketFactory build(MqttSslProperties props) {
         SSLContext sslContext = buildSslContext(props);
         return sslContext != null ? sslContext.getSocketFactory() : null;
     }
@@ -60,21 +61,25 @@ public final class MqttSslSocketFactoryBuilder {
      *
      * @param props SSL 配置属性
      * @return 构建完成的 SSLContext，若未启用则返回 null
-     * @throws Exception 证书解析或初始化异常
+     * @throws BusinessException 证书解析或初始化失败
      */
-    public static SSLContext buildSslContext(MqttSslProperties props) throws Exception {
+    public static SSLContext buildSslContext(MqttSslProperties props) {
         if (props == null || !props.isEnabled()) {
             return null;
         }
 
-        String protocol = StringUtils.hasText(props.getProtocol()) ? props.getProtocol() : "TLSv1.3";
-        SSLContext sslContext = SSLContext.getInstance(protocol);
+        try {
+            String protocol = StringUtils.hasText(props.getProtocol()) ? props.getProtocol() : "TLSv1.3";
+            SSLContext sslContext = SSLContext.getInstance(protocol);
 
-        KeyManager[] keyManagers = buildKeyManagers(props);
-        TrustManager[] trustManagers = buildTrustManagers(props);
+            KeyManager[] keyManagers = buildKeyManagers(props);
+            TrustManager[] trustManagers = buildTrustManagers(props);
 
-        sslContext.init(keyManagers, trustManagers, new SecureRandom());
-        return sslContext;
+            sslContext.init(keyManagers, trustManagers, new SecureRandom());
+            return sslContext;
+        } catch (Exception e) {
+            throw new BusinessException("Failed to initialize MQTT SSL socket factory: " + e.getMessage(), e);
+        }
     }
 
     private static TrustManager[] buildTrustManagers(MqttSslProperties props) throws Exception {

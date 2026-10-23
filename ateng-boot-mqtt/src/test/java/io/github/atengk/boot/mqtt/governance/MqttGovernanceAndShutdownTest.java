@@ -1,6 +1,11 @@
 package io.github.atengk.boot.mqtt.governance;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.IdempotentException;
+import io.github.atengk.boot.mqtt.context.MqttContextHolder;
+import io.github.atengk.boot.mqtt.exception.SilentAckException;
+import org.slf4j.MDC;
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
@@ -39,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 毒丸死信 DLT 转移、Silent ACK 幂等防卫、确定性优雅停机与动态遗嘱全维测试
@@ -63,6 +69,11 @@ class MqttGovernanceAndShutdownTest {
 
     @AfterEach
     void tearDown() {
+        MDC.clear();
+        TenantContextHolder.clear();
+        UserContextHolder.clear();
+        MqttContextHolder.clear();
+
         if (listenerRegistry != null) {
             listenerRegistry.stop();
         }
@@ -394,5 +405,56 @@ class MqttGovernanceAndShutdownTest {
             // 模拟 @Idempotent 切面判定为重复消息抛出的 IdempotentException
             throw new IdempotentException("Duplicate MQTT payload detected: " + payload);
         }
+    }
+
+    public static class SilentAckListenerBean {
+        final AtomicInteger invokeCount = new AtomicInteger(0);
+
+        @MqttListener(topics = "sensor/silent-ack/data", qos = 1)
+        public void onMessage(String payload) {
+            invokeCount.incrementAndGet();
+            throw new SilentAckException("Explicit silent ACK for business reason: " + payload);
+        }
+    }
+
+    @Test
+    @DisplayName("静默确认：抛出 SilentAckException 时底座提交 ACK 且不转发至死信队列")
+    void shouldHandleSilentAckExceptionGracefully() throws Exception {
+        AtengMqttProperties properties = new AtengMqttProperties();
+        properties.setDefaultClient("primary");
+
+        MqttClientProperties clientProps = new MqttClientProperties();
+        clientProps.setServerUri(broker.getServerUri());
+        clientProps.setClientId("silent-ack-client");
+        clientProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        properties.getClients().put("primary", clientProps);
+
+        clientRegistry = new NamedMqttClientRegistry(properties);
+        clientRegistry.initClients();
+
+        SilentAckListenerBean listenerBean = new SilentAckListenerBean();
+        MqttListenerEndpointRegistry registry = new MqttListenerEndpointRegistry(clientRegistry, new PayloadGuard(), executor);
+        MqttListenerAnnotationBeanPostProcessor bpp = new MqttListenerAnnotationBeanPostProcessor(registry);
+        bpp.postProcessAfterInitialization(listenerBean, "silentAckListenerBean");
+        registry.start();
+        listenerRegistry = registry;
+
+        MqttTemplate template = new MqttTemplate(clientRegistry, new PayloadGuard(), null, executor, null);
+        template.publish("sensor/silent-ack/data", "{\"msg\":\"silent-test\"}", 1);
+
+        Thread.sleep(1000);
+        assertThat(listenerBean.invokeCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("防御性参数校验：MqttWill 非法 QoS 必须 Fail-Fast 抛出 IllegalArgumentException")
+    void shouldFailFastOnInvalidMqttWillQos() {
+        assertThatThrownBy(() -> MqttWill.of("test/topic", "test".getBytes(StandardCharsets.UTF_8), 3, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("QoS must be between 0 and 2");
+
+        assertThatThrownBy(() -> MqttWill.of("test/topic", "test".getBytes(StandardCharsets.UTF_8), -1, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("QoS must be between 0 and 2");
     }
 }

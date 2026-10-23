@@ -13,7 +13,7 @@ import java.util.HexFormat;
  */
 public class HexMqttMessageConverter implements MqttMessageConverter {
 
-    private static final HexFormat HEX_FORMAT = HexFormat.of();
+    private static final HexFormat HEX_FORMAT = HexFormat.of().withUpperCase();
 
     @Override
     public boolean supports(Class<?> targetType) {
@@ -34,14 +34,11 @@ public class HexMqttMessageConverter implements MqttMessageConverter {
         if (payload instanceof HexPayload hexPayload) {
             return hexPayload.getBytes();
         }
-        if (payload instanceof String str) {
-            return hexToBytes(str);
-        }
         return new byte[0];
     }
 
     /**
-     * 将字节数组转为标准小写无前缀十六进制字符串
+     * 将字节数组转为标准大写无前缀十六进制字符串
      *
      * @param bytes 字节数组
      * @return 十六进制字符串
@@ -54,7 +51,7 @@ public class HexMqttMessageConverter implements MqttMessageConverter {
     }
 
     /**
-     * 将十六进制字符串转为字节数组
+     * 将十六进制字符串转为字节数组（支持奇数长度高位补零、空格过滤与大小写自适应）
      *
      * @param hexStr 十六进制字符串（支持含空格或无空格）
      * @return 字节数组
@@ -63,9 +60,9 @@ public class HexMqttMessageConverter implements MqttMessageConverter {
         if (hexStr == null || hexStr.isBlank()) {
             return new byte[0];
         }
-        String cleanHex = hexStr.replaceAll("\\s+", "");
+        String cleanHex = hexStr.replaceAll("\\s+", "").toUpperCase();
         if (cleanHex.length() % 2 != 0) {
-            throw new IllegalArgumentException("Hex string length must be even: " + hexStr);
+            cleanHex = "0" + cleanHex;
         }
         return HEX_FORMAT.parseHex(cleanHex);
     }

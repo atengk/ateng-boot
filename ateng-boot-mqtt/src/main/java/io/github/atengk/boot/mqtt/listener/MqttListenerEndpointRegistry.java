@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
+import io.github.atengk.boot.mqtt.exception.SilentAckException;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -129,9 +131,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
             @Override
             public void messageArrived(String topic, MqttMessage message) {
-                // 当消息未被特定 Topic 监听器命中（如共享订阅因 $share 前缀无法直接通过 Paho 内部 TopicFilter 匹配）时兜底分发
+                // 仅针对共享订阅端点（因 $share 前缀导致 Paho 内部 TopicFilter 无法直接匹配 listener）执行兜底分发，彻底防御普通端点重复分发
                 for (MqttListenerEndpoint endpoint : endpoints) {
-                    if (isEndpointAssignedToClient(endpoint, handle.getClientName())) {
+                    if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
                         for (MqttTopicPattern pattern : endpoint.getPatterns()) {
                             if (pattern.matchAndExtract(topic) != null) {
                                 executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
@@ -170,26 +172,15 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         for (MqttTopicPattern pattern : endpoint.getPatterns()) {
             String filter = pattern.getSharedMqttFilter(sharedGroup);
             try {
-                org.eclipse.paho.mqttv5.common.MqttSubscription subscription = new MqttSubscription(filter, endpoint.getQos());
                 org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (topic, message) -> {
                     // Paho I/O 回调线程中秒级提交至受管线程池，彻底杜绝 KeepAlive 假死
                     executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
                 };
-                // 使用数组重载以规避 Paho 1.2.5 单参重载中的 subscriptionIdentifiers 空指针/越界 Bug
-                org.eclipse.paho.mqttv5.client.IMqttToken token = handle.getAsyncClient().subscribe(
-                        new org.eclipse.paho.mqttv5.common.MqttSubscription[]{subscription},
-                        null,
-                        null,
-                        new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{listener},
-                        null
-                );
-                long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
-                token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+                handle.subscribe(filter, endpoint.getQos(), listener);
                 subscribedTopicsByClient.computeIfAbsent(handle.getClientName(), k -> new CopyOnWriteArrayList<>()).add(filter);
                 log.info("[MQTT] Client [{}] successfully subscribed to [{}] for endpoint [{}]",
                         handle.getClientName(), filter, endpoint.getId());
             } catch (MqttException e) {
-                log.error("[MQTT] Client [{}] failed to subscribe topic [{}]: {}", handle.getClientName(), filter, e.getMessage(), e);
                 throw new BusinessException("Failed to subscribe MQTT topic [" + filter + "]: " + e.getMessage(), e);
             }
         }
@@ -202,6 +193,15 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                                  MqttClientHandle handle) {
         if (metrics != null) {
             metrics.recordReceived(handle.getClientName(), actualTopic);
+        }
+        Semaphore semaphore = endpoint.getConcurrencySemaphore();
+        if (semaphore != null) {
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
         long startNanos = System.nanoTime();
         try {
@@ -222,10 +222,10 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             if (metrics != null) {
                 metrics.recordConsume(endpoint.getId(), actualTopic, false, System.nanoTime() - startNanos);
             }
-            // 1. 消费端幂等静默确认 (Silent ACK Invariant)
-            if (isIdempotentException(e)) {
-                log.info("[MQTT] Idempotent duplicate message detected on topic [{}] for endpoint [{}], submitting Silent ACK to terminate redelivery loop",
-                        actualTopic, endpoint.getId());
+            // 1. 消费端静默确认与幂等防重拦截 (Silent ACK Invariant)
+            if (isSilentAckOrIdempotent(e)) {
+                log.info("[MQTT] Silent ACK requested or idempotent duplicate detected on topic [{}] for endpoint [{}], submitting ACK to terminate redelivery loop: {}",
+                        actualTopic, endpoint.getId(), e.getMessage());
                 return;
             }
 
@@ -238,17 +238,25 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             // 3. 非致命普通异常日志记录
             log.error("[MQTT] Error during message dispatch for topic [{}] on endpoint [{}]: {}",
                     actualTopic, endpoint.getId(), e.getMessage(), e);
+        } finally {
+            if (semaphore != null) {
+                semaphore.release();
+            }
         }
     }
 
-    private boolean isIdempotentException(Throwable t) {
+    private boolean isSilentAckOrIdempotent(Throwable t) {
         Throwable current = t;
         int depth = 0;
         while (current != null && depth < 30) {
+            if (current instanceof SilentAckException) {
+                return true;
+            }
             if (current instanceof IdempotentException) {
                 return true;
             }
-            if ("io.github.atengk.boot.core.exception.IdempotentException".equals(current.getClass().getName())) {
+            if ("io.github.atengk.boot.core.exception.IdempotentException".equals(current.getClass().getName())
+                    || "io.github.atengk.boot.mqtt.exception.SilentAckException".equals(current.getClass().getName())) {
                 return true;
             }
             current = current.getCause();
@@ -282,9 +290,16 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             return;
         }
 
+        // 防御死信主题自循环投递隐患：若当前报文已来自 DLT 主题，严禁再次转发自身
+        if (actualTopic.endsWith("/DLT") || actualTopic.startsWith("sys/dlt")) {
+            log.error("[MQTT] Poison pill occurred on dead-letter topic [{}] itself for endpoint [{}], dropping message to break infinite DLT self-loop: {}",
+                    actualTopic, endpoint.getId(), cause.getMessage());
+            return;
+        }
+
         String dltTopic = endpoint.getAnnotation().dltTopic();
         if (!StringUtils.hasText(dltTopic)) {
-            dltTopic = actualTopic.endsWith("/DLT") ? actualTopic : actualTopic + "/DLT";
+            dltTopic = actualTopic + "/DLT";
         }
 
         try {
@@ -347,7 +362,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                     if (clientRegistry.containsClient(clientName)) {
                         MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
                         if (handle.isConnected()) {
-                            handle.getAsyncClient().unsubscribe(topics.toArray(new String[0]));
+                            handle.unsubscribe(topics.toArray(new String[0]));
                             log.info("[MQTT] Client [{}] unsubscribed {} topics cleanly", clientName, topics.size());
                         }
                     }

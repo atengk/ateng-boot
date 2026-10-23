@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.constant.MessageHeaderConstants;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
@@ -115,6 +116,7 @@ class MqttRequestReplyTest {
         MDC.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        MqttContextHolder.clear();
 
         if (requestReplyManager != null) {
             requestReplyManager.stop();

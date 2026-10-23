@@ -10,8 +10,10 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
+import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
+import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
 import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.common.MqttException;
@@ -23,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.context.SmartLifecycle;
+import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -56,30 +59,50 @@ public class MqttRequestReplyManager implements SmartLifecycle {
     private final NamedMqttClientRegistry clientRegistry;
     private final PayloadGuard payloadGuard;
     private final Executor executor;
+    private final MqttMetrics metrics;
 
     private final Map<String, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Set<String> subscribedClientNames = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
+    private final boolean externalScanner;
     private ScheduledExecutorService timeoutScanner;
 
     public MqttRequestReplyManager(NamedMqttClientRegistry clientRegistry,
                                   PayloadGuard payloadGuard,
-                                  Executor executor) {
+                                  Executor executor,
+                                  ScheduledExecutorService timeoutScanner,
+                                  MqttMetrics metrics) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.executor = executor;
+        this.externalScanner = timeoutScanner != null;
+        this.timeoutScanner = timeoutScanner;
+        this.metrics = metrics;
+    }
+
+    public MqttRequestReplyManager(NamedMqttClientRegistry clientRegistry,
+                                  PayloadGuard payloadGuard,
+                                  Executor executor,
+                                  ScheduledExecutorService timeoutScanner) {
+        this(clientRegistry, payloadGuard, executor, timeoutScanner, null);
+    }
+
+    public MqttRequestReplyManager(NamedMqttClientRegistry clientRegistry,
+                                  PayloadGuard payloadGuard,
+                                  Executor executor) {
+        this(clientRegistry, payloadGuard, executor, null, null);
     }
 
     @Override
     public void start() {
         if (running.compareAndSet(false, true)) {
             log.info("[MQTT] Starting MqttRequestReplyManager, initializing aggregated response subscriptions");
-            this.timeoutScanner = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "ateng-mqtt-rpc-timeout-cleaner");
-                t.setDaemon(true);
-                return t;
-            });
+            if (this.timeoutScanner == null) {
+                CustomizableThreadFactory factory = new CustomizableThreadFactory("ateng-mqtt-request-reply-cleaner-");
+                factory.setDaemon(true);
+                this.timeoutScanner = Executors.newSingleThreadScheduledExecutor(factory);
+            }
             // 启动定时超时安全扫描器（每 500ms 扫描一次），防范无界内存挂起
             this.timeoutScanner.scheduleWithFixedDelay(this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
 
@@ -99,7 +122,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
     public void stop() {
         if (running.compareAndSet(true, false)) {
             log.info("[MQTT] Stopping MqttRequestReplyManager, cleaning [{}] pending requests", pendingRequests.size());
-            if (timeoutScanner != null) {
+            if (!externalScanner && timeoutScanner != null) {
                 timeoutScanner.shutdownNow();
             }
             // 终止所有未决的请求 Future
@@ -132,25 +155,12 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         }
         String responseTopic = handle.getResponseTopic();
         try {
-            MqttSubscription subscription = new MqttSubscription(responseTopic, 1);
             IMqttMessageListener listener = (topic, message) -> handleInboundResponse(handle, topic, message);
-
-            // 使用数组重载以规避 Paho 1.2.5 单参重载中的 subscriptionIdentifiers 空指针/越界 Bug
-            IMqttToken token = handle.getAsyncClient().subscribe(
-                    new MqttSubscription[]{subscription},
-                    null,
-                    null,
-                    new IMqttMessageListener[]{listener},
-                    null
-            );
-            long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
-            token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+            handle.subscribe(responseTopic, 1, listener);
             subscribedClientNames.add(handle.getClientName());
             log.info("[MQTT] Client [{}] successfully pre-subscribed to private response topic [{}]",
                     handle.getClientName(), responseTopic);
         } catch (MqttException e) {
-            log.error("[MQTT] Failed to subscribe to private response topic [{}] on client [{}]: {}",
-                    responseTopic, handle.getClientName(), e.getMessage(), e);
             throw new BusinessException("Failed to subscribe response topic [" + responseTopic + "] on client [" + handle.getClientName() + "]: " + e.getMessage(), e);
         }
     }
@@ -271,6 +281,9 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         for (PendingRequest pending : pendingRequests.values()) {
             if (now > pending.expireTimeMillis) {
                 if (pendingRequests.remove(pending.correlationId, pending)) {
+                    if (metrics != null) {
+                        metrics.recordRequestTimeout(pending.clientName, pending.topic);
+                    }
                     String msg = String.format("Request-Response timed out after waiting %sms for topic [%s] on client [%s], correlationId: [%s]",
                             pending.timeout.toMillis(), pending.topic, pending.clientName, pending.correlationId);
                     log.warn("[MQTT] {}", msg);
@@ -307,18 +320,7 @@ public class MqttRequestReplyManager implements SmartLifecycle {
     }
 
     private Map<String, Object> extractHeaders(MqttMessage message) {
-        if (message == null || message.getProperties() == null) {
-            return Collections.emptyMap();
-        }
-        List<UserProperty> userProperties = message.getProperties().getUserProperties();
-        if (userProperties == null || userProperties.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Map<String, Object> headers = new HashMap<>(userProperties.size());
-        for (UserProperty prop : userProperties) {
-            headers.put(prop.getKey(), prop.getValue());
-        }
-        return headers;
+        return new HashMap<>(MqttHeaderUtils.extractHeaders(message));
     }
 
     private byte[] convertPayload(Object payload) {

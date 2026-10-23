@@ -25,7 +25,10 @@ public class MqttWill {
         }
         this.topic = topic;
         this.payload = payload != null ? payload : new byte[0];
-        this.qos = Math.max(0, Math.min(qos, 2));
+        if (qos < 0 || qos > 2) {
+            throw new IllegalArgumentException("MQTT Will QoS must be between 0 and 2, but got: " + qos);
+        }
+        this.qos = qos;
         this.retained = retained;
     }
 

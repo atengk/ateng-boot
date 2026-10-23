@@ -57,6 +57,18 @@ public class MqttMetrics {
      * @param qos        QoS 等级
      */
     public void recordPublished(String clientName, String topic, int qos) {
+        recordPublished(clientName, topic, qos, -1L);
+    }
+
+    /**
+     * 记录出站消息发送成功与耗时
+     *
+     * @param clientName    客户端名称
+     * @param topic         目标主题
+     * @param qos           QoS 等级
+     * @param durationNanos 发送耗时（纳秒）
+     */
+    public void recordPublished(String clientName, String topic, int qos, long durationNanos) {
         Counter.builder("mqtt.message.published")
                 .tag("client", clientName != null ? clientName : "unknown")
                 .tag("topic", topic != null ? topic : "unknown")
@@ -64,6 +76,16 @@ public class MqttMetrics {
                 .description("Count of published MQTT messages")
                 .register(meterRegistry)
                 .increment();
+
+        if (durationNanos >= 0) {
+            Timer.builder("mqtt.publish.latency")
+                    .tag("client", clientName != null ? clientName : "unknown")
+                    .tag("topic", topic != null ? topic : "unknown")
+                    .tag("qos", String.valueOf(qos))
+                    .description("MQTT message publishing latency")
+                    .register(meterRegistry)
+                    .record(durationNanos, TimeUnit.NANOSECONDS);
+        }
     }
 
     /**
@@ -110,6 +132,21 @@ public class MqttMetrics {
                 .tag("endpoint", endpointId != null ? endpointId : "unknown")
                 .tag("topic", topic != null ? topic : "unknown")
                 .description("Count of poison pill messages routed to DLT")
+                .register(meterRegistry)
+                .increment();
+    }
+
+    /**
+     * 记录请求-响应 (Request-Reply) 超时计数
+     *
+     * @param clientName 客户端名称
+     * @param topic      请求主题
+     */
+    public void recordRequestTimeout(String clientName, String topic) {
+        Counter.builder("mqtt.requestreply.timeout")
+                .tag("client", clientName != null ? clientName : "unknown")
+                .tag("topic", topic != null ? topic : "unknown")
+                .description("Count of timed out MQTT request-reply messages")
                 .register(meterRegistry)
                 .increment();
     }

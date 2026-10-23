@@ -26,7 +26,7 @@
 | **大报文熔断** | 入站大报文超限守卫 | `MqttPayloadGuard` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | 毫秒级探测报文字节大小，超过阈值立即 Fail-Fast 熔断，记录度量指标并触发 DLT 隔离，捍卫 JVM 堆内存安全 | `MqttPayloadGuardTest` |
 | **双向 mTLS** | TLS 加密与双向证书认证 | `MqttSslSocketFactoryBuilder` | `ateng.boot.mqtt.clients.<name>.ssl.*` | 支持 CA 根证书、客户端双向 PEM 证书与私钥解析，无缝构建标准 `SSLSocketFactory`，严守 TLSv1.2 / TLSv1.3 安全基线 | `MqttSslSocketFactoryBuilderTest` |
 | **健康状态探针** | Actuator 生产健康感知 | `MqttHealthIndicator` | `management.health.mqtt.enabled` | 深度集成 Spring Boot Actuator `/actuator/health`，实时上报所有受管客户端连接状态、Broker 地址与协议版本 | `MqttHealthIndicatorTest` / `SampleMqttE2eTest` |
-| **黄金度量指标** | Micrometer 核心度量采集 | `MqttMetrics` | `management.metrics.enable.mqtt` | 实时输出客户端状态 Gauge（`mqtt.client.status`）、发信与消费计数器/耗时 Timer、RPC 超时统计与 Payload 超限计数 | `MqttMetricsTest` / `SampleMqttE2eTest` |
+| **黄金度量指标** | Micrometer 核心度量采集 | `MqttMetrics` | `management.metrics.enable.mqtt` | 实时输出客户端状态 Gauge（`mqtt.client.status`）、发信与消费计数器/耗时 Timer、Request-Reply 超时统计与 DLT 死信计数 | `MqttCodecAndObservabilityTest` / `SampleMqttE2eTest` |
 | **防互踢策略** | 客户端 ID 动态生成策略 | `ClientIdStrategy` | `ateng.boot.mqtt.clients.<name>.client-id-strategy` | 支持 `STATIC`、`RANDOM_SUFFIX`（下划线随机后缀）与 `IP_PID`（宿主 IP 与进程号），彻底防御微服务多实例部署互踢雪崩 | `MqttClientConnectionTest` |
 | **高吞吐抗压** | 生产飞行报文窗口调优 | `MqttClientProperties` | `ateng.boot.mqtt.clients.<name>.max-inflight` | 默认将 Paho 极其保守的 10 飞行窗口调优至 1000，彻底消除高并发吞吐下的 Paho `32202` (Too many publishes in progress) 异常 | `MqttClientConnectionTest` |
 | **配置元数据** | 强类型配置属性与元数据 | `AtengMqttProperties`<br>`MqttClientProperties` | `ateng.boot.mqtt.*` | 时间统一声明为 `Duration`，容量统一声明为 `DataSize`，消除无量纲配置歧义，提供生产合理默认值与 IDE 智能补全 | - |
@@ -84,6 +84,9 @@ management:
   health:
     mqtt:
       enabled: true
+  endpoint:
+    health:
+      show-details: always
   endpoints:
     web:
       exposure:
@@ -410,10 +413,17 @@ public class DatabaseFallbackMqttSendFailureHandler implements MqttSendFailureHa
     "mqtt": {
       "status": "UP",
       "details": {
-        "client.primary.connected": true,
-        "client.primary.serverUri": "tcp://127.0.0.1:1883",
-        "client.primary.clientId": "ateng-sample-primary_4cb4f0",
-        "client.primary.protocolVersion": "5.0"
+        "clients": {
+          "primary": {
+            "status": "CONNECTED",
+            "connected": true,
+            "clientId": "ateng-sample-primary_4cb4f0",
+            "serverUri": "tcp://127.0.0.1:1883",
+            "protocolVersion": "5.0",
+            "automaticReconnect": true,
+            "bufferedMessages": 0
+          }
+        }
       }
     }
   }
@@ -422,17 +432,17 @@ public class DatabaseFallbackMqttSendFailureHandler implements MqttSendFailureHa
 
 ### 6.2 Micrometer 黄金度量指标 (`/actuator/prometheus`)
 
-引入 `micrometer-registry-prometheus` 后，框架通过 `MqttMetrics` 实时采集四大黄金生产度量：
+引入 `micrometer-registry-prometheus` 后，框架通过 `MqttMetrics` 实时采集黄金生产度量：
 
 | 指标名称 | 类型 | 维度标签 (Tags) | 业务语义说明 |
 | :--- | :--- | :--- | :--- |
-| `mqtt.client.status` | Gauge | `client`, `uri` | 客户端实时连接状态（1: 已连接, 0: 未连接/断开） |
-| `mqtt.publish.total` | Counter | `client`, `topic`, `status` | 消息发布累计次数（`status=success` 或 `failed`） |
-| `mqtt.publish.duration` | Timer | `client`, `topic` | 消息发布同步耗时分布统计 |
-| `mqtt.consume.total` | Counter | `endpoint`, `topic`, `status` | 监听端点消息消费累计次数 |
-| `mqtt.consume.duration` | Timer | `endpoint`, `topic` | 监听端点消息业务处理耗时分布统计 |
-| `mqtt.rpc.timeout` | Counter | `client`, `topic` | RPC 同步请求响应超时累计次数 |
-| `mqtt.payload.exceeded` | Counter | `topic` | 入站大报文超限拦截触发次数 |
+| `mqtt.client.status` | Gauge | `client` | 客户端实时连接状态（1: 已连接, 0: 未连接/断开） |
+| `mqtt.message.published` | Counter | `client`, `topic`, `qos` | 消息发布累计次数 |
+| `mqtt.publish.latency` | Timer | `client`, `topic`, `qos` | 消息发布耗时分布统计 |
+| `mqtt.message.received` | Counter | `client`, `topic` | 入站接收消息累计次数 |
+| `mqtt.consumer.latency` | Timer | `endpoint`, `topic`, `status` | 监听端点消息消费业务耗时分布统计 |
+| `mqtt.consumer.dlt` | Counter | `endpoint`, `topic` | 业务异常转入毒丸死信队列 (DLT) 累计次数 |
+| `mqtt.requestreply.timeout` | Counter | `client`, `topic` | 请求-响应 (Request-Reply) 同步等待超时累计次数 |
 
 ---
 

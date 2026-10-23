@@ -17,7 +17,15 @@ public class ByteArrayMqttMessageConverter implements MqttMessageConverter {
 
     @Override
     public Object fromMessage(MqttMessage message, Class<?> targetType) {
-        return message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
+        byte[] payload = message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
+        if (targetType == Byte[].class) {
+            Byte[] boxed = new Byte[payload.length];
+            for (int i = 0; i < payload.length; i++) {
+                boxed[i] = payload[i];
+            }
+            return boxed;
+        }
+        return payload;
     }
 
     @Override
@@ -27,6 +35,13 @@ public class ByteArrayMqttMessageConverter implements MqttMessageConverter {
         }
         if (payload instanceof byte[] bytes) {
             return bytes;
+        }
+        if (payload instanceof Byte[] boxed) {
+            byte[] unboxed = new byte[boxed.length];
+            for (int i = 0; i < boxed.length; i++) {
+                unboxed[i] = boxed[i] != null ? boxed[i] : (byte) 0;
+            }
+            return unboxed;
         }
         return new byte[0];
     }

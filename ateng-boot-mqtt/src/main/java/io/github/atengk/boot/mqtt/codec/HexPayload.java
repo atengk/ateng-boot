@@ -1,7 +1,7 @@
 package io.github.atengk.boot.mqtt.codec;
 
 import java.util.Arrays;
-import java.util.Objects;
+import java.util.HexFormat;
 
 /**
  * 工业国标与十六进制二进制报文载荷实体
@@ -12,17 +12,28 @@ import java.util.Objects;
  */
 public class HexPayload {
 
+    private static final HexFormat HEX_FORMAT = HexFormat.of().withUpperCase();
+
     private final byte[] bytes;
     private final String hexString;
 
     public HexPayload(byte[] bytes) {
-        this.bytes = bytes != null ? bytes : new byte[0];
-        this.hexString = HexMqttMessageConverter.bytesToHex(this.bytes);
+        this.bytes = bytes != null ? Arrays.copyOf(bytes, bytes.length) : new byte[0];
+        this.hexString = HEX_FORMAT.formatHex(this.bytes);
     }
 
     public HexPayload(String hexString) {
-        this.hexString = hexString != null ? hexString.trim() : "";
-        this.bytes = HexMqttMessageConverter.hexToBytes(this.hexString);
+        if (hexString == null || hexString.isBlank()) {
+            this.hexString = "";
+            this.bytes = new byte[0];
+        } else {
+            String clean = hexString.replaceAll("\\s+", "").toUpperCase();
+            if (clean.length() % 2 != 0) {
+                clean = "0" + clean;
+            }
+            this.hexString = clean;
+            this.bytes = HEX_FORMAT.parseHex(clean);
+        }
     }
 
     public static HexPayload of(byte[] bytes) {
@@ -34,7 +45,7 @@ public class HexPayload {
     }
 
     public byte[] getBytes() {
-        return bytes;
+        return Arrays.copyOf(bytes, bytes.length);
     }
 
     public String getHexString() {

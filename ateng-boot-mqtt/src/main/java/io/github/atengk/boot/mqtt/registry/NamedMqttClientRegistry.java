@@ -101,7 +101,6 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
                 log.info("[MQTT] Successfully initialized and connected client [{}] with actual clientId [{}] to [{}]",
                         clientName, handle.getActualClientId(), clientProps.getServerUri());
             } catch (Exception e) {
-                log.error("[MQTT] Failed to initialize MQTT client [{}]: {}", clientName, e.getMessage(), e);
                 throw new BusinessException("Failed to initialize MQTT client [" + clientName + "]: " + e.getMessage(), e);
             }
         }
@@ -116,6 +115,13 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
      * @throws MqttException 底层连接异常
      */
     private MqttClientHandle createAndConnectClient(String clientName, MqttClientProperties clientProps) throws MqttException {
+        // 0. 校验协议版本合法性防线 (Fail-Fast Invariant)
+        String protocolVersion = StringUtils.hasText(clientProps.getProtocolVersion()) ? clientProps.getProtocolVersion().trim() : "5.0";
+        if (!"5.0".equalsIgnoreCase(protocolVersion) && !"5".equalsIgnoreCase(protocolVersion)
+                && !"3.1.1".equalsIgnoreCase(protocolVersion) && !"3.1".equalsIgnoreCase(protocolVersion)) {
+            throw new IllegalArgumentException("Unsupported MQTT protocol version [" + protocolVersion + "] for client [" + clientName + "]. Supported versions: 5.0, 3.1.1");
+        }
+
         // 1. 校验持久会话与随机 ClientId 策略防线 (Fail-Fast Invariant)
         if (!clientProps.isCleanStart() && clientProps.getClientIdStrategy() == ClientIdStrategy.RANDOM_SUFFIX) {
             log.warn("[MQTT] Client [{}] has cleanStart=false (Persistent Session) but uses RANDOM_SUFFIX clientIdStrategy. " +
@@ -198,17 +204,20 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             connOpts.setWill(clientProps.getLwt().getTopic(), willMsg);
         }
 
+        // 协议版本适配（MQTT 3.1.1 存量降级模式防御 5.0 特有参数引发 Broker 异常）
+        String protocolVersion = StringUtils.hasText(clientProps.getProtocolVersion()) ? clientProps.getProtocolVersion().trim() : "5.0";
+        if ("3.1.1".equalsIgnoreCase(protocolVersion) || "3.1".equalsIgnoreCase(protocolVersion)) {
+            log.info("[MQTT] Client [{}] configured for MQTT 3.1.1 legacy compatibility mode", clientName);
+            connOpts.setSessionExpiryInterval(0L);
+        }
+
         // TLS / SSL 安全套接字配置
         if (clientProps.getSsl() != null && clientProps.getSsl().isEnabled()) {
-            try {
-                javax.net.ssl.SSLSocketFactory socketFactory = MqttSslSocketFactoryBuilder.build(clientProps.getSsl());
-                if (socketFactory != null) {
-                    connOpts.setSocketFactory(socketFactory);
-                    log.info("[MQTT] Configured custom SSLSocketFactory for client [{}] with protocol [{}]",
-                            clientName, clientProps.getSsl().getProtocol());
-                }
-            } catch (Exception e) {
-                throw new BusinessException("Failed to initialize SSLSocketFactory for client [" + clientName + "]: " + e.getMessage(), e);
+            javax.net.ssl.SSLSocketFactory socketFactory = MqttSslSocketFactoryBuilder.build(clientProps.getSsl());
+            if (socketFactory != null) {
+                connOpts.setSocketFactory(socketFactory);
+                log.info("[MQTT] Configured custom SSLSocketFactory for client [{}] with protocol [{}]",
+                        clientName, clientProps.getSsl().getProtocol());
             }
         }
 

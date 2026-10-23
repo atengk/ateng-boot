@@ -32,6 +32,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * MQTT 基础设施与多客户端自动装配类
@@ -99,10 +100,13 @@ public class AtengMqttAutoConfiguration {
     @ConditionalOnMissingBean
     public MqttRequestReplyManager mqttRequestReplyManager(NamedMqttClientRegistry namedMqttClientRegistry,
                                                            PayloadGuard mqttPayloadGuard,
+                                                           ObjectProvider<MqttMetrics> metricsProvider,
                                                            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                                           @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+                                                           @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
+                                                           ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor);
+        ScheduledExecutorService scheduledExecutor = scheduledExecutorProvider.getIfAvailable();
+        return new MqttRequestReplyManager(namedMqttClientRegistry, mqttPayloadGuard, executor, scheduledExecutor, metricsProvider.getIfAvailable());
     }
 
     @Bean
@@ -153,14 +157,17 @@ public class AtengMqttAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public MqttHealthIndicator mqttHealthIndicator(NamedMqttClientRegistry namedMqttClientRegistry) {
-            return new MqttHealthIndicator(namedMqttClientRegistry);
+        public MqttHealthIndicator mqttHealthIndicator(NamedMqttClientRegistry namedMqttClientRegistry,
+                                                       @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                                       @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+            Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
+            return new MqttHealthIndicator(namedMqttClientRegistry, executor);
         }
     }
 
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(MeterRegistry.class)
-    @ConditionalOnProperty(prefix = "management.metrics.export.mqtt", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnProperty(prefix = "management.metrics.enable", name = "mqtt", havingValue = "true", matchIfMissing = true)
     static class MqttMetricsConfiguration {
 
         @Bean

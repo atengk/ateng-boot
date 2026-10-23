@@ -8,6 +8,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Semaphore;
 
 /**
  * 单个声明式 MQTT 监听器端点元数据实体
@@ -23,6 +24,7 @@ public class MqttListenerEndpoint {
     private final MqttListener annotation;
     private final MqttListenerMethodAdapter adapter;
     private final List<MqttTopicPattern> patterns;
+    private final Semaphore concurrencySemaphore;
 
     public MqttListenerEndpoint(String id, Object bean, Method method, MqttListener annotation) {
         this(id, bean, method, annotation, null);
@@ -40,6 +42,7 @@ public class MqttListenerEndpoint {
             list.add(new MqttTopicPattern(topic));
         }
         this.patterns = Collections.unmodifiableList(list);
+        this.concurrencySemaphore = annotation.concurrency() > 0 ? new Semaphore(annotation.concurrency()) : null;
     }
 
     public String getId() {
@@ -76,5 +79,13 @@ public class MqttListenerEndpoint {
 
     public int getQos() {
         return annotation.qos();
+    }
+
+    public int getConcurrency() {
+        return annotation.concurrency();
+    }
+
+    public Semaphore getConcurrencySemaphore() {
+        return concurrencySemaphore;
     }
 }

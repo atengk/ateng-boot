@@ -177,7 +177,9 @@ class SampleMqttE2eTest {
     void testActuatorHealthIndicator() throws Exception {
         mockMvc.perform(get("/actuator/health"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("UP"));
+                .andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components.mqtt.status").value("UP"))
+                .andExpect(jsonPath("$.components.mqtt.details.clients.primary.status").value("CONNECTED"));
     }
 
     @Test
@@ -190,8 +192,9 @@ class SampleMqttE2eTest {
                 .isNotNull()
                 .satisfies(gauge -> assertThat(gauge.value()).isEqualTo(1.0));
 
-        // 2. 验证发信 Counter
+        // 2. 验证发信 Counter 与耗时 Timer
         assertThat(meterRegistry.find("mqtt.message.published").counters()).isNotEmpty();
+        assertThat(meterRegistry.find("mqtt.publish.latency").timers()).isNotEmpty();
 
         // 3. 验证收信 Counter
         assertThat(meterRegistry.find("mqtt.message.received").counters()).isNotEmpty();

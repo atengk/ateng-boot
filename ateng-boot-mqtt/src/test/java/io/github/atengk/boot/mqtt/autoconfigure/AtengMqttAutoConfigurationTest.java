@@ -6,9 +6,12 @@ import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
+import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -57,6 +60,26 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttTemplate.class);
                     assertThat(context).doesNotHaveBean(MqttListenerEndpointRegistry.class);
                     assertThat(context).doesNotHaveBean(MqttListenerAnnotationBeanPostProcessor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试可观测性自动装配：存在 MeterRegistry 时注册 MqttMetrics，可通过配置禁用")
+    void testObservabilityAutoConfiguration() {
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MqttMetrics.class);
+                    assertThat(context).hasSingleBean(MqttHealthIndicator.class);
+                });
+
+        contextRunner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues(
+                        "management.metrics.enable.mqtt=false",
+                        "management.health.mqtt.enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MqttMetrics.class);
+                    assertThat(context).doesNotHaveBean(MqttHealthIndicator.class);
                 });
     }
 }

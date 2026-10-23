@@ -27,10 +27,12 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
   health:
     mqtt:
       enabled: true
   metrics:
-    export:
-      mqtt:
-        enabled: true
+    enable:
+      mqtt: true

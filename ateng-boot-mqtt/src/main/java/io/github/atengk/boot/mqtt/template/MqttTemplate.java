@@ -19,6 +19,7 @@ import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttActionListener;
 import org.eclipse.paho.mqttv5.client.MqttConnectionOptions;
@@ -321,6 +322,7 @@ public class MqttTemplate {
         byte[] payloadBytes = toPayloadBytes(payload);
         String effectiveClient = resolveEffectiveClientName(clientName);
         CompletableFuture<Void> future = new CompletableFuture<>();
+        long startTime = System.nanoTime();
 
         try {
             MqttClientHandle handle = resolveClientHandle(effectiveClient);
@@ -332,7 +334,7 @@ public class MqttTemplate {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
                     if (metrics != null) {
-                        metrics.recordPublished(effectiveClient, topic, qos);
+                        metrics.recordPublished(effectiveClient, topic, qos, System.nanoTime() - startTime);
                     }
                     future.complete(null);
                 }
@@ -371,12 +373,13 @@ public class MqttTemplate {
         MqttMessage message = buildMqttMessage(handle, payloadBytes, qos, retained);
         Duration timeout = handle.getClientProperties().getPublishTimeout();
         long timeoutMs = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout.toMillis() : 10000L;
+        long startTime = System.nanoTime();
 
         try {
             IMqttToken token = handle.getAsyncClient().publish(topic, message);
             token.waitForCompletion(timeoutMs);
             if (metrics != null) {
-                metrics.recordPublished(handle.getClientName(), topic, qos);
+                metrics.recordPublished(handle.getClientName(), topic, qos, System.nanoTime() - startTime);
             }
         } catch (Throwable e) {
             throw createDeliveryException(handle.getClientName(), topic, e);
@@ -430,19 +433,7 @@ public class MqttTemplate {
      * 判断当前客户端连接是否为 MQTT 5.0
      */
     private boolean isMqttV5(MqttClientHandle handle) {
-        if (handle.getClientProperties() != null && StringUtils.hasText(handle.getClientProperties().getProtocolVersion())) {
-            String version = handle.getClientProperties().getProtocolVersion().trim();
-            if ("3.1.1".equalsIgnoreCase(version) || "3.1".equalsIgnoreCase(version)) {
-                return false;
-            }
-            if ("5.0".equalsIgnoreCase(version) || "5".equalsIgnoreCase(version)) {
-                return true;
-            }
-        }
-        if (handle.getConnectionOptions() != null) {
-            return handle.getConnectionOptions().getMqttVersion() == 5;
-        }
-        return true;
+        return handle != null && handle.isMqttV5();
     }
 
     /**
@@ -603,7 +594,6 @@ public class MqttTemplate {
         MqttClientHandle handle = resolveClientHandle(effectiveClient);
 
         try {
-            org.eclipse.paho.mqttv5.common.MqttSubscription subscription = new MqttSubscription(topicFilter, qos);
             org.eclipse.paho.mqttv5.client.IMqttMessageListener listener = (actualTopic, message) -> {
                 Runnable task = () -> {
                     Map<String, Object> headers = extractHeaders(message);
@@ -615,19 +605,9 @@ public class MqttTemplate {
                     task.run();
                 }
             };
-            // 使用数组重载以规避 Paho 1.2.5 单参重载中的 subscriptionIdentifiers 空指针/越界 Bug
-            IMqttToken token = handle.getAsyncClient().subscribe(
-                    new org.eclipse.paho.mqttv5.common.MqttSubscription[]{subscription},
-                    null,
-                    null,
-                    new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{listener},
-                    null
-            );
-            long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
-            token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+            handle.subscribe(topicFilter, qos, listener);
             log.info("[MQTT] Client [{}] subscribed to [{}] with QoS [{}] dynamically", effectiveClient, topicFilter, qos);
         } catch (MqttException e) {
-            log.error("[MQTT] Dynamic subscribe failed on client [{}] to topic [{}]: {}", effectiveClient, topicFilter, e.getMessage(), e);
             throw new BusinessException("Failed to subscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
         }
     }
@@ -669,12 +649,9 @@ public class MqttTemplate {
         MqttClientHandle handle = resolveClientHandle(effectiveClient);
 
         try {
-            IMqttToken token = handle.getAsyncClient().unsubscribe(topicFilter);
-            long timeoutMs = handle.getClientProperties().getConnectionTimeout().toMillis();
-            token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+            handle.unsubscribe(topicFilter);
             log.info("[MQTT] Client [{}] unsubscribed from [{}] dynamically", effectiveClient, topicFilter);
         } catch (MqttException e) {
-            log.error("[MQTT] Dynamic unsubscribe failed on client [{}] from topic [{}]: {}", effectiveClient, topicFilter, e.getMessage(), e);
             throw new BusinessException("Failed to unsubscribe MQTT topic [" + topicFilter + "] on client [" + effectiveClient + "]: " + e.getMessage(), e);
         }
     }
@@ -730,10 +707,14 @@ public class MqttTemplate {
      * @return 响应报文
      */
     public MqttMessage sendAndReceive(String clientName, String topic, Object payload, int qos, Duration timeout) {
+        CompletableFuture<MqttMessage> future = sendAndReceiveAsync(clientName, topic, payload, qos, timeout);
         try {
-            CompletableFuture<MqttMessage> future = sendAndReceiveAsync(clientName, topic, payload, qos, timeout);
             return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
+            future.cancel(true);
+            if (metrics != null) {
+                metrics.recordRequestTimeout(resolveEffectiveClientName(clientName), topic);
+            }
             throw new MqttTimeoutException("Request-Response timed out after " + timeout.toMillis() + "ms for topic [" + topic + "]", topic, null, timeout, e);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
@@ -952,21 +933,6 @@ public class MqttTemplate {
     }
 
     private Map<String, Object> extractHeaders(MqttMessage message) {
-        if (message == null) {
-            return Collections.emptyMap();
-        }
-        MqttProperties properties = message.getProperties();
-        if (properties == null || properties.getUserProperties() == null) {
-            return Collections.emptyMap();
-        }
-        List<UserProperty> userProperties = properties.getUserProperties();
-        if (userProperties.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Map<String, Object> headers = new HashMap<>(userProperties.size());
-        for (UserProperty prop : userProperties) {
-            headers.put(prop.getKey(), prop.getValue());
-        }
-        return headers;
+        return new HashMap<>(MqttHeaderUtils.extractHeaders(message));
     }
 }

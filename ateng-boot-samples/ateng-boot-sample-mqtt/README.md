@@ -36,9 +36,9 @@
 | **02** | 工业国标 Hex 报文转译 | `HexPayload`<br>`HexMqttMessageConverter` | `POST /api/mqtt/publish/hex` | 强类型接收并转译 `68AAAAAAAAAAAA6811043333333316`，十六进制与字节长度无损解析 |
 | **03** | `$share` 共享订阅均衡消费 | `@MqttListener(sharedGroup = "...")` | `POST /api/mqtt/publish/cluster-metric` | 自动添加 `$share/telemetry-worker/` 前缀订阅，多节点分组轮询消费成功 |
 | **04** | MQTT 5.0 同步 RPC 指令响应 | `MqttTemplate.sendAndReceive`<br>`MqttRequestReplyManager` | `POST /api/mqtt/rpc/control` | 阻塞等待边缘端基于 `ResponseTopic` 与 `CorrelationData` 回传回执，返回统一结果状态 |
-| **05** | 本地事务对齐发信防脏读 | `MqttTemplate.sendAfterCommit`<br>`@Transactional` | `POST /api/mqtt/publish/transactional` | 事务提交后投递成功，消费者接收到带有事务一致性的订单遥测记录 |
+| **05** | 本地事务对齐发信防脏读 | `MqttTemplate.sendAfterCommit`<br>`@Transactional` | `POST /api/mqtt/tx/telemetry` | 事务提交后投递成功，消费者接收到带有事务一致性的订单遥测记录 |
 | **06** | Actuator 生产健康感知探针 | `MqttHealthIndicator` + Actuator | `GET /actuator/health` | 实时感知底层 MQTT 客户端连接状态，输出 `UP` 与详细 Broker 地址、ClientId、协议版本 |
-| **07** | Micrometer 核心度量采集 | `MqttMetrics` + Prometheus Registry | 模拟发信与消费 | 统计 `mqtt.client.status`、`mqtt.publish.total`、`mqtt.consume.total` 等指标全覆盖 |
+| **07** | Micrometer 核心度量采集 | `MqttMetrics` + Prometheus Registry | 模拟发信与消费 | 统计 `mqtt.client.status`、`mqtt.message.published`、`mqtt.publish.latency` 等指标全覆盖 |
 
 ---
 
@@ -66,10 +66,16 @@ curl "http://localhost:8080/api/mqtt/telemetries"
 ### 4. 发起同步 RPC 设备控制指令
 
 ```bash
-curl -X POST "http://localhost:8080/api/mqtt/rpc/control?commandId=cmd-999&payload=RESTART"
+curl -X POST "http://localhost:8080/api/mqtt/rpc/control?action=reboot&speed=50"
 ```
 
-### 5. 查看 Actuator 健康探针与度量
+### 5. 发布本地事务协同遥测数据 (HTTP POST)
+
+```bash
+curl -X POST "http://localhost:8080/api/mqtt/tx/telemetry?deviceId=tx-device-01&temp=31.2&humidity=48.0"
+```
+
+### 6. 查看 Actuator 健康探针与度量
 
 ```bash
 # 查看健康状态

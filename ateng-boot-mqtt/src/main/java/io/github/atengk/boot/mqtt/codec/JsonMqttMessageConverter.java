@@ -13,8 +13,12 @@ public class JsonMqttMessageConverter implements MqttMessageConverter {
 
     @Override
     public boolean supports(Class<?> targetType) {
-        // 作为通用对象转译转换器
-        return targetType != null && targetType != byte[].class && !CharSequence.class.isAssignableFrom(targetType);
+        // 作为通用对象转译转换器，显式排除基础字节数组、字符序列与工业 HexPayload 特化对象
+        return targetType != null
+                && targetType != byte[].class
+                && targetType != Byte[].class
+                && !CharSequence.class.isAssignableFrom(targetType)
+                && !HexPayload.class.isAssignableFrom(targetType);
     }
 
     @Override

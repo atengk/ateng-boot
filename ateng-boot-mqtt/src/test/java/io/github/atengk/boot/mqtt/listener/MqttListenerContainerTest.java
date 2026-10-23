@@ -6,6 +6,7 @@ import io.github.atengk.boot.mqtt.annotation.MqttHeader;
 import io.github.atengk.boot.mqtt.annotation.MqttListener;
 import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
+import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
@@ -161,6 +162,7 @@ class MqttListenerContainerTest {
         MDC.clear();
         TenantContextHolder.clear();
         UserContextHolder.clear();
+        MqttContextHolder.clear();
 
         if (endpointRegistry != null) {
             endpointRegistry.stop();

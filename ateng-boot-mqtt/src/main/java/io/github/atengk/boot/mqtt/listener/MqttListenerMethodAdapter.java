@@ -8,12 +8,15 @@ import io.github.atengk.boot.mqtt.annotation.MqttTopic;
 import io.github.atengk.boot.mqtt.annotation.MqttVariable;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
+import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
 import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
 import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.MethodParameter;
+import org.springframework.core.convert.ConversionService;
+import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.util.ReflectionUtils;
 
 import java.lang.reflect.InvocationTargetException;
@@ -37,6 +40,7 @@ import java.util.Objects;
 public class MqttListenerMethodAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(MqttListenerMethodAdapter.class);
+    private static final ConversionService CONVERSION_SERVICE = DefaultConversionService.getSharedInstance();
 
     private final Object bean;
     private final Method method;
@@ -72,15 +76,11 @@ public class MqttListenerMethodAdapter {
                 method.invoke(bean, args);
             } catch (InvocationTargetException e) {
                 Throwable target = e.getTargetException();
-                log.error("[MQTT] Execution failed on listener method [{}.{}]: {}",
-                        bean.getClass().getSimpleName(), method.getName(), target.getMessage(), target);
                 if (target instanceof RuntimeException re) {
                     throw re;
                 }
                 throw new BusinessException("Listener method execution failed: " + target.getMessage(), target);
             } catch (Exception e) {
-                log.error("[MQTT] Invocation error on listener method [{}.{}]: {}",
-                        bean.getClass().getSimpleName(), method.getName(), e.getMessage(), e);
                 throw new BusinessException("Listener method invocation error: " + e.getMessage(), e);
             }
         });
@@ -121,29 +121,13 @@ public class MqttListenerMethodAdapter {
 
     private Object convertType(String value, Class<?> targetType) {
         if (value == null) {
-            if (targetType.isPrimitive()) {
-                if (targetType == boolean.class) return false;
-                if (targetType == int.class) return 0;
-                if (targetType == long.class) return 0L;
-                if (targetType == double.class) return 0.0;
-                if (targetType == float.class) return 0.0f;
-            }
-            return null;
+            return targetType.isPrimitive() ? CONVERSION_SERVICE.convert("", targetType) : null;
         }
         if (String.class.equals(targetType)) {
             return value;
         }
-        if (Long.class.equals(targetType) || long.class.equals(targetType)) {
-            return Long.valueOf(value);
-        }
-        if (Integer.class.equals(targetType) || int.class.equals(targetType)) {
-            return Integer.valueOf(value);
-        }
-        if (Double.class.equals(targetType) || double.class.equals(targetType)) {
-            return Double.valueOf(value);
-        }
-        if (Boolean.class.equals(targetType) || boolean.class.equals(targetType)) {
-            return Boolean.valueOf(value);
+        if (CONVERSION_SERVICE.canConvert(String.class, targetType)) {
+            return CONVERSION_SERVICE.convert(value, targetType);
         }
         return value;
     }
@@ -165,22 +149,7 @@ public class MqttListenerMethodAdapter {
     }
 
     private Map<String, Object> extractHeaders(MqttMessage message) {
-        if (message == null) {
-            return Collections.emptyMap();
-        }
-        MqttProperties properties = message.getProperties();
-        if (properties == null || properties.getUserProperties() == null) {
-            return Collections.emptyMap();
-        }
-        List<UserProperty> userProperties = properties.getUserProperties();
-        if (userProperties.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Map<String, Object> headers = new HashMap<>(userProperties.size());
-        for (UserProperty prop : userProperties) {
-            headers.put(prop.getKey(), prop.getValue());
-        }
-        return headers;
+        return new HashMap<>(MqttHeaderUtils.extractHeaders(message));
     }
 
     public Object getBean() {

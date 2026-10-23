@@ -66,7 +66,7 @@ class MqttCodecAndObservabilityTest {
         HexPayload payloadFromBytes = HexPayload.of(rawBytes);
         assertEquals("010a1fff", payloadFromBytes.getHexString().toLowerCase());
         assertArrayEquals(rawBytes, payloadFromBytes.getBytes());
-        assertEquals("010a1fff", payloadFromBytes.toString());
+        assertEquals("010A1FFF", payloadFromBytes.toString());
 
         HexPayload payloadFromHex = HexPayload.of("010A1FFF");
         assertArrayEquals(rawBytes, payloadFromHex.getBytes());
@@ -83,7 +83,15 @@ class MqttCodecAndObservabilityTest {
         assertInstanceOf(HexPayload.class, result);
         assertEquals("010a1fff", ((HexPayload) result).getHexString().toLowerCase());
 
-        // 4. 空校验与容错防线
+        // 4. 奇数长度高位自动补零与大写规范
+        HexPayload oddHex = HexPayload.of("A");
+        assertEquals("0A", oddHex.getHexString());
+        assertArrayEquals(new byte[]{0x0A}, oddHex.getBytes());
+
+        HexPayload lowerHex = HexPayload.of("010a1fff");
+        assertEquals("010A1FFF", lowerHex.getHexString(), "应规范化为标准大写");
+
+        // 5. 空校验与容错防线
         assertEquals(0, HexPayload.of((byte[]) null).getBytes().length);
         assertEquals("", HexPayload.of((String) null).getHexString());
     }
@@ -149,6 +157,19 @@ class MqttCodecAndObservabilityTest {
         assertNotNull(readPojo);
         assertEquals("dev-001", readPojo.getDeviceId());
         assertEquals(36.5, readPojo.getTemperature());
+
+        // 5. 验证 Byte[] 装箱类型编解码对称性与 Json 转换器排除机制
+        ByteArrayMqttMessageConverter byteConverter = new ByteArrayMqttMessageConverter();
+        assertTrue(byteConverter.supports(Byte[].class));
+        Byte[] boxed = (Byte[]) byteConverter.fromMessage(new MqttMessage(new byte[]{1, 2, 3}), Byte[].class);
+        assertArrayEquals(new Byte[]{1, 2, 3}, boxed);
+        byte[] unboxed = byteConverter.toPayload(boxed);
+        assertArrayEquals(new byte[]{1, 2, 3}, unboxed);
+
+        JsonMqttMessageConverter jsonConverter = new JsonMqttMessageConverter();
+        assertFalse(jsonConverter.supports(HexPayload.class), "Json 转换器应排除 HexPayload");
+        assertFalse(jsonConverter.supports(byte[].class), "Json 转换器应排除 byte[]");
+        assertFalse(jsonConverter.supports(Byte[].class), "Json 转换器应排除 Byte[]");
     }
 
     // ==================== 3. 监听器形参自适应转译测试 ====================
@@ -278,6 +299,13 @@ class MqttCodecAndObservabilityTest {
         when(handle.getActualClientId()).thenReturn("test-client-123");
         when(handle.getClientProperties()).thenReturn(clientProps);
         when(handle.getAsyncClient()).thenReturn(asyncClient);
+        when(handle.getHealthDetails()).thenReturn(Map.of(
+                "status", "CONNECTED",
+                "connected", true,
+                "clientId", "test-client-123",
+                "serverUri", "tcp://127.0.0.1:1883",
+                "bufferedMessages", 5
+        ));
 
         when(registry.getClientHandles()).thenReturn(Map.of("default", handle));
 
@@ -312,10 +340,16 @@ class MqttCodecAndObservabilityTest {
         when(handle.getActualClientId()).thenReturn("test-client-down");
         when(handle.getClientProperties()).thenReturn(clientProps);
         when(handle.getAsyncClient()).thenReturn(asyncClient);
+        when(handle.getHealthDetails()).thenReturn(Map.of(
+                "status", "DISCONNECTED",
+                "connected", false,
+                "clientId", "test-client-down",
+                "serverUri", "tcp://127.0.0.1:1883"
+        ));
 
         when(registry.getClientHandles()).thenReturn(Map.of("broken-client", handle));
 
-        MqttHealthIndicator healthIndicator = new MqttHealthIndicator(registry);
+        MqttHealthIndicator healthIndicator = new MqttHealthIndicator(registry, Runnable::run);
         Health health = healthIndicator.health();
 
         assertEquals(Status.DOWN, health.getStatus());
@@ -335,6 +369,30 @@ class MqttCodecAndObservabilityTest {
         assertEquals("No MQTT clients configured or running", health.getDetails().get("status"));
     }
 
+    @Test
+    @DisplayName("测试 MqttClientHandle.getHealthDetails() 真实快照提取")
+    void testMqttClientHandleHealthDetails() {
+        MqttClientProperties props = new MqttClientProperties();
+        props.setServerUri("tcp://127.0.0.1:1883");
+        props.setAutomaticReconnect(true);
+        props.setProtocolVersion("5.0");
+
+        MqttAsyncClient asyncClient = mock(MqttAsyncClient.class);
+        when(asyncClient.isConnected()).thenReturn(true);
+        when(asyncClient.getBufferedMessageCount()).thenReturn(3);
+
+        MqttClientHandle clientHandle = new MqttClientHandle("primary", "real-client-id", asyncClient, null, props);
+        Map<String, Object> details = clientHandle.getHealthDetails();
+
+        assertEquals(true, details.get("connected"));
+        assertEquals("CONNECTED", details.get("status"));
+        assertEquals("real-client-id", details.get("clientId"));
+        assertEquals("tcp://127.0.0.1:1883", details.get("serverUri"));
+        assertEquals(true, details.get("automaticReconnect"));
+        assertEquals("5.0", details.get("protocolVersion"));
+        assertEquals(3, details.get("bufferedMessages"));
+    }
+
     // ==================== 6. Micrometer 度量指标测试 ====================
 
     @Test
@@ -343,8 +401,8 @@ class MqttCodecAndObservabilityTest {
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         MqttMetrics metrics = new MqttMetrics(meterRegistry);
 
-        // 1. 测试发信 Counter
-        metrics.recordPublished("primary", "telemetry/data", 1);
+        // 1. 测试发信 Counter 与耗时 Timer
+        metrics.recordPublished("primary", "telemetry/data", 1, 2_000_000L); // 2ms
         metrics.recordPublished("primary", "telemetry/data", 1);
         Counter publishCounter = meterRegistry.find("mqtt.message.published")
                 .tag("client", "primary")
@@ -353,6 +411,14 @@ class MqttCodecAndObservabilityTest {
                 .counter();
         assertNotNull(publishCounter);
         assertEquals(2.0, publishCounter.count());
+
+        Timer publishTimer = meterRegistry.find("mqtt.publish.latency")
+                .tag("client", "primary")
+                .tag("topic", "telemetry/data")
+                .tag("qos", "1")
+                .timer();
+        assertNotNull(publishTimer);
+        assertEquals(1, publishTimer.count());
 
         // 2. 测试收信 Counter
         metrics.recordReceived("primary", "devices/alerts");
@@ -374,7 +440,7 @@ class MqttCodecAndObservabilityTest {
         assertEquals(1, consumeTimer.count());
         assertTrue(consumeTimer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS) >= 4.0);
 
-        // 4. 测试死信 DLT Counter
+        // 4. 测试死信 DLT Counter 与 请求-响应 超时 Counter
         metrics.recordDlt("bean#onAlert", "devices/alerts");
         Counter dltCounter = meterRegistry.find("mqtt.consumer.dlt")
                 .tag("endpoint", "bean#onAlert")
@@ -382,6 +448,14 @@ class MqttCodecAndObservabilityTest {
                 .counter();
         assertNotNull(dltCounter);
         assertEquals(1.0, dltCounter.count());
+
+        metrics.recordRequestTimeout("primary", "devices/rpc/control");
+        Counter timeoutCounter = meterRegistry.find("mqtt.requestreply.timeout")
+                .tag("client", "primary")
+                .tag("topic", "devices/rpc/control")
+                .counter();
+        assertNotNull(timeoutCounter);
+        assertEquals(1.0, timeoutCounter.count());
 
         // 5. 测试客户端连接 Gauge 绑定
         NamedMqttClientRegistry registry = mock(NamedMqttClientRegistry.class);

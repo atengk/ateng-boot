@@ -114,4 +114,66 @@ class NamedMqttClientRegistryTest {
 
         assertTrue(registry.getClientHandles().isEmpty(), "禁用状态下不应建立任何客户端连接");
     }
+
+    @Test
+    @DisplayName("测试 MqttClientHandle 单主题串行订阅、批量订阅防卫与退订")
+    void testClientHandleSubscriptionMethods() throws Exception {
+        AtengMqttProperties properties = new AtengMqttProperties();
+        properties.setDefaultClient("primary");
+
+        MqttClientProperties primaryProps = new MqttClientProperties();
+        primaryProps.setServerUri(broker.getServerUri());
+        primaryProps.setClientId("gateway-sub-test");
+        primaryProps.setClientIdStrategy(ClientIdStrategy.STATIC);
+        properties.getClients().put("primary", primaryProps);
+
+        registry = new NamedMqttClientRegistry(properties);
+        registry.afterPropertiesSet();
+
+        MqttClientHandle handle = registry.getDefaultClientHandle();
+        assertNotNull(handle);
+        assertTrue(handle.isMqttV5());
+
+        // 单主题订阅
+        assertDoesNotThrow(() -> handle.subscribe("test/topic/single", 1));
+
+        // 批量订阅（串行迭代解构）
+        assertDoesNotThrow(() -> handle.subscribeBatch(
+                new String[]{"test/topic/batch1", "test/topic/batch2"},
+                new int[]{1, 1}
+        ));
+
+        // 退订
+        assertDoesNotThrow(() -> handle.unsubscribe("test/topic/single", "test/topic/batch1", "test/topic/batch2"));
+    }
+
+    @Test
+    @DisplayName("测试协议版本校验防卫：非法版本快速失败与 3.1.1 兼容模式")
+    void testProtocolVersionValidation() {
+        AtengMqttProperties properties = new AtengMqttProperties();
+        properties.setDefaultClient("legacy");
+
+        MqttClientProperties legacyProps = new MqttClientProperties();
+        legacyProps.setServerUri(broker.getServerUri());
+        legacyProps.setProtocolVersion("3.1.1");
+        properties.getClients().put("legacy", legacyProps);
+
+        registry = new NamedMqttClientRegistry(properties);
+        registry.afterPropertiesSet();
+
+        MqttClientHandle legacyHandle = registry.getDefaultClientHandle();
+        assertNotNull(legacyHandle);
+        assertFalse(legacyHandle.isMqttV5(), "3.1.1 协议模式下 isMqttV5 应为 false");
+
+        // 测试不支持的非法版本
+        AtengMqttProperties invalidProperties = new AtengMqttProperties();
+        MqttClientProperties invalidProps = new MqttClientProperties();
+        invalidProps.setServerUri(broker.getServerUri());
+        invalidProps.setProtocolVersion("2.0");
+        invalidProperties.getClients().put("invalid", invalidProps);
+
+        NamedMqttClientRegistry invalidRegistry = new NamedMqttClientRegistry(invalidProperties);
+        BusinessException ex = assertThrows(BusinessException.class, invalidRegistry::afterPropertiesSet);
+        assertTrue(ex.getMessage().contains("Unsupported MQTT protocol version"));
+    }
 }

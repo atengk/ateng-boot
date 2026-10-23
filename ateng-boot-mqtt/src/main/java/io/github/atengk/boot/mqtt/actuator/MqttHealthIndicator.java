@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -24,14 +25,22 @@ public class MqttHealthIndicator extends AbstractHealthIndicator {
     private static final long TIMEOUT_SECONDS = 2L;
 
     private final NamedMqttClientRegistry clientRegistry;
+    private final Executor executor;
+
+    public MqttHealthIndicator(NamedMqttClientRegistry clientRegistry, Executor executor) {
+        this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
+        this.executor = executor;
+    }
 
     public MqttHealthIndicator(NamedMqttClientRegistry clientRegistry) {
-        this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
+        this(clientRegistry, null);
     }
 
     @Override
     protected void doHealthCheck(Health.Builder builder) {
-        CompletableFuture<Void> checkFuture = CompletableFuture.runAsync(() -> performCheck(builder));
+        CompletableFuture<Void> checkFuture = executor != null
+                ? CompletableFuture.runAsync(() -> performCheck(builder), executor)
+                : CompletableFuture.runAsync(() -> performCheck(builder));
         try {
             checkFuture.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (TimeoutException e) {
@@ -65,17 +74,12 @@ public class MqttHealthIndicator extends AbstractHealthIndicator {
                 allConnected = false;
             }
 
-            Map<String, Object> details = new HashMap<>();
-            details.put("connected", connected);
-            details.put("clientId", handle.getActualClientId());
-            details.put("serverUri", handle.getClientProperties().getServerUri());
-            details.put("automaticReconnect", handle.getClientProperties().isAutomaticReconnect());
-            try {
-                details.put("bufferedMessages", handle.getAsyncClient().getBufferedMessageCount());
-            } catch (Exception ex) {
-                details.put("bufferedMessages", -1);
+            Map<String, Object> details = handle.getHealthDetails();
+            if (details == null || details.isEmpty()) {
+                details = new HashMap<>();
+                details.put("connected", connected);
+                details.put("status", connected ? "CONNECTED" : "DISCONNECTED");
             }
-
             clientsData.put(clientName, details);
         }
 
