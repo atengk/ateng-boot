@@ -44,6 +44,10 @@ _Avoid_: SshTunnel, PortForwarder, TunnelSession
 封装交互式 PTY 伪终端会话并支持窗口重设、流式收发字节帧的受管终端交互句柄。
 _Avoid_: WebSshSession, TerminalHandle, PtySession
 
+**SshShellOptions (终端规格选项配置)**:
+封装 PTY 终端类型（如 xterm-256color）、行列尺寸、像素尺寸及环境变量的强类型配置对象。
+_Avoid_: TerminalConfig, ShellParam, PtyOptions
+
 **SftpFileInfo (SFTP 文件元数据)**:
 封装远程 SFTP 文件名称、路径、大小、修改时间与 POSIX 权限位的只读元数据对象。
 _Avoid_: SftpEntry, RemoteFile, SftpNode

@@ -1,0 +1,294 @@
+package io.github.atengk.boot.ssh.template;
+
+import io.github.atengk.boot.ssh.exception.SshOperationException;
+import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.model.SftpFileInfo;
+import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.pool.SshSessionPool;
+import io.github.atengk.boot.ssh.properties.SshPoolProperties;
+import io.github.atengk.boot.ssh.properties.SshProperties;
+import io.github.atengk.boot.ssh.registry.SshClientRegistry;
+import org.apache.sshd.client.SshClient;
+import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier;
+import org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory;
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
+import org.apache.sshd.sftp.server.SftpSubsystemFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * SftpTemplate 核心文件传输与治理门面单元测试
+ *
+ * @author Ateng
+ * @since 2026-10-23
+ */
+@DisplayName("SftpTemplate 核心文件传输与治理门面单元测试")
+class SftpTemplateTest {
+
+    private SshServer sshServer;
+    private SshClient sshClient;
+    private SshSessionPool sessionPool;
+    private SshClientRegistry clientRegistry;
+    private SshProperties sshProperties;
+    private SftpTemplate sftpTemplate;
+    private int serverPort;
+    private Path remoteRoot;
+
+    @BeforeEach
+    void setUp(@TempDir Path tempDir) throws IOException {
+        remoteRoot = tempDir.resolve("sftp-root");
+        Files.createDirectories(remoteRoot);
+
+        // 1. 启动嵌入式 SSH 服务端，挂载 SFTP 子系统与虚拟根目录
+        sshServer = SshServer.setUpDefaultServer();
+        sshServer.setHost("127.0.0.1");
+        sshServer.setPort(0);
+        sshServer.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(tempDir.resolve("hostkey.ser")));
+        sshServer.setPasswordAuthenticator((username, password, session) ->
+                "testuser".equals(username) && "testpass".equals(password));
+        sshServer.setSubsystemFactories(Collections.singletonList(new SftpSubsystemFactory()));
+        sshServer.setFileSystemFactory(new VirtualFileSystemFactory(remoteRoot));
+        sshServer.start();
+        serverPort = sshServer.getPort();
+
+        // 2. 启动客户端与会话池
+        sshClient = SshClient.setUpDefaultClient();
+        sshClient.setServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE);
+        sshClient.start();
+
+        sshProperties = new SshProperties();
+        sshProperties.setHost("127.0.0.1");
+        sshProperties.setPort(serverPort);
+        sshProperties.setUsername("testuser");
+        sshProperties.setPassword("testpass");
+
+        SshPoolProperties poolProps = new SshPoolProperties();
+        poolProps.setMaxSessions(10);
+        sessionPool = new SshSessionPool(sshClient, poolProps);
+
+        clientRegistry = new SshClientRegistry();
+        clientRegistry.register(SshClientRegistry.DEFAULT_SERVER, SshServerInfo.fromProperties(sshProperties));
+
+        sftpTemplate = new SftpTemplate(sessionPool, clientRegistry, sshProperties);
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (sessionPool != null) {
+            sessionPool.close();
+        }
+        if (sshClient != null) {
+            sshClient.stop();
+        }
+        if (sshServer != null) {
+            try {
+                sshServer.stop(true);
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("测试通过字节数组流式上传并重新下载验证内容一致")
+    void testUploadAndDownloadByteArray() {
+        String content = "Hello SFTP Streaming Engine! 2026-10-23";
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+
+        sftpTemplate.upload("/hello.txt", bytes);
+
+        byte[] downloaded = sftpTemplate.downloadToBytes("/hello.txt");
+        assertThat(new String(downloaded, StandardCharsets.UTF_8)).isEqualTo(content);
+    }
+
+    @Test
+    @DisplayName("测试原子上传机制：成功写入并重命名覆盖目标文件")
+    void testAtomicUploadWorkflow() {
+        String path = "/atomic-test.txt";
+        byte[] initial = "version 1".getBytes(StandardCharsets.UTF_8);
+        byte[] updated = "version 2 with atomic rename".getBytes(StandardCharsets.UTF_8);
+
+        sftpTemplate.upload(path, initial);
+        assertThat(new String(sftpTemplate.downloadToBytes(path), StandardCharsets.UTF_8)).isEqualTo("version 1");
+
+        // 覆盖更新
+        sftpTemplate.upload(path, updated);
+        assertThat(new String(sftpTemplate.downloadToBytes(path), StandardCharsets.UTF_8)).isEqualTo("version 2 with atomic rename");
+    }
+
+    @Test
+    @DisplayName("测试输入流与输出流流式传输以及函数式 Consumer 消费")
+    void testUploadAndDownloadStream() {
+        String path = "/stream.dat";
+        String testData = "Streaming data content for verification";
+        ByteArrayInputStream bais = new ByteArrayInputStream(testData.getBytes(StandardCharsets.UTF_8));
+
+        sftpTemplate.upload(path, bais);
+
+        // 1. download to OutputStream
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        sftpTemplate.download(path, baos);
+        assertThat(baos.toString(StandardCharsets.UTF_8)).isEqualTo(testData);
+
+        // 2. download with Consumer<InputStream>
+        AtomicBoolean consumed = new AtomicBoolean(false);
+        sftpTemplate.download(path, (InputStream in) -> {
+            try {
+                byte[] readBytes = in.readAllBytes();
+                assertThat(new String(readBytes, StandardCharsets.UTF_8)).isEqualTo(testData);
+                consumed.set(true);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        assertThat(consumed.get()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试本地磁盘文件上传与下载落地本地磁盘文件")
+    void testUploadAndDownloadFile(@TempDir Path localTemp) throws IOException {
+        Path localSource = localTemp.resolve("source.txt");
+        String fileContent = "Disk file content 123456789";
+        Files.writeString(localSource, fileContent);
+
+        // 上传到远端
+        sftpTemplate.upload("/remote-file.txt", localSource.toFile());
+
+        // 下载到新本地文件
+        Path localDest = localTemp.resolve("dest.txt");
+        sftpTemplate.downloadToFile("/remote-file.txt", localDest.toFile());
+
+        assertThat(Files.readString(localDest)).isEqualTo(fileContent);
+    }
+
+    @Test
+    @DisplayName("测试上传深层嵌套路径时自动递归创建父目录")
+    void testAutoMkdirsOnUpload() {
+        String nestedPath = "/nested/sub1/sub2/app.log";
+        byte[] logData = "Application log initialized".getBytes(StandardCharsets.UTF_8);
+
+        sftpTemplate.upload(nestedPath, logData);
+
+        assertThat(sftpTemplate.exists(nestedPath)).isTrue();
+        assertThat(sftpTemplate.exists("/nested/sub1/sub2")).isTrue();
+        assertThat(new String(sftpTemplate.downloadToBytes(nestedPath), StandardCharsets.UTF_8))
+                .isEqualTo("Application log initialized");
+    }
+
+    @Test
+    @DisplayName("测试 stat 文件元数据提取与 exists 存在性检查")
+    void testStatAndExists() {
+        String path = "/stat-meta.txt";
+        byte[] data = "Metadata test".getBytes(StandardCharsets.UTF_8);
+        sftpTemplate.upload(path, data);
+
+        assertThat(sftpTemplate.exists(path)).isTrue();
+        assertThat(sftpTemplate.exists("/not-exist-file.txt")).isFalse();
+
+        SftpFileInfo info = sftpTemplate.stat(path);
+        assertThat(info).isNotNull();
+        assertThat(info.getFilename()).isEqualTo("stat-meta.txt");
+        assertThat(info.getSize()).isEqualTo(data.length);
+        assertThat(info.isRegularFile()).isTrue();
+        assertThat(info.isDirectory()).isFalse();
+        assertThat(info.getPermissionsString()).isNotBlank();
+        assertThat(info.getModifiedTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试 delete 正常删除与删除不存在文件保底返回 false")
+    void testDelete() {
+        String path = "/to-delete.txt";
+        sftpTemplate.upload(path, "delete me".getBytes(StandardCharsets.UTF_8));
+        assertThat(sftpTemplate.exists(path)).isTrue();
+
+        boolean deleted = sftpTemplate.delete(path);
+        assertThat(deleted).isTrue();
+        assertThat(sftpTemplate.exists(path)).isFalse();
+
+        // 再次删除已不存在的文件，应平滑返回 false 而非抛出异常
+        boolean deleteAgain = sftpTemplate.delete(path);
+        assertThat(deleteAgain).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 chmod 权限修改与 mkdir/mkdirs 目录创建")
+    void testChmodAndMkdirs() {
+        sftpTemplate.mkdirs("/perm-dir/inner");
+        assertThat(sftpTemplate.exists("/perm-dir/inner")).isTrue();
+
+        String filePath = "/perm-dir/inner/data.txt";
+        sftpTemplate.upload(filePath, "data".getBytes(StandardCharsets.UTF_8));
+
+        // 修改权限为 0755
+        sftpTemplate.chmod(filePath, 0755);
+        SftpFileInfo info = sftpTemplate.stat(filePath);
+        assertThat(info.getPermissions()).isGreaterThan(0);
+        if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            assertThat(info.getPermissions() & 0777).isEqualTo(0755);
+        }
+    }
+
+    @Test
+    @DisplayName("测试路径穿越攻击防卫：包含 ../ 等非法路径时直接 Fail-Fast 拦截")
+    void testPathTraversalGuard() {
+        assertThatThrownBy(() -> sftpTemplate.upload("/sub/../../etc/passwd", "hack".getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Path Traversal");
+
+        assertThatThrownBy(() -> sftpTemplate.download("../secret.key", new ByteArrayOutputStream()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Path Traversal");
+
+        assertThatThrownBy(() -> sftpTemplate.stat(".."))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Path Traversal");
+    }
+
+    @Test
+    @DisplayName("测试动态传入 SshServerInfo 值对象时对称执行成功")
+    void testDynamicServerInfoRouting() {
+        SshServerInfo dynamicServer = SshServerInfo.builder()
+                .host("127.0.0.1")
+                .port(serverPort)
+                .username("testuser")
+                .password("testpass")
+                .build();
+
+        String path = "/dynamic-route.txt";
+        sftpTemplate.upload(dynamicServer, path, "dynamic server info content".getBytes(StandardCharsets.UTF_8));
+
+        byte[] result = sftpTemplate.downloadToBytes(dynamicServer, path);
+        assertThat(new String(result, StandardCharsets.UTF_8)).isEqualTo("dynamic server info content");
+        assertThat(sftpTemplate.exists(dynamicServer, path)).isTrue();
+        assertThat(sftpTemplate.delete(dynamicServer, path)).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试下载不存在的文件时抛出 SFTP_FILE_NOT_FOUND 语义化异常")
+    void testDownloadNonExistentThrowsSftpFileNotFound() {
+        assertThatThrownBy(() -> sftpTemplate.downloadToBytes("/non-existent-file-404.txt"))
+                .isInstanceOf(SshOperationException.class)
+                .satisfies(ex -> {
+                    SshOperationException soe = (SshOperationException) ex;
+                    assertThat(soe.getResultCode()).isEqualTo(SshResultCode.SFTP_FILE_NOT_FOUND);
+                });
+    }
+}

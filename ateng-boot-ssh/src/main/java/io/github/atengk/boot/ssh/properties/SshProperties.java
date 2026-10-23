@@ -86,6 +86,12 @@ public class SshProperties {
     private SshPoolProperties pool = new SshPoolProperties();
 
     /**
+     * SFTP 文件传输子系统配置
+     */
+    @NestedConfigurationProperty
+    private SftpProperties sftp = new SftpProperties();
+
+    /**
      * 命名多服务器节点字典（用于静态多主机映射）
      */
     private Map<String, SshProperties> servers = new LinkedHashMap<>();
