@@ -56,6 +56,7 @@
         <module>ateng-boot-ssh</module>
         <module>ateng-boot-notification</module>
         <module>ateng-boot-document</module>
+        <module>ateng-boot-mqtt</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -81,6 +82,7 @@
         <sshd.version>2.14.0</sshd.version>
         <poi-tl.version>1.12.2</poi-tl.version>
         <pdfbox.version>3.0.4</pdfbox.version>
+        <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -311,6 +313,16 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-document</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.paho</groupId>
+                <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+                <version>${paho-mqttv5.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-mqtt</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -123,6 +123,16 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-mqtt</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.paho</groupId>
+                <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+                <version>${paho-mqttv5.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.deepoove</groupId>
                 <artifactId>poi-tl</artifactId>
                 <version>${poi-tl.version}</version>
