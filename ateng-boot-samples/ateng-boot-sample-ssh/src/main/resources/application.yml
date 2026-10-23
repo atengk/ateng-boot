@@ -22,6 +22,11 @@ ateng:
         max-sessions: 64
         idle-timeout: 5m
         heartbeat-interval: 15s
+      # SFTP 传输配置
+      sftp:
+        buffer-size: 32KB
+        atomic-upload: true
+        temp-suffix: .uploading.tmp
       # 命名多主机节点字典
       servers:
         node1:
