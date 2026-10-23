@@ -207,7 +207,12 @@ public class NotificationChannelRegistry {
         }
     }
 
-    private String resolveDynamicChannel() {
+    /**
+     * 执行动态渠道路由解析（遍历所有挂载的 NotificationChannelResolver SPI）
+     *
+     * @return 解析到的有效渠道名称，若无解析器匹配则返回 null
+     */
+    public String resolveDynamicChannel() {
         for (NotificationChannelResolver resolver : channelResolvers) {
             try {
                 String resolved = resolver.resolveChannel();

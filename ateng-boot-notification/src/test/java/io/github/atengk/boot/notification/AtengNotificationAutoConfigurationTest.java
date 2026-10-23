@@ -2,6 +2,7 @@ package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.autoconfigure.AtengNotificationAutoConfiguration;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
+import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
@@ -9,6 +10,8 @@ import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
 import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
 import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
+import io.github.atengk.boot.notification.renderer.NotificationTemplateRenderer;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,6 +53,9 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             assertThat(context).hasSingleBean(WeComNotificationProvider.class);
             assertThat(context).hasSingleBean(FeishuNotificationProvider.class);
             assertThat(context).hasSingleBean(GenericWebhookNotificationProvider.class);
+            assertThat(context).hasSingleBean(NotificationTemplateRenderer.class);
+            assertThat(context).hasSingleBean(NotificationSendFailureHandler.class);
+            assertThat(context).hasSingleBean(NotificationTemplate.class);
 
             NotificationProperties properties = context.getBean(NotificationProperties.class);
             assertEquals("ops-alert", properties.getDefaultChannel());

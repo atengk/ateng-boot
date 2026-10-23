@@ -4,13 +4,19 @@ import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelProvider;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.channel.NotificationChannelResolver;
+import io.github.atengk.boot.notification.handler.LoggingNotificationSendFailureHandler;
+import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
 import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
 import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
 import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
+import io.github.atengk.boot.notification.provider.NotificationProvider;
 import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
+import io.github.atengk.boot.notification.renderer.NotificationTemplateRenderer;
+import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -19,6 +25,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -29,6 +36,7 @@ import org.springframework.web.client.RestClient;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * ateng-boot 协同通知自动装配入口
@@ -187,6 +195,71 @@ public class AtengNotificationAutoConfiguration {
     @ConditionalOnMissingBean
     public GenericWebhookNotificationProvider genericWebhookNotificationProvider() {
         return new GenericWebhookNotificationProvider();
+    }
+
+    /**
+     * 自动装配通知模板动态渲染引擎
+     * 默认提供纯原生轻量占位符插值渲染器 SimpleNotificationTemplateRenderer
+     *
+     * @return NotificationTemplateRenderer 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NotificationTemplateRenderer notificationTemplateRenderer() {
+        return new SimpleNotificationTemplateRenderer();
+    }
+
+    /**
+     * 自动装配发信失败补偿处理器 SPI
+     * 默认提供基于 SLF4J 记录错误日志的 LoggingNotificationSendFailureHandler
+     *
+     * @return NotificationSendFailureHandler 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NotificationSendFailureHandler notificationSendFailureHandler() {
+        return new LoggingNotificationSendFailureHandler();
+    }
+
+    /**
+     * 自动装配协同通知操作核心门面 NotificationTemplate
+     * 统一集成配置中心、渠道注册表、全驱动引擎、滑动窗口频控器、受管线程池与生命周期事件发布
+     *
+     * @param properties             全局通知配置属性
+     * @param channelRegistry        多命名渠道注册中心
+     * @param providers              平台驱动引擎列表
+     * @param rateLimiter            客户端通道频控器
+     * @param restClient             专有 RestClient 客户端
+     * @param templateRenderer       模板动态渲染引擎
+     * @param failureHandler         发信失败补偿处理器
+     * @param eventPublisherProvider 可选的 Spring 事件发布器
+     * @param asyncExecutorProvider  可选的受管异步任务执行器
+     * @return NotificationTemplate 统一门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NotificationTemplate notificationTemplate(
+            NotificationProperties properties,
+            NotificationChannelRegistry channelRegistry,
+            List<NotificationProvider> providers,
+            NotificationRateLimiter rateLimiter,
+            @Qualifier("notificationRestClient") RestClient restClient,
+            NotificationTemplateRenderer templateRenderer,
+            NotificationSendFailureHandler failureHandler,
+            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+            @Qualifier("taskExecutor") ObjectProvider<Executor> asyncExecutorProvider) {
+        log.debug("Initializing NotificationTemplate facade (defaultChannel={})", properties.getDefaultChannel());
+        return new NotificationTemplate(
+                properties,
+                channelRegistry,
+                providers,
+                rateLimiter,
+                restClient,
+                templateRenderer,
+                failureHandler,
+                eventPublisherProvider.getIfAvailable(),
+                asyncExecutorProvider.getIfAvailable()
+        );
     }
 }
 
