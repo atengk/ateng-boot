@@ -1,6 +1,7 @@
 package io.github.atengk.boot.document.autoconfigure;
 
 import io.github.atengk.boot.document.font.DocumentFontResolver;
+import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
@@ -37,6 +38,7 @@ class AtengDocumentAutoConfigurationTest {
             assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(DefaultDocumentConverter.class);
             assertThat(context).hasSingleBean(DocumentFontResolver.class);
             assertThat(context).hasSingleBean(WordTemplate.class);
+            assertThat(context).hasSingleBean(PdfTemplate.class);
         });
     }
 
@@ -49,6 +51,7 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(DocumentConverter.class);
                     assertThat(context).doesNotHaveBean(DocumentFontResolver.class);
                     assertThat(context).doesNotHaveBean(WordTemplate.class);
+                    assertThat(context).doesNotHaveBean(PdfTemplate.class);
                 });
     }
 
@@ -61,6 +64,7 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context.getBean(DocumentConverter.class)).isInstanceOf(CustomDocumentConverter.class);
                     assertThat(context).hasSingleBean(DocumentFontResolver.class);
                     assertThat(context).hasSingleBean(WordTemplate.class);
+                    assertThat(context).hasSingleBean(PdfTemplate.class);
                 });
     }
 
@@ -72,6 +76,7 @@ class AtengDocumentAutoConfigurationTest {
                     assertThat(context).hasSingleBean(DocumentFontResolver.class);
                     assertThat(context.getBean(DocumentFontResolver.class)).isInstanceOf(CustomDocumentFontResolver.class);
                     assertThat(context).hasSingleBean(WordTemplate.class);
+                    assertThat(context).hasSingleBean(PdfTemplate.class);
                 });
     }
 
@@ -82,7 +87,30 @@ class AtengDocumentAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(WordTemplate.class);
                     assertThat(context.getBean(WordTemplate.class)).isInstanceOf(CustomWordTemplate.class);
+                    assertThat(context).hasSingleBean(PdfTemplate.class);
                 });
+    }
+
+    @Test
+    @DisplayName("测试用户自定义 PdfTemplate 时缺省 Bean 平滑让位")
+    void testCustomPdfTemplateOverride() {
+        contextRunner.withUserConfiguration(CustomPdfTemplateConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(PdfTemplate.class);
+                    assertThat(context.getBean(PdfTemplate.class)).isInstanceOf(CustomPdfTemplate.class);
+                });
+    }
+
+    @Configuration
+    static class CustomPdfTemplateConfiguration {
+
+        @Bean
+        public PdfTemplate customPdfTemplate() {
+            return new CustomPdfTemplate();
+        }
+    }
+
+    static class CustomPdfTemplate extends PdfTemplate {
     }
 
     @Configuration

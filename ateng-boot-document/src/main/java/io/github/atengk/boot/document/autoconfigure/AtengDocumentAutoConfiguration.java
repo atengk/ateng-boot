@@ -1,6 +1,7 @@
 package io.github.atengk.boot.document.autoconfigure;
 
 import io.github.atengk.boot.document.font.DocumentFontResolver;
+import io.github.atengk.boot.document.pdf.PdfTemplate;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.spi.DefaultDocumentConverter;
 import io.github.atengk.boot.document.spi.DocumentConverter;
@@ -55,5 +56,18 @@ public class AtengDocumentAutoConfiguration {
     @ConditionalOnMissingBean(WordTemplate.class)
     public WordTemplate wordTemplate(DocumentProperties properties) {
         return new WordTemplate(properties.getWord());
+    }
+
+    /**
+     * 注册 PDF 文档治理统一操作门面
+     *
+     * @param properties   文档治理根配置属性
+     * @param fontResolver 中文字体解析器
+     * @return PdfTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(PdfTemplate.class)
+    public PdfTemplate pdfTemplate(DocumentProperties properties, DocumentFontResolver fontResolver) {
+        return new PdfTemplate(properties, fontResolver);
     }
 }
