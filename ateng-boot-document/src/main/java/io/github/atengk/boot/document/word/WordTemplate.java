@@ -5,10 +5,17 @@ import com.deepoove.poi.config.Configure;
 import com.deepoove.poi.config.ConfigureBuilder;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
 import com.deepoove.poi.util.TableTools;
+import com.deepoove.poi.xwpf.NiceXWPFDocument;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.WordRenderException;
 import io.github.atengk.boot.document.properties.DocumentWordProperties;
 import io.github.atengk.boot.document.word.policy.FloatingPictureRenderPolicy;
+import org.apache.poi.ooxml.POIXMLDocumentPart;
+import org.apache.poi.poifs.crypt.HashAlgorithm;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFFactory;
+import org.apache.poi.xwpf.usermodel.XWPFRelation;
+import org.apache.poi.xwpf.usermodel.XWPFSettings;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,15 +30,19 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
  * 企业级 Word (.docx) 模板渲染统一操作门面
  * <p>
- * 基于 poi-tl 构建，提供多源输入自适应、强类型/Map 数据模型渲染、
- * 表格行循环动态追加、单元格跨行跨列合并、浮动电子印章嵌入及条件区块控制。
+ * 基于 poi-tl 与 Apache POI 构建，提供多源输入自适应、强类型/Map 数据模型渲染、
+ * 表格行循环动态追加、单元格跨行跨列合并、浮动电子印章嵌入、多文档物理无缝拼装与只读锁定保护。
  * </p>
  *
  * @author Ateng
@@ -477,5 +488,286 @@ public class WordTemplate {
             is = ClassLoader.getSystemResourceAsStream(path);
         }
         return is;
+    }
+
+    /**
+     * 将多个独立的 Word 文档物理无缝按序拼装并输出至目标
+     *
+     * @param target      目标输出对象（支持 File, Path, OutputStream, WritableResource, String）
+     * @param docxSources 待拼装的文档列表（支持 Resource, InputStream, File, Path, byte[], String）
+     * @throws WordRenderException 拼装合并失败或输入流异常时抛出
+     */
+    public void stitch(Object target, List<?> docxSources) {
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        if (docxSources == null || docxSources.isEmpty()) {
+            throw new IllegalArgumentException("待拼装的 Word 文档输入列表 docxSources 不能为空");
+        }
+
+        try {
+            NiceXWPFDocument mainDoc = null;
+            List<NiceXWPFDocument> subDocs = new ArrayList<>();
+            List<InputStream> openedStreams = new ArrayList<>();
+
+            try {
+                for (int i = 0; i < docxSources.size(); i++) {
+                    Object src = docxSources.get(i);
+                    if (src == null) {
+                        throw new IllegalArgumentException("待拼装的 Word 文档项不能为空 (索引: " + i + ")");
+                    }
+                    InputStream is = resolveInputStream(src);
+                    openedStreams.add(is);
+                    NiceXWPFDocument doc = new NiceXWPFDocument(is);
+                    if (i == 0) {
+                        mainDoc = doc;
+                    } else {
+                        subDocs.add(doc);
+                    }
+                }
+
+                if (!subDocs.isEmpty()) {
+                    mainDoc = mainDoc.merge(subDocs, mainDoc.createParagraph().createRun());
+                }
+
+                NiceXWPFDocument finalDoc = mainDoc.generate();
+                OutputStream os = resolveOutputStream(target);
+                try {
+                    finalDoc.write(os);
+                    os.flush();
+                } finally {
+                    finalDoc.close();
+                    if (!(target instanceof OutputStream)) {
+                        os.close();
+                    }
+                }
+            } finally {
+                if (mainDoc != null) {
+                    try {
+                        mainDoc.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                for (NiceXWPFDocument d : subDocs) {
+                    try {
+                        d.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+                for (InputStream is : openedStreams) {
+                    try {
+                        is.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "多文档拼装合并失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将多个独立的 Word 文档物理无缝按序拼装并输出至目标（可变参数便捷重载）
+     *
+     * @param target      目标输出对象
+     * @param docxSources 待拼装的文档输入源列表
+     */
+    public void stitch(Object target, Object... docxSources) {
+        Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
+        stitch(target, Arrays.asList(docxSources));
+    }
+
+    /**
+     * 将多个独立的 Word 文档物理无缝拼装并导出为二进制字节数组
+     *
+     * @param docxSources 待拼装的文档列表
+     * @return 拼装后的 Word 二进制数据
+     */
+    public byte[] stitchToBytes(List<?> docxSources) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        stitch(baos, docxSources);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 将多个独立的 Word 文档物理无缝拼装并导出为二进制字节数组（可变参数便捷重载）
+     *
+     * @param docxSources 待拼装的文档输入源列表
+     * @return 拼装后的 Word 二进制数据
+     */
+    public byte[] stitchToBytes(Object... docxSources) {
+        Objects.requireNonNull(docxSources, "待拼装的 Word 文档输入源不能为空");
+        return stitchToBytes(Arrays.asList(docxSources));
+    }
+
+    /**
+     * 为 Word 文档施加只读密码锁定保护（Read-Only Protection with Password）
+     *
+     * @param source   原始 Word 文档输入源
+     * @param target   目标输出对象
+     * @param password 保护密码（若为 null 或空串则启用无密码只读锁定）
+     * @throws WordRenderException 施加保护失败时抛出
+     */
+    public void protect(Object source, Object target, String password) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        try (InputStream is = resolveInputStream(source);
+             XWPFDocument doc = new XWPFDocument(is)) {
+
+            ensureSettingsInitialized(doc);
+
+            if (password != null && !password.isEmpty()) {
+                doc.enforceReadonlyProtection(password, HashAlgorithm.sha512);
+            } else {
+                doc.enforceReadonlyProtection();
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.write(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "为 Word 文档施加只读保护失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 为 Word 文档施加无密码只读锁定保护
+     *
+     * @param source 原始 Word 文档输入源
+     * @param target 目标输出对象
+     */
+    public void protect(Object source, Object target) {
+        protect(source, target, null);
+    }
+
+    /**
+     * 为 Word 文档施加只读密码锁定保护并导出为字节数组
+     *
+     * @param source   原始 Word 文档输入源
+     * @param password 保护密码
+     * @return 保护后的 Word 二进制数据
+     */
+    public byte[] protectToBytes(Object source, String password) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        protect(source, baos, password);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 为 Word 文档施加无密码只读锁定保护并导出为字节数组
+     *
+     * @param source 原始 Word 文档输入源
+     * @return 保护后的 Word 二进制数据
+     */
+    public byte[] protectToBytes(Object source) {
+        return protectToBytes(source, null);
+    }
+
+    /**
+     * 解除 Word 文档的只读锁定保护状态（Unprotect）
+     *
+     * @param source 原始 Word 文档输入源
+     * @param target 目标输出对象
+     */
+    public void unprotect(Object source, Object target) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        try (InputStream is = resolveInputStream(source);
+             XWPFDocument doc = new XWPFDocument(is)) {
+
+            ensureSettingsInitialized(doc);
+            doc.removeProtectionEnforcement();
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.write(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "解除 Word 文档只读保护失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 解除 Word 文档的保护状态并导出为字节数组
+     *
+     * @param source 原始 Word 文档输入源
+     * @return 解除保护后的二进制字节数据
+     */
+    public byte[] unprotectToBytes(Object source) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        unprotect(source, baos);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 判断指定的 Word 文档是否启用了只读锁定保护
+     *
+     * @param source Word 文档输入源
+     * @return 是否已开启只读保护
+     */
+    public boolean isEnforcedReadonlyProtection(Object source) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        try (InputStream is = resolveInputStream(source);
+             XWPFDocument doc = new XWPFDocument(is)) {
+            return doc.isEnforcedReadonlyProtection();
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "检查 Word 文档只读保护状态失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 校验 Word 文档的保护密码是否匹配
+     *
+     * @param source   Word 文档输入源
+     * @param password 待校验的明文密码
+     * @return 密码匹配返回 true，否则返回 false
+     */
+    public boolean validateProtectionPassword(Object source, String password) {
+        Objects.requireNonNull(source, "模板输入源 source 不能为空");
+        if (password == null) {
+            return false;
+        }
+        try (InputStream is = resolveInputStream(source);
+             XWPFDocument doc = new XWPFDocument(is)) {
+            return doc.validateProtectionPassword(password);
+        } catch (WordRenderException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED, "校验 Word 文档保护密码失败: " + e.getMessage(), e);
+        }
+    }
+
+    private void ensureSettingsInitialized(XWPFDocument doc) {
+        if (doc.getSettings() == null) {
+            try {
+                POIXMLDocumentPart part = doc.createRelationship(XWPFRelation.SETTINGS, XWPFFactory.getInstance());
+                if (part instanceof XWPFSettings settings) {
+                    Field field = XWPFDocument.class.getDeclaredField("settings");
+                    field.setAccessible(true);
+                    field.set(doc, settings);
+                }
+            } catch (Exception ex) {
+                log.warn("防御性初始化 Word 文档 settings 失败: {}", ex.getMessage());
+            }
+        }
     }
 }
