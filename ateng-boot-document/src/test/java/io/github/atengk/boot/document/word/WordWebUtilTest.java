@@ -40,6 +40,7 @@ class WordWebUtilTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getContentType()).contains(WordWebUtil.DOCX_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
 
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).isNotNull();
@@ -71,6 +72,7 @@ class WordWebUtilTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getContentType()).contains(WordWebUtil.DOCX_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
 
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).contains("attachment");
@@ -78,6 +80,25 @@ class WordWebUtilTest {
 
         byte[] contentBytes = response.getContentAsByteArray();
         assertThat(contentBytes).isEqualTo(sampleDocx);
+    }
+
+    @Test
+    @DisplayName("测试 WordWebWriter 函数式写入与便捷别名（write / download）")
+    void testWordWebWriterAndAliases() throws Exception {
+        byte[] sampleDocx = createSimpleTemplateDocx("函数式写入内容");
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        WordWebUtil.write(response, "函数直写", out -> out.write(sampleDocx));
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentType()).contains(WordWebUtil.DOCX_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
+        assertThat(response.getContentAsByteArray()).isEqualTo(sampleDocx);
+
+        MockHttpServletResponse downloadResponse = new MockHttpServletResponse();
+        WordWebUtil.download(downloadResponse, "附件下载", sampleDocx);
+        assertThat(downloadResponse.getStatus()).isEqualTo(200);
+        assertThat(downloadResponse.getContentAsByteArray()).isEqualTo(sampleDocx);
     }
 
     @Test

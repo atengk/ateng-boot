@@ -17,7 +17,7 @@
 | **PDF 物理坐标盖章** | 绝对物理坐标电子公章压印 | `PdfTemplate` | - | `addImageStamp(source, target, options)` / `addImageStamp(source, target, image, pageIndex, x, y, width, height)`；`addImageStampToBytes(source, options)` / `addImageStampToBytes(source, image, pageIndex, x, y, width, height)`；支持指定任意页面（包含 `-1` 索引倒数盖章）与绝对物理坐标精准压印 | `PdfTemplateTest` |
 | **PDF 文本与信息** | 文本内容抽取与页数探测 | `PdfTemplate` | - | `extractText(source)`：提取 PDF 全文文本；`getPageCount(source)`：获取有效物理总页数 | `PdfTemplateTest` |
 | **PDF 物理编排** | 多文件物理合并与拆分 | `PdfTemplate` | - | `merge(target, pdfSources)` / `merge(target, Object... pdfSources)`；`mergeToBytes(pdfSources)` / `mergeToBytes(Object... pdfSources)`；`split(source, outputDir, prefix)`（逐页拆分为单页 PDF 文件） | `PdfTemplateTest` |
-| **PDF 页面重组** | 页面精准提取与角度旋转 | `PdfTemplate` | - | `extractPages(source, target, fromPage, toPage)` / `extractPages(source, target, int... pageIndexes)`；`extractPagesToBytes(...)`；`rotatePages(source, target, angle, int... pageIndexes)` / `rotatePagesToBytes(...)`（支持 90°、180°、270° 顺时针旋转） | `PdfTemplateTest` |
+| **PDF 页面重组** | 页面精准提取与角度旋转 | `PdfTemplate` | - | `extractPages(source, target, fromPage, toPage)` / `extractPageRange(source, target, fromPage, toPage)` / `extractPages(source, target, int... pageIndexes)`；`extractPagesToBytes(...)` / `extractPageRangeToBytes(...)`；`rotatePages(source, target, angle, int... pageIndexes)` / `rotatePagesToBytes(...)`（支持 90°、180°、270° 顺时针旋转） | `PdfTemplateTest` |
 | **PDF 页码压印** | 动态页码与跳过封面重算 | `PdfTemplate` | - | `addPageNumbers(source, target, options)` / `addPageNumbers(source, target)`；`addPageNumbersToBytes(source, options)` / `addPageNumbersToBytes(source)`；支持指定 6 种对齐方位、格式模板 `{page}` / `{total}`、跳过封面页码与有效总页数重新核算 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 权限加密** | 256 位 AES 权限锁与解密 | `PdfTemplate` | - | `protect(source, target, options)` / `protect(source, target, userPassword, ownerPassword)`；`protectToBytes(...)`；`unprotect(source, target, password)` / `unprotectToBytes(source, password)`；`isEncrypted(source)`；精细化控制打印、修改、文本复制、表单填报权限 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 动态表单** | AcroForm 表单填报与扁平化 | `PdfTemplate` | - | `fillForm(source, target, formData, options)` / `fillForm(source, target, formData)`；`fillFormToBytes(...)`；`getFormFields(source)` / `hasAcroForm(source)`；自动识别文本框与复选框，默认执行矢量扁平化（Flatten）彻底销毁交互控件防二次篡改 | `PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
@@ -26,8 +26,8 @@
 | **安全锁与表单模型** | PDF 权限策略与表单填报模型 | `SecurityOptions`<br>`FormOptions` | - | `SecurityOptions.noPrintAndNoCopy(ownerPassword)` / `withPasswords(userPassword, ownerPassword)`；细粒度控制 `canPrint`、`canModify`、`canCopy`、`canFillInForm` 等 8 项权限标志；`FormOptions.defaults()`（默认扁平化）、`readOnlyInteractive()`、`interactive()`；支持 `flatten`、`readOnly`、`readOnlyFields`、`refreshAppearances` | `PdfTemplateTest`<br>`PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
 | **中文字体探测器** | CJK 云原生三级弹性自适应探测 | `DocumentFontResolver`<br>`ResolvedFont`<br>`FontResolutionTier` | `ateng.boot.document.pdf.font-path`<br>`ateng.boot.document.pdf.preferred-font-names` | `resolveFont()` / `loadFont(document)` / `loadFont(document, customPath)` / `isFontAvailable()` / `clearCache()` / `getCachedFont()`；按“1. 显式配置路径 -> 2. 宿主机 OS 目录扫描 -> 3. 缺失时快速失败输出 Dockerfile 修复指引”三级解析，线程安全缓存避免重复扫描 | `DocumentFontResolverTest` |
 | **格式转换逃生舱** | 文档跨格式转换统一 SPI 契约 | `DocumentConverter`<br>`DefaultDocumentConverter` | - | `docxToPdf(InputStream)` / `htmlToPdf(InputStream)`；底座内置 `DefaultDocumentConverter` 优雅快速失败并提示扩展指引，应用层可无缝注册自定义 Bean 接管 Gotenberg / LibreOffice 集群 | `DocumentConverterTest` |
-| **Word 浏览器直出** | Word 浏览器流式安全响应工具 | `WordWebUtil` | - | `prepareResponse(response, filename)`；`writeToResponse(response, filename, templateSource, data)` / `writeToResponse(response, filename, docxSource)`；RFC 6266 / RFC 5987 中文文件名标准化转码，自动补齐 `Content-Type`、`Content-Disposition` 与防页面缓存标头 | `WordWebUtilTest`<br>`DocumentSampleIntegrationTest` |
-| **PDF 浏览器直出** | PDF 浏览器安全流式预览与下载 | `PdfWebUtil` | - | `preview(response, filename, source)` / `preview(response, filename, writer)`（内联预览 `inline`）；`download(response, filename, source)` / `download(response, filename, writer)`（附件下载 `attachment`）；`writeToResponse(response, filename, source, inline)`；函数式写入器 `PdfWebWriter` 零缓冲写出 | `PdfWebUtilTest`<br>`DocumentSampleIntegrationTest` |
+| **Word 浏览器直出** | Word 浏览器流式安全响应工具 | `WordWebUtil` | - | `prepareResponse(response, filename)`；`write(response, filename, ...)` / `download(response, filename, ...)`；`writeToResponse(response, filename, templateSource, data)` / `writeToResponse(response, filename, docxSource)` / `writeToResponse(response, filename, writer)`；RFC 6266 / RFC 5987 中文文件名标准化转码，自动补齐 `Content-Type`、`Content-Disposition` 与防页面缓存标头 (`Cache-Control: no-cache, no-store, must-revalidate`) | `WordWebUtilTest`<br>`DocumentSampleIntegrationTest` |
+| **PDF 浏览器直出** | PDF 浏览器安全流式预览与下载 | `PdfWebUtil` | - | `prepareResponse(response, filename)` / `prepareResponse(response, filename, inline)`；`write(response, filename, ...)` / `download(response, filename, ...)` / `preview(response, filename, ...)`；`writeToResponse(response, filename, source, inline)`；函数式写入器 `PdfWebWriter` 零缓冲写出，自动补齐 `Cache-Control` 防缓存标头 | `PdfWebUtilTest`<br>`DocumentSampleIntegrationTest` |
 | **自动装配与主配置** | 底座自动装配与强类型属性模型 | `AtengDocumentAutoConfiguration`<br>`DocumentProperties`<br>`DocumentWordProperties`<br>`DocumentPdfProperties`<br>`DocumentWatermarkProperties` | `ateng.boot.document.enabled`<br>`ateng.boot.document.in-memory-threshold`<br>`ateng.boot.document.temp-dir` | 装配类统配 `@AutoConfiguration` 并挂载缺省 Bean 守卫；统管内存防 OOM 阈值（默认 `10MB`，基于 `DataSize` 强类型）、受管临时交换目录、Word 模板基准路径、PDF 字体偏好与水印默认参数 | `AtengDocumentAutoConfigurationTest`<br>`DocumentPropertiesTest` |
 | **因果异常体系** | 语义化异常与专用业务错误码 | `DocumentException`<br>`WordRenderException`<br>`PdfOperationException`<br>`DocumentFontException`<br>`UnsupportedConversionException`<br>`DocumentResultCode` | - | 继承 `BusinessException`，严禁吞咽异常，转译时 100% 传递原始 `cause`；统一状态码 `57000` 至 `57007`（包含 `WORD_RENDER_FAILED`、`PDF_OPERATION_FAILED`、`FONT_NOT_FOUND`、`UNSUPPORTED_CONVERSION`、`TEMPLATE_NOT_FOUND`、`PASSWORD_ERROR`、`FORM_ERROR`） | `DocumentExceptionAndResultCodeTest` |
 
@@ -296,9 +296,7 @@ public class DocumentExportController {
                 ))
                 .build();
 
-        byte[] finalDocx = contractService.generateContractDocx(request);
-        String fileName = String.format("劳动雇佣合同_%s", request.getEmployeeName());
-        WordWebUtil.writeToResponse(response, fileName, finalDocx);
+        contractService.exportContractToWeb(response, request);
     }
 
     // 2. 财务对账单浏览器内联在线预览（标准 inline 标头）
@@ -307,25 +305,46 @@ public class DocumentExportController {
                                  @RequestParam(defaultValue = "李小四") String name,
                                  @RequestParam(defaultValue = "FIN-886") String code,
                                  @RequestParam(defaultValue = "13812345678") String phone) {
-        byte[] pdfBytes = financeStatementService.generateWatermarkedStatement(name, code, phone);
-        PdfWebUtil.preview(response, "财务对账单_预览", pdfBytes);
+        financeStatementService.previewStatementWeb(response, name, code, phone);
     }
 
-    // 3. 供应商准入登记表 PDF 受控下载（已矢量扁平化）
+    // 3. 财务对账单 256 位 AES 权限锁加密保护下载
+    @GetMapping("/statement/download")
+    public void downloadProtectedStatement(HttpServletResponse response,
+                                           @RequestParam(defaultValue = "Pass123456") String password) {
+        financeStatementService.downloadProtectedStatementWeb(response, "王财务", password, "AdminOwnerPass#2026");
+    }
+
+    // 4. 供应商准入登记表 PDF 受控下载（已矢量扁平化）
     @GetMapping("/supplier-form/download")
     public void downloadSupplierForm(HttpServletResponse response,
-                                     @RequestParam(defaultValue = "某科技服务有限公司") String name,
-                                     @RequestParam(defaultValue = "010-88886666") String phone) {
+                                     @RequestParam(defaultValue = "未来智能网络科技(深圳)有限公司") String name,
+                                     @RequestParam(defaultValue = "0755-88889999") String phone) {
         SupplierFormRequest request = SupplierFormRequest.builder()
                 .supplierName(name)
                 .contactPhone(phone)
                 .qualificationPassed(true)
                 .build();
 
-        byte[] pdfBytes = supplierFormService.fillSupplierForm(request, true);
-        String fileName = String.format("供应商准入登记表_%s", request.getSupplierName());
-        PdfWebUtil.download(response, fileName, pdfBytes);
+        supplierFormService.downloadSupplierFormWeb(response, request);
     }
+}
+```
+
+##### 业务层流式输出协同实现
+业务 Service 完成文档渲染与业务组装后，直接调用 `WordWebUtil` 或 `PdfWebUtil` 将流灌入响应，实现纯净的分层解耦与流式直出：
+```java
+// ContractService.java
+public void exportContractToWeb(HttpServletResponse response, ContractRenderRequest req) {
+    byte[] docx = generateContractDocument(req);
+    String fileName = "劳动聘用合同_" + req.getEmployeeName();
+    WordWebUtil.writeToResponse(response, fileName, docx);
+}
+
+// FinanceStatementService.java
+public void previewStatementWeb(HttpServletResponse response, String operatorName, String operatorCode, String operatorPhone) {
+    byte[] pdfBytes = generateWatermarkedStatement(operatorName, operatorCode, operatorPhone);
+    PdfWebUtil.preview(response, "财务对账单_安全预览", pdfBytes);
 }
 ```
 
@@ -430,7 +449,26 @@ COPY simsun.ttc /app/fonts/simsun.ttc
 
 ---
 
-### 3.3 水印动态宏变量与安全掩码规则
+### 3.3 POI-TL 扩展与自定义渲染策略 (RenderPolicy) 注册
+
+`WordTemplate` 基于成熟的 `poi-tl` 驱动，完全兼容其 `Configure` 扩展体系。应用层可根据业务定制特殊的渲染策略（如自定义动态图表、条形码生成或特殊图层浮动对象）：
+
+```java
+// 1. 构建 poi-tl 定制配置
+Configure configure = Configure.builder()
+        // 绑定特定标签至内置的浮动印章策略（实现浮于文字上方与绝对物理位移）
+        .bind("customSeal", new FloatingPictureRenderPolicy())
+        // 绑定业务自定义扩展渲染策略
+        .bind("chartData", new MyCustomChartRenderPolicy())
+        .build();
+
+// 2. 传入 Configure 执行模板渲染
+wordTemplate.render(templateSource, dataModel, targetOutput, configure);
+```
+
+---
+
+### 3.4 水印动态宏变量与安全掩码规则
 
 `WatermarkMacroParser` 内置支持丰富的动态宏语法与智能容错：
 
@@ -476,6 +514,11 @@ COPY simsun.ttc /app/fonts/simsun.ttc
     ```
 - **自动防页面缓存**：强制追加 `Cache-Control: no-cache, no-store, must-revalidate`，防御敏感商业凭证被代理服务器或浏览器本地历史缓存窃取。
 
+### 4.6 PDF 256 位 AES 权限锁与 Adobe Acrobat Reader 跨平台兼容性
+- `PdfTemplate.protect()` 默认采用标准 256 位 AES 算法（StandardProtectionPolicy, keyLength = 256），该机制完全兼容 Adobe Acrobat Reader DC、Foxit Reader 及主流现代浏览器（Chrome / Edge / Safari / Firefox）内建 PDF 渲染引擎；
+- **老旧终端兼容考量**：部分古老或非标嵌入式 PDF 查阅器（如部分旧版 Android 定制阅读器）仅支持 128 位 RC4 算法，若面向老旧特殊终端分发，需评估受众解密兼容能力；
+- **无感安全阅览**：施加权限锁时，若仅设置 `ownerPassword` 而将 `userPassword` 置空，用户打开文档时无需输入密码，但在尝试打印、复制文本或修改文档时将被严格拦截，实现防爬防拷贝的无感阅览体验。
+
 ---
 
 ## 5. 真实场景样例工程 (1:1 Verification Sandbox)
@@ -484,13 +527,13 @@ COPY simsun.ttc /app/fonts/simsun.ttc
 
 ### 场景工程覆盖清单
 1. **劳动用工合同签署与附件拼装**：[`ContractService.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/service/ContractService.java)
-2. **财务对账单暗水印与权限锁**：[`FinanceStatementService.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/service/FinanceStatementService.java)
+2. **财务对账单暗水印、页码与权限锁**：[`FinanceStatementService.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/service/FinanceStatementService.java)
 3. **供应商准入表单填报与扁平化**：[`SupplierFormService.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/service/SupplierFormService.java)
 4. **统一 Web 浏览器流式直出控制器**：[`DocumentExportController.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/controller/DocumentExportController.java)
 5. **端到端集成测试套件**：[`DocumentSampleIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-document/src/test/java/io/github/atengk/boot/sample/document/DocumentSampleIntegrationTest.java)
 
 ### 本地极速自验验证
 ```bash
-# 执行场景工程端到端集成测试验证（5 项真实场景 100% 绿灯）
+# 执行场景工程端到端集成测试验证（6 项真实场景 100% 绿灯）
 mvn test -pl ateng-boot-samples/ateng-boot-sample-document -am -T 1C -nsu -B
 ```

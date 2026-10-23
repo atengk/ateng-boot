@@ -115,8 +115,11 @@ public class WordTemplate {
     public void render(Object source, Object data, Object target, Configure configure) {
         Objects.requireNonNull(target, "target 不能为空");
         Configure configToUse = configure != null ? configure : createDefaultConfigure();
-        try (XWPFTemplate template = compile(source, configToUse);
-             OutputStream os = resolveOutputStream(target)) {
+        XWPFTemplate template = null;
+        OutputStream os = null;
+        try {
+            template = compile(source, configToUse);
+            os = resolveOutputStream(target);
             template.render(data != null ? data : new Object());
             template.write(os);
             os.flush();
@@ -125,6 +128,19 @@ public class WordTemplate {
         } catch (Exception e) {
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "渲染 Word 模板失败: " + e.getMessage(), e);
+        } finally {
+            if (template != null) {
+                try {
+                    template.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (os != null && !(target instanceof OutputStream)) {
+                try {
+                    os.close();
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 
@@ -190,6 +206,12 @@ public class WordTemplate {
         try {
             return XWPFTemplate.compile(is, configToUse);
         } catch (Exception e) {
+            if (!(source instanceof InputStream)) {
+                try {
+                    is.close();
+                } catch (Exception ignored) {
+                }
+            }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "编译 Word 模板异常 [" + source + "]: " + e.getMessage(), e);
         }

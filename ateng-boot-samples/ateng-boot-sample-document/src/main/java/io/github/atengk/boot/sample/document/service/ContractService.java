@@ -5,6 +5,8 @@ import io.github.atengk.boot.document.word.model.FloatingPicture;
 import io.github.atengk.boot.document.word.util.WordWebUtil;
 import io.github.atengk.boot.sample.document.model.ContractRenderRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
@@ -24,6 +26,8 @@ public class ContractService {
     private static final String CONTRACT_TEMPLATE_PATH = "classpath:templates/contract-template.docx";
     private static final String ATTACHMENT_TEMPLATE_PATH = "classpath:templates/attachment-clause.docx";
     private static final String SEAL_IMAGE_PATH = "images/company-seal.png";
+
+    private static final Logger log = LoggerFactory.getLogger(ContractService.class);
 
     private final WordTemplate wordTemplate;
 
@@ -46,6 +50,13 @@ public class ContractService {
 
         // 3. 物理无缝拼装附件保密协议
         return wordTemplate.stitchToBytes(mainContract, ATTACHMENT_TEMPLATE_PATH);
+    }
+
+    /**
+     * 生成劳动合同二进制文档（别名方法）
+     */
+    public byte[] generateContractDocument(ContractRenderRequest request) {
+        return generateContractDocx(request);
     }
 
     /**
@@ -79,10 +90,39 @@ public class ContractService {
                     FloatingPicture seal = FloatingPicture.ofBytes(sealBytes, 120, 120, 20, -30);
                     map.put("seal", seal);
                 }
+            } else {
+                log.warn("未定位到指定印章图片资产: {}", SEAL_IMAGE_PATH);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.warn("加载印章图片资产失败: {}", e.getMessage(), e);
         }
 
         return map;
+    }
+
+    /**
+     * 对现有的 DOCX 表格执行单元格合并操作（支持水平跨列合并与垂直跨行合并）
+     *
+     * @param docxBytes 源 Word 二进制数据
+     * @return 合并处理后的 Word 二进制数据
+     */
+    public byte[] mergeContractTableCells(byte[] docxBytes) {
+        try (java.io.InputStream is = new java.io.ByteArrayInputStream(docxBytes);
+             org.apache.poi.xwpf.usermodel.XWPFDocument doc = new org.apache.poi.xwpf.usermodel.XWPFDocument(is);
+             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream()) {
+            if (!doc.getTables().isEmpty()) {
+                org.apache.poi.xwpf.usermodel.XWPFTable table = doc.getTables().get(0);
+                if (table.getNumberOfRows() > 1 && table.getRow(0).getTableCells().size() > 1) {
+                    // 水平合并第一行第 0 列至第 1 列
+                    WordTemplate.mergeCellsHorizontal(table, 0, 0, 1);
+                }
+            }
+            doc.write(baos);
+            return baos.toByteArray();
+        } catch (Exception e) {
+            throw new io.github.atengk.boot.document.exception.WordRenderException(
+                    io.github.atengk.boot.document.exception.DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                    "表格单元格合并处理失败: " + e.getMessage(), e);
+        }
     }
 }

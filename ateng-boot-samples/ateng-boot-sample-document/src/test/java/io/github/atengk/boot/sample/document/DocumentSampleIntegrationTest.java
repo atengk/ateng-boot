@@ -65,7 +65,7 @@ class DocumentSampleIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        UserContextHolder.set(null);
+        UserContextHolder.clear();
         MDC.clear();
     }
 
@@ -198,6 +198,47 @@ class DocumentSampleIntegrationTest {
             assertThat(acroForm.getField("supplierName").getValueAsString()).isEqualTo("华为数字能源");
             assertThat(acroForm.getField("contactPhone").getValueAsString()).isEqualTo("0755-66668888");
             assertThat(((PDCheckBox) acroForm.getField("qualificationPassed")).isChecked()).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("端到端测试 5：Word 表格跨列水平合并与单元格处理")
+    void testContractTableCellMerge() {
+        ContractRenderRequest req = ContractRenderRequest.builder()
+                .employeeName("张三")
+                .idCard("110101199001011234")
+                .department("研发部")
+                .postName("资深架构师")
+                .salary("50,000")
+                .signDate("2026-10-23")
+                .items(List.of(new ProjectExperience("核心网重构", "Tech Lead", "12 个月")))
+                .build();
+        byte[] docx = contractService.generateContractDocx(req);
+        byte[] mergedDocx = contractService.mergeContractTableCells(docx);
+        assertThat(mergedDocx).isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("端到端测试 6：PDF 物理编排（合并、切分、旋转）")
+    void testPdfOrchestrationMergeSplitRotate() throws Exception {
+        byte[] pdf1 = financeStatementService.generateWatermarkedStatement("张三", "FIN-001", "13800000000");
+        byte[] pdf2 = financeStatementService.generateWatermarkedStatement("李四", "FIN-002", "13900000000");
+
+        // 1. 合并
+        byte[] mergedPdf = financeStatementService.mergeStatements(List.of(pdf1, pdf2));
+        assertThat(mergedPdf).isNotEmpty();
+        try (PDDocument doc = Loader.loadPDF(mergedPdf)) {
+            assertThat(doc.getNumberOfPages()).isGreaterThanOrEqualTo(2);
+        }
+
+        // 2. 切分
+        List<byte[]> splits = financeStatementService.splitStatement(mergedPdf, 1);
+        assertThat(splits).hasSizeGreaterThanOrEqualTo(2);
+
+        // 3. 旋转（将第 0 页顺时针旋转 90 度）
+        byte[] rotatedPdf = financeStatementService.rotateStatement(pdf1, 90, 0);
+        try (PDDocument doc = Loader.loadPDF(rotatedPdf)) {
+            assertThat(doc.getPage(0).getRotation()).isEqualTo(90);
         }
     }
 }

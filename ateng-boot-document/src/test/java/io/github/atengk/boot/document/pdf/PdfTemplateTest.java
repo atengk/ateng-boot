@@ -93,6 +93,28 @@ class PdfTemplateTest {
         String extracted = pdfTemplate.extractText(targetPdfPath);
         assertThat(extracted).contains("机密报告");
         assertThat(extracted).contains("内部绝密 禁止外传");
+
+        // 验证 UNDERLAY 底层模式水印生成
+        WatermarkOptions underlayOptions = WatermarkOptions.builder()
+                .text("底图背景水印")
+                .layer(WatermarkLayer.UNDERLAY)
+                .build();
+        byte[] underlayPdf = pdfTemplate.addWatermarkToBytes(originalPdf, underlayOptions);
+        assertThat(underlayPdf).isNotEmpty();
+        assertThat(pdfTemplate.extractText(underlayPdf)).contains("底图背景水印");
+
+        // 验证 copySourceToTarget 时不关闭外部 OutputStream
+        boolean[] streamClosed = new boolean[1];
+        ByteArrayOutputStream customBaos = new ByteArrayOutputStream() {
+            @Override
+            public void close() throws IOException {
+                streamClosed[0] = true;
+                super.close();
+            }
+        };
+        pdfTemplate.addWatermark(originalPdf, customBaos, WatermarkOptions.builder().text("   ").build());
+        assertThat(streamClosed[0]).isFalse();
+        assertThat(customBaos.size()).isGreaterThan(0);
     }
 
     @Test
@@ -173,6 +195,25 @@ class PdfTemplateTest {
     }
 
     @Test
+    @DisplayName("测试大文件解析异常时临时文件被确定性物理清理")
+    void testTempFileCleanedOnCorruptedPdf(@TempDir Path tempDir) {
+        DocumentProperties properties = new DocumentProperties();
+        properties.setInMemoryThreshold(DataSize.ofBytes(10));
+        properties.setTempDir(tempDir.toString());
+        PdfTemplate customTemplate = new PdfTemplate(properties);
+
+        byte[] corruptBytes = "CORRUPT_PDF_STREAM_MORE_THAN_10_BYTES".getBytes();
+        assertThatThrownBy(() -> customTemplate.extractText(corruptBytes))
+                .isInstanceOf(Exception.class);
+
+        try (var stream = Files.list(tempDir)) {
+            assertThat(stream.count()).isEqualTo(0);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
     @DisplayName("测试多个独立 PDF 顺序物理合并为单一文档")
     void testMergeMultiplePdfs(@TempDir Path tempDir) throws Exception {
         byte[] pdf1 = createSamplePdf("第一部分：合同主体信息");
@@ -217,9 +258,13 @@ class PdfTemplateTest {
         assertThat(pdfTemplate.getPageCount(extractedBytes)).isEqualTo(1);
         assertThat(pdfTemplate.extractText(extractedBytes)).contains("Page 2 Terms");
 
-        // 提取 1-based 页码范围 1 到 2
-        byte[] rangeBytes = pdfTemplate.extractPagesToBytes(multiPdf, 1, 2);
+        // 提取 1-based 页码范围 1 到 2 (支持显式 extractPageRange 与兼容重载 extractPages)
+        byte[] rangeBytes = pdfTemplate.extractPageRangeToBytes(multiPdf, 1, 2);
         assertThat(pdfTemplate.getPageCount(rangeBytes)).isEqualTo(2);
+
+        // 提取 0-based 索引 0 与 1（验证重载自适应消歧）
+        byte[] zeroBasedBytes = pdfTemplate.extractPagesToBytes(multiPdf, 0, 1);
+        assertThat(pdfTemplate.getPageCount(zeroBasedBytes)).isEqualTo(2);
     }
 
     @Test
@@ -286,6 +331,18 @@ class PdfTemplateTest {
         String extracted = pdfTemplate.extractText(resultBytes);
         assertThat(extracted).contains("第 1 页 / 共 2 页");
         assertThat(extracted).contains("第 2 页 / 共 2 页");
+
+        // 测试 recalculateTotal = false：显示总页数为原总页数 3 页，且当前页码依然从 1 开始
+        PageNumberOptions optionsNoRecalc = PageNumberOptions.builder()
+                .skipPages(1)
+                .recalculateTotal(false)
+                .format("第 {page} 页 / 共 {total} 页")
+                .position(PageNumberPosition.BOTTOM_CENTER)
+                .build();
+        byte[] resultBytesNoRecalc = pdfTemplate.addPageNumbersToBytes(doc3Pages, optionsNoRecalc);
+        String extractedNoRecalc = pdfTemplate.extractText(resultBytesNoRecalc);
+        assertThat(extractedNoRecalc).contains("第 1 页 / 共 3 页");
+        assertThat(extractedNoRecalc).contains("第 2 页 / 共 3 页");
     }
 
     @Test

@@ -80,7 +80,7 @@ public class FinanceStatementService {
 
             return pdfTemplate.addPageNumbersToBytes(watermarkedPdf, pageOptions);
         } finally {
-            UserContextHolder.set(null);
+            UserContextHolder.clear();
         }
     }
 
@@ -130,5 +130,38 @@ public class FinanceStatementService {
         byte[] watermarkedPdf = generateWatermarkedStatement(operatorName, "FIN-009", "13912345678");
         byte[] protectedPdf = protectStatement(watermarkedPdf, userPassword, ownerPassword);
         PdfWebUtil.download(response, "财务对账单_受控归档", protectedPdf);
+    }
+
+    /**
+     * 场景编排：多对账单物理合并（Merge）
+     *
+     * @param statements 多份对账单输入源
+     * @return 合并后的 PDF 二进制数据
+     */
+    public byte[] mergeStatements(java.util.List<?> statements) {
+        return pdfTemplate.mergeToBytes(statements);
+    }
+
+    /**
+     * 场景编排：对账单物理分页切分（Split）
+     *
+     * @param statementPdf 对账单 PDF 源
+     * @param pagesPerFile 每个文件的页数
+     * @return 切分后的单文件切片列表
+     */
+    public java.util.List<byte[]> splitStatement(Object statementPdf, int pagesPerFile) {
+        return pdfTemplate.splitToBytes(statementPdf, pagesPerFile);
+    }
+
+    /**
+     * 场景编排：对账单页面物理旋转（Rotate）
+     *
+     * @param statementPdf 对账单 PDF 源
+     * @param angle        旋转角度（90, 180, 270）
+     * @param pages        目标页码（1-based）
+     * @return 旋转后的 PDF 二进制数据
+     */
+    public byte[] rotateStatement(Object statementPdf, int angle, int... pages) {
+        return pdfTemplate.rotatePagesToBytes(statementPdf, angle, pages);
     }
 }

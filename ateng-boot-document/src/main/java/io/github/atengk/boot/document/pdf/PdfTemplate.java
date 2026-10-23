@@ -605,6 +605,70 @@ public class PdfTemplate {
     }
 
     /**
+     * 将 PDF 文档拆分并输出至指定目录（使用默认前缀 "split_"）
+     *
+     * @param source    原始 PDF 输入源
+     * @param outputDir 输出目录
+     * @return 拆分生成的物理文件列表
+     */
+    public List<File> split(Object source, Object outputDir) {
+        return split(source, outputDir, "split_");
+    }
+
+    /**
+     * 将 PDF 文档逐页拆分为多个单页 PDF 字节数组列表
+     *
+     * @param source 原始 PDF 输入源
+     * @return 拆分后的单页 PDF 字节数组列表
+     * @throws PdfOperationException 拆分操作失败时抛出
+     */
+    public List<byte[]> splitToBytes(Object source) {
+        return splitToBytes(source, 1);
+    }
+
+    /**
+     * 按指定每份页数将 PDF 文档拆分为多个 PDF 字节数组列表
+     *
+     * @param source      原始 PDF 输入源
+     * @param splitAtPage 每份拆分文件的页数（默认 1）
+     * @return 拆分后的 PDF 字节数组列表
+     * @throws PdfOperationException 拆分操作失败时抛出
+     */
+    public List<byte[]> splitToBytes(Object source, int splitAtPage) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        if (splitAtPage < 1) {
+            throw new IllegalArgumentException("拆分页数 splitAtPage 必须大于等于 1");
+        }
+        List<byte[]> result = new ArrayList<>();
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument srcDoc = loadedPdf.getDocument();
+            Splitter splitter = new Splitter();
+            splitter.setSplitAtPage(splitAtPage);
+            List<PDDocument> pages = splitter.split(srcDoc);
+
+            try {
+                for (PDDocument pageDoc : pages) {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    pageDoc.save(baos);
+                    result.add(baos.toByteArray());
+                }
+            } finally {
+                for (PDDocument pDoc : pages) {
+                    try {
+                        pDoc.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            return result;
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "内存拆分 PDF 文档失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 提取 PDF 文档中指定页码范围并保存为新文档（1-based 包含两端）
      *
      * @param source   原始 PDF 输入源
@@ -612,7 +676,7 @@ public class PdfTemplate {
      * @param fromPage 起始页码（从 1 开始，包含）
      * @param toPage   结束页码（从 1 开始，包含）
      */
-    public void extractPages(Object source, Object target, int fromPage, int toPage) {
+    public void extractPageRange(Object source, Object target, int fromPage, int toPage) {
         if (fromPage < 1 || toPage < fromPage) {
             throw new IllegalArgumentException(String.format("页码范围无效 (fromPage: %d, toPage: %d)", fromPage, toPage));
         }
@@ -621,6 +685,23 @@ public class PdfTemplate {
             indexes[i] = fromPage - 1 + i;
         }
         extractPages(source, target, indexes);
+    }
+
+    /**
+     * 提取 PDF 文档中指定页码范围并保存为新文档（兼容重载，支持 1-based 范围与 0-based 索引自适应）
+     *
+     * @param source   原始 PDF 输入源
+     * @param target   目标输出
+     * @param fromPage 起始页码或第一个页面索引
+     * @param toPage   结束页码或第二个页面索引
+     */
+    public void extractPages(Object source, Object target, int fromPage, int toPage) {
+        if (fromPage == 0) {
+            // 当传入 0 索引时，自适应作为 0-based 页面索引处理，消除与 int... 变长重载歧义
+            extractPages(source, target, new int[]{fromPage, toPage});
+            return;
+        }
+        extractPageRange(source, target, fromPage, toPage);
     }
 
     /**
@@ -675,6 +756,20 @@ public class PdfTemplate {
      * @param source   原始 PDF 输入源
      * @param fromPage 起始页码（从 1 开始）
      * @param toPage   结束页码（从 1 开始）
+     * @return 提取后的 PDF 二进制数据
+     */
+    public byte[] extractPageRangeToBytes(Object source, int fromPage, int toPage) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        extractPageRange(source, baos, fromPage, toPage);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 提取 PDF 文档指定页码范围并导出为字节数组（兼容重载，支持 1-based 范围与 0-based 索引自适应）
+     *
+     * @param source   原始 PDF 输入源
+     * @param fromPage 起始页码或第一个索引
+     * @param toPage   结束页码或第二个索引
      * @return 提取后的 PDF 二进制数据
      */
     public byte[] extractPagesToBytes(Object source, int fromPage, int toPage) {
@@ -808,9 +903,7 @@ public class PdfTemplate {
                     continue;
                 }
 
-                int displayPage = opts.isRecalculateTotal()
-                        ? (i - skipPages + opts.getStartNumber())
-                        : (i + opts.getStartNumber());
+                int displayPage = (i - skipPages) + opts.getStartNumber();
 
                 String pageText = opts.getFormat()
                         .replace("{page}", String.valueOf(displayPage))
@@ -1452,8 +1545,18 @@ public class PdfTemplate {
         if (source instanceof byte[] bytes) {
             if (bytes.length > thresholdBytes) {
                 File tempFile = createTrackedTempFile("pdf-overflow-", ".pdf");
-                Files.write(tempFile.toPath(), bytes);
-                return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
+                try {
+                    Files.write(tempFile.toPath(), bytes);
+                    return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
+                } catch (Throwable t) {
+                    if (tempFile.exists()) {
+                        try {
+                            tempFile.delete();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    throw t;
+                }
             } else {
                 return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBuffer(bytes)), null);
             }
@@ -1521,6 +1624,7 @@ public class PdfTemplate {
         long totalRead = 0;
         File tempFile = null;
         FileOutputStream fos = null;
+        boolean documentLoaded = false;
 
         try {
             while ((bytesRead = is.read(buffer)) != -1) {
@@ -1543,15 +1647,25 @@ public class PdfTemplate {
                 fos.flush();
                 fos.close();
                 fos = null;
-                return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
+                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
+                documentLoaded = true;
+                return loadedDoc;
             } else {
                 byte[] inMemBytes = memoryBaos.toByteArray();
-                return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBuffer(inMemBytes)), null);
+                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBuffer(inMemBytes)), null);
+                documentLoaded = true;
+                return loadedDoc;
             }
         } finally {
             if (fos != null) {
                 try {
                     fos.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (!documentLoaded && tempFile != null && tempFile.exists()) {
+                try {
+                    tempFile.delete();
                 } catch (Exception ignored) {
                 }
             }
@@ -1700,12 +1814,19 @@ public class PdfTemplate {
     }
 
     private void copySourceToTarget(Object source, Object target) {
-        try (InputStream is = resolveRawInputStream(source);
-             OutputStream os = resolveOutputStream(target)) {
+        OutputStream os = resolveOutputStream(target);
+        try (InputStream is = resolveRawInputStream(source)) {
             is.transferTo(os);
             os.flush();
         } catch (IOException e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "复制源文件到目标失败: " + e.getMessage(), e);
+        } finally {
+            if (!(target instanceof OutputStream)) {
+                try {
+                    os.close();
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 

@@ -347,6 +347,26 @@ class WordTemplateTest {
                 .hasMessageContaining("target 不能为空");
     }
 
+    @Test
+    @DisplayName("测试 render 到外部 OutputStream 时不关闭外部受管流")
+    void testRenderDoesNotCloseCallerOutputStream() throws Exception {
+        WordTemplate wordTemplate = new WordTemplate();
+        Map<String, Object> model = createTestModel(false);
+
+        boolean[] closed = new boolean[1];
+        ByteArrayOutputStream baos = new ByteArrayOutputStream() {
+            @Override
+            public void close() throws IOException {
+                closed[0] = true;
+                super.close();
+            }
+        };
+
+        wordTemplate.render(sampleTemplateBytes, model, baos);
+        assertThat(baos.size()).isGreaterThan(0);
+        assertThat(closed[0]).isFalse();
+    }
+
     private String getFullDocumentText(XWPFDocument doc) {
         StringBuilder sb = new StringBuilder();
         for (XWPFParagraph p : doc.getParagraphs()) {

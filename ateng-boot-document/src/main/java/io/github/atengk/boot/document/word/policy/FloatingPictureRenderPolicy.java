@@ -55,12 +55,24 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
 
     @Override
     public PictureRenderData cast(Object data) throws Exception {
+        currentFloating.remove();
         if (data instanceof FloatingPicture fp) {
             currentFloating.set(fp);
-            return fp.getPictureData();
+            try {
+                return fp.getPictureData();
+            } catch (Exception e) {
+                currentFloating.remove();
+                throw e;
+            }
         }
-        currentFloating.remove();
         return super.cast(data);
+    }
+
+    /**
+     * 显式清理当前线程绑定的浮动图片上下文
+     */
+    public void clear() {
+        currentFloating.remove();
     }
 
     @Override

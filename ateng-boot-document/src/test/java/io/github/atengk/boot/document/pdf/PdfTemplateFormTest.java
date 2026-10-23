@@ -5,6 +5,7 @@ import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -14,9 +15,12 @@ import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceDictionary;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
 import org.apache.pdfbox.pdmodel.interactive.form.PDField;
+import org.apache.pdfbox.pdmodel.interactive.form.PDRadioButton;
 import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -263,7 +267,7 @@ class PdfTemplateFormTest {
 
         assertThat(pdfTemplate.hasAcroForm(templatePdf)).isTrue();
         Map<String, String> fields = pdfTemplate.getFormFields(templatePdf);
-        assertThat(fields).containsKeys("username", "role", "agreeTerms");
+        assertThat(fields).containsKeys("username", "role", "agreeTerms", "gender");
 
         // 空白普通 PDF 探测断言
         byte[] plainPdf;
@@ -276,6 +280,25 @@ class PdfTemplateFormTest {
 
         assertThat(pdfTemplate.hasAcroForm(plainPdf)).isFalse();
         assertThat(pdfTemplate.getFormFields(plainPdf)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试单选按钮（RadioButton）填报与值校验")
+    void testFillFormRadioButton(@TempDir Path tempDir) throws Exception {
+        byte[] templatePdf = createSampleFormPdf();
+        Map<String, Object> formData = Map.of(
+                "username", "李四",
+                "gender", "Male"
+        );
+        FormOptions options = FormOptions.builder().flatten(false).build();
+        byte[] filled = pdfTemplate.fillFormToBytes(templatePdf, formData, options);
+
+        try (PDDocument doc = Loader.loadPDF(filled)) {
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            assertThat(acroForm).isNotNull();
+            PDRadioButton rb = (PDRadioButton) acroForm.getField("gender");
+            assertThat(rb.getValueAsString()).isEqualTo("Male");
+        }
     }
 
     /**
@@ -326,6 +349,58 @@ class PdfTemplateFormTest {
             cbWidget.setRectangle(new PDRectangle(50, 600, 20, 20));
             cbWidget.setPage(page);
             page.getAnnotations().add(cbWidget);
+
+            // 4. 单选按钮 gender
+            PDRadioButton radioButton = new PDRadioButton(acroForm);
+            radioButton.setPartialName("gender");
+            radioButton.setExportValues(java.util.List.of("Male", "Female"));
+            acroForm.getFields().add(radioButton);
+
+            PDAnnotationWidget rbWidget1 = new PDAnnotationWidget();
+            rbWidget1.setRectangle(new PDRectangle(50, 550, 20, 20));
+            rbWidget1.setPage(page);
+            PDAppearanceDictionary ap1 = new PDAppearanceDictionary();
+            COSDictionary nDict1 = new COSDictionary();
+            PDAppearanceStream offStream1 = new PDAppearanceStream(doc);
+            offStream1.setBBox(new PDRectangle(20, 20));
+            try (var cs = new org.apache.pdfbox.pdmodel.PDAppearanceContentStream(offStream1)) {
+                // empty stream
+            }
+            PDAppearanceStream onStream1 = new PDAppearanceStream(doc);
+            onStream1.setBBox(new PDRectangle(20, 20));
+            try (var cs = new org.apache.pdfbox.pdmodel.PDAppearanceContentStream(onStream1)) {
+                // empty stream
+            }
+            nDict1.setItem(COSName.Off, offStream1);
+            nDict1.setItem(COSName.getPDFName("Male"), onStream1);
+            ap1.getCOSObject().setItem(COSName.N, nDict1);
+            rbWidget1.setAppearance(ap1);
+            rbWidget1.setAppearanceState("Off");
+            page.getAnnotations().add(rbWidget1);
+
+            PDAnnotationWidget rbWidget2 = new PDAnnotationWidget();
+            rbWidget2.setRectangle(new PDRectangle(100, 550, 20, 20));
+            rbWidget2.setPage(page);
+            PDAppearanceDictionary ap2 = new PDAppearanceDictionary();
+            COSDictionary nDict2 = new COSDictionary();
+            PDAppearanceStream offStream2 = new PDAppearanceStream(doc);
+            offStream2.setBBox(new PDRectangle(20, 20));
+            try (var cs = new org.apache.pdfbox.pdmodel.PDAppearanceContentStream(offStream2)) {
+                // empty stream
+            }
+            PDAppearanceStream onStream2 = new PDAppearanceStream(doc);
+            onStream2.setBBox(new PDRectangle(20, 20));
+            try (var cs = new org.apache.pdfbox.pdmodel.PDAppearanceContentStream(onStream2)) {
+                // empty stream
+            }
+            nDict2.setItem(COSName.Off, offStream2);
+            nDict2.setItem(COSName.getPDFName("Female"), onStream2);
+            ap2.getCOSObject().setItem(COSName.N, nDict2);
+            rbWidget2.setAppearance(ap2);
+            rbWidget2.setAppearanceState("Off");
+            page.getAnnotations().add(rbWidget2);
+
+            radioButton.setWidgets(java.util.List.of(rbWidget1, rbWidget2));
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.save(baos);

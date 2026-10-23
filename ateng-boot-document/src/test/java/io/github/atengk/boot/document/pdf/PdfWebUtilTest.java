@@ -34,6 +34,7 @@ class PdfWebUtilTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
 
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).isNotNull();
@@ -56,6 +57,7 @@ class PdfWebUtilTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
 
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).isNotNull();
@@ -76,6 +78,7 @@ class PdfWebUtilTest {
 
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getContentType()).contains(PdfWebUtil.PDF_CONTENT_TYPE);
+        assertThat(response.getHeader(HttpHeaders.CACHE_CONTROL)).isEqualTo("no-cache, no-store, must-revalidate");
 
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).startsWith("inline");
@@ -97,6 +100,26 @@ class PdfWebUtilTest {
         assertThat(response.getStatus()).isEqualTo(200);
         String disposition = response.getHeader(HttpHeaders.CONTENT_DISPOSITION);
         assertThat(disposition).startsWith("attachment");
+    }
+
+    @Test
+    @DisplayName("测试 write 便捷别名重载")
+    void testWriteAliases() throws Exception {
+        byte[] samplePdf = createSimplePdf();
+
+        MockHttpServletResponse response1 = new MockHttpServletResponse();
+        PdfWebUtil.write(response1, "报表下载", samplePdf);
+        assertThat(response1.getStatus()).isEqualTo(200);
+        assertThat(response1.getHeader(HttpHeaders.CONTENT_DISPOSITION)).startsWith("attachment");
+
+        MockHttpServletResponse response2 = new MockHttpServletResponse();
+        PdfWebUtil.write(response2, "报表预览", samplePdf, true);
+        assertThat(response2.getStatus()).isEqualTo(200);
+        assertThat(response2.getHeader(HttpHeaders.CONTENT_DISPOSITION)).startsWith("inline");
+
+        MockHttpServletResponse response3 = new MockHttpServletResponse();
+        PdfWebUtil.write(response3, "函数写出", out -> out.write(samplePdf));
+        assertThat(response3.getStatus()).isEqualTo(200);
     }
 
     @Test
