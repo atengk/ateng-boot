@@ -5,6 +5,7 @@ import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
+import io.github.atengk.boot.document.pdf.model.FormOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
@@ -13,6 +14,7 @@ import io.github.atengk.boot.document.properties.DocumentPdfProperties;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWatermarkProperties;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
 import org.apache.pdfbox.multipdf.PDFMergerUtility;
@@ -20,6 +22,7 @@ import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
@@ -28,6 +31,14 @@ import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
+import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
+import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
+import org.apache.pdfbox.pdmodel.interactive.form.PDChoice;
+import org.apache.pdfbox.pdmodel.interactive.form.PDField;
+import org.apache.pdfbox.pdmodel.interactive.form.PDNonTerminalField;
+import org.apache.pdfbox.pdmodel.interactive.form.PDRadioButton;
+import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
+import org.apache.pdfbox.pdmodel.interactive.form.PDVariableText;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.util.Matrix;
 import org.slf4j.Logger;
@@ -48,8 +59,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 企业级 PDF 文档治理统一操作门面
@@ -1088,7 +1103,328 @@ public class PdfTemplate {
     }
 
     // ==========================================
-    // 4. 10MB 阈值防 OOM 与临时文件物理清理核心逻辑
+    // 8. 交互式表单（AcroForm）数据填报与矢量扁平化防篡改 (Form Filling & Flattening)
+    // ==========================================
+
+    /**
+     * 填充 PDF 交互式表单（AcroForm）并输出至目标位置（支持不可逆矢量扁平化与只读保护）
+     *
+     * @param source   原始 PDF 输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @param target   目标输出（支持 File, Path, OutputStream, WritableResource, String）
+     * @param formData 表单填充键值对映射
+     * @param options  表单填报与防篡改选项（为 null 时使用默认配置，默认执行矢量扁平化）
+     * @throws PdfOperationException 表单不存在或填充操作失败时抛出
+     */
+    public void fillForm(Object source, Object target, Map<String, Object> formData, FormOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        FormOptions opts = options != null ? options : FormOptions.defaults();
+        Map<String, Object> data = formData != null ? formData : Collections.emptyMap();
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再填充表单");
+            }
+
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            if (acroForm == null) {
+                throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "PDF 文档不包含 AcroForm 交互式表单");
+            }
+
+            // 填充表单字段
+            fillAcroFormFields(doc, acroForm, data, opts);
+
+            // 只读锁定策略
+            applyFormReadOnlyPolicy(acroForm, opts);
+
+            // 不可逆矢量扁平化防篡改
+            if (opts.isFlatten()) {
+                acroForm.flatten();
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "填充 PDF 表单失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 填充 PDF 交互式表单并输出至目标位置（默认开启不可逆矢量扁平化）
+     *
+     * @param source   原始 PDF 输入源
+     * @param target   目标输出
+     * @param formData 表单填充键值对映射
+     */
+    public void fillForm(Object source, Object target, Map<String, Object> formData) {
+        fillForm(source, target, formData, FormOptions.defaults());
+    }
+
+    /**
+     * 填充 PDF 交互式表单并导出为二进制字节数组
+     *
+     * @param source   原始 PDF 输入源
+     * @param formData 表单填充键值对映射
+     * @param options  表单填报与防篡改选项
+     * @return 填充后的 PDF 二进制数据
+     */
+    public byte[] fillFormToBytes(Object source, Map<String, Object> formData, FormOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        fillForm(source, baos, formData, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 填充 PDF 交互式表单并导出为二进制字节数组（默认开启不可逆矢量扁平化）
+     *
+     * @param source   原始 PDF 输入源
+     * @param formData 表单填充键值对映射
+     * @return 填充后的 PDF 二进制数据
+     */
+    public byte[] fillFormToBytes(Object source, Map<String, Object> formData) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        fillForm(source, baos, formData, FormOptions.defaults());
+        return baos.toByteArray();
+    }
+
+    /**
+     * 提取 PDF 文档中所有交互式表单域的名称及其当前值映射
+     *
+     * @param source PDF 输入源
+     * @return 字段名称与当前值的键值映射（若文档不含表单则返回空 Map，绝不返回 null）
+     */
+    public Map<String, String> getFormFields(Object source) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再获取表单字段");
+            }
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            if (acroForm == null) {
+                return Collections.emptyMap();
+            }
+            Map<String, String> result = new LinkedHashMap<>();
+            collectFields(acroForm.getFields(), result);
+            return result;
+        } catch (PdfOperationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "获取 PDF 表单字段失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 探测指定的 PDF 文档是否包含 AcroForm 交互式表单
+     *
+     * @param source PDF 输入源
+     * @return 若包含交互式表单且至少存在一个表单域返回 true，否则返回 false
+     */
+    public boolean hasAcroForm(Object source) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            return acroForm != null && !acroForm.getFields().isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void fillAcroFormFields(PDDocument doc, PDAcroForm acroForm, Map<String, Object> data, FormOptions opts) throws IOException {
+        PDFont[] cachedChineseFont = new PDFont[1];
+        COSName[] cachedFontName = new COSName[1];
+
+        for (Map.Entry<String, Object> entry : data.entrySet()) {
+            String fieldName = entry.getKey();
+            if (fieldName == null) {
+                continue;
+            }
+            PDField field = acroForm.getField(fieldName);
+            if (field == null) {
+                log.debug("PDF 表单域不存在，跳过填充: {}", fieldName);
+                continue;
+            }
+            Object value = entry.getValue();
+            setFieldValue(doc, acroForm, field, value, opts, cachedChineseFont, cachedFontName);
+        }
+    }
+
+    private void setFieldValue(PDDocument doc, PDAcroForm acroForm, PDField field, Object val,
+                               FormOptions opts, PDFont[] cachedChineseFont, COSName[] cachedFontName) throws IOException {
+        if (field instanceof PDTextField textField) {
+            String strVal = val != null ? String.valueOf(val) : "";
+            if (containsChinese(strVal)) {
+                ensureChineseFontConfigured(doc, acroForm, textField, opts, cachedChineseFont, cachedFontName);
+            }
+            try {
+                textField.setValue(strVal);
+            } catch (IllegalArgumentException e) {
+                // 若因编码问题抛出异常，强制适配中文字体后重试
+                ensureChineseFontConfigured(doc, acroForm, textField, opts, cachedChineseFont, cachedFontName);
+                if (cachedFontName[0] != null) {
+                    float size = parseFontSize(textField.getDefaultAppearance(), 10.0f);
+                    textField.setDefaultAppearance("/" + cachedFontName[0].getName() + " " + size + " Tf 0 g");
+                    textField.setValue(strVal);
+                } else {
+                    throw e;
+                }
+            }
+        } else if (field instanceof PDCheckBox checkBox) {
+            if (val instanceof Boolean b) {
+                if (b) {
+                    checkBox.check();
+                } else {
+                    checkBox.unCheck();
+                }
+            } else if (val != null) {
+                String s = String.valueOf(val).trim();
+                if ("true".equalsIgnoreCase(s) || "yes".equalsIgnoreCase(s) || "1".equals(s) || "on".equalsIgnoreCase(s)
+                        || s.equalsIgnoreCase(checkBox.getOnValue())) {
+                    checkBox.check();
+                } else {
+                    checkBox.unCheck();
+                }
+            } else {
+                checkBox.unCheck();
+            }
+        } else if (field instanceof PDRadioButton radioButton) {
+            if (val != null) {
+                radioButton.setValue(String.valueOf(val));
+            }
+        } else if (field instanceof PDChoice choice) {
+            if (val instanceof List<?> list) {
+                choice.setValue(list.stream().map(String::valueOf).toList());
+            } else if (val != null) {
+                choice.setValue(String.valueOf(val));
+            }
+        } else {
+            if (val != null) {
+                field.setValue(String.valueOf(val));
+            }
+        }
+    }
+
+    private void ensureChineseFontConfigured(PDDocument doc, PDAcroForm acroForm, PDVariableText variableText,
+                                             FormOptions opts, PDFont[] cachedChineseFont, COSName[] cachedFontName) {
+        if (cachedFontName[0] == null) {
+            PDResources resources = acroForm.getDefaultResources();
+            if (resources == null) {
+                resources = new PDResources();
+                acroForm.setDefaultResources(resources);
+            }
+            PDFont font = resolveFormFont(doc, opts.getCustomFontPath());
+            cachedChineseFont[0] = font;
+            cachedFontName[0] = resources.add(font);
+        }
+
+        String da = variableText.getDefaultAppearance();
+        float size = parseFontSize(da, 10.0f);
+        variableText.setDefaultAppearance("/" + cachedFontName[0].getName() + " " + size + " Tf 0 g");
+    }
+
+    private float parseFontSize(String da, float defaultSize) {
+        if (da == null || da.trim().isEmpty()) {
+            return defaultSize;
+        }
+        try {
+            String[] parts = da.trim().split("\\s+");
+            for (int i = 0; i < parts.length - 1; i++) {
+                if ("Tf".equalsIgnoreCase(parts[i + 1])) {
+                    return Float.parseFloat(parts[i]);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return defaultSize;
+    }
+
+    private PDFont resolveFormFont(PDDocument doc, String customFontPath) {
+        if (customFontPath != null && !customFontPath.trim().isEmpty()) {
+            try {
+                return fontResolver.loadFont(doc, customFontPath.trim());
+            } catch (Exception e) {
+                log.warn("通过自定义路径加载表单字体失败: {}", e.getMessage());
+            }
+        }
+        try {
+            return fontResolver.loadFont(doc);
+        } catch (Exception e) {
+            log.warn("解析中文字体失败，表单回退至 Helvetica: {}", e.getMessage());
+            return new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+        }
+    }
+
+    private void applyFormReadOnlyPolicy(PDAcroForm acroForm, FormOptions opts) {
+        if (opts.isReadOnly()) {
+            setFieldsReadOnly(acroForm.getFields());
+        } else if (opts.getReadOnlyFields() != null && !opts.getReadOnlyFields().isEmpty()) {
+            for (String fieldName : opts.getReadOnlyFields()) {
+                if (fieldName != null) {
+                    PDField field = acroForm.getField(fieldName);
+                    if (field != null) {
+                        field.setReadOnly(true);
+                    }
+                }
+            }
+        }
+    }
+
+    private void setFieldsReadOnly(List<PDField> fields) {
+        if (fields == null) {
+            return;
+        }
+        for (PDField f : fields) {
+            f.setReadOnly(true);
+            if (f instanceof PDNonTerminalField ntf) {
+                setFieldsReadOnly(ntf.getChildren());
+            }
+        }
+    }
+
+    private void collectFields(List<PDField> fields, Map<String, String> result) {
+        if (fields == null) {
+            return;
+        }
+        for (PDField f : fields) {
+            if (f instanceof PDNonTerminalField ntf) {
+                collectFields(ntf.getChildren(), result);
+            } else {
+                String name = f.getFullyQualifiedName();
+                String val = f.getValueAsString();
+                result.put(name, val != null ? val : "");
+            }
+        }
+    }
+
+    private static boolean containsChinese(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); ) {
+            int codePoint = text.codePointAt(i);
+            Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+            if (script == Character.UnicodeScript.HAN) {
+                return true;
+            }
+            i += Character.charCount(codePoint);
+        }
+        return false;
+    }
+
+    // ==========================================
+    // 9. 10MB 阈值防 OOM 与临时文件物理清理核心逻辑
     // ==========================================
 
     private LoadedPdfDocument loadDocument(Object source) throws IOException {
