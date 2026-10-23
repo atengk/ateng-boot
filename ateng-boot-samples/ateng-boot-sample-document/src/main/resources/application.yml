@@ -11,6 +11,7 @@ ateng:
       word:
         auto-detect-fields: true
       pdf:
+        font-path: classpath:fonts/sample-cjk.ttf
         in-memory-threshold: 10MB
         watermark:
           default-text: "内部绝密 严禁外传"

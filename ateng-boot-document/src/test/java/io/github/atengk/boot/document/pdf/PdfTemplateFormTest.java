@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
+import io.github.atengk.boot.document.properties.DocumentProperties;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
@@ -47,7 +48,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class PdfTemplateFormTest {
 
-    private final PdfTemplate pdfTemplate = new PdfTemplate();
+    private static DocumentProperties createTestProperties() {
+        DocumentProperties props = new DocumentProperties();
+        props.getPdf().setFontPath("classpath:fonts/test-cjk.ttf");
+        return props;
+    }
+
+    private final PdfTemplate pdfTemplate = new PdfTemplate(createTestProperties());
 
     @AfterEach
     void tearDown() {

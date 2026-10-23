@@ -49,8 +49,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class PdfTemplateTest {
 
+    private static DocumentProperties createTestProperties() {
+        DocumentProperties props = new DocumentProperties();
+        props.getPdf().setFontPath("classpath:fonts/test-cjk.ttf");
+        return props;
+    }
+
     private static byte[] sealPngBytes;
-    private final PdfTemplate pdfTemplate = new PdfTemplate();
+    private final PdfTemplate pdfTemplate = new PdfTemplate(createTestProperties());
 
     @BeforeAll
     static void setupAssets() throws IOException {
@@ -92,7 +98,8 @@ class PdfTemplateTest {
         // 提取文本验证
         String extracted = pdfTemplate.extractText(targetPdfPath);
         assertThat(extracted).contains("机密报告");
-        assertThat(extracted).contains("内部绝密 禁止外传");
+        String normalized = extracted.replace("\r", "").replace("\n", "");
+        assertThat(normalized).contains("内部绝密 禁止外传");
 
         // 验证 UNDERLAY 底层模式水印生成
         WatermarkOptions underlayOptions = WatermarkOptions.builder()
@@ -101,7 +108,7 @@ class PdfTemplateTest {
                 .build();
         byte[] underlayPdf = pdfTemplate.addWatermarkToBytes(originalPdf, underlayOptions);
         assertThat(underlayPdf).isNotEmpty();
-        assertThat(pdfTemplate.extractText(underlayPdf)).contains("底图背景水印");
+        assertThat(pdfTemplate.extractText(underlayPdf).replace("\r", "").replace("\n", "")).contains("底图背景水印");
 
         // 验证 copySourceToTarget 时不关闭外部 OutputStream
         boolean[] streamClosed = new boolean[1];
@@ -132,9 +139,10 @@ class PdfTemplateTest {
         assertThat(resultBytes).isNotEmpty();
 
         String extracted = pdfTemplate.extractText(resultBytes);
-        assertThat(extracted).contains("操作人：王五");
-        assertThat(extracted).contains("电话：139****4321");
-        assertThat(extracted).contains("Trace: tr-8888");
+        String normalized = extracted.replace("\r", "").replace("\n", "");
+        assertThat(normalized).contains("操作人：王五");
+        assertThat(normalized).contains("电话：139****4321");
+        assertThat(normalized).contains("Trace: tr-8888");
     }
 
     @Test
@@ -174,7 +182,7 @@ class PdfTemplateTest {
     @DisplayName("测试超限小内存阈值防 OOM：自动使用临时文件模式并在完成时物理销毁")
     void testInMemoryThresholdOverflowAndCleanup(@TempDir Path tempDir) throws Exception {
         // 创建仅为 100 字节阈值的配置实例
-        DocumentProperties properties = new DocumentProperties();
+        DocumentProperties properties = createTestProperties();
         properties.setInMemoryThreshold(DataSize.ofBytes(100));
         properties.setTempDir(tempDir.toString());
 
@@ -197,7 +205,7 @@ class PdfTemplateTest {
     @Test
     @DisplayName("测试大文件解析异常时临时文件被确定性物理清理")
     void testTempFileCleanedOnCorruptedPdf(@TempDir Path tempDir) {
-        DocumentProperties properties = new DocumentProperties();
+        DocumentProperties properties = createTestProperties();
         properties.setInMemoryThreshold(DataSize.ofBytes(10));
         properties.setTempDir(tempDir.toString());
         PdfTemplate customTemplate = new PdfTemplate(properties);
@@ -295,7 +303,7 @@ class PdfTemplateTest {
         byte[] doc3Pages;
         try (PDDocument doc = new PDDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            DocumentProperties props = new DocumentProperties();
+            DocumentProperties props = createTestProperties();
             DocumentFontResolver resolver = new DocumentFontResolver(props.getPdf());
             var font = resolver.loadFont(doc);
 
@@ -436,7 +444,7 @@ class PdfTemplateTest {
             PDPage page = new PDPage(PDRectangle.A4);
             doc.addPage(page);
 
-            DocumentProperties props = new DocumentProperties();
+            DocumentProperties props = createTestProperties();
             DocumentFontResolver resolver = new DocumentFontResolver(props.getPdf());
             var font = resolver.loadFont(doc);
 
@@ -458,7 +466,7 @@ class PdfTemplateTest {
     private static byte[] createMultiPagePdf(String page1Text, String page2Text) {
         try (PDDocument doc = new PDDocument();
              ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            DocumentProperties props = new DocumentProperties();
+            DocumentProperties props = createTestProperties();
             DocumentFontResolver resolver = new DocumentFontResolver(props.getPdf());
             var font = resolver.loadFont(doc);
 
