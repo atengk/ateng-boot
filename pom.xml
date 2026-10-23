@@ -57,6 +57,7 @@
         <module>ateng-boot-notification</module>
         <module>ateng-boot-document</module>
         <module>ateng-boot-mqtt</module>
+        <module>ateng-boot-pay</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -83,6 +84,8 @@
         <poi-tl.version>1.12.2</poi-tl.version>
         <pdfbox.version>3.0.4</pdfbox.version>
         <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
+        <wechatpay-java.version>0.2.17</wechatpay-java.version>
+        <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -324,6 +327,21 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-mqtt</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-pay</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.wechatpay-apiv3</groupId>
+                <artifactId>wechatpay-java</artifactId>
+                <version>${wechatpay-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.alipay.sdk</groupId>
+                <artifactId>alipay-sdk-java</artifactId>
+                <version>${alipay-sdk-java.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
