@@ -1,7 +1,12 @@
 package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.autoconfigure.AtengNotificationAutoConfiguration;
+import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
 import io.github.atengk.boot.notification.properties.NotificationProperties;
+import io.github.atengk.boot.notification.provider.DingTalkNotificationProvider;
+import io.github.atengk.boot.notification.provider.FeishuNotificationProvider;
+import io.github.atengk.boot.notification.provider.GenericWebhookNotificationProvider;
+import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,12 +35,17 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
             .withConfiguration(AutoConfigurations.of(AtengNotificationAutoConfiguration.class));
 
     @Test
-    @DisplayName("验证默认配置下自动装配生效并成功注册专有 RestClient Bean")
+    @DisplayName("验证默认配置下自动装配生效并成功注册专有 RestClient、注册中心与驱动 Bean")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(NotificationProperties.class);
             assertThat(context).hasBean("notificationClientHttpRequestFactory");
             assertThat(context).hasBean("notificationRestClient");
+            assertThat(context).hasSingleBean(NotificationChannelRegistry.class);
+            assertThat(context).hasSingleBean(DingTalkNotificationProvider.class);
+            assertThat(context).hasSingleBean(WeComNotificationProvider.class);
+            assertThat(context).hasSingleBean(FeishuNotificationProvider.class);
+            assertThat(context).hasSingleBean(GenericWebhookNotificationProvider.class);
 
             NotificationProperties properties = context.getBean(NotificationProperties.class);
             assertEquals("ops-alert", properties.getDefaultChannel());
@@ -81,6 +91,9 @@ class AtengNotificationAutoConfigurationTest extends BaseNotificationTest {
                     assertEquals(1, properties.getChannels().size());
                     assertTrue(properties.getChannels().containsKey("ops-alert"));
                     assertEquals(20, properties.getChannels().get("ops-alert").getPermitsPerMinute());
+
+                    NotificationChannelRegistry registry = context.getBean(NotificationChannelRegistry.class);
+                    assertTrue(registry.has("ops-alert"));
                 });
     }
 

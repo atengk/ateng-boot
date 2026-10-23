@@ -23,6 +23,8 @@ import java.util.Map;
  */
 public class WeComPayloadBuilder implements NotificationPayloadBuilder {
 
+    public static final WeComPayloadBuilder INSTANCE = new WeComPayloadBuilder();
+
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
         if (message == null) {

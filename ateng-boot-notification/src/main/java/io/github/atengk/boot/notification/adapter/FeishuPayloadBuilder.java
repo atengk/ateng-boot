@@ -22,6 +22,8 @@ import java.util.Map;
  */
 public class FeishuPayloadBuilder implements NotificationPayloadBuilder {
 
+    public static final FeishuPayloadBuilder INSTANCE = new FeishuPayloadBuilder();
+
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
         if (message == null) {

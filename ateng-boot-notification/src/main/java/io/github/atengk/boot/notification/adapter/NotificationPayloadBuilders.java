@@ -10,11 +10,6 @@ import io.github.atengk.boot.notification.model.Platform;
  */
 public final class NotificationPayloadBuilders {
 
-    private static final DingTalkPayloadBuilder DINGTALK = new DingTalkPayloadBuilder();
-    private static final WeComPayloadBuilder WECOM = new WeComPayloadBuilder();
-    private static final FeishuPayloadBuilder FEISHU = new FeishuPayloadBuilder();
-    private static final GenericPayloadBuilder GENERIC = new GenericPayloadBuilder();
-
     private NotificationPayloadBuilders() {
     }
 
@@ -26,13 +21,13 @@ public final class NotificationPayloadBuilders {
      */
     public static NotificationPayloadBuilder get(Platform platform) {
         if (platform == null) {
-            return GENERIC;
+            return GenericPayloadBuilder.INSTANCE;
         }
         return switch (platform) {
-            case DINGTALK -> DINGTALK;
-            case WECOM -> WECOM;
-            case FEISHU -> FEISHU;
-            case GENERIC -> GENERIC;
+            case DINGTALK -> DingTalkPayloadBuilder.INSTANCE;
+            case WECOM -> WeComPayloadBuilder.INSTANCE;
+            case FEISHU -> FeishuPayloadBuilder.INSTANCE;
+            case GENERIC -> GenericPayloadBuilder.INSTANCE;
         };
     }
 }

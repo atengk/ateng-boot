@@ -1,7 +1,7 @@
 package io.github.atengk.boot.notification.properties;
 
-import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.notification.model.Platform;
+import io.github.atengk.boot.notification.util.NotificationDesensitizeUtil;
 import lombok.Data;
 
 import java.time.Duration;
@@ -49,41 +49,11 @@ public class NotificationChannelProperties {
     public String toString() {
         return "NotificationChannelProperties{" +
                 "platform=" + platform +
-                ", webhook='" + maskWebhook(webhook) + '\'' +
-                ", secret='" + maskSecret(secret) + '\'' +
+                ", webhook='" + NotificationDesensitizeUtil.maskWebhook(webhook) + '\'' +
+                ", secret='" + NotificationDesensitizeUtil.maskSecret(secret) + '\'' +
                 ", connectTimeout=" + connectTimeout +
                 ", readTimeout=" + readTimeout +
                 ", permitsPerMinute=" + permitsPerMinute +
                 '}';
-    }
-
-    private static String maskWebhook(String url) {
-        if (url == null || url.isEmpty()) {
-            return url;
-        }
-        int len = url.length();
-        if (len <= 15) {
-            return "******";
-        }
-        int queryIdx = url.indexOf('?');
-        if (queryIdx > 0 && queryIdx + 5 < len) {
-            return DesensitizeUtil.mask(url, queryIdx + 1, Math.max(queryIdx + 1, len - 4));
-        }
-        int hookIdx = url.indexOf("/hook/");
-        if (hookIdx > 0 && hookIdx + 6 < len) {
-            return DesensitizeUtil.mask(url, hookIdx + 6, Math.max(hookIdx + 6, len - 4));
-        }
-        return DesensitizeUtil.mask(url, 15, len - 4);
-    }
-
-    private static String maskSecret(String secret) {
-        if (secret == null || secret.isEmpty()) {
-            return secret;
-        }
-        int len = secret.length();
-        if (len <= 6) {
-            return "******";
-        }
-        return DesensitizeUtil.mask(secret, 3, len - 3);
     }
 }

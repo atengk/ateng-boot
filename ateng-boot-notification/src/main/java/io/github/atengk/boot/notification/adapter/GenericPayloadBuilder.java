@@ -20,6 +20,8 @@ import java.util.Map;
  */
 public class GenericPayloadBuilder implements NotificationPayloadBuilder {
 
+    public static final GenericPayloadBuilder INSTANCE = new GenericPayloadBuilder();
+
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
         if (message == null) {

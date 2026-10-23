@@ -22,6 +22,8 @@ import java.util.Map;
  */
 public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
 
+    public static final DingTalkPayloadBuilder INSTANCE = new DingTalkPayloadBuilder();
+
     @Override
     public Map<String, Object> buildPayload(NotificationMessage message) {
         if (message == null) {
