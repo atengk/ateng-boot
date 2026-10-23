@@ -17,6 +17,11 @@ public class PayCallbackProperties implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 是否启用支付异步 Webhook 回调网关自动装配，默认为 true
+     */
+    private boolean enabled = true;
+
+    /**
      * 自动装配的回调端点统一前缀，默认为 /ateng-pay/callback
      */
     private String pathPrefix = "/ateng-pay/callback";
