@@ -45,4 +45,15 @@ public @interface MqttListener {
      * 监听器并发处理度提示（默认 1）
      */
     int concurrency() default 1;
+
+    /**
+     * 是否启用死信队列（DLT）转移机制（默认 true）
+     * 当遇到反序列化崩溃、格式错误或不可自愈异常时，自动转移到死信主题并提交 ACK 阻断死循环
+     */
+    boolean enableDlt() default true;
+
+    /**
+     * 自定义死信目标主题（默认空，为空时自动派生为 ${topic}/DLT）
+     */
+    String dltTopic() default "";
 }

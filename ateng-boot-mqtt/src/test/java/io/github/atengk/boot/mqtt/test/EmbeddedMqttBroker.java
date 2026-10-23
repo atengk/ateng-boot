@@ -34,8 +34,11 @@ public class EmbeddedMqttBroker {
 
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
+    private final Map<Channel, WillRecord> willMessages = new ConcurrentHashMap<>();
     private final AtomicInteger messageIdCounter = new AtomicInteger(1);
     private final List<ReceivedMessage> receivedMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private record WillRecord(String topic, byte[] payload, MqttQoS qos, boolean retained) {}
 
     public static class ReceivedMessage {
         private final String clientId;
@@ -146,6 +149,7 @@ public class EmbeddedMqttBroker {
         }
         channelSubscriptions.clear();
         clientIds.clear();
+        willMessages.clear();
         receivedMessages.clear();
         log.info("[EmbeddedMqttBroker] Stopped In-Memory MQTT Broker successfully");
     }
@@ -189,6 +193,16 @@ public class EmbeddedMqttBroker {
             clientIds.put(ctx.channel(), clientId);
             channelSubscriptions.computeIfAbsent(ctx.channel(), k -> new CopyOnWriteArraySet<>());
 
+            if (msg.variableHeader().isWillFlag()) {
+                MqttQoS willQos = MqttQoS.valueOf(msg.variableHeader().willQos());
+                willMessages.put(ctx.channel(), new WillRecord(
+                        msg.payload().willTopic(),
+                        msg.payload().willMessageInBytes(),
+                        willQos,
+                        msg.variableHeader().isWillRetain()
+                ));
+            }
+
             MqttConnAckMessage connAck = MqttMessageBuilders.connAck()
                     .returnCode(MqttConnectReturnCode.CONNECTION_ACCEPTED)
                     .sessionPresent(false)
@@ -198,6 +212,8 @@ public class EmbeddedMqttBroker {
         }
 
         private void handleDisconnect(ChannelHandlerContext ctx) {
+            // 收到客户端主动发送的标准 DISCONNECT 报文，依据 MQTT 协议必须销毁该连接的 Will 消息（杜绝误报）
+            willMessages.remove(ctx.channel());
             cleanChannel(ctx.channel());
             ctx.close();
         }
@@ -272,7 +288,12 @@ public class EmbeddedMqttBroker {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            WillRecord will = willMessages.remove(ctx.channel());
             cleanChannel(ctx.channel());
+            if (will != null) {
+                log.info("[EmbeddedMqttBroker] Client channel closed unexpectedly without DISCONNECT, triggering LWT broadcast on topic [{}]", will.topic());
+                broadcastMessage(will.topic(), will.payload(), will.qos(), null);
+            }
             super.channelInactive(ctx);
         }
 

@@ -5,6 +5,8 @@ import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
+import io.github.atengk.boot.mqtt.will.MqttWill;
+import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import org.eclipse.paho.mqttv5.client.DisconnectedBufferOptions;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.eclipse.paho.mqttv5.client.MqttClientPersistence;
@@ -17,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.context.SmartLifecycle;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
@@ -24,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * MQTT 命名客户端注册中心与生命周期管理器
@@ -31,20 +35,46 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Ateng
  * @since 2026-10-23
  */
-public class NamedMqttClientRegistry implements InitializingBean, DisposableBean {
+public class NamedMqttClientRegistry implements InitializingBean, DisposableBean, SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(NamedMqttClientRegistry.class);
 
     private final AtengMqttProperties properties;
+    private final MqttWillProvider willProvider;
     private final Map<String, MqttClientHandle> clientHandles = new ConcurrentHashMap<>();
+    private final AtomicBoolean running = new AtomicBoolean(false);
 
     public NamedMqttClientRegistry(AtengMqttProperties properties) {
+        this(properties, null);
+    }
+
+    public NamedMqttClientRegistry(AtengMqttProperties properties, MqttWillProvider willProvider) {
         this.properties = properties;
+        this.willProvider = willProvider;
     }
 
     @Override
     public void afterPropertiesSet() {
         initClients();
+    }
+
+    @Override
+    public void start() {
+        if (running.compareAndSet(false, true)) {
+            if (clientHandles.isEmpty()) {
+                initClients();
+            }
+        }
+    }
+
+    @Override
+    public boolean isRunning() {
+        return running.get();
+    }
+
+    @Override
+    public int getPhase() {
+        return 10; // 在监听器与 RPC 管理器停止后断开物理连接
     }
 
     /**
@@ -103,7 +133,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         MqttAsyncClient asyncClient = new MqttAsyncClient(clientProps.getServerUri(), actualClientId, persistence);
 
         // 5. 构建连接选项 MqttConnectionOptions
-        MqttConnectionOptions connOpts = buildConnectionOptions(clientProps);
+        MqttConnectionOptions connOpts = buildConnectionOptions(clientName, actualClientId, clientProps);
 
         // 6. 配置 DisconnectedBufferOptions
         DisconnectedBufferOptions bufferOpts = new DisconnectedBufferOptions();
@@ -130,7 +160,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         return new MemoryPersistence();
     }
 
-    private MqttConnectionOptions buildConnectionOptions(MqttClientProperties clientProps) {
+    private MqttConnectionOptions buildConnectionOptions(String clientName, String actualClientId, MqttClientProperties clientProps) {
         MqttConnectionOptions connOpts = new MqttConnectionOptions();
         connOpts.setServerURIs(new String[]{clientProps.getServerUri()});
         connOpts.setCleanStart(clientProps.isCleanStart());
@@ -152,8 +182,15 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             connOpts.setPassword(clientProps.getPassword().getBytes(StandardCharsets.UTF_8));
         }
 
-        // LWT 遗嘱消息配置
-        if (clientProps.getLwt() != null && clientProps.getLwt().isEnabled() && StringUtils.hasText(clientProps.getLwt().getTopic())) {
+        // LWT 遗嘱消息配置（优先使用 MqttWillProvider 动态 SPI，无则回退静态配置）
+        MqttWill dynamicWill = willProvider != null ? willProvider.getWill(clientName, actualClientId, clientProps) : null;
+        if (dynamicWill != null && StringUtils.hasText(dynamicWill.getTopic())) {
+            MqttMessage willMsg = new MqttMessage(dynamicWill.getPayload());
+            willMsg.setQos(dynamicWill.getQos());
+            willMsg.setRetained(dynamicWill.isRetained());
+            connOpts.setWill(dynamicWill.getTopic(), willMsg);
+            log.info("[MQTT] Configured dynamic LWT will for client [{}] to topic [{}] via MqttWillProvider", clientName, dynamicWill.getTopic());
+        } else if (clientProps.getLwt() != null && clientProps.getLwt().isEnabled() && StringUtils.hasText(clientProps.getLwt().getTopic())) {
             MqttMessage willMsg = new MqttMessage(clientProps.getLwt().getPayloadBytes());
             willMsg.setQos(clientProps.getLwt().getQos());
             willMsg.setRetained(clientProps.getLwt().isRetain());
@@ -218,21 +255,30 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     }
 
     @Override
-    public void destroy() {
-        log.info("[MQTT] Shutting down NamedMqttClientRegistry, closing [{}] active clients", clientHandles.size());
-        for (Map.Entry<String, MqttClientHandle> entry : clientHandles.entrySet()) {
-            String name = entry.getKey();
-            MqttClientHandle handle = entry.getValue();
-            try {
-                if (handle.getAsyncClient().isConnected()) {
-                    handle.getAsyncClient().disconnect().waitForCompletion(handle.getClientProperties().getShutdownTimeout().toMillis());
+    public void stop() {
+        if (running.compareAndSet(true, false) || !clientHandles.isEmpty()) {
+            log.info("[MQTT] Shutting down NamedMqttClientRegistry, cleanly disconnecting [{}] active clients", clientHandles.size());
+            for (Map.Entry<String, MqttClientHandle> entry : clientHandles.entrySet()) {
+                String name = entry.getKey();
+                MqttClientHandle handle = entry.getValue();
+                try {
+                    if (handle.getAsyncClient().isConnected()) {
+                        long shutdownMs = handle.getClientProperties().getShutdownTimeout().toMillis();
+                        // 显式发送 MQTT 规范 DISCONNECT 报文，告知 Broker 正常下线并依法销毁 LWT 遗嘱消息（防误报）
+                        handle.getAsyncClient().disconnect().waitForCompletion(shutdownMs > 0 ? shutdownMs : 5000L);
+                    }
+                    handle.getAsyncClient().close();
+                    log.info("[MQTT] Client [{}] disconnected and closed cleanly with DISCONNECT", name);
+                } catch (Exception e) {
+                    log.warn("[MQTT] Error closing MQTT client [{}]: {}", name, e.getMessage());
                 }
-                handle.getAsyncClient().close();
-                log.info("[MQTT] Client [{}] disconnected and closed cleanly", name);
-            } catch (Exception e) {
-                log.warn("[MQTT] Error closing MQTT client [{}]: {}", name, e.getMessage());
             }
+            clientHandles.clear();
         }
-        clientHandles.clear();
+    }
+
+    @Override
+    public void destroy() {
+        stop();
     }
 }

@@ -9,6 +9,7 @@ import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
+import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -36,8 +37,9 @@ public class AtengMqttAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public NamedMqttClientRegistry namedMqttClientRegistry(AtengMqttProperties properties) {
-        return new NamedMqttClientRegistry(properties);
+    public NamedMqttClientRegistry namedMqttClientRegistry(AtengMqttProperties properties,
+                                                           ObjectProvider<MqttWillProvider> willProvider) {
+        return new NamedMqttClientRegistry(properties, willProvider.getIfAvailable());
     }
 
     @Bean

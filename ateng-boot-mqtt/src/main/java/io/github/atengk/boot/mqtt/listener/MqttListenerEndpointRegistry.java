@@ -1,6 +1,8 @@
 package io.github.atengk.boot.mqtt.listener;
 
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.exception.IdempotentException;
+import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
@@ -12,10 +14,13 @@ import org.eclipse.paho.mqttv5.common.MqttException;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
 import org.eclipse.paho.mqttv5.common.MqttSubscription;
 import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
+import org.eclipse.paho.mqttv5.common.packet.UserProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.util.StringUtils;
+
+import java.time.Duration;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -194,8 +199,103 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             // 反射调用适配器
             endpoint.getAdapter().invoke(actualTopic, message, variables);
         } catch (Throwable e) {
-            log.error("[MQTT] Unhandled error during message dispatch for topic [{}] on endpoint [{}]: {}",
+            // 1. 消费端幂等静默确认 (Silent ACK Invariant)
+            if (isIdempotentException(e)) {
+                log.info("[MQTT] Idempotent duplicate message detected on topic [{}] for endpoint [{}], submitting Silent ACK to terminate redelivery loop",
+                        actualTopic, endpoint.getId());
+                return;
+            }
+
+            // 2. 毒丸死信转移 (DLT Invariant)
+            if (FatalExceptionClassifier.isFatal(e)) {
+                handleFatalPoisonPill(endpoint, actualTopic, message, handle, e);
+                return;
+            }
+
+            // 3. 非致命普通异常日志记录
+            log.error("[MQTT] Error during message dispatch for topic [{}] on endpoint [{}]: {}",
                     actualTopic, endpoint.getId(), e.getMessage(), e);
+        }
+    }
+
+    private boolean isIdempotentException(Throwable t) {
+        Throwable current = t;
+        int depth = 0;
+        while (current != null && depth < 30) {
+            if (current instanceof IdempotentException) {
+                return true;
+            }
+            if ("io.github.atengk.boot.core.exception.IdempotentException".equals(current.getClass().getName())) {
+                return true;
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private Throwable findRootFatalCause(Throwable t) {
+        Throwable current = t;
+        Throwable candidate = t;
+        int depth = 0;
+        while (current != null && depth < 30) {
+            if (FatalExceptionClassifier.isFatal(current)) {
+                candidate = current;
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return candidate;
+    }
+
+    private void handleFatalPoisonPill(MqttListenerEndpoint endpoint,
+                                       String actualTopic,
+                                       MqttMessage message,
+                                       MqttClientHandle handle,
+                                       Throwable cause) {
+        if (!endpoint.getAnnotation().enableDlt()) {
+            log.warn("[MQTT] Fatal poison pill on topic [{}] for endpoint [{}], DLT is disabled via configuration, dropping message: {}",
+                    actualTopic, endpoint.getId(), cause.getMessage());
+            return;
+        }
+
+        String dltTopic = endpoint.getAnnotation().dltTopic();
+        if (!StringUtils.hasText(dltTopic)) {
+            dltTopic = actualTopic.endsWith("/DLT") ? actualTopic : actualTopic + "/DLT";
+        }
+
+        try {
+            byte[] payload = message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
+            MqttMessage dltMessage = new MqttMessage(payload);
+            dltMessage.setQos(endpoint.getQos());
+            dltMessage.setRetained(false);
+
+            // 构建死信出站 MqttProperties，附加原始上下文与异常堆栈标头
+            Throwable fatalCause = findRootFatalCause(cause);
+            MqttProperties dltProperties = new MqttProperties();
+            List<UserProperty> userProps = new ArrayList<>();
+            if (message != null && message.getProperties() != null && message.getProperties().getUserProperties() != null) {
+                userProps.addAll(message.getProperties().getUserProperties());
+            }
+            userProps.add(new UserProperty("x-original-topic", actualTopic));
+            userProps.add(new UserProperty("x-exception-class", fatalCause.getClass().getName()));
+            String exMsg = fatalCause.getMessage();
+            if (exMsg != null) {
+                if (exMsg.length() > 512) {
+                    exMsg = exMsg.substring(0, 512) + "...";
+                }
+                userProps.add(new UserProperty("x-exception-message", exMsg));
+            }
+            userProps.add(new UserProperty("x-dlt-timestamp", String.valueOf(System.currentTimeMillis())));
+            dltProperties.setUserProperties(userProps);
+            dltMessage.setProperties(dltProperties);
+
+            handle.getAsyncClient().publish(dltTopic, dltMessage);
+            log.warn("[MQTT] Poison pill message on topic [{}] successfully transferred to DLT [{}] for endpoint [{}], submitted ACK to break redelivery loop",
+                    actualTopic, dltTopic, endpoint.getId());
+        } catch (Exception e) {
+            log.error("[MQTT] Failed to forward poison pill to DLT topic [{}] on client [{}]: {}",
+                    dltTopic, handle.getClientName(), e.getMessage(), e);
         }
     }
 
@@ -210,6 +310,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     public void stop() {
         if (running.compareAndSet(true, false)) {
             log.info("[MQTT] Stopping MqttListenerEndpointRegistry, unsubscribing [{}] active client channels", subscribedTopicsByClient.size());
+            // 1. 第一阶段：注销所有入站订阅，阻断新报文涌入
             for (Map.Entry<String, List<String>> entry : subscribedTopicsByClient.entrySet()) {
                 String clientName = entry.getKey();
                 List<String> topics = entry.getValue();
@@ -229,7 +330,48 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                 }
             }
             subscribedTopicsByClient.clear();
+
+            // 2. 第二阶段：排空受管线程池中未决任务（最多等待 shutdownTimeout）
+            drainExecutor();
         }
+    }
+
+    private void drainExecutor() {
+        if (executor == null) {
+            return;
+        }
+        Duration maxTimeout = Duration.ofSeconds(5);
+        for (MqttClientHandle h : clientRegistry.getClientHandles().values()) {
+            if (h.getClientProperties() != null && h.getClientProperties().getShutdownTimeout() != null) {
+                if (h.getClientProperties().getShutdownTimeout().compareTo(maxTimeout) > 0) {
+                    maxTimeout = h.getClientProperties().getShutdownTimeout();
+                }
+            }
+        }
+        long deadline = System.currentTimeMillis() + maxTimeout.toMillis();
+        log.info("[MQTT] Awaiting executor task queue draining (max timeout: {}ms)", maxTimeout.toMillis());
+        while (System.currentTimeMillis() < deadline) {
+            if (getActiveCount() <= 0) {
+                break;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        log.info("[MQTT] Executor task queue drained successfully");
+    }
+
+    private int getActiveCount() {
+        if (executor instanceof org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor springExec) {
+            return springExec.getActiveCount();
+        }
+        if (executor instanceof java.util.concurrent.ThreadPoolExecutor jdkExec) {
+            return jdkExec.getActiveCount();
+        }
+        return 0;
     }
 
     @Override
