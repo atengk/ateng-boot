@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-samples</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-sample-pay</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot 企业级多渠道支付专有收单与 Webhook 回调场景自验样例（微信支付 V3 / 支付宝双轨驱动、统一收单门面、服务端二次加签、双模防重并发锁）</description>
+
+    <dependencies>
+        <!-- 企业级多渠道支付 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-pay</artifactId>
+        </dependency>
+
+        <!-- Web 运行时增强 Starter (契约层 Result / 校验 / 异常拦截 / MDC 链路追踪) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- Lombok (编译期使用) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Spring Boot Test 套件 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

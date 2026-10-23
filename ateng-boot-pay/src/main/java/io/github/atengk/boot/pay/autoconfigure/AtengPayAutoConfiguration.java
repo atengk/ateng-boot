@@ -17,11 +17,14 @@ import io.github.atengk.boot.pay.util.PayKeyLoader;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.Collections;
@@ -94,16 +97,28 @@ public class AtengPayAutoConfiguration {
     }
 
     /**
-     * 注册双轨支付防重并发锁管理器（Redis 优先，内存锁保底）
+     * Redis 分布式防重锁自动装配
      */
-    @Bean
-    @ConditionalOnMissingBean(PayLockManager.class)
-    public PayLockManager payLockManager(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
+    @Slf4j
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    public static class RedisPayLockConfiguration {
+
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(PayLockManager.class)
+        public PayLockManager redisPayLockManager(StringRedisTemplate redisTemplate) {
             log.info("Redis infrastructure detected, configuring RedisPayLockManager for distributed payment callback locks.");
             return new RedisPayLockManager(redisTemplate);
         }
+    }
+
+    /**
+     * 注册本地单机防重并发锁保底（当无 Redis 或未配置 StringRedisTemplate Bean 时生效）
+     */
+    @Bean
+    @ConditionalOnMissingBean(PayLockManager.class)
+    public PayLockManager inMemoryPayLockManager() {
         log.info("No Redis infrastructure detected, fallback to InMemoryPayLockManager for local payment callback locks.");
         return new InMemoryPayLockManager();
     }

@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-pay
+
+# ateng-boot 企业级多渠道支付配置
+ateng:
+  boot:
+    pay:
+      enabled: true
+      # 异步 Webhook 回调与防重锁配置
+      callback:
+        enabled: true
+        path-prefix: /ateng-pay/callback
+        idempotent-timeout: 10s
+      # 微信支付官方 V3 沙箱/生产配置
+      wechat:
+        enabled: true
+        default-merchant: default
+        merchants:
+          default:
+            app-id: wx8888888888888888
+            mch-id: "1900000001"
+            api-v3-key: "32bytesMockApiV3KeyForTesting000"
+            merchant-serial-number: "1234567890ABCDEF1234567890ABCDEF"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat"
+            auto-certificate: false
+      # 支付宝官方开放平台沙箱/生产配置
+      alipay:
+        enabled: true
+        default-app: default
+        apps:
+          default:
+            app-id: "2021000000000001"
+            server-url: "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/alipay"
+            return-url: "http://127.0.0.1:8080/pay/return"

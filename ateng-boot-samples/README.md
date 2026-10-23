@@ -21,6 +21,7 @@
 | **`ateng-boot-sample-rocketmq`** | **专一 RocketMQ 原生 2PC 分布式事务与 gRPC 监听 Demo**<br/>高阶门面 `RocketmqTemplate`、原生 2PC 分布式事务半消息与统一回查分发 `RocketmqTransactionChecker`、事务感知发信 `sendAfterCommit`、声明式 `@RocketmqListener`、微服务推断反序列化解耦、毒丸安全丢弃、`@Idempotent` 幂等静默确认 | RocketMQ / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-rocketmq/README.md) |
 | **`ateng-boot-sample-ftp`** | **专一 FTP 远程文件传输与切源 Demo**<br/>长连接池化复用、心跳保活断线自愈、双重工作目录复位防串目录、`FtpContextHolder` 线程级动态切源、表单原子上传守护（`.tmp` + `rename`）、流式下载、RFC 3659 MLSD 机器目录解析、跨目录移动、路径穿越防卫与原生逃逸舱 | FTP / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-ftp/README.md) |
 | **`ateng-boot-sample-mqtt`** | **专一物联网 MQTT 5.0 / 3.1.1 客户端 Demo**<br/>REST 风格主题通配提取、`X-Trace-Id` 标头全链路透传、集群 `$share` 共享订阅、MQTT 5.0 同步 RPC、本地事务对齐发信、工业国标/车联网 `HexPayload` 强类型转译、Actuator 探针与 Micrometer 黄金度量 | MQTT / Web / Actuator | **零 DB 依赖** | [查看](./ateng-boot-sample-mqtt/README.md) |
+| **`ateng-boot-sample-pay`** | **专一企业级多渠道支付 Demo**<br/>微信支付 V3 / 支付宝双规驱动、统一收单门面 `PayTemplate`、服务端二次加签、双模防重并发锁、业务回调监听器 SPI | Pay / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-pay/README.md) |
 | **`ateng-boot-sample-smoke-test`** | **全家桶 CI 冒烟准出门禁**<br/>全量 Starter 无冲突自动装配校验与端到端核心链路冒烟验收（耗时 ≤ 8s） | All / H2 / OpenAPI | H2 内存库 | [查看](./ateng-boot-sample-smoke-test/README.md) |
 
 ---
@@ -59,6 +60,9 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-ftp spring-boot:run
 
 # 启动 10：MQTT 物联网客户端与 RPC 演示
 mvn -pl ateng-boot-samples/ateng-boot-sample-mqtt spring-boot:run
+
+# 启动 11：多渠道支付收单与 Webhook 回调演示
+mvn -pl ateng-boot-samples/ateng-boot-sample-pay spring-boot:run
 ```
 
 ---

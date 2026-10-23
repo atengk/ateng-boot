@@ -1,5 +1,6 @@
 package io.github.atengk.boot.pay.model.response;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -59,15 +60,17 @@ public class WechatAppParams implements Serializable {
     private String sign;
 
     /**
-     * 兼容返回 package 字段别名
+     * 兼容返回 package 字段别名 (忽略 Jackson 避免与 packageVal 重复冲突)
      */
+    @JsonIgnore
     public String getPackage() {
         return packageVal;
     }
 
     /**
-     * 兼容设置 package 字段别名
+     * 兼容设置 package 字段别名 (忽略 Jackson 避免与 packageVal 重复冲突)
      */
+    @JsonIgnore
     public void setPackage(String packageVal) {
         this.packageVal = packageVal;
     }
