@@ -11,6 +11,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.time.Duration;
+import java.util.Arrays;
 
 /**
  * SSH 目标服务器连接不可变描述符
@@ -222,12 +223,26 @@ public final class SshServerInfo {
      * @return 会话池路由键值
      */
     public String toPoolKey() {
-        int credHash = java.util.Objects.hash(password, privateKey, privateKeyPath, passphrase, keyPair);
+        int kpHash = computeKeyPairHash(keyPair);
+        int credHash = java.util.Objects.hash(password, privateKey, privateKeyPath, passphrase, kpHash);
         String base = username + "@" + host + ":" + port + "#" + Integer.toHexString(credHash);
         if (jumpHost != null) {
             base += "->via(" + jumpHost.toPoolKey() + ")";
         }
         return base;
+    }
+
+    private static int computeKeyPairHash(KeyPair kp) {
+        if (kp == null) {
+            return 0;
+        }
+        int pubHash = kp.getPublic() != null && kp.getPublic().getEncoded() != null
+                ? Arrays.hashCode(kp.getPublic().getEncoded())
+                : (kp.getPublic() != null ? kp.getPublic().hashCode() : 0);
+        int privHash = kp.getPrivate() != null && kp.getPrivate().getEncoded() != null
+                ? Arrays.hashCode(kp.getPrivate().getEncoded())
+                : (kp.getPrivate() != null ? kp.getPrivate().hashCode() : 0);
+        return 31 * pubHash + privHash;
     }
 
     /**

@@ -251,6 +251,28 @@ class SshTemplateCommandExecutionTest {
         assertThat(sessionPool.getPoolSize()).isEqualTo(0);
     }
 
+    @Test
+    @DisplayName("测试 execScript 多行脚本跨平台换行符规范化：Windows CRLF 自动清洗为 Unix LF")
+    void testExecScriptWindowsCrlfNormalization() {
+        String windowsScript = "script_task1\r\nscript_task2\r\n";
+        SshExecResult result = template.execScript("default", windowsScript);
+        assertThat(result.isSuccess()).isTrue();
+        // 验证 Windows CRLF 已被无缝清洗为 Unix LF，绝不包含 \r
+        assertThat(result.getStdout()).doesNotContain("\r");
+        assertThat(result.getStdout()).contains("script_task1\nscript_task2");
+    }
+
+    @Test
+    @DisplayName("测试 SshExecOptions 开启 pty 伪终端选项命令执行")
+    void testExecWithPtyOption() {
+        SshExecOptions options = SshExecOptions.builder()
+                .pty(true)
+                .build();
+        SshExecResult result = template.exec("echo pty-enabled", options);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getStdout().trim()).isEqualTo("pty-enabled");
+    }
+
     /**
      * 针对嵌入式 SSH 服务端的命令测试工厂
      */

@@ -65,7 +65,6 @@ public final class SshKeyLoader {
             }
             return new ArrayList<>(keyPairs);
         } catch (Exception e) {
-            log.error("ateng-boot-ssh: 纯内存私钥内容解析失败: {}", e.getMessage());
             throw new SshOperationException(SshResultCode.AUTH_FAILED, "纯内存私钥内容解析失败: " + e.getMessage(), e);
         }
     }
@@ -122,7 +121,6 @@ public final class SshKeyLoader {
             }
             return new ArrayList<>(keyPairs);
         } catch (Exception e) {
-            log.error("ateng-boot-ssh: 本地私钥文件解析失败 [path={}]: {}", path, e.getMessage());
             throw new SshOperationException(SshResultCode.AUTH_FAILED, "本地私钥文件解析失败: " + e.getMessage(), e);
         }
     }
@@ -167,9 +165,7 @@ public final class SshKeyLoader {
         // 3. 纯内存 PEM 私钥认证（零磁盘落盘）
         if (serverInfo.hasPrivateKey()) {
             List<KeyPair> memoryKeys = loadKeyPairsFromMemory(serverInfo.getPrivateKey(), serverInfo.getPassphrase());
-            for (KeyPair keyPair : memoryKeys) {
-                session.addPublicKeyIdentity(keyPair);
-            }
+            addIdentities(session, memoryKeys);
             log.debug("ateng-boot-ssh: 为会话 [{}] 注入纯内存私钥身份凭据 (共 {} 个)",
                     serverInfo.toSessionKey(), memoryKeys.size());
         }
@@ -177,11 +173,17 @@ public final class SshKeyLoader {
         // 4. 本地文件私钥认证
         if (serverInfo.hasPrivateKeyPath()) {
             List<KeyPair> pathKeys = loadKeyPairsFromPath(serverInfo.getPrivateKeyPath(), serverInfo.getPassphrase());
-            for (KeyPair keyPair : pathKeys) {
-                session.addPublicKeyIdentity(keyPair);
-            }
+            addIdentities(session, pathKeys);
             log.debug("ateng-boot-ssh: 为会话 [{}] 注入本地磁盘私钥身份凭据 (共 {} 个)",
                     serverInfo.toSessionKey(), pathKeys.size());
+        }
+    }
+
+    private static void addIdentities(ClientSession session, List<KeyPair> keys) {
+        if (keys != null) {
+            for (KeyPair keyPair : keys) {
+                session.addPublicKeyIdentity(keyPair);
+            }
         }
     }
 

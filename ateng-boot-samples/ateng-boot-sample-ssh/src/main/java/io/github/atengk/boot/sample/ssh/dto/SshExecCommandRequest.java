@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.ssh.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 import lombok.Data;
 
 /**
@@ -31,5 +32,6 @@ public class SshExecCommandRequest {
     /**
      * 命令执行超时秒数（可选）
      */
+    @Positive(message = "超时时间必须大于0秒")
     private Integer timeoutSeconds;
 }

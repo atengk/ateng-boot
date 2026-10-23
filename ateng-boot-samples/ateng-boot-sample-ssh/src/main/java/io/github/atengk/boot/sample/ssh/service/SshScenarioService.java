@@ -1,10 +1,12 @@
 package io.github.atengk.boot.sample.ssh.service;
 
+import io.github.atengk.boot.ssh.context.SshContextHolder;
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.template.SshTemplate;
 import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
+import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,9 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 /**
  * SSH 核心业务底座与高阶场景演练服务
@@ -128,7 +133,74 @@ public class SshScenarioService {
     }
 
     /**
-     * 演示多行复杂运维脚本管道执行
+     * 当前服务受管的活跃端口转发句柄映射字典 (key: localPort)
+     */
+    private final Map<Integer, SshTunnelHandle> managedTunnels = new ConcurrentHashMap<>();
+
+    /**
+     * 演示建立受管的本地端口转发隧道
+     *
+     * @param serverName 节点名称
+     * @param localPort  本地期望绑定端口（0 为动态分配）
+     * @param remoteHost 目标内网主机
+     * @param remotePort 目标内网端口
+     * @return 实际绑定的本地端口
+     */
+    public int openManagedTunnel(String serverName, int localPort, String remoteHost, int remotePort) {
+        SshTunnelHandle handle = (serverName != null && !serverName.isBlank())
+                ? sshTemplate.openLocalTunnel(serverName, localPort, remoteHost, remotePort)
+                : sshTemplate.openLocalTunnel(localPort, remoteHost, remotePort);
+        int boundPort = handle.getLocalPort();
+        managedTunnels.put(boundPort, handle);
+        log.info("ateng-boot-ssh-sample: 受管端口转发隧道已注册 [localPort={}, remote={}:{}]", boundPort, remoteHost, remotePort);
+        return boundPort;
+    }
+
+    /**
+     * 对称释放受管的本地端口转发隧道
+     *
+     * @param localPort 本地绑定端口
+     * @return true 若成功释放
+     */
+    public boolean closeManagedTunnel(int localPort) {
+        SshTunnelHandle handle = managedTunnels.remove(localPort);
+        if (handle != null) {
+            handle.close();
+            log.info("ateng-boot-ssh-sample: 受管端口转发隧道已安全释放 [localPort={}]", localPort);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 演示通过 SshContextHolder 动态切源至目标节点执行命令
+     *
+     * @param serverName 目标节点标识
+     * @param command    待执行命令
+     * @return 远端标准输出
+     */
+    public String executeWithContextSwitch(String serverName, String command) {
+        log.info("ateng-boot-ssh-sample: 正在通过 SshContextHolder 动态切源至节点 [{}] 执行命令 [{}]", serverName, command);
+        return SshContextHolder.runWith(serverName, () -> {
+            SshExecResult result = sshTemplate.exec(command);
+            return result.getStdout().trim();
+        });
+    }
+
+    /**
+     * 演示底座长命令流式按行消费（零内存缓冲防 OOM）
+     *
+     * @param command      待执行长命令
+     * @param lineConsumer 行日志消费者
+     * @return 进程退出状态码
+     */
+    public int streamLogs(String command, Consumer<String> lineConsumer) {
+        log.info("ateng-boot-ssh-sample: 正在以零内存缓冲流式消费命令日志 [{}]", command);
+        return sshTemplate.execStream(command, lineConsumer);
+    }
+
+    /**
+     * 演示下发多行运维脚本序列
      *
      * @param scriptBody 脚本内容
      * @return 执行结果
@@ -136,5 +208,16 @@ public class SshScenarioService {
     public SshExecResult runMaintenanceScript(String scriptBody) {
         log.info("ateng-boot-ssh-sample: 正在下发多行运维脚本管道...");
         return sshTemplate.execScript(scriptBody);
+    }
+
+    @PreDestroy
+    public void closeAllTunnels() {
+        for (SshTunnelHandle handle : managedTunnels.values()) {
+            try {
+                handle.close();
+            } catch (Exception ignored) {
+            }
+        }
+        managedTunnels.clear();
     }
 }

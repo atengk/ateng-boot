@@ -66,6 +66,7 @@ class SshLifecycleManagerTest {
 
         lifecycleManager.start();
         assertThat(lifecycleManager.isRunning()).isTrue();
+        assertThat(lifecycleManager.getPhase()).isEqualTo(Integer.MAX_VALUE - 1000);
 
         // 1. 注册端口转发隧道模拟释放回调 (步骤 1)
         AtomicBoolean tunnelClosed = new AtomicBoolean(false);

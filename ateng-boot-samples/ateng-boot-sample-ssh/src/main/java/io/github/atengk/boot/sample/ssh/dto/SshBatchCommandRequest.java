@@ -19,7 +19,7 @@ public class SshBatchCommandRequest {
      * 待执行的目标服务器具名节点名称列表（必填）
      */
     @NotEmpty(message = "集群目标节点列表不能为空")
-    private List<String> servers;
+    private List<@NotBlank(message = "服务器节点名称不能为空") String> servers;
 
     /**
      * 待在各节点并发执行的命令（必填）

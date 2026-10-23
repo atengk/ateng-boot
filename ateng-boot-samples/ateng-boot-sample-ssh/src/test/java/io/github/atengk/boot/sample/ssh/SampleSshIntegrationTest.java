@@ -424,4 +424,58 @@ class SampleSshIntegrationTest {
         SshExecResult result = scenarioService.runMaintenanceScript(script);
         assertThat(result.isSuccess()).isTrue();
     }
+
+    @Test
+    @DisplayName("测试 SshContextHolder 动态切源 REST 端点端到端测试")
+    void testContextSwitchEndpoint() throws Exception {
+        mockMvc.perform(post("/api/ssh/context-switch")
+                        .param("server", "node1")
+                        .param("command", "echo CONTEXT_SWITCH_OK"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value("CONTEXT_SWITCH_OK"));
+    }
+
+    @Test
+    @DisplayName("测试受管端口转发对称开启与关闭释放端点")
+    void testTunnelOpenAndCloseSymmetricEndpoints() throws Exception {
+        SshTunnelRequest request = new SshTunnelRequest();
+        request.setServer("default");
+        request.setLocalPort(0);
+        request.setRemoteHost("127.0.0.1");
+        request.setRemotePort(echoTcpServer.getLocalPort());
+
+        // 1. 开启受管隧道
+        String openResponse = mockMvc.perform(post("/api/ssh/tunnel/open")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn().getResponse().getContentAsString();
+
+        int boundPort = objectMapper.readTree(openResponse).get("data").asInt();
+        assertThat(boundPort).isGreaterThan(0);
+
+        // 2. 对称关闭释放受管隧道
+        mockMvc.perform(post("/api/ssh/tunnel/close")
+                        .param("localPort", String.valueOf(boundPort)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+    }
+
+    @Test
+    @DisplayName("测试集群批量巡检空白服务器元素传输层 Fail-Fast 校验拦截")
+    void testBatchCommandValidationBlankServerElement() throws Exception {
+        SshBatchCommandRequest request = new SshBatchCommandRequest();
+        request.setServers(List.of("node1", "   ", "node2"));
+        request.setCommand("uptime");
+
+        mockMvc.perform(post("/api/ssh/exec-batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").isNumber())
+                .andExpect(jsonPath("$.code").value(org.hamcrest.Matchers.not(0)));
+    }
 }

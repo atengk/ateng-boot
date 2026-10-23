@@ -33,6 +33,11 @@ public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
      */
     public static final AttributeKey<String> TARGET_HOST_KEY = new AttributeKey<>();
 
+    /**
+     * 会话级动态主机公钥策略属性标识（允许每个独立连接或服务器描述符覆盖全局默认策略）
+     */
+    public static final AttributeKey<HostKeyPolicy> HOST_KEY_POLICY_KEY = new AttributeKey<>();
+
     @Getter
     private final HostKeyPolicy policy;
 
@@ -64,14 +69,23 @@ public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
             return false;
         }
 
-        if (policy == HostKeyPolicy.IGNORE) {
+        // 优先支持会话级上下文动态覆盖主机公钥校验策略
+        HostKeyPolicy effectivePolicy = this.policy;
+        if (clientSession != null) {
+            HostKeyPolicy sessionPolicy = clientSession.getAttribute(HOST_KEY_POLICY_KEY);
+            if (sessionPolicy != null) {
+                effectivePolicy = sessionPolicy;
+            }
+        }
+
+        if (effectivePolicy == HostKeyPolicy.IGNORE) {
             log.debug("ateng-boot-ssh: HostKeyPolicy 为 IGNORE，跳过服务端主机指纹校验: {}", remoteAddress);
             return true;
         }
 
         String hostPortKey = resolveAddressKey(remoteAddress, clientSession);
 
-        if (policy == HostKeyPolicy.LENIENT) {
+        if (effectivePolicy == HostKeyPolicy.LENIENT) {
             PublicKey existingKey = knownKeys.putIfAbsent(hostPortKey, serverKey);
             if (existingKey == null) {
                 // 首次连接，宽容信任并存入内存
@@ -89,7 +103,7 @@ public class InMemoryServerKeyVerifier implements ServerKeyVerifier {
             return false;
         }
 
-        if (policy == HostKeyPolicy.STRICT) {
+        if (effectivePolicy == HostKeyPolicy.STRICT) {
             PublicKey existingKey = knownKeys.get(hostPortKey);
             if (existingKey != null && KeyUtils.compareKeys(existingKey, serverKey)) {
                 return true;

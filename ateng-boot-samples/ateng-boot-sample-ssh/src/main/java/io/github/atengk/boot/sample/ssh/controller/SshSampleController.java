@@ -15,6 +15,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
@@ -40,6 +41,7 @@ import java.util.Map;
 public class SshSampleController {
 
     private final SshTemplate sshTemplate;
+    private final io.github.atengk.boot.sample.ssh.service.SshScenarioService sshScenarioService;
 
     /**
      * 同步短命令执行（支持指定节点与富选项）
@@ -104,14 +106,13 @@ public class SshSampleController {
     @PostMapping("/stream-log")
     public Result<List<String>> streamLog(@Valid @RequestBody SshExecCommandRequest request) {
         List<String> capturedLines = new ArrayList<>();
-        int exitCode = sshTemplate.execStream(
+        int exitCode = sshScenarioService.streamLogs(
                 request.getCommand(),
                 line -> {
                     synchronized (capturedLines) {
                         capturedLines.add(line);
                     }
-                },
-                null
+                }
         );
         log.info("ateng-boot-ssh-sample: 流式命令执行完成，exitCode={}, 捕获行数={}",
                 exitCode, capturedLines.size());
@@ -147,12 +148,38 @@ public class SshSampleController {
      */
     @PostMapping("/tunnel/open")
     public Result<Integer> openTunnel(@Valid @RequestBody SshTunnelRequest request) {
-        SshTunnelHandle handle;
-        if (request.getServer() != null && !request.getServer().isBlank()) {
-            handle = sshTemplate.openLocalTunnel(request.getServer(), request.getLocalPort(), request.getRemoteHost(), request.getRemotePort());
-        } else {
-            handle = sshTemplate.openLocalTunnel(request.getLocalPort(), request.getRemoteHost(), request.getRemotePort());
-        }
-        return Result.success(handle.getLocalPort());
+        int boundPort = sshScenarioService.openManagedTunnel(
+                request.getServer(),
+                request.getLocalPort(),
+                request.getRemoteHost(),
+                request.getRemotePort()
+        );
+        return Result.success(boundPort);
+    }
+
+    /**
+     * 对称释放受管的本地端口转发隧道（确定性资源清理防泄露）
+     *
+     * @param localPort 本地绑定端口
+     * @return 是否成功关闭
+     */
+    @PostMapping("/tunnel/close")
+    public Result<Boolean> closeTunnel(@RequestParam("localPort") int localPort) {
+        boolean closed = sshScenarioService.closeManagedTunnel(localPort);
+        return Result.success(closed);
+    }
+
+    /**
+     * 演示通过 SshContextHolder 动态切源至目标节点执行命令
+     *
+     * @param server  目标服务器名称
+     * @param command 待执行命令
+     * @return 远端标准输出
+     */
+    @PostMapping("/context-switch")
+    public Result<String> contextSwitch(@RequestParam("server") String server,
+                                        @RequestParam("command") String command) {
+        String output = sshScenarioService.executeWithContextSwitch(server, command);
+        return Result.success(output);
     }
 }

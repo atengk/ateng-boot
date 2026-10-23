@@ -146,7 +146,7 @@ public class SshLifecycleManager implements SmartLifecycle {
 
     @Override
     public int getPhase() {
-        // 赋予适当的生命周期 Phase，确保在 Spring 容器停机阶段优先优雅释放高阶网络资源
-        return Integer.MIN_VALUE + 1000;
+        // 赋予高阶 Phase（SmartLifecycle 停机时序按 phase 降序调用），确保在 Spring 容器停机阶段优先释放高阶 SSH 隧道与网络连接
+        return Integer.MAX_VALUE - 1000;
     }
 }

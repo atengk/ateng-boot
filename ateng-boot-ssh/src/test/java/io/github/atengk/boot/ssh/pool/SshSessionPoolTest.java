@@ -1,8 +1,10 @@
 package io.github.atengk.boot.ssh.pool;
 
 import io.github.atengk.boot.ssh.enums.HostKeyPolicy;
+import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.properties.SshPoolProperties;
+import io.github.atengk.boot.ssh.verifier.InMemoryServerKeyVerifier;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier;
 import org.apache.sshd.client.session.ClientSession;
@@ -16,6 +18,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +30,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SshSessionPool 受管会话缓存池单元与并发高压测试
@@ -256,5 +261,125 @@ class SshSessionPoolTest {
             assertThat(serverAuthCount.get()).isEqualTo(1);
             assertThat(pool.getActiveSessionCount()).isEqualTo(1);
         }
+    }
+
+    @Test
+    @DisplayName("测试失效死会话并发探测与自动剔除重建：会话断开后多线程并发获取能够感知失效并平滑重建")
+    void testDeadSessionEvictionAndRecreationOnAcquire() throws Exception {
+        SshPoolProperties poolProperties = new SshPoolProperties();
+        try (SshSessionPool pool = new SshSessionPool(sshClient, poolProperties)) {
+            SshServerInfo serverInfo = SshServerInfo.of("127.0.0.1", serverPort, "pooluser", "poolpass");
+
+            // 1. 首次获取健康会话
+            ClientSession originalSession = pool.acquire(serverInfo);
+            assertThat(originalSession.isOpen()).isTrue();
+            assertThat(serverAuthCount.get()).isEqualTo(1);
+
+            // 2. 模拟服务端断开或网络闪断导致的死会话 (物理关闭底层会话)
+            originalSession.close(true);
+            assertThat(originalSession.isOpen()).isFalse();
+
+            // 3. 多线程并发再次获取
+            int concurrency = 8;
+            ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+            CountDownLatch latch = new CountDownLatch(concurrency);
+            List<Future<ClientSession>> futures = new ArrayList<>();
+
+            for (int i = 0; i < concurrency; i++) {
+                futures.add(executor.submit(() -> {
+                    try {
+                        return pool.acquire(serverInfo);
+                    } finally {
+                        latch.countDown();
+                    }
+                }));
+            }
+
+            latch.await();
+            executor.shutdown();
+
+            List<ClientSession> newSessions = new ArrayList<>();
+            for (Future<ClientSession> f : futures) {
+                newSessions.add(f.get());
+            }
+
+            // 4. 验证旧死会话已被自动剔除，并发线程获取到了全新且一致的健康会话
+            ClientSession renewedSession = newSessions.get(0);
+            assertThat(renewedSession.isOpen()).isTrue();
+            assertThat(renewedSession).isNotSameAs(originalSession);
+
+            for (ClientSession session : newSessions) {
+                assertThat(session).isSameAs(renewedSession);
+            }
+
+            // 认证计数递增为 2（只产生了一次平滑重建）
+            assertThat(serverAuthCount.get()).isEqualTo(2);
+            assertThat(pool.getActiveSessionCount()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    @DisplayName("测试会话级 HostKeyPolicy 端到端校验生效：STRICT 严格模式未注册阻断 vs IGNORE 模式放行")
+    void testHostKeyPolicyEnforcement() {
+        // 创建配置了全局 InMemoryServerKeyVerifier 的客户端
+        SshClient customClient = SshClient.setUpDefaultClient();
+        InMemoryServerKeyVerifier verifier = new InMemoryServerKeyVerifier(HostKeyPolicy.LENIENT);
+        customClient.setServerKeyVerifier(verifier);
+        customClient.start();
+
+        try (SshSessionPool pool = new SshSessionPool(customClient, new SshPoolProperties())) {
+            // 1. 配置 STRICT 严格策略的主机描述符（未预先注册公钥，应阻断抛出异常）
+            SshServerInfo strictServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .hostKeyPolicy(HostKeyPolicy.STRICT)
+                    .build();
+
+            assertThatThrownBy(() -> pool.acquire(strictServer))
+                    .isInstanceOf(SshOperationException.class);
+
+            // 2. 配置 IGNORE 策略的主机描述符（跳过指纹校验，宽容放行）
+            SshServerInfo ignoreServer = SshServerInfo.builder()
+                    .host("127.0.0.1")
+                    .port(serverPort)
+                    .username("pooluser")
+                    .password("poolpass")
+                    .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                    .build();
+
+            ClientSession ignoreSession = pool.acquire(ignoreServer);
+            assertThat(ignoreSession).isNotNull();
+            assertThat(ignoreSession.isOpen()).isTrue();
+        } finally {
+            customClient.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("测试 KeyPair 凭据哈希一致性：不同对象实例相同公私钥编码能够命中同一会话池缓存")
+    void testKeyPairCredentialHashConsistency() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        KeyPair kp = generator.generateKeyPair();
+
+        // 构造两个相同密钥对内容但不同对象引用的 ServerInfo
+        SshServerInfo server1 = SshServerInfo.builder()
+                .host("127.0.0.1")
+                .port(serverPort)
+                .username("pooluser")
+                .keyPair(kp)
+                .build();
+
+        SshServerInfo server2 = SshServerInfo.builder()
+                .host("127.0.0.1")
+                .port(serverPort)
+                .username("pooluser")
+                .keyPair(new KeyPair(kp.getPublic(), kp.getPrivate()))
+                .build();
+
+        // 验证两者计算出的 toPoolKey 100% 相同
+        assertThat(server1.toPoolKey()).isEqualTo(server2.toPoolKey());
     }
 }

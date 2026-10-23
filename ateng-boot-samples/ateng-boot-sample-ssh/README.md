@@ -26,10 +26,12 @@
 | **04** | 长任务流式实时按行消费 | `SshTemplate.execStream` | `POST /api/ssh/stream-log` | 实时按行回调消费远端滚动日志，返回逐行捕获行列表 |
 | **05** | CMDB 纯内存资产动态直连 | `SshServerInfo` 不变值对象 | `POST /api/ssh/dynamic-connect` | 纯内存解析凭据与宽容自适应主机指纹，执行成功 |
 | **06** | 受管本地端口转发隧道 | `SshTemplate.openLocalTunnel` | `POST /api/ssh/tunnel/open` | 本地端口设为 0，由操作系统动态分配可用随机端口并成功反查 |
-| **07** | ProxyJump 两级跳板机级联穿透 | `SshServerInfo.jumpHost` | `SshScenarioService.runCascadingProxyJump` | 成功穿透两级跳板机（Jump1 -> Jump2 -> Target）并执行命令 |
-| **08** | 瞬态单次任务隔离执行 | `SshTemplate.execOnce` | `SshScenarioService.runTransientTask` | 执行完毕立即确定性物理关闭断开，零残留会话与句柄 |
-| **09** | 端口转发真实双向 TCP 流量 | `SshTunnelHandle` + `Socket` | `SshScenarioService.forwardAndQueryTcp` | 本地客户端向本地转发端口发起 TCP 请求，成功透传至远端 Echo 服务 |
-| **10** | JSR-303 参数格式校验 Fail-Fast | Spring MVC `@Validated` + `@NotBlank` | `POST /api/ssh/exec` 传入空白命令 | 前置卫语句拦截，Fail-Fast 触发参数校验异常，统一返回业务错误报文 |
+| **07** | 受管端口转发对称释放 | `SshScenarioService.closeManagedTunnel` | `POST /api/ssh/tunnel/close` | 对称释放受管隧道，物理关闭底层 Socket 监听，防端口泄漏 |
+| **08** | 线程上下文动态切源 | `SshContextHolder.runWith` | `POST /api/ssh/context-switch` | 线程级透明切源至指定节点，作用域结束后自动复位 |
+| **09** | ProxyJump 两级跳板机级联穿透 | `SshServerInfo.jumpHost` | `SshScenarioService.runCascadingProxyJump` | 成功穿透两级跳板机（Jump1 -> Jump2 -> Target）并执行命令 |
+| **10** | 瞬态单次任务隔离执行 | `SshTemplate.execOnce` | `SshScenarioService.runTransientTask` | 执行完毕立即确定性物理关闭断开，零残留会话与句柄 |
+| **11** | 端口转发真实双向 TCP 流量 | `SshTunnelHandle` + `Socket` | `SshScenarioService.forwardAndQueryTcp` | 本地客户端向本地转发端口发起 TCP 请求，成功透传至远端 Echo 服务 |
+| **12** | JSR-303 参数格式校验 Fail-Fast | Spring MVC `@Validated` + `@NotBlank` | `POST /api/ssh/exec` 传入空白命令 | 前置卫语句拦截，Fail-Fast 触发参数校验异常，统一返回业务错误报文 |
 
 ---
 

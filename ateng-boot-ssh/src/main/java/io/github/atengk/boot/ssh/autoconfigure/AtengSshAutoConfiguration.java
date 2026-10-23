@@ -18,6 +18,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import java.util.concurrent.Executor;
 
@@ -102,8 +103,14 @@ public class AtengSshAutoConfiguration {
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
-    public SshSessionPool sshSessionPool(SshClient sshClient, SshProperties properties) {
-        return new SshSessionPool(sshClient, properties.getPool());
+    public SshSessionPool sshSessionPool(SshClient sshClient,
+                                         SshProperties properties,
+                                         ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider) {
+        return new SshSessionPool(
+                sshClient,
+                properties.getPool(),
+                taskSchedulerProvider.getIfAvailable() != null ? taskSchedulerProvider.getIfAvailable().getScheduledExecutor() : null
+        );
     }
 
     /**

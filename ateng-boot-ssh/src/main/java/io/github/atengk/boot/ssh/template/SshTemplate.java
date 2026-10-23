@@ -281,6 +281,17 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      *
      * @param serverName 节点名称
      * @param script     多行脚本内容
+     * @return 强类型命令执行结果
+     */
+    public SshExecResult execScript(String serverName, String script) {
+        return execScript(serverName, script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上执行多行脚本序列
+     *
+     * @param serverName 节点名称
+     * @param script     多行脚本内容
      * @param options    参数选项
      * @return 强类型命令执行结果
      */
@@ -309,8 +320,9 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
      */
     public SshExecResult execScript(SshServerInfo serverInfo, String script, SshExecOptions options) {
         Assert.hasText(script, "script must not be blank");
-        // 多行脚本直接交由底层 Exec 管道处理
-        return exec(serverInfo, script, options);
+        // 标准化多行脚本换行符：统一将 Windows \r\n 转换为 Unix \n，防御远端 Shell 报 $'\r': command not found
+        String normalizedScript = script.replace("\r\n", "\n").replace("\r", "\n");
+        return exec(serverInfo, normalizedScript, options);
     }
 
     // ==========================================
@@ -614,53 +626,8 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
     public Map<SshServerInfo, SshExecResult> execBatch(Collection<SshServerInfo> servers,
                                                        String command,
                                                        SshExecOptions options) {
-        if (servers == null || servers.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Assert.hasText(command, "command must not be blank");
-
-        Executor targetExecutor = getEffectiveExecutor();
         SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
-
-        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
-
-        for (SshServerInfo server : servers) {
-            if (server == null) {
-                continue;
-            }
-            Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
-                long start = System.currentTimeMillis();
-                try {
-                    return exec(server, command, effectiveOptions);
-                } catch (Exception e) {
-                    log.warn("ateng-boot-ssh: 批量执行节点异常隔离 [{}]: {}", server.toSessionKey(), e.getMessage());
-                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
-                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    return SshExecResult.builder()
-                            .exitCode(-1)
-                            .stderr(errorMsg)
-                            .duration(duration)
-                            .build();
-                }
-            });
-
-            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
-        }
-
-        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
-
-        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
-        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
-            try {
-                resultMap.put(entry.getKey(), entry.getValue().join());
-            } catch (Exception e) {
-                resultMap.put(entry.getKey(), SshExecResult.builder()
-                        .exitCode(-1)
-                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
-                        .build());
-            }
-        }
-        return resultMap;
+        return executeBatchInternal(servers, command, "执行", server -> exec(server, command, effectiveOptions));
     }
 
     /**
@@ -729,53 +696,8 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                                                            String command,
                                                            String sudoPassword,
                                                            SshExecOptions options) {
-        if (servers == null || servers.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        Assert.hasText(command, "command must not be blank");
-
-        Executor targetExecutor = getEffectiveExecutor();
         SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
-
-        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
-
-        for (SshServerInfo server : servers) {
-            if (server == null) {
-                continue;
-            }
-            Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
-                long start = System.currentTimeMillis();
-                try {
-                    return execSudo(server, command, sudoPassword, effectiveOptions);
-                } catch (Exception e) {
-                    log.warn("ateng-boot-ssh: 批量 Sudo 执行节点异常隔离 [{}]: {}", server.toSessionKey(), e.getMessage());
-                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
-                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    return SshExecResult.builder()
-                            .exitCode(-1)
-                            .stderr(errorMsg)
-                            .duration(duration)
-                            .build();
-                }
-            });
-
-            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
-        }
-
-        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
-
-        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
-        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
-            try {
-                resultMap.put(entry.getKey(), entry.getValue().join());
-            } catch (Exception e) {
-                resultMap.put(entry.getKey(), SshExecResult.builder()
-                        .exitCode(-1)
-                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
-                        .build());
-            }
-        }
-        return resultMap;
+        return executeBatchInternal(servers, command, "Sudo", server -> execSudo(server, command, sudoPassword, effectiveOptions));
     }
 
     /**
@@ -805,14 +727,69 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                                                            String command,
                                                            char[] sudoPassword,
                                                            SshExecOptions options) {
-        String pwdStr = sudoPassword != null ? new String(sudoPassword) : null;
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
         try {
-            return execSudoBatch(servers, command, pwdStr, options);
+            return executeBatchInternal(servers, command, "Sudo", server -> {
+                char[] copy = sudoPassword != null ? sudoPassword.clone() : null;
+                return execSudo(server, command, copy, effectiveOptions);
+            });
         } finally {
             if (sudoPassword != null) {
                 java.util.Arrays.fill(sudoPassword, '\0');
             }
         }
+    }
+
+    private Map<SshServerInfo, SshExecResult> executeBatchInternal(
+            Collection<SshServerInfo> servers,
+            String command,
+            String operationName,
+            java.util.function.Function<SshServerInfo, SshExecResult> taskFunction) {
+        if (servers == null || servers.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Assert.hasText(command, "command must not be blank");
+
+        Executor targetExecutor = getEffectiveExecutor();
+        Map<SshServerInfo, CompletableFuture<SshExecResult>> futures = new LinkedHashMap<>();
+
+        for (SshServerInfo server : servers) {
+            if (server == null) {
+                continue;
+            }
+            Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> {
+                long start = System.currentTimeMillis();
+                try {
+                    return taskFunction.apply(server);
+                } catch (Exception e) {
+                    log.warn("ateng-boot-ssh: 批量 {} 节点异常隔离 [{}]: {}", operationName, server.toSessionKey(), e.getMessage());
+                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - start);
+                    String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    return SshExecResult.builder()
+                            .exitCode(-1)
+                            .stderr(errorMsg)
+                            .duration(duration)
+                            .build();
+                }
+            });
+
+            futures.put(server, CompletableFuture.supplyAsync(task, targetExecutor));
+        }
+
+        CompletableFuture.allOf(futures.values().toArray(new CompletableFuture[0])).join();
+
+        Map<SshServerInfo, SshExecResult> resultMap = new LinkedHashMap<>();
+        for (Map.Entry<SshServerInfo, CompletableFuture<SshExecResult>> entry : futures.entrySet()) {
+            try {
+                resultMap.put(entry.getKey(), entry.getValue().join());
+            } catch (Exception e) {
+                resultMap.put(entry.getKey(), SshExecResult.builder()
+                        .exitCode(-1)
+                        .stderr(e.getMessage() != null ? e.getMessage() : "Unknown execution error")
+                        .build());
+            }
+        }
+        return resultMap;
     }
 
     @Override

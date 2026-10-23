@@ -11,15 +11,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.client.session.forward.ExplicitPortForwardingTracker;
+import org.apache.sshd.common.AttributeRepository;
 import org.apache.sshd.common.util.net.SshdSocketAddress;
 import org.apache.sshd.core.CoreModuleProperties;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.Assert;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,6 +40,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @Slf4j
 public class SshSessionPool implements AutoCloseable {
 
+    private static final int STRIPE_COUNT = 64;
+    private final Object[] stripeLocks;
+
     private final SshClient sshClient;
     private final SshPoolProperties poolProperties;
 
@@ -47,27 +52,40 @@ public class SshSessionPool implements AutoCloseable {
     private final ConcurrentHashMap<String, PooledSessionHolder> pool = new ConcurrentHashMap<>();
 
     /**
-     * 针对相同目标主机的防并发建连细粒度并发锁字典
-     */
-    private final ConcurrentHashMap<String, Object> connectionLocks = new ConcurrentHashMap<>();
-
-    /**
      * 后台空闲会话探测淘汰调度器
      */
     private final ScheduledExecutorService evictionScheduler;
+    private final ThreadPoolTaskScheduler internalTaskScheduler;
 
     private volatile boolean closed = false;
 
     public SshSessionPool(SshClient sshClient, SshPoolProperties poolProperties) {
+        this(sshClient, poolProperties, null);
+    }
+
+    public SshSessionPool(SshClient sshClient, SshPoolProperties poolProperties, ScheduledExecutorService externalScheduler) {
         Assert.notNull(sshClient, "SshClient must not be null");
         this.sshClient = sshClient;
         this.poolProperties = poolProperties != null ? poolProperties : new SshPoolProperties();
 
-        this.evictionScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "ateng-ssh-session-evictor");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.stripeLocks = new Object[STRIPE_COUNT];
+        for (int i = 0; i < STRIPE_COUNT; i++) {
+            this.stripeLocks[i] = new Object();
+        }
+
+        if (externalScheduler != null) {
+            this.evictionScheduler = externalScheduler;
+            this.internalTaskScheduler = null;
+        } else {
+            ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+            scheduler.setPoolSize(1);
+            scheduler.setThreadNamePrefix("ateng-ssh-evictor-");
+            scheduler.setDaemon(true);
+            scheduler.setWaitForTasksToCompleteOnShutdown(false);
+            scheduler.initialize();
+            this.internalTaskScheduler = scheduler;
+            this.evictionScheduler = scheduler.getScheduledExecutor();
+        }
 
         // 启动定时空闲会话淘汰任务（周期取 idleTimeout 的一半或保底 15 秒）
         long checkIntervalSeconds = Math.max(5, Math.min(15, this.poolProperties.getIdleTimeout().toSeconds() / 2));
@@ -82,6 +100,15 @@ public class SshSessionPool implements AutoCloseable {
                 this.poolProperties.getMaxSessions(),
                 this.poolProperties.getIdleTimeout(),
                 this.poolProperties.getHeartbeatInterval());
+    }
+
+    private Object getLock(String poolKey) {
+        if (poolKey == null) {
+            return stripeLocks[0];
+        }
+        int hash = poolKey.hashCode() ^ (poolKey.hashCode() >>> 16);
+        int index = Math.abs(hash % STRIPE_COUNT);
+        return stripeLocks[index];
     }
 
     /**
@@ -104,8 +131,8 @@ public class SshSessionPool implements AutoCloseable {
             return holder.getSession();
         }
 
-        // 2. 慢速路径 (Slow Path)：基于单机防并发建连细粒度锁建立握手
-        Object lock = connectionLocks.computeIfAbsent(poolKey, k -> new Object());
+        // 2. 慢速路径 (Slow Path)：基于分段锁建立防惊群建连握手
+        Object lock = getLock(poolKey);
         synchronized (lock) {
             checkNotClosed();
             holder = pool.get(poolKey);
@@ -246,12 +273,14 @@ public class SshSessionPool implements AutoCloseable {
         if (poolKey == null) {
             return;
         }
-        PooledSessionHolder holder = pool.remove(poolKey);
-        if (holder != null) {
-            holder.close();
-            log.debug("ateng-boot-ssh: 已主动剔除并注销池化会话 [poolKey={}]", poolKey);
+        Object lock = getLock(poolKey);
+        synchronized (lock) {
+            PooledSessionHolder holder = pool.remove(poolKey);
+            if (holder != null) {
+                holder.close();
+                log.debug("ateng-boot-ssh: 已主动剔除并注销池化会话 [poolKey={}]", poolKey);
+            }
         }
-        connectionLocks.remove(poolKey);
     }
 
     /**
@@ -287,7 +316,6 @@ public class SshSessionPool implements AutoCloseable {
             holder.close();
         }
         pool.clear();
-        connectionLocks.clear();
     }
 
     /**
@@ -301,10 +329,18 @@ public class SshSessionPool implements AutoCloseable {
         this.closed = true;
         log.info("ateng-boot-ssh: 正在关闭 SshSessionPool 会话缓存池并释放全部网络连接...");
 
-        try {
-            evictionScheduler.shutdownNow();
-        } catch (Exception e) {
-            log.warn("ateng-boot-ssh: 停止淘汰调度器异常: {}", e.getMessage());
+        if (internalTaskScheduler != null) {
+            try {
+                internalTaskScheduler.destroy();
+            } catch (Exception e) {
+                log.warn("ateng-boot-ssh: 停止内部淘汰调度器异常: {}", e.getMessage());
+            }
+        } else if (evictionScheduler != null) {
+            try {
+                evictionScheduler.shutdownNow();
+            } catch (Exception e) {
+                log.warn("ateng-boot-ssh: 停止淘汰调度器异常: {}", e.getMessage());
+            }
         }
 
         clear();
@@ -313,8 +349,16 @@ public class SshSessionPool implements AutoCloseable {
 
     private ClientSession createAndAuthenticateSession(SshServerInfo serverInfo) {
         ExplicitPortForwardingTracker jumpTracker = null;
+        ClientSession session = null;
         try {
-            ClientSession session;
+            // 构造建连初始上下文，确保在 TCP 握手与密钥协商阶段即刻生效目标地址与会话级 HostKeyPolicy
+            Map<AttributeRepository.AttributeKey<?>, Object> initAttrs = new HashMap<>();
+            initAttrs.put(InMemoryServerKeyVerifier.TARGET_HOST_KEY, serverInfo.toHostPortKey());
+            if (serverInfo.getHostKeyPolicy() != null) {
+                initAttrs.put(InMemoryServerKeyVerifier.HOST_KEY_POLICY_KEY, serverInfo.getHostKeyPolicy());
+            }
+            AttributeRepository connectionContext = AttributeRepository.ofAttributesMap(initAttrs);
+
             if (serverInfo.hasJumpHost()) {
                 // 1. ProxyJump 跳板机穿透拓扑：递归解析并获取跳板机会话
                 ClientSession jumpSession = acquire(serverInfo.getJumpHost());
@@ -328,12 +372,13 @@ public class SshSessionPool implements AutoCloseable {
                         boundPort, serverInfo.toHostPortKey(), serverInfo.getJumpHost().toSessionKey());
 
                 // 3. 通过本地代理端口与目标服务器握手建连
-                session = sshClient.connect(serverInfo.getUsername(), "127.0.0.1", boundPort)
+                session = sshClient.connect(serverInfo.getUsername(), "127.0.0.1", boundPort, connectionContext, null)
                         .verify(serverInfo.getConnectTimeout())
                         .getSession();
 
                 // 4. 双向级联生命周期监听：目标会话关闭时即刻释放跳板机上的临时端口；跳板机会话关闭时级联切断目标会话
                 ExplicitPortForwardingTracker finalTracker = jumpTracker;
+                ClientSession targetSession = session;
                 session.addCloseFutureListener(f -> {
                     try {
                         finalTracker.close();
@@ -343,8 +388,8 @@ public class SshSessionPool implements AutoCloseable {
                 });
                 jumpSession.addCloseFutureListener(f -> {
                     try {
-                        if (session.isOpen()) {
-                            session.close(true);
+                        if (targetSession.isOpen()) {
+                            targetSession.close(true);
                         }
                     } catch (Exception ex) {
                         log.debug("ateng-boot-ssh: 跳板机会话关闭触发目标会话断开: {}", ex.getMessage());
@@ -352,16 +397,15 @@ public class SshSessionPool implements AutoCloseable {
                 });
             } else {
                 // 普通直连拓扑
-                session = sshClient.connect(serverInfo.getUsername(), serverInfo.getHost(), serverInfo.getPort())
+                session = sshClient.connect(serverInfo.getUsername(), serverInfo.getHost(), serverInfo.getPort(), connectionContext, null)
                         .verify(serverInfo.getConnectTimeout())
                         .getSession();
             }
 
-            // 注入真实目标服务器地址属性，供指纹校验器等设施透明识别
+            // 注入真实目标服务器地址属性与策略备选守卫
             session.setAttribute(InMemoryServerKeyVerifier.TARGET_HOST_KEY, serverInfo.toHostPortKey());
-
-            // 若服务器描述符指定了特定的主机公钥策略，覆盖默认校验器
             if (serverInfo.getHostKeyPolicy() != null) {
+                session.setAttribute(InMemoryServerKeyVerifier.HOST_KEY_POLICY_KEY, serverInfo.getHostKeyPolicy());
                 session.setServerKeyVerifier(serverInfo.getHostKeyPolicy().toVerifier());
             }
 
@@ -377,6 +421,13 @@ public class SshSessionPool implements AutoCloseable {
 
             return session;
         } catch (Exception e) {
+            if (session != null) {
+                try {
+                    session.close(true);
+                } catch (Exception ex) {
+                    log.debug("ateng-boot-ssh: 建连失败清理异常会话完成: {}", ex.getMessage());
+                }
+            }
             if (jumpTracker != null) {
                 try {
                     jumpTracker.close();
@@ -410,7 +461,6 @@ public class SshSessionPool implements AutoCloseable {
                         poolProperties.getMaxSessions(), evicted.getServerInfo().toSessionKey());
                 evicted.close();
             }
-            connectionLocks.remove(oldestKey);
         }
     }
 
@@ -426,7 +476,6 @@ public class SshSessionPool implements AutoCloseable {
                 log.debug("ateng-boot-ssh: 后台探测到失效或空闲超时会话，执行清理注销 [poolKey={}]", entry.getKey());
                 pool.remove(entry.getKey(), holder);
                 holder.close();
-                connectionLocks.remove(entry.getKey());
             }
         }
     }

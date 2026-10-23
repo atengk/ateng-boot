@@ -9,6 +9,7 @@ import org.apache.sshd.client.channel.ChannelExec;
 import org.apache.sshd.client.channel.ClientChannelEvent;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.common.SshConstants;
+import org.apache.sshd.common.channel.PtyChannelConfiguration;
 import org.apache.sshd.common.util.buffer.Buffer;
 import org.springframework.util.Assert;
 
@@ -99,7 +100,8 @@ public final class SshCommandExecutor {
 
         ChannelExec channel = null;
         try {
-            channel = session.createExecChannel(finalCommand, charset, null, effectiveOptions.getEnv());
+            PtyChannelConfiguration ptyConfig = effectiveOptions.isPty() ? new PtyChannelConfiguration() : null;
+            channel = session.createExecChannel(finalCommand, charset, ptyConfig, effectiveOptions.getEnv());
             channel.setOut(stdoutStream);
             channel.setErr(stderrStream);
 
@@ -143,7 +145,6 @@ public final class SshCommandExecutor {
         } catch (SshOperationException e) {
             throw e;
         } catch (Exception e) {
-            log.error("ateng-boot-ssh: 远程命令执行异常 [command={}]: {}", rawCommand, e.getMessage());
             throw new SshOperationException(SshResultCode.COMMAND_EXEC_FAILED, "SSH 远程命令执行异常: " + e.getMessage(), e);
         } finally {
             closeChannelQuietly(channel);
@@ -265,7 +266,8 @@ public final class SshCommandExecutor {
 
         ChannelExec channel = null;
         try {
-            channel = session.createExecChannel(finalCommand, charset, null, effectiveOptions.getEnv());
+            PtyChannelConfiguration ptyConfig = effectiveOptions.isPty() ? new PtyChannelConfiguration() : null;
+            channel = session.createExecChannel(finalCommand, charset, ptyConfig, effectiveOptions.getEnv());
             channel.setOut(stdoutStream);
             channel.setErr(stderrStream);
 
@@ -286,7 +288,6 @@ public final class SshCommandExecutor {
         } catch (SshOperationException e) {
             throw e;
         } catch (Exception e) {
-            log.error("ateng-boot-ssh: 流式执行命令异常 [command={}]: {}", rawCommand, e.getMessage());
             throw new SshOperationException(SshResultCode.COMMAND_EXEC_FAILED, "SSH 流式执行命令异常: " + e.getMessage(), e);
         } finally {
             closeChannelQuietly(channel);
