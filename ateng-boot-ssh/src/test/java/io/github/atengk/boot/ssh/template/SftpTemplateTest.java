@@ -2,6 +2,7 @@ package io.github.atengk.boot.ssh.template;
 
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
+import io.github.atengk.boot.ssh.listener.SftpProgressListener;
 import io.github.atengk.boot.ssh.model.SftpFileInfo;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -290,5 +291,139 @@ class SftpTemplateTest {
                     SshOperationException soe = (SshOperationException) ex;
                     assertThat(soe.getResultCode()).isEqualTo(SshResultCode.SFTP_FILE_NOT_FOUND);
                 });
+    }
+
+    @Test
+    @DisplayName("测试大文件流式上传与下载挂载 SftpProgressListener 实时监听进度")
+    void testStreamingProgressListener() {
+        byte[] payload = new byte[100 * 1024]; // 100 KB
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i % 128);
+        }
+        String path = "/progress-test.bin";
+
+        // 1. 上传监听
+        java.util.concurrent.atomic.AtomicLong uploadBytes = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong uploadTotal = new java.util.concurrent.atomic.AtomicLong(0);
+        sftpTemplate.upload(path, payload, (transferred, total) -> {
+            uploadBytes.set(transferred);
+            uploadTotal.set(total);
+        });
+
+        assertThat(uploadBytes.get()).isEqualTo(payload.length);
+        assertThat(uploadTotal.get()).isEqualTo(payload.length);
+
+        // 2. 下载监听
+        java.util.concurrent.atomic.AtomicLong downloadBytes = new java.util.concurrent.atomic.AtomicLong(0);
+        java.util.concurrent.atomic.AtomicLong downloadTotal = new java.util.concurrent.atomic.AtomicLong(0);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        sftpTemplate.download(path, baos, (transferred, total) -> {
+            downloadBytes.set(transferred);
+            downloadTotal.set(total);
+        });
+
+        assertThat(downloadBytes.get()).isEqualTo(payload.length);
+        assertThat(downloadTotal.get()).isEqualTo(payload.length);
+        assertThat(baos.toByteArray()).isEqualTo(payload);
+    }
+
+    @Test
+    @DisplayName("测试 list 检索指定目录下的全部文件与子目录元数据")
+    void testListDirectory() {
+        String baseDir = "/list-dir";
+        sftpTemplate.upload(baseDir + "/file1.txt", "1".getBytes(StandardCharsets.UTF_8));
+        sftpTemplate.upload(baseDir + "/file2.txt", "22".getBytes(StandardCharsets.UTF_8));
+        sftpTemplate.mkdirs(baseDir + "/child-dir");
+
+        java.util.List<SftpFileInfo> entries = sftpTemplate.list(baseDir);
+        assertThat(entries).hasSize(3);
+
+        java.util.Map<String, SftpFileInfo> map = new java.util.HashMap<>();
+        for (SftpFileInfo entry : entries) {
+            map.put(entry.getFilename(), entry);
+        }
+
+        assertThat(map).containsKey("file1.txt");
+        assertThat(map).containsKey("file2.txt");
+        assertThat(map).containsKey("child-dir");
+
+        assertThat(map.get("file1.txt").isRegularFile()).isTrue();
+        assertThat(map.get("file1.txt").getSize()).isEqualTo(1L);
+
+        assertThat(map.get("child-dir").isDirectory()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试 deleteRecursively 深度优先递归删除多层非空目录")
+    void testDeleteRecursively() {
+        String rootDir = "/tree-to-delete";
+        sftpTemplate.upload(rootDir + "/sub1/fileA.txt", "A".getBytes(StandardCharsets.UTF_8));
+        sftpTemplate.upload(rootDir + "/sub1/sub2/fileB.txt", "B".getBytes(StandardCharsets.UTF_8));
+        sftpTemplate.mkdirs(rootDir + "/empty-sub");
+
+        assertThat(sftpTemplate.exists(rootDir + "/sub1/sub2/fileB.txt")).isTrue();
+        assertThat(sftpTemplate.exists(rootDir + "/empty-sub")).isTrue();
+
+        boolean result = sftpTemplate.deleteRecursively(rootDir);
+        assertThat(result).isTrue();
+
+        assertThat(sftpTemplate.exists(rootDir)).isFalse();
+        assertThat(sftpTemplate.exists(rootDir + "/sub1/sub2/fileB.txt")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 deleteRecursively 遇到高危受保护根目录时触发 Fail-Fast 异常拦截")
+    void testDeleteRecursivelyHighRiskRootGuard() {
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/etc"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively("/root"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("禁止递归删除系统关键受保护目录");
+
+        assertThatThrownBy(() -> sftpTemplate.deleteRecursively(""))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试 uploadDirectory 与 downloadDirectory 整包双向同步目录树（空目录镜像 + 宿主隐性文件过滤）")
+    void testUploadAndDownloadDirectory(@TempDir Path tempLocal) throws IOException {
+        Path sourceLocal = tempLocal.resolve("source-tree");
+        Files.createDirectories(sourceLocal.resolve("empty-child"));
+        Files.createDirectories(sourceLocal.resolve("nested/deep"));
+
+        Files.writeString(sourceLocal.resolve("root-file.txt"), "Root content");
+        Files.writeString(sourceLocal.resolve("nested/deep/deep-file.txt"), "Deep content");
+        // 隐性系统文件（应被自动忽略）
+        Files.writeString(sourceLocal.resolve("desktop.ini"), "[ViewState]");
+        Files.writeString(sourceLocal.resolve(".DS_Store"), "macOS metadata");
+
+        String remoteSyncDir = "/synced-tree";
+
+        // 1. 上传整棵目录树
+        sftpTemplate.uploadDirectory(sourceLocal, remoteSyncDir);
+
+        assertThat(sftpTemplate.exists(remoteSyncDir + "/root-file.txt")).isTrue();
+        assertThat(sftpTemplate.exists(remoteSyncDir + "/nested/deep/deep-file.txt")).isTrue();
+        assertThat(sftpTemplate.exists(remoteSyncDir + "/empty-child")).isTrue();
+        // 校验隐性文件被成功过滤
+        assertThat(sftpTemplate.exists(remoteSyncDir + "/desktop.ini")).isFalse();
+        assertThat(sftpTemplate.exists(remoteSyncDir + "/.DS_Store")).isFalse();
+
+        // 2. 下载整棵目录树至新本地目录
+        Path destLocal = tempLocal.resolve("dest-tree");
+        sftpTemplate.downloadDirectory(remoteSyncDir, destLocal);
+
+        assertThat(Files.readString(destLocal.resolve("root-file.txt"))).isEqualTo("Root content");
+        assertThat(Files.readString(destLocal.resolve("nested/deep/deep-file.txt"))).isEqualTo("Deep content");
+        assertThat(Files.exists(destLocal.resolve("empty-child"))).isTrue();
+        assertThat(Files.isDirectory(destLocal.resolve("empty-child"))).isTrue();
+        assertThat(Files.exists(destLocal.resolve("desktop.ini"))).isFalse();
+        assertThat(Files.exists(destLocal.resolve(".DS_Store"))).isFalse();
     }
 }
