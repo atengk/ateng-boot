@@ -1,10 +1,17 @@
 package io.github.atengk.boot.pay.autoconfigure;
 
 import io.github.atengk.boot.pay.config.properties.PayProperties;
+import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
+import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
+import io.github.atengk.boot.pay.spi.PayCertificateProvider;
+import io.github.atengk.boot.pay.util.PayKeyLoader;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 
 /**
  * 支付模块顶层统一自动装配类
@@ -18,7 +25,26 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @ConditionalOnProperty(prefix = "ateng.boot.pay", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengPayAutoConfiguration {
 
-    public AtengPayAutoConfiguration() {
+    public AtengPayAutoConfiguration(ObjectProvider<PayCertificateProvider> certificateProviders) {
         log.info("Initialized AtengPayAutoConfiguration for enterprise multi-channel payment foundation.");
+        certificateProviders.orderedStream().forEach(PayKeyLoader::registerProvider);
+    }
+
+    /**
+     * 注册命名多商户与多应用注册表
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public NamedMerchantRegistry namedMerchantRegistry(PayProperties payProperties) {
+        return new NamedMerchantRegistry(payProperties);
+    }
+
+    /**
+     * 注册微信平台证书自动轮换与生命周期管理器
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WechatAutoCertificateManager wechatAutoCertificateManager() {
+        return new WechatAutoCertificateManager();
     }
 }

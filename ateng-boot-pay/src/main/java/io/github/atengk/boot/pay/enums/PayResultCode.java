@@ -57,7 +57,17 @@ public enum PayResultCode implements IResultCode {
     /**
      * 获取支付防重锁失败，请勿并发重复操作
      */
-    PAY_LOCK_ACQUIRE_FAILED(58009, "获取支付防重锁失败，请勿并发重复操作");
+    PAY_LOCK_ACQUIRE_FAILED(58009, "获取支付防重锁失败，请勿并发重复操作"),
+
+    /**
+     * 支付请求参数非法或缺失
+     */
+    PAY_PARAM_INVALID(58010, "支付请求参数非法或缺失"),
+
+    /**
+     * 未找到有效的支付平台或商户证书
+     */
+    PAY_CERTIFICATE_NOT_FOUND(58011, "未找到有效的支付平台或商户证书");
 
     /**
      * 业务状态码

@@ -19,4 +19,12 @@ public class PaySignException extends PayException {
     public PaySignException(String message, Throwable cause) {
         super(PayResultCode.PAY_SIGN_VERIFY_ERROR, message, cause);
     }
+
+    public PaySignException(io.github.atengk.boot.core.code.IResultCode resultCode, String message) {
+        super(resultCode, message);
+    }
+
+    public PaySignException(io.github.atengk.boot.core.code.IResultCode resultCode, String message, Throwable cause) {
+        super(resultCode, message, cause);
+    }
 }
