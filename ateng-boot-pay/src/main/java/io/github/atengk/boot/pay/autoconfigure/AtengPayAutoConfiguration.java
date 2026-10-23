@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.autoconfigure;
 
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.core.AlipayTemplate;
+import io.github.atengk.boot.pay.core.PayTemplate;
 import io.github.atengk.boot.pay.core.WechatPayTemplate;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
@@ -69,5 +70,15 @@ public class AtengPayAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.pay.alipay", name = "enabled", havingValue = "true", matchIfMissing = true)
     public AlipayTemplate alipayTemplate(NamedMerchantRegistry namedMerchantRegistry) {
         return new AlipayTemplate(namedMerchantRegistry);
+    }
+
+    /**
+     * 注册顶层轻量统一收单门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PayTemplate payTemplate(ObjectProvider<WechatPayTemplate> wechatPayTemplateProvider,
+                                   ObjectProvider<AlipayTemplate> alipayTemplateProvider) {
+        return new PayTemplate(wechatPayTemplateProvider.getIfAvailable(), alipayTemplateProvider.getIfAvailable());
     }
 }
