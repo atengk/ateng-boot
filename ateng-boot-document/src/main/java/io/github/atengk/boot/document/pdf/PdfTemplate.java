@@ -1,10 +1,13 @@
 package io.github.atengk.boot.document.pdf;
 
+import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
+import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
+import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentPdfProperties;
 import io.github.atengk.boot.document.properties.DocumentProperties;
@@ -12,11 +15,17 @@ import io.github.atengk.boot.document.properties.DocumentWatermarkProperties;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
+import org.apache.pdfbox.multipdf.PDFMergerUtility;
+import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
+import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -37,6 +46,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -423,6 +435,655 @@ public class PdfTemplate {
             return loadedPdf.getDocument().getNumberOfPages();
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "获取 PDF 页数失败: " + e.getMessage(), e);
+        }
+    }
+
+    // ==========================================
+    // 4. 多 PDF 物理合并与拆分提取 (Merge & Split)
+    // ==========================================
+
+    /**
+     * 将多个独立的 PDF 文档物理顺序合并为单一完整文档
+     *
+     * @param target     目标输出对象（支持 File, Path, OutputStream, WritableResource, String）
+     * @param pdfSources 待合并的 PDF 文档列表（支持 Resource, InputStream, File, Path, byte[], String）
+     * @throws PdfOperationException 合并操作失败或输入流异常时抛出
+     */
+    public void merge(Object target, List<?> pdfSources) {
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        if (pdfSources == null || pdfSources.isEmpty()) {
+            throw new IllegalArgumentException("待合并的 PDF 文档输入列表 pdfSources 不能为空");
+        }
+
+        try {
+            PDFMergerUtility merger = new PDFMergerUtility();
+            List<InputStream> openedStreams = new ArrayList<>();
+
+            try {
+                for (int i = 0; i < pdfSources.size(); i++) {
+                    Object src = pdfSources.get(i);
+                    if (src == null) {
+                        throw new IllegalArgumentException("待合并的 PDF 文档项不能为空 (索引: " + i + ")");
+                    }
+                    InputStream is = resolveRawInputStream(src);
+                    openedStreams.add(is);
+                    merger.addSource(new RandomAccessReadBuffer(is));
+                }
+
+                OutputStream os = resolveOutputStream(target);
+                try {
+                    merger.setDestinationStream(os);
+                    merger.mergeDocuments(null);
+                    os.flush();
+                } finally {
+                    if (!(target instanceof OutputStream)) {
+                        os.close();
+                    }
+                }
+            } finally {
+                for (InputStream is : openedStreams) {
+                    try {
+                        is.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "合并 PDF 文档失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将多个独立的 PDF 文档物理合并并输出至目标（可变参数便捷重载）
+     *
+     * @param target     目标输出对象
+     * @param pdfSources 待合并的 PDF 文档输入源列表
+     */
+    public void merge(Object target, Object... pdfSources) {
+        Objects.requireNonNull(pdfSources, "待合并的 PDF 文档输入源不能为空");
+        merge(target, Arrays.asList(pdfSources));
+    }
+
+    /**
+     * 将多个独立的 PDF 文档物理合并并导出为二进制字节数组
+     *
+     * @param pdfSources 待合并的 PDF 文档列表
+     * @return 合并后的 PDF 二进制数据
+     */
+    public byte[] mergeToBytes(List<?> pdfSources) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        merge(baos, pdfSources);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 将多个独立的 PDF 文档物理合并并导出为二进制字节数组（可变参数便捷重载）
+     *
+     * @param pdfSources 待合并的 PDF 文档输入源列表
+     * @return 合并后的 PDF 二进制数据
+     */
+    public byte[] mergeToBytes(Object... pdfSources) {
+        Objects.requireNonNull(pdfSources, "待合并的 PDF 文档输入源不能为空");
+        return mergeToBytes(Arrays.asList(pdfSources));
+    }
+
+    /**
+     * 将 PDF 文档逐页物理拆分并保存至指定输出目录
+     *
+     * @param source    原始 PDF 输入源
+     * @param outputDir 输出目录（支持 File, Path, String）
+     * @param prefix    生成拆分文件名称前缀（如 "page_"，若为空默认 "split_"）
+     * @return 拆分生成的物理文件列表
+     * @throws PdfOperationException 拆分操作失败时抛出
+     */
+    public List<File> split(Object source, Object outputDir, String prefix) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(outputDir, "输出目录 outputDir 不能为空");
+
+        File targetDir;
+        if (outputDir instanceof File f) {
+            targetDir = f;
+        } else if (outputDir instanceof Path p) {
+            targetDir = p.toFile();
+        } else if (outputDir instanceof String s) {
+            targetDir = new File(s.trim());
+        } else {
+            throw new IllegalArgumentException("不支持的输出目录类型: " + outputDir.getClass().getName());
+        }
+
+        if (!targetDir.exists()) {
+            targetDir.mkdirs();
+        }
+
+        String filePrefix = prefix != null && !prefix.trim().isEmpty() ? prefix.trim() : "split_";
+        List<File> generatedFiles = new ArrayList<>();
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument srcDoc = loadedPdf.getDocument();
+            Splitter splitter = new Splitter();
+            splitter.setSplitAtPage(1); // 逐页拆分
+            List<PDDocument> pages = splitter.split(srcDoc);
+
+            try {
+                for (int i = 0; i < pages.size(); i++) {
+                    PDDocument pageDoc = pages.get(i);
+                    File outFile = new File(targetDir, filePrefix + (i + 1) + ".pdf");
+                    pageDoc.save(outFile);
+                    generatedFiles.add(outFile);
+                }
+            } finally {
+                for (PDDocument pDoc : pages) {
+                    try {
+                        pDoc.close();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            return generatedFiles;
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "拆分 PDF 文档失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 提取 PDF 文档中指定页码范围并保存为新文档（1-based 包含两端）
+     *
+     * @param source   原始 PDF 输入源
+     * @param target   目标输出
+     * @param fromPage 起始页码（从 1 开始，包含）
+     * @param toPage   结束页码（从 1 开始，包含）
+     */
+    public void extractPages(Object source, Object target, int fromPage, int toPage) {
+        if (fromPage < 1 || toPage < fromPage) {
+            throw new IllegalArgumentException(String.format("页码范围无效 (fromPage: %d, toPage: %d)", fromPage, toPage));
+        }
+        int[] indexes = new int[toPage - fromPage + 1];
+        for (int i = 0; i < indexes.length; i++) {
+            indexes[i] = fromPage - 1 + i;
+        }
+        extractPages(source, target, indexes);
+    }
+
+    /**
+     * 提取 PDF 文档中指定页面索引并保存为新文档（0-based，支持负数索引如 -1 为最后一页）
+     *
+     * @param source      原始 PDF 输入源
+     * @param target      目标输出
+     * @param pageIndexes 待提取的页面索引列表
+     */
+    public void extractPages(Object source, Object target, int... pageIndexes) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        Objects.requireNonNull(pageIndexes, "待提取的页面索引列表不能为空");
+        if (pageIndexes.length == 0) {
+            throw new IllegalArgumentException("待提取的页面索引列表不能为空");
+        }
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source);
+             PDDocument destDoc = new PDDocument()) {
+
+            PDDocument srcDoc = loadedPdf.getDocument();
+            int totalPages = srcDoc.getNumberOfPages();
+
+            for (int rawIndex : pageIndexes) {
+                int actualIndex = rawIndex < 0 ? totalPages + rawIndex : rawIndex;
+                if (actualIndex < 0 || actualIndex >= totalPages) {
+                    throw new IllegalArgumentException(String.format("待提取的页面索引超出范围 (总页数: %d, 请求页码: %d)",
+                            totalPages, rawIndex));
+                }
+                destDoc.importPage(srcDoc.getPage(actualIndex));
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                destDoc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "提取 PDF 页面失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 提取 PDF 文档指定页码范围并导出为字节数组（1-based 包含两端）
+     *
+     * @param source   原始 PDF 输入源
+     * @param fromPage 起始页码（从 1 开始）
+     * @param toPage   结束页码（从 1 开始）
+     * @return 提取后的 PDF 二进制数据
+     */
+    public byte[] extractPagesToBytes(Object source, int fromPage, int toPage) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        extractPages(source, baos, fromPage, toPage);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 提取 PDF 文档指定页面索引并导出为字节数组（0-based，支持负数）
+     *
+     * @param source      原始 PDF 输入源
+     * @param pageIndexes 待提取的页面索引列表
+     * @return 提取后的 PDF 二进制数据
+     */
+    public byte[] extractPagesToBytes(Object source, int... pageIndexes) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        extractPages(source, baos, pageIndexes);
+        return baos.toByteArray();
+    }
+
+    // ==========================================
+    // 5. 页面旋转物理校准 (Rotate)
+    // ==========================================
+
+    /**
+     * 对 PDF 的全部或特定页面按指定角度进行物理旋转校准
+     *
+     * @param source      原始 PDF 输入源
+     * @param target      目标输出
+     * @param angle       旋转角度（必须为 90 的整数倍，如 90, 180, 270）
+     * @param pageIndexes 目标旋转页面索引（0-based，支持负数；若未提供则旋转全部页面）
+     * @throws PdfOperationException 旋转操作失败时抛出
+     */
+    public void rotatePages(Object source, Object target, int angle, int... pageIndexes) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        if (angle % 90 != 0) {
+            throw new IllegalArgumentException("旋转角度 angle 必须为 90 的整数倍 (如 90, 180, 270): " + angle);
+        }
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            int totalPages = doc.getNumberOfPages();
+
+            if (pageIndexes == null || pageIndexes.length == 0) {
+                // 旋转全部页面
+                for (PDPage page : doc.getPages()) {
+                    int currentRotation = page.getRotation();
+                    page.setRotation((currentRotation + angle + 360) % 360);
+                }
+            } else {
+                // 旋转特定指定页面
+                for (int rawIndex : pageIndexes) {
+                    int actualIndex = rawIndex < 0 ? totalPages + rawIndex : rawIndex;
+                    if (actualIndex < 0 || actualIndex >= totalPages) {
+                        throw new IllegalArgumentException(String.format("待旋转的页面索引超出范围 (总页数: %d, 请求页码: %d)",
+                                totalPages, rawIndex));
+                    }
+                    PDPage page = doc.getPage(actualIndex);
+                    int currentRotation = page.getRotation();
+                    page.setRotation((currentRotation + angle + 360) % 360);
+                }
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "旋转 PDF 页面失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 对 PDF 页面进行物理旋转校准并导出为字节数组
+     *
+     * @param source      原始 PDF 输入源
+     * @param angle       旋转角度（必须为 90 的整数倍）
+     * @param pageIndexes 目标旋转页面索引（未提供则旋转全部页面）
+     * @return 旋转后的 PDF 二进制数据
+     */
+    public byte[] rotatePagesToBytes(Object source, int angle, int... pageIndexes) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        rotatePages(source, baos, angle, pageIndexes);
+        return baos.toByteArray();
+    }
+
+    // ==========================================
+    // 6. 页码与页眉页脚压印 (Page Numbers)
+    // ==========================================
+
+    /**
+     * 为 PDF 文档压印自定义格式页码（支持跳过封面与重算总页数）
+     *
+     * @param source  原始 PDF 输入源
+     * @param target  目标输出
+     * @param options 页码高级配置选项（包含格式、跳过页数、位置、字体与边距）
+     * @throws PdfOperationException 页码压印失败时抛出
+     */
+    public void addPageNumbers(Object source, Object target, PageNumberOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        PageNumberOptions opts = options != null ? options : PageNumberOptions.builder().build();
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            int totalPages = doc.getNumberOfPages();
+            if (totalPages <= 0) {
+                copySourceToTarget(source, target);
+                return;
+            }
+
+            PDFont font = resolvePageNumberFont(doc, opts.getCustomFontPath());
+            Color color = parseColor(opts.getColor());
+            int skipPages = Math.max(0, opts.getSkipPages());
+            int effectiveTotal = opts.isRecalculateTotal() ? Math.max(1, totalPages - skipPages) : totalPages;
+
+            for (int i = 0; i < totalPages; i++) {
+                if (i < skipPages) {
+                    // 跳过封面与前置目录
+                    continue;
+                }
+
+                int displayPage = opts.isRecalculateTotal()
+                        ? (i - skipPages + opts.getStartNumber())
+                        : (i + opts.getStartNumber());
+
+                String pageText = opts.getFormat()
+                        .replace("{page}", String.valueOf(displayPage))
+                        .replace("{total}", String.valueOf(effectiveTotal));
+
+                PDPage page = doc.getPage(i);
+                drawPageNumber(doc, page, pageText, font, opts, color);
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "为 PDF 添加页码失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 为 PDF 文档添加默认居中页码（第 X 页 / 共 Y 页）
+     *
+     * @param source 原始 PDF 输入源
+     * @param target 目标输出
+     */
+    public void addPageNumbers(Object source, Object target) {
+        addPageNumbers(source, target, PageNumberOptions.builder().build());
+    }
+
+    /**
+     * 为 PDF 文档压印页码并导出为二进制字节数组
+     *
+     * @param source  原始 PDF 输入源
+     * @param options 页码配置选项
+     * @return 压印页码后的 PDF 二进制数据
+     */
+    public byte[] addPageNumbersToBytes(Object source, PageNumberOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        addPageNumbers(source, baos, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 为 PDF 文档压印默认页码并导出为二进制字节数组
+     *
+     * @param source 原始 PDF 输入源
+     * @return 压印页码后的 PDF 二进制数据
+     */
+    public byte[] addPageNumbersToBytes(Object source) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        addPageNumbers(source, baos);
+        return baos.toByteArray();
+    }
+
+    private void drawPageNumber(PDDocument doc, PDPage page, String text, PDFont font,
+                                PageNumberOptions opts, Color color) throws IOException {
+        PDRectangle mediaBox = page.getMediaBox();
+        float width = mediaBox.getWidth();
+        float height = mediaBox.getHeight();
+        float fontSize = opts.getFontSize();
+        float margin = opts.getMargin();
+
+        float textWidth = font.getStringWidth(text) / 1000.0f * fontSize;
+        float x;
+        float y;
+
+        switch (opts.getPosition()) {
+            case BOTTOM_LEFT -> {
+                x = margin;
+                y = margin;
+            }
+            case BOTTOM_RIGHT -> {
+                x = width - margin - textWidth;
+                y = margin;
+            }
+            case TOP_LEFT -> {
+                x = margin;
+                y = height - margin;
+            }
+            case TOP_CENTER -> {
+                x = (width - textWidth) / 2.0f;
+                y = height - margin;
+            }
+            case TOP_RIGHT -> {
+                x = width - margin - textWidth;
+                y = height - margin;
+            }
+            case BOTTOM_CENTER -> {
+                x = (width - textWidth) / 2.0f;
+                y = margin;
+            }
+            default -> {
+                x = (width - textWidth) / 2.0f;
+                y = margin;
+            }
+        }
+
+        try (PDPageContentStream cs = new PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+            cs.setNonStrokingColor(color.getRed() / 255.0f, color.getGreen() / 255.0f, color.getBlue() / 255.0f);
+            cs.beginText();
+            cs.setFont(font, fontSize);
+            cs.newLineAtOffset(x, y);
+            cs.showText(text);
+            cs.endText();
+        }
+    }
+
+    private PDFont resolvePageNumberFont(PDDocument doc, String customFontPath) {
+        if (customFontPath != null && !customFontPath.trim().isEmpty()) {
+            try {
+                return fontResolver.loadFont(doc, customFontPath.trim());
+            } catch (Exception e) {
+                log.warn("通过自定义路径加载页码字体失败: {}", e.getMessage());
+            }
+        }
+        try {
+            return fontResolver.loadFont(doc);
+        } catch (Exception e) {
+            return new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+        }
+    }
+
+    // ==========================================
+    // 7. 密码安全加密与复制/打印权限控制 (Security)
+    // ==========================================
+
+    /**
+     * 为 PDF 文档施加密码安全加密与复制/打印权限控制锁
+     *
+     * @param source  原始 PDF 输入源
+     * @param target  目标输出
+     * @param options 安全权限配置选项（包含打开密码、管理密码及各项权限标志）
+     * @throws PdfOperationException 施加安全控制失败时抛出
+     */
+    public void protect(Object source, Object target, SecurityOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        Objects.requireNonNull(options, "安全配置选项 options 不能为空");
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+
+            AccessPermission permissions = new AccessPermission();
+            permissions.setCanPrint(options.isCanPrint());
+            permissions.setCanExtractContent(options.isCanCopy());
+            permissions.setCanModify(options.isCanModify());
+            permissions.setCanModifyAnnotations(options.isCanAnnotate());
+            permissions.setCanFillInForm(options.isCanFillForms());
+
+            String ownerPass = options.getOwnerPassword();
+            String userPass = options.getUserPassword() != null ? options.getUserPassword() : "";
+            if (ownerPass == null || ownerPass.isEmpty()) {
+                ownerPass = userPass.isEmpty() ? "AtengDocSecurityOwnerPass#2026" : userPass + "_owner";
+            }
+
+            StandardProtectionPolicy policy = new StandardProtectionPolicy(ownerPass, userPass, permissions);
+            policy.setEncryptionKeyLength(options.getKeyLength() > 0 ? options.getKeyLength() : 256);
+            doc.protect(policy);
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "为 PDF 文档施加安全权限锁失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 便捷方法：为 PDF 文档施加打开密码与管理密码加密保护
+     *
+     * @param source        原始 PDF 输入源
+     * @param target        目标输出
+     * @param userPassword  打开密码
+     * @param ownerPassword 管理密码
+     */
+    public void protect(Object source, Object target, String userPassword, String ownerPassword) {
+        SecurityOptions options = SecurityOptions.withPasswords(userPassword, ownerPassword);
+        protect(source, target, options);
+    }
+
+    /**
+     * 为 PDF 文档施加密码安全保护并导出为二进制字节数组
+     *
+     * @param source  原始 PDF 输入源
+     * @param options 安全权限配置选项
+     * @return 加密后的 PDF 二进制数据
+     */
+    public byte[] protectToBytes(Object source, SecurityOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        protect(source, baos, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 为 PDF 文档施加打开密码与管理密码并导出为二进制字节数组
+     *
+     * @param source        原始 PDF 输入源
+     * @param userPassword  打开密码
+     * @param ownerPassword 管理密码
+     * @return 加密后的 PDF 二进制数据
+     */
+    public byte[] protectToBytes(Object source, String userPassword, String ownerPassword) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        protect(source, baos, userPassword, ownerPassword);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 使用有效密码解密并移除 PDF 文档的全部安全限制（Unprotect）
+     *
+     * @param source   受保护的 PDF 输入源
+     * @param target   目标输出
+     * @param password 打开密码或管理密码
+     * @throws PdfOperationException 密码错误或解密失败时抛出
+     */
+    public void unprotect(Object source, Object target, String password) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+
+        String pass = password != null ? password : "";
+
+        try {
+            byte[] rawBytes = resolveImageBytes(source);
+            PDDocument doc;
+            try {
+                doc = Loader.loadPDF(rawBytes, pass);
+            } catch (IOException e) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档密码错误或解密失败: " + e.getMessage(), e);
+            }
+
+            try (doc) {
+                doc.setAllSecurityToBeRemoved(true);
+                OutputStream os = resolveOutputStream(target);
+                try {
+                    doc.save(os);
+                    os.flush();
+                } finally {
+                    if (!(target instanceof OutputStream)) {
+                        os.close();
+                    }
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "解除 PDF 文档保护失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 使用有效密码解密并移除安全限制，导出为二进制字节数组
+     *
+     * @param source   受保护的 PDF 输入源
+     * @param password 打开密码或管理密码
+     * @return 解除保护后的 PDF 二进制数据
+     */
+    public byte[] unprotectToBytes(Object source, String password) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        unprotect(source, baos, password);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 探测指定的 PDF 文档是否处于加密保护状态
+     *
+     * @param source PDF 输入源
+     * @return 若已加密返回 true，未加密返回 false
+     */
+    public boolean isEncrypted(Object source) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            return loadedPdf.getDocument().isEncrypted();
+        } catch (Exception e) {
+            return true;
         }
     }
 

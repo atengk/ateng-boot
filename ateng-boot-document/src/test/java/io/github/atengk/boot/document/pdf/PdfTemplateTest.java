@@ -1,10 +1,13 @@
 package io.github.atengk.boot.document.pdf;
 
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
+import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
+import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import org.apache.pdfbox.Loader;
@@ -33,6 +36,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -169,6 +173,160 @@ class PdfTemplateTest {
     }
 
     @Test
+    @DisplayName("测试多个独立 PDF 顺序物理合并为单一文档")
+    void testMergeMultiplePdfs(@TempDir Path tempDir) throws Exception {
+        byte[] pdf1 = createSamplePdf("第一部分：合同主体信息");
+        byte[] pdf2 = createSamplePdf("第二部分：采购设备清单");
+        byte[] pdf3 = createSamplePdf("第三部分：售后服务承诺");
+
+        Path mergedPath = tempDir.resolve("merged.pdf");
+        pdfTemplate.merge(mergedPath, List.of(pdf1, pdf2, pdf3));
+
+        assertThat(Files.exists(mergedPath)).isTrue();
+        assertThat(pdfTemplate.getPageCount(mergedPath)).isEqualTo(3);
+
+        String fullText = pdfTemplate.extractText(mergedPath);
+        assertThat(fullText).contains("第一部分：合同主体信息");
+        assertThat(fullText).contains("第二部分：采购设备清单");
+        assertThat(fullText).contains("第三部分：售后服务承诺");
+    }
+
+    @Test
+    @DisplayName("测试 PDF 文档逐页物理拆分并导出至目标目录")
+    void testSplitPdf(@TempDir Path tempDir) {
+        byte[] multiPdf = createMultiPagePdf("第一页概要", "第二页详细条款");
+        Path splitDir = tempDir.resolve("splits");
+
+        List<File> files = pdfTemplate.split(multiPdf, splitDir, "doc_page_");
+
+        assertThat(files).hasSize(2);
+        assertThat(files.get(0)).exists().hasName("doc_page_1.pdf");
+        assertThat(files.get(1)).exists().hasName("doc_page_2.pdf");
+
+        assertThat(pdfTemplate.extractText(files.get(0))).contains("第一页概要");
+        assertThat(pdfTemplate.extractText(files.get(1))).contains("第二页详细条款");
+    }
+
+    @Test
+    @DisplayName("测试提取 PDF 文档指定页码范围与页面索引")
+    void testExtractPages() {
+        byte[] multiPdf = createMultiPagePdf("Page 1 Summary", "Page 2 Terms");
+
+        // 提取第 2 页 (0-based 索引为 1)
+        byte[] extractedBytes = pdfTemplate.extractPagesToBytes(multiPdf, 1);
+        assertThat(pdfTemplate.getPageCount(extractedBytes)).isEqualTo(1);
+        assertThat(pdfTemplate.extractText(extractedBytes)).contains("Page 2 Terms");
+
+        // 提取 1-based 页码范围 1 到 2
+        byte[] rangeBytes = pdfTemplate.extractPagesToBytes(multiPdf, 1, 2);
+        assertThat(pdfTemplate.getPageCount(rangeBytes)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("测试页面 90°/180°/270° 旋转校准")
+    void testRotatePages() throws Exception {
+        byte[] multiPdf = createMultiPagePdf("页面1", "页面2");
+
+        // 将第 1 页 (0-based 索引为 0) 旋转 90 度
+        byte[] rotatedBytes = pdfTemplate.rotatePagesToBytes(multiPdf, 90, 0);
+
+        try (PDDocument doc = Loader.loadPDF(rotatedBytes)) {
+            assertThat(doc.getPage(0).getRotation()).isEqualTo(90);
+            assertThat(doc.getPage(1).getRotation()).isEqualTo(0);
+        }
+
+        // 旋转全部页面 180 度
+        byte[] allRotatedBytes = pdfTemplate.rotatePagesToBytes(multiPdf, 180);
+        try (PDDocument doc = Loader.loadPDF(allRotatedBytes)) {
+            assertThat(doc.getPage(0).getRotation()).isEqualTo(180);
+            assertThat(doc.getPage(1).getRotation()).isEqualTo(180);
+        }
+    }
+
+    @Test
+    @DisplayName("测试页码压印与跳过封面页码重算")
+    void testAddPageNumbersWithSkipCover() {
+        // 创建 3 页 PDF：第 1 页为封面，第 2、3 页为正文
+        byte[] doc3Pages;
+        try (PDDocument doc = new PDDocument();
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            DocumentProperties props = new DocumentProperties();
+            DocumentFontResolver resolver = new DocumentFontResolver(props.getPdf());
+            var font = resolver.loadFont(doc);
+
+            for (int i = 1; i <= 3; i++) {
+                PDPage page = new PDPage(PDRectangle.A4);
+                doc.addPage(page);
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                    cs.beginText();
+                    cs.setFont(font, 14);
+                    cs.newLineAtOffset(50, 750);
+                    cs.showText("内容第 " + i + " 页");
+                    cs.endText();
+                }
+            }
+            doc.save(baos);
+            doc3Pages = baos.toByteArray();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        // 跳过 1 页封面，重新计算总页数为 2 页
+        PageNumberOptions options = PageNumberOptions.builder()
+                .skipPages(1)
+                .recalculateTotal(true)
+                .format("第 {page} 页 / 共 {total} 页")
+                .position(PageNumberPosition.BOTTOM_CENTER)
+                .build();
+
+        byte[] resultBytes = pdfTemplate.addPageNumbersToBytes(doc3Pages, options);
+        assertThat(resultBytes).isNotEmpty();
+
+        // 验证文本提取：封面无页码，正文显示 第 1 页 / 共 2 页、第 2 页 / 共 2 页
+        String extracted = pdfTemplate.extractText(resultBytes);
+        assertThat(extracted).contains("第 1 页 / 共 2 页");
+        assertThat(extracted).contains("第 2 页 / 共 2 页");
+    }
+
+    @Test
+    @DisplayName("测试文档密码安全加密与复制/打印权限控制锁")
+    void testProtectWithSecurityOptionsAndUnprotect() throws Exception {
+        byte[] original = createSamplePdf("高安全等级涉密文档，严禁泄露与打印");
+
+        // 施加密码锁：打开密码 "user123"，权限密码 "owner888"，禁止打印，禁止复制文本
+        SecurityOptions options = SecurityOptions.builder()
+                .userPassword("user123")
+                .ownerPassword("owner888")
+                .canPrint(false)
+                .canCopy(false)
+                .build();
+
+        byte[] protectedBytes = pdfTemplate.protectToBytes(original, options);
+        assertThat(pdfTemplate.isEncrypted(protectedBytes)).isTrue();
+
+        // 1. 无密码无法读取
+        assertThatThrownBy(() -> Loader.loadPDF(protectedBytes))
+                .isInstanceOf(Exception.class);
+
+        // 2. 使用正确密码加载并验证权限
+        try (PDDocument doc = Loader.loadPDF(protectedBytes, "user123")) {
+            assertThat(doc.isEncrypted()).isTrue();
+            assertThat(doc.getCurrentAccessPermission().canPrint()).isFalse();
+            assertThat(doc.getCurrentAccessPermission().canExtractContent()).isFalse();
+        }
+
+        // 3. 解除密码保护 (Unprotect)
+        byte[] unprotectedBytes = pdfTemplate.unprotectToBytes(protectedBytes, "owner888");
+        assertThat(pdfTemplate.isEncrypted(unprotectedBytes)).isFalse();
+
+        // 验证解除后无密码直接可读
+        try (PDDocument doc = Loader.loadPDF(unprotectedBytes)) {
+            assertThat(doc.isEncrypted()).isFalse();
+            assertThat(doc.getCurrentAccessPermission().canPrint()).isTrue();
+        }
+    }
+
+    @Test
     @DisplayName("对抗性防卫性测试：空入参、越界页码与非法源路径快速失败")
     void testAdversarialEdgeCases() {
         // 1. 空入参防卫
@@ -194,6 +352,21 @@ class PdfTemplateTest {
         // 3. 不存在的物理文件路径
         assertThatThrownBy(() -> pdfTemplate.extractText("not/exist/path.pdf"))
                 .isInstanceOf(PdfOperationException.class);
+
+        // 4. 旋转角度非法
+        assertThatThrownBy(() -> pdfTemplate.rotatePages(simplePdf, new ByteArrayOutputStream(), 45))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("旋转角度 angle 必须为 90 的整数倍");
+
+        // 5. 合并空列表
+        assertThatThrownBy(() -> pdfTemplate.merge(new ByteArrayOutputStream(), (List<?>) null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("待合并的 PDF 文档输入列表 pdfSources 不能为空");
+
+        // 6. 提取页面范围非法
+        assertThatThrownBy(() -> pdfTemplate.extractPages(simplePdf, new ByteArrayOutputStream(), 5, 2))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("页码范围无效");
     }
 
     private static byte[] createSamplePdf(String content) {
