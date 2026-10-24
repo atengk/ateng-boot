@@ -94,6 +94,7 @@ public class PayTemplate {
                         .subMchId(request.getSubMchId())
                         .spAppId(request.getSpAppId())
                         .subAppId(request.getSubAppId())
+                        .profitSharing(request.getProfitSharing())
                         .build();
 
                 yield switch (tradeType) {

@@ -107,6 +107,17 @@ public class WechatPayRequest implements Serializable {
      */
     private String goodsTag;
 
+    /**
+     * 是否指定分账 (可选，默认 false)
+     * <p>
+     * <b>特别警告：</b>
+     * 微信支付分账要求必须在统一下单前置打标（传入 true）。若未打标，后续调用分账 API 将报错。
+     * 若打标为 true，订单支付成功后资金将处于冻结状态；必须在分账完成后主动调用完结分账解冻接口（unfreeze），
+     * 否则剩余在途资金将被长期冻结导致商户资金沉淀无法结算提现。
+     * </p>
+     */
+    private Boolean profitSharing;
+
     // ================= 服务商 (ISV) 模式属性 =================
 
     /**

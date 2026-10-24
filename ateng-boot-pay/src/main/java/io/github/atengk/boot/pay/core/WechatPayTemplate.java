@@ -20,6 +20,22 @@ import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByIdRequest;
 import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByOutTradeNoRequest;
 import com.wechat.pay.java.service.payments.model.Transaction;
 import com.wechat.pay.java.service.payments.nativepay.NativePayService;
+import com.wechat.pay.java.service.profitsharing.ProfitsharingService;
+import com.wechat.pay.java.service.profitsharing.model.AddReceiverRequest;
+import com.wechat.pay.java.service.profitsharing.model.AddReceiverResponse;
+import com.wechat.pay.java.service.profitsharing.model.CreateOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.CreateReturnOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.DeleteReceiverRequest;
+import com.wechat.pay.java.service.profitsharing.model.DeleteReceiverResponse;
+import com.wechat.pay.java.service.profitsharing.model.OrdersEntity;
+import com.wechat.pay.java.service.profitsharing.model.QueryMerchantRatioRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryMerchantRatioResponse;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderAmountRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderAmountResponse;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryReturnOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.ReturnOrdersEntity;
+import com.wechat.pay.java.service.profitsharing.model.UnfreezeOrderRequest;
 import com.wechat.pay.java.service.refund.RefundService;
 import com.wechat.pay.java.service.refund.model.AmountReq;
 import com.wechat.pay.java.service.refund.model.CreateRequest;
@@ -28,6 +44,7 @@ import com.wechat.pay.java.service.refund.model.Refund;
 import com.wechat.pay.java.service.refund.model.ReqFundsAccount;
 import com.wechat.pay.java.service.refund.model.Status;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
@@ -91,6 +108,7 @@ public class WechatPayTemplate {
 
     private final NamedMerchantRegistry namedMerchantRegistry;
     private final WechatAutoCertificateManager wechatAutoCertificateManager;
+    private final PayProperties payProperties;
 
     /**
      * 商户服务持有者缓存：商户配置键/商户号 -> WechatServiceHolder
@@ -104,8 +122,42 @@ public class WechatPayTemplate {
 
     public WechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
                              WechatAutoCertificateManager wechatAutoCertificateManager) {
+        this(namedMerchantRegistry, wechatAutoCertificateManager, new PayProperties());
+    }
+
+    public WechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
+                             WechatAutoCertificateManager wechatAutoCertificateManager,
+                             PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
         this.wechatAutoCertificateManager = Objects.requireNonNull(wechatAutoCertificateManager, "WechatAutoCertificateManager 不能为空");
+        this.payProperties = payProperties != null ? payProperties : new PayProperties();
+    }
+
+    /**
+     * 动态配置资金分账总开关（主要用于单测切换或受控管理）
+     *
+     * @param enabled 是否开启分账功能
+     */
+    public void setProfitSharingEnabled(boolean enabled) {
+        this.payProperties.getProfitSharing().setEnabled(enabled);
+    }
+
+    /**
+     * 判断资金分账功能是否已开启
+     *
+     * @return true 开启，false 关闭
+     */
+    public boolean isProfitSharingEnabled() {
+        return this.payProperties != null && this.payProperties.getProfitSharing() != null && this.payProperties.getProfitSharing().isEnabled();
+    }
+
+    /**
+     * 资金分账物理总开关防卫前置断言
+     */
+    private void assertProfitSharingEnabled() {
+        if (!isProfitSharingEnabled()) {
+            throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "微信资金分账高敏特性未启用，请配置 ateng.boot.pay.profit-sharing.enabled=true 显式开启");
+        }
     }
 
     /**
@@ -159,6 +211,13 @@ public class WechatPayTemplate {
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.partnerpayments.nativepay.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.partnerpayments.nativepay.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
+
                 com.wechat.pay.java.service.partnerpayments.nativepay.model.PrepayResponse rawResp =
                         holder.getPartnerNativePayService().prepay(prepayReq);
 
@@ -191,6 +250,13 @@ public class WechatPayTemplate {
                 amount.setTotal((int) fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
+
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.payments.nativepay.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.payments.nativepay.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
 
                 com.wechat.pay.java.service.payments.nativepay.model.PrepayResponse rawResp =
                         holder.getNativePayService().prepay(prepayReq);
@@ -271,6 +337,13 @@ public class WechatPayTemplate {
                 }
                 prepayReq.setPayer(payer);
 
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.partnerpayments.jsapi.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.partnerpayments.jsapi.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
+
                 // 服务商二次调起签名 AppId：优先使用子商户 AppId，无则使用服务商 AppId
                 String signAppId = subAppId != null ? subAppId : spAppId;
                 com.wechat.pay.java.service.partnerpayments.jsapi.model.PrepayWithRequestPaymentResponse rawResp =
@@ -322,6 +395,13 @@ public class WechatPayTemplate {
                 Payer payer = new Payer();
                 payer.setOpenid(request.getOpenid());
                 prepayReq.setPayer(payer);
+
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.payments.jsapi.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.payments.jsapi.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
 
                 PrepayWithRequestPaymentResponse rawResp =
                         holder.getJsapiServiceExtension().prepayWithRequestPayment(prepayReq);
@@ -404,6 +484,13 @@ public class WechatPayTemplate {
                 sceneInfo.setH5Info(h5Info);
                 prepayReq.setSceneInfo(sceneInfo);
 
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.partnerpayments.h5.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.partnerpayments.h5.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
+
                 com.wechat.pay.java.service.partnerpayments.h5.model.PrepayResponse rawResp =
                         holder.getPartnerH5Service().prepay(prepayReq);
 
@@ -443,6 +530,13 @@ public class WechatPayTemplate {
                 h5Info.setType(request.getH5Type() != null ? request.getH5Type() : "Wap");
                 sceneInfo.setH5Info(h5Info);
                 prepayReq.setSceneInfo(sceneInfo);
+
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.payments.h5.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.payments.h5.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
 
                 com.wechat.pay.java.service.payments.h5.model.PrepayResponse rawResp =
                         holder.getH5Service().prepay(prepayReq);
@@ -506,6 +600,13 @@ public class WechatPayTemplate {
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
 
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.partnerpayments.app.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.partnerpayments.app.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
+
                 String signAppId = subAppId != null ? subAppId : spAppId;
                 com.wechat.pay.java.service.partnerpayments.app.model.PrepayWithRequestPaymentResponse rawResp =
                         holder.getPartnerAppServiceExtension().prepayWithRequestPayment(prepayReq, signAppId);
@@ -551,6 +652,13 @@ public class WechatPayTemplate {
                 amount.setTotal((int) fen);
                 amount.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
                 prepayReq.setAmount(amount);
+
+                if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                    com.wechat.pay.java.service.payments.app.model.SettleInfo settleInfo =
+                            new com.wechat.pay.java.service.payments.app.model.SettleInfo();
+                    settleInfo.setProfitSharing(true);
+                    prepayReq.setSettleInfo(settleInfo);
+                }
 
                 com.wechat.pay.java.service.payments.app.model.PrepayWithRequestPaymentResponse rawResp =
                         holder.getAppServiceExtension().prepayWithRequestPayment(prepayReq);
@@ -631,6 +739,9 @@ public class WechatPayTemplate {
             }
             bodyMap.put("amount", Map.of("total", fen, "currency", request.getCurrency() != null ? request.getCurrency() : "CNY"));
             bodyMap.put("payer", Map.of("auth_code", request.getAuthCode()));
+            if (Boolean.TRUE.equals(request.getProfitSharing())) {
+                bodyMap.put("settle_info", Map.of("profit_sharing", true));
+            }
 
             String jsonBody = JsonUtil.toJsonString(bodyMap);
 
@@ -1271,6 +1382,516 @@ public class WechatPayTemplate {
     }
 
     // =========================================================================
+    // 11. 资金分账全生命周期闭环 (Profit Sharing Lifecycle)
+    // =========================================================================
+
+    /**
+     * 添加分账接收方
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     添加接收方请求入参
+     * @return 添加分账接收方响应实体
+     */
+    public AddReceiverResponse addProfitSharingReceiver(String merchantKey, AddReceiverRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "添加分账接收方请求入参不能为空");
+        }
+        if (request.getType() == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "添加分账接收方类型 [type] 不能为空");
+        }
+        if (request.getAccount() == null || request.getAccount().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "添加分账接收方账号 [account] 不能为空");
+        }
+        if (request.getRelationType() == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "添加分账与分账方的关系类型 [relationType] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (request.getAppid() == null || request.getAppid().isBlank()) {
+            request.setAppid(merchantProps.getAppId());
+        }
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("addProfitSharingReceiver", () ->
+                holder.getProfitsharingService().addReceiver(request)
+        );
+    }
+
+    /**
+     * 添加分账接收方（默认商户）
+     *
+     * @param request 添加接收方请求入参
+     * @return 添加分账接收方响应实体
+     */
+    public AddReceiverResponse addProfitSharingReceiver(AddReceiverRequest request) {
+        return addProfitSharingReceiver(null, request);
+    }
+
+    /**
+     * 删除分账接收方
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     删除接收方请求入参
+     * @return 删除分账接收方响应实体
+     */
+    public DeleteReceiverResponse deleteProfitSharingReceiver(String merchantKey, DeleteReceiverRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "删除分账接收方请求入参不能为空");
+        }
+        if (request.getType() == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "删除分账接收方类型 [type] 不能为空");
+        }
+        if (request.getAccount() == null || request.getAccount().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "删除分账接收方账号 [account] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (request.getAppid() == null || request.getAppid().isBlank()) {
+            request.setAppid(merchantProps.getAppId());
+        }
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("deleteProfitSharingReceiver", () ->
+                holder.getProfitsharingService().deleteReceiver(request)
+        );
+    }
+
+    /**
+     * 删除分账接收方（默认商户）
+     *
+     * @param request 删除接收方请求入参
+     * @return 删除分账接收方响应实体
+     */
+    public DeleteReceiverResponse deleteProfitSharingReceiver(DeleteReceiverRequest request) {
+        return deleteProfitSharingReceiver(null, request);
+    }
+
+    /**
+     * 发起请求分账
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     请求分账入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity createProfitSharing(String merchantKey, CreateOrderRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "请求分账入参不能为空");
+        }
+        if (request.getOutOrderNo() == null || request.getOutOrderNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "请求分账商户分账单号 [outOrderNo] 不能为空");
+        }
+        if (request.getTransactionId() == null || request.getTransactionId().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "请求分账微信支付订单号 [transactionId] 不能为空");
+        }
+        if (request.getReceivers() == null || request.getReceivers().isEmpty()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "请求分账接收方列表 [receivers] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (request.getAppid() == null || request.getAppid().isBlank()) {
+            request.setAppid(merchantProps.getAppId());
+        }
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+        if (request.getUnfreezeUnsplit() == null) {
+            request.setUnfreezeUnsplit(false);
+        }
+
+        return executeWithExceptionTranslation("createProfitSharing", () ->
+                holder.getProfitsharingService().createOrder(request)
+        );
+    }
+
+    /**
+     * 发起请求分账（默认商户）
+     *
+     * @param request 请求分账入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity createProfitSharing(CreateOrderRequest request) {
+        return createProfitSharing(null, request);
+    }
+
+    /**
+     * 查询分账结果
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     查询分账结果入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity queryProfitSharing(String merchantKey, QueryOrderRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询分账结果入参不能为空");
+        }
+        if (request.getOutOrderNo() == null || request.getOutOrderNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询分账商户分账单号 [outOrderNo] 不能为空");
+        }
+        if (request.getTransactionId() == null || request.getTransactionId().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询分账微信支付订单号 [transactionId] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("queryProfitSharing", () ->
+                holder.getProfitsharingService().queryOrder(request)
+        );
+    }
+
+    /**
+     * 查询分账结果（默认商户）
+     *
+     * @param request 查询分账结果入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity queryProfitSharing(QueryOrderRequest request) {
+        return queryProfitSharing((String) null, request);
+    }
+
+    /**
+     * 便捷重载：查询分账结果（默认商户）
+     *
+     * @param outOrderNo    商户分账单号
+     * @param transactionId 微信支付订单号
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity queryProfitSharing(String outOrderNo, String transactionId) {
+        QueryOrderRequest req = new QueryOrderRequest();
+        req.setOutOrderNo(outOrderNo);
+        req.setTransactionId(transactionId);
+        return queryProfitSharing((String) null, req);
+    }
+
+    /**
+     * 便捷重载：查询指定商户的分账结果
+     *
+     * @param merchantKey   商户别名或商户号
+     * @param outOrderNo    商户分账单号
+     * @param transactionId 微信支付订单号
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity queryProfitSharing(String merchantKey, String outOrderNo, String transactionId) {
+        QueryOrderRequest req = new QueryOrderRequest();
+        req.setOutOrderNo(outOrderNo);
+        req.setTransactionId(transactionId);
+        return queryProfitSharing(merchantKey, req);
+    }
+
+    /**
+     * 完结分账并解冻订单剩余在途资金 (unfreeze)
+     * <p>
+     * <b>特别注意：</b>
+     * 前置统一下单打了 {@code profit_sharing=true} 标记的订单，在完成分账或无需再分账时，
+     * 必须调用此方法主动解冻剩余资金，否则剩余在途资金将被长期冻结沉淀。
+     * </p>
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     解冻请求入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity unfreezeProfitSharing(String merchantKey, UnfreezeOrderRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "完结解冻分账资金请求入参不能为空");
+        }
+        if (request.getOutOrderNo() == null || request.getOutOrderNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "解冻分账商户分账单号 [outOrderNo] 不能为空");
+        }
+        if (request.getTransactionId() == null || request.getTransactionId().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "解冻分账微信支付订单号 [transactionId] 不能为空");
+        }
+        if (request.getDescription() == null || request.getDescription().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "解冻分账原因描述 [description] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("unfreezeProfitSharing", () ->
+                holder.getProfitsharingService().unfreezeOrder(request)
+        );
+    }
+
+    /**
+     * 完结分账并解冻订单剩余在途资金（默认商户）
+     *
+     * @param request 解冻请求入参
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity unfreezeProfitSharing(UnfreezeOrderRequest request) {
+        return unfreezeProfitSharing((String) null, request);
+    }
+
+    /**
+     * 便捷重载：完结解冻分账资金（默认商户）
+     *
+     * @param outOrderNo    商户分账单号
+     * @param transactionId 微信支付订单号
+     * @param description   解冻描述
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity unfreezeProfitSharing(String outOrderNo, String transactionId, String description) {
+        UnfreezeOrderRequest req = new UnfreezeOrderRequest();
+        req.setOutOrderNo(outOrderNo);
+        req.setTransactionId(transactionId);
+        req.setDescription(description);
+        return unfreezeProfitSharing((String) null, req);
+    }
+
+    /**
+     * 便捷重载：完结解冻指定商户的分账资金
+     *
+     * @param merchantKey   商户别名或商户号
+     * @param outOrderNo    商户分账单号
+     * @param transactionId 微信支付订单号
+     * @param description   解冻描述
+     * @return 微信分账订单实体
+     */
+    public OrdersEntity unfreezeProfitSharing(String merchantKey, String outOrderNo, String transactionId, String description) {
+        UnfreezeOrderRequest req = new UnfreezeOrderRequest();
+        req.setOutOrderNo(outOrderNo);
+        req.setTransactionId(transactionId);
+        req.setDescription(description);
+        return unfreezeProfitSharing(merchantKey, req);
+    }
+
+    /**
+     * 请求分账回退
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     分账回退请求入参
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity returnProfitSharing(String merchantKey, CreateReturnOrderRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账回退请求入参不能为空");
+        }
+        if ((request.getOrderId() == null || request.getOrderId().isBlank())
+                && (request.getOutOrderNo() == null || request.getOutOrderNo().isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账回退必须提供微信分账单号 [orderId] 或商户分账单号 [outOrderNo]");
+        }
+        if (request.getOutReturnNo() == null || request.getOutReturnNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户回退单号 [outReturnNo] 不能为空");
+        }
+        if (request.getReturnMchid() == null || request.getReturnMchid().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账回退出资商户号 [returnMchid] 不能为空");
+        }
+        if (request.getAmount() == null || request.getAmount() <= 0) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账回退金额 [amount] 必须大于 0");
+        }
+        if (request.getDescription() == null || request.getDescription().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "分账回退原因描述 [description] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("returnProfitSharing", () ->
+                holder.getProfitsharingService().createReturnOrder(request)
+        );
+    }
+
+    /**
+     * 请求分账回退（默认商户）
+     *
+     * @param request 分账回退请求入参
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity returnProfitSharing(CreateReturnOrderRequest request) {
+        return returnProfitSharing(null, request);
+    }
+
+    /**
+     * 查询分账回退结果
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     查询分账回退结果请求入参
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity queryProfitSharingReturn(String merchantKey, QueryReturnOrderRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询分账回退结果入参不能为空");
+        }
+        if (request.getOutReturnNo() == null || request.getOutReturnNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户回退单号 [outReturnNo] 不能为空");
+        }
+        if (request.getOutOrderNo() == null || request.getOutOrderNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户分账单号 [outOrderNo] 不能为空");
+        }
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchid());
+
+        if (isPartner && (request.getSubMchid() == null || request.getSubMchid().isBlank())) {
+            request.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchid()));
+        }
+
+        return executeWithExceptionTranslation("queryProfitSharingReturn", () ->
+                holder.getProfitsharingService().queryReturnOrder(request)
+        );
+    }
+
+    /**
+     * 查询分账回退结果（默认商户）
+     *
+     * @param request 查询分账回退结果请求入参
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity queryProfitSharingReturn(QueryReturnOrderRequest request) {
+        return queryProfitSharingReturn((String) null, request);
+    }
+
+    /**
+     * 便捷重载：查询分账回退结果（默认商户）
+     *
+     * @param outReturnNo 商户回退单号
+     * @param outOrderNo  商户分账单号
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity queryProfitSharingReturn(String outReturnNo, String outOrderNo) {
+        QueryReturnOrderRequest req = new QueryReturnOrderRequest();
+        req.setOutReturnNo(outReturnNo);
+        req.setOutOrderNo(outOrderNo);
+        return queryProfitSharingReturn((String) null, req);
+    }
+
+    /**
+     * 便捷重载：查询指定商户的分账回退结果
+     *
+     * @param merchantKey 商户别名或商户号
+     * @param outReturnNo 商户回退单号
+     * @param outOrderNo  商户分账单号
+     * @return 分账回退订单实体
+     */
+    public ReturnOrdersEntity queryProfitSharingReturn(String merchantKey, String outReturnNo, String outOrderNo) {
+        QueryReturnOrderRequest req = new QueryReturnOrderRequest();
+        req.setOutReturnNo(outReturnNo);
+        req.setOutOrderNo(outOrderNo);
+        return queryProfitSharingReturn(merchantKey, req);
+    }
+
+    /**
+     * 查询剩余待分金额
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     查询待分金额请求
+     * @return 待分金额响应实体
+     */
+    public QueryOrderAmountResponse queryProfitSharingAmount(String merchantKey, QueryOrderAmountRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询待分金额请求入参不能为空");
+        }
+        if (request.getTransactionId() == null || request.getTransactionId().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付订单号 [transactionId] 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("queryProfitSharingAmount", () ->
+                holder.getProfitsharingService().queryOrderAmount(request)
+        );
+    }
+
+    /**
+     * 查询剩余待分金额（默认商户）
+     *
+     * @param request 查询待分金额请求
+     * @return 待分金额响应实体
+     */
+    public QueryOrderAmountResponse queryProfitSharingAmount(QueryOrderAmountRequest request) {
+        return queryProfitSharingAmount(null, request);
+    }
+
+    /**
+     * 查询最大分账比例
+     *
+     * @param merchantKey 商户配置键或商户号（可选）
+     * @param request     查询最大分账比例请求
+     * @return 最大分账比例响应实体
+     */
+    public QueryMerchantRatioResponse queryProfitSharingMerchantRatio(String merchantKey, QueryMerchantRatioRequest request) {
+        assertProfitSharingEnabled();
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询最大分账比例请求入参不能为空");
+        }
+        if (request.getSubMchid() == null || request.getSubMchid().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "子商户号 [subMchid] 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("queryProfitSharingMerchantRatio", () ->
+                holder.getProfitsharingService().queryMerchantRatio(request)
+        );
+    }
+
+    /**
+     * 查询最大分账比例（默认商户）
+     *
+     * @param request 查询最大分账比例请求
+     * @return 最大分账比例响应实体
+     */
+    public QueryMerchantRatioResponse queryProfitSharingMerchantRatio(QueryMerchantRatioRequest request) {
+        return queryProfitSharingMerchantRatio(null, request);
+    }
+
+    /**
+     * 获取指定商户的官方微信分账服务实例（逃生舱）
+     *
+     * @param merchantKey 商户配置键或商户号
+     * @return 官方 ProfitsharingService 原生实例
+     */
+    public ProfitsharingService getProfitsharingService(String merchantKey) {
+        assertProfitSharingEnabled();
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        return getServiceHolder(merchantProps).getProfitsharingService();
+    }
+
+    /**
+     * 获取默认商户的官方微信分账服务实例（逃生舱）
+     *
+     * @return 官方 ProfitsharingService 原生实例
+     */
+    public ProfitsharingService getProfitsharingService() {
+        return getProfitsharingService(null);
+    }
+
+    // =========================================================================
     // 10. 私有解析与因果异常转译机制
     // =========================================================================
 
@@ -1479,6 +2100,7 @@ public class WechatPayTemplate {
         private final H5Service h5Service;
         private final AppServiceExtension appServiceExtension;
         private final RefundService refundService;
+        private final ProfitsharingService profitsharingService;
 
         // 服务商服务
         private final com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService partnerNativePayService;
@@ -1495,6 +2117,7 @@ public class WechatPayTemplate {
             this.h5Service = new H5Service.Builder().config(config).httpClient(httpClient).build();
             this.appServiceExtension = new AppServiceExtension.Builder().config(config).httpClient(httpClient).build();
             this.refundService = new RefundService.Builder().config(config).httpClient(httpClient).build();
+            this.profitsharingService = new ProfitsharingService.Builder().config(config).httpClient(httpClient).build();
 
             this.partnerNativePayService = new com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService.Builder()
                     .config(config).httpClient(httpClient).build();
@@ -1532,6 +2155,10 @@ public class WechatPayTemplate {
 
         public RefundService getRefundService() {
             return refundService;
+        }
+
+        public ProfitsharingService getProfitsharingService() {
+            return profitsharingService;
         }
 
         public com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService getPartnerNativePayService() {

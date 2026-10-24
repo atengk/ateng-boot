@@ -67,7 +67,12 @@ public enum PayResultCode implements IResultCode {
     /**
      * 未找到有效的支付平台或商户证书
      */
-    PAY_CERTIFICATE_NOT_FOUND(58011, "未找到有效的支付平台或商户证书");
+    PAY_CERTIFICATE_NOT_FOUND(58011, "未找到有效的支付平台或商户证书"),
+
+    /**
+     * 支付相关高敏特性未启用或已被物理开关关闭
+     */
+    PAY_FEATURE_DISABLED(58012, "支付高敏特性未启用或已被物理开关关闭");
 
     /**
      * 业务状态码

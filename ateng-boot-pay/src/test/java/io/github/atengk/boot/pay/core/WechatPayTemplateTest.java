@@ -2,6 +2,24 @@ package io.github.atengk.boot.pay.core;
 
 import com.wechat.pay.java.core.http.DefaultHttpClientBuilder;
 import com.wechat.pay.java.core.http.HttpClient;
+import com.wechat.pay.java.service.profitsharing.model.AddReceiverRequest;
+import com.wechat.pay.java.service.profitsharing.model.AddReceiverResponse;
+import com.wechat.pay.java.service.profitsharing.model.CreateOrderReceiver;
+import com.wechat.pay.java.service.profitsharing.model.CreateOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.CreateReturnOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.DeleteReceiverRequest;
+import com.wechat.pay.java.service.profitsharing.model.DeleteReceiverResponse;
+import com.wechat.pay.java.service.profitsharing.model.OrdersEntity;
+import com.wechat.pay.java.service.profitsharing.model.QueryMerchantRatioRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryMerchantRatioResponse;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderAmountRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderAmountResponse;
+import com.wechat.pay.java.service.profitsharing.model.QueryOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.QueryReturnOrderRequest;
+import com.wechat.pay.java.service.profitsharing.model.ReceiverRelationType;
+import com.wechat.pay.java.service.profitsharing.model.ReceiverType;
+import com.wechat.pay.java.service.profitsharing.model.ReturnOrdersEntity;
+import com.wechat.pay.java.service.profitsharing.model.UnfreezeOrderRequest;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.config.properties.WechatPayProperties;
@@ -657,6 +675,248 @@ class WechatPayTemplateTest {
                 .build();
         PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+    }
+
+    // =========================================================================
+    // 10. 资金分账单元测试 (Profit Sharing)
+    // =========================================================================
+
+    @Test
+    @DisplayName("payNative: 前置指定分账标记 (profitSharing=true) 时组装 settle_info")
+    void testPayNativeWithProfitSharing() throws Exception {
+        String mockResponseJson = "{\"code_url\":\"weixin://wxpay/bizpayurl?pr=mock_ps_native_qr_code\"}";
+        server.enqueue(mockResponse(200, mockResponseJson));
+
+        WechatPayRequest request = WechatPayRequest.builder()
+                .outTradeNo("NATIVE_PS_001")
+                .description("测试分账商品")
+                .amount(new BigDecimal("100.00"))
+                .profitSharing(true)
+                .build();
+
+        PayResponse response = payTemplate.payNative(request);
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+
+        RecordedRequest recordedReq = server.takeRequest();
+        String requestBody = recordedReq.getBody().readUtf8();
+        assertTrue(requestBody.contains("\"settle_info\""), "出站请求报文必须包含 settle_info");
+        assertTrue(requestBody.contains("\"profit_sharing\":true"), "出站请求报文必须包含 profit_sharing=true");
+    }
+
+    @Test
+    @DisplayName("profitSharing: 物理开关默认关闭时调用任何分账方法均快速失败拦截")
+    void testProfitSharingDisabledInterception() {
+        assertFalse(payTemplate.isProfitSharingEnabled(), "默认情况下资金分账总开关必须为关闭状态");
+
+        // 1. 添加接收方
+        AddReceiverRequest addReq = new AddReceiverRequest();
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.addProfitSharingReceiver(addReq));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex1.getResultCode());
+
+        // 2. 删除接收方
+        DeleteReceiverRequest delReq = new DeleteReceiverRequest();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.deleteProfitSharingReceiver(delReq));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex2.getResultCode());
+
+        // 3. 请求分账
+        CreateOrderRequest createReq = new CreateOrderRequest();
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.createProfitSharing(createReq));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex3.getResultCode());
+
+        // 4. 查询分账
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.queryProfitSharing("PS_001", "TX_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex4.getResultCode());
+
+        // 5. 完结解冻资金
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.unfreezeProfitSharing("PS_001", "TX_001", "解冻"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex5.getResultCode());
+
+        // 6. 分账回退
+        CreateReturnOrderRequest returnReq = new CreateReturnOrderRequest();
+        PayException ex6 = assertThrows(PayException.class, () -> payTemplate.returnProfitSharing(returnReq));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex6.getResultCode());
+
+        // 7. 查询分账回退
+        PayException ex7 = assertThrows(PayException.class, () -> payTemplate.queryProfitSharingReturn("RET_001", "PS_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex7.getResultCode());
+
+        // 8. 逃生舱获取
+        PayException ex8 = assertThrows(PayException.class, () -> payTemplate.getProfitsharingService());
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex8.getResultCode());
+    }
+
+    @Test
+    @DisplayName("profitSharing: 全生命周期成功流转（接收方、分账、查询、解冻、回退）")
+    void testProfitSharingLifecycleSuccess() throws Exception {
+        payTemplate.setProfitSharingEnabled(true);
+        assertTrue(payTemplate.isProfitSharingEnabled());
+
+        // 1. 添加接收方
+        server.enqueue(mockResponse(200, "{\"type\":\"MERCHANT_ID\",\"account\":\"1900000002\",\"relation_type\":\"USER\"}"));
+        AddReceiverRequest addReq = new AddReceiverRequest();
+        addReq.setType(ReceiverType.MERCHANT_ID);
+        addReq.setAccount("1900000002");
+        addReq.setRelationType(ReceiverRelationType.USER);
+
+        AddReceiverResponse addResp = payTemplate.addProfitSharingReceiver(addReq);
+        assertNotNull(addResp);
+        assertEquals("1900000002", addResp.getAccount());
+
+        RecordedRequest recordedAdd = server.takeRequest();
+        assertEquals("POST", recordedAdd.getMethod());
+        assertTrue(recordedAdd.getPath().contains("/v3/profitsharing/receivers/add"));
+
+        // 2. 删除接收方
+        server.enqueue(mockResponse(200, "{\"type\":\"MERCHANT_ID\",\"account\":\"1900000002\"}"));
+        DeleteReceiverRequest delReq = new DeleteReceiverRequest();
+        delReq.setType(ReceiverType.MERCHANT_ID);
+        delReq.setAccount("1900000002");
+
+        DeleteReceiverResponse delResp = payTemplate.deleteProfitSharingReceiver(delReq);
+        assertNotNull(delResp);
+        assertEquals("1900000002", delResp.getAccount());
+
+        RecordedRequest recordedDel = server.takeRequest();
+        assertEquals("POST", recordedDel.getMethod());
+        assertTrue(recordedDel.getPath().contains("/v3/profitsharing/receivers/delete"));
+
+        // 3. 请求分账
+        server.enqueue(mockResponse(200, "{\"transaction_id\":\"4200002000202610240001\",\"out_order_no\":\"PS_20261024_001\",\"order_id\":\"3000002000202610240001\",\"state\":\"FINISHED\"}"));
+        CreateOrderRequest createReq = new CreateOrderRequest();
+        createReq.setTransactionId("4200002000202610240001");
+        createReq.setOutOrderNo("PS_20261024_001");
+        CreateOrderReceiver receiver = new CreateOrderReceiver();
+        receiver.setType("MERCHANT_ID");
+        receiver.setAccount("1900000002");
+        receiver.setAmount(100L);
+        receiver.setDescription("分账测试");
+        createReq.setReceivers(java.util.List.of(receiver));
+
+        OrdersEntity createResp = payTemplate.createProfitSharing(createReq);
+        assertNotNull(createResp);
+        assertEquals("PS_20261024_001", createResp.getOutOrderNo());
+        assertEquals("3000002000202610240001", createResp.getOrderId());
+
+        RecordedRequest recordedCreate = server.takeRequest();
+        assertEquals("POST", recordedCreate.getMethod());
+        assertTrue(recordedCreate.getPath().contains("/v3/profitsharing/orders"));
+
+        // 4. 查询分账结果
+        server.enqueue(mockResponse(200, "{\"transaction_id\":\"4200002000202610240001\",\"out_order_no\":\"PS_20261024_001\",\"order_id\":\"3000002000202610240001\",\"state\":\"FINISHED\"}"));
+        OrdersEntity queryResp = payTemplate.queryProfitSharing("PS_20261024_001", "4200002000202610240001");
+        assertNotNull(queryResp);
+        assertEquals("PS_20261024_001", queryResp.getOutOrderNo());
+
+        RecordedRequest recordedQuery = server.takeRequest();
+        assertEquals("GET", recordedQuery.getMethod());
+        assertTrue(recordedQuery.getPath().contains("/v3/profitsharing/orders/PS_20261024_001"));
+        assertTrue(recordedQuery.getPath().contains("transaction_id=4200002000202610240001"));
+
+        // 5. 完结解冻在途剩余资金
+        server.enqueue(mockResponse(200, "{\"transaction_id\":\"4200002000202610240001\",\"out_order_no\":\"UNFREEZE_001\",\"order_id\":\"3000002000202610240001\",\"state\":\"FINISHED\"}"));
+        OrdersEntity unfreezeResp = payTemplate.unfreezeProfitSharing("UNFREEZE_001", "4200002000202610240001", "分账完成解冻剩余资金");
+        assertNotNull(unfreezeResp);
+        assertEquals("UNFREEZE_001", unfreezeResp.getOutOrderNo());
+
+        RecordedRequest recordedUnfreeze = server.takeRequest();
+        assertEquals("POST", recordedUnfreeze.getMethod());
+        assertTrue(recordedUnfreeze.getPath().contains("/v3/profitsharing/orders/unfreeze"));
+        String unfreezeBody = recordedUnfreeze.getBody().readUtf8();
+        assertTrue(unfreezeBody.contains("\"out_order_no\":\"UNFREEZE_001\""));
+        assertTrue(unfreezeBody.contains("\"description\":\"分账完成解冻剩余资金\""));
+
+        // 6. 请求分账回退
+        server.enqueue(mockResponse(200, "{\"order_id\":\"3000002000202610240001\",\"out_order_no\":\"PS_20261024_001\",\"out_return_no\":\"RET_001\",\"return_mchid\":\"1900000002\",\"amount\":100,\"result\":\"SUCCESS\"}"));
+        CreateReturnOrderRequest returnReq = new CreateReturnOrderRequest();
+        returnReq.setOutOrderNo("PS_20261024_001");
+        returnReq.setOutReturnNo("RET_001");
+        returnReq.setReturnMchid("1900000002");
+        returnReq.setAmount(100L);
+        returnReq.setDescription("用户退货分账回退");
+
+        ReturnOrdersEntity returnResp = payTemplate.returnProfitSharing(returnReq);
+        assertNotNull(returnResp);
+        assertEquals("RET_001", returnResp.getOutReturnNo());
+
+        RecordedRequest recordedReturn = server.takeRequest();
+        assertEquals("POST", recordedReturn.getMethod());
+        assertTrue(recordedReturn.getPath().contains("/v3/profitsharing/return-orders"));
+
+        // 7. 查询分账回退
+        server.enqueue(mockResponse(200, "{\"order_id\":\"3000002000202610240001\",\"out_order_no\":\"PS_20261024_001\",\"out_return_no\":\"RET_001\",\"return_mchid\":\"1900000002\",\"amount\":100,\"result\":\"SUCCESS\"}"));
+        ReturnOrdersEntity queryReturnResp = payTemplate.queryProfitSharingReturn("RET_001", "PS_20261024_001");
+        assertNotNull(queryReturnResp);
+        assertEquals("RET_001", queryReturnResp.getOutReturnNo());
+
+        RecordedRequest recordedQueryReturn = server.takeRequest();
+        assertEquals("GET", recordedQueryReturn.getMethod());
+        assertTrue(recordedQueryReturn.getPath().contains("/v3/profitsharing/return-orders/RET_001"));
+        assertTrue(recordedQueryReturn.getPath().contains("out_order_no=PS_20261024_001"));
+
+        // 8. 查询剩余待分金额
+        server.enqueue(mockResponse(200, "{\"transaction_id\":\"4200002000202610240001\",\"unsplit_amount\":500}"));
+        QueryOrderAmountRequest amountReq = new QueryOrderAmountRequest();
+        amountReq.setTransactionId("4200002000202610240001");
+        var amountResp = payTemplate.queryProfitSharingAmount(amountReq);
+        assertNotNull(amountResp);
+        assertEquals(500L, amountResp.getUnsplitAmount());
+
+        RecordedRequest recordedAmount = server.takeRequest();
+        assertEquals("GET", recordedAmount.getMethod());
+        assertTrue(recordedAmount.getPath().contains("/v3/profitsharing/transactions/4200002000202610240001/amounts"));
+
+        // 9. 查询最大分账比例
+        server.enqueue(mockResponse(200, "{\"sub_mchid\":\"1900000002\",\"max_ratio\":3000}"));
+        QueryMerchantRatioRequest ratioReq = new QueryMerchantRatioRequest();
+        ratioReq.setSubMchid("1900000002");
+        var ratioResp = payTemplate.queryProfitSharingMerchantRatio(ratioReq);
+        assertNotNull(ratioResp);
+        assertEquals(3000, ratioResp.getMaxRatio());
+
+        RecordedRequest recordedRatio = server.takeRequest();
+        assertEquals("GET", recordedRatio.getMethod());
+        assertTrue(recordedRatio.getPath().contains("/v3/profitsharing/merchant-configs/1900000002"));
+
+        // 10. 逃生舱实例验证
+        assertNotNull(payTemplate.getProfitsharingService());
+    }
+
+    @Test
+    @DisplayName("profitSharing: 参数非法防卫校验测试")
+    void testProfitSharingValidationErrors() {
+        payTemplate.setProfitSharingEnabled(true);
+
+        // 1. null request
+        PayException exNull = assertThrows(PayException.class, () -> payTemplate.createProfitSharing(null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, exNull.getResultCode());
+
+        // 2. createOrder 缺少 outOrderNo
+        CreateOrderRequest noOutOrderReq = new CreateOrderRequest();
+        noOutOrderReq.setTransactionId("TX_001");
+        noOutOrderReq.setReceivers(java.util.List.of(new CreateOrderReceiver()));
+        PayException exNoOutOrder = assertThrows(PayException.class, () -> payTemplate.createProfitSharing(noOutOrderReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, exNoOutOrder.getResultCode());
+
+        // 3. createOrder 缺少 receivers
+        CreateOrderRequest noReceiversReq = new CreateOrderRequest();
+        noReceiversReq.setOutOrderNo("PS_001");
+        noReceiversReq.setTransactionId("TX_001");
+        PayException exNoReceivers = assertThrows(PayException.class, () -> payTemplate.createProfitSharing(noReceiversReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, exNoReceivers.getResultCode());
+
+        // 4. unfreezeOrder 缺少 description
+        PayException exNoDesc = assertThrows(PayException.class, () -> payTemplate.unfreezeProfitSharing("PS_001", "TX_001", ""));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, exNoDesc.getResultCode());
+
+        // 5. returnOrder 缺少 orderId 与 outOrderNo
+        CreateReturnOrderRequest badReturnReq = new CreateReturnOrderRequest();
+        badReturnReq.setOutReturnNo("RET_001");
+        badReturnReq.setReturnMchid("1900000002");
+        badReturnReq.setAmount(100L);
+        badReturnReq.setDescription("回退");
+        PayException exBadReturn = assertThrows(PayException.class, () -> payTemplate.returnProfitSharing(badReturnReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, exBadReturn.getResultCode());
     }
 
     // =========================================================================

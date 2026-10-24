@@ -11,6 +11,7 @@ import io.github.atengk.boot.pay.core.lock.InMemoryPayLockManager;
 import io.github.atengk.boot.pay.core.lock.PayLockManager;
 import io.github.atengk.boot.pay.core.lock.RedisPayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
+import io.github.atengk.boot.pay.core.profitsharing.WechatProfitSharingService;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.spi.PayCertificateProvider;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
@@ -74,8 +75,21 @@ public class AtengPayAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.pay.wechat", name = "enabled", havingValue = "true", matchIfMissing = true)
     public WechatPayTemplate wechatPayTemplate(NamedMerchantRegistry namedMerchantRegistry,
-                                               WechatAutoCertificateManager wechatAutoCertificateManager) {
-        return new WechatPayTemplate(namedMerchantRegistry, wechatAutoCertificateManager);
+                                               WechatAutoCertificateManager wechatAutoCertificateManager,
+                                               PayProperties payProperties) {
+        return new WechatPayTemplate(namedMerchantRegistry, wechatAutoCertificateManager, payProperties);
+    }
+
+    /**
+     * 注册微信分账专有独立业务服务（由物理开关 ateng.boot.pay.profit-sharing.enabled 守卫）
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(WechatPayTemplate.class)
+    @ConditionalOnProperty(name = "ateng.boot.pay.profit-sharing.enabled", havingValue = "true")
+    public WechatProfitSharingService wechatProfitSharingService(WechatPayTemplate wechatPayTemplate) {
+        log.info("Profit-sharing feature enabled, configuring WechatProfitSharingService.");
+        return new WechatProfitSharingService(wechatPayTemplate);
     }
 
     /**
