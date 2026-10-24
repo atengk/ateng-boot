@@ -3,6 +3,7 @@ package io.github.atengk.boot.datasource.config;
 import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceProperties;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
+import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
@@ -39,6 +40,7 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context.getBean(TenantDataSourceProvider.class)).isInstanceOf(DefaultTenantDataSourceProvider.class);
             assertThat(context).hasSingleBean(DataSource.class);
             assertThat(context.getBean(DataSource.class)).isInstanceOf(AtengDynamicRoutingDataSource.class);
+            assertThat(context).hasSingleBean(DynamicDatasourceGuard.class);
             assertThat(context).hasSingleBean(DynamicDatasourceTemplate.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
@@ -82,6 +84,7 @@ class AtengDatasourceAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(DatasourceProperties.class);
                     assertThat(context).doesNotHaveBean(TenantDataSourceProvider.class);
                     assertThat(context).doesNotHaveBean(DataSource.class);
+                    assertThat(context).doesNotHaveBean(DynamicDatasourceGuard.class);
                     assertThat(context).doesNotHaveBean(DynamicDatasourceTemplate.class);
                 });
     }

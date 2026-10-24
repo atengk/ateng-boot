@@ -1,9 +1,17 @@
 package io.github.atengk.boot.datasource.config;
 
 import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
+import com.baomidou.dynamic.datasource.annotation.DS;
+import com.baomidou.dynamic.datasource.aop.DynamicDataSourceAnnotationAdvisor;
+import com.baomidou.dynamic.datasource.processor.DsJakartaHeaderProcessor;
+import com.baomidou.dynamic.datasource.processor.DsJakartaSessionProcessor;
+import com.baomidou.dynamic.datasource.processor.DsProcessor;
+import com.baomidou.dynamic.datasource.processor.DsSpelExpressionProcessor;
 import com.baomidou.dynamic.datasource.provider.DynamicDataSourceProvider;
 import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceAutoConfiguration;
 import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceProperties;
+import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
+import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
@@ -11,12 +19,15 @@ import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.aop.Advisor;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.expression.BeanFactoryResolver;
 
 import javax.sql.DataSource;
 import java.util.Collections;
@@ -50,6 +61,19 @@ public class AtengDatasourceAutoConfiguration {
     @ConditionalOnMissingBean(TenantDataSourceProvider.class)
     public TenantDataSourceProvider defaultTenantDataSourceProvider(DatasourceProperties properties) {
         return new DefaultTenantDataSourceProvider(properties);
+    }
+
+    /**
+     * 注册动态数据源事务切源安全守卫
+     *
+     * @param datasourceProperties 数据源配置属性
+     * @return 事务切源安全守卫实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DynamicDatasourceGuard.class)
+    public DynamicDatasourceGuard dynamicDatasourceGuard(DatasourceProperties datasourceProperties) {
+        log.info("装配 DynamicDatasourceGuard 动态数据源事务切源安全守卫");
+        return new DynamicDatasourceGuard(datasourceProperties);
     }
 
     /**
@@ -88,14 +112,67 @@ public class AtengDatasourceAutoConfiguration {
      * @param dataSource               受管动态路由数据源
      * @param datasourceProperties     数据源配置属性
      * @param tenantDataSourceProvider 租户数据源解析器
+     * @param guard                    事务切源安全守卫
      * @return 编程式切源门面实例
      */
     @Bean
     @ConditionalOnMissingBean(DynamicDatasourceTemplate.class)
     public DynamicDatasourceTemplate dynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                                                DatasourceProperties datasourceProperties,
-                                                               TenantDataSourceProvider tenantDataSourceProvider) {
+                                                               TenantDataSourceProvider tenantDataSourceProvider,
+                                                               DynamicDatasourceGuard guard) {
         log.info("装配 DynamicDatasourceTemplate 编程式切源对称门面与批处理沙箱");
-        return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider);
+        return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider, guard);
+    }
+
+    /**
+     * 注册数据源处理器链
+     *
+     * @param beanFactory                Spring BeanFactory
+     * @param dynamicDataSourceProperties Baomidou 配置属性
+     * @return 数据源处理器链
+     */
+    @Bean
+    @ConditionalOnMissingBean(DsProcessor.class)
+    public DsProcessor dsProcessor(BeanFactory beanFactory, DynamicDataSourceProperties dynamicDataSourceProperties) {
+        DsJakartaHeaderProcessor headerProcessor = new DsJakartaHeaderProcessor();
+        DsJakartaSessionProcessor sessionProcessor = new DsJakartaSessionProcessor();
+        DsSpelExpressionProcessor spelProcessor = new DsSpelExpressionProcessor();
+        spelProcessor.setBeanResolver(new BeanFactoryResolver(beanFactory));
+        if (dynamicDataSourceProperties.getAop() != null && dynamicDataSourceProperties.getAop().getAllowedSpelTypeAccess() != null) {
+            spelProcessor.setAllowedSpelTypeAccess(dynamicDataSourceProperties.getAop().getAllowedSpelTypeAccess());
+        }
+        headerProcessor.setNextProcessor(sessionProcessor);
+        sessionProcessor.setNextProcessor(spelProcessor);
+        return headerProcessor;
+    }
+
+    /**
+     * 注册具备假切源刚性拦截防卫的 @DS 注解切面 Advisor
+     *
+     * @param dsProcessor                 数据源处理器
+     * @param dynamicDataSourceProperties Baomidou 原生多数据源配置属性
+     * @param guard                       事务切源安全守卫
+     * @return 切源增强 Advisor
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "dynamicDatasourceAnnotationAdvisor")
+    public Advisor dynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor,
+                                                      DynamicDataSourceProperties dynamicDataSourceProperties,
+                                                      DynamicDatasourceGuard guard) {
+        log.info("装配 AtengDynamicDataSourceAnnotationInterceptor 假切源刚性拦截切面 Advisor");
+        Boolean allowedPublicOnly = dynamicDataSourceProperties.getAop() != null
+                ? dynamicDataSourceProperties.getAop().getAllowedPublicOnly()
+                : false;
+        AtengDynamicDataSourceAnnotationInterceptor interceptor = new AtengDynamicDataSourceAnnotationInterceptor(
+                allowedPublicOnly,
+                dsProcessor,
+                guard
+        );
+        DynamicDataSourceAnnotationAdvisor advisor = new DynamicDataSourceAnnotationAdvisor(interceptor, DS.class);
+        if (dynamicDataSourceProperties.getAop() != null && dynamicDataSourceProperties.getAop().getOrder() != null) {
+            advisor.setOrder(dynamicDataSourceProperties.getAop().getOrder());
+        }
+        return advisor;
     }
 }

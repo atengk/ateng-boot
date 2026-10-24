@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.exception.TenantDataSourceNotFoundException;
+import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
@@ -35,15 +36,24 @@ public class DynamicDatasourceTemplate {
     private final DynamicRoutingDataSource dataSource;
     private final DatasourceProperties datasourceProperties;
     private final TenantDataSourceProvider tenantDataSourceProvider;
+    private final DynamicDatasourceGuard guard;
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
-                                     TenantDataSourceProvider tenantDataSourceProvider) {
+                                     TenantDataSourceProvider tenantDataSourceProvider,
+                                     DynamicDatasourceGuard guard) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource 不能为空");
         this.datasourceProperties = datasourceProperties != null ? datasourceProperties : new DatasourceProperties();
         this.tenantDataSourceProvider = tenantDataSourceProvider != null
                 ? tenantDataSourceProvider
                 : new DefaultTenantDataSourceProvider(this.datasourceProperties);
+        this.guard = guard != null ? guard : new DynamicDatasourceGuard(this.datasourceProperties);
+    }
+
+    public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
+                                     DatasourceProperties datasourceProperties,
+                                     TenantDataSourceProvider tenantDataSourceProvider) {
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, new DynamicDatasourceGuard(datasourceProperties));
     }
 
     /**
@@ -58,6 +68,10 @@ public class DynamicDatasourceTemplate {
     public <T> T callInDataSource(String dsKey, Supplier<T> action) {
         Assert.hasText(dsKey, "数据源 Key (dsKey) 不能为空");
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
+
+        if (guard != null) {
+            guard.validateSwitch(dsKey);
+        }
 
         DynamicDataSourceContextHolder.push(dsKey);
         try {
