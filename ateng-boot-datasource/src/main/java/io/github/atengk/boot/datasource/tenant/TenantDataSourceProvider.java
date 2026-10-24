@@ -1,5 +1,8 @@
 package io.github.atengk.boot.datasource.tenant;
 
+import java.util.Collections;
+import java.util.Map;
+
 /**
  * 物理分库租户数据源解析器 SPI
  *
@@ -16,4 +19,14 @@ public interface TenantDataSourceProvider {
      * @return 目标物理数据源 Key，若返回 null 或空字符串则视为未匹配到专属数据源
      */
     String resolveDataSourceKey(String tenantId);
+
+    /**
+     * 获取所有已知或活跃的租户与数据源映射（可选扩展）
+     * 默认返回空 Map
+     *
+     * @return 租户与物理数据源 Key 映射表
+     */
+    default Map<String, String> getTenantDataSourceMap() {
+        return Collections.emptyMap();
+    }
 }

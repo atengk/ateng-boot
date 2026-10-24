@@ -6,6 +6,7 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceProperties;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.slf4j.Logger;
@@ -62,10 +63,10 @@ public class AtengDatasourceAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(DataSource.class)
-    public DataSource dataSource(DynamicDataSourceProperties properties,
-                                 List<DynamicDataSourceProvider> providers,
-                                 DatasourceProperties datasourceProperties,
-                                 TenantDataSourceProvider tenantDataSourceProvider) {
+    public DynamicRoutingDataSource dataSource(DynamicDataSourceProperties properties,
+                                               List<DynamicDataSourceProvider> providers,
+                                               DatasourceProperties datasourceProperties,
+                                               TenantDataSourceProvider tenantDataSourceProvider) {
         log.info("装配 AtengDynamicRoutingDataSource 物理多租户受管动态路由数据源");
         AtengDynamicRoutingDataSource dataSource = new AtengDynamicRoutingDataSource(
                 providers != null ? providers : Collections.emptyList(),
@@ -79,5 +80,22 @@ public class AtengDatasourceAutoConfiguration {
         dataSource.setSeata(properties.getSeata());
         dataSource.setGraceDestroy(properties.getGraceDestroy());
         return dataSource;
+    }
+
+    /**
+     * 注册编程式切源对称门面与全库批处理容错沙箱
+     *
+     * @param dataSource               受管动态路由数据源
+     * @param datasourceProperties     数据源配置属性
+     * @param tenantDataSourceProvider 租户数据源解析器
+     * @return 编程式切源门面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(DynamicDatasourceTemplate.class)
+    public DynamicDatasourceTemplate dynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
+                                                               DatasourceProperties datasourceProperties,
+                                                               TenantDataSourceProvider tenantDataSourceProvider) {
+        log.info("装配 DynamicDatasourceTemplate 编程式切源对称门面与批处理沙箱");
+        return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider);
     }
 }

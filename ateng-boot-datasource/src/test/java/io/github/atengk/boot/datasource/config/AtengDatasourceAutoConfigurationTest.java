@@ -5,6 +5,7 @@ import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.junit.jupiter.api.DisplayName;
@@ -38,6 +39,7 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context.getBean(TenantDataSourceProvider.class)).isInstanceOf(DefaultTenantDataSourceProvider.class);
             assertThat(context).hasSingleBean(DataSource.class);
             assertThat(context.getBean(DataSource.class)).isInstanceOf(AtengDynamicRoutingDataSource.class);
+            assertThat(context).hasSingleBean(DynamicDatasourceTemplate.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -80,6 +82,7 @@ class AtengDatasourceAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(DatasourceProperties.class);
                     assertThat(context).doesNotHaveBean(TenantDataSourceProvider.class);
                     assertThat(context).doesNotHaveBean(DataSource.class);
+                    assertThat(context).doesNotHaveBean(DynamicDatasourceTemplate.class);
                 });
     }
 
