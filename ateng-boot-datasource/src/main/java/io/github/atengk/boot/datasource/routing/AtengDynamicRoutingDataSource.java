@@ -67,20 +67,23 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
     @Override
     public DataSource determineDataSource() {
-        // 1. 显式优先级最高：当前线程已通过 @DS 或编程式门面显式指定数据源 Key
-        String explicitKey = DynamicDataSourceContextHolder.peek();
-        if (StringUtils.hasText(explicitKey)) {
-            return resolveWithFailover(explicitKey);
-        }
-
         DatasourceProperties.ReadWriteSplitProperties readWrite = datasourceProperties.getReadWriteSplit();
         String masterKey = StringUtils.hasText(readWrite.getMasterDataSource()) ? readWrite.getMasterDataSource() : "master";
         String slaveKey = StringUtils.hasText(readWrite.getSlaveDataSource()) ? readWrite.getSlaveDataSource() : "slave";
 
-        // 2. 写后读主防延迟检查：若当前上下文（单请求或时间窗口内）发生过写操作，强制路由至主库
+        String explicitKey = DynamicDataSourceContextHolder.peek();
+
+        // 1. 写后读主防延迟检查：若当前上下文命中防延迟且目标路由为读从库，强制回退至主库
         if (readWrite.isEnabled() && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
-            log.debug("写后读主 (Read-After-Write) 防延迟生效，强制只读查询路由至主库: [{}]", masterKey);
-            return resolveWithFailover(masterKey);
+            if (Objects.equals(explicitKey, slaveKey) || (!StringUtils.hasText(explicitKey) && !StringUtils.hasText(TenantContextHolder.getTenantId()))) {
+                log.debug("写后读主 (Read-After-Write) 防延迟生效，强制只读查询路由至主库: [{}] (原路由: [{}])", masterKey, explicitKey);
+                return resolveWithFailover(masterKey);
+            }
+        }
+
+        // 2. 显式优先级最高：当前线程已通过 @DS 或编程式门面显式指定数据源 Key
+        if (StringUtils.hasText(explicitKey)) {
+            return resolveWithFailover(explicitKey);
         }
 
         // 3. 读写分离路由：检测当前是否处于只读事务中 (@Transactional(readOnly = true))

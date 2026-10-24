@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.aop.Advisor;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -126,7 +127,7 @@ public class AtengDatasourceAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(DynamicDatasourceGuard.class)
-    public DynamicDatasourceGuard dynamicDatasourceGuard(DatasourceProperties datasourceProperties) {
+    public DynamicDatasourceGuard datasourceGuard(DatasourceProperties datasourceProperties) {
         log.info("装配 DynamicDatasourceGuard 动态数据源事务切源安全守卫");
         return new DynamicDatasourceGuard(datasourceProperties);
     }
@@ -262,10 +263,10 @@ public class AtengDatasourceAutoConfiguration {
      * @return 切源增强 Advisor
      */
     @Bean
-    @ConditionalOnMissingBean(name = "dynamicDatasourceAnnotationAdvisor")
-    public Advisor dynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor,
-                                                      DynamicDataSourceProperties dynamicDataSourceProperties,
-                                                      DynamicDatasourceGuard guard) {
+    @ConditionalOnMissingBean(name = "atengDynamicDatasourceAnnotationAdvisor")
+    public Advisor atengDynamicDatasourceAnnotationAdvisor(DsProcessor dsProcessor,
+                                                           DynamicDataSourceProperties dynamicDataSourceProperties,
+                                                           DynamicDatasourceGuard guard) {
         log.info("装配 AtengDynamicDataSourceAnnotationInterceptor 假切源刚性拦截切面 Advisor");
         Boolean allowedPublicOnly = dynamicDataSourceProperties.getAop() != null
                 ? dynamicDataSourceProperties.getAop().getAllowedPublicOnly()
@@ -280,5 +281,21 @@ public class AtengDatasourceAutoConfiguration {
             advisor.setOrder(dynamicDataSourceProperties.getAop().getOrder());
         }
         return advisor;
+    }
+
+    /**
+     * 清理 Baomidou 原生未挂载假切源守卫的 dynamicDatasourceAnnotationAdvisor 定义，
+     * 避免双重拦截与 BeanDefinition 覆盖冲突。
+     *
+     * @return BeanDefinition 注册后处理器
+     */
+    @Bean
+    public static BeanDefinitionRegistryPostProcessor atengDynamicDatasourceAopOverridePostProcessor() {
+        return registry -> {
+            if (registry.containsBeanDefinition("dynamicDatasourceAnnotationAdvisor")) {
+                registry.removeBeanDefinition("dynamicDatasourceAnnotationAdvisor");
+                log.info("ateng-boot: 成功替换 Baomidou 原生 dynamicDatasourceAnnotationAdvisor 为具备安全守卫的 Advisor");
+            }
+        };
     }
 }
