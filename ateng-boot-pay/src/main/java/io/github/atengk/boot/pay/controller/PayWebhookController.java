@@ -37,14 +37,19 @@ public class PayWebhookController {
     }
 
     /**
-     * 统一接收并处理各支付渠道的异步 Webhook 回调
+     * 统一接收并处理各支付渠道的异步 Webhook 回调（支付成功、退款完成等事件自动智能识别）
      *
      * @param channel    支付渠道标识（wechat / alipay）
      * @param merchantId 商户键或商户号 / 应用 AppId（可选，默认 default）
      * @param request    Servlet 原生请求对象
      * @return 官方标准渠道 ACK 响应
      */
-    @PostMapping(value = {"/{channel}/{merchantId}", "/{channel}"})
+    @PostMapping(value = {
+            "/{channel}/{merchantId}",
+            "/{channel}",
+            "/{channel}/{merchantId}/refund",
+            "/{channel}/refund"
+    })
     public ResponseEntity<String> handleCallback(
             @PathVariable("channel") String channel,
             @PathVariable(value = "merchantId", required = false) String merchantId,
@@ -54,8 +59,13 @@ public class PayWebhookController {
                 ? merchantId
                 : NamedMerchantRegistry.DEFAULT_KEY;
 
-        log.info("Received incoming payment webhook notification: channel=[{}], merchantId=[{}]",
-                channel, effectiveMerchantId);
+        // 若命中了 /{channel}/refund 路径变体且 merchantId 捕获为 "refund"，降级为默认商户 default
+        if ("refund".equalsIgnoreCase(effectiveMerchantId)) {
+            effectiveMerchantId = NamedMerchantRegistry.DEFAULT_KEY;
+        }
+
+        log.info("Received incoming payment/refund webhook notification: channel=[{}], merchantId=[{}], uri=[{}]",
+                channel, effectiveMerchantId, request != null ? request.getRequestURI() : null);
 
         PayChannel payChannel = resolveChannel(channel);
         if (payChannel == null) {

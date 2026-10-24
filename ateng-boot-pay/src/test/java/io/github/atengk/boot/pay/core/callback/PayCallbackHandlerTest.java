@@ -11,10 +11,12 @@ import io.github.atengk.boot.pay.core.lock.InMemoryPayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayTradeState;
+import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.junit.jupiter.api.AfterEach;
@@ -397,6 +399,186 @@ class PayCallbackHandlerTest {
     }
 
     // =========================================================================
+    // 4. 微信与支付宝退款异步 Webhook 通知测试
+    // =========================================================================
+
+    @Test
+    @DisplayName("微信退款: 正常验签解密、智能路由与 onRefundSuccess 触发")
+    void testWechatRefundCallbackSuccess() throws Exception {
+        AtomicBoolean refundInvoked = new AtomicBoolean(false);
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                fail("退款通知不应触发 onPaymentSuccess");
+                return PayCallbackResult.fail("错误分支");
+            }
+
+            @Override
+            public PayCallbackResult onRefundSuccess(RefundSuccessCallback callback) {
+                refundInvoked.set(true);
+                assertEquals(PayChannel.WECHAT_PAY, callback.getChannel());
+                assertEquals("WX_ORIG_ORDER_1001", callback.getOutTradeNo());
+                assertEquals("WX_TX_ORIG_2002", callback.getTransactionId());
+                assertEquals("WX_REFUND_NO_3003", callback.getOutRefundNo());
+                assertEquals("WX_REF_ID_4004", callback.getRefundId());
+                assertEquals(new BigDecimal("100.00"), callback.getTotalAmount());
+                assertEquals(new BigDecimal("20.00"), callback.getRefundAmount());
+                assertEquals("SUCCESS", callback.getRefundStatus());
+                assertEquals("2026-10-24T10:15:00+08:00", callback.getRefundTime());
+                return PayCallbackResult.success();
+            }
+        });
+
+        String refundJson = buildWechatRefundJson("WX_ORIG_ORDER_1001", "WX_TX_ORIG_2002",
+                "WX_REFUND_NO_3003", "WX_REF_ID_4004", 10000, 2000, "SUCCESS");
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatRefundNotificationBody(refundJson, headers);
+
+        // 调用 handleWechat 自动智能识别退款
+        PayCallbackResponse response = handler.handleWechat("default", headers, body);
+
+        assertTrue(refundInvoked.get(), "必须成功路由并执行 onRefundSuccess");
+        assertNotNull(response);
+        assertEquals(200, response.getHttpStatus());
+        assertEquals("{\"code\":\"SUCCESS\",\"message\":\"成功\"}", response.getResponseBody());
+        assertTrue(response.isSuccess());
+        assertTrue(response.isRefund());
+        assertNotNull(response.getRefundCallback());
+        assertEquals("WX_REFUND_NO_3003", response.getRefundCallback().getOutRefundNo());
+    }
+
+    @Test
+    @DisplayName("微信退款: 业务监听器返回 FAIL 回复 HTTP 500 触发微信退款重试")
+    void testWechatRefundCallbackFail() throws Exception {
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                return PayCallbackResult.success();
+            }
+
+            @Override
+            public PayCallbackResult onRefundSuccess(RefundSuccessCallback callback) {
+                return PayCallbackResult.fail("退款冲销记账失败，触发重试");
+            }
+        });
+
+        String refundJson = buildWechatRefundJson("WX_FAIL_ORDER", "WX_TX_FAIL",
+                "WX_FAIL_REFUND", "WX_FAIL_REF_ID", 5000, 1000, "SUCCESS");
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatRefundNotificationBody(refundJson, headers);
+
+        PayCallbackResponse response = handler.handleWechat("default", headers, body);
+
+        assertEquals(500, response.getHttpStatus());
+        assertTrue(response.getResponseBody().contains("退款冲销记账失败"));
+        assertTrue(response.isFail());
+    }
+
+    @Test
+    @DisplayName("微信退款: 双轨并发防重锁基于 channel:outRefundNo 锁竞争阻断")
+    void testWechatRefundCallbackLockContention() throws Exception {
+        String outRefundNo = "WX_REFUND_LOCKED_888";
+        String lockKey = "WECHAT_PAY:" + outRefundNo;
+
+        // 预先获取退款防重锁
+        assertTrue(payLockManager.tryLock(lockKey, Duration.ofSeconds(10)));
+
+        String refundJson = buildWechatRefundJson("WX_ORDER_SAME", "WX_TX_SAME",
+                outRefundNo, "WX_REF_ID_888", 8800, 8800, "SUCCESS");
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatRefundNotificationBody(refundJson, headers);
+
+        PayCallbackResponse response = handler.handleWechat("default", headers, body);
+
+        // 锁冲突回复 500 FAIL，触发微信重试
+        assertEquals(500, response.getHttpStatus());
+        assertTrue(response.getResponseBody().contains("并发防重锁冲突"));
+        assertTrue(response.isFail());
+
+        // 释放预占锁
+        payLockManager.unlock(lockKey);
+    }
+
+    @Test
+    @DisplayName("微信退款: 编程式 parseAndVerifyWechatRefund 解析验证与普通 parse 拦截")
+    void testWechatRefundParseAndVerify() throws Exception {
+        String refundJson = buildWechatRefundJson("WX_ORDER_PROG", "WX_TX_PROG",
+                "WX_REFUND_PROG", "WX_REF_ID_PROG", 6000, 3000, "SUCCESS");
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatRefundNotificationBody(refundJson, headers);
+
+        // 1. 编程式 parseAndVerifyWechatRefund 成功解析
+        RefundSuccessCallback refundCallback = handler.parseAndVerifyWechatRefund("default", headers, body);
+        assertNotNull(refundCallback);
+        assertEquals("WX_REFUND_PROG", refundCallback.getOutRefundNo());
+        assertEquals(new BigDecimal("30.00"), refundCallback.getRefundAmount());
+
+        // 2. 普通 parseAndVerifyWechat 拦截并提示
+        PayException ex = assertThrows(PayException.class, () -> handler.parseAndVerifyWechat("default", headers, body));
+        assertTrue(ex.getMessage().contains("parseAndVerifyWechatRefund"));
+    }
+
+    @Test
+    @DisplayName("支付宝退款: 正常验签、智能路由与 onRefundSuccess 触发")
+    void testAlipayRefundCallbackSuccess() throws Exception {
+        AtomicBoolean refundInvoked = new AtomicBoolean(false);
+        listeners.add(new PayCallbackListener() {
+            @Override
+            public PayCallbackResult onPaymentSuccess(PaymentSuccessCallback callback) {
+                fail("退款通知不应触发 onPaymentSuccess");
+                return PayCallbackResult.fail("错误分支");
+            }
+
+            @Override
+            public PayCallbackResult onRefundSuccess(RefundSuccessCallback callback) {
+                refundInvoked.set(true);
+                assertEquals(PayChannel.ALIPAY, callback.getChannel());
+                assertEquals("ALI_T_1001", callback.getOutTradeNo());
+                assertEquals("202610242200140001", callback.getTransactionId());
+                assertEquals("ALI_R_2002", callback.getOutRefundNo());
+                assertEquals(new BigDecimal("100.00"), callback.getTotalAmount());
+                assertEquals(new BigDecimal("35.00"), callback.getRefundAmount());
+                assertEquals("REFUND_SUCCESS", callback.getRefundStatus());
+                return PayCallbackResult.success();
+            }
+        });
+
+        Map<String, String> params = buildAlipayRefundParams("ALI_T_1001", "202610242200140001",
+                "ALI_R_2002", "100.00", "35.00");
+
+        PayCallbackResponse response = handler.handleAlipay("default", params);
+
+        assertTrue(refundInvoked.get());
+        assertNotNull(response);
+        assertEquals(200, response.getHttpStatus());
+        assertEquals("success", response.getResponseBody());
+        assertTrue(response.isSuccess());
+        assertTrue(response.isRefund());
+        assertNotNull(response.getRefundCallback());
+        assertEquals("ALI_R_2002", response.getRefundCallback().getOutRefundNo());
+    }
+
+    @Test
+    @DisplayName("支付宝退款: 双轨并发防重锁基于 channel:outRefundNo 锁竞争阻断")
+    void testAlipayRefundCallbackLockContention() throws Exception {
+        String outRefundNo = "ALI_R_LOCKED_999";
+        String lockKey = "ALIPAY:" + outRefundNo;
+
+        // 预先获取退款防重锁
+        assertTrue(payLockManager.tryLock(lockKey, Duration.ofSeconds(10)));
+
+        Map<String, String> params = buildAlipayRefundParams("ALI_T_SAME", "202610242200140002",
+                outRefundNo, "50.00", "50.00");
+
+        PayCallbackResponse response = handler.handleAlipay("default", params);
+
+        assertEquals("fail", response.getResponseBody());
+        assertTrue(response.isFail());
+
+        payLockManager.unlock(lockKey);
+    }
+
+    // =========================================================================
     // 辅助工具方法
     // =========================================================================
 
@@ -486,6 +668,92 @@ class PayCallbackHandlerTest {
         if (passbackParams != null) {
             params.put("passback_params", passbackParams);
         }
+
+        String content = AlipaySignature.getSignCheckContentV1(params);
+        String sign = AlipaySignature.rsaSign(content, testPrivateKeyPem, "UTF-8", "RSA2");
+        params.put("sign", sign);
+        return params;
+    }
+
+    private String buildWechatRefundJson(String outTradeNo, String txId, String outRefundNo, String refundId,
+                                         int totalFen, int refundFen, String status) {
+        return "{\n" +
+                "  \"mchid\": \"1900000001\",\n" +
+                "  \"out_trade_no\": \"" + outTradeNo + "\",\n" +
+                "  \"transaction_id\": \"" + txId + "\",\n" +
+                "  \"out_refund_no\": \"" + outRefundNo + "\",\n" +
+                "  \"refund_id\": \"" + refundId + "\",\n" +
+                "  \"refund_status\": \"" + status + "\",\n" +
+                "  \"success_time\": \"2026-10-24T10:15:00+08:00\",\n" +
+                "  \"user_received_account\": \"支付用户零钱\",\n" +
+                "  \"amount\": {\n" +
+                "    \"total\": " + totalFen + ",\n" +
+                "    \"refund\": " + refundFen + ",\n" +
+                "    \"payer_total\": " + totalFen + ",\n" +
+                "    \"payer_refund\": " + refundFen + "\n" +
+                "  }\n" +
+                "}";
+    }
+
+    private String buildWechatRefundNotificationBody(String refundJson, Map<String, String> headers) throws Exception {
+        String nonce = "aes_gcm_nonce_" + System.currentTimeMillis();
+        String associatedData = "refund";
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        SecretKeySpec keySpec = new SecretKeySpec(API_V3_KEY.getBytes(StandardCharsets.UTF_8), "AES");
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(128, nonce.getBytes(StandardCharsets.UTF_8));
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
+        cipher.updateAAD(associatedData.getBytes(StandardCharsets.UTF_8));
+        byte[] ciphertextBytes = cipher.doFinal(refundJson.getBytes(StandardCharsets.UTF_8));
+        String ciphertextBase64 = Base64.getEncoder().encodeToString(ciphertextBytes);
+
+        String body = "{\n" +
+                "  \"id\": \"EV-" + System.currentTimeMillis() + "\",\n" +
+                "  \"create_time\": \"2026-10-24T10:00:00+08:00\",\n" +
+                "  \"resource_type\": \"encrypt-resource\",\n" +
+                "  \"event_type\": \"REFUND.SUCCESS\",\n" +
+                "  \"summary\": \"退款成功\",\n" +
+                "  \"resource\": {\n" +
+                "    \"algorithm\": \"AEAD_AES_256_GCM\",\n" +
+                "    \"ciphertext\": \"" + ciphertextBase64 + "\",\n" +
+                "    \"associated_data\": \"" + associatedData + "\",\n" +
+                "    \"original_type\": \"refund\",\n" +
+                "    \"nonce\": \"" + nonce + "\"\n" +
+                "  }\n" +
+                "}";
+
+        long timestamp = Instant.now().getEpochSecond();
+        String headerNonce = "header_nonce_" + System.currentTimeMillis();
+        String signPayload = timestamp + "\n" + headerNonce + "\n" + body + "\n";
+
+        Signature signer = Signature.getInstance("SHA256withRSA");
+        signer.initSign(testPrivateKey);
+        signer.update(signPayload.getBytes(StandardCharsets.UTF_8));
+        String signature = Base64.getEncoder().encodeToString(signer.sign());
+
+        headers.put("Wechatpay-Timestamp", String.valueOf(timestamp));
+        headers.put("Wechatpay-Nonce", headerNonce);
+        headers.put("Wechatpay-Signature", signature);
+        headers.put("Wechatpay-Serial", testCertSerial);
+        headers.put("Wechatpay-Signature-Type", "WECHATPAY2-SHA256-RSA2048");
+
+        return body;
+    }
+
+    private Map<String, String> buildAlipayRefundParams(String outTradeNo, String tradeNo, String outRefundNo,
+                                                        String totalAmount, String refundFee) throws Exception {
+        Map<String, String> params = new HashMap<>();
+        params.put("app_id", "2021000000000001");
+        params.put("out_trade_no", outTradeNo);
+        params.put("trade_no", tradeNo);
+        params.put("out_biz_no", outRefundNo);
+        params.put("total_amount", totalAmount);
+        params.put("refund_fee", refundFee);
+        params.put("trade_status", "TRADE_CLOSED");
+        params.put("gmt_refund", "2026-10-24 10:15:00");
+        params.put("notify_time", "2026-10-24 10:15:01");
+        params.put("charset", "UTF-8");
+        params.put("sign_type", "RSA2");
 
         String content = AlipaySignature.getSignCheckContentV1(params);
         String sign = AlipaySignature.rsaSign(content, testPrivateKeyPem, "UTF-8", "RSA2");

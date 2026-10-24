@@ -5,6 +5,7 @@ import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResponse;
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -121,5 +122,52 @@ class PayWebhookControllerTest {
         assertEquals(HttpStatus.BAD_REQUEST, result.getStatusCode());
         assertTrue(result.getBody().contains("Unsupported payment callback channel"));
         verifyNoInteractions(callbackHandler);
+    }
+
+    @Test
+    @DisplayName("控制器端点: 微信退款回调端点与响应转译")
+    void testWechatRefundCallbackDispatch() {
+        RefundSuccessCallback refundCallback = RefundSuccessCallback.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("WX_CTRL_101")
+                .outRefundNo("WX_CTRL_REF_202")
+                .refundAmount(new BigDecimal("20.00"))
+                .build();
+
+        PayCallbackResponse response = PayCallbackResponse.builder()
+                .httpStatus(200)
+                .contentType("application/json;charset=utf-8")
+                .responseBody("{\"code\":\"SUCCESS\",\"message\":\"成功\"}")
+                .result(PayCallbackResult.success())
+                .refundCallback(refundCallback)
+                .build();
+
+        when(callbackHandler.handleWechat(eq("mch_001"), eq(request))).thenReturn(response);
+
+        ResponseEntity<String> result = controller.handleCallback("wechat", "mch_001", request);
+
+        assertEquals(HttpStatus.OK, result.getStatusCode());
+        assertEquals("{\"code\":\"SUCCESS\",\"message\":\"成功\"}", result.getBody());
+        assertTrue(response.isRefund());
+        verify(callbackHandler, times(1)).handleWechat("mch_001", request);
+    }
+
+    @Test
+    @DisplayName("控制器端点: 微信专用退款路径 /{channel}/refund 降级至 default 商户")
+    void testWechatRefundPathFallbackToDefault() {
+        PayCallbackResponse response = PayCallbackResponse.builder()
+                .httpStatus(200)
+                .contentType("application/json;charset=utf-8")
+                .responseBody("{\"code\":\"SUCCESS\",\"message\":\"成功\"}")
+                .result(PayCallbackResult.success())
+                .build();
+
+        when(callbackHandler.handleWechat(eq("default"), eq(request))).thenReturn(response);
+
+        // 当匹配到 /{channel}/refund 时，Spring MVC 将 "refund" 传给 merchantId
+        ResponseEntity<String> result = controller.handleCallback("wechat", "refund", request);
+
+        assertEquals(HttpStatus.OK, result.getStatusCode());
+        verify(callbackHandler, times(1)).handleWechat("default", request);
     }
 }

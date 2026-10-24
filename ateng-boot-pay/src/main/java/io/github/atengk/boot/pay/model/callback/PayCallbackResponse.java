@@ -45,9 +45,14 @@ public class PayCallbackResponse implements Serializable {
     private final PayCallbackResult result;
 
     /**
-     * 标准化解析后的支付成功事件数据 (若验签失败或未达到分发阶段可能为 null)
+     * 标准化解析后的支付成功事件数据 (若为退款通知、验签失败或未达到分发阶段可能为 null)
      */
     private final PaymentSuccessCallback callback;
+
+    /**
+     * 标准化解析后的退款成功事件数据 (若为支付通知、验签失败或未达到分发阶段可能为 null)
+     */
+    private final RefundSuccessCallback refundCallback;
 
     /**
      * 转换为 Spring MVC 标准强类型响应实体
@@ -58,6 +63,10 @@ public class PayCallbackResponse implements Serializable {
         return ResponseEntity.status(httpStatus)
                 .contentType(MediaType.parseMediaType(contentType))
                 .body(responseBody);
+    }
+
+    public boolean isRefund() {
+        return refundCallback != null;
     }
 
     public boolean isSuccess() {
