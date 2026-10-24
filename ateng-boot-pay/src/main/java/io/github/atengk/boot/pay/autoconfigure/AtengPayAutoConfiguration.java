@@ -7,6 +7,7 @@ import io.github.atengk.boot.pay.core.PayTemplate;
 import io.github.atengk.boot.pay.core.WechatPayTemplate;
 import io.github.atengk.boot.pay.core.callback.PayCallbackHandler;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
+import io.github.atengk.boot.pay.core.executor.BarcodePayExecutor;
 import io.github.atengk.boot.pay.core.lock.InMemoryPayLockManager;
 import io.github.atengk.boot.pay.core.lock.PayLockManager;
 import io.github.atengk.boot.pay.core.lock.RedisPayLockManager;
@@ -111,6 +112,16 @@ public class AtengPayAutoConfiguration {
     public PayTemplate payTemplate(ObjectProvider<WechatPayTemplate> wechatPayTemplateProvider,
                                    ObjectProvider<AlipayTemplate> alipayTemplateProvider) {
         return new PayTemplate(wechatPayTemplateProvider.getIfAvailable(), alipayTemplateProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册线下条码收银执行器（阶梯轮询与超时主动撤销冲正）
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(PayTemplate.class)
+    public BarcodePayExecutor barcodePayExecutor(PayTemplate payTemplate, PayProperties payProperties) {
+        return new BarcodePayExecutor(payTemplate, payProperties.getBarcode());
     }
 
     /**

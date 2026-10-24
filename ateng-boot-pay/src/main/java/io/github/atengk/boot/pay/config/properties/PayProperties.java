@@ -30,6 +30,12 @@ public class PayProperties implements Serializable {
     private PayCallbackProperties callback = new PayCallbackProperties();
 
     /**
+     * 线下条码收银阶梯轮询与撤销冲正配置
+     */
+    @NestedConfigurationProperty
+    private BarcodePayProperties barcode = new BarcodePayProperties();
+
+    /**
      * 单笔资金转账高敏配置（默认关闭）
      */
     @NestedConfigurationProperty

@@ -31,6 +31,9 @@ class PayPropertiesTest {
             assertThat(properties.isEnabled()).isTrue();
             assertThat(properties.getCallback().getPathPrefix()).isEqualTo("/ateng-pay/callback");
             assertThat(properties.getCallback().getIdempotentTimeout()).isEqualTo(Duration.ofSeconds(10));
+            assertThat(properties.getBarcode().getMaxWaitTime()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getBarcode().getPollInterval()).isEqualTo(Duration.ofSeconds(3));
+            assertThat(properties.getBarcode().isAutoCancelOnTimeout()).isTrue();
             assertThat(properties.getTransfer().isEnabled()).isFalse();
             assertThat(properties.getProfitSharing().isEnabled()).isFalse();
 
@@ -51,6 +54,9 @@ class PayPropertiesTest {
                 "ateng.boot.pay.enabled=true",
                 "ateng.boot.pay.callback.path-prefix=/custom/pay/callback",
                 "ateng.boot.pay.callback.idempotent-timeout=30s",
+                "ateng.boot.pay.barcode.max-wait-time=45s",
+                "ateng.boot.pay.barcode.poll-interval=5s",
+                "ateng.boot.pay.barcode.auto-cancel-on-timeout=false",
                 "ateng.boot.pay.transfer.enabled=true",
                 "ateng.boot.pay.profit-sharing.enabled=true",
                 "ateng.boot.pay.wechat.default-merchant=store1",
@@ -67,6 +73,9 @@ class PayPropertiesTest {
 
             assertThat(properties.getCallback().getPathPrefix()).isEqualTo("/custom/pay/callback");
             assertThat(properties.getCallback().getIdempotentTimeout()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getBarcode().getMaxWaitTime()).isEqualTo(Duration.ofSeconds(45));
+            assertThat(properties.getBarcode().getPollInterval()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(properties.getBarcode().isAutoCancelOnTimeout()).isFalse();
             assertThat(properties.getTransfer().isEnabled()).isTrue();
             assertThat(properties.getProfitSharing().isEnabled()).isTrue();
 
