@@ -18,7 +18,7 @@
 | **统一转账** | 统一单笔转账状态查询 | `PayTemplate` | `ateng.boot.pay.transfer.enabled` | `queryTransfer(UnifiedTransferQueryRequest)` / `queryTransfer(PayChannel, String)` / `queryTransfer(PayChannel, String, String)`，查询转账到账状态 | `PayTemplateTest` / `PaySampleIntegrationTest` |
 | **对账单流** | 财务对账单流式下载 | `PayTemplate` | `ateng.boot.pay.enabled` | `downloadBillStream(PayBillDownloadRequest)`，流式下载渠道官方明细对账单输入流 | `PayTemplateTest` / `PaySampleIntegrationTest` |
 | **统一逃生舱** | 便捷原生客户端逃生舱 | `PayTemplate` | - | `getWechatClient()` 获取微信 `HttpClient`；`getAlipayClient()` 获取支付宝 `AlipayClient`；`getWechatTemplate()` 与 `getAlipayTemplate()` 获取独立专有门面 | `PayTemplateTest` |
-| **条码收银** | 线下付款码收银轮询执行器 | `BarcodePayExecutor` | `ateng.boot.pay.barcode.total-timeout`<br>`ateng.boot.pay.barcode.poll-interval` | `execute(UnifiedPayRequest)` 与 `execute(UnifiedPayRequest, Duration, Duration)`，阶梯式轮询支付结果，超时自动撤销冲正 | `BarcodePayExecutorTest` / `PaySampleIntegrationTest` |
+| **条码收银** | 线下付款码收银轮询执行器 | `BarcodePayExecutor` | `ateng.boot.pay.barcode.max-wait-time`<br>`ateng.boot.pay.barcode.poll-interval`<br>`ateng.boot.pay.barcode.auto-cancel-on-timeout` | `execute(UnifiedPayRequest)` 与 `execute(UnifiedPayRequest, Duration, Duration)`，阶梯式轮询支付结果，超时自动撤销冲正 | `BarcodePayExecutorTest` / `PaySampleIntegrationTest` |
 | **账单解析** | 财务对账单流式解压解析引擎 | `PayBillParser` | - | `parse(InputStream)` 全量内存解析为 `PayBillResult`；`parse(InputStream, Consumer<PayBillEntry>)` 零 OOM 流式逐行解压与回调 | `PayBillParserTest` / `PaySampleIntegrationTest` |
 | **微信专有** | Native 扫码收单 | `WechatPayTemplate` | `ateng.boot.pay.wechat.enabled`<br>`ateng.boot.pay.wechat.merchants.<key>.*` | `payNative(WechatPayRequest)`，直连商户与特约服务商扫码预下单，返回 `qrCode` 二维码内容链接 | `WechatPayTemplateTest` / `PaySampleIntegrationTest` |
 | **微信专有** | JSAPI 小程序/公众号支付 | `WechatPayTemplate` | `ateng.boot.pay.wechat.merchants.<key>.app-id`<br>`ateng.boot.pay.wechat.merchants.<key>.private-key-pem` | `payJsapi(WechatPayRequest)`，服务端全自动 RSA 二次加签，封包 5 元素直达凭据 `wechatJsapi` | `WechatPayTemplateTest` / `PaySampleIntegrationTest` |
@@ -106,8 +106,9 @@ ateng:
         enabled: true
       # 线下收银台条码支付轮询与冲正配置
       barcode:
-        total-timeout: 30s
+        max-wait-time: 30s
         poll-interval: 3s
+        auto-cancel-on-timeout: true
       # 微信支付官方 V3 配置
       wechat:
         enabled: true

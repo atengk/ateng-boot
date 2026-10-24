@@ -575,7 +575,14 @@ public class PayTemplate {
                 if (alipayTemplate == null) {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
                 }
-                yield alipayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
+                boolean hasCustomScene = (request.getProductCode() != null && !request.getProductCode().isBlank())
+                        || (request.getBizScene() != null && !request.getBizScene().isBlank());
+                if (hasCustomScene) {
+                    yield alipayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId(),
+                            request.getProductCode(), request.getBizScene());
+                } else {
+                    yield alipayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
+                }
             }
         };
     }

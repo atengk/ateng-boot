@@ -164,98 +164,99 @@ public class PayBillParser {
      * 核心 CSV 文本流状态机解析逻辑
      */
     private PayBillSummary parseCsvStream(InputStream in, Charset charset, Consumer<PayBillEntry> consumer) throws IOException {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(in, charset));
-        Map<String, Integer> headerMap = null;
-        Map<String, Integer> summaryHeaderMap = null;
-        PayChannel channel = null;
-        boolean summaryMode = false;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, charset))) {
+            Map<String, Integer> headerMap = null;
+            Map<String, Integer> summaryHeaderMap = null;
+            PayChannel channel = null;
+            boolean summaryMode = false;
 
-        PayBillSummary summary = PayBillSummary.builder().build();
+            PayBillSummary summary = PayBillSummary.builder().build();
 
-        long computedCount = 0;
-        BigDecimal computedTotalAmount = BigDecimal.ZERO;
-        BigDecimal computedSettlementAmount = BigDecimal.ZERO;
-        BigDecimal computedRefundAmount = BigDecimal.ZERO;
-        BigDecimal computedServiceFee = BigDecimal.ZERO;
+            long computedCount = 0;
+            BigDecimal computedTotalAmount = BigDecimal.ZERO;
+            BigDecimal computedSettlementAmount = BigDecimal.ZERO;
+            BigDecimal computedRefundAmount = BigDecimal.ZERO;
+            BigDecimal computedServiceFee = BigDecimal.ZERO;
 
-        String rawLine;
-        while ((rawLine = reader.readLine()) != null) {
-            // 剥离可能的 UTF-8 BOM 标记
-            if (rawLine.startsWith("\uFEFF")) {
-                rawLine = rawLine.substring(1);
-            }
-            String line = rawLine.trim();
-            if (line.isEmpty()) {
-                continue;
-            }
-
-            // 过滤注释与分隔行（如支付宝的 # 业务明细列表、#----------------等）
-            if (line.startsWith("#")) {
-                parseCommentSummary(line, summary);
-                continue;
-            }
-
-            // 检查是否进入了汇总表头行（如微信或支付宝末尾汇总）
-            if (line.contains("总交易单数") || line.contains("总交易笔数") || line.contains("总笔数")) {
-                summaryMode = true;
-                summaryHeaderMap = parseHeaderMap(line);
-                continue;
-            }
-
-            if (summaryMode) {
-                // 汇总数值行
-                parseSummaryDataLine(line, summaryHeaderMap, summary, channel);
-                continue;
-            }
-
-            // 检查是否是明细表头行
-            if (headerMap == null) {
-                if (isDetailHeaderLine(line)) {
-                    headerMap = parseHeaderMap(line);
-                    channel = detectChannel(headerMap);
-                    summary.setChannel(channel);
+            String rawLine;
+            while ((rawLine = reader.readLine()) != null) {
+                // 剥离可能的 UTF-8 BOM 标记
+                if (rawLine.startsWith("\uFEFF")) {
+                    rawLine = rawLine.substring(1);
                 }
-                continue;
+                String line = rawLine.trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
+
+                // 过滤注释与分隔行（如支付宝的 # 业务明细列表、#----------------等）
+                if (line.startsWith("#")) {
+                    parseCommentSummary(line, summary);
+                    continue;
+                }
+
+                // 检查是否进入了汇总表头行（如微信或支付宝末尾汇总）
+                if (line.contains("总交易单数") || line.contains("总交易笔数") || line.contains("总笔数")) {
+                    summaryMode = true;
+                    summaryHeaderMap = parseHeaderMap(line);
+                    continue;
+                }
+
+                if (summaryMode) {
+                    // 汇总数值行
+                    parseSummaryDataLine(line, summaryHeaderMap, summary, channel);
+                    continue;
+                }
+
+                // 检查是否是明细表头行
+                if (headerMap == null) {
+                    if (isDetailHeaderLine(line)) {
+                        headerMap = parseHeaderMap(line);
+                        channel = detectChannel(headerMap);
+                        summary.setChannel(channel);
+                    }
+                    continue;
+                }
+
+                // 明细数据行解析
+                PayBillEntry entry = parseEntryLine(line, headerMap, channel);
+                if (entry != null) {
+                    computedCount++;
+                    if (entry.getTotalAmount() != null) {
+                        computedTotalAmount = computedTotalAmount.add(entry.getTotalAmount().abs());
+                    }
+                    if (entry.getSettlementAmount() != null) {
+                        computedSettlementAmount = computedSettlementAmount.add(entry.getSettlementAmount().abs());
+                    }
+                    if (entry.getRefundAmount() != null) {
+                        computedRefundAmount = computedRefundAmount.add(entry.getRefundAmount().abs());
+                    }
+                    if (entry.getServiceFee() != null) {
+                        computedServiceFee = computedServiceFee.add(entry.getServiceFee());
+                    }
+                    consumer.accept(entry);
+                }
             }
 
-            // 明细数据行解析
-            PayBillEntry entry = parseEntryLine(line, headerMap, channel);
-            if (entry != null) {
-                computedCount++;
-                if (entry.getTotalAmount() != null) {
-                    computedTotalAmount = computedTotalAmount.add(entry.getTotalAmount().abs());
-                }
-                if (entry.getSettlementAmount() != null) {
-                    computedSettlementAmount = computedSettlementAmount.add(entry.getSettlementAmount().abs());
-                }
-                if (entry.getRefundAmount() != null) {
-                    computedRefundAmount = computedRefundAmount.add(entry.getRefundAmount().abs());
-                }
-                if (entry.getServiceFee() != null) {
-                    computedServiceFee = computedServiceFee.add(entry.getServiceFee());
-                }
-                consumer.accept(entry);
+            // 汇总保底兜底赋值
+            if (summary.getTotalCount() == null) {
+                summary.setTotalCount(computedCount);
             }
-        }
+            if (summary.getTotalAmount() == null && computedCount > 0) {
+                summary.setTotalAmount(computedTotalAmount);
+            }
+            if (summary.getSettlementAmount() == null && computedCount > 0) {
+                summary.setSettlementAmount(computedSettlementAmount);
+            }
+            if (summary.getRefundAmount() == null && computedCount > 0) {
+                summary.setRefundAmount(computedRefundAmount);
+            }
+            if (summary.getServiceFee() == null && computedCount > 0) {
+                summary.setServiceFee(computedServiceFee);
+            }
 
-        // 汇总保底兜底赋值
-        if (summary.getTotalCount() == null) {
-            summary.setTotalCount(computedCount);
+            return summary;
         }
-        if (summary.getTotalAmount() == null && computedCount > 0) {
-            summary.setTotalAmount(computedTotalAmount);
-        }
-        if (summary.getSettlementAmount() == null && computedCount > 0) {
-            summary.setSettlementAmount(computedSettlementAmount);
-        }
-        if (summary.getRefundAmount() == null && computedCount > 0) {
-            summary.setRefundAmount(computedRefundAmount);
-        }
-        if (summary.getServiceFee() == null && computedCount > 0) {
-            summary.setServiceFee(computedServiceFee);
-        }
-
-        return summary;
     }
 
     /**

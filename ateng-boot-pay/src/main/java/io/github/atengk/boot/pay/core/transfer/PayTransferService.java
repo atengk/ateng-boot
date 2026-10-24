@@ -4,6 +4,8 @@ import io.github.atengk.boot.pay.core.AlipayTemplate;
 import io.github.atengk.boot.pay.core.PayTemplate;
 import io.github.atengk.boot.pay.core.WechatPayTemplate;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayResultCode;
+import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.AlipayTransferRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedTransferQueryRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedTransferRequest;
@@ -82,7 +84,7 @@ public class PayTransferService {
     public PayTransferResponse transferWechat(WechatTransferRequest request) {
         WechatPayTemplate wechatTemplate = payTemplate.getWechatPayTemplate();
         if (wechatTemplate == null) {
-            throw new IllegalStateException("WechatPayTemplate 未注入或未启用");
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
         }
         return wechatTemplate.transfer(request);
     }
@@ -98,7 +100,7 @@ public class PayTransferService {
     public PayTransferResponse queryWechatTransfer(String merchantKey, String outBatchNo, String outDetailNo) {
         WechatPayTemplate wechatTemplate = payTemplate.getWechatPayTemplate();
         if (wechatTemplate == null) {
-            throw new IllegalStateException("WechatPayTemplate 未注入或未启用");
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
         }
         return wechatTemplate.queryTransferDetail(merchantKey, outBatchNo, outDetailNo);
     }
@@ -112,7 +114,7 @@ public class PayTransferService {
     public PayTransferResponse transferAlipay(AlipayTransferRequest request) {
         AlipayTemplate alipayTemplate = payTemplate.getAlipayTemplate();
         if (alipayTemplate == null) {
-            throw new IllegalStateException("AlipayTemplate 未注入或未启用");
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
         }
         return alipayTemplate.transfer(request);
     }
@@ -128,7 +130,7 @@ public class PayTransferService {
     public PayTransferResponse queryAlipayTransfer(String appKey, String outBizNo, String orderId) {
         AlipayTemplate alipayTemplate = payTemplate.getAlipayTemplate();
         if (alipayTemplate == null) {
-            throw new IllegalStateException("AlipayTemplate 未注入或未启用");
+            throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
         }
         return alipayTemplate.queryTransfer(appKey, outBizNo, orderId);
     }

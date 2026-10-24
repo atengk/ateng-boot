@@ -6,6 +6,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.Serializable;
 
@@ -19,7 +21,7 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class PayBillDownloadResponse implements Serializable {
+public class PayBillDownloadResponse implements Serializable, Closeable {
 
     private static final long serialVersionUID = 1L;
 
@@ -57,4 +59,11 @@ public class PayBillDownloadResponse implements Serializable {
      * 原始哈希校验码
      */
     private String hashValue;
+
+    @Override
+    public void close() throws IOException {
+        if (this.fileStream != null) {
+            this.fileStream.close();
+        }
+    }
 }

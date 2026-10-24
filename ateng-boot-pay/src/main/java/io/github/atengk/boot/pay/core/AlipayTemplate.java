@@ -7,6 +7,7 @@ import com.alipay.api.response.*;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
+import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
@@ -67,6 +68,8 @@ public class AlipayTemplate {
     private static final String PRODUCT_APP_PAY = "QUICK_MSECURITY_PAY";
     private static final String PRODUCT_FACE_TO_FACE = "FACE_TO_FACE_PAYMENT";
     private static final String SCENE_BAR_CODE = "bar_code";
+    private static final int DEFAULT_BILL_CONNECT_TIMEOUT_MS = 15_000;
+    private static final int DEFAULT_BILL_READ_TIMEOUT_MS = 60_000;
 
     private final NamedMerchantRegistry namedMerchantRegistry;
     private final PayProperties payProperties;
@@ -83,20 +86,21 @@ public class AlipayTemplate {
 
     public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
-        this.payProperties = payProperties;
+        this.payProperties = payProperties != null ? payProperties : new PayProperties();
     }
 
     public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry) {
-        this(namedMerchantRegistry, null);
+        this(namedMerchantRegistry, new PayProperties());
     }
 
     /**
      * 动态设置单笔资金转账开关（主要供单测使用）
      */
     public void setTransferEnabled(boolean enabled) {
-        if (this.payProperties != null && this.payProperties.getTransfer() != null) {
-            this.payProperties.getTransfer().setEnabled(enabled);
+        if (this.payProperties.getTransfer() == null) {
+            this.payProperties.setTransfer(new PayTransferProperties());
         }
+        this.payProperties.getTransfer().setEnabled(enabled);
     }
 
     /**
@@ -732,6 +736,9 @@ public class AlipayTemplate {
      * @return 统一退款响应出参
      */
     public PayRefundResponse queryRefund(AlipayRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝退款查询请求入参不能为空");
+        }
         if (request.getOutRefundNo() == null || request.getOutRefundNo().isBlank()) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询支付宝退款必须提供商户退款单号 [outRefundNo]");
         }
@@ -943,7 +950,17 @@ public class AlipayTemplate {
      * @param orderId  支付宝转账单据号（可选）
      * @return 统一转账响应出参
      */
-    public PayTransferResponse queryTransfer(String appKey, String outBizNo, String orderId) {
+    /**
+     * 查询支付宝单笔转账状态（支持自定义 productCode 与 bizScene）
+     *
+     * @param appKey      应用别名或 AppId（可选）
+     * @param outBizNo    商家唯一转账订单号
+     * @param orderId     支付宝转账单据号（可选）
+     * @param productCode 业务产品码（可选，默认 TRANS_ACCOUNT_NO_PWD）
+     * @param bizScene    业务场景（可选，默认 DIRECT_TRANSFER）
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(String appKey, String outBizNo, String orderId, String productCode, String bizScene) {
         assertTransferEnabled();
         if ((outBizNo == null || outBizNo.isBlank()) && (orderId == null || orderId.isBlank())) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户转账单号 [outBizNo] 与支付宝转账单号 [orderId] 不能同时为空");
@@ -954,8 +971,8 @@ public class AlipayTemplate {
 
         AlipayFundTransCommonQueryRequest queryRequest = new AlipayFundTransCommonQueryRequest();
         AlipayFundTransCommonQueryModel model = new AlipayFundTransCommonQueryModel();
-        model.setBizScene("DIRECT_TRANSFER");
-        model.setProductCode("TRANS_ACCOUNT_NO_PWD");
+        model.setBizScene(bizScene != null && !bizScene.isBlank() ? bizScene : "DIRECT_TRANSFER");
+        model.setProductCode(productCode != null && !productCode.isBlank() ? productCode : "TRANS_ACCOUNT_NO_PWD");
         if (outBizNo != null && !outBizNo.isBlank()) {
             model.setOutBizNo(outBizNo);
         }
@@ -984,7 +1001,9 @@ public class AlipayTemplate {
         if (response.getOrderFee() != null && !response.getOrderFee().isBlank()) {
             try {
                 fee = new BigDecimal(response.getOrderFee());
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
+                        response.getCode(), "支付宝转账订单费用解析失败: [" + response.getOrderFee() + "]", e);
             }
         }
 
@@ -1000,6 +1019,18 @@ public class AlipayTemplate {
                 .failReason(response.getFailReason())
                 .rawResponse(response)
                 .build();
+    }
+
+    /**
+     * 查询支付宝单笔转账状态
+     *
+     * @param appKey   应用别名或 AppId（可选）
+     * @param outBizNo 商家唯一转账订单号
+     * @param orderId  支付宝转账单据号（可选）
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(String appKey, String outBizNo, String orderId) {
+        return queryTransfer(appKey, outBizNo, orderId, null, null);
     }
 
     /**
@@ -1164,8 +1195,8 @@ public class AlipayTemplate {
         return executeWithExceptionTranslation("downloadBillStream", () -> {
             URI uri = URI.create(downloadUrl);
             URLConnection conn = uri.toURL().openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(60000);
+            conn.setConnectTimeout(DEFAULT_BILL_CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(DEFAULT_BILL_READ_TIMEOUT_MS);
             return conn.getInputStream();
         });
     }
@@ -1173,7 +1204,7 @@ public class AlipayTemplate {
     /**
      * 注入自定义对账单流式下载器（主要供单元测试脱机离线使用）
      */
-    public void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
+    void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
         this.billStreamDownloader = billStreamDownloader;
     }
 

@@ -68,7 +68,7 @@ public class BarcodePayExecutor {
      *
      * @param sleeper 睡眠等待消费函数
      */
-    public void setSleeper(Consumer<Duration> sleeper) {
+    void setSleeper(Consumer<Duration> sleeper) {
         this.sleeper = Objects.requireNonNull(sleeper, "Sleeper 不能为空");
     }
 

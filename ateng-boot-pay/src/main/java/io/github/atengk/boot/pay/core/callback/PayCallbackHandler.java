@@ -731,7 +731,9 @@ public class PayCallbackHandler {
         if (totalAmountStr != null && !totalAmountStr.isBlank()) {
             try {
                 totalAmount = new BigDecimal(totalAmountStr);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                throw new PaySignException(PayResultCode.PAY_PARAM_INVALID,
+                        "支付宝退款回调总金额解析失败: [total_amount=" + totalAmountStr + "]", e);
             }
         }
 

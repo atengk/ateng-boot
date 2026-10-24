@@ -683,6 +683,21 @@ class WechatPayTemplateTest {
                 .build();
         PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // queryRefund 空参数防卫
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.queryRefund((WechatRefundRequest) null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
+
+        // 非法资金账户 fundsAccount
+        WechatRefundRequest badFundsReq = WechatRefundRequest.builder()
+                .outTradeNo("T_ERR_003")
+                .outRefundNo("R_ERR_003")
+                .totalAmount(new BigDecimal("10.00"))
+                .refundAmount(new BigDecimal("5.00"))
+                .fundsAccount("INVALID_FUNDS_ACCOUNT")
+                .build();
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.refund(badFundsReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex4.getResultCode());
     }
 
     // =========================================================================

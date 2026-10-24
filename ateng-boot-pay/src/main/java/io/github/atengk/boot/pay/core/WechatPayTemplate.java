@@ -55,7 +55,9 @@ import com.wechat.pay.java.service.transferbatch.TransferBatchService;
 import com.wechat.pay.java.service.transferbatch.model.*;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.pay.config.properties.PayProfitSharingProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
+import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
@@ -154,6 +156,9 @@ public class WechatPayTemplate {
      * @param enabled 是否开启分账功能
      */
     public void setProfitSharingEnabled(boolean enabled) {
+        if (this.payProperties.getProfitSharing() == null) {
+            this.payProperties.setProfitSharing(new PayProfitSharingProperties());
+        }
         this.payProperties.getProfitSharing().setEnabled(enabled);
     }
 
@@ -179,9 +184,10 @@ public class WechatPayTemplate {
      * 动态设置单笔资金转账开关（主要供单测使用）
      */
     public void setTransferEnabled(boolean enabled) {
-        if (this.payProperties != null && this.payProperties.getTransfer() != null) {
-            this.payProperties.getTransfer().setEnabled(enabled);
+        if (this.payProperties.getTransfer() == null) {
+            this.payProperties.setTransfer(new PayTransferProperties());
         }
+        this.payProperties.getTransfer().setEnabled(enabled);
     }
 
     /**
@@ -986,7 +992,9 @@ public class WechatPayTemplate {
             if (request.getFundsAccount() != null && !request.getFundsAccount().isBlank()) {
                 try {
                     createReq.setFundsAccount(ReqFundsAccount.valueOf(request.getFundsAccount().toUpperCase()));
-                } catch (Exception ignored) {
+                } catch (IllegalArgumentException e) {
+                    throw new PayException(PayResultCode.PAY_PARAM_INVALID,
+                            "非法的微信退款出资账户资金类型: [" + request.getFundsAccount() + "]", e);
                 }
             }
 
@@ -1037,6 +1045,9 @@ public class WechatPayTemplate {
      * @return 统一退款响应出参
      */
     public PayRefundResponse queryRefund(WechatRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信退款查询请求入参不能为空");
+        }
         if (request.getOutRefundNo() == null || request.getOutRefundNo().isBlank()) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询微信退款必须提供商户退款单号 [outRefundNo]");
         }

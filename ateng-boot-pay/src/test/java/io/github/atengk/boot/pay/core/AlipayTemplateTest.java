@@ -649,6 +649,10 @@ class AlipayTemplateTest {
                 .build();
         PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // queryRefund 空参数防卫
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.queryRefund((AlipayRefundRequest) null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 
     // =========================================================================
@@ -671,6 +675,17 @@ class AlipayTemplateTest {
 
         PayException ex2 = assertThrows(PayException.class, () -> payTemplate.queryTransfer("ALI_TRANS_001"));
         assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex2.getResultCode());
+    }
+
+    @Test
+    @DisplayName("AlipayTemplate: 单参构造函数保底初始化 PayProperties，setTransferEnabled 正常生效")
+    void testAlipayTemplateConstructorSafety() {
+        AlipayTemplate template = new AlipayTemplate(merchantRegistry);
+        assertFalse(template.isTransferEnabled());
+        template.setTransferEnabled(true);
+        assertTrue(template.isTransferEnabled());
+        template.setTransferEnabled(false);
+        assertFalse(template.isTransferEnabled());
     }
 
     @Test

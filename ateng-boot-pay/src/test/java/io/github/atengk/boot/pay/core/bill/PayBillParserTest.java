@@ -184,4 +184,34 @@ class PayBillParserTest {
         assertNotNull(result.getEntries());
         assertEquals(0L, result.getSummary().getTotalCount());
     }
+
+    @Test
+    @DisplayName("PayBillDownloadResponse: 自动闭合流生命周期测试")
+    void testPayBillDownloadResponse_closeLifecycle() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        InputStream mockStream = new ByteArrayInputStream("test".getBytes()) {
+            @Override
+            public void close() throws java.io.IOException {
+                super.close();
+                closed.set(true);
+            }
+        };
+
+        io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse response =
+                io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .fileStream(mockStream)
+                        .build();
+
+        assertFalse(closed.get());
+        try (response) {
+            assertNotNull(response.getFileStream());
+        }
+        assertTrue(closed.get());
+
+        // 防御流为 null 时的安全 close
+        io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse nullStreamResponse =
+                io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse.builder().build();
+        assertDoesNotThrow(nullStreamResponse::close);
+    }
 }

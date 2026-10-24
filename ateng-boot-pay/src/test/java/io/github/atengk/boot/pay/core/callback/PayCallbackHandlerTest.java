@@ -578,6 +578,20 @@ class PayCallbackHandlerTest {
         payLockManager.unlock(lockKey);
     }
 
+    @Test
+    @DisplayName("支付宝退款: total_amount 格式非法时防御性拦截并抛出 PaySignException 与 fail 应答")
+    void testAlipayRefundMalformedTotalAmount() throws Exception {
+        Map<String, String> params = buildAlipayRefundParams("ALI_T_MALFORMED", "202610242200140003",
+                "ALI_R_MALFORMED", "NOT_A_NUMBER", "50.00");
+
+        assertThrows(PaySignException.class, () -> handler.parseAndVerifyAlipayRefund("default", params));
+
+        PayCallbackResponse response = handler.handleAlipay("default", params);
+        assertNotNull(response);
+        assertTrue(response.isFail());
+        assertEquals("fail", response.getResponseBody());
+    }
+
     // =========================================================================
     // 辅助工具方法
     // =========================================================================
