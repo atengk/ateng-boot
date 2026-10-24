@@ -5,6 +5,7 @@ import io.github.atengk.boot.pay.controller.PayWebhookController;
 import io.github.atengk.boot.pay.core.AlipayTemplate;
 import io.github.atengk.boot.pay.core.PayTemplate;
 import io.github.atengk.boot.pay.core.WechatPayTemplate;
+import io.github.atengk.boot.pay.core.bill.PayBillParser;
 import io.github.atengk.boot.pay.core.callback.PayCallbackHandler;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.executor.BarcodePayExecutor;
@@ -122,6 +123,15 @@ public class AtengPayAutoConfiguration {
     @ConditionalOnBean(PayTemplate.class)
     public BarcodePayExecutor barcodePayExecutor(PayTemplate payTemplate, PayProperties payProperties) {
         return new BarcodePayExecutor(payTemplate, payProperties.getBarcode());
+    }
+
+    /**
+     * 注册财务对账单流式解压与结构化解析引擎
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public PayBillParser payBillParser() {
+        return new PayBillParser();
     }
 
     /**

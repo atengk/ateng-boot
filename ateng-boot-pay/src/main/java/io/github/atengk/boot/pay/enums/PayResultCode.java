@@ -72,7 +72,12 @@ public enum PayResultCode implements IResultCode {
     /**
      * 支付相关高敏特性未启用或已被物理开关关闭
      */
-    PAY_FEATURE_DISABLED(58012, "支付高敏特性未启用或已被物理开关关闭");
+    PAY_FEATURE_DISABLED(58012, "支付高敏特性未启用或已被物理开关关闭"),
+
+    /**
+     * 财务对账单解析失败
+     */
+    PAY_BILL_PARSE_ERROR(58013, "财务对账单解析失败");
 
     /**
      * 业务状态码

@@ -8,6 +8,8 @@ import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
+import io.github.atengk.boot.pay.model.bill.PayBillDownloadRequest;
+import io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse;
 import io.github.atengk.boot.pay.model.request.*;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
@@ -23,6 +25,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.math.BigDecimal;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -1037,5 +1041,79 @@ class PayTemplateTest {
         assertFalse(respStr.contains(originalRealName), "PayTransferResponse toString() 严禁泄露真实明文姓名");
         assertFalse(respStr.contains(originalAccount), "PayTransferResponse toString() 严禁泄露真实明文账号");
         assertTrue(respStr.contains("*"), "PayTransferResponse toString() 必须包含脱敏掩码");
+    }
+
+    @Test
+    @DisplayName("downloadBill: 微信对账单下载路由与流式直达")
+    void testDownloadBill_wechat() throws Exception {
+        byte[] mockBytes = "mock,wechat,bill,stream".getBytes();
+        com.wechat.pay.java.service.billdownload.DigestBillEntity mockDigest =
+                new com.wechat.pay.java.service.billdownload.DigestBillEntity(
+                        new ByteArrayInputStream(mockBytes),
+                        "abc123hash",
+                        com.wechat.pay.java.service.billdownload.model.HashType.SHA1);
+        when(wechatPayTemplate.downloadTradeBill(nullable(String.class), any(com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest.class)))
+                .thenReturn(mockDigest);
+
+        PayBillDownloadRequest request = PayBillDownloadRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .billDate("2026-10-24")
+                .billType("ALL")
+                .tarType("GZIP")
+                .build();
+
+        PayBillDownloadResponse response = payTemplate.downloadBill(request);
+        assertNotNull(response);
+        assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
+        assertEquals("2026-10-24", response.getBillDate());
+        assertNotNull(response.getFileStream());
+
+        InputStream directStream = payTemplate.downloadBillStream(request);
+        assertNotNull(directStream);
+    }
+
+    @Test
+    @DisplayName("downloadBill: 支付宝对账单下载路由与直链解析")
+    void testDownloadBill_alipay() throws Exception {
+        com.alipay.api.response.AlipayDataDataserviceBillDownloadurlQueryResponse mockAlipayResp =
+                new com.alipay.api.response.AlipayDataDataserviceBillDownloadurlQueryResponse();
+        mockAlipayResp.setCode("10000");
+        mockAlipayResp.setBillDownloadUrl("https://mock-bill.alipay.com/download.zip");
+        mockAlipayResp.setBillFileCode("ali_hash_123");
+
+        when(alipayTemplate.queryBillDownloadUrl(anyString(), anyString(), nullable(String.class))).thenReturn(mockAlipayResp);
+        when(alipayTemplate.downloadBillStream("https://mock-bill.alipay.com/download.zip"))
+                .thenReturn(new ByteArrayInputStream("mock_zip".getBytes()));
+
+        PayBillDownloadRequest request = PayBillDownloadRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .billDate("2026-10-24")
+                .billType("trade")
+                .build();
+
+        PayBillDownloadResponse response = payTemplate.downloadBill(request);
+        assertNotNull(response);
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals("https://mock-bill.alipay.com/download.zip", response.getDownloadUrl());
+        assertEquals("ali_hash_123", response.getHashValue());
+        assertNotNull(response.getFileStream());
+    }
+
+    @Test
+    @DisplayName("downloadBill: 参数防卫前置校验")
+    void testDownloadBill_validationErrors() {
+        // 1. 空请求
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.downloadBill(null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 2. 缺失 billDate
+        PayBillDownloadRequest noDate = PayBillDownloadRequest.builder().channel(PayChannel.WECHAT_PAY).build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.downloadBill(noDate));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // 3. 缺失 channel
+        PayBillDownloadRequest noChannel = PayBillDownloadRequest.builder().billDate("2026-10-24").build();
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.downloadBill(noChannel));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 }

@@ -770,6 +770,43 @@ class AlipayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex5.getResultCode());
     }
 
+    @Test
+    @DisplayName("queryBillDownloadUrl: 查询账单下载地址并流式下载")
+    void testQueryBillDownloadUrlAndStream() throws Exception {
+        String billNodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"bill_download_url\":\"https://mock-bill.alipay.com/download.zip\",\"bill_file_code\":\"abc123hash\"}";
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody(buildSignedResponse("alipay_data_dataservice_bill_downloadurl_query_response", billNodeJson, alipayPrivateKey)));
+
+        var rawResp = payTemplate.queryBillDownloadUrl("trade", "2026-10-24");
+        assertNotNull(rawResp);
+        assertEquals("https://mock-bill.alipay.com/download.zip", rawResp.getBillDownloadUrl());
+        assertEquals("abc123hash", rawResp.getBillFileCode());
+
+        // 验证 getBillDownloadUrl 重载
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json;charset=UTF-8")
+                .setBody(buildSignedResponse("alipay_data_dataservice_bill_downloadurl_query_response", billNodeJson, alipayPrivateKey)));
+        String url = payTemplate.getBillDownloadUrl("trade", "2026-10-24");
+        assertEquals("https://mock-bill.alipay.com/download.zip", url);
+
+        // 验证自定义下载器钩子
+        byte[] dummyZipBytes = new byte[]{0x50, 0x4b, 0x03, 0x04};
+        payTemplate.setBillStreamDownloader(targetUrl -> new java.io.ByteArrayInputStream(dummyZipBytes));
+        try (java.io.InputStream stream = payTemplate.downloadBillStream("https://mock-bill.alipay.com/download.zip")) {
+            assertNotNull(stream);
+            byte[] readBytes = stream.readAllBytes();
+            assertArrayEquals(dummyZipBytes, readBytes);
+        }
+
+        // 验证参数防卫：空日期
+        PayException ex = assertThrows(PayException.class, () -> payTemplate.queryBillDownloadUrl("trade", ""));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+
+        // 验证参数防卫：空下载地址
+        assertThrows(PayException.class, () -> payTemplate.downloadBillStream(""));
+    }
+
     // =========================================================================
     // 私有辅助工具
     // =========================================================================

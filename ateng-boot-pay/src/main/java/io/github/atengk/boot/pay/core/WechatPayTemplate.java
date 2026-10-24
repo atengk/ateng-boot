@@ -8,6 +8,14 @@ import com.wechat.pay.java.core.exception.MalformedMessageException;
 import com.wechat.pay.java.core.exception.ServiceException;
 import com.wechat.pay.java.core.exception.ValidationException;
 import com.wechat.pay.java.core.http.*;
+import com.wechat.pay.java.service.billdownload.BillDownloadService;
+import com.wechat.pay.java.service.billdownload.BillDownloadServiceExtension;
+import com.wechat.pay.java.service.billdownload.DigestBillEntity;
+import com.wechat.pay.java.service.billdownload.model.BillType;
+import com.wechat.pay.java.service.billdownload.model.GetFundFlowBillRequest;
+import com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest;
+import com.wechat.pay.java.service.billdownload.model.QueryBillEntity;
+import com.wechat.pay.java.service.billdownload.model.TarType;
 import com.wechat.pay.java.service.payments.app.AppServiceExtension;
 import com.wechat.pay.java.service.payments.h5.H5Service;
 import com.wechat.pay.java.service.payments.h5.model.H5Info;
@@ -75,6 +83,7 @@ import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
@@ -2185,7 +2194,171 @@ public class WechatPayTemplate {
     }
 
     // =========================================================================
-    // 10. 私有解析与因果异常转译机制
+    // 10. 财务对账单下载与校验 (Bill Download & Verification)
+    // =========================================================================
+
+    /**
+     * 申请并下载交易对账单（返回包含流与 Hash 校验的实体）
+     *
+     * @param request 交易账单请求参数
+     * @return 包含输入流与 Hash 校验的实体
+     */
+    public DigestBillEntity downloadTradeBill(GetTradeBillRequest request) {
+        return downloadTradeBill(null, request);
+    }
+
+    /**
+     * 申请并下载交易对账单（指定多商户标识）
+     *
+     * @param merchantKey 多商户标识
+     * @param request     交易账单请求参数
+     * @return 包含输入流与 Hash 校验的实体
+     */
+    public DigestBillEntity downloadTradeBill(String merchantKey, GetTradeBillRequest request) {
+        if (request == null || request.getBillDate() == null || request.getBillDate().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("downloadTradeBill", () ->
+                holder.billDownloadServiceExtension.getTradeBill(request)
+        );
+    }
+
+    /**
+     * 申请并下载资金账单（返回包含流与 Hash 校验的实体）
+     *
+     * @param request 资金账单请求参数
+     * @return 包含输入流与 Hash 校验的实体
+     */
+    public DigestBillEntity downloadFundFlowBill(GetFundFlowBillRequest request) {
+        return downloadFundFlowBill(null, request);
+    }
+
+    /**
+     * 申请并下载资金账单（指定多商户标识）
+     *
+     * @param merchantKey 多商户标识
+     * @param request     资金账单请求参数
+     * @return 包含输入流与 Hash 校验的实体
+     */
+    public DigestBillEntity downloadFundFlowBill(String merchantKey, GetFundFlowBillRequest request) {
+        if (request == null || request.getBillDate() == null || request.getBillDate().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("downloadFundFlowBill", () ->
+                holder.billDownloadServiceExtension.getFundFlowBill(request)
+        );
+    }
+
+    /**
+     * 查询交易对账单下载地址与 Hash 校验元数据（不直接拉取文件流）
+     *
+     * @param request 交易账单请求参数
+     * @return 对账单下载元数据（含 downloadUrl 与 hashValue）
+     */
+    public QueryBillEntity queryTradeBill(GetTradeBillRequest request) {
+        return queryTradeBill(null, request);
+    }
+
+    /**
+     * 查询交易对账单下载地址与 Hash 校验元数据（指定商户标识）
+     *
+     * @param merchantKey 多商户标识
+     * @param request     交易账单请求参数
+     * @return 对账单下载元数据
+     */
+    public QueryBillEntity queryTradeBill(String merchantKey, GetTradeBillRequest request) {
+        if (request == null || request.getBillDate() == null || request.getBillDate().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("queryTradeBill", () ->
+                holder.billDownloadService.getTradeBill(request)
+        );
+    }
+
+    /**
+     * 查询资金账单下载地址与 Hash 校验元数据
+     *
+     * @param request 资金账单请求参数
+     * @return 对账单下载元数据
+     */
+    public QueryBillEntity queryFundFlowBill(GetFundFlowBillRequest request) {
+        return queryFundFlowBill(null, request);
+    }
+
+    /**
+     * 查询资金账单下载地址与 Hash 校验元数据（指定商户标识）
+     *
+     * @param merchantKey 多商户标识
+     * @param request     资金账单请求参数
+     * @return 对账单下载元数据
+     */
+    public QueryBillEntity queryFundFlowBill(String merchantKey, GetFundFlowBillRequest request) {
+        if (request == null || request.getBillDate() == null || request.getBillDate().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 (billDate) 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("queryFundFlowBill", () ->
+                holder.billDownloadService.getFundFlowBill(request)
+        );
+    }
+
+    /**
+     * 根据对账单直链下载地址直接拉取原始输入流
+     *
+     * @param downloadUrl 账单下载地址
+     * @return 原始对账单输入流
+     */
+    public InputStream downloadBillStream(String downloadUrl) {
+        return downloadBillStream(null, downloadUrl);
+    }
+
+    /**
+     * 根据对账单直链下载地址直接拉取原始输入流（指定商户标识）
+     *
+     * @param merchantKey 多商户标识
+     * @param downloadUrl 账单下载地址
+     * @return 原始对账单输入流
+     */
+    public InputStream downloadBillStream(String merchantKey, String downloadUrl) {
+        if (downloadUrl == null || downloadUrl.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单下载地址不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        return executeWithExceptionTranslation("downloadBillStream", () ->
+                holder.httpClient.download(downloadUrl)
+        );
+    }
+
+    /**
+     * 获取微信官方对账单原生服务（直连模式逃生舱）
+     *
+     * @param merchantKey 多商户标识
+     * @return 微信官方 BillDownloadService
+     */
+    public BillDownloadService getBillDownloadService(String merchantKey) {
+        return getServiceHolder(resolveMerchant(merchantKey)).getBillDownloadService();
+    }
+
+    /**
+     * 获取微信官方对账单带校验扩展服务（逃生舱）
+     *
+     * @param merchantKey 多商户标识
+     * @return 微信官方 BillDownloadServiceExtension
+     */
+    public BillDownloadServiceExtension getBillDownloadServiceExtension(String merchantKey) {
+        return getServiceHolder(resolveMerchant(merchantKey)).getBillDownloadServiceExtension();
+    }
+
+    // =========================================================================
+    // 11. 私有解析与因果异常转译机制
     // =========================================================================
 
     private WechatMerchantProperties resolveMerchant(WechatPayRequest request) {
@@ -2395,6 +2568,8 @@ public class WechatPayTemplate {
         private final RefundService refundService;
         private final ProfitsharingService profitsharingService;
         private final TransferBatchService transferBatchService;
+        private final BillDownloadService billDownloadService;
+        private final BillDownloadServiceExtension billDownloadServiceExtension;
 
         // 服务商服务
         private final com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService partnerNativePayService;
@@ -2413,6 +2588,8 @@ public class WechatPayTemplate {
             this.refundService = new RefundService.Builder().config(config).httpClient(httpClient).build();
             this.profitsharingService = new ProfitsharingService.Builder().config(config).httpClient(httpClient).build();
             this.transferBatchService = new TransferBatchService.Builder().config(config).httpClient(httpClient).build();
+            this.billDownloadService = new BillDownloadService.Builder().config(config).httpClient(httpClient).build();
+            this.billDownloadServiceExtension = new BillDownloadServiceExtension.Builder().config(config).httpClient(httpClient).build();
 
             this.partnerNativePayService = new com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService.Builder()
                     .config(config).httpClient(httpClient).build();
@@ -2458,6 +2635,14 @@ public class WechatPayTemplate {
 
         public TransferBatchService getTransferBatchService() {
             return transferBatchService;
+        }
+
+        public BillDownloadService getBillDownloadService() {
+            return billDownloadService;
+        }
+
+        public BillDownloadServiceExtension getBillDownloadServiceExtension() {
+            return billDownloadServiceExtension;
         }
 
         public com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService getPartnerNativePayService() {

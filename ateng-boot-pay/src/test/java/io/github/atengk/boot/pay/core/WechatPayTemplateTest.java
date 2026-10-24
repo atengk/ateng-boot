@@ -2,6 +2,11 @@ package io.github.atengk.boot.pay.core;
 
 import com.wechat.pay.java.core.http.DefaultHttpClientBuilder;
 import com.wechat.pay.java.core.http.HttpClient;
+import com.wechat.pay.java.service.billdownload.model.BillType;
+import com.wechat.pay.java.service.billdownload.model.GetFundFlowBillRequest;
+import com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest;
+import com.wechat.pay.java.service.billdownload.model.QueryBillEntity;
+import com.wechat.pay.java.service.billdownload.model.TarType;
 import com.wechat.pay.java.service.profitsharing.model.AddReceiverRequest;
 import com.wechat.pay.java.service.profitsharing.model.AddReceiverResponse;
 import com.wechat.pay.java.service.profitsharing.model.CreateOrderReceiver;
@@ -1034,6 +1039,42 @@ class WechatPayTemplateTest {
         WechatTransferRequest req5 = WechatTransferRequest.builder().outBatchNo("B001").amount(new BigDecimal("10.00")).build();
         PayException ex5 = assertThrows(PayException.class, () -> payTemplate.transfer(req5));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex5.getResultCode());
+    }
+
+    @Test
+    @DisplayName("bill: 微信对账单元数据查询与逃生舱验证")
+    void testQueryTradeBillAndEscapeHatches() throws Exception {
+        String mockResp = "{\"download_url\":\"https://api.mch.weixin.qq.com/v3/billdownload/file?token=test_token\",\"hash_type\":\"SHA1\",\"hash_value\":\"abc123456\"}";
+        server.enqueue(mockResponse(200, mockResp));
+
+        GetTradeBillRequest req = new GetTradeBillRequest();
+        req.setBillDate("2026-10-24");
+        req.setBillType(BillType.ALL);
+        req.setTarType(TarType.GZIP);
+
+        QueryBillEntity entity = payTemplate.queryTradeBill(req);
+        assertNotNull(entity);
+        assertEquals("https://api.mch.weixin.qq.com/v3/billdownload/file?token=test_token", entity.getDownloadUrl());
+        assertEquals("abc123456", entity.getHashValue());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("GET", recorded.getMethod());
+        assertTrue(recorded.getPath().contains("/v3/bill/tradebill?bill_date=2026-10-24"));
+
+        // 逃生舱检查
+        assertNotNull(payTemplate.getBillDownloadService("default"));
+        assertNotNull(payTemplate.getBillDownloadServiceExtension("default"));
+
+        // 参数校验异常拦截
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.queryTradeBill(null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        GetTradeBillRequest emptyDateReq = new GetTradeBillRequest();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.queryTradeBill(emptyDateReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.downloadBillStream(""));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 
     // =========================================================================

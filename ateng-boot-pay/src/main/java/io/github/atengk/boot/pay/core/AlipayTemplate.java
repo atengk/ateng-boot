@@ -31,10 +31,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
+import java.net.URLConnection;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -71,6 +75,11 @@ public class AlipayTemplate {
      * 支付宝应用客户端持有者缓存：应用别名/AppId -> AlipayClientHolder
      */
     private final ConcurrentHashMap<String, AlipayClientHolder> holderCache = new ConcurrentHashMap<>();
+
+    /**
+     * 自定义账单流式下载器（单测脱机钩子）
+     */
+    private Function<String, InputStream> billStreamDownloader;
 
     public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
@@ -1055,7 +1064,121 @@ public class AlipayTemplate {
     }
 
     // =========================================================================
-    // 11. 状态机与模型映射辅助工具 (Normalization)
+    // 11. 财务对账单下载 (Financial Bill Download)
+    // =========================================================================
+
+    /**
+     * 查询账单下载地址（返回 30s 内有效的直链 URL）
+     *
+     * @param billType 账单类型：trade（交易账单）、signcustomer（账务账单）
+     * @param billDate 账单日期（日账单格式 yyyy-MM-dd，月账单格式 yyyy-MM）
+     * @return 官方查询响应（含 billDownloadUrl 与 billFileCode）
+     */
+    public AlipayDataDataserviceBillDownloadurlQueryResponse queryBillDownloadUrl(String billType, String billDate) {
+        return queryBillDownloadUrl(billType, billDate, null);
+    }
+
+    /**
+     * 查询账单下载地址（指定应用/商户标识）
+     *
+     * @param billType    账单类型
+     * @param billDate    账单日期
+     * @param merchantKey 多商户标识
+     * @return 官方查询响应
+     */
+    public AlipayDataDataserviceBillDownloadurlQueryResponse queryBillDownloadUrl(String billType, String billDate, String merchantKey) {
+        if (billDate == null || billDate.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝对账单日期 [billDate] 不能为空");
+        }
+        String realBillType = (billType != null && !billType.isBlank()) ? billType : "trade";
+        AlipayAppProperties appProps = resolveApp(merchantKey);
+        AlipayClientHolder holder = getClientHolder(appProps);
+
+        return executeWithExceptionTranslation("queryBillDownloadUrl", () -> {
+            AlipayDataDataserviceBillDownloadurlQueryRequest alipayRequest = new AlipayDataDataserviceBillDownloadurlQueryRequest();
+            AlipayDataDataserviceBillDownloadurlQueryModel model = new AlipayDataDataserviceBillDownloadurlQueryModel();
+            model.setBillType(realBillType);
+            model.setBillDate(billDate);
+            alipayRequest.setBizModel(model);
+
+            AlipayDataDataserviceBillDownloadurlQueryResponse response = executeApi(holder, alipayRequest, null);
+            if (!response.isSuccess()) {
+                throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
+                        response.getSubCode() != null ? response.getSubCode() : response.getCode(),
+                        response.getSubMsg() != null ? response.getSubMsg() : response.getMsg());
+            }
+            return response;
+        });
+    }
+
+    /**
+     * 获取账单下载链接 URL
+     *
+     * @param billType 账单类型 (trade / signcustomer)
+     * @param billDate 账单日期
+     * @return 30s 有效的下载地址
+     */
+    public String getBillDownloadUrl(String billType, String billDate) {
+        return getBillDownloadUrl(billType, billDate, null);
+    }
+
+    /**
+     * 获取账单下载链接 URL（指定商户）
+     */
+    public String getBillDownloadUrl(String billType, String billDate, String merchantKey) {
+        return queryBillDownloadUrl(billType, billDate, merchantKey).getBillDownloadUrl();
+    }
+
+    /**
+     * 直接下载账单 ZIP 字节输入流（一步到位）
+     *
+     * @param billType 账单类型 (trade / signcustomer)
+     * @param billDate 账单日期 (yyyy-MM-dd)
+     * @return 账单 ZIP 输入流
+     */
+    public InputStream downloadBillStream(String billType, String billDate) {
+        return downloadBillStream(billType, billDate, null);
+    }
+
+    /**
+     * 直接下载账单 ZIP 字节输入流（指定商户）
+     */
+    public InputStream downloadBillStream(String billType, String billDate, String merchantKey) {
+        String downloadUrl = getBillDownloadUrl(billType, billDate, merchantKey);
+        return downloadBillStream(downloadUrl);
+    }
+
+    /**
+     * 根据任意直链下载地址拉取输入流
+     *
+     * @param downloadUrl 账单下载地址
+     * @return 字节流
+     */
+    public InputStream downloadBillStream(String downloadUrl) {
+        if (downloadUrl == null || downloadUrl.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝对账单下载地址不能为空");
+        }
+        if (billStreamDownloader != null) {
+            return billStreamDownloader.apply(downloadUrl);
+        }
+        return executeWithExceptionTranslation("downloadBillStream", () -> {
+            URI uri = URI.create(downloadUrl);
+            URLConnection conn = uri.toURL().openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            return conn.getInputStream();
+        });
+    }
+
+    /**
+     * 注入自定义对账单流式下载器（主要供单元测试脱机离线使用）
+     */
+    public void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
+        this.billStreamDownloader = billStreamDownloader;
+    }
+
+    // =========================================================================
+    // 12. 状态机与模型映射辅助工具 (Normalization)
     // =========================================================================
 
     /**

@@ -9,6 +9,8 @@ import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
+import io.github.atengk.boot.pay.model.bill.PayBillDownloadRequest;
+import io.github.atengk.boot.pay.model.bill.PayBillDownloadResponse;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
 import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
 import io.github.atengk.boot.pay.model.request.AlipayTransferRequest;
@@ -29,6 +31,7 @@ import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Objects;
@@ -614,7 +617,105 @@ public class PayTemplate {
     }
 
     // =========================================================================
-    // 8. 专有门面与官方客户端逃生舱
+    // 8. 财务对账单下载 (downloadBill & downloadBillStream)
+    // =========================================================================
+
+    /**
+     * 下载渠道财务对账单（返回统一响应，包含下载链接或输入流实体）
+     *
+     * @param request 统一对账单下载请求
+     * @return 对账单下载响应（含 downloadUrl 与 fileStream）
+     */
+    public PayBillDownloadResponse downloadBill(PayBillDownloadRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单下载请求参数不能为空");
+        }
+        if (request.getBillDate() == null || request.getBillDate().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "对账单日期 [billDate] 不能为空");
+        }
+        PayChannel channel = resolveChannel(request.getChannel());
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用 (ateng.boot.pay.wechat.enabled=false)");
+                }
+                String billType = request.getBillType() != null && !request.getBillType().isBlank()
+                        ? request.getBillType() : "ALL";
+                boolean isFundFlow = "FUND_FLOW".equalsIgnoreCase(billType) || "FUNDFLOW".equalsIgnoreCase(billType);
+
+                if (isFundFlow) {
+                    com.wechat.pay.java.service.billdownload.model.GetFundFlowBillRequest req =
+                            new com.wechat.pay.java.service.billdownload.model.GetFundFlowBillRequest();
+                    req.setBillDate(request.getBillDate());
+                    if ("GZIP".equalsIgnoreCase(request.getTarType())) {
+                        req.setTarType(com.wechat.pay.java.service.billdownload.model.TarType.GZIP);
+                    }
+                    com.wechat.pay.java.service.billdownload.DigestBillEntity digestEntity =
+                            wechatPayTemplate.downloadFundFlowBill(request.getMerchantKey(), req);
+                    yield PayBillDownloadResponse.builder()
+                            .channel(PayChannel.WECHAT_PAY)
+                            .billDate(request.getBillDate())
+                            .billType(billType)
+                            .fileStream(digestEntity.getInputStream())
+                            .build();
+                } else {
+                    com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest req =
+                            new com.wechat.pay.java.service.billdownload.model.GetTradeBillRequest();
+                    req.setBillDate(request.getBillDate());
+                    req.setBillType(com.wechat.pay.java.service.billdownload.model.BillType.valueOf(billType.toUpperCase()));
+                    req.setSubMchid(request.getSubMchid());
+                    if ("GZIP".equalsIgnoreCase(request.getTarType()) || request.getTarType() == null) {
+                        req.setTarType(com.wechat.pay.java.service.billdownload.model.TarType.GZIP);
+                    }
+                    com.wechat.pay.java.service.billdownload.DigestBillEntity digestEntity =
+                            wechatPayTemplate.downloadTradeBill(request.getMerchantKey(), req);
+                    yield PayBillDownloadResponse.builder()
+                            .channel(PayChannel.WECHAT_PAY)
+                            .billDate(request.getBillDate())
+                            .billType(billType)
+                            .fileStream(digestEntity.getInputStream())
+                            .build();
+                }
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用 (ateng.boot.pay.alipay.enabled=false)");
+                }
+                String billType = request.getBillType() != null && !request.getBillType().isBlank()
+                        ? request.getBillType() : "trade";
+                com.alipay.api.response.AlipayDataDataserviceBillDownloadurlQueryResponse rawResp =
+                        alipayTemplate.queryBillDownloadUrl(billType, request.getBillDate(), request.getMerchantKey());
+                String downloadUrl = rawResp.getBillDownloadUrl();
+                InputStream fileStream = null;
+                if (downloadUrl != null && !downloadUrl.isBlank()) {
+                    fileStream = alipayTemplate.downloadBillStream(downloadUrl);
+                }
+                yield PayBillDownloadResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .billDate(request.getBillDate())
+                        .billType(billType)
+                        .downloadUrl(downloadUrl)
+                        .fileStream(fileStream)
+                        .hashValue(rawResp.getBillFileCode())
+                        .build();
+            }
+        };
+    }
+
+    /**
+     * 直接下载账单输入流（自动路由微信 GZIP 流或支付宝 ZIP 流）
+     *
+     * @param request 统一对账单下载请求
+     * @return 账单输入流（可直接送入 PayBillParser 解析）
+     */
+    public InputStream downloadBillStream(PayBillDownloadRequest request) {
+        PayBillDownloadResponse response = downloadBill(request);
+        return response.getFileStream();
+    }
+
+    // =========================================================================
+    // 9. 专有门面与官方客户端逃生舱
     // =========================================================================
 
     /**
