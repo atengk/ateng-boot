@@ -37,7 +37,17 @@ public enum DatasourceResultCode implements IResultCode {
     /**
      * 数据源不存在
      */
-    DATASOURCE_NOT_FOUND(59005, "数据源不存在");
+    DATASOURCE_NOT_FOUND(59005, "数据源不存在"),
+
+    /**
+     * 数据源初始化或凭据解密异常
+     */
+    DATASOURCE_INIT_ERROR(59006, "数据源初始化或凭据解密异常"),
+
+    /**
+     * 数据源受管生命周期操作异常
+     */
+    DATASOURCE_LIFECYCLE_ERROR(59007, "数据源受管生命周期操作异常");
 
     private final Integer code;
     private final String msg;

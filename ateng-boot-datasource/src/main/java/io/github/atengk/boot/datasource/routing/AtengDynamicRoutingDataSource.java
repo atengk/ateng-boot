@@ -54,6 +54,11 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
                 : new ReadAfterWriteManager(this.datasourceProperties.getReadWriteSplit().getReadAfterWrite(), new DefaultWriteOccurredResolver());
     }
 
+    @Override
+    public String getPrimary() {
+        return super.getPrimary();
+    }
+
     public AtengDynamicRoutingDataSource(List<DynamicDataSourceProvider> providers,
                                          DatasourceProperties datasourceProperties,
                                          TenantDataSourceProvider tenantDataSourceProvider) {

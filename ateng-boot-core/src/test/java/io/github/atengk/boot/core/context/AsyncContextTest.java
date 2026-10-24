@@ -205,4 +205,64 @@ class AsyncContextTest {
         );
         assertTrue(threadCleanCheck.get(2, TimeUnit.SECONDS), "抛出异常时工作线程四维现场仍应被严格自清理还原");
     }
+
+    @Test
+    @DisplayName("通过 AsyncContextSnapshotProvider 扩展第 5 维上下文（如数据源）在异步线程中透传与还原")
+    void shouldPropagateCustomSnapshotProvider() throws Exception {
+        ThreadLocal<String> customContext = new ThreadLocal<>();
+        AsyncContextSnapshotProvider testProvider = new AsyncContextSnapshotProvider() {
+            @Override
+            public Object capture() {
+                return customContext.get();
+            }
+
+            @Override
+            public Object capturePrevious() {
+                return customContext.get();
+            }
+
+            @Override
+            public void apply(Object snapshot) {
+                if (snapshot != null) {
+                    customContext.set((String) snapshot);
+                } else {
+                    customContext.remove();
+                }
+            }
+
+            @Override
+            public void restore(Object previous) {
+                if (previous != null) {
+                    customContext.set((String) previous);
+                } else {
+                    customContext.remove();
+                }
+            }
+        };
+
+        try {
+            AsyncContext.registerSnapshotProvider(testProvider);
+            customContext.set("ds-order-master");
+
+            AtomicReference<String> asyncContextValue = new AtomicReference<>();
+            Runnable task = AsyncContext.wrap(() -> {
+                asyncContextValue.set(customContext.get());
+            });
+
+            // 父线程清理
+            customContext.remove();
+
+            Future<?> future = executor.submit(task);
+            future.get(2, TimeUnit.SECONDS);
+
+            assertEquals("ds-order-master", asyncContextValue.get(), "扩展提供者快照必须正确透传至子线程");
+
+            // 验证子线程执行完毕后现场被还原
+            Future<String> cleanCheck = executor.submit(customContext::get);
+            assertNull(cleanCheck.get(2, TimeUnit.SECONDS), "异步工作线程执行完毕后扩展上下文必须被严格清理");
+        } finally {
+            AsyncContext.unregisterSnapshotProvider(testProvider);
+            customContext.remove();
+        }
+    }
 }

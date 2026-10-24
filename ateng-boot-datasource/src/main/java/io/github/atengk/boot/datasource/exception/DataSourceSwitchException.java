@@ -1,5 +1,6 @@
 package io.github.atengk.boot.datasource.exception;
 
+import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.datasource.enums.DatasourceResultCode;
 import lombok.Getter;
@@ -24,5 +25,29 @@ public class DataSourceSwitchException extends BusinessException {
         super(DatasourceResultCode.DATASOURCE_SWITCH_ERROR, message);
         this.currentDataSourceKey = currentDataSourceKey;
         this.targetDataSourceKey = targetDataSourceKey;
+    }
+
+    public DataSourceSwitchException(String message) {
+        super(DatasourceResultCode.DATASOURCE_SWITCH_ERROR, message);
+        this.currentDataSourceKey = null;
+        this.targetDataSourceKey = null;
+    }
+
+    public DataSourceSwitchException(String message, Throwable cause) {
+        super(DatasourceResultCode.DATASOURCE_SWITCH_ERROR, message, cause);
+        this.currentDataSourceKey = null;
+        this.targetDataSourceKey = null;
+    }
+
+    public DataSourceSwitchException(String message, IResultCode resultCode) {
+        super(resultCode != null ? resultCode : DatasourceResultCode.DATASOURCE_SWITCH_ERROR, message);
+        this.currentDataSourceKey = null;
+        this.targetDataSourceKey = null;
+    }
+
+    public DataSourceSwitchException(String message, Throwable cause, IResultCode resultCode) {
+        super(resultCode != null ? resultCode : DatasourceResultCode.DATASOURCE_SWITCH_ERROR, message, cause);
+        this.currentDataSourceKey = null;
+        this.targetDataSourceKey = null;
     }
 }

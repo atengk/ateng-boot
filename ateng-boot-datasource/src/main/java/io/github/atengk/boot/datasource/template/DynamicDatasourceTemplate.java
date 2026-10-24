@@ -1,13 +1,20 @@
 package io.github.atengk.boot.datasource.template;
 
 import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
+import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
+import com.baomidou.dynamic.datasource.creator.DefaultDataSourceCreator;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
+import com.zaxxer.hikari.HikariDataSource;
+import com.zaxxer.hikari.HikariPoolMXBean;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
+import io.github.atengk.boot.datasource.enums.DatasourceResultCode;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
+import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.exception.TenantDataSourceNotFoundException;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.slf4j.Logger;
@@ -15,7 +22,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -37,23 +48,34 @@ public class DynamicDatasourceTemplate {
     private final DatasourceProperties datasourceProperties;
     private final TenantDataSourceProvider tenantDataSourceProvider;
     private final DynamicDatasourceGuard guard;
+    private final DefaultDataSourceCreator defaultDataSourceCreator;
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
                                      TenantDataSourceProvider tenantDataSourceProvider,
-                                     DynamicDatasourceGuard guard) {
+                                     DynamicDatasourceGuard guard,
+                                     DefaultDataSourceCreator defaultDataSourceCreator) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource 不能为空");
         this.datasourceProperties = datasourceProperties != null ? datasourceProperties : new DatasourceProperties();
         this.tenantDataSourceProvider = tenantDataSourceProvider != null
                 ? tenantDataSourceProvider
                 : new DefaultTenantDataSourceProvider(this.datasourceProperties);
         this.guard = guard != null ? guard : new DynamicDatasourceGuard(this.datasourceProperties);
+        this.defaultDataSourceCreator = defaultDataSourceCreator;
+    }
+
+    public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
+                                     DatasourceProperties datasourceProperties,
+                                     TenantDataSourceProvider tenantDataSourceProvider,
+                                     DynamicDatasourceGuard guard) {
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, guard, null);
     }
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
                                      TenantDataSourceProvider tenantDataSourceProvider) {
-        this(dataSource, datasourceProperties, tenantDataSourceProvider, new DynamicDatasourceGuard(datasourceProperties));
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, new DynamicDatasourceGuard(datasourceProperties), null);
     }
 
     /**
@@ -392,6 +414,163 @@ public class DynamicDatasourceTemplate {
             }
         }
         return builder.build();
+    }
+
+    /**
+     * 动态注册并初始化受管数据源（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     *
+     * @param dsKey    数据源唯一标识
+     * @param property 数据源创建配置属性
+     */
+    public void addDataSource(String dsKey, DataSourceProperty property) {
+        Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
+        Objects.requireNonNull(property, "数据源属性配置 (property) 不能为空");
+        if (defaultDataSourceCreator == null) {
+            throw new IllegalStateException("DefaultDataSourceCreator 未初始化，无法根据 DataSourceProperty 动态创建数据源");
+        }
+        lifecycleLock.lock();
+        try {
+            if (dataSource.getDataSources().containsKey(dsKey)) {
+                throw new DataSourceSwitchException("数据源标识已存在，拒绝重复添加: " + dsKey);
+            }
+            DataSource newDs;
+            try {
+                newDs = defaultDataSourceCreator.createDataSource(property);
+            } catch (Exception e) {
+                log.error("ateng-boot-datasource: 创建物理数据源实例失败 [dsKey={}]", dsKey, e);
+                throw new DataSourceSwitchException("创建物理数据源实例失败 [dsKey=" + dsKey + "]: " + e.getMessage(), e,
+                        DatasourceResultCode.DATASOURCE_INIT_ERROR);
+            }
+            validateConnection(dsKey, newDs);
+            dataSource.addDataSource(dsKey, newDs);
+            log.info("ateng-boot-datasource: 动态注册受管数据源成功 [dsKey={}]", dsKey);
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * 动态注册已就绪的受管物理数据源（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     *
+     * @param dsKey  数据源唯一标识
+     * @param newDs  待注册的物理数据源实例
+     */
+    public void addDataSource(String dsKey, DataSource newDs) {
+        Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
+        Objects.requireNonNull(newDs, "数据源实例 (newDs) 不能为空");
+        lifecycleLock.lock();
+        try {
+            if (dataSource.getDataSources().containsKey(dsKey)) {
+                throw new DataSourceSwitchException("数据源标识已存在，拒绝重复添加: " + dsKey);
+            }
+            validateConnection(dsKey, newDs);
+            dataSource.addDataSource(dsKey, newDs);
+            log.info("ateng-boot-datasource: 动态注册受管物理数据源成功 [dsKey={}]", dsKey);
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    /**
+     * 优雅注销并安全销毁数据源（从路由表安全摘除流量，并按需等待在途事务连接归还）
+     *
+     * @param dsKey    待注销数据源标识
+     * @param graceful 是否执行优雅排空（等待在途连接归还，超时时间由 ateng.boot.datasource.dynamic-load.drain-timeout 纳管）
+     */
+    public void removeDataSource(String dsKey, boolean graceful) {
+        Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
+        String primary = resolvePrimaryDataSourceKey();
+        if (dsKey.equals(primary) || "master".equals(dsKey)) {
+            throw new DataSourceSwitchException("受管主数据源严禁动态注销: " + dsKey);
+        }
+        lifecycleLock.lock();
+        try {
+            DataSource targetDs = dataSource.getDataSources().get(dsKey);
+            if (targetDs == null) {
+                log.warn("ateng-boot-datasource: 待注销数据源不存在或已被移除 [dsKey={}]", dsKey);
+                return;
+            }
+            // 1. 先从动态路由注册表中摘除，切断新请求流量
+            dataSource.removeDataSource(dsKey);
+            log.info("ateng-boot-datasource: 已从动态路由表摘除数据源流量 [dsKey={}]", dsKey);
+
+            // 2. 若指定 graceful，执行优雅排空 (Drain)
+            if (graceful) {
+                drainDataSource(dsKey, targetDs);
+            }
+
+            // 3. 物理关闭底层连接池
+            closeDataSource(targetDs);
+            log.info("ateng-boot-datasource: 受管数据源已安全物理关闭 [dsKey={}]", dsKey);
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    private void validateConnection(String dsKey, DataSource ds) {
+        Duration probeTimeout = datasourceProperties.getDynamicLoad() != null
+                ? datasourceProperties.getDynamicLoad().getProbeTimeout()
+                : Duration.ofSeconds(2);
+        int timeoutSeconds = Math.max(1, (int) probeTimeout.toSeconds());
+        try (Connection conn = ds.getConnection()) {
+            if (!conn.isValid(timeoutSeconds)) {
+                closeDataSource(ds);
+                throw new DataSourceSwitchException("数据源连通性预检失败 (isValid=false) [dsKey=" + dsKey + "]");
+            }
+        } catch (Exception e) {
+            closeDataSource(ds);
+            if (e instanceof DataSourceSwitchException switchException) {
+                throw switchException;
+            }
+            throw new DataSourceSwitchException("新增数据源连通性预检异常 [dsKey=" + dsKey + "]: " + e.getMessage(), e,
+                    DatasourceResultCode.DATASOURCE_INIT_ERROR);
+        }
+    }
+
+    private void drainDataSource(String dsKey, DataSource ds) {
+        if (ds instanceof HikariDataSource hikari) {
+            Duration drainTimeout = datasourceProperties.getDynamicLoad() != null
+                    ? datasourceProperties.getDynamicLoad().getDrainTimeout()
+                    : Duration.ofSeconds(5);
+            long deadline = System.currentTimeMillis() + drainTimeout.toMillis();
+            while (System.currentTimeMillis() < deadline) {
+                HikariPoolMXBean poolBean = hikari.getHikariPoolMXBean();
+                if (poolBean == null || poolBean.getActiveConnections() <= 0) {
+                    log.debug("ateng-boot-datasource: 数据源在途活跃连接已全部归还 [dsKey={}]", dsKey);
+                    break;
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+    }
+
+    private void closeDataSource(DataSource ds) {
+        if (ds instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                log.warn("ateng-boot-datasource: 关闭数据源连接池异常: {}", e.getMessage(), e);
+            }
+        }
+    }
+
+    private String resolvePrimaryDataSourceKey() {
+        if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+            String p = atengDs.getPrimary();
+            if (StringUtils.hasText(p)) {
+                return p;
+            }
+        }
+        if (datasourceProperties != null && datasourceProperties.getMultiTenancy() != null &&
+                StringUtils.hasText(datasourceProperties.getMultiTenancy().getDefaultDataSource())) {
+            return datasourceProperties.getMultiTenancy().getDefaultDataSource();
+        }
+        return "master";
     }
 
     /**

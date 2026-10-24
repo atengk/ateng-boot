@@ -213,6 +213,16 @@ public class DatasourceProperties {
          * 是否启用密码密文自动解密（支持 enc:sm4: 与 enc:aes: 前缀）
          */
         private boolean passwordDecryptionEnabled = true;
+
+        /**
+         * 密文密码解密全局密钥（可选；若密文字符串未自包含密钥时作为统一对称解密密钥，支持 16/24/32 字节）
+         */
+        private String secretKey;
+
+        /**
+         * 密文密码解密全局初始向量（可选；CBC 模式缺省 IV）
+         */
+        private String iv;
     }
 
     /**

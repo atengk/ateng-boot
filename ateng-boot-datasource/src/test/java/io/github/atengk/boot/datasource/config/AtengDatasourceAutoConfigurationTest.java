@@ -50,6 +50,8 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context.getBean(WriteOccurredResolver.class)).isInstanceOf(DefaultWriteOccurredResolver.class);
             assertThat(context).hasSingleBean(ReadAfterWriteManager.class);
             assertThat(context).hasSingleBean(HealthAwareDynamicDataSourceStrategy.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.datasource.security.DataSourcePasswordDecryptor.class);
+            assertThat(context).hasSingleBean(com.baomidou.dynamic.datasource.event.DataSourceInitEvent.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
