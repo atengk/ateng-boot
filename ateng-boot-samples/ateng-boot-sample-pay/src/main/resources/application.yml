@@ -15,6 +15,17 @@ ateng:
         enabled: true
         path-prefix: /ateng-pay/callback
         idempotent-timeout: 10s
+      # 单笔资金转账高敏开关
+      transfer:
+        enabled: true
+      # 微信资金分账高敏开关
+      profit-sharing:
+        enabled: true
+      # 线下条码收银阶梯轮询配置
+      barcode:
+        max-wait-time: 30s
+        poll-interval: 2s
+        auto-cancel-on-timeout: true
       # 微信支付官方 V3 沙箱/生产配置
       wechat:
         enabled: true

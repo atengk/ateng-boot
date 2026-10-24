@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.pay.listener;
 
 import io.github.atengk.boot.pay.model.callback.PayCallbackResult;
 import io.github.atengk.boot.pay.model.callback.PaymentSuccessCallback;
+import io.github.atengk.boot.pay.model.callback.RefundSuccessCallback;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,11 @@ public class OrderPaymentCallbackListener implements PayCallbackListener {
      */
     private final Set<String> processedOrders = ConcurrentHashMap.newKeySet();
 
+    /**
+     * 模拟业务已处理退款单号集合 (用于退款防重幂等校验)
+     */
+    private final Set<String> processedRefunds = ConcurrentHashMap.newKeySet();
+
     @Override
     public boolean supports(PaymentSuccessCallback callback) {
         return callback != null && callback.getOutTradeNo() != null;
@@ -54,6 +60,34 @@ public class OrderPaymentCallbackListener implements PayCallbackListener {
         return PayCallbackResult.success("订单支付状态更新成功");
     }
 
+    @Override
+    public boolean supports(RefundSuccessCallback callback) {
+        return callback != null && callback.getOutRefundNo() != null;
+    }
+
+    @Override
+    public PayCallbackResult onRefundSuccess(RefundSuccessCallback callback) {
+        String outRefundNo = callback.getOutRefundNo();
+        log.info("Received verified refund success callback: channel={}, outRefundNo={}, refundId={}, amount={}, status={}",
+                callback.getChannel(), outRefundNo, callback.getRefundId(), callback.getRefundAmount(), callback.getRefundStatus());
+
+        if (processedRefunds.contains(outRefundNo)) {
+            log.info("Refund [{}] has already been processed previously, returning IGNORE ACK.", outRefundNo);
+            return PayCallbackResult.ignore("退款已处理，忽略重复通知");
+        }
+
+        processedRefunds.add(outRefundNo);
+        log.info("Business refund [{}] state successfully updated in database.", outRefundNo);
+        return PayCallbackResult.success("退款状态更新成功");
+    }
+
+    /**
+     * 获取已处理完成的退款单号集合
+     */
+    public Set<String> getProcessedRefunds() {
+        return Collections.unmodifiableSet(processedRefunds);
+    }
+
     /**
      * 获取已处理完成的订单号集合（供测试或监控探针使用）
      *
@@ -68,5 +102,6 @@ public class OrderPaymentCallbackListener implements PayCallbackListener {
      */
     public void reset() {
         processedOrders.clear();
+        processedRefunds.clear();
     }
 }
