@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.core;
 
 import com.alipay.api.AlipayClient;
 import com.wechat.pay.java.core.http.HttpClient;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.enums.PayChannel;
 import io.github.atengk.boot.pay.enums.PayResultCode;
@@ -10,16 +11,21 @@ import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
 import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
+import io.github.atengk.boot.pay.model.request.AlipayTransferRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedCancelRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedCloseRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedPayRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedQueryRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedRefundQueryRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedTransferQueryRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedTransferRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
 import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.request.WechatTransferRequest;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -478,7 +484,137 @@ public class PayTemplate {
     }
 
     // =========================================================================
-    // 7. 专有门面与官方客户端逃生舱
+    // 7. 统一单笔资金转账 (transfer & queryTransfer)
+    // =========================================================================
+
+    /**
+     * 发起统一单笔资金转账
+     *
+     * @param request 统一单笔转账请求入参
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse transfer(UnifiedTransferRequest request) {
+        validateTransferRequest(request);
+        PayChannel channel = resolveChannel(request.getChannel());
+        BigDecimal normalizedAmount = request.getAmount().setScale(2, RoundingMode.HALF_UP);
+
+        log.debug("Routing unified transfer request: channel={}, outBizNo={}, amount={}, payeeAccount={}, payeeRealName={}",
+                channel, request.getOutBizNo(), normalizedAmount,
+                DesensitizeUtil.maskKeepHeadTail(request.getPayeeAccount(), 2, 2),
+                DesensitizeUtil.chineseName(request.getPayeeRealName()));
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用 (ateng.boot.pay.wechat.enabled=false)");
+                }
+                String title = (request.getTitle() != null && !request.getTitle().isBlank())
+                        ? request.getTitle()
+                        : "单笔转账";
+                String remark = (request.getRemark() != null && !request.getRemark().isBlank())
+                        ? request.getRemark()
+                        : title;
+                WechatTransferRequest wechatReq = WechatTransferRequest.builder()
+                        .merchantKey(request.getMerchantKey())
+                        .outBatchNo(request.getOutBizNo())
+                        .outDetailNo(request.getOutBizNo())
+                        .batchName(title)
+                        .batchRemark(remark)
+                        .transferRemark(remark)
+                        .amount(normalizedAmount)
+                        .openid(request.getPayeeAccount())
+                        .userName(request.getPayeeRealName())
+                        .notifyUrl(request.getNotifyUrl())
+                        .build();
+                yield wechatPayTemplate.transfer(request.getMerchantKey(), wechatReq);
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用 (ateng.boot.pay.alipay.enabled=false)");
+                }
+                AlipayTransferRequest alipayReq = AlipayTransferRequest.builder()
+                        .appKey(request.getMerchantKey())
+                        .outBizNo(request.getOutBizNo())
+                        .amount(normalizedAmount)
+                        .orderTitle(request.getTitle() != null && !request.getTitle().isBlank() ? request.getTitle() : "单笔转账")
+                        .remark(request.getRemark())
+                        .payeeType(request.getPayeeIdentityType() != null && !request.getPayeeIdentityType().isBlank()
+                                ? request.getPayeeIdentityType()
+                                : "ALIPAY_LOGON_ID")
+                        .payeeAccount(request.getPayeeAccount())
+                        .payeeRealName(request.getPayeeRealName())
+                        .build();
+                yield alipayTemplate.transfer(request.getMerchantKey(), alipayReq);
+            }
+        };
+    }
+
+    /**
+     * 查询统一单笔转账状态
+     *
+     * @param request 统一转账查询请求参数
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(UnifiedTransferQueryRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一转账查询请求参数不能为空");
+        }
+        PayChannel channel = resolveChannel(request.getChannel());
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                yield wechatPayTemplate.queryTransferDetail(request.getMerchantKey(), request.getOutBizNo(), request.getOutBizNo());
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
+                }
+                yield alipayTemplate.queryTransfer(request.getMerchantKey(), request.getOutBizNo(), request.getOrderId());
+            }
+        };
+    }
+
+    /**
+     * 单标识符重载：根据渠道与商户转账单号查询转账状态
+     *
+     * @param channel  支付渠道
+     * @param outBizNo 商户转账单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(PayChannel channel, String outBizNo) {
+        return queryTransfer(UnifiedTransferQueryRequest.builder().channel(channel).outBizNo(outBizNo).build());
+    }
+
+    /**
+     * 单标识符重载：根据渠道、商户转账单号与渠道转账单号查询转账状态
+     *
+     * @param channel  支付渠道
+     * @param outBizNo 商户转账单号
+     * @param orderId  渠道官方转账订单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(PayChannel channel, String outBizNo, String orderId) {
+        return queryTransfer(UnifiedTransferQueryRequest.builder().channel(channel).outBizNo(outBizNo).orderId(orderId).build());
+    }
+
+    /**
+     * 单标识符重载：根据渠道、商户别名、商户转账单号与渠道转账单号查询转账状态
+     *
+     * @param channel     支付渠道
+     * @param merchantKey 商户别名或应用别名
+     * @param outBizNo    商户转账单号
+     * @param orderId     渠道官方转账订单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(PayChannel channel, String merchantKey, String outBizNo, String orderId) {
+        return queryTransfer(UnifiedTransferQueryRequest.builder().channel(channel).merchantKey(merchantKey).outBizNo(outBizNo).orderId(orderId).build());
+    }
+
+    // =========================================================================
+    // 8. 专有门面与官方客户端逃生舱
     // =========================================================================
 
     /**
@@ -555,5 +691,25 @@ public class PayTemplate {
             return request.getSubject();
         }
         return request.getDescription();
+    }
+
+    private void validateTransferRequest(UnifiedTransferRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一转账请求参数不能为空");
+        }
+        if (request.getOutBizNo() == null || request.getOutBizNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户转账单号 [outBizNo] 不能为空");
+        }
+        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID, "转账金额 [amount] 必须大于 0 元");
+        }
+        BigDecimal stripped = request.getAmount().stripTrailingZeros();
+        if (stripped.scale() > 2) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID,
+                    "转账金额小数位不能超过 2 位（分）：" + request.getAmount());
+        }
+        if (request.getPayeeAccount() == null || request.getPayeeAccount().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "收款人账号 [payeeAccount] 不能为空");
+        }
     }
 }

@@ -4,7 +4,9 @@ import com.alipay.api.*;
 import com.alipay.api.domain.*;
 import com.alipay.api.request.*;
 import com.alipay.api.response.*;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
+import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
@@ -12,15 +14,18 @@ import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
 import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
+import io.github.atengk.boot.pay.model.request.AlipayTransferRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,14 +65,47 @@ public class AlipayTemplate {
     private static final String SCENE_BAR_CODE = "bar_code";
 
     private final NamedMerchantRegistry namedMerchantRegistry;
+    private final PayProperties payProperties;
 
     /**
      * 支付宝应用客户端持有者缓存：应用别名/AppId -> AlipayClientHolder
      */
     private final ConcurrentHashMap<String, AlipayClientHolder> holderCache = new ConcurrentHashMap<>();
 
-    public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry) {
+    public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
+        this.payProperties = payProperties;
+    }
+
+    public AlipayTemplate(NamedMerchantRegistry namedMerchantRegistry) {
+        this(namedMerchantRegistry, null);
+    }
+
+    /**
+     * 动态设置单笔资金转账开关（主要供单测使用）
+     */
+    public void setTransferEnabled(boolean enabled) {
+        if (this.payProperties != null && this.payProperties.getTransfer() != null) {
+            this.payProperties.getTransfer().setEnabled(enabled);
+        }
+    }
+
+    /**
+     * 判断单笔资金转账功能是否已开启
+     *
+     * @return true 开启，false 关闭
+     */
+    public boolean isTransferEnabled() {
+        return this.payProperties != null && this.payProperties.getTransfer() != null && this.payProperties.getTransfer().isEnabled();
+    }
+
+    /**
+     * 单笔资金转账物理总开关防卫前置断言
+     */
+    private void assertTransferEnabled() {
+        if (!isTransferEnabled()) {
+            throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "支付宝资金转账高敏特性未启用，请配置 ateng.boot.pay.transfer.enabled=true 显式开启");
+        }
     }
 
     // =========================================================================
@@ -792,6 +830,228 @@ public class AlipayTemplate {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝退款请求入参不能为空");
         }
         request.validate();
+    }
+
+    // =========================================================================
+    // 10. 单笔资金转账 (transfer)
+    // =========================================================================
+
+    /**
+     * 发起支付宝单笔资金转账（到支付宝账户或银行卡）
+     *
+     * @param appKey  应用别名或 AppId（可选）
+     * @param request 支付宝转账专有请求参数
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse transfer(String appKey, AlipayTransferRequest request) {
+        assertTransferEnabled();
+        validateTransferRequest(request);
+
+        String key = (appKey != null && !appKey.isBlank()) ? appKey : request.getAppKey();
+        AlipayAppProperties appProps = resolveApp(key);
+        AlipayClientHolder holder = getClientHolder(appProps);
+
+        AlipayFundTransUniTransferRequest alipayRequest = new AlipayFundTransUniTransferRequest();
+        AlipayFundTransUniTransferModel model = new AlipayFundTransUniTransferModel();
+
+        model.setOutBizNo(request.getOutBizNo());
+        model.setTransAmount(formatAmount(request.getAmount()));
+        model.setProductCode(request.getProductCode() != null && !request.getProductCode().isBlank()
+                ? request.getProductCode()
+                : "TRANS_ACCOUNT_NO_PWD");
+        model.setBizScene(request.getBizScene() != null && !request.getBizScene().isBlank()
+                ? request.getBizScene()
+                : "DIRECT_TRANSFER");
+        model.setOrderTitle(request.getOrderTitle() != null && !request.getOrderTitle().isBlank()
+                ? request.getOrderTitle()
+                : "单笔转账");
+        if (request.getRemark() != null && !request.getRemark().isBlank()) {
+            model.setRemark(request.getRemark());
+        }
+
+        Participant payeeInfo = new Participant();
+        payeeInfo.setIdentity(request.getPayeeAccount());
+        payeeInfo.setIdentityType(request.getPayeeType() != null && !request.getPayeeType().isBlank()
+                ? request.getPayeeType()
+                : "ALIPAY_LOGON_ID");
+        if (request.getPayeeRealName() != null && !request.getPayeeRealName().isBlank()) {
+            payeeInfo.setName(request.getPayeeRealName());
+        }
+        model.setPayeeInfo(payeeInfo);
+
+        alipayRequest.setBizModel(model);
+
+        log.debug("Initiating Alipay single transfer: outBizNo={}, amount={}, payeeAccount={}, payeeRealName={}",
+                request.getOutBizNo(), request.getAmount(),
+                DesensitizeUtil.maskKeepHeadTail(request.getPayeeAccount(), 2, 2),
+                DesensitizeUtil.chineseName(request.getPayeeRealName()));
+
+        AlipayFundTransUniTransferResponse response = executeWithExceptionTranslation("transfer", () -> {
+            try {
+                return executeApi(holder, alipayRequest, resolveAppAuthToken(appProps, (String) null));
+            } catch (AlipayApiException e) {
+                throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "调用支付宝单笔转账接口通信失败: " + e.getMessage(), e);
+            }
+        });
+
+        if (!response.isSuccess()) {
+            throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
+                    response.getSubCode() != null ? response.getSubCode() : response.getCode(),
+                    response.getSubMsg() != null ? response.getSubMsg() : response.getMsg());
+        }
+
+        PayTransferState state = mapAlipayTransferStatus(response.getStatus());
+
+        return PayTransferResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo(response.getOutBizNo() != null ? response.getOutBizNo() : request.getOutBizNo())
+                .orderId(response.getOrderId())
+                .payFundOrderId(response.getPayFundOrderId())
+                .status(state)
+                .amount(request.getAmount())
+                .payeeAccount(request.getPayeeAccount())
+                .payeeRealName(request.getPayeeRealName())
+                .payTime(response.getTransDate())
+                .rawResponse(response)
+                .build();
+    }
+
+    /**
+     * 发起支付宝单笔资金转账（默认应用）
+     *
+     * @param request 支付宝转账专有请求参数
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse transfer(AlipayTransferRequest request) {
+        return transfer(null, request);
+    }
+
+    /**
+     * 查询支付宝单笔转账状态
+     *
+     * @param appKey   应用别名或 AppId（可选）
+     * @param outBizNo 商家唯一转账订单号
+     * @param orderId  支付宝转账单据号（可选）
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(String appKey, String outBizNo, String orderId) {
+        assertTransferEnabled();
+        if ((outBizNo == null || outBizNo.isBlank()) && (orderId == null || orderId.isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户转账单号 [outBizNo] 与支付宝转账单号 [orderId] 不能同时为空");
+        }
+
+        AlipayAppProperties appProps = resolveApp(appKey);
+        AlipayClientHolder holder = getClientHolder(appProps);
+
+        AlipayFundTransCommonQueryRequest queryRequest = new AlipayFundTransCommonQueryRequest();
+        AlipayFundTransCommonQueryModel model = new AlipayFundTransCommonQueryModel();
+        model.setBizScene("DIRECT_TRANSFER");
+        model.setProductCode("TRANS_ACCOUNT_NO_PWD");
+        if (outBizNo != null && !outBizNo.isBlank()) {
+            model.setOutBizNo(outBizNo);
+        }
+        if (orderId != null && !orderId.isBlank()) {
+            model.setOrderId(orderId);
+        }
+        queryRequest.setBizModel(model);
+
+        AlipayFundTransCommonQueryResponse response = executeWithExceptionTranslation("queryTransfer", () -> {
+            try {
+                return executeApi(holder, queryRequest, resolveAppAuthToken(appProps, (String) null));
+            } catch (AlipayApiException e) {
+                throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "调用支付宝转账查询接口通信失败: " + e.getMessage(), e);
+            }
+        });
+
+        if (!response.isSuccess()) {
+            throw new PayTradeException(PayResultCode.PAY_GATEWAY_ERROR,
+                    response.getSubCode() != null ? response.getSubCode() : response.getCode(),
+                    response.getSubMsg() != null ? response.getSubMsg() : response.getMsg());
+        }
+
+        PayTransferState state = mapAlipayTransferStatus(response.getStatus());
+
+        BigDecimal fee = null;
+        if (response.getOrderFee() != null && !response.getOrderFee().isBlank()) {
+            try {
+                fee = new BigDecimal(response.getOrderFee());
+            } catch (Exception ignored) {
+            }
+        }
+
+        return PayTransferResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo(response.getOutBizNo())
+                .orderId(response.getOrderId())
+                .payFundOrderId(response.getPayFundOrderId())
+                .status(state)
+                .amount(fee)
+                .payeeAccount(response.getReceiverOpenId() != null ? response.getReceiverOpenId() : response.getReceiverUserId())
+                .payTime(response.getPayDate() != null ? response.getPayDate() : response.getArrivalTimeEnd())
+                .failReason(response.getFailReason())
+                .rawResponse(response)
+                .build();
+    }
+
+    /**
+     * 查询支付宝单笔转账状态（默认应用）
+     *
+     * @param outBizNo 商家唯一转账订单号
+     * @param orderId  支付宝转账单据号（可选）
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(String outBizNo, String orderId) {
+        return queryTransfer(null, outBizNo, orderId);
+    }
+
+    /**
+     * 查询支付宝单笔转账状态（仅凭商户订单号，默认应用）
+     *
+     * @param outBizNo 商家唯一转账订单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransfer(String outBizNo) {
+        return queryTransfer(null, outBizNo, null);
+    }
+
+    /**
+     * 将支付宝原生转账单据状态映射为统一转账状态机
+     *
+     * @param status 支付宝 status 字符串
+     * @return 标准化转账状态
+     */
+    public static PayTransferState mapAlipayTransferStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return PayTransferState.SUCCESS;
+        }
+        return switch (status.trim().toUpperCase()) {
+            case "SUCCESS" -> PayTransferState.SUCCESS;
+            case "FAIL" -> PayTransferState.FAIL;
+            case "DEALING", "WAIT_PAY" -> PayTransferState.PROCESSING;
+            case "REFUND" -> PayTransferState.REFUND;
+            case "CLOSED" -> PayTransferState.CLOSED;
+            default -> PayTransferState.PROCESSING;
+        };
+    }
+
+    private void validateTransferRequest(AlipayTransferRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝转账请求入参不能为空");
+        }
+        if (request.getOutBizNo() == null || request.getOutBizNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商户转账唯一单号 [outBizNo] 不能为空");
+        }
+        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID, "转账金额 [amount] 必须大于 0 元");
+        }
+        BigDecimal stripped = request.getAmount().stripTrailingZeros();
+        if (stripped.scale() > 2) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID,
+                    "转账金额小数位不能超过 2 位（分）：" + request.getAmount());
+        }
+        if (request.getPayeeAccount() == null || request.getPayeeAccount().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "收款人账号 [payeeAccount] 不能为空");
+        }
     }
 
     // =========================================================================

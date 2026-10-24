@@ -12,6 +12,7 @@ import io.github.atengk.boot.pay.core.lock.PayLockManager;
 import io.github.atengk.boot.pay.core.lock.RedisPayLockManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.core.profitsharing.WechatProfitSharingService;
+import io.github.atengk.boot.pay.core.transfer.PayTransferService;
 import io.github.atengk.boot.pay.spi.PayCallbackListener;
 import io.github.atengk.boot.pay.spi.PayCertificateProvider;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
@@ -98,8 +99,8 @@ public class AtengPayAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.pay.alipay", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public AlipayTemplate alipayTemplate(NamedMerchantRegistry namedMerchantRegistry) {
-        return new AlipayTemplate(namedMerchantRegistry);
+    public AlipayTemplate alipayTemplate(NamedMerchantRegistry namedMerchantRegistry, PayProperties payProperties) {
+        return new AlipayTemplate(namedMerchantRegistry, payProperties);
     }
 
     /**
@@ -110,6 +111,18 @@ public class AtengPayAutoConfiguration {
     public PayTemplate payTemplate(ObjectProvider<WechatPayTemplate> wechatPayTemplateProvider,
                                    ObjectProvider<AlipayTemplate> alipayTemplateProvider) {
         return new PayTemplate(wechatPayTemplateProvider.getIfAvailable(), alipayTemplateProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册单笔资金转账专有业务服务（由物理开关 ateng.boot.pay.transfer.enabled 守卫）
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(PayTemplate.class)
+    @ConditionalOnProperty(name = "ateng.boot.pay.transfer.enabled", havingValue = "true")
+    public PayTransferService payTransferService(PayTemplate payTemplate) {
+        log.info("Single fund transfer feature enabled, configuring PayTransferService.");
+        return new PayTransferService(payTemplate);
     }
 
     /**

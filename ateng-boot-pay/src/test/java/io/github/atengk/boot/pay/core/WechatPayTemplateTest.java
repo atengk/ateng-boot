@@ -30,14 +30,17 @@ import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
 import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.request.WechatTransferRequest;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
@@ -917,6 +920,120 @@ class WechatPayTemplateTest {
         badReturnReq.setDescription("回退");
         PayException exBadReturn = assertThrows(PayException.class, () -> payTemplate.returnProfitSharing(badReturnReq));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, exBadReturn.getResultCode());
+    }
+
+    @Test
+    @DisplayName("transfer: 物理总开关关闭时调用转账操作必须 Fail-Fast 抛出 PAY_FEATURE_DISABLED")
+    void testTransferDisabledFailsFast() {
+        payTemplate.setTransferEnabled(false);
+
+        WechatTransferRequest request = WechatTransferRequest.builder()
+                .outBatchNo("BATCH_20261024_001")
+                .amount(new BigDecimal("10.00"))
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .build();
+
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.transfer(request));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex1.getResultCode());
+
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.queryTransferDetail("BATCH_20261024_001", "DETAIL_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex2.getResultCode());
+
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.queryTransferBatch("BATCH_20261024_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex3.getResultCode());
+
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.getTransferBatchService());
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex4.getResultCode());
+    }
+
+    @Test
+    @DisplayName("transfer: 100% 离线自洽模拟微信单笔转账发起与明细状态查询")
+    void testInitiateSingleTransferAndQueryHermetic() throws Exception {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 模拟发起商家转账到零钱出站与应答
+        server.enqueue(mockResponse(200, "{\"out_batch_no\":\"BATCH_TRANSFER_001\",\"batch_id\":\"103000007110109690030000001\",\"create_time\":\"2026-10-24T08:00:00+08:00\",\"batch_status\":\"ACCEPTED\"}"));
+
+        WechatTransferRequest transferReq = WechatTransferRequest.builder()
+                .outBatchNo("BATCH_TRANSFER_001")
+                .amount(new BigDecimal("88.88"))
+                .batchName("2026年终绩效奖金")
+                .batchRemark("研发绩效结算")
+                .transferRemark("研发绩效奖金")
+                .openid("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .userName("张三")
+                .build();
+
+        PayTransferResponse transferResp = payTemplate.transfer(transferReq);
+
+        assertNotNull(transferResp);
+        assertEquals(PayChannel.WECHAT_PAY, transferResp.getChannel());
+        assertEquals("BATCH_TRANSFER_001", transferResp.getOutBizNo());
+        assertEquals("103000007110109690030000001", transferResp.getOrderId());
+        assertEquals(PayTransferState.PROCESSING, transferResp.getStatus());
+        assertEquals(new BigDecimal("88.88"), transferResp.getAmount());
+        assertEquals("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o", transferResp.getPayeeAccount());
+        assertEquals("张三", transferResp.getPayeeRealName());
+
+        RecordedRequest recordedInitiate = server.takeRequest();
+        assertEquals("POST", recordedInitiate.getMethod());
+        assertTrue(recordedInitiate.getPath().contains("/v3/transfer/batches"));
+        String initiateBody = recordedInitiate.getBody().readUtf8();
+        assertTrue(initiateBody.contains("\"out_batch_no\":\"BATCH_TRANSFER_001\""));
+        assertTrue(initiateBody.contains("\"total_amount\":8888"));
+        assertTrue(initiateBody.contains("\"total_num\":1"));
+        assertTrue(initiateBody.contains("\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\""));
+
+        // 2. 模拟根据商家批次单号与明细单号查询转账状态
+        server.enqueue(mockResponse(200, "{\"mchid\":\"1900000001\",\"out_batch_no\":\"BATCH_TRANSFER_001\",\"batch_id\":\"103000007110109690030000001\",\"appid\":\"wx_default_app\",\"out_detail_no\":\"BATCH_TRANSFER_001\",\"detail_id\":\"104000007110109690030000001\",\"detail_status\":\"SUCCESS\",\"transfer_amount\":8888,\"transfer_remark\":\"研发绩效奖金\",\"openid\":\"oUpF8uMuAJO_M2pxb1Q9zNjWeS6o\",\"initiate_time\":\"2026-10-24T08:00:00+08:00\",\"update_time\":\"2026-10-24T08:05:00+08:00\"}"));
+
+        PayTransferResponse detailResp = payTemplate.queryTransferDetail("BATCH_TRANSFER_001", "BATCH_TRANSFER_001");
+        assertNotNull(detailResp);
+        assertEquals(PayChannel.WECHAT_PAY, detailResp.getChannel());
+        assertEquals("BATCH_TRANSFER_001", detailResp.getOutBizNo());
+        assertEquals("103000007110109690030000001", detailResp.getOrderId());
+        assertEquals("104000007110109690030000001", detailResp.getPayFundOrderId());
+        assertEquals(PayTransferState.SUCCESS, detailResp.getStatus());
+        assertEquals(new BigDecimal("88.88"), detailResp.getAmount());
+        assertEquals("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o", detailResp.getPayeeAccount());
+        assertEquals("2026-10-24T08:05:00+08:00", detailResp.getPayTime());
+
+        RecordedRequest recordedQuery = server.takeRequest();
+        assertEquals("GET", recordedQuery.getMethod());
+        assertTrue(recordedQuery.getPath().contains("/v3/transfer/batches/out-batch-no/BATCH_TRANSFER_001/details/out-detail-no/BATCH_TRANSFER_001"));
+
+        // 3. 逃生舱实例检查
+        assertNotNull(payTemplate.getTransferBatchService());
+    }
+
+    @Test
+    @DisplayName("transfer: 微信单笔转账参数前置防卫校验")
+    void testTransferValidationErrors() {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 空请求
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.transfer(null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 2. 缺失 outBatchNo
+        WechatTransferRequest req2 = WechatTransferRequest.builder().amount(new BigDecimal("10.00")).openid("openid_123").build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.transfer(req2));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // 3. 金额小于等于 0
+        WechatTransferRequest req3 = WechatTransferRequest.builder().outBatchNo("B001").amount(BigDecimal.ZERO).openid("openid_123").build();
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.transfer(req3));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex3.getResultCode());
+
+        // 4. 金额小数位超过 2 位
+        WechatTransferRequest req4 = WechatTransferRequest.builder().outBatchNo("B001").amount(new BigDecimal("10.005")).openid("openid_123").build();
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.transfer(req4));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex4.getResultCode());
+
+        // 5. 缺失 openid
+        WechatTransferRequest req5 = WechatTransferRequest.builder().outBatchNo("B001").amount(new BigDecimal("10.00")).build();
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.transfer(req5));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex5.getResultCode());
     }
 
     // =========================================================================

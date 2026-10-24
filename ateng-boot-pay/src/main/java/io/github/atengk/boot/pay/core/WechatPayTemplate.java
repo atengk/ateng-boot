@@ -43,6 +43,9 @@ import com.wechat.pay.java.service.refund.model.QueryByOutRefundNoRequest;
 import com.wechat.pay.java.service.refund.model.Refund;
 import com.wechat.pay.java.service.refund.model.ReqFundsAccount;
 import com.wechat.pay.java.service.refund.model.Status;
+import com.wechat.pay.java.service.transferbatch.TransferBatchService;
+import com.wechat.pay.java.service.transferbatch.model.*;
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
@@ -53,6 +56,7 @@ import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
@@ -60,8 +64,10 @@ import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
 import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.request.WechatTransferRequest;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.model.response.WechatAppParams;
 import io.github.atengk.boot.pay.model.response.WechatJsapiParams;
 import io.github.atengk.boot.pay.util.CurrencyUtil;
@@ -157,6 +163,33 @@ public class WechatPayTemplate {
     private void assertProfitSharingEnabled() {
         if (!isProfitSharingEnabled()) {
             throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "微信资金分账高敏特性未启用，请配置 ateng.boot.pay.profit-sharing.enabled=true 显式开启");
+        }
+    }
+
+    /**
+     * 动态设置单笔资金转账开关（主要供单测使用）
+     */
+    public void setTransferEnabled(boolean enabled) {
+        if (this.payProperties != null && this.payProperties.getTransfer() != null) {
+            this.payProperties.getTransfer().setEnabled(enabled);
+        }
+    }
+
+    /**
+     * 判断单笔资金转账功能是否已开启
+     *
+     * @return true 开启，false 关闭
+     */
+    public boolean isTransferEnabled() {
+        return this.payProperties != null && this.payProperties.getTransfer() != null && this.payProperties.getTransfer().isEnabled();
+    }
+
+    /**
+     * 单笔资金转账物理总开关防卫前置断言
+     */
+    private void assertTransferEnabled() {
+        if (!isTransferEnabled()) {
+            throw new PayException(PayResultCode.PAY_FEATURE_DISABLED, "微信资金转账高敏特性未启用，请配置 ateng.boot.pay.transfer.enabled=true 显式开启");
         }
     }
 
@@ -1892,6 +1925,266 @@ public class WechatPayTemplate {
     }
 
     // =========================================================================
+    // 10. 商家转账到零钱 (transfer)
+    // =========================================================================
+
+    /**
+     * 发起微信商家转账到零钱
+     *
+     * @param merchantKey 商户别名或商户号（可选）
+     * @param request     微信转账专有请求参数
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse transfer(String merchantKey, WechatTransferRequest request) {
+        assertTransferEnabled();
+        validateTransferRequest(request);
+
+        String key = (merchantKey != null && !merchantKey.isBlank()) ? merchantKey : request.getMerchantKey();
+        WechatMerchantProperties merchantProps = resolveMerchant(key);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+
+        String outBatchNo = request.getOutBatchNo();
+        String outDetailNo = (request.getOutDetailNo() != null && !request.getOutDetailNo().isBlank())
+                ? request.getOutDetailNo()
+                : outBatchNo;
+        String batchName = (request.getBatchName() != null && !request.getBatchName().isBlank())
+                ? request.getBatchName()
+                : "单笔转账";
+        String batchRemark = (request.getBatchRemark() != null && !request.getBatchRemark().isBlank())
+                ? request.getBatchRemark()
+                : batchName;
+        String transferRemark = (request.getTransferRemark() != null && !request.getTransferRemark().isBlank())
+                ? request.getTransferRemark()
+                : batchName;
+
+        Long amountInFen = CurrencyUtil.yuanToFen(request.getAmount());
+
+        InitiateBatchTransferRequest sdkReq = new InitiateBatchTransferRequest();
+        sdkReq.setAppid(merchantProps.getAppId());
+        sdkReq.setOutBatchNo(outBatchNo);
+        sdkReq.setBatchName(batchName);
+        sdkReq.setBatchRemark(batchRemark);
+        sdkReq.setTotalAmount(amountInFen);
+        sdkReq.setTotalNum(1);
+        if (request.getTransferSceneId() != null && !request.getTransferSceneId().isBlank()) {
+            sdkReq.setTransferSceneId(request.getTransferSceneId());
+        }
+        String notifyUrl = request.getNotifyUrl() != null ? request.getNotifyUrl() : merchantProps.getNotifyUrl();
+        if (notifyUrl != null && !notifyUrl.isBlank()) {
+            sdkReq.setNotifyUrl(notifyUrl);
+        }
+
+        TransferDetailInput detail = new TransferDetailInput();
+        detail.setOutDetailNo(outDetailNo);
+        detail.setTransferAmount(amountInFen);
+        detail.setTransferRemark(transferRemark);
+        detail.setOpenid(request.getOpenid());
+        if (request.getUserName() != null && !request.getUserName().isBlank()) {
+            detail.setUserName(request.getUserName());
+        }
+        sdkReq.setTransferDetailList(java.util.List.of(detail));
+
+        log.debug("Initiating WeChat single transfer: outBatchNo={}, outDetailNo={}, amount={}, openid={}, userName={}",
+                outBatchNo, outDetailNo, request.getAmount(),
+                DesensitizeUtil.maskKeepHeadTail(request.getOpenid(), 3, 3),
+                DesensitizeUtil.chineseName(request.getUserName()));
+
+        InitiateBatchTransferResponse sdkResponse = executeWithExceptionTranslation("initiateBatchTransfer", () ->
+                holder.getTransferBatchService().initiateBatchTransfer(sdkReq)
+        );
+
+        PayTransferState state = mapWechatBatchStatus(sdkResponse.getBatchStatus());
+
+        return PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo(sdkResponse.getOutBatchNo())
+                .orderId(sdkResponse.getBatchId())
+                .status(state)
+                .amount(request.getAmount())
+                .payeeAccount(request.getOpenid())
+                .payeeRealName(request.getUserName())
+                .payTime(sdkResponse.getCreateTime())
+                .rawResponse(sdkResponse)
+                .build();
+    }
+
+    /**
+     * 发起微信商家转账到零钱（默认商户）
+     *
+     * @param request 微信转账专有请求参数
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse transfer(WechatTransferRequest request) {
+        return transfer(null, request);
+    }
+
+    /**
+     * 查询微信商家转账明细单状态
+     *
+     * @param merchantKey 商户别名或商户号（可选）
+     * @param outBatchNo  商家批次单号
+     * @param outDetailNo 商家明细单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransferDetail(String merchantKey, String outBatchNo, String outDetailNo) {
+        assertTransferEnabled();
+        if (outBatchNo == null || outBatchNo.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商家批次单号 [outBatchNo] 不能为空");
+        }
+        String realDetailNo = (outDetailNo != null && !outDetailNo.isBlank()) ? outDetailNo : outBatchNo;
+
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+
+        GetTransferDetailByOutNoRequest queryReq = new GetTransferDetailByOutNoRequest();
+        queryReq.setOutBatchNo(outBatchNo);
+        queryReq.setOutDetailNo(realDetailNo);
+
+        TransferDetailEntity detail = executeWithExceptionTranslation("getTransferDetailByOutNo", () ->
+                holder.getTransferBatchService().getTransferDetailByOutNo(queryReq)
+        );
+
+        PayTransferState state = mapWechatDetailStatus(detail.getDetailStatus());
+        String failReason = detail.getFailReason() != null ? detail.getFailReason().name() : null;
+
+        return PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo(detail.getOutDetailNo())
+                .orderId(detail.getBatchId())
+                .payFundOrderId(detail.getDetailId())
+                .status(state)
+                .amount(CurrencyUtil.fenToYuan(detail.getTransferAmount()))
+                .payeeAccount(detail.getOpenid())
+                .payeeRealName(detail.getUserName())
+                .payTime(detail.getUpdateTime() != null ? detail.getUpdateTime() : detail.getInitiateTime())
+                .failReason(failReason)
+                .rawResponse(detail)
+                .build();
+    }
+
+    /**
+     * 查询微信商家转账明细单状态（默认商户）
+     *
+     * @param outBatchNo  商家批次单号
+     * @param outDetailNo 商家明细单号
+     * @return 统一转账响应出参
+     */
+    public PayTransferResponse queryTransferDetail(String outBatchNo, String outDetailNo) {
+        return queryTransferDetail(null, outBatchNo, outDetailNo);
+    }
+
+    /**
+     * 查询微信商家转账批次单详情
+     *
+     * @param merchantKey 商户别名或商户号（可选）
+     * @param outBatchNo  商家批次单号
+     * @return 官方 TransferBatchEntity 原生实体
+     */
+    public TransferBatchEntity queryTransferBatch(String merchantKey, String outBatchNo) {
+        assertTransferEnabled();
+        if (outBatchNo == null || outBatchNo.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商家批次单号 [outBatchNo] 不能为空");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+
+        GetTransferBatchByOutNoRequest request = new GetTransferBatchByOutNoRequest();
+        request.setOutBatchNo(outBatchNo);
+        request.setNeedQueryDetail(true);
+
+        return executeWithExceptionTranslation("getTransferBatchByOutNo", () ->
+                holder.getTransferBatchService().getTransferBatchByOutNo(request)
+        );
+    }
+
+    /**
+     * 查询微信商家转账批次单详情（默认商户）
+     *
+     * @param outBatchNo 商家批次单号
+     * @return 官方 TransferBatchEntity 原生实体
+     */
+    public TransferBatchEntity queryTransferBatch(String outBatchNo) {
+        return queryTransferBatch(null, outBatchNo);
+    }
+
+    /**
+     * 获取指定商户的官方微信商家转账服务实例（逃生舱）
+     *
+     * @param merchantKey 商户别名或商户号
+     * @return 官方 TransferBatchService 原生实例
+     */
+    public TransferBatchService getTransferBatchService(String merchantKey) {
+        assertTransferEnabled();
+        WechatMerchantProperties merchantProps = resolveMerchant(merchantKey);
+        return getServiceHolder(merchantProps).getTransferBatchService();
+    }
+
+    /**
+     * 获取默认商户的官方微信商家转账服务实例（逃生舱）
+     *
+     * @return 官方 TransferBatchService 原生实例
+     */
+    public TransferBatchService getTransferBatchService() {
+        return getTransferBatchService(null);
+    }
+
+    /**
+     * 将微信批次单状态转换为标准化转账状态机
+     *
+     * @param batchStatus 微信 batch_status
+     * @return 标准化转账状态
+     */
+    public static PayTransferState mapWechatBatchStatus(String batchStatus) {
+        if (batchStatus == null || batchStatus.isBlank()) {
+            return PayTransferState.PROCESSING;
+        }
+        return switch (batchStatus.trim()) {
+            case "FINISHED", "SUCCESS" -> PayTransferState.SUCCESS;
+            case "CLOSED" -> PayTransferState.CLOSED;
+            case "WAIT_PAY", "ACCEPTED", "PROCESSING" -> PayTransferState.PROCESSING;
+            default -> PayTransferState.PROCESSING;
+        };
+    }
+
+    /**
+     * 将微信明细单状态转换为标准化转账状态机
+     *
+     * @param detailStatus 微信 detail_status
+     * @return 标准化转账状态
+     */
+    public static PayTransferState mapWechatDetailStatus(String detailStatus) {
+        if (detailStatus == null || detailStatus.isBlank()) {
+            return PayTransferState.PROCESSING;
+        }
+        return switch (detailStatus.trim()) {
+            case "SUCCESS" -> PayTransferState.SUCCESS;
+            case "FAIL" -> PayTransferState.FAIL;
+            case "INIT", "WAIT_PAY", "PROCESSING" -> PayTransferState.PROCESSING;
+            default -> PayTransferState.PROCESSING;
+        };
+    }
+
+    private void validateTransferRequest(WechatTransferRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信转账请求参数不能为空");
+        }
+        if (request.getOutBatchNo() == null || request.getOutBatchNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "商家批次单号 [outBatchNo] 不能为空");
+        }
+        if (request.getAmount() == null || request.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID, "转账金额 [amount] 必须大于 0 元");
+        }
+        BigDecimal stripped = request.getAmount().stripTrailingZeros();
+        if (stripped.scale() > 2) {
+            throw new PayException(PayResultCode.PAY_AMOUNT_INVALID,
+                    "转账金额小数位不能超过 2 位（分）：" + request.getAmount());
+        }
+        if (request.getOpenid() == null || request.getOpenid().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "收款人 openid 不能为空");
+        }
+    }
+
+    // =========================================================================
     // 10. 私有解析与因果异常转译机制
     // =========================================================================
 
@@ -2101,6 +2394,7 @@ public class WechatPayTemplate {
         private final AppServiceExtension appServiceExtension;
         private final RefundService refundService;
         private final ProfitsharingService profitsharingService;
+        private final TransferBatchService transferBatchService;
 
         // 服务商服务
         private final com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService partnerNativePayService;
@@ -2118,6 +2412,7 @@ public class WechatPayTemplate {
             this.appServiceExtension = new AppServiceExtension.Builder().config(config).httpClient(httpClient).build();
             this.refundService = new RefundService.Builder().config(config).httpClient(httpClient).build();
             this.profitsharingService = new ProfitsharingService.Builder().config(config).httpClient(httpClient).build();
+            this.transferBatchService = new TransferBatchService.Builder().config(config).httpClient(httpClient).build();
 
             this.partnerNativePayService = new com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService.Builder()
                     .config(config).httpClient(httpClient).build();
@@ -2159,6 +2454,10 @@ public class WechatPayTemplate {
 
         public ProfitsharingService getProfitsharingService() {
             return profitsharingService;
+        }
+
+        public TransferBatchService getTransferBatchService() {
+            return transferBatchService;
         }
 
         public com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService getPartnerNativePayService() {

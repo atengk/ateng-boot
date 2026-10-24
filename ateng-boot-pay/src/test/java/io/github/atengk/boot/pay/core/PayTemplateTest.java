@@ -6,10 +6,12 @@ import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.*;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import io.github.atengk.boot.pay.model.response.WechatAppParams;
 import io.github.atengk.boot.pay.model.response.WechatJsapiParams;
 import org.junit.jupiter.api.AfterEach;
@@ -802,5 +804,238 @@ class PayTemplateTest {
                         .outTradeNo("T001")
                         .build()));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
+    }
+
+    // =========================================================================
+    // 7. 统一资金转账 (transfer & queryTransfer) 与 PII 全链路脱敏
+    // =========================================================================
+
+    @Test
+    @DisplayName("transfer: 微信渠道智能路由与入参归一化转换")
+    void testTransfer_wechatRouting() {
+        PayTransferResponse mockResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("WX_TRANS_001")
+                .orderId("WX_BATCH_1001")
+                .status(PayTransferState.PROCESSING)
+                .amount(new BigDecimal("100.00"))
+                .build();
+        when(wechatPayTemplate.transfer(eq("store_wechat"), any(WechatTransferRequest.class))).thenReturn(mockResp);
+
+        UnifiedTransferRequest req = UnifiedTransferRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("store_wechat")
+                .outBizNo("WX_TRANS_001")
+                .amount(new BigDecimal("100.00"))
+                .title("年终分红")
+                .remark("技术团队分红")
+                .payeeAccount("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o")
+                .payeeRealName("张三")
+                .notifyUrl("https://example.com/callback")
+                .build();
+
+        PayTransferResponse response = payTemplate.transfer(req);
+
+        assertNotNull(response);
+        assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
+        assertEquals("WX_TRANS_001", response.getOutBizNo());
+        assertEquals("WX_BATCH_1001", response.getOrderId());
+        assertEquals(PayTransferState.PROCESSING, response.getStatus());
+
+        ArgumentCaptor<WechatTransferRequest> captor = ArgumentCaptor.forClass(WechatTransferRequest.class);
+        verify(wechatPayTemplate).transfer(eq("store_wechat"), captor.capture());
+        WechatTransferRequest captured = captor.getValue();
+        assertEquals("WX_TRANS_001", captured.getOutBatchNo());
+        assertEquals("WX_TRANS_001", captured.getOutDetailNo());
+        assertEquals(new BigDecimal("100.00"), captured.getAmount());
+        assertEquals("oUpF8uMuAJO_M2pxb1Q9zNjWeS6o", captured.getOpenid());
+        assertEquals("张三", captured.getUserName());
+        assertEquals("年终分红", captured.getBatchName());
+        assertEquals("https://example.com/callback", captured.getNotifyUrl());
+    }
+
+    @Test
+    @DisplayName("transfer: 支付宝渠道智能路由与入参归一化转换")
+    void testTransfer_alipayRouting() {
+        PayTransferResponse mockResp = PayTransferResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("ALI_TRANS_001")
+                .orderId("ALI_ORDER_2001")
+                .status(PayTransferState.SUCCESS)
+                .amount(new BigDecimal("50.50"))
+                .build();
+        when(alipayTemplate.transfer(eq("app_alipay"), any(AlipayTransferRequest.class))).thenReturn(mockResp);
+
+        UnifiedTransferRequest req = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .merchantKey("app_alipay")
+                .outBizNo("ALI_TRANS_001")
+                .amount(new BigDecimal("50.50"))
+                .title("日常报销")
+                .remark("办公用品采购")
+                .payeeAccount("alipay_user@example.com")
+                .payeeRealName("李四")
+                .payeeIdentityType("ALIPAY_LOGON_ID")
+                .build();
+
+        PayTransferResponse response = payTemplate.transfer(req);
+
+        assertNotNull(response);
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals("ALI_TRANS_001", response.getOutBizNo());
+        assertEquals("ALI_ORDER_2001", response.getOrderId());
+        assertEquals(PayTransferState.SUCCESS, response.getStatus());
+
+        ArgumentCaptor<AlipayTransferRequest> captor = ArgumentCaptor.forClass(AlipayTransferRequest.class);
+        verify(alipayTemplate).transfer(eq("app_alipay"), captor.capture());
+        AlipayTransferRequest captured = captor.getValue();
+        assertEquals("ALI_TRANS_001", captured.getOutBizNo());
+        assertEquals(new BigDecimal("50.50"), captured.getAmount());
+        assertEquals("alipay_user@example.com", captured.getPayeeAccount());
+        assertEquals("李四", captured.getPayeeRealName());
+        assertEquals("ALIPAY_LOGON_ID", captured.getPayeeType());
+    }
+
+    @Test
+    @DisplayName("transfer: PayContextHolder 上下文渠道隐式透传测试")
+    void testTransfer_contextChannelFallback() {
+        PayContextHolder.setChannel(PayChannel.WECHAT_PAY);
+
+        PayTransferResponse mockResp = PayTransferResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outBizNo("CTX_TRANS_001")
+                .status(PayTransferState.PROCESSING)
+                .build();
+        when(wechatPayTemplate.transfer(isNull(), any(WechatTransferRequest.class))).thenReturn(mockResp);
+
+        UnifiedTransferRequest req = UnifiedTransferRequest.builder()
+                .outBizNo("CTX_TRANS_001")
+                .amount(new BigDecimal("20.00"))
+                .payeeAccount("openid_123")
+                .build();
+
+        PayTransferResponse response = payTemplate.transfer(req);
+        assertNotNull(response);
+        verify(wechatPayTemplate).transfer(isNull(), any(WechatTransferRequest.class));
+    }
+
+    @Test
+    @DisplayName("transfer: 校验防御 - 统一转账入参合法性 Fail-Fast")
+    void testTransferValidationFailFast() {
+        // 1. 空请求
+        assertThrows(PayException.class, () -> payTemplate.transfer(null));
+
+        // 2. 缺失渠道且上下文无渠道
+        UnifiedTransferRequest noChanReq = UnifiedTransferRequest.builder()
+                .outBizNo("T001")
+                .amount(new BigDecimal("10.00"))
+                .payeeAccount("user@test.com")
+                .build();
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.transfer(noChanReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 3. 缺失 outBizNo
+        UnifiedTransferRequest noOutBizReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .amount(new BigDecimal("10.00"))
+                .payeeAccount("user@test.com")
+                .build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.transfer(noOutBizReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // 4. 金额小于等于 0
+        UnifiedTransferRequest zeroAmountReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("T001")
+                .amount(BigDecimal.ZERO)
+                .payeeAccount("user@test.com")
+                .build();
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.transfer(zeroAmountReq));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex3.getResultCode());
+
+        // 5. 金额小数位超限
+        UnifiedTransferRequest invalidScaleReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("T001")
+                .amount(new BigDecimal("10.005"))
+                .payeeAccount("user@test.com")
+                .build();
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.transfer(invalidScaleReq));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex4.getResultCode());
+
+        // 6. 缺失收款账号
+        UnifiedTransferRequest noAccountReq = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("T001")
+                .amount(new BigDecimal("10.00"))
+                .build();
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.transfer(noAccountReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex5.getResultCode());
+    }
+
+    @Test
+    @DisplayName("queryTransfer: 统一转账查询路由与单标识符重载")
+    void testQueryTransfer_routing() {
+        PayTransferResponse mockWechat = PayTransferResponse.builder().channel(PayChannel.WECHAT_PAY).status(PayTransferState.SUCCESS).build();
+        when(wechatPayTemplate.queryTransferDetail(eq("wechat_key"), eq("W_001"), eq("W_001"))).thenReturn(mockWechat);
+
+        PayTransferResponse resp1 = payTemplate.queryTransfer(UnifiedTransferQueryRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .merchantKey("wechat_key")
+                .outBizNo("W_001")
+                .build());
+        assertNotNull(resp1);
+        assertEquals(PayChannel.WECHAT_PAY, resp1.getChannel());
+
+        PayTransferResponse mockAlipay = PayTransferResponse.builder().channel(PayChannel.ALIPAY).status(PayTransferState.SUCCESS).build();
+        when(alipayTemplate.queryTransfer(eq("alipay_key"), eq("A_001"), eq("ORD_001"))).thenReturn(mockAlipay);
+
+        PayTransferResponse resp2 = payTemplate.queryTransfer(PayChannel.ALIPAY, "alipay_key", "A_001", "ORD_001");
+        assertNotNull(resp2);
+        assertEquals(PayChannel.ALIPAY, resp2.getChannel());
+    }
+
+    @Test
+    @DisplayName("PII 脱敏与内存真明文不变量: 严防日志泄露，内存保持 100% 原始真实明文")
+    void testTransfer_piiSanitizationAndInMemoryPlaintextInvariant() {
+        String originalRealName = "诸葛孔明";
+        String originalAccount = "6222021234567890123";
+
+        UnifiedTransferRequest request = UnifiedTransferRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("T_PII_001")
+                .amount(new BigDecimal("99.99"))
+                .title("高管奖金")
+                .payeeAccount(originalAccount)
+                .payeeRealName(originalRealName)
+                .build();
+
+        // 1. 验证“内存真明文”不变量：getter 必须 100% 返回原始明文
+        assertEquals(originalRealName, request.getPayeeRealName());
+        assertEquals(originalAccount, request.getPayeeAccount());
+
+        // 2. 验证日志与 toString() 必须使用 DesensitizeUtil 脱敏，绝不出现原始敏感字符串
+        String reqStr = request.toString();
+        assertFalse(reqStr.contains(originalRealName), "toString() 严禁包含真实明文姓名");
+        assertFalse(reqStr.contains(originalAccount), "toString() 严禁包含真实明文完整账号");
+        assertTrue(reqStr.contains("*"), "toString() 脱敏后必须包含掩码星号");
+
+        // 3. 验证 PayTransferResponse 出参的脱敏与真明文
+        PayTransferResponse response = PayTransferResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outBizNo("T_PII_001")
+                .payeeAccount(originalAccount)
+                .payeeRealName(originalRealName)
+                .amount(new BigDecimal("99.99"))
+                .status(PayTransferState.SUCCESS)
+                .build();
+
+        assertEquals(originalRealName, response.getPayeeRealName());
+        assertEquals(originalAccount, response.getPayeeAccount());
+
+        String respStr = response.toString();
+        assertFalse(respStr.contains(originalRealName), "PayTransferResponse toString() 严禁泄露真实明文姓名");
+        assertFalse(respStr.contains(originalAccount), "PayTransferResponse toString() 严禁泄露真实明文账号");
+        assertTrue(respStr.contains("*"), "PayTransferResponse toString() 必须包含脱敏掩码");
     }
 }

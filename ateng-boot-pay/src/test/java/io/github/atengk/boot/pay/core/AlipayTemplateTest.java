@@ -9,14 +9,17 @@ import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
+import io.github.atengk.boot.pay.enums.PayTransferState;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
 import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
+import io.github.atengk.boot.pay.model.request.AlipayTransferRequest;
 import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
+import io.github.atengk.boot.pay.model.response.PayTransferResponse;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -112,7 +115,7 @@ class AlipayTemplateTest {
 
         // 4. 初始化注册表与门面
         merchantRegistry = new NamedMerchantRegistry(payProperties);
-        payTemplate = new AlipayTemplate(merchantRegistry);
+        payTemplate = new AlipayTemplate(merchantRegistry, payProperties);
     }
 
     @AfterEach
@@ -646,6 +649,125 @@ class AlipayTemplateTest {
                 .build();
         PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+    }
+
+    // =========================================================================
+    // 10. 单笔资金转账 (transfer & queryTransfer)
+    // =========================================================================
+
+    @Test
+    @DisplayName("transfer: 物理总开关关闭时调用支付宝转账必须 Fail-Fast 抛出 PAY_FEATURE_DISABLED")
+    void testTransferDisabledFailsFast() {
+        payTemplate.setTransferEnabled(false);
+
+        AlipayTransferRequest request = AlipayTransferRequest.builder()
+                .outBizNo("ALI_TRANS_001")
+                .amount(new BigDecimal("10.00"))
+                .payeeAccount("alipay_user@example.com")
+                .build();
+
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.transfer(request));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex1.getResultCode());
+
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.queryTransfer("ALI_TRANS_001"));
+        assertEquals(PayResultCode.PAY_FEATURE_DISABLED, ex2.getResultCode());
+    }
+
+    @Test
+    @DisplayName("transfer: 100% 离线自洽模拟支付宝单笔转账发起与状态查询")
+    void testAlipaySingleTransferAndQueryHermetic() throws Exception {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 模拟发起单笔转账到支付宝账户
+        String transferNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"out_biz_no\":\"ALI_TRANS_001\",\"order_id\":\"202100000000001\",\"pay_fund_order_id\":\"PF_2021001\",\"status\":\"SUCCESS\",\"trans_date\":\"2026-10-24 10:00:00\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(buildSignedResponse("alipay_fund_trans_uni_transfer_response", transferNode, alipayPrivateKey)));
+
+        AlipayTransferRequest transferReq = AlipayTransferRequest.builder()
+                .outBizNo("ALI_TRANS_001")
+                .amount(new BigDecimal("50.00"))
+                .orderTitle("单笔报销转账")
+                .remark("差旅报销")
+                .payeeType("ALIPAY_LOGON_ID")
+                .payeeAccount("test_user@example.com")
+                .payeeRealName("李四")
+                .build();
+
+        PayTransferResponse transferResp = payTemplate.transfer(transferReq);
+
+        assertNotNull(transferResp);
+        assertEquals(PayChannel.ALIPAY, transferResp.getChannel());
+        assertEquals("ALI_TRANS_001", transferResp.getOutBizNo());
+        assertEquals("202100000000001", transferResp.getOrderId());
+        assertEquals("PF_2021001", transferResp.getPayFundOrderId());
+        assertEquals(PayTransferState.SUCCESS, transferResp.getStatus());
+        assertEquals(new BigDecimal("50.00"), transferResp.getAmount());
+        assertEquals("test_user@example.com", transferResp.getPayeeAccount());
+        assertEquals("李四", transferResp.getPayeeRealName());
+        assertEquals("2026-10-24 10:00:00", transferResp.getPayTime());
+
+        RecordedRequest recordedTransfer = server.takeRequest();
+        assertEquals("POST", recordedTransfer.getMethod());
+        String transferBody = java.net.URLDecoder.decode(recordedTransfer.getBody().readUtf8(), StandardCharsets.UTF_8);
+        String transferUrl = recordedTransfer.getRequestUrl() != null ? recordedTransfer.getRequestUrl().toString() : "";
+        assertTrue(transferUrl.contains("alipay.fund.trans.uni.transfer") || transferBody.contains("alipay.fund.trans.uni.transfer"));
+        assertTrue(transferBody.contains("ALI_TRANS_001"));
+        assertTrue(transferBody.contains("50.00"));
+
+        // 2. 模拟根据商户单号与渠道单号查询转账状态
+        String queryNode = "{\"code\":\"10000\",\"msg\":\"Success\",\"out_biz_no\":\"ALI_TRANS_001\",\"order_id\":\"202100000000001\",\"pay_fund_order_id\":\"PF_2021001\",\"status\":\"SUCCESS\",\"order_fee\":\"50.00\",\"pay_date\":\"2026-10-24 10:00:00\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(buildSignedResponse("alipay_fund_trans_common_query_response", queryNode, alipayPrivateKey)));
+
+        PayTransferResponse queryResp = payTemplate.queryTransfer("ALI_TRANS_001", "202100000000001");
+        assertNotNull(queryResp);
+        assertEquals(PayChannel.ALIPAY, queryResp.getChannel());
+        assertEquals("ALI_TRANS_001", queryResp.getOutBizNo());
+        assertEquals("202100000000001", queryResp.getOrderId());
+        assertEquals("PF_2021001", queryResp.getPayFundOrderId());
+        assertEquals(PayTransferState.SUCCESS, queryResp.getStatus());
+        assertEquals(new BigDecimal("50.00"), queryResp.getAmount());
+
+        RecordedRequest recordedQuery = server.takeRequest();
+        assertEquals("POST", recordedQuery.getMethod());
+        String queryBody = java.net.URLDecoder.decode(recordedQuery.getBody().readUtf8(), StandardCharsets.UTF_8);
+        String queryUrl = recordedQuery.getRequestUrl() != null ? recordedQuery.getRequestUrl().toString() : "";
+        assertTrue(queryUrl.contains("alipay.fund.trans.common.query") || queryBody.contains("alipay.fund.trans.common.query"));
+        assertTrue(queryBody.contains("ALI_TRANS_001"));
+    }
+
+    @Test
+    @DisplayName("transfer: 支付宝单笔转账参数前置防卫校验")
+    void testAlipayTransferValidationErrors() {
+        payTemplate.setTransferEnabled(true);
+
+        // 1. 空请求
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.transfer(null));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 2. 缺失 outBizNo
+        AlipayTransferRequest req2 = AlipayTransferRequest.builder().amount(new BigDecimal("10.00")).payeeAccount("account").build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.transfer(req2));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // 3. 金额为 0 或负数
+        AlipayTransferRequest req3 = AlipayTransferRequest.builder().outBizNo("T001").amount(BigDecimal.ZERO).payeeAccount("account").build();
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.transfer(req3));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex3.getResultCode());
+
+        // 4. 金额小数位超过 2 位
+        AlipayTransferRequest req4 = AlipayTransferRequest.builder().outBizNo("T001").amount(new BigDecimal("10.001")).payeeAccount("account").build();
+        PayException ex4 = assertThrows(PayException.class, () -> payTemplate.transfer(req4));
+        assertEquals(PayResultCode.PAY_AMOUNT_INVALID, ex4.getResultCode());
+
+        // 5. 缺失收款账号
+        AlipayTransferRequest req5 = AlipayTransferRequest.builder().outBizNo("T001").amount(new BigDecimal("10.00")).build();
+        PayException ex5 = assertThrows(PayException.class, () -> payTemplate.transfer(req5));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex5.getResultCode());
     }
 
     // =========================================================================
