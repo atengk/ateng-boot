@@ -1,13 +1,18 @@
 package io.github.atengk.boot.datasource.config;
 
+import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSourceProperties;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
+import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+import javax.sql.DataSource;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,6 +34,10 @@ class AtengDatasourceAutoConfigurationTest {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(AtengDatasourceAutoConfiguration.class);
             assertThat(context).hasSingleBean(DatasourceProperties.class);
+            assertThat(context).hasSingleBean(TenantDataSourceProvider.class);
+            assertThat(context.getBean(TenantDataSourceProvider.class)).isInstanceOf(DefaultTenantDataSourceProvider.class);
+            assertThat(context).hasSingleBean(DataSource.class);
+            assertThat(context.getBean(DataSource.class)).isInstanceOf(AtengDynamicRoutingDataSource.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -69,6 +78,8 @@ class AtengDatasourceAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(AtengDatasourceAutoConfiguration.class);
                     assertThat(context).doesNotHaveBean(DatasourceProperties.class);
+                    assertThat(context).doesNotHaveBean(TenantDataSourceProvider.class);
+                    assertThat(context).doesNotHaveBean(DataSource.class);
                 });
     }
 
