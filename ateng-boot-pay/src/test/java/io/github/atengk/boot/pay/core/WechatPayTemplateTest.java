@@ -8,13 +8,17 @@ import io.github.atengk.boot.pay.config.properties.WechatPayProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
+import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
+import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import okhttp3.HttpUrl;
@@ -500,6 +504,159 @@ class WechatPayTemplateTest {
         assertNotNull(payTemplate.getHttpClient());
         assertNotNull(payTemplate.getClient());
         assertEquals(payTemplate.getHttpClient(), payTemplate.getClient());
+        assertNotNull(payTemplate.getRefundService());
+    }
+
+    // =========================================================================
+    // 退款业务测试 (refund & queryRefund)
+    // =========================================================================
+
+    @Test
+    @DisplayName("refund: 直连商户部分退款与出站报文校验")
+    void testRefundDirectSuccess() throws Exception {
+        String mockRefundJson = """
+                {
+                  "refund_id": "50000000382019052709732678859",
+                  "out_refund_no": "R_20261024_001",
+                  "transaction_id": "1217752501201407033233368018",
+                  "out_trade_no": "T_20261024_001",
+                  "channel": "ORIGINAL",
+                  "user_received_account": "支付用户零钱",
+                  "success_time": "2026-10-24T12:00:00+08:00",
+                  "create_time": "2026-10-24T11:59:00+08:00",
+                  "status": "SUCCESS",
+                  "amount": {
+                    "total": 10000,
+                    "refund": 2550,
+                    "payer_total": 10000,
+                    "payer_refund": 2550,
+                    "currency": "CNY"
+                  }
+                }
+                """;
+        server.enqueue(mockResponse(200, mockRefundJson));
+
+        WechatRefundRequest request = WechatRefundRequest.builder()
+                .outTradeNo("T_20261024_001")
+                .outRefundNo("R_20261024_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("25.50"))
+                .reason("用户申请部分退款")
+                .build();
+
+        PayRefundResponse response = payTemplate.refund(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
+        assertEquals("T_20261024_001", response.getOutTradeNo());
+        assertEquals("R_20261024_001", response.getOutRefundNo());
+        assertEquals("50000000382019052709732678859", response.getRefundId());
+        assertEquals("1217752501201407033233368018", response.getTransactionId());
+        assertEquals(new BigDecimal("100.00"), response.getTotalAmount());
+        assertEquals(new BigDecimal("25.50"), response.getRefundAmount());
+        assertEquals(PayRefundState.SUCCESS, response.getRefundState());
+        assertEquals("支付用户零钱", response.getUserReceivedAccount());
+
+        RecordedRequest recordedReq = server.takeRequest();
+        assertEquals("POST", recordedReq.getMethod());
+        assertEquals("/v3/refund/domestic/refunds", recordedReq.getPath());
+        String body = recordedReq.getBody().readUtf8();
+        assertTrue(body.contains("\"out_refund_no\":\"R_20261024_001\""));
+        assertTrue(body.contains("\"out_trade_no\":\"T_20261024_001\""));
+        assertTrue(body.contains("\"refund\":2550"));
+        assertTrue(body.contains("\"total\":10000"));
+    }
+
+    @Test
+    @DisplayName("refund: 服务商模式特约子商户退款 (sub_mchid)")
+    void testRefundPartnerMode() throws Exception {
+        String mockRefundJson = """
+                {
+                  "refund_id": "50000000382019052709732678860",
+                  "out_refund_no": "R_SP_001",
+                  "out_trade_no": "T_SP_001",
+                  "channel": "ORIGINAL",
+                  "status": "PROCESSING",
+                  "amount": {
+                    "total": 5000,
+                    "refund": 5000,
+                    "currency": "CNY"
+                  }
+                }
+                """;
+        server.enqueue(mockResponse(200, mockRefundJson));
+
+        WechatRefundRequest request = WechatRefundRequest.builder()
+                .merchantKey("partner_tenant")
+                .subMchId("1900000002")
+                .outTradeNo("T_SP_001")
+                .outRefundNo("R_SP_001")
+                .totalAmount(new BigDecimal("50.00"))
+                .refundAmount(new BigDecimal("50.00"))
+                .build();
+
+        PayRefundResponse response = payTemplate.refund(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayRefundState.PROCESSING, response.getRefundState());
+
+        RecordedRequest recordedReq = server.takeRequest();
+        String body = recordedReq.getBody().readUtf8();
+        assertTrue(body.contains("\"sub_mchid\":\"1900000002\""));
+    }
+
+    @Test
+    @DisplayName("queryRefund: 根据商户退款单号查询退款状态")
+    void testQueryRefundSuccess() throws Exception {
+        String mockRefundJson = """
+                {
+                  "refund_id": "50000000382019052709732678861",
+                  "out_refund_no": "R_QUERY_001",
+                  "out_trade_no": "T_QUERY_001",
+                  "status": "SUCCESS",
+                  "amount": {
+                    "total": 8800,
+                    "refund": 8800,
+                    "currency": "CNY"
+                  }
+                }
+                """;
+        server.enqueue(mockResponse(200, mockRefundJson));
+
+        PayRefundResponse response = payTemplate.queryRefund("R_QUERY_001");
+
+        assertNotNull(response);
+        assertEquals(PayRefundState.SUCCESS, response.getRefundState());
+        assertEquals(new BigDecimal("88.00"), response.getRefundAmount());
+
+        RecordedRequest recordedReq = server.takeRequest();
+        assertEquals("GET", recordedReq.getMethod());
+        assertTrue(recordedReq.getPath().contains("/v3/refund/domestic/refunds/R_QUERY_001"));
+    }
+
+    @Test
+    @DisplayName("refund: 校验防御 - 退款金额大于原订单金额或金额非正")
+    void testRefundValidationErrors() {
+        // 退款金额大于原订单金额
+        WechatRefundRequest overAmountReq = WechatRefundRequest.builder()
+                .outTradeNo("T_ERR_001")
+                .outRefundNo("R_ERR_001")
+                .totalAmount(new BigDecimal("10.00"))
+                .refundAmount(new BigDecimal("10.01"))
+                .build();
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.refund(overAmountReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 缺少退款单号
+        WechatRefundRequest noRefundNoReq = WechatRefundRequest.builder()
+                .outTradeNo("T_ERR_002")
+                .totalAmount(new BigDecimal("10.00"))
+                .refundAmount(new BigDecimal("5.00"))
+                .build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
     }
 
     // =========================================================================

@@ -9,11 +9,16 @@ import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
+import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedCancelRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedCloseRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedPayRequest;
 import io.github.atengk.boot.pay.model.request.UnifiedQueryRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedRefundQueryRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
+import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -356,7 +361,123 @@ public class PayTemplate {
     }
 
     // =========================================================================
-    // 5. 专有门面与官方客户端逃生舱
+    // 5. 统一退款申请 (refund)
+    // =========================================================================
+
+    /**
+     * 发起统一退款申请（自动根据 channel 路由到对应渠道专有门面）
+     *
+     * @param request 顶层统一退款请求入参
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse refund(UnifiedRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一退款请求入参不能为空");
+        }
+        request.validate();
+        PayChannel channel = resolveChannel(request.getChannel());
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                yield wechatPayTemplate.refund(request);
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
+                }
+                yield alipayTemplate.refund(request);
+            }
+        };
+    }
+
+    // =========================================================================
+    // 6. 统一退款查询 (queryRefund)
+    // =========================================================================
+
+    /**
+     * 查询统一退款状态
+     *
+     * @param request 统一退款查询请求
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(UnifiedRefundQueryRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一退款查询请求入参不能为空");
+        }
+        if (request.getOutRefundNo() == null || request.getOutRefundNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询退款必须提供商户退款单号 [outRefundNo]");
+        }
+        PayChannel channel = resolveChannel(request.getChannel());
+
+        return switch (channel) {
+            case WECHAT_PAY -> {
+                if (wechatPayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
+                }
+                yield wechatPayTemplate.queryRefund(WechatRefundRequest.builder()
+                        .merchantKey(request.getMerchantKey())
+                        .outTradeNo(request.getOutTradeNo())
+                        .transactionId(request.getTransactionId())
+                        .outRefundNo(request.getOutRefundNo())
+                        .subMchId(request.getSubMchId())
+                        .build());
+            }
+            case ALIPAY -> {
+                if (alipayTemplate == null) {
+                    throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "支付宝模块未装配或未启用");
+                }
+                yield alipayTemplate.queryRefund(AlipayRefundRequest.builder()
+                        .appKey(request.getMerchantKey())
+                        .outTradeNo(request.getOutTradeNo())
+                        .tradeNo(request.getTransactionId())
+                        .outRefundNo(request.getOutRefundNo())
+                        .appAuthToken(request.getAppAuthToken())
+                        .build());
+            }
+        };
+    }
+
+    /**
+     * 单标识符重载：根据渠道与商户退款单号查询退款状态
+     *
+     * @param channel     支付渠道
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(PayChannel channel, String outRefundNo) {
+        return queryRefund(UnifiedRefundQueryRequest.builder().channel(channel).outRefundNo(outRefundNo).build());
+    }
+
+    /**
+     * 单标识符重载：根据渠道、原商户订单号与商户退款单号查询退款状态
+     *
+     * @param channel     支付渠道
+     * @param outTradeNo  原商户订单号
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(PayChannel channel, String outTradeNo, String outRefundNo) {
+        return queryRefund(UnifiedRefundQueryRequest.builder().channel(channel).outTradeNo(outTradeNo).outRefundNo(outRefundNo).build());
+    }
+
+    /**
+     * 单标识符重载：根据渠道、商户别名、原商户订单号与商户退款单号查询退款状态
+     *
+     * @param channel     支付渠道
+     * @param merchantKey 商户别名或应用别名
+     * @param outTradeNo  原商户订单号
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(PayChannel channel, String merchantKey, String outTradeNo, String outRefundNo) {
+        return queryRefund(UnifiedRefundQueryRequest.builder().channel(channel).merchantKey(merchantKey).outTradeNo(outTradeNo).outRefundNo(outRefundNo).build());
+    }
+
+    // =========================================================================
+    // 7. 专有门面与官方客户端逃生舱
     // =========================================================================
 
     /**

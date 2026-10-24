@@ -2,11 +2,13 @@ package io.github.atengk.boot.pay.core;
 
 import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
 import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.model.request.*;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.model.response.WechatAppParams;
 import io.github.atengk.boot.pay.model.response.WechatJsapiParams;
@@ -639,5 +641,166 @@ class PayTemplateTest {
         // 3. 撤销缺少单号拦截
         assertThrows(PayException.class, () -> payTemplate.cancelOrder(
                 UnifiedCancelRequest.builder().channel(PayChannel.ALIPAY).build()));
+    }
+
+    // =========================================================================
+    // 9. 退款业务测试 (refund & queryRefund)
+    // =========================================================================
+
+    @Test
+    @DisplayName("refund: 微信退款路由与四要素透传")
+    void testRefund_wechat() {
+        PayRefundResponse mockResp = PayRefundResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("WX_T_001")
+                .outRefundNo("WX_R_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("20.00"))
+                .refundState(PayRefundState.PROCESSING)
+                .success(true)
+                .build();
+        when(wechatPayTemplate.refund(any(UnifiedRefundRequest.class))).thenReturn(mockResp);
+
+        UnifiedRefundRequest request = UnifiedRefundRequest.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo("WX_T_001")
+                .outRefundNo("WX_R_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("20.00"))
+                .reason("部分退款")
+                .notifyUrl("https://api.test.com/refund/notify")
+                .build();
+
+        PayRefundResponse response = payTemplate.refund(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayChannel.WECHAT_PAY, response.getChannel());
+        assertEquals("WX_T_001", response.getOutTradeNo());
+        assertEquals("WX_R_001", response.getOutRefundNo());
+
+        ArgumentCaptor<UnifiedRefundRequest> captor = ArgumentCaptor.forClass(UnifiedRefundRequest.class);
+        verify(wechatPayTemplate).refund(captor.capture());
+        UnifiedRefundRequest captured = captor.getValue();
+        assertEquals("WX_T_001", captured.getOutTradeNo());
+        assertEquals("WX_R_001", captured.getOutRefundNo());
+        assertEquals(new BigDecimal("100.00"), captured.getTotalAmount());
+        assertEquals(new BigDecimal("20.00"), captured.getRefundAmount());
+        assertEquals("部分退款", captured.getReason());
+        assertEquals("https://api.test.com/refund/notify", captured.getNotifyUrl());
+    }
+
+    @Test
+    @DisplayName("refund: 支付宝退款路由与四要素透传")
+    void testRefund_alipay() {
+        PayRefundResponse mockResp = PayRefundResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("30.00"))
+                .refundState(PayRefundState.SUCCESS)
+                .success(true)
+                .build();
+        when(alipayTemplate.refund(any(UnifiedRefundRequest.class))).thenReturn(mockResp);
+
+        UnifiedRefundRequest request = UnifiedRefundRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("30.00"))
+                .reason("正常退款")
+                .build();
+
+        PayRefundResponse response = payTemplate.refund(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals("ALI_T_001", response.getOutTradeNo());
+        assertEquals("ALI_R_001", response.getOutRefundNo());
+
+        ArgumentCaptor<UnifiedRefundRequest> captor = ArgumentCaptor.forClass(UnifiedRefundRequest.class);
+        verify(alipayTemplate).refund(captor.capture());
+        UnifiedRefundRequest captured = captor.getValue();
+        assertEquals("ALI_T_001", captured.getOutTradeNo());
+        assertEquals("ALI_R_001", captured.getOutRefundNo());
+        assertEquals(new BigDecimal("100.00"), captured.getTotalAmount());
+        assertEquals(new BigDecimal("30.00"), captured.getRefundAmount());
+    }
+
+    @Test
+    @DisplayName("queryRefund: 统一退款查询路由与重载")
+    void testQueryRefund() {
+        PayRefundResponse mockResp = PayRefundResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .refundState(PayRefundState.SUCCESS)
+                .success(true)
+                .build();
+        when(alipayTemplate.queryRefund(any(AlipayRefundRequest.class))).thenReturn(mockResp);
+
+        // 1. UnifiedRefundQueryRequest
+        UnifiedRefundQueryRequest req = UnifiedRefundQueryRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .build();
+        PayRefundResponse resp1 = payTemplate.queryRefund(req);
+        assertNotNull(resp1);
+        assertEquals(PayRefundState.SUCCESS, resp1.getRefundState());
+
+        // 2. 重载 queryRefund(channel, outTradeNo, outRefundNo)
+        PayRefundResponse resp2 = payTemplate.queryRefund(PayChannel.ALIPAY, "ALI_T_001", "ALI_R_001");
+        assertNotNull(resp2);
+        assertEquals(PayRefundState.SUCCESS, resp2.getRefundState());
+
+        // 3. 上下文透传渠道：通过 UnifiedRefundQueryRequest 省略 channel
+        PayContextHolder.setChannel(PayChannel.ALIPAY);
+        PayRefundResponse resp3 = payTemplate.queryRefund(UnifiedRefundQueryRequest.builder()
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .build());
+        assertNotNull(resp3);
+        assertEquals(PayRefundState.SUCCESS, resp3.getRefundState());
+    }
+
+    @Test
+    @DisplayName("refund & queryRefund: 参数防卫 Fail-Fast")
+    void testRefundValidationFailFast() {
+        // 空请求
+        assertThrows(PayException.class, () -> payTemplate.refund(null));
+        assertThrows(PayException.class, () -> payTemplate.queryRefund(null));
+
+        // 缺失渠道且上下文无渠道
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.refund(
+                UnifiedRefundRequest.builder()
+                        .outTradeNo("T001")
+                        .outRefundNo("R001")
+                        .totalAmount(new BigDecimal("10.00"))
+                        .refundAmount(new BigDecimal("5.00"))
+                        .build()));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 退款金额超限
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(
+                UnifiedRefundRequest.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .outTradeNo("T001")
+                        .outRefundNo("R001")
+                        .totalAmount(new BigDecimal("10.00"))
+                        .refundAmount(new BigDecimal("10.01"))
+                        .build()));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
+
+        // 退款查询缺失退款单号
+        PayException ex3 = assertThrows(PayException.class, () -> payTemplate.queryRefund(
+                UnifiedRefundQueryRequest.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .outTradeNo("T001")
+                        .build()));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 }

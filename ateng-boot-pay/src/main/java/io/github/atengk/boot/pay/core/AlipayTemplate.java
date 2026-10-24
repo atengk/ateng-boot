@@ -5,8 +5,10 @@ import com.alipay.api.domain.*;
 import com.alipay.api.request.*;
 import com.alipay.api.response.*;
 import io.github.atengk.boot.pay.config.properties.AlipayAppProperties;
+import io.github.atengk.boot.pay.core.context.PayContextHolder;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
@@ -15,6 +17,9 @@ import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
+import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
+import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.util.PayKeyLoader;
 import org.slf4j.Logger;
@@ -576,7 +581,221 @@ public class AlipayTemplate {
     }
 
     // =========================================================================
-    // 9. 状态机与模型映射辅助工具 (Normalization)
+    // 9. 统一退款申请 (refund)
+    // =========================================================================
+
+    /**
+     * 发起支付宝交易退款（支持多次部分退款与全额退款）
+     * <p>
+     * 自动将商户退款单号 {@code outRefundNo} 映射为支付宝专有的 {@code out_request_no}，
+     * 杜绝同一订单多次部分退款被误判为重复提交而被拦截。
+     * </p>
+     *
+     * @param request 支付宝退款请求参数
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse refund(AlipayRefundRequest request) {
+        validateRefundRequest(request);
+        AlipayAppProperties appProps = resolveApp(request.getAppKey());
+        AlipayClientHolder holder = getClientHolder(appProps);
+        String appAuthToken = resolveAppAuthToken(appProps, request.getAppAuthToken());
+
+        return executeWithExceptionTranslation("refund", () -> {
+            AlipayTradeRefundRequest alipayRequest = new AlipayTradeRefundRequest();
+            if (request.getNotifyUrl() != null && !request.getNotifyUrl().isBlank()) {
+                alipayRequest.setNotifyUrl(request.getNotifyUrl());
+            }
+
+            AlipayTradeRefundModel model = new AlipayTradeRefundModel();
+            if (request.getOutTradeNo() != null && !request.getOutTradeNo().isBlank()) {
+                model.setOutTradeNo(request.getOutTradeNo());
+            }
+            if (request.getTradeNo() != null && !request.getTradeNo().isBlank()) {
+                model.setTradeNo(request.getTradeNo());
+            }
+            model.setRefundAmount(formatAmount(request.getRefundAmount()));
+            model.setRefundReason(request.getReason());
+            model.setOutRequestNo(request.getOutRefundNo()); // 关键四要素映射
+            alipayRequest.setBizModel(model);
+
+            AlipayTradeRefundResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
+
+            if (rawResp.isSuccess()) {
+                BigDecimal refundFee = null;
+                if (rawResp.getRefundFee() != null && !rawResp.getRefundFee().isBlank()) {
+                    refundFee = new BigDecimal(rawResp.getRefundFee());
+                }
+                if (refundFee == null) {
+                    refundFee = request.getRefundAmount();
+                }
+
+                return PayRefundResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .outTradeNo(rawResp.getOutTradeNo() != null ? rawResp.getOutTradeNo() : request.getOutTradeNo())
+                        .transactionId(rawResp.getTradeNo())
+                        .outRefundNo(request.getOutRefundNo())
+                        .totalAmount(request.getTotalAmount())
+                        .refundAmount(refundFee)
+                        .refundState(PayRefundState.SUCCESS)
+                        .rawRefundState(rawResp.getCode())
+                        .refundStateDesc(rawResp.getMsg() != null ? rawResp.getMsg() : "退款成功")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                        rawResp.getSubCode() != null ? rawResp.getSubCode() : rawResp.getCode(),
+                        rawResp.getSubMsg() != null ? rawResp.getSubMsg() : rawResp.getMsg());
+            }
+        });
+    }
+
+    /**
+     * 基于顶层统一退款请求模型发起支付宝退款
+     *
+     * @param request 顶层统一退款请求入参
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse refund(UnifiedRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一退款请求入参不能为空");
+        }
+        request.validate();
+        return refund(AlipayRefundRequest.builder()
+                .appKey(request.getMerchantKey())
+                .outTradeNo(request.getOutTradeNo())
+                .tradeNo(request.getTransactionId())
+                .outRefundNo(request.getOutRefundNo())
+                .totalAmount(request.getTotalAmount())
+                .refundAmount(request.getRefundAmount())
+                .reason(request.getReason())
+                .notifyUrl(request.getNotifyUrl())
+                .appAuthToken(request.getAppAuthToken())
+                .build());
+    }
+
+    // =========================================================================
+    // 10. 统一退款查询 (queryRefund)
+    // =========================================================================
+
+    /**
+     * 查询支付宝单笔退款状态
+     *
+     * @param request 支付宝退款查询参数
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(AlipayRefundRequest request) {
+        if (request.getOutRefundNo() == null || request.getOutRefundNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询支付宝退款必须提供商户退款单号 [outRefundNo]");
+        }
+        if ((request.getOutTradeNo() == null || request.getOutTradeNo().isBlank())
+                && (request.getTradeNo() == null || request.getTradeNo().isBlank())) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询支付宝退款必须提供商户原订单号 [outTradeNo] 或支付宝交易号 [tradeNo]");
+        }
+        AlipayAppProperties appProps = resolveApp(request.getAppKey());
+        AlipayClientHolder holder = getClientHolder(appProps);
+        String appAuthToken = resolveAppAuthToken(appProps, request.getAppAuthToken());
+
+        return executeWithExceptionTranslation("queryRefund", () -> {
+            AlipayTradeFastpayRefundQueryRequest alipayRequest = new AlipayTradeFastpayRefundQueryRequest();
+            AlipayTradeFastpayRefundQueryModel model = new AlipayTradeFastpayRefundQueryModel();
+            if (request.getOutTradeNo() != null && !request.getOutTradeNo().isBlank()) {
+                model.setOutTradeNo(request.getOutTradeNo());
+            }
+            if (request.getTradeNo() != null && !request.getTradeNo().isBlank()) {
+                model.setTradeNo(request.getTradeNo());
+            }
+            model.setOutRequestNo(request.getOutRefundNo());
+            alipayRequest.setBizModel(model);
+
+            AlipayTradeFastpayRefundQueryResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
+
+            if (rawResp.isSuccess()) {
+                BigDecimal totalAmount = null;
+                BigDecimal refundAmount = null;
+                if (rawResp.getTotalAmount() != null && !rawResp.getTotalAmount().isBlank()) {
+                    totalAmount = new BigDecimal(rawResp.getTotalAmount());
+                }
+                if (rawResp.getRefundAmount() != null && !rawResp.getRefundAmount().isBlank()) {
+                    refundAmount = new BigDecimal(rawResp.getRefundAmount());
+                }
+                if (totalAmount == null) {
+                    totalAmount = request.getTotalAmount();
+                }
+                if (refundAmount == null) {
+                    refundAmount = request.getRefundAmount();
+                }
+
+                PayRefundState state = mapRefundState(rawResp.getRefundStatus());
+                return PayRefundResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .outTradeNo(rawResp.getOutTradeNo() != null ? rawResp.getOutTradeNo() : request.getOutTradeNo())
+                        .transactionId(rawResp.getTradeNo() != null ? rawResp.getTradeNo() : request.getTradeNo())
+                        .outRefundNo(rawResp.getOutRequestNo() != null ? rawResp.getOutRequestNo() : request.getOutRefundNo())
+                        .totalAmount(totalAmount)
+                        .refundAmount(refundAmount)
+                        .refundState(state)
+                        .rawRefundState(rawResp.getRefundStatus() != null ? rawResp.getRefundStatus() : rawResp.getCode())
+                        .refundStateDesc(rawResp.getRefundReason() != null ? rawResp.getRefundReason() : "退款成功")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                        rawResp.getSubCode() != null ? rawResp.getSubCode() : rawResp.getCode(),
+                        rawResp.getSubMsg() != null ? rawResp.getSubMsg() : rawResp.getMsg());
+            }
+        });
+    }
+
+    /**
+     * 单标识符重载：查询当前默认应用的退款状态
+     *
+     * @param outTradeNo  商户原订单号
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(String outTradeNo, String outRefundNo) {
+        return queryRefund(AlipayRefundRequest.builder().outTradeNo(outTradeNo).outRefundNo(outRefundNo).build());
+    }
+
+    /**
+     * 单标识符重载：指定应用别名查询退款状态
+     *
+     * @param appKey      应用别名或 AppId
+     * @param outTradeNo  商户原订单号
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(String appKey, String outTradeNo, String outRefundNo) {
+        return queryRefund(AlipayRefundRequest.builder().appKey(appKey).outTradeNo(outTradeNo).outRefundNo(outRefundNo).build());
+    }
+
+    /**
+     * 将支付宝原生退款状态映射为统一退款状态枚举
+     *
+     * @param alipayRefundStatus 支付宝 refund_status 字符串
+     * @return 标准化统一退款状态
+     */
+    public static PayRefundState mapRefundState(String alipayRefundStatus) {
+        if (alipayRefundStatus == null || alipayRefundStatus.isBlank()) {
+            return PayRefundState.SUCCESS;
+        }
+        if ("REFUND_SUCCESS".equalsIgnoreCase(alipayRefundStatus.trim())) {
+            return PayRefundState.SUCCESS;
+        }
+        return PayRefundState.PROCESSING;
+    }
+
+    private void validateRefundRequest(AlipayRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝退款请求入参不能为空");
+        }
+        request.validate();
+    }
+
+    // =========================================================================
+    // 11. 状态机与模型映射辅助工具 (Normalization)
     // =========================================================================
 
     /**
@@ -664,6 +883,11 @@ public class AlipayTemplate {
         String key = (request != null && request.getAppKey() != null && !request.getAppKey().isBlank())
                 ? request.getAppKey()
                 : (request != null ? request.getAppId() : null);
+        return resolveApp(key);
+    }
+
+    private AlipayAppProperties resolveApp(String appKey) {
+        String key = (appKey != null && !appKey.isBlank()) ? appKey : PayContextHolder.getMerchantId();
         return namedMerchantRegistry.resolveAlipayApp(key);
     }
 
@@ -744,6 +968,13 @@ public class AlipayTemplate {
     private String resolveAppAuthToken(AlipayAppProperties props, AlipayPayRequest request) {
         if (request != null && request.getAppAuthToken() != null && !request.getAppAuthToken().isBlank()) {
             return request.getAppAuthToken();
+        }
+        return props.getAppAuthToken();
+    }
+
+    private String resolveAppAuthToken(AlipayAppProperties props, String appAuthToken) {
+        if (appAuthToken != null && !appAuthToken.isBlank()) {
+            return appAuthToken;
         }
         return props.getAppAuthToken();
     }

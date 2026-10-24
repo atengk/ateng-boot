@@ -20,11 +20,19 @@ import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByIdRequest;
 import com.wechat.pay.java.service.payments.jsapi.model.QueryOrderByOutTradeNoRequest;
 import com.wechat.pay.java.service.payments.model.Transaction;
 import com.wechat.pay.java.service.payments.nativepay.NativePayService;
+import com.wechat.pay.java.service.refund.RefundService;
+import com.wechat.pay.java.service.refund.model.AmountReq;
+import com.wechat.pay.java.service.refund.model.CreateRequest;
+import com.wechat.pay.java.service.refund.model.QueryByOutRefundNoRequest;
+import com.wechat.pay.java.service.refund.model.Refund;
+import com.wechat.pay.java.service.refund.model.ReqFundsAccount;
+import com.wechat.pay.java.service.refund.model.Status;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
@@ -32,7 +40,10 @@ import io.github.atengk.boot.pay.exception.PayException;
 import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
+import io.github.atengk.boot.pay.model.request.UnifiedRefundRequest;
 import io.github.atengk.boot.pay.model.request.WechatPayRequest;
+import io.github.atengk.boot.pay.model.request.WechatRefundRequest;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import io.github.atengk.boot.pay.model.response.WechatAppParams;
 import io.github.atengk.boot.pay.model.response.WechatJsapiParams;
@@ -781,8 +792,227 @@ public class WechatPayTemplate {
     }
 
     // =========================================================================
-    // 8. 状态机与模型映射辅助工具 (Normalization)
+    // 8. 申请退款 (refund)
     // =========================================================================
+
+    /**
+     * 发起微信退款申请（支持直连商户与服务商模式特约子商户，支持多次部分退款与全额退款）
+     *
+     * @param request 微信退款请求参数
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse refund(WechatRefundRequest request) {
+        validateRefundRequest(request);
+        WechatMerchantProperties merchantProps = resolveMerchant(request.getMerchantKey());
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchId());
+        long refundFen = CurrencyUtil.yuanToFen(request.getRefundAmount());
+        long totalFen = CurrencyUtil.yuanToFen(request.getTotalAmount());
+        String notifyUrl = request.getNotifyUrl() != null && !request.getNotifyUrl().isBlank()
+                ? request.getNotifyUrl()
+                : merchantProps.getNotifyUrl();
+
+        return executeWithExceptionTranslation("refund", () -> {
+            CreateRequest createReq = new CreateRequest();
+            if (isPartner) {
+                createReq.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchId()));
+            }
+            if (request.getOutTradeNo() != null && !request.getOutTradeNo().isBlank()) {
+                createReq.setOutTradeNo(request.getOutTradeNo());
+            }
+            if (request.getTransactionId() != null && !request.getTransactionId().isBlank()) {
+                createReq.setTransactionId(request.getTransactionId());
+            }
+            createReq.setOutRefundNo(request.getOutRefundNo());
+            if (request.getReason() != null && !request.getReason().isBlank()) {
+                createReq.setReason(request.getReason());
+            }
+            if (notifyUrl != null && !notifyUrl.isBlank()) {
+                createReq.setNotifyUrl(notifyUrl);
+            }
+            if (request.getFundsAccount() != null && !request.getFundsAccount().isBlank()) {
+                try {
+                    createReq.setFundsAccount(ReqFundsAccount.valueOf(request.getFundsAccount().toUpperCase()));
+                } catch (Exception ignored) {
+                }
+            }
+
+            AmountReq amountReq = new AmountReq();
+            amountReq.setRefund(refundFen);
+            amountReq.setTotal(totalFen);
+            amountReq.setCurrency(request.getCurrency() != null ? request.getCurrency() : "CNY");
+            createReq.setAmount(amountReq);
+
+            Refund rawResp = holder.getRefundService().create(createReq);
+            return toPayRefundResponse(rawResp, request.getTotalAmount(), request.getRefundAmount());
+        });
+    }
+
+    /**
+     * 基于顶层统一退款请求模型发起微信退款
+     *
+     * @param request 顶层统一退款请求入参
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse refund(UnifiedRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "统一退款请求入参不能为空");
+        }
+        request.validate();
+        return refund(WechatRefundRequest.builder()
+                .merchantKey(request.getMerchantKey())
+                .outTradeNo(request.getOutTradeNo())
+                .transactionId(request.getTransactionId())
+                .outRefundNo(request.getOutRefundNo())
+                .totalAmount(request.getTotalAmount())
+                .refundAmount(request.getRefundAmount())
+                .reason(request.getReason())
+                .notifyUrl(request.getNotifyUrl())
+                .currency(request.getCurrency())
+                .subMchId(request.getSubMchId())
+                .build());
+    }
+
+    // =========================================================================
+    // 9. 查询单笔退款 (queryRefund)
+    // =========================================================================
+
+    /**
+     * 查询微信单笔退款状态（通过商户退款单号）
+     *
+     * @param request 微信退款查询请求
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(WechatRefundRequest request) {
+        if (request.getOutRefundNo() == null || request.getOutRefundNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "查询微信退款必须提供商户退款单号 [outRefundNo]");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(request.getMerchantKey());
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request.getSubMchId());
+
+        return executeWithExceptionTranslation("queryRefund", () -> {
+            QueryByOutRefundNoRequest queryReq = new QueryByOutRefundNoRequest();
+            queryReq.setOutRefundNo(request.getOutRefundNo());
+            if (isPartner) {
+                queryReq.setSubMchid(resolveSubMchId(merchantProps, request.getSubMchId()));
+            }
+
+            Refund rawResp = holder.getRefundService().queryByOutRefundNo(queryReq);
+            return toPayRefundResponse(rawResp, request.getTotalAmount(), request.getRefundAmount());
+        });
+    }
+
+    /**
+     * 单标识符重载：查询当前默认商户的退款状态
+     *
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(String outRefundNo) {
+        return queryRefund(WechatRefundRequest.builder().outRefundNo(outRefundNo).build());
+    }
+
+    /**
+     * 单标识符重载：指定商户号/商户别名查询退款状态
+     *
+     * @param merchantKey 商户别名或商户号
+     * @param outRefundNo 商户退款单号
+     * @return 统一退款响应出参
+     */
+    public PayRefundResponse queryRefund(String merchantKey, String outRefundNo) {
+        return queryRefund(WechatRefundRequest.builder().merchantKey(merchantKey).outRefundNo(outRefundNo).build());
+    }
+
+    // =========================================================================
+    // 10. 状态机与模型映射辅助工具 (Normalization)
+    // =========================================================================
+
+    /**
+     * 将微信原生退款状态映射为统一退款状态枚举
+     *
+     * @param wechatStatus 微信 SDK 原生枚举
+     * @return 标准化统一退款状态
+     */
+    public static PayRefundState mapRefundState(Status wechatStatus) {
+        if (wechatStatus == null) {
+            return PayRefundState.PROCESSING;
+        }
+        return switch (wechatStatus) {
+            case SUCCESS -> PayRefundState.SUCCESS;
+            case PROCESSING -> PayRefundState.PROCESSING;
+            case CLOSED -> PayRefundState.CLOSED;
+            case ABNORMAL -> PayRefundState.ABNORMAL;
+        };
+    }
+
+    /**
+     * 将字符串退款状态码转换为统一退款状态枚举
+     *
+     * @param rawState 原始状态字符串
+     * @return 标准化统一退款状态
+     */
+    public static PayRefundState mapRefundState(String rawState) {
+        if (rawState == null || rawState.isBlank()) {
+            return PayRefundState.PROCESSING;
+        }
+        try {
+            return mapRefundState(Status.valueOf(rawState.toUpperCase()));
+        } catch (IllegalArgumentException e) {
+            return PayRefundState.ABNORMAL;
+        }
+    }
+
+    /**
+     * 将微信底层退款实体映射为统一 PayRefundResponse
+     */
+    private PayRefundResponse toPayRefundResponse(Refund rawResp, BigDecimal fallbackTotal, BigDecimal fallbackRefund) {
+        if (rawResp == null) {
+            return PayRefundResponse.builder()
+                    .channel(PayChannel.WECHAT_PAY)
+                    .refundState(PayRefundState.ABNORMAL)
+                    .rawRefundState("EMPTY_RESPONSE")
+                    .refundStateDesc("微信退款响应为空")
+                    .success(false)
+                    .build();
+        }
+
+        PayRefundState refundState = mapRefundState(rawResp.getStatus());
+        BigDecimal total = fallbackTotal;
+        BigDecimal refund = fallbackRefund;
+        if (rawResp.getAmount() != null) {
+            if (rawResp.getAmount().getTotal() != null) {
+                total = CurrencyUtil.fenToYuan(rawResp.getAmount().getTotal());
+            }
+            if (rawResp.getAmount().getRefund() != null) {
+                refund = CurrencyUtil.fenToYuan(rawResp.getAmount().getRefund());
+            }
+        }
+
+        return PayRefundResponse.builder()
+                .channel(PayChannel.WECHAT_PAY)
+                .outTradeNo(rawResp.getOutTradeNo())
+                .transactionId(rawResp.getTransactionId())
+                .outRefundNo(rawResp.getOutRefundNo())
+                .refundId(rawResp.getRefundId())
+                .totalAmount(total)
+                .refundAmount(refund)
+                .userReceivedAccount(rawResp.getUserReceivedAccount())
+                .successTime(rawResp.getSuccessTime())
+                .refundState(refundState)
+                .rawRefundState(rawResp.getStatus() != null ? rawResp.getStatus().name() : null)
+                .refundStateDesc(rawResp.getStatus() != null ? rawResp.getStatus().name() : "退款处理中")
+                .success(refundState == PayRefundState.SUCCESS || refundState == PayRefundState.PROCESSING)
+                .rawResponse(rawResp)
+                .build();
+    }
+
+    private void validateRefundRequest(WechatRefundRequest request) {
+        if (request == null) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信退款请求入参不能为空");
+        }
+        request.validate();
+    }
 
     /**
      * 将微信原生交易状态转换为统一交易状态枚举
@@ -961,7 +1191,7 @@ public class WechatPayTemplate {
      * 获取默认商户的微信配置对象（逃生舱）
      */
     public Config getWechatConfig() {
-        return getServiceHolder(resolveMerchant(null)).getConfig();
+        return getServiceHolder(resolveMerchant((String) null)).getConfig();
     }
 
     /**
@@ -977,7 +1207,7 @@ public class WechatPayTemplate {
      * 获取默认商户的官方 HTTP 客户端（逃生舱）
      */
     public HttpClient getHttpClient() {
-        return getServiceHolder(resolveMerchant(null)).getHttpClient();
+        return getServiceHolder(resolveMerchant((String) null)).getHttpClient();
     }
 
     /**
@@ -1009,28 +1239,35 @@ public class WechatPayTemplate {
      * 获取直连商户 JSAPI 支付服务扩展实例（逃生舱）
      */
     public JsapiServiceExtension getJsapiService() {
-        return getServiceHolder(resolveMerchant(null)).getJsapiServiceExtension();
+        return getServiceHolder(resolveMerchant((String) null)).getJsapiServiceExtension();
     }
 
     /**
      * 获取直连商户 Native 扫码支付服务实例（逃生舱）
      */
     public NativePayService getNativePayService() {
-        return getServiceHolder(resolveMerchant(null)).getNativePayService();
+        return getServiceHolder(resolveMerchant((String) null)).getNativePayService();
     }
 
     /**
      * 获取直连商户 H5 手机网页支付服务实例（逃生舱）
      */
     public H5Service getH5Service() {
-        return getServiceHolder(resolveMerchant(null)).getH5Service();
+        return getServiceHolder(resolveMerchant((String) null)).getH5Service();
     }
 
     /**
      * 获取直连商户 App 支付服务扩展实例（逃生舱）
      */
     public AppServiceExtension getAppService() {
-        return getServiceHolder(resolveMerchant(null)).getAppServiceExtension();
+        return getServiceHolder(resolveMerchant((String) null)).getAppServiceExtension();
+    }
+
+    /**
+     * 获取微信退款服务实例（逃生舱）
+     */
+    public RefundService getRefundService() {
+        return getServiceHolder(resolveMerchant((String) null)).getRefundService();
     }
 
     // =========================================================================
@@ -1039,6 +1276,14 @@ public class WechatPayTemplate {
 
     private WechatMerchantProperties resolveMerchant(WechatPayRequest request) {
         String key = request != null ? (request.getMerchantKey() != null ? request.getMerchantKey() : request.getMchId()) : null;
+        return resolveMerchant(key);
+    }
+
+    private WechatMerchantProperties resolveMerchant(String merchantKey) {
+        String key = merchantKey;
+        if (key == null || key.isBlank()) {
+            key = io.github.atengk.boot.pay.core.context.PayContextHolder.getMerchantId();
+        }
         return namedMerchantRegistry.resolveWechatMerchant(key);
     }
 
@@ -1050,6 +1295,13 @@ public class WechatPayTemplate {
             if (request.getSubMchId() != null && !request.getSubMchId().isBlank()) {
                 return true;
             }
+        }
+        return merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank();
+    }
+
+    private boolean isPartnerMode(WechatMerchantProperties merchantProps, String subMchId) {
+        if (subMchId != null && !subMchId.isBlank()) {
+            return true;
         }
         return merchantProps.getSpMchId() != null && !merchantProps.getSpMchId().isBlank();
     }
@@ -1084,6 +1336,13 @@ public class WechatPayTemplate {
     private String resolveSubMchId(WechatMerchantProperties merchantProps, WechatPayRequest request) {
         if (request != null && request.getSubMchId() != null && !request.getSubMchId().isBlank()) {
             return request.getSubMchId();
+        }
+        return merchantProps.getSubMchId();
+    }
+
+    private String resolveSubMchId(WechatMerchantProperties merchantProps, String subMchId) {
+        if (subMchId != null && !subMchId.isBlank()) {
+            return subMchId;
         }
         return merchantProps.getSubMchId();
     }
@@ -1219,6 +1478,7 @@ public class WechatPayTemplate {
         private final JsapiServiceExtension jsapiServiceExtension;
         private final H5Service h5Service;
         private final AppServiceExtension appServiceExtension;
+        private final RefundService refundService;
 
         // 服务商服务
         private final com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService partnerNativePayService;
@@ -1234,6 +1494,7 @@ public class WechatPayTemplate {
             this.jsapiServiceExtension = new JsapiServiceExtension.Builder().config(config).httpClient(httpClient).build();
             this.h5Service = new H5Service.Builder().config(config).httpClient(httpClient).build();
             this.appServiceExtension = new AppServiceExtension.Builder().config(config).httpClient(httpClient).build();
+            this.refundService = new RefundService.Builder().config(config).httpClient(httpClient).build();
 
             this.partnerNativePayService = new com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService.Builder()
                     .config(config).httpClient(httpClient).build();
@@ -1267,6 +1528,10 @@ public class WechatPayTemplate {
 
         public AppServiceExtension getAppServiceExtension() {
             return appServiceExtension;
+        }
+
+        public RefundService getRefundService() {
+            return refundService;
         }
 
         public com.wechat.pay.java.service.partnerpayments.nativepay.NativePayService getPartnerNativePayService() {

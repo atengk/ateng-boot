@@ -5,6 +5,7 @@ import io.github.atengk.boot.pay.config.properties.AlipayPayProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
+import io.github.atengk.boot.pay.enums.PayRefundState;
 import io.github.atengk.boot.pay.enums.PayResultCode;
 import io.github.atengk.boot.pay.enums.PayTradeState;
 import io.github.atengk.boot.pay.enums.PayTradeType;
@@ -13,6 +14,8 @@ import io.github.atengk.boot.pay.exception.PayNetworkException;
 import io.github.atengk.boot.pay.exception.PaySignException;
 import io.github.atengk.boot.pay.exception.PayTradeException;
 import io.github.atengk.boot.pay.model.request.AlipayPayRequest;
+import io.github.atengk.boot.pay.model.request.AlipayRefundRequest;
+import io.github.atengk.boot.pay.model.response.PayRefundResponse;
 import io.github.atengk.boot.pay.model.response.PayResponse;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -566,6 +569,83 @@ class AlipayTemplateTest {
 
         assertNotNull(headerTemplate.getClient());
         assertNotNull(headerTemplate.getAlipayClient("headerApp"));
+    }
+
+    // =========================================================================
+    // 退款业务测试 (refund & queryRefund)
+    // =========================================================================
+
+    @Test
+    @DisplayName("refund: 支付宝部分退款与 out_request_no 自动映射校验")
+    void testRefundSuccess() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"2021081722001435460500000001\",\"out_trade_no\":\"ALI_T_001\",\"buyer_logon_id\":\"159****5620\",\"fund_change\":\"Y\",\"refund_fee\":\"30.00\",\"send_back_fee\":\"30.00\"}";
+        String signed = buildSignedResponse("alipay_trade_refund_response", nodeJson, alipayPrivateKey);
+        server.enqueue(new MockResponse().setBody(signed).setHeader("Content-Type", "application/json;charset=utf-8"));
+
+        AlipayRefundRequest request = AlipayRefundRequest.builder()
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .totalAmount(new BigDecimal("100.00"))
+                .refundAmount(new BigDecimal("30.00"))
+                .reason("正常退款")
+                .build();
+
+        PayRefundResponse response = payTemplate.refund(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals("ALI_T_001", response.getOutTradeNo());
+        assertEquals("ALI_R_001", response.getOutRefundNo());
+        assertEquals("2021081722001435460500000001", response.getTransactionId());
+        assertEquals(new BigDecimal("100.00"), response.getTotalAmount());
+        assertEquals(new BigDecimal("30.00"), response.getRefundAmount());
+        assertEquals(PayRefundState.SUCCESS, response.getRefundState());
+
+        RecordedRequest recordedReq = server.takeRequest();
+        String formBody = java.net.URLDecoder.decode(recordedReq.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertTrue(formBody.contains("\"out_request_no\":\"ALI_R_001\""), "必须映射 outRefundNo 至 out_request_no");
+        assertTrue(formBody.contains("\"refund_amount\":\"30.00\""));
+        assertTrue(formBody.contains("\"out_trade_no\":\"ALI_T_001\""));
+    }
+
+    @Test
+    @DisplayName("queryRefund: 支付宝单笔退款查询 (fastpay)")
+    void testQueryRefundSuccess() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"2021081722001435460500000001\",\"out_trade_no\":\"ALI_T_001\",\"out_request_no\":\"ALI_R_001\",\"refund_reason\":\"部分退款\",\"total_amount\":\"100.00\",\"refund_amount\":\"30.00\",\"refund_status\":\"REFUND_SUCCESS\"}";
+        String signed = buildSignedResponse("alipay_trade_fastpay_refund_query_response", nodeJson, alipayPrivateKey);
+        server.enqueue(new MockResponse().setBody(signed).setHeader("Content-Type", "application/json;charset=utf-8"));
+
+        PayRefundResponse response = payTemplate.queryRefund("ALI_T_001", "ALI_R_001");
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayRefundState.SUCCESS, response.getRefundState());
+        assertEquals(new BigDecimal("30.00"), response.getRefundAmount());
+        assertEquals(new BigDecimal("100.00"), response.getTotalAmount());
+    }
+
+    @Test
+    @DisplayName("refund: 校验防御 - 支付宝退款参数合法性")
+    void testRefundValidationErrors() {
+        // 退款金额超限
+        AlipayRefundRequest overReq = AlipayRefundRequest.builder()
+                .outTradeNo("ALI_T_001")
+                .outRefundNo("ALI_R_001")
+                .totalAmount(new BigDecimal("50.00"))
+                .refundAmount(new BigDecimal("50.01"))
+                .build();
+        PayException ex1 = assertThrows(PayException.class, () -> payTemplate.refund(overReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex1.getResultCode());
+
+        // 缺少退款单号
+        AlipayRefundRequest noRefundNoReq = AlipayRefundRequest.builder()
+                .outTradeNo("ALI_T_001")
+                .totalAmount(new BigDecimal("50.00"))
+                .refundAmount(new BigDecimal("10.00"))
+                .build();
+        PayException ex2 = assertThrows(PayException.class, () -> payTemplate.refund(noRefundNoReq));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex2.getResultCode());
     }
 
     // =========================================================================
