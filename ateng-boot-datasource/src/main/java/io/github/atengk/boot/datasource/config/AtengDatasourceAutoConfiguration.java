@@ -13,7 +13,11 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
+import io.github.atengk.boot.datasource.readwrite.WriteOccurredResolver;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStrategy;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
@@ -83,6 +87,8 @@ public class AtengDatasourceAutoConfiguration {
      * @param providers                数据源提供者集合
      * @param datasourceProperties     ateng 多数据源增强配置属性
      * @param tenantDataSourceProvider 租户数据源解析器
+     * @param healthAwareStrategy      高可用故障自愈策略
+     * @param readAfterWriteManager    写后读主协调管理器
      * @return 受管动态路由数据源实例
      */
     @Bean
@@ -90,20 +96,61 @@ public class AtengDatasourceAutoConfiguration {
     public DynamicRoutingDataSource dataSource(DynamicDataSourceProperties properties,
                                                List<DynamicDataSourceProvider> providers,
                                                DatasourceProperties datasourceProperties,
-                                               TenantDataSourceProvider tenantDataSourceProvider) {
+                                               TenantDataSourceProvider tenantDataSourceProvider,
+                                               HealthAwareDynamicDataSourceStrategy healthAwareStrategy,
+                                               ReadAfterWriteManager readAfterWriteManager) {
         log.info("装配 AtengDynamicRoutingDataSource 物理多租户受管动态路由数据源");
         AtengDynamicRoutingDataSource dataSource = new AtengDynamicRoutingDataSource(
                 providers != null ? providers : Collections.emptyList(),
                 datasourceProperties,
-                tenantDataSourceProvider
+                tenantDataSourceProvider,
+                healthAwareStrategy,
+                readAfterWriteManager
         );
         dataSource.setPrimary(properties.getPrimary());
         dataSource.setStrict(properties.getStrict());
-        dataSource.setStrategy(properties.getStrategy());
+        dataSource.setStrategy(properties.getStrategy() != null ? properties.getStrategy() : HealthAwareDynamicDataSourceStrategy.class);
         dataSource.setP6spy(properties.getP6spy());
         dataSource.setSeata(properties.getSeata());
         dataSource.setGraceDestroy(properties.getGraceDestroy());
         return dataSource;
+    }
+
+    /**
+     * 注册写后读主防延迟写操作感知解析器
+     *
+     * @return 写操作感知解析器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(WriteOccurredResolver.class)
+    public WriteOccurredResolver defaultWriteOccurredResolver() {
+        return new DefaultWriteOccurredResolver();
+    }
+
+    /**
+     * 注册写后读主防延迟全局协调管理器
+     *
+     * @param datasourceProperties 数据源配置属性
+     * @param writeOccurredResolver 写操作感知解析器
+     * @return 防延迟协调管理器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ReadAfterWriteManager.class)
+    public ReadAfterWriteManager readAfterWriteManager(DatasourceProperties datasourceProperties,
+                                                       WriteOccurredResolver writeOccurredResolver) {
+        return new ReadAfterWriteManager(datasourceProperties.getReadWriteSplit().getReadAfterWrite(), writeOccurredResolver);
+    }
+
+    /**
+     * 注册具备从库故障感知与自动黑名单熔断自愈能力的高可用数据源策略
+     *
+     * @param datasourceProperties 数据源配置属性
+     * @return 高可用数据源策略实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(HealthAwareDynamicDataSourceStrategy.class)
+    public HealthAwareDynamicDataSourceStrategy healthAwareDynamicDataSourceStrategy(DatasourceProperties datasourceProperties) {
+        return new HealthAwareDynamicDataSourceStrategy(datasourceProperties);
     }
 
     /**

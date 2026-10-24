@@ -5,7 +5,11 @@ import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
+import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
+import io.github.atengk.boot.datasource.readwrite.WriteOccurredResolver;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
+import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStrategy;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
@@ -42,6 +46,10 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context.getBean(DataSource.class)).isInstanceOf(AtengDynamicRoutingDataSource.class);
             assertThat(context).hasSingleBean(DynamicDatasourceGuard.class);
             assertThat(context).hasSingleBean(DynamicDatasourceTemplate.class);
+            assertThat(context).hasSingleBean(WriteOccurredResolver.class);
+            assertThat(context.getBean(WriteOccurredResolver.class)).isInstanceOf(DefaultWriteOccurredResolver.class);
+            assertThat(context).hasSingleBean(ReadAfterWriteManager.class);
+            assertThat(context).hasSingleBean(HealthAwareDynamicDataSourceStrategy.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -86,6 +94,9 @@ class AtengDatasourceAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(DataSource.class);
                     assertThat(context).doesNotHaveBean(DynamicDatasourceGuard.class);
                     assertThat(context).doesNotHaveBean(DynamicDatasourceTemplate.class);
+                    assertThat(context).doesNotHaveBean(WriteOccurredResolver.class);
+                    assertThat(context).doesNotHaveBean(ReadAfterWriteManager.class);
+                    assertThat(context).doesNotHaveBean(HealthAwareDynamicDataSourceStrategy.class);
                 });
     }
 
