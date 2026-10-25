@@ -19,8 +19,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 加密属性源动态装饰器
@@ -34,12 +36,13 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
 
     private final PropertySource<?> delegate;
     private final CiphertextParser parser;
-    private final KeyDetector keyDetector;
+    private volatile KeyDetector keyDetector;
     private final List<ConfigDecryptor> decryptors;
     private final EncryptAlgorithm defaultAlgorithm;
     private final boolean failOnError;
 
-    private final Map<String, Object> decryptedCache = new ConcurrentHashMap<>();
+    private final AtomicReference<ConcurrentHashMap<String, Object>> decryptedCacheRef =
+            new AtomicReference<>(new ConcurrentHashMap<>());
     private final Set<String> encryptedPropertyNames = ConcurrentHashMap.newKeySet();
 
     @SuppressWarnings("unchecked")
@@ -91,6 +94,13 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         if (customDecryptors != null) {
             list.addAll(customDecryptors);
         }
+        // 通过 Java ServiceLoader 发现外部 SPI 扩展解密器（如外部云 KMS、硬件加密机扩展）
+        ServiceLoader<ConfigDecryptor> serviceLoader = ServiceLoader.load(ConfigDecryptor.class);
+        for (ConfigDecryptor spiDecryptor : serviceLoader) {
+            if (list.stream().noneMatch(d -> d.getClass().equals(spiDecryptor.getClass()))) {
+                list.add(spiDecryptor);
+            }
+        }
         // 注册默认纯 JDK 原生解密器
         if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_GCM))) {
             list.add(new AesGcmConfigDecryptor());
@@ -125,7 +135,8 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         encryptedPropertyNames.add(name);
 
         // 优先从内存缓存中获取已解密值
-        Object cached = decryptedCache.get(name);
+        ConcurrentHashMap<String, Object> cache = decryptedCacheRef.get();
+        Object cached = cache.get(name);
         if (cached != null) {
             return cached;
         }
@@ -151,7 +162,7 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
                     throw new ConfigDecryptionException(name, keyId, algorithm.getCode(), e);
                 }
             });
-            decryptedCache.put(name, decrypted);
+            cache.put(name, decrypted);
             return decrypted;
         } catch (ConfigDecryptionException e) {
             if (failOnError) {
@@ -194,11 +205,26 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
      * 清空解密缓存（用于配置热刷新时原子置换）
      */
     public void clearCache() {
-        decryptedCache.clear();
+        decryptedCacheRef.set(new ConcurrentHashMap<>());
+        encryptedPropertyNames.clear();
     }
 
     public PropertySource<?> getDelegate() {
         return delegate;
+    }
+
+    public KeyDetector getKeyDetector() {
+        return keyDetector;
+    }
+
+    /**
+     * 更新密钥探测器并清空解密缓存（用于后置阶段或动态刷新时同步最新密钥）
+     */
+    public void updateKeyDetector(KeyDetector newKeyDetector) {
+        if (newKeyDetector != null) {
+            this.keyDetector = newKeyDetector;
+            clearCache();
+        }
     }
 
     /**

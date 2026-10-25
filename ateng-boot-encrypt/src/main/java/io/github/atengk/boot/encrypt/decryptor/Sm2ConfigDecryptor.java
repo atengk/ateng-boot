@@ -113,7 +113,7 @@ public class Sm2ConfigDecryptor implements ConfigDecryptor {
             return null;
         }
         String base64 = Base64.getEncoder().encodeToString(pubPoint.toUncompressedBytes());
-        return formatAsPem("PUBLIC KEY", base64);
+        return MultilineSecretFormatter.formatAsPem("PUBLIC KEY", base64);
     }
 
     /**
@@ -129,19 +129,9 @@ public class Sm2ConfigDecryptor implements ConfigDecryptor {
         byte[] dBytes = Sm2Engine.toFixedBytes(privateKey, 32);
         try {
             String base64 = Base64.getEncoder().encodeToString(dBytes);
-            return formatAsPem("PRIVATE KEY", base64);
+            return MultilineSecretFormatter.formatAsPem("PRIVATE KEY", base64);
         } finally {
             Arrays.fill(dBytes, (byte) 0);
         }
-    }
-
-    private static String formatAsPem(String type, String base64) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("-----BEGIN ").append(type).append("-----\n");
-        for (int i = 0; i < base64.length(); i += 64) {
-            sb.append(base64, i, Math.min(i + 64, base64.length())).append("\n");
-        }
-        sb.append("-----END ").append(type).append("-----\n");
-        return sb.toString();
     }
 }

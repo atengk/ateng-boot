@@ -119,4 +119,24 @@ public final class MultilineSecretFormatter {
     public static String formatPem(String text) {
         return formatPem(text, DEFAULT_LINE_SEPARATOR);
     }
+
+    /**
+     * 将 Base64 字符串格式化为指定类型的标准 PEM 文本
+     *
+     * @param type   PEM 类型（例如 "PUBLIC KEY"、"PRIVATE KEY"）
+     * @param base64 Base64 编码的密钥字节
+     * @return 规整的 PEM 格式字符串
+     */
+    public static String formatAsPem(String type, String base64) {
+        if (type == null || base64 == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("-----BEGIN ").append(type).append("-----\n");
+        for (int i = 0; i < base64.length(); i += PEM_LINE_LENGTH) {
+            sb.append(base64, i, Math.min(i + PEM_LINE_LENGTH, base64.length())).append("\n");
+        }
+        sb.append("-----END ").append(type).append("-----\n");
+        return sb.toString();
+    }
 }

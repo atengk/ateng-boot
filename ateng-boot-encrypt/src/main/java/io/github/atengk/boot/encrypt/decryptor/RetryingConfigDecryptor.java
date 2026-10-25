@@ -50,11 +50,11 @@ public class RetryingConfigDecryptor implements ConfigDecryptor {
     };
 
     /**
-     * 默认重试配置：最多尝试 3 次，初始等待 100ms，2.0 指数退避，上限 5000ms，启用 Equal Jitter 打散洪峰
+     * 默认重试配置：最多尝试 3 次，初始等待 300ms，2.0 指数退避，上限 5000ms，启用 Equal Jitter 打散洪峰
      */
     public static final RetryUtil.RetryConfig DEFAULT_RETRY_CONFIG = RetryUtil.RetryConfig.builder()
             .maxAttempts(3)
-            .delay(Duration.ofMillis(100))
+            .delay(Duration.ofMillis(300))
             .multiplier(2.0)
             .maxDelay(Duration.ofMillis(5000))
             .jitter(true)

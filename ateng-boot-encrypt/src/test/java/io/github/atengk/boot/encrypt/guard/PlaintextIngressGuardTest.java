@@ -115,4 +115,32 @@ class PlaintextIngressGuardTest {
         assertThatCode(() -> guard.onEnvironmentChange(Set.of("spring.datasource.password"), env))
                 .doesNotThrowAnyException();
     }
+
+    @Test
+    @DisplayName("onEnvironmentChange: 动态刷新推送全新属性源时，自动装配解密代理并成功解密")
+    void testNewPropertySourceWrappedOnRefresh() {
+        EncryptProperties properties = new EncryptProperties();
+        properties.setPassword(masterPassword);
+        PlaintextIngressGuard guard = new PlaintextIngressGuard(properties, parser);
+
+        StandardEnvironment env = new StandardEnvironment();
+        System.setProperty(KeyDetector.PROPERTY_PASSWORD, masterPassword);
+        try {
+            // 动态推送一个全新的原始 MapPropertySource（未经过包装）
+            String cipher = ConfigEncryptor.encrypt("new_redis_password_999", masterPassword, EncryptAlgorithm.AES_GCM);
+            Map<String, Object> map = new HashMap<>();
+            map.put("spring.data.redis.password", "ENC(" + cipher + ")");
+            MapPropertySource remoteSource = new MapPropertySource("nacosRemoteSource", map);
+            env.getPropertySources().addFirst(remoteSource);
+
+            // 触发动态刷新响应
+            guard.onEnvironmentChange(Set.of("spring.data.redis.password"), env);
+
+            // 断言属性源已被装饰为 EncryptPropertySourceWrapper 且成功解密
+            assertThat(env.getPropertySources().get("nacosRemoteSource")).isInstanceOf(EncryptPropertySourceWrapper.class);
+            assertThat(env.getProperty("spring.data.redis.password")).isEqualTo("new_redis_password_999");
+        } finally {
+            System.clearProperty(KeyDetector.PROPERTY_PASSWORD);
+        }
+    }
 }

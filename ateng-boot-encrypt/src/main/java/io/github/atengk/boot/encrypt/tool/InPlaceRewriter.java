@@ -280,16 +280,7 @@ public class InPlaceRewriter {
     }
 
     private String buildEncToken(String keyId, EncryptAlgorithm algorithm, String ciphertext) {
-        StringBuilder sb = new StringBuilder("ENC");
-        if (keyId != null && !keyId.trim().isEmpty() && !MultiKeyRegistry.DEFAULT_KEY_ALIAS.equalsIgnoreCase(keyId.trim())) {
-            sb.append("[").append(keyId.trim()).append("]");
-        }
-        sb.append("(");
-        if (algorithm != defaultAlgorithm) {
-            sb.append(algorithm.getCode()).append("@");
-        }
-        sb.append(ciphertext).append(")");
-        return sb.toString();
+        return CiphertextParser.formatToken(keyId, algorithm, defaultAlgorithm, ciphertext);
     }
 
     private static String unquote(String str) {

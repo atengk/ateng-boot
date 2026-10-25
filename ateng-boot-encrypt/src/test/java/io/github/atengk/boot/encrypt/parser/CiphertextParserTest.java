@@ -145,4 +145,38 @@ class CiphertextParserTest {
         });
         assertEquals("cleaned_rsa_plain", replaced);
     }
+
+    @Test
+    @DisplayName("测试 formatToken 静态门面格式化生成 ENC 标记")
+    void testFormatToken() {
+        // 默认 AES-GCM 算法且无 keyId，省略算法与 keyId
+        assertEquals("ENC(my_cipher_123)",
+                CiphertextParser.formatToken(null, EncryptAlgorithm.AES_GCM, "my_cipher_123"));
+        assertEquals("ENC(my_cipher_123)",
+                CiphertextParser.formatToken("default", EncryptAlgorithm.AES_GCM, "my_cipher_123"));
+        assertEquals("ENC(my_cipher_123)",
+                CiphertextParser.formatToken("", null, "my_cipher_123"));
+
+        // 显式非默认算法（如 SM4-CBC）
+        assertEquals("ENC(SM4-CBC@my_sm4_cipher)",
+                CiphertextParser.formatToken(null, EncryptAlgorithm.SM4_CBC, "my_sm4_cipher"));
+
+        // 指定 KeyId
+        assertEquals("ENC[db-key](my_cipher)",
+                CiphertextParser.formatToken("db-key", EncryptAlgorithm.AES_GCM, "my_cipher"));
+
+        // 指定 KeyId 与 非默认算法
+        assertEquals("ENC[finance-key](RSA@rsa_cipher)",
+                CiphertextParser.formatToken("finance-key", EncryptAlgorithm.RSA, "rsa_cipher"));
+
+        // 自定义默认算法基准
+        assertEquals("ENC(sm4_cipher)",
+                CiphertextParser.formatToken(null, EncryptAlgorithm.SM4_CBC, EncryptAlgorithm.SM4_CBC, "sm4_cipher"));
+        assertEquals("ENC[redis](AES-GCM@gcm_cipher)",
+                CiphertextParser.formatToken("redis", EncryptAlgorithm.AES_GCM, EncryptAlgorithm.SM4_CBC, "gcm_cipher"));
+
+        // 空密文断言防御
+        assertThrows(IllegalArgumentException.class, () ->
+                CiphertextParser.formatToken("db", EncryptAlgorithm.AES_GCM, null));
+    }
 }

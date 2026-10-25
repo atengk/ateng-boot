@@ -31,6 +31,7 @@ public class Sm4ConfigDecryptor implements ConfigDecryptor {
         }
         byte[] combined = Base64.getDecoder().decode(ciphertext.trim());
         byte[] keyBytes = KeyDerivationHelper.deriveKey(password, KEY_SIZE);
+        byte[] decrypted = null;
         try {
             // CBC 模式需提取 16 字节前置 IV
             if (combined.length > IV_SIZE) {
@@ -40,28 +41,48 @@ public class Sm4ConfigDecryptor implements ConfigDecryptor {
                 byte[] encryptedBytes = new byte[cipherLen];
                 System.arraycopy(combined, IV_SIZE, encryptedBytes, 0, cipherLen);
                 try {
-                    byte[] decrypted = CryptoUtil.decryptSm4Cbc(encryptedBytes, keyBytes, iv);
-                    return new String(decrypted, StandardCharsets.UTF_8);
+                    decrypted = CryptoUtil.decryptSm4Cbc(encryptedBytes, keyBytes, iv);
+                    String text = new String(decrypted, StandardCharsets.UTF_8);
+                    if (!isPrintableText(text)) {
+                        throw new IllegalArgumentException("SM4-CBC 解密结果包含非法控制字符，可能是解密口令错误");
+                    }
+                    return text;
                 } catch (Exception cbcEx) {
                     // 若 CBC 解密失败，仅当密文长度能被 16 整除时尝试纯 ECB 兜底
                     if (combined.length % KEY_SIZE == 0) {
                         try {
-                            byte[] decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
+                            if (decrypted != null) {
+                                Arrays.fill(decrypted, (byte) 0);
+                                decrypted = null;
+                            }
+                            decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
                             String text = new String(decrypted, StandardCharsets.UTF_8);
                             if (isPrintableText(text)) {
                                 return text;
                             }
-                        } catch (Exception ignored) {
+                        } catch (Exception ecbEx) {
+                            cbcEx.addSuppressed(ecbEx);
                         }
                     }
                     throw cbcEx;
+                } finally {
+                    Arrays.fill(iv, (byte) 0);
+                    Arrays.fill(encryptedBytes, (byte) 0);
                 }
             } else {
-                byte[] decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
-                return new String(decrypted, StandardCharsets.UTF_8);
+                decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
+                String text = new String(decrypted, StandardCharsets.UTF_8);
+                if (!isPrintableText(text)) {
+                    throw new IllegalArgumentException("SM4-ECB 解密结果包含非法控制字符，可能是解密口令错误");
+                }
+                return text;
             }
         } finally {
+            if (decrypted != null) {
+                Arrays.fill(decrypted, (byte) 0);
+            }
             Arrays.fill(keyBytes, (byte) 0);
+            Arrays.fill(combined, (byte) 0);
         }
     }
 

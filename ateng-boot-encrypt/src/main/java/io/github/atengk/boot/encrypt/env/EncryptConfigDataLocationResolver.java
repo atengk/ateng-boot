@@ -81,9 +81,21 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
         }
 
         try {
-            // 1. 尝试从 context 反射获取 contributors
+            // 1. 尝试从 context 反射获取 contributors (Spring Boot 3.3+ 真实字段为 "contributors"，Mock 为 "this$0")
             Class<?> ctxClass = context.getClass();
-            Field outerField = findField(ctxClass, "this$0");
+            Field outerField = findField(ctxClass, "contributors");
+            if (outerField == null) {
+                outerField = findField(ctxClass, "this$0");
+            }
+            if (outerField == null) {
+                for (Field field : ctxClass.getDeclaredFields()) {
+                    if (Iterable.class.isAssignableFrom(field.getType())) {
+                        field.setAccessible(true);
+                        outerField = field;
+                        break;
+                    }
+                }
+            }
             if (outerField == null) {
                 return;
             }
@@ -95,12 +107,29 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
 
             KeyDetector keyDetector = KeyDetector.detect(null);
 
+            // 动态读取可能由早阶已加载配置声明的密码以及自定义 prefix / suffix
+            CiphertextParser parser = PARSER;
+            if (context.getBinder() != null) {
+                try {
+                    String binderPass = context.getBinder().bind(KeyDetector.PROPERTY_PASSWORD, String.class).orElse(null);
+                    if (binderPass != null && !binderPass.trim().isEmpty()) {
+                        keyDetector.setDefaultPassword(binderPass.trim());
+                    }
+                    String prefix = context.getBinder().bind("ateng.boot.encrypt.prefix", String.class).orElse(null);
+                    String suffix = context.getBinder().bind("ateng.boot.encrypt.suffix", String.class).orElse(null);
+                    if (prefix != null || suffix != null) {
+                        parser = new CiphertextParser(prefix, suffix);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
             // 2. 遍历所有 contributor，寻找包含密文的未装饰 PropertySource
             for (Object item : iterable) {
                 if (item == null) {
                     continue;
                 }
-                decorateContributorIfNecessary(item, keyDetector);
+                decorateContributorIfNecessary(item, keyDetector, parser);
             }
 
             processedContextHashes.add(contextHash);
@@ -110,7 +139,7 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
         }
     }
 
-    private void decorateContributorIfNecessary(Object contributor, KeyDetector keyDetector) {
+    private void decorateContributorIfNecessary(Object contributor, KeyDetector keyDetector, CiphertextParser parser) {
         try {
             Field propSourceField = findField(contributor.getClass(), "propertySource");
             if (propSourceField == null) {
@@ -127,13 +156,13 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
             }
 
             // 检查该属性源是否含有密文
-            if (!hasEncryptedValue(propertySource)) {
+            if (!hasEncryptedValue(propertySource, parser)) {
                 return;
             }
 
             // 执行装饰
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    propertySource, keyDetector, EncryptAlgorithm.AES_GCM);
+                    propertySource, parser, keyDetector, null, EncryptAlgorithm.AES_GCM, true);
             propSourceField.set(contributor, wrapper);
 
             // 同时刷新对应 contributor 内部绑定的 configurationPropertySource
@@ -151,11 +180,12 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
         }
     }
 
-    private boolean hasEncryptedValue(PropertySource<?> source) {
+    private boolean hasEncryptedValue(PropertySource<?> source, CiphertextParser parser) {
         if (source instanceof EnumerablePropertySource<?> enumerableSource) {
+            CiphertextParser actualParser = parser != null ? parser : PARSER;
             for (String name : enumerableSource.getPropertyNames()) {
                 Object val = enumerableSource.getProperty(name);
-                if (val instanceof String strVal && PARSER.hasEncrypted(strVal)) {
+                if (val instanceof String strVal && actualParser.hasEncrypted(strVal)) {
                     return true;
                 }
             }

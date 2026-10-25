@@ -117,4 +117,19 @@ class RsaConfigDecryptorTest {
         assertThatThrownBy(() -> decryptor.decrypt(tamperedCiphertext, RsaConfigDecryptor.encodePrivateKey(keyPair1.getPrivate())))
                 .isInstanceOf(Exception.class);
     }
+
+    @Test
+    @DisplayName("因果异常体系: OAEP 与 PKCS1 双重解密失败时必须保留 OAEP 原始被抑制异常")
+    void testSuppressedExceptionOnDoubleFailure() throws Exception {
+        KeyPair keyPair1 = RsaConfigDecryptor.generateKeyPair(2048);
+        KeyPair keyPair2 = RsaConfigDecryptor.generateKeyPair(2048);
+
+        String ciphertext = RsaConfigDecryptor.encrypt("secret_causal_chain", RsaConfigDecryptor.encodePublicKey(keyPair1.getPublic()));
+        String wrongPrivateKey = RsaConfigDecryptor.encodePrivateKey(keyPair2.getPrivate());
+
+        assertThatThrownBy(() -> decryptor.decrypt(ciphertext, wrongPrivateKey))
+                .satisfies(ex -> {
+                    assertThat(ex.getSuppressed()).isNotEmpty();
+                });
+    }
 }

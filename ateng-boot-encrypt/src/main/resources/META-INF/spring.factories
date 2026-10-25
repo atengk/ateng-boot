@@ -2,6 +2,10 @@
 org.springframework.boot.context.config.ConfigDataLocationResolver=\
   io.github.atengk.boot.encrypt.env.EncryptConfigDataLocationResolver
 
+# ConfigData Environment Update Listeners (First-Phase Event Notification & Early Interception)
+org.springframework.boot.context.config.ConfigDataEnvironmentUpdateListener=\
+  io.github.atengk.boot.encrypt.env.EncryptConfigDataEnvironmentUpdateListener
+
 # EnvironmentPostProcessors (Full PropertySources Decryption & Logging Synergy)
 org.springframework.boot.env.EnvironmentPostProcessor=\
   io.github.atengk.boot.encrypt.env.EncryptEnvironmentPostProcessor

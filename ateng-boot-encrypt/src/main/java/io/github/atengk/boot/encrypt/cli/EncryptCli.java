@@ -312,16 +312,7 @@ public class EncryptCli {
     }
 
     private static String formatEncToken(String keyId, EncryptAlgorithm algo, String ciphertext) {
-        StringBuilder sb = new StringBuilder("ENC");
-        if (keyId != null && !keyId.trim().isEmpty()) {
-            sb.append("[").append(keyId.trim()).append("]");
-        }
-        sb.append("(");
-        if (algo != EncryptAlgorithm.AES_GCM) {
-            sb.append(algo.getCode()).append("@");
-        }
-        sb.append(ciphertext).append(")");
-        return sb.toString();
+        return CiphertextParser.formatToken(keyId, algo, ciphertext);
     }
 
     private ConfigDecryptor getDecryptor(EncryptAlgorithm algorithm) {

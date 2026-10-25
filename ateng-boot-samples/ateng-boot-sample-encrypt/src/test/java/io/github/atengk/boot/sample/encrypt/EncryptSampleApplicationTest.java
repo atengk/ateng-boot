@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.tool.InPlaceRewriter;
+import io.github.atengk.boot.encrypt.guard.PlaintextIngressGuard;
 import io.github.atengk.boot.sample.encrypt.config.SampleSecretProperties;
 import io.github.atengk.boot.sample.encrypt.model.DecryptRequest;
 import io.github.atengk.boot.sample.encrypt.model.EncryptRequest;
@@ -11,8 +12,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -47,6 +52,9 @@ class EncryptSampleApplicationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @Test
     @DisplayName("端到端验证配置属性透明解密与多Key别名路由")
@@ -176,5 +184,41 @@ class EncryptSampleApplicationTest {
         String restored = Files.readString(yamlFile, StandardCharsets.UTF_8);
         assertTrue(restored.contains("myPlaintextRootPass123"));
         assertTrue(restored.contains("# @encrypt 数据库明文密码"));
+    }
+
+    @Test
+    @DisplayName("端到端验证生产环境强制加密门禁 enforce-encrypted 阻断未加密敏感配置")
+    void testEnforceEncryptedBlocksUnencryptedSecretsInApplication() {
+        assertThrows(Exception.class, () -> {
+            new SpringApplicationBuilder(EncryptSampleApplication.class)
+                    .properties(
+                            "spring.profiles.active=test",
+                            "ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                            "ateng.boot.encrypt.enforce-encrypted=true"
+                    )
+                    .initializers(context -> {
+                        // 注入携带裸明文敏感属性的非系统属性源（模拟运维误提交）
+                        java.util.Map<String, Object> map = new java.util.HashMap<>();
+                        map.put("spring.datasource.password", "nakedPlaintextSecret999");
+                        context.getEnvironment().getPropertySources().addFirst(
+                                new MapPropertySource("misconfigured-external-source", map));
+                    })
+                    .run();
+        }, "存在裸明文敏感配置且开启 enforce-encrypted=true 时必须阻断启动");
+    }
+
+    @Test
+    @DisplayName("端到端验证配置中心热更新守卫 PlaintextIngressGuard 响应刷新事件与缓存原子置换")
+    void testPlaintextIngressGuardRefreshEvent() {
+        PlaintextIngressGuard guard = applicationContext.getBean(PlaintextIngressGuard.class);
+        assertNotNull(guard, "PlaintextIngressGuard 必须作为受管 Bean 成功装配");
+
+        // 模拟触发配置中心环境变更全量刷新
+        ConfigurableEnvironment env = (ConfigurableEnvironment) applicationContext.getEnvironment();
+        assertDoesNotThrow(() -> guard.onEnvironmentChange(null, env),
+                "在合规配置下触发环境变更刷新不应抛出异常");
+
+        // 验证热更新后配置属性依然能够正常解密且服务可用
+        assertEquals("mysqlRootPass2026!", secretProperties.getDatabasePassword());
     }
 }

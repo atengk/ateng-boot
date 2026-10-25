@@ -178,4 +178,22 @@ class EncryptEnvironmentPostProcessorTest {
         // 不应抛出任何异常
         postProcessor.postProcessEnvironment(null, new SpringApplication());
     }
+
+    @Test
+    @DisplayName("测试自定义前后缀支持：配置 ateng.boot.encrypt.prefix 与 suffix 时成功解密且门禁正常放行")
+    void testCustomPrefixAndSuffix() {
+        StandardEnvironment environment = new StandardEnvironment();
+
+        String cipher = decryptor.encrypt("custom-prefix-secret", PASSWORD);
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.prefix", "CRYPT[");
+        map.put("ateng.boot.encrypt.suffix", "]");
+        map.put("ateng.boot.encrypt.enforce-encrypted", "true");
+        map.put("spring.datasource.password", "CRYPT[" + cipher + "]");
+        environment.getPropertySources().addLast(new MapPropertySource("application.yml", map));
+
+        postProcessor.postProcessEnvironment(environment, new SpringApplication());
+
+        assertThat(environment.getProperty("spring.datasource.password")).isEqualTo("custom-prefix-secret");
+    }
 }

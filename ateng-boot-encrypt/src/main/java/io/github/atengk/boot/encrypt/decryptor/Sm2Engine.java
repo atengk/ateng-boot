@@ -493,15 +493,23 @@ public final class Sm2Engine {
             for (int i = 0; i < bytes.length - 34; i++) {
                 if (bytes[i] == 0x04 && (bytes[i + 1] & 0xff) == 32) {
                     byte[] dBytes = new byte[32];
-                    System.arraycopy(bytes, i + 2, dBytes, 0, 32);
-                    return new BigInteger(1, dBytes);
+                    try {
+                        System.arraycopy(bytes, i + 2, dBytes, 0, 32);
+                        return new BigInteger(1, dBytes);
+                    } finally {
+                        Arrays.fill(dBytes, (byte) 0);
+                    }
                 }
             }
             // 保底提取末尾 32 字节
             if (bytes.length > 32) {
                 byte[] dBytes = new byte[32];
-                System.arraycopy(bytes, bytes.length - 32, dBytes, 0, 32);
-                return new BigInteger(1, dBytes);
+                try {
+                    System.arraycopy(bytes, bytes.length - 32, dBytes, 0, 32);
+                    return new BigInteger(1, dBytes);
+                } finally {
+                    Arrays.fill(dBytes, (byte) 0);
+                }
             }
             return new BigInteger(1, bytes);
         } finally {

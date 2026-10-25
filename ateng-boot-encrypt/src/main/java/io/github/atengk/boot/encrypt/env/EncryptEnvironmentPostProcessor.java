@@ -58,32 +58,39 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
         EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
         EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
 
-        // 3. 扫描并无差别装饰所有尚未被包装的属性源
+        // 3. 动态读取密文前后缀配置，支持自定义前后缀
+        String prefix = environment.getProperty("ateng.boot.encrypt.prefix");
+        String suffix = environment.getProperty("ateng.boot.encrypt.suffix");
+        CiphertextParser parser = new CiphertextParser(prefix, suffix);
+
+        // 4. 扫描并无差别装饰所有尚未被包装的属性源，并同步更新早期包装器的最新 keyDetector
         MutablePropertySources propertySources = environment.getPropertySources();
         List<PropertySource<?>> toWrap = new ArrayList<>();
 
         for (PropertySource<?> source : propertySources) {
-            if (shouldWrap(source)) {
+            if (source instanceof EncryptPropertySourceWrapper wrapper) {
+                wrapper.updateKeyDetector(keyDetector);
+            } else if (shouldWrap(source)) {
                 toWrap.add(source);
             }
         }
 
         for (PropertySource<?> source : toWrap) {
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    source, keyDetector, defaultAlgorithm);
+                    source, parser, keyDetector, null, defaultAlgorithm, true);
             propertySources.replace(source.getName(), wrapper);
             log.trace("[ateng-boot-encrypt] 属性源已装配解密代理: {}", source.getName());
         }
 
-        // 4. 重新挂载 ConfigurationPropertySources，确保 @ConfigurationProperties Binder 能够感知代理包装
+        // 5. 重新挂载 ConfigurationPropertySources，确保 @ConfigurationProperties Binder 能够感知代理包装
         ConfigurationPropertySources.attach(environment);
 
-        // 5. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
+        // 6. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
         String enforceStr = environment.getProperty("ateng.boot.encrypt.enforce-encrypted");
         if (Boolean.parseBoolean(enforceStr)) {
             String pattern = environment.getProperty("ateng.boot.encrypt.sensitive-key-pattern",
                     EnforceEncryptionPolicy.DEFAULT_SENSITIVE_KEY_PATTERN);
-            EnforceEncryptionPolicy.enforce(environment, pattern, new CiphertextParser());
+            EnforceEncryptionPolicy.enforce(environment, pattern, parser);
         }
     }
 

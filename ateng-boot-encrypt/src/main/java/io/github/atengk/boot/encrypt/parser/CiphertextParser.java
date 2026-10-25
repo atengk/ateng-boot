@@ -110,6 +110,44 @@ public class CiphertextParser {
         return new ParsedToken(rawToken, keyId, null, MultilineSecretFormatter.cleanCiphertext(trimmed));
     }
 
+    /**
+     * 格式化生成标准的 ENC[keyId](algo@ciphertext) 或 ENC(ciphertext) 密文标记
+     *
+     * @param keyId 密钥别名标识（为 null、空串或 "default" 时省略 [keyId] 标签）
+     * @param algorithm 加密算法（为 null 或默认 AES_GCM 时省略 algo@ 标签）
+     * @param ciphertext 密文内容
+     * @return 格式化后的密文标记，如 ENC[db](SM4-CBC@...) 或 ENC(...)
+     */
+    public static String formatToken(String keyId, EncryptAlgorithm algorithm, String ciphertext) {
+        return formatToken(keyId, algorithm, EncryptAlgorithm.AES_GCM, ciphertext);
+    }
+
+    /**
+     * 格式化生成密文标记，并指定默认算法基准
+     *
+     * @param keyId 密钥别名标识（为 null、空串或 "default" 时省略 [keyId] 标签）
+     * @param algorithm 实际加密算法
+     * @param defaultAlgorithm 当前环境的默认加密算法
+     * @param ciphertext 密文内容
+     * @return 格式化后的密文标记
+     */
+    public static String formatToken(String keyId, EncryptAlgorithm algorithm, EncryptAlgorithm defaultAlgorithm, String ciphertext) {
+        if (ciphertext == null) {
+            throw new IllegalArgumentException("ciphertext 不能为空");
+        }
+        StringBuilder sb = new StringBuilder("ENC");
+        if (keyId != null && !keyId.trim().isEmpty() && !"default".equalsIgnoreCase(keyId.trim())) {
+            sb.append("[").append(keyId.trim()).append("]");
+        }
+        sb.append("(");
+        EncryptAlgorithm baseAlgo = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
+        if (algorithm != null && algorithm != baseAlgo) {
+            sb.append(algorithm.getCode()).append("@");
+        }
+        sb.append(ciphertext).append(")");
+        return sb.toString();
+    }
+
     @Getter
     @ToString
     @RequiredArgsConstructor

@@ -42,11 +42,18 @@ public class AesGcmConfigDecryptor implements ConfigDecryptor {
         System.arraycopy(combined, IV_SIZE, encryptedBytes, 0, cipherLen);
 
         byte[] keyBytes = KeyDerivationHelper.deriveKey(password, KEY_SIZE);
+        byte[] decrypted = null;
         try {
-            byte[] decrypted = CryptoUtil.decryptGcm(encryptedBytes, keyBytes, iv);
+            decrypted = CryptoUtil.decryptGcm(encryptedBytes, keyBytes, iv);
             return new String(decrypted, StandardCharsets.UTF_8);
         } finally {
+            if (decrypted != null) {
+                Arrays.fill(decrypted, (byte) 0);
+            }
             Arrays.fill(keyBytes, (byte) 0);
+            Arrays.fill(encryptedBytes, (byte) 0);
+            Arrays.fill(iv, (byte) 0);
+            Arrays.fill(combined, (byte) 0);
         }
     }
 

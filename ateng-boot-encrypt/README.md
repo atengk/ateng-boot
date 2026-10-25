@@ -42,7 +42,7 @@
 | **整文件就地智能回写** | 保持注释与格式保真的智能回写器 | `InPlaceRewriter`, `# @encrypt` 指令 | - | `rewriteEncrypt(path)`, `rewriteDecrypt(path)`，逐行解析 YAML/Properties，支持 `# @encrypt[keyId](ALGO)` 行内指令，100% 保持缩进、注释与换行符保真，自动生成 `.bak` 备份 | `InPlaceRewriterTest.java`, `EncryptSampleApplicationTest.java` |
 | **脱机安全运维 CLI** | 终端脱机安全加解密与密钥生成工具箱 | `EncryptCli` | - | `EncryptCli.main(args)`，支持命令行批处理（`--encrypt`, `--decrypt`, `--keygen`）与交互式控制台菜单，支持脱机生成 RSA 与 SM2 密钥对与单值加解密 | `EncryptCliTest.java` |
 | **多行大文本规范** | 多行大文本与 PEM 证书单行化编解码 | `MultilineSecretFormatter` | - | `toSingleLine(pem)`, `toMultiLine(singleLinePem)`，将多行 RSA 私钥/公钥与 PEM 证书规范编码为单行，适配配置中心与 YAML 属性规范 | `MultilineSecretFormatterTest.java` |
-| **配置中心预解密 Hook** | Nacos / Apollo 远端拉取前凭据预解密 | `EncryptConfigDataLocationResolver`, `EncryptConfigDataEnvironmentPostProcessor` | - | Spring Boot 2.4+ ConfigData 规范接入，在远端配置中心拉取配置前完成 `spring.cloud.nacos.config.password` 等连接凭据的优先解密，规避 403 权限拒绝 | `EncryptConfigDataLocationResolverTest.java` |
+| **配置中心预解密 Hook** | Nacos / Apollo 远端拉取前凭据预解密 | `EncryptConfigDataLocationResolver`, `EncryptConfigDataEnvironmentUpdateListener` | - | Spring Boot 2.4+ ConfigData 规范接入，在远端配置中心拉取配置前完成 `spring.cloud.nacos.config.password` 等连接凭据的优先解密，规避 403 权限拒绝 | `EncryptConfigDataLocationResolverTest.java` |
 
 ---
 
@@ -323,7 +323,7 @@ ConfigDecryptor resilientDecryptor = new RetryingConfigDecryptor(
 ### 7.3 Nacos / Apollo 远端配置解析预拦截 (`PreResolverHook`)
 在 Spring Boot 2.4+ 的 `ConfigData` 加载机制下，若 Nacos / Apollo 连接配置自身的用户名和密码也被加密（例如 `spring.cloud.nacos.config.password=ENC(...)`），常规的 `EnvironmentPostProcessor` 会因介入过晚而导致客户端拉取远端配置时抛出 403 权限拒绝。
 
-Starter 内置 `EncryptConfigDataLocationResolver` 与 `EncryptConfigDataEnvironmentPostProcessor`，在配置中心拉取远端资源前的极早期阶段自动完成解密预拦截，彻底消除配置中心连接 403 痛点。
+Starter 内置 `EncryptConfigDataLocationResolver` 与 `EncryptConfigDataEnvironmentUpdateListener`，在配置中心拉取远端资源前的极早期阶段自动完成解密预拦截，彻底消除配置中心连接 403 痛点。
 
 ---
 

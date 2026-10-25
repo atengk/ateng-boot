@@ -104,6 +104,28 @@ class EncryptConfigDataLocationResolverTest {
         assertThat(boundPassword).isEqualTo("nacos-root-123456");
     }
 
+    @Test
+    @DisplayName("测试 Spring Boot 3.3.x 真实静态类字段名 contributors 的穿透探查与解密")
+    void testSpringBoot3RealFieldContributorsPenetration() throws Exception {
+        String cipherPassword = decryptor.encrypt("nacos-real-field-pass", PASSWORD);
+        Map<String, Object> localMap = new HashMap<>();
+        localMap.put("spring.cloud.nacos.password", "ENC(" + cipherPassword + ")");
+        MapPropertySource localPropertySource = new MapPropertySource("applicationConfig: [classpath:/application.yml]", localMap);
+
+        MockContributor mockContributor = new MockContributor(localPropertySource);
+        MockContributors mockContributors = new MockContributors(List.of(mockContributor));
+        MockSpringBoot3ResolverContext mockContext = new MockSpringBoot3ResolverContext(mockContributors);
+
+        ConfigDataLocation location = ConfigDataLocation.of("nacos:application.yaml");
+        boolean resolvable = resolver.isResolvable(mockContext, location);
+        assertThat(resolvable).isFalse();
+
+        assertThat(mockContributor.getPropertySource()).isInstanceOf(EncryptPropertySourceWrapper.class);
+        Binder binder = mockContext.getBinder();
+        String boundPassword = binder.bind("spring.cloud.nacos.password", String.class).get();
+        assertThat(boundPassword).isEqualTo("nacos-real-field-pass");
+    }
+
     // ========== 模拟 Spring Boot 内部 Contributor 树状结构 ==========
 
     static class MockContributors implements Iterable<MockContributor> {
@@ -149,6 +171,36 @@ class EncryptConfigDataLocationResolverTest {
             // 从当前 contributors 构造 Binder
             List<ConfigurationPropertySource> sources = new java.util.ArrayList<>();
             for (MockContributor c : this$0) {
+                if (c.getConfigurationPropertySource() != null) {
+                    sources.add(c.getConfigurationPropertySource());
+                }
+            }
+            return new Binder(sources);
+        }
+
+        @Override
+        public ConfigDataResource getParent() {
+            return null;
+        }
+
+        @Override
+        public ConfigurableBootstrapContext getBootstrapContext() {
+            return null;
+        }
+    }
+
+    static class MockSpringBoot3ResolverContext implements ConfigDataLocationResolverContext {
+        // 1:1 对齐 Spring Boot 3.3.x ContributorConfigDataLocationResolverContext 的真实字段名 "contributors"
+        private final MockContributors contributors;
+
+        MockSpringBoot3ResolverContext(MockContributors contributors) {
+            this.contributors = contributors;
+        }
+
+        @Override
+        public Binder getBinder() {
+            List<ConfigurationPropertySource> sources = new java.util.ArrayList<>();
+            for (MockContributor c : contributors) {
                 if (c.getConfigurationPropertySource() != null) {
                     sources.add(c.getConfigurationPropertySource());
                 }

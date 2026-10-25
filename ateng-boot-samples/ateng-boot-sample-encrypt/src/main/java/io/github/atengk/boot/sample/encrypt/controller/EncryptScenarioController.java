@@ -64,18 +64,8 @@ public class EncryptScenarioController {
     public Result<String> encryptText(@Valid @RequestBody EncryptRequest request) {
         EncryptAlgorithm algo = request.getAlgorithm() != null ? request.getAlgorithm() : EncryptAlgorithm.AES_GCM;
         String ciphertext = ConfigEncryptor.encrypt(request.getPlaintext(), request.getPassword(), algo);
-
-        StringBuilder sb = new StringBuilder("ENC");
-        if (request.getKeyId() != null && !request.getKeyId().trim().isEmpty()) {
-            sb.append("[").append(request.getKeyId().trim()).append("]");
-        }
-        sb.append("(");
-        if (algo != EncryptAlgorithm.AES_GCM) {
-            sb.append(algo.getCode()).append("@");
-        }
-        sb.append(ciphertext).append(")");
-
-        return Result.success(sb.toString());
+        String encToken = CiphertextParser.formatToken(request.getKeyId(), algo, ciphertext);
+        return Result.success(encToken);
     }
 
     /**

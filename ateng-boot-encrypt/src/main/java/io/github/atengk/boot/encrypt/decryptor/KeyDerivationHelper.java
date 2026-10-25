@@ -34,11 +34,14 @@ public final class KeyDerivationHelper {
             java.util.Arrays.fill(raw, (byte) 0);
             return result;
         }
+        byte[] hash = null;
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(raw);
+            hash = digest.digest(raw);
             if (requiredLength == hash.length) {
-                return hash;
+                byte[] transferred = hash;
+                hash = null;
+                return transferred;
             }
             byte[] result = new byte[requiredLength];
             System.arraycopy(hash, 0, result, 0, Math.min(hash.length, requiredLength));
@@ -46,6 +49,9 @@ public final class KeyDerivationHelper {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 算法在当前 JVM 中不可用", e);
         } finally {
+            if (hash != null) {
+                java.util.Arrays.fill(hash, (byte) 0);
+            }
             java.util.Arrays.fill(raw, (byte) 0);
         }
     }

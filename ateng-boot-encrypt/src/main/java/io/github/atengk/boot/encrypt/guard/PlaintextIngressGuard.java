@@ -1,11 +1,14 @@
 package io.github.atengk.boot.encrypt.guard;
 
+import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
+import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.EnvironmentAware;
@@ -14,6 +17,8 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.env.PropertySource;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -32,7 +37,7 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
 
     private final EncryptProperties properties;
     private final CiphertextParser parser;
-    private ConfigurableEnvironment environment;
+    private volatile ConfigurableEnvironment environment;
 
     public PlaintextIngressGuard(EncryptProperties properties, CiphertextParser parser) {
         this.properties = properties != null ? properties : new EncryptProperties();
@@ -87,15 +92,32 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
             return;
         }
 
-        // 1. 原子置换清空所有属性源中的解密缓存，保证新密文被实时解密
+        // 1. 重新包装外部配置中心新推入的未包装属性源，并原子置换清空存量解密缓存
+        KeyDetector keyDetector = KeyDetector.detect(env);
+        String algoCode = env.getProperty("ateng.boot.encrypt.algorithm");
+        EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
+        EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
+
         int wrapperCount = 0;
+        List<PropertySource<?>> toWrap = new ArrayList<>();
         for (PropertySource<?> source : env.getPropertySources()) {
             if (source instanceof EncryptPropertySourceWrapper wrapper) {
                 wrapper.clearCache();
                 wrapperCount++;
+            } else if (source != null && !EnforceEncryptionPolicy.shouldSkipPropertySource(source)) {
+                toWrap.add(source);
             }
         }
-        log.info("[ateng-boot-encrypt] 已原子清空 {} 个属性源解密缓存", wrapperCount);
+        for (PropertySource<?> source : toWrap) {
+            EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
+                    source, parser, keyDetector, null, defaultAlgorithm, true);
+            env.getPropertySources().replace(source.getName(), wrapper);
+            wrapperCount++;
+        }
+        if (!toWrap.isEmpty()) {
+            ConfigurationPropertySources.attach(env);
+        }
+        log.info("[ateng-boot-encrypt] 已原子置换与更新 {} 个属性源解密缓存", wrapperCount);
 
         // 2. 若开启生产强制加密 (enforce-encrypted: true)，防范裸明文倒灌
         if (properties.isEnforceEncrypted()) {
@@ -118,7 +140,13 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
     }
 
     private void validateKey(String key, ConfigurableEnvironment env) {
+        if (EnforceEncryptionPolicy.isIgnoredKey(key)) {
+            return;
+        }
         for (PropertySource<?> source : env.getPropertySources()) {
+            if (EnforceEncryptionPolicy.shouldSkipPropertySource(source)) {
+                continue;
+            }
             if (source.containsProperty(key)) {
                 Object raw = (source instanceof EncryptPropertySourceWrapper wrapper)
                         ? wrapper.getDelegate().getProperty(key)

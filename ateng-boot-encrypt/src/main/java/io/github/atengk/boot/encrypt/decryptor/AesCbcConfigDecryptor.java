@@ -42,12 +42,39 @@ public class AesCbcConfigDecryptor implements ConfigDecryptor {
         System.arraycopy(combined, IV_SIZE, encryptedBytes, 0, cipherLen);
 
         byte[] keyBytes = KeyDerivationHelper.deriveKey(password, KEY_SIZE);
+        byte[] decrypted = null;
         try {
-            byte[] decrypted = CryptoUtil.decryptCbc(encryptedBytes, keyBytes, iv);
-            return new String(decrypted, StandardCharsets.UTF_8);
+            decrypted = CryptoUtil.decryptCbc(encryptedBytes, keyBytes, iv);
+            String result = new String(decrypted, StandardCharsets.UTF_8);
+            if (!isPrintableText(result)) {
+                throw new IllegalArgumentException("AES-CBC 解密结果包含非法控制字符，可能是解密口令错误");
+            }
+            return result;
         } finally {
+            if (decrypted != null) {
+                Arrays.fill(decrypted, (byte) 0);
+            }
             Arrays.fill(keyBytes, (byte) 0);
+            Arrays.fill(encryptedBytes, (byte) 0);
+            Arrays.fill(iv, (byte) 0);
+            Arrays.fill(combined, (byte) 0);
         }
+    }
+
+    private static boolean isPrintableText(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n' || c == '\r' || c == '\t') {
+                continue;
+            }
+            if (c < 32 || c == 127) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

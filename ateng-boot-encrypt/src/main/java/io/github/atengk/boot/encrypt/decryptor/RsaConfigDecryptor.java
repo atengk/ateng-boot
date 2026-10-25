@@ -6,6 +6,7 @@ import io.github.atengk.boot.encrypt.parser.MultilineSecretFormatter;
 import javax.crypto.Cipher;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -55,7 +56,12 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
             try {
                 decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_OAEP, keyBytes);
             } catch (Exception e) {
-                decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_PKCS1, keyBytes);
+                try {
+                    decryptedBytes = doSegmentedDecrypt(encryptedBytes, privateKey, TRANSFORMATION_PKCS1, keyBytes);
+                } catch (Exception p1Ex) {
+                    p1Ex.addSuppressed(e);
+                    throw p1Ex;
+                }
             }
             String decryptedText = new String(decryptedBytes, StandardCharsets.UTF_8);
             if (MultilineSecretFormatter.isPem(decryptedText)) {
@@ -123,16 +129,28 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
                     : (keyBytes - 11);
 
             byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
-            Cipher cipher = Cipher.getInstance(transformation);
-            cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+            try {
+                Cipher cipher = Cipher.getInstance(transformation);
+                cipher.init(Cipher.ENCRYPT_MODE, publicKey);
 
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            for (int offset = 0; offset < plainBytes.length; offset += maxPlainBlock) {
-                int len = Math.min(maxPlainBlock, plainBytes.length - offset);
-                byte[] block = cipher.doFinal(plainBytes, offset, len);
-                out.write(block);
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] block = null;
+                try {
+                    for (int offset = 0; offset < plainBytes.length; offset += maxPlainBlock) {
+                        int len = Math.min(maxPlainBlock, plainBytes.length - offset);
+                        block = cipher.doFinal(plainBytes, offset, len);
+                        out.write(block);
+                        Arrays.fill(block, (byte) 0);
+                    }
+                    return Base64.getEncoder().encodeToString(out.toByteArray());
+                } finally {
+                    if (block != null) {
+                        Arrays.fill(block, (byte) 0);
+                    }
+                }
+            } finally {
+                Arrays.fill(plainBytes, (byte) 0);
             }
-            return Base64.getEncoder().encodeToString(out.toByteArray());
         } catch (Exception e) {
             throw new IllegalStateException("RSA 公钥加密失败: " + e.getMessage(), e);
         }
@@ -174,7 +192,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
             return null;
         }
         String base64 = Base64.getEncoder().encodeToString(publicKey.getEncoded());
-        return formatAsPem("PUBLIC KEY", base64);
+        return MultilineSecretFormatter.formatAsPem("PUBLIC KEY", base64);
     }
 
     /**
@@ -197,7 +215,7 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         byte[] encoded = privateKey.getEncoded();
         try {
             String base64 = Base64.getEncoder().encodeToString(encoded);
-            return formatAsPem("PRIVATE KEY", base64);
+            return MultilineSecretFormatter.formatAsPem("PRIVATE KEY", base64);
         } finally {
             Arrays.fill(encoded, (byte) 0);
         }
@@ -257,20 +275,10 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         return MultilineSecretFormatter.cleanCiphertext(cleaned);
     }
 
-    private static String formatAsPem(String type, String base64) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("-----BEGIN ").append(type).append("-----\n");
-        for (int i = 0; i < base64.length(); i += 64) {
-            sb.append(base64, i, Math.min(i + 64, base64.length())).append("\n");
-        }
-        sb.append("-----END ").append(type).append("-----\n");
-        return sb.toString();
-    }
-
-    private static int getKeyLengthBytes(Object key) {
+    private static int getKeyLengthBytes(Key key) {
         if (key instanceof RSAKey rsaKey) {
             return (rsaKey.getModulus().bitLength() + 7) / 8;
         }
-        return 256;
+        throw new IllegalArgumentException("非 RSA 密钥类型，无法计算密钥字节长度: " + (key != null ? key.getClass().getName() : "null"));
     }
 }

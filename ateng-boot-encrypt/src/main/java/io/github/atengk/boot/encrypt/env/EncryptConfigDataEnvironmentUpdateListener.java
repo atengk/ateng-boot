@@ -33,7 +33,7 @@ public class EncryptConfigDataEnvironmentUpdateListener implements ConfigDataEnv
                                                      KeyDetector keyDetector,
                                                      EncryptAlgorithm defaultAlgorithm) {
         this.environment = environment;
-        this.keyDetector = keyDetector != null ? keyDetector : new KeyDetector();
+        this.keyDetector = keyDetector != null ? keyDetector : KeyDetector.detect(environment);
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
     }
 

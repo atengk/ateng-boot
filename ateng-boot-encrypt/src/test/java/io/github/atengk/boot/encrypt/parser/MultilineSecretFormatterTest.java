@@ -65,4 +65,21 @@ class MultilineSecretFormatterTest {
         String multiLine = "line1\nline2\r\nline3";
         assertThat(MultilineSecretFormatter.formatPem(multiLine)).isEqualTo(multiLine);
     }
+
+    @Test
+    @DisplayName("formatAsPem: 规范格式化 Base64 为带标头标尾与 64 字符换行的标准 PEM")
+    void testFormatAsPem() {
+        String base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/0123456789==";
+        String pem = MultilineSecretFormatter.formatAsPem("PUBLIC KEY", base64);
+        assertThat(pem).startsWith("-----BEGIN PUBLIC KEY-----\n");
+        assertThat(pem).endsWith("-----END PUBLIC KEY-----\n");
+        String[] lines = pem.split("\n");
+        assertThat(lines[0]).isEqualTo("-----BEGIN PUBLIC KEY-----");
+        assertThat(lines[1]).hasSize(64);
+        assertThat(lines[2]).isEqualTo("0123456789==");
+        assertThat(lines[3]).isEqualTo("-----END PUBLIC KEY-----");
+
+        assertThat(MultilineSecretFormatter.formatAsPem(null, base64)).isNull();
+        assertThat(MultilineSecretFormatter.formatAsPem("PUBLIC KEY", null)).isNull();
+    }
 }

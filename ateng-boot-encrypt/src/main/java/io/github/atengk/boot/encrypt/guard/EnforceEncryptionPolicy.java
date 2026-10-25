@@ -78,7 +78,7 @@ public final class EnforceEncryptionPolicy {
         return source.getProperty(key);
     }
 
-    private static boolean shouldSkipPropertySource(PropertySource<?> source) {
+    static boolean shouldSkipPropertySource(PropertySource<?> source) {
         if (source == null) {
             return true;
         }
@@ -93,7 +93,7 @@ public final class EnforceEncryptionPolicy {
                 || name.startsWith("stub");
     }
 
-    private static boolean isIgnoredKey(String key) {
+    static boolean isIgnoredKey(String key) {
         if (key == null) {
             return true;
         }
