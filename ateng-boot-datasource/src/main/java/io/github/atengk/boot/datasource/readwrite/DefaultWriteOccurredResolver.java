@@ -68,11 +68,12 @@ public class DefaultWriteOccurredResolver implements WriteOccurredResolver {
      * 解析当前客户端的标识 Key
      * 优先提取 UserContextHolder 用户 ID，若未登录则回退至当前线程标识
      */
+    @SuppressWarnings("deprecation")
     protected String resolveCurrentKey() {
         String userId = UserContextHolder.getUserId();
         if (StringUtils.hasText(userId)) {
             return "USER:" + userId;
         }
-        return "THREAD:" + Thread.currentThread().threadId();
+        return "THREAD:" + Thread.currentThread().getId();
     }
 }
