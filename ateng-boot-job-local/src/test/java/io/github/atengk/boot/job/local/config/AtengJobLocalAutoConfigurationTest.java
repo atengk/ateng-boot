@@ -7,6 +7,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,6 +30,7 @@ class AtengJobLocalAutoConfigurationTest {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(JobLocalProperties.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
+            assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
             assertThat(context).hasSingleBean(LocalJobRegistry.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.job.local.template.LocalJobTemplate.class);
             assertThat(context).hasSingleBean(LocalJobAnnotationBeanPostProcessor.class);
@@ -45,6 +47,7 @@ class AtengJobLocalAutoConfigurationTest {
         contextRunner.withPropertyValues("ateng.boot.job.local.enabled=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(ThreadPoolTaskScheduler.class);
+                    assertThat(context).doesNotHaveBean(ThreadPoolTaskExecutor.class);
                     assertThat(context).doesNotHaveBean(LocalJobRegistry.class);
                     assertThat(context).doesNotHaveBean(LocalJobAnnotationBeanPostProcessor.class);
                 });

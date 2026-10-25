@@ -9,6 +9,7 @@ import io.github.atengk.boot.job.local.model.JobResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronTrigger;
@@ -33,9 +34,15 @@ public class LocalJobRegistry implements DisposableBean {
 
     private final ConcurrentMap<String, ScheduledJobTask> taskMap = new ConcurrentHashMap<>();
     private final ThreadPoolTaskScheduler taskScheduler;
+    private final AsyncTaskExecutor workerExecutor;
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
+        this(taskScheduler, null);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler, AsyncTaskExecutor workerExecutor) {
         this.taskScheduler = taskScheduler;
+        this.workerExecutor = workerExecutor;
     }
 
     /**
@@ -51,7 +58,7 @@ public class LocalJobRegistry implements DisposableBean {
             throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);
         }
 
-        ScheduledJobTask task = new ScheduledJobTask(definition, handler);
+        ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor);
         if (task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
             scheduleTask(task);
         }

@@ -1,8 +1,14 @@
 package io.github.atengk.boot.job.local.registry;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.core.util.RetryUtil.RetryConfig;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.handler.JobHandler;
 import io.github.atengk.boot.job.local.model.JobContext;
 import io.github.atengk.boot.job.local.model.JobDefinition;
@@ -12,16 +18,28 @@ import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronTrigger;
 import org.springframework.scheduling.support.PeriodicTrigger;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
  * 受管定时任务运行时封装包装器
@@ -41,6 +59,9 @@ public class ScheduledJobTask implements Runnable {
 
     @Getter
     private final JobHandler handler;
+
+    private final ThreadPoolTaskScheduler taskScheduler;
+    private final AsyncTaskExecutor workerExecutor;
 
     @Getter
     @Setter
@@ -66,9 +87,24 @@ public class ScheduledJobTask implements Runnable {
     @Getter
     private volatile String lastResultMsg;
 
+    @Getter
+    private volatile String lastTraceId;
+
     public ScheduledJobTask(JobDefinition definition, JobHandler handler) {
+        this(definition, handler, null, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler, ThreadPoolTaskScheduler taskScheduler) {
+        this(definition, handler, taskScheduler, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor) {
         this.definition = definition;
         this.handler = handler;
+        this.taskScheduler = taskScheduler;
+        this.workerExecutor = workerExecutor;
         this.status = definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED;
         this.trigger = buildTrigger(definition);
     }
@@ -82,8 +118,15 @@ public class ScheduledJobTask implements Runnable {
             log.debug("Job [{}] is currently paused or stopped, skipping scheduled execution", definition.getJobName());
             return;
         }
-        executeInternal(TriggerType.CRON.equals(definition.getTriggerType()) ? TriggerType.CRON
-                : (definition.getFixedRate() != null ? TriggerType.FIXED_RATE : TriggerType.FIXED_DELAY), Collections.emptyMap());
+        TriggerType triggerType = TriggerType.CRON.equals(definition.getTriggerType()) ? TriggerType.CRON
+                : (definition.getFixedRate() != null ? TriggerType.FIXED_RATE : TriggerType.FIXED_DELAY);
+        try {
+            executeInternal(triggerType, Collections.emptyMap());
+        } catch (JobTimeoutException ex) {
+            log.warn("Job [{}] scheduled execution timed out: {}", definition.getJobName(), ex.getMessage());
+        } catch (Throwable ex) {
+            log.error("Job [{}] scheduled execution failed: {}", definition.getJobName(), ex.getMessage(), ex);
+        }
     }
 
     /**
@@ -97,68 +140,109 @@ public class ScheduledJobTask implements Runnable {
     }
 
     /**
-     * 执行任务核心管道（集成四阶并发重叠策略）
+     * 执行任务核心管道（集成四阶并发重叠策略、MDC 链路追踪与全上下文透传防御）
      */
     protected JobResult executeInternal(TriggerType triggerType, Map<String, Object> params) {
         OverlappingStrategy strategy = definition.getStrategy() != null ? definition.getStrategy() : OverlappingStrategy.DISCARD;
         String jobName = definition.getJobName();
 
-        switch (strategy) {
-            case DISCARD:
-                if (!lock.tryLock()) {
-                    log.info("Job [{}] execution skipped due to overlapping DISCARD policy (previous execution is still running)", jobName);
-                    this.lastStatus = "DISCARDED";
-                    this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
-                    return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
-                }
-                try {
-                    return doExecute(triggerType, params);
-                } finally {
-                    if (lock.isHeldByCurrentThread()) {
-                        lock.unlock();
+        // 1. 抓取调用方当前线程上下文现场
+        String previousTraceId = MDC.get("traceId");
+        String previousUser = UserContextHolder.getExplicit();
+        TenantContextHolder.TenantSnapshot previousTenant = TenantContextHolder.capturePrevious();
+
+        // 2. 生成无锁 32 位 UUID 注入 MDC，挂载租户与系统用户
+        String traceId = null;
+        if (params != null && params.containsKey("traceId")) {
+            traceId = String.valueOf(params.get("traceId"));
+        }
+        if (traceId == null || traceId.isBlank()) {
+            traceId = IdUtil.fastSimpleUUID();
+        }
+        MDC.put("traceId", traceId);
+
+        if (params != null && params.containsKey("userId")) {
+            UserContextHolder.set(String.valueOf(params.get("userId")));
+        } else if (UserContextHolder.get() == null) {
+            UserContextHolder.set("SYSTEM");
+        }
+
+        if (params != null && params.containsKey("tenantId")) {
+            TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
+        }
+
+        try {
+            switch (strategy) {
+                case DISCARD:
+                    if (!lock.tryLock()) {
+                        log.info("Job [{}] execution skipped due to overlapping DISCARD policy (previous execution is still running)", jobName);
+                        this.lastStatus = "DISCARDED";
+                        this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
+                        return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
-                }
-
-            case QUEUE:
-                lock.lock();
-                try {
-                    return doExecute(triggerType, params);
-                } finally {
-                    if (lock.isHeldByCurrentThread()) {
-                        lock.unlock();
+                    try {
+                        return doExecute(triggerType, params, traceId);
+                    } finally {
+                        if (lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        }
                     }
-                }
 
-            case CONCURRENT:
-                return doExecute(triggerType, params);
-
-            case INTERRUPT:
-                Thread previousThread = executingThread.getAndSet(Thread.currentThread());
-                if (previousThread != null && previousThread.isAlive() && previousThread != Thread.currentThread()) {
-                    log.warn("Job [{}] interrupting previous active thread [{}] due to INTERRUPT policy", jobName, previousThread.getName());
-                    previousThread.interrupt();
-                }
-                lock.lock();
-                try {
-                    return doExecute(triggerType, params);
-                } finally {
-                    executingThread.compareAndSet(Thread.currentThread(), null);
-                    if (lock.isHeldByCurrentThread()) {
-                        lock.unlock();
+                case QUEUE:
+                    lock.lock();
+                    try {
+                        return doExecute(triggerType, params, traceId);
+                    } finally {
+                        if (lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        }
                     }
-                }
 
-            default:
-                throw new IllegalStateException("Unsupported overlapping strategy: " + strategy);
+                case CONCURRENT:
+                    return doExecute(triggerType, params, traceId);
+
+                case INTERRUPT:
+                    Thread previousThread = executingThread.getAndSet(Thread.currentThread());
+                    if (previousThread != null && previousThread.isAlive() && previousThread != Thread.currentThread()) {
+                        log.warn("Job [{}] interrupting previous active thread [{}] due to INTERRUPT policy", jobName, previousThread.getName());
+                        previousThread.interrupt();
+                    }
+                    lock.lock();
+                    try {
+                        return doExecute(triggerType, params, traceId);
+                    } finally {
+                        executingThread.compareAndSet(Thread.currentThread(), null);
+                        if (lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        }
+                    }
+
+                default:
+                    throw new IllegalStateException("Unsupported overlapping strategy: " + strategy);
+            }
+        } finally {
+            // 3. 严格清理现场或精准恢复原现场，100% 杜绝线程池污染
+            if (previousTraceId != null) {
+                MDC.put("traceId", previousTraceId);
+            } else {
+                MDC.remove("traceId");
+            }
+            if (previousUser != null) {
+                UserContextHolder.set(previousUser);
+            } else {
+                UserContextHolder.clear();
+            }
+            TenantContextHolder.restore(previousTenant);
         }
     }
 
     /**
-     * 实际调用处理器执行任务并计算统计指标
+     * 实际调用处理器执行任务并计算统计指标（集成超时中断与退避重试）
      */
-    protected JobResult doExecute(TriggerType triggerType, Map<String, Object> params) {
+    protected JobResult doExecute(TriggerType triggerType, Map<String, Object> params, String traceId) {
         Instant startTime = Instant.now();
         this.lastExecutionTime = startTime;
+        this.lastTraceId = traceId;
         String jobName = definition.getJobName();
 
         JobContext context = JobContext.builder()
@@ -166,26 +250,171 @@ public class ScheduledJobTask implements Runnable {
                 .triggerType(triggerType)
                 .fireTime(startTime)
                 .params(params != null ? params : Collections.emptyMap())
+                .traceId(traceId)
                 .build();
 
+        AtomicInteger retryCount = new AtomicInteger(0);
+
         try {
-            log.debug("Executing job [{}] triggered by [{}]", jobName, triggerType);
-            Object result = handler.execute(context);
-            long duration = java.time.Duration.between(startTime, Instant.now()).toMillis();
+            log.debug("Executing job [{}] triggered by [{}] with traceId [{}]", jobName, triggerType, traceId);
+            Object result = executeWithRetryAndTimeout(context, retryCount);
+
+            long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
             this.lastStatus = "SUCCESS";
 
             String resultMsg = extractResultMessage(result);
             this.lastResultMsg = resultMsg;
             return JobResult.success(resultMsg, result);
+        } catch (JobTimeoutException ex) {
+            long duration = Duration.between(startTime, Instant.now()).toMillis();
+            this.lastDurationMs = duration;
+            this.lastStatus = "TIMEOUT";
+            this.lastResultMsg = ex.getMessage();
+            log.error("Execution timed out for job [{}] after {}: {}", jobName, ex.getTimeout(), ex.getMessage());
+            throw ex;
         } catch (Throwable ex) {
-            long duration = java.time.Duration.between(startTime, Instant.now()).toMillis();
+            long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
             this.lastStatus = "FAILED";
             this.lastResultMsg = ex.getMessage();
             log.error("Execution failed for job [{}] with exception: {}", jobName, ex.getMessage(), ex);
             return JobResult.failure(ex.getMessage());
         }
+    }
+
+    private Object executeWithRetryAndTimeout(JobContext context, AtomicInteger retryCount) {
+        int maxRetries = definition.getMaxRetries();
+        Duration retryInterval = definition.getRetryInterval() != null ? definition.getRetryInterval() : Duration.ofSeconds(1);
+        String jobName = definition.getJobName();
+
+        Supplier<Object> supplier = () -> {
+            try {
+                return executeSingleAttempt(context);
+            } catch (Throwable t) {
+                sneakyThrow(t);
+                return null;
+            }
+        };
+
+        if (maxRetries > 0) {
+            RetryConfig retryConfig = RetryConfig.builder()
+                    .maxAttempts(1 + maxRetries)
+                    .delay(retryInterval)
+                    .multiplier(2.0)
+                    .maxDelay(Duration.ofSeconds(60))
+                    .onRetry((attempt, error) -> {
+                        retryCount.incrementAndGet();
+                        log.warn("Job [{}] execution attempt [{}] failed ({}), retrying with exponential backoff...",
+                                jobName, attempt, error.getMessage());
+                        context.log("Retry attempt " + attempt + " after failure: " + error.getMessage());
+                    })
+                    .build();
+            return RetryUtil.execute(supplier, retryConfig);
+        } else {
+            return supplier.get();
+        }
+    }
+
+    private Object executeSingleAttempt(JobContext context) throws Throwable {
+        Duration timeout = definition.getTimeout();
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            return executeWithTimeout(context, timeout);
+        } else {
+            return executeDirectly(context);
+        }
+    }
+
+    private Object executeDirectly(JobContext context) throws Throwable {
+        Thread current = Thread.currentThread();
+        executingThread.set(current);
+        try {
+            return handler.execute(context);
+        } finally {
+            executingThread.compareAndSet(current, null);
+        }
+    }
+
+    private Object executeWithTimeout(JobContext context, Duration timeout) throws Throwable {
+        String jobName = definition.getJobName();
+        AtomicReference<Thread> workerThreadRef = new AtomicReference<>();
+
+        Callable<Object> workerTask = () -> {
+            Thread worker = Thread.currentThread();
+            workerThreadRef.set(worker);
+            executingThread.set(worker);
+
+            String traceId = context.getTraceId();
+            if (traceId != null) {
+                MDC.put("traceId", traceId);
+            }
+            if (UserContextHolder.get() == null) {
+                UserContextHolder.set("SYSTEM");
+            }
+            try {
+                return handler.execute(context);
+            } finally {
+                try {
+                    MDC.remove("traceId");
+                } finally {
+                    try {
+                        UserContextHolder.clear();
+                    } finally {
+                        TenantContextHolder.clear();
+                    }
+                }
+                executingThread.compareAndSet(worker, null);
+            }
+        };
+
+        Future<Object> future = submitTask(workerTask);
+
+        try {
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            Thread worker = workerThreadRef.get();
+            if (worker != null && worker.isAlive()) {
+                worker.interrupt();
+            }
+            throw new JobTimeoutException(
+                    "Job [" + jobName + "] execution timed out after " + timeout,
+                    jobName,
+                    timeout,
+                    te
+            );
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause();
+            throw cause != null ? cause : ee;
+        } catch (InterruptedException ie) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw ie;
+        }
+    }
+
+    private Future<Object> submitTask(Callable<Object> task) {
+        if (workerExecutor != null) {
+            return workerExecutor.submit(task);
+        }
+        if (taskScheduler != null) {
+            return taskScheduler.submit(task);
+        }
+        CompletableFuture<Object> cf = new CompletableFuture<>();
+        Thread t = new Thread(() -> {
+            try {
+                cf.complete(task.call());
+            } catch (Throwable ex) {
+                cf.completeExceptionally(ex);
+            }
+        }, "ateng-job-worker-fallback");
+        t.start();
+        return cf;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Throwable> void sneakyThrow(Throwable e) throws E {
+        throw (E) e;
     }
 
     private String extractResultMessage(Object result) {
@@ -224,6 +453,7 @@ public class ScheduledJobTask implements Runnable {
                 .lastDurationMs(this.lastDurationMs)
                 .lastStatus(this.lastStatus)
                 .lastResultMsg(this.lastResultMsg)
+                .lastTraceId(this.lastTraceId)
                 .build();
     }
 

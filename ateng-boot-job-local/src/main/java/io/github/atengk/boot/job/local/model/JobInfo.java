@@ -94,6 +94,11 @@ public class JobInfo {
     private Instant lastExecutionTime;
 
     /**
+     * 上次执行的 MDC 链路追踪 ID
+     */
+    private String lastTraceId;
+
+    /**
      * 上次执行总耗时（毫秒）
      */
     private Long lastDurationMs;
