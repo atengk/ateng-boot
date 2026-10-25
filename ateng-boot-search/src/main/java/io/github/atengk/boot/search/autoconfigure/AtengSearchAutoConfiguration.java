@@ -2,18 +2,23 @@ package io.github.atengk.boot.search.autoconfigure;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.search.bulk.BulkListener;
+import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.search.template.SearchTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+
+import java.util.concurrent.Executor;
 
 /**
  * 搜索引擎自动装配配置类
@@ -43,5 +48,22 @@ public class AtengSearchAutoConfiguration {
     public SearchTemplate searchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties) {
         log.info("Auto-configuring SearchTemplate");
         return new SearchTemplate(searchEngineClient, properties);
+    }
+
+    @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(SearchBulkProcessor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.search.bulk", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SearchBulkProcessor searchBulkProcessor(SearchTemplate searchTemplate,
+                                                   AtengSearchProperties properties,
+                                                   ObjectProvider<BulkListener> bulkListenerProvider,
+                                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        log.info("Auto-configuring SearchBulkProcessor with batchSize={}, flushInterval={}, bufferSize={}",
+                properties.getBulk().getBatchSize(),
+                properties.getBulk().getFlushInterval(),
+                properties.getBulk().getBufferSize());
+        SearchBulkProcessor.Builder builder = searchTemplate.newBulkProcessorBuilder();
+        bulkListenerProvider.ifAvailable(builder::listener);
+        taskExecutorProvider.ifAvailable(builder::executor);
+        return builder.build();
     }
 }

@@ -4,6 +4,7 @@ import io.github.atengk.boot.search.enums.SearchEngineType;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -98,6 +99,12 @@ public class AtengSearchProperties {
     @NestedConfigurationProperty
     private PaginationProperties pagination = new PaginationProperties();
 
+    /**
+     * 批量缓冲写入治理配置 (BulkProcessor)
+     */
+    @NestedConfigurationProperty
+    private BulkProcessorProperties bulk = new BulkProcessorProperties();
+
     @Data
     public static class SslProperties {
         /**
@@ -140,5 +147,43 @@ public class AtengSearchProperties {
          * 浅分页最大结果窗口阈值，超过将刚性熔断（默认 10000）
          */
         private int maxResultWindow = 10000;
+    }
+
+    @Data
+    public static class BulkProcessorProperties {
+        /**
+         * 是否启用默认受管 BulkProcessor Bean
+         */
+        private boolean enabled = true;
+
+        /**
+         * 批量提交条数阈值（默认 1000 条）
+         */
+        private int batchSize = 1000;
+
+        /**
+         * 定时强制刷盘时间间隔（默认 1 秒）
+         */
+        private Duration flushInterval = Duration.ofSeconds(1);
+
+        /**
+         * 缓冲估算字节容量阈值（默认 5MB）
+         */
+        private DataSize bufferSize = DataSize.ofMegabytes(5);
+
+        /**
+         * 最大并发执行的 Flush 请求数（默认 1，>0 表示异步并发提交，0 表示同步阻塞提交）
+         */
+        private int concurrentRequests = 1;
+
+        /**
+         * 缓冲队列最大文档积压容量（默认 10000 条，超出将触发微退避背压防爆）
+         */
+        private int maxQueueCapacity = 10000;
+
+        /**
+         * 优雅停机排空最大等待超时时间（默认 10 秒）
+         */
+        private Duration awaitCloseTimeout = Duration.ofSeconds(10);
     }
 }

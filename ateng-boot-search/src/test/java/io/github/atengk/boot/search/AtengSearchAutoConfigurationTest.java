@@ -2,6 +2,7 @@ package io.github.atengk.boot.search;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import io.github.atengk.boot.search.autoconfigure.AtengSearchAutoConfiguration;
+import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.search.template.SearchTemplate;
@@ -28,11 +29,12 @@ class AtengSearchAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengSearchAutoConfiguration.class));
 
     @Test
-    @DisplayName("测试默认配置下 SearchEngineClient 与 SearchTemplate 成功自动装配")
+    @DisplayName("测试默认配置下 SearchEngineClient、SearchTemplate 与 SearchBulkProcessor 成功自动装配")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(SearchEngineClient.class);
             assertThat(context).hasSingleBean(SearchTemplate.class);
+            assertThat(context).hasSingleBean(SearchBulkProcessor.class);
         });
     }
 
@@ -44,6 +46,19 @@ class AtengSearchAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(SearchEngineClient.class);
                     assertThat(context).doesNotHaveBean(SearchTemplate.class);
+                    assertThat(context).doesNotHaveBean(SearchBulkProcessor.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试配置 bulk.enabled=false 时仅关闭 SearchBulkProcessor 装配")
+    void testDisabledBulkProcessorAutoConfiguration() {
+        contextRunner
+                .withPropertyValues("ateng.boot.search.bulk.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(SearchEngineClient.class);
+                    assertThat(context).hasSingleBean(SearchTemplate.class);
+                    assertThat(context).doesNotHaveBean(SearchBulkProcessor.class);
                 });
     }
 

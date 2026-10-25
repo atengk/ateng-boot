@@ -18,6 +18,7 @@ import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
+import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
@@ -77,6 +78,30 @@ public class SearchTemplate {
      */
     public SearchIndexOperations indices() {
         return this.searchIndexOperations;
+    }
+
+    /**
+     * 获取基于全局配置预设的受管流式批量缓冲处理器构建器
+     *
+     * @return SearchBulkProcessor.Builder 实例
+     */
+    public SearchBulkProcessor.Builder newBulkProcessorBuilder() {
+        return SearchBulkProcessor.builder(this)
+                .batchSize(properties.getBulk().getBatchSize())
+                .flushInterval(properties.getBulk().getFlushInterval())
+                .bufferSize(properties.getBulk().getBufferSize())
+                .concurrentRequests(properties.getBulk().getConcurrentRequests())
+                .maxQueueCapacity(properties.getBulk().getMaxQueueCapacity())
+                .awaitCloseTimeout(properties.getBulk().getAwaitCloseTimeout());
+    }
+
+    /**
+     * 基于全局配置构建一个自闭环的受管流式批量缓冲处理器
+     *
+     * @return SearchBulkProcessor 实例
+     */
+    public SearchBulkProcessor bulkProcessor() {
+        return newBulkProcessorBuilder().build();
     }
 
     /**
@@ -882,7 +907,27 @@ public class SearchTemplate {
         return executeBulk(bulkBuilder.build(), validItemCount, lenient);
     }
 
-    private SearchBulkResult executeBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
+    /**
+     * 执行底层 Elasticsearch 批量提交请求
+     *
+     * @param bulkRequest Elasticsearch 官方 BulkRequest
+     * @param lenient     是否启用宽容模式（true 时不抛出异常，返回包含失败明细的 SearchBulkResult；false 时任一失败快速抛出 SearchBulkException）
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult executeBulk(BulkRequest bulkRequest, boolean lenient) {
+        int totalItems = bulkRequest != null && bulkRequest.operations() != null ? bulkRequest.operations().size() : 0;
+        return executeBulk(bulkRequest, totalItems, lenient);
+    }
+
+    /**
+     * 执行底层 Elasticsearch 批量提交请求（支持指定预期操作数）
+     *
+     * @param bulkRequest Elasticsearch 官方 BulkRequest
+     * @param totalItems  预期提交的操作项总数
+     * @param lenient     是否启用宽容模式
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult executeBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
         // 1. 执行 Elasticsearch 批量提交
         try {
             BulkResponse response = getClient().bulk(bulkRequest);
