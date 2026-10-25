@@ -67,6 +67,9 @@ class SampleSmokeIntegrationTest {
     @Autowired
     private RealtimeTemplate realtimeTemplate;
 
+    @Autowired(required = false)
+    private io.github.atengk.boot.statemachine.autoconfigure.StateMachineInitializer stateMachineInitializer;
+
     @BeforeEach
     @AfterEach
     void resetContexts() {
@@ -87,6 +90,7 @@ class SampleSmokeIntegrationTest {
         assertThat(realtimeTemplate.getOnlineUserCount()).isEqualTo(0);
         assertThat(SaManager.getStpInterface()).isNotNull();
         assertThat(SaManager.getConfig()).isNotNull();
+        assertThat(stateMachineInitializer).isNotNull();
     }
 
     @Test
