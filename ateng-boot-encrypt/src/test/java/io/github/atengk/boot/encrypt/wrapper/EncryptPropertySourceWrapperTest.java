@@ -127,4 +127,45 @@ class EncryptPropertySourceWrapperTest {
         // 断言严禁在异常中泄露原始密文
         assertFalse(ex.getMessage().contains(invalidCipher));
     }
+
+    @Test
+    @DisplayName("测试包装属性源对非对称 RSA 与国密 SM2 透明解密")
+    void testAsymmetricRsaAndSm2TransparentDecryption() throws Exception {
+        // 1. RSA
+        java.security.KeyPair rsaKeyPair = io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor.generateKeyPair(2048);
+        String rsaPub = io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor.encodePublicKey(rsaKeyPair.getPublic());
+        String rsaPriv = io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor.encodePrivateKey(rsaKeyPair.getPrivate());
+        String rsaPlain = "rsa_confidential_db_secret";
+        String rsaCipher = io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor.encrypt(rsaPlain, rsaPub);
+
+        // 2. SM2
+        io.github.atengk.boot.encrypt.decryptor.Sm2Engine.Sm2KeyPair sm2KeyPair = io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor.generateKeyPair();
+        String sm2Pub = sm2KeyPair.getPublicKeyHex();
+        String sm2Priv = sm2KeyPair.getPrivateKeyHex();
+        String sm2Plain = "sm2_wechat_payment_secret";
+        String sm2Cipher = io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor.encrypt(sm2Plain, sm2Pub);
+
+        // 多密钥映射：仅注入私钥解密
+        KeyDetector detector = new KeyDetector(masterPassword, Map.of(
+                "rsa-prod", rsaPriv,
+                "sm2-prod", sm2Priv
+        ));
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("custom.rsa.password", "ENC[rsa-prod](RSA@" + rsaCipher + ")");
+        map.put("custom.sm2.password", "ENC[sm2-prod](SM2@" + sm2Cipher + ")");
+        MapPropertySource rawSource = new MapPropertySource("asymSource", map);
+
+        EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
+                rawSource,
+                new CiphertextParser(),
+                detector,
+                null, // 默认自动装配所有解密器
+                EncryptAlgorithm.AES_GCM,
+                true
+        );
+
+        assertEquals(rsaPlain, wrapper.getProperty("custom.rsa.password"));
+        assertEquals(sm2Plain, wrapper.getProperty("custom.sm2.password"));
+    }
 }

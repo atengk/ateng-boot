@@ -103,11 +103,11 @@ public class CiphertextParser {
             String algoPrefix = trimmed.substring(0, atIndex).trim();
             EncryptAlgorithm algo = EncryptAlgorithm.fromCode(algoPrefix);
             if (algo != null) {
-                String ciphertext = trimmed.substring(atIndex + 1).trim();
-                return new ParsedToken(rawToken, keyId, algo, ciphertext);
+                String ciphertext = trimmed.substring(atIndex + 1);
+                return new ParsedToken(rawToken, keyId, algo, MultilineSecretFormatter.cleanCiphertext(ciphertext));
             }
         }
-        return new ParsedToken(rawToken, keyId, null, trimmed);
+        return new ParsedToken(rawToken, keyId, null, MultilineSecretFormatter.cleanCiphertext(trimmed));
     }
 
     @Getter

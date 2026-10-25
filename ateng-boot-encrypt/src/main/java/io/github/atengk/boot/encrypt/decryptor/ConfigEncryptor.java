@@ -32,7 +32,9 @@ public final class ConfigEncryptor {
             case AES_CBC -> AesCbcConfigDecryptor.encrypt(plaintext, password);
             case SM4_CBC -> Sm4ConfigDecryptor.encryptCbc(plaintext, password);
             case SM4_ECB -> Sm4ConfigDecryptor.encryptEcb(plaintext, password);
-            default -> throw new UnsupportedOperationException("暂不支持算法的对称加密: " + algo);
+            case RSA -> RsaConfigDecryptor.encrypt(plaintext, password);
+            case SM2 -> Sm2ConfigDecryptor.encrypt(plaintext, password);
+            default -> throw new UnsupportedOperationException("暂不支持算法的加密: " + algo);
         };
     }
 

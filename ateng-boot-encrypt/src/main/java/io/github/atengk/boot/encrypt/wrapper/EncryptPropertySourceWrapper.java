@@ -4,6 +4,8 @@ import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.decryptor.AesCbcConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
@@ -71,6 +73,12 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
         }
         if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM4_CBC))) {
             list.add(new Sm4ConfigDecryptor());
+        }
+        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.RSA))) {
+            list.add(new RsaConfigDecryptor());
+        }
+        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM2))) {
+            list.add(new Sm2ConfigDecryptor());
         }
         return list;
     }

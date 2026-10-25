@@ -127,4 +127,22 @@ class CiphertextParserTest {
         assertFalse(parser.hasEncrypted(input));
         assertEquals(input, parser.replaceTokens(input, token -> "not_called"));
     }
+
+    @Test
+    @DisplayName("测试多行折行与缩进空白 YAML 密文自动清洗")
+    void testMultilineYamlCiphertextCleaning() {
+        String input = "ENC(\n"
+                + "  RSA@MIIEvgIBADANBgkqhkiG9w0BAQEFAASC\r\n"
+                + "  BKgwggSkAgEAAoIBAQC7+abcdef\t\n"
+                + "  1234567890==\n"
+                + ")";
+        assertTrue(parser.hasEncrypted(input));
+
+        String replaced = parser.replaceTokens(input, token -> {
+            assertEquals(EncryptAlgorithm.RSA, token.getAlgorithm());
+            assertEquals("MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7+abcdef1234567890==", token.getCiphertext());
+            return "cleaned_rsa_plain";
+        });
+        assertEquals("cleaned_rsa_plain", replaced);
+    }
 }
