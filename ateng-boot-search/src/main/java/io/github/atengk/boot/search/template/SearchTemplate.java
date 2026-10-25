@@ -3,13 +3,20 @@ package io.github.atengk.boot.search.template;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.Result;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.enums.SearchResultCode;
+import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
+import io.github.atengk.boot.search.model.SearchBulkFailure;
+import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
@@ -18,6 +25,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.elasticsearch.client.ResponseException;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -469,7 +480,318 @@ public class SearchTemplate {
         }
     }
 
-    // ==================== 5. 底层逃生舱 (Execute) ====================
+    // ==================== 5. 双模批量写入治理 (Bulk Operations) ====================
+
+    /**
+     * 批量索引文档（严格快速失败模式）
+     * <p>
+     * 自动从各文档实体类解析 @SearchIndex 索引名与 @SearchId 文档 ID。
+     * 若底层批量操作存在任一文档失败，立即抛出 {@link SearchBulkException} 阻断脏数据扩散。
+     *
+     * @param documents 待索引文档集合
+     * @param <T>       文档实体类型
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档写入失败时抛出
+     */
+    public <T> SearchBulkResult indexBatch(Collection<T> documents) {
+        return indexBatch(null, documents);
+    }
+
+    /**
+     * 批量索引文档至指定索引（严格快速失败模式）
+     * <p>
+     * 若底层批量操作存在任一文档失败，立即抛出 {@link SearchBulkException} 阻断脏数据扩散。
+     *
+     * @param index     目标索引名（为 null 时自动解析各实体类注解）
+     * @param documents 待索引文档集合
+     * @param <T>       文档实体类型
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档写入失败时抛出
+     */
+    public <T> SearchBulkResult indexBatch(String index, Collection<T> documents) {
+        return doBulkIndex(index, documents, false);
+    }
+
+    /**
+     * 批量索引文档（宽容模式）
+     * <p>
+     * 不向外抛出批量局部失败异常，将全部执行结果结构化封装进 {@link SearchBulkResult} 返回，
+     * 专供数据管道同步、死信队列隔离与局部补偿重试场景。
+     *
+     * @param documents 待索引文档集合
+     * @param <T>       文档实体类型
+     * @return 批量操作结果模型（包含成功数与失败列表快照）
+     */
+    public <T> SearchBulkResult indexBatchLenient(Collection<T> documents) {
+        return indexBatchLenient(null, documents);
+    }
+
+    /**
+     * 批量索引文档至指定索引（宽容模式）
+     *
+     * @param index     目标索引名（为 null 时自动解析各实体类注解）
+     * @param documents 待索引文档集合
+     * @param <T>       文档实体类型
+     * @return 批量操作结果模型（包含成功数与失败列表快照）
+     */
+    public <T> SearchBulkResult indexBatchLenient(String index, Collection<T> documents) {
+        return doBulkIndex(index, documents, true);
+    }
+
+    /**
+     * 批量局部更新文档（严格快速失败模式）
+     * <p>
+     * 自动从各文档实体类解析 @SearchIndex 索引名与 @SearchId 文档 ID。
+     *
+     * @param partialDocs 局部变更实体集合
+     * @param <T>         文档实体类型
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档更新失败时抛出
+     */
+    public <T> SearchBulkResult updateBatch(Collection<T> partialDocs) {
+        return updateBatch(null, partialDocs, false);
+    }
+
+    /**
+     * 批量局部更新文档，支持 docAsUpsert（严格快速失败模式）
+     *
+     * @param index       目标索引名（为 null 时自动解析实体注解）
+     * @param partialDocs 局部变更实体集合
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param <T>         文档实体类型
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档更新失败时抛出
+     */
+    public <T> SearchBulkResult updateBatch(String index, Collection<T> partialDocs, boolean docAsUpsert) {
+        return doBulkUpdate(index, partialDocs, docAsUpsert, false);
+    }
+
+    /**
+     * 批量局部更新文档（宽容模式）
+     *
+     * @param partialDocs 局部变更实体集合
+     * @param <T>         文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult updateBatchLenient(Collection<T> partialDocs) {
+        return updateBatchLenient(null, partialDocs, false);
+    }
+
+    /**
+     * 批量局部更新文档，支持 docAsUpsert（宽容模式）
+     *
+     * @param index       目标索引名（为 null 时自动解析实体注解）
+     * @param partialDocs 局部变更实体集合
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param <T>         文档实体类型
+     * @return 批量操作结果模型
+     */
+    public <T> SearchBulkResult updateBatchLenient(String index, Collection<T> partialDocs, boolean docAsUpsert) {
+        return doBulkUpdate(index, partialDocs, docAsUpsert, true);
+    }
+
+    /**
+     * 根据主键 ID 集合批量删除文档（严格快速失败模式）
+     *
+     * @param clazz 实体类类型（用于解析索引名）
+     * @param ids   待删除的文档 ID 集合
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档删除失败时抛出
+     */
+    public SearchBulkResult deleteBatch(Class<?> clazz, Collection<String> ids) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return deleteBatch(index, ids);
+    }
+
+    /**
+     * 根据主键 ID 集合批量从指定索引删除文档（严格快速失败模式）
+     *
+     * @param index 目标索引名
+     * @param ids   待删除的文档 ID 集合
+     * @return 批量操作结果模型（全量成功时返回）
+     * @throws SearchBulkException 当任一文档删除失败时抛出
+     */
+    public SearchBulkResult deleteBatch(String index, Collection<String> ids) {
+        return doBulkDelete(index, ids, false);
+    }
+
+    /**
+     * 根据主键 ID 集合批量删除文档（宽容模式）
+     *
+     * @param clazz 实体类类型（用于解析索引名）
+     * @param ids   待删除的文档 ID 集合
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(Class<?> clazz, Collection<String> ids) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return deleteBatchLenient(index, ids);
+    }
+
+    /**
+     * 根据主键 ID 集合批量从指定索引删除文档（宽容模式）
+     *
+     * @param index 目标索引名
+     * @param ids   待删除的文档 ID 集合
+     * @return 批量操作结果模型
+     */
+    public SearchBulkResult deleteBatchLenient(String index, Collection<String> ids) {
+        return doBulkDelete(index, ids, true);
+    }
+
+    private <T> SearchBulkResult doBulkIndex(String index, Collection<T> documents, boolean lenient) {
+        if (CollectionUtil.isEmpty(documents)) {
+            return emptyBulkResult();
+        }
+
+        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
+        if (StringUtils.hasText(index)) {
+            bulkBuilder.index(index);
+        }
+
+        int validItemCount = 0;
+        for (T doc : documents) {
+            if (doc == null) {
+                continue;
+            }
+            String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
+            String docId = SearchMetadataHelper.resolveDocumentId(doc);
+            bulkBuilder.operations(op -> op.index(idx -> {
+                idx.index(docIndex).document(doc);
+                if (StringUtils.hasText(docId)) {
+                    idx.id(docId);
+                }
+                return idx;
+            }));
+            validItemCount++;
+        }
+
+        if (validItemCount == 0) {
+            return emptyBulkResult();
+        }
+
+        return executeBulk(bulkBuilder.build(), validItemCount, lenient);
+    }
+
+    private <T> SearchBulkResult doBulkUpdate(String index, Collection<T> partialDocs, boolean docAsUpsert, boolean lenient) {
+        if (CollectionUtil.isEmpty(partialDocs)) {
+            return emptyBulkResult();
+        }
+
+        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder();
+        if (StringUtils.hasText(index)) {
+            bulkBuilder.index(index);
+        }
+
+        int validItemCount = 0;
+        for (T doc : partialDocs) {
+            if (doc == null) {
+                continue;
+            }
+            String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
+            String docId = SearchMetadataHelper.resolveDocumentId(doc);
+            if (!StringUtils.hasText(docId)) {
+                throw new IllegalArgumentException("Cannot update document without an ID in batch update. Ensure @SearchId is configured on the entity.");
+            }
+            bulkBuilder.operations(op -> op.update(u -> u
+                    .index(docIndex)
+                    .id(docId)
+                    .action(a -> a.doc(doc).docAsUpsert(docAsUpsert))
+            ));
+            validItemCount++;
+        }
+
+        if (validItemCount == 0) {
+            return emptyBulkResult();
+        }
+
+        return executeBulk(bulkBuilder.build(), validItemCount, lenient);
+    }
+
+    private SearchBulkResult doBulkDelete(String index, Collection<String> ids, boolean lenient) {
+        Objects.requireNonNull(index, "index must not be null");
+        if (CollectionUtil.isEmpty(ids)) {
+            return emptyBulkResult();
+        }
+
+        BulkRequest.Builder bulkBuilder = new BulkRequest.Builder().index(index);
+        int validItemCount = 0;
+        for (String id : ids) {
+            if (!StringUtils.hasText(id)) {
+                continue;
+            }
+            bulkBuilder.operations(op -> op.delete(d -> d.index(index).id(id)));
+            validItemCount++;
+        }
+
+        if (validItemCount == 0) {
+            return emptyBulkResult();
+        }
+
+        return executeBulk(bulkBuilder.build(), validItemCount, lenient);
+    }
+
+    private SearchBulkResult executeBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
+        // 1. 执行 Elasticsearch 批量提交
+        try {
+            BulkResponse response = getClient().bulk(bulkRequest);
+            List<SearchBulkFailure> failures = new ArrayList<>();
+
+            // 2. 结构化提取局部失败项明细
+            if (response.errors() && response.items() != null) {
+                for (BulkResponseItem item : response.items()) {
+                    boolean isError = item.error() != null || (item.status() >= 400 && !"not_found".equalsIgnoreCase(item.result()));
+                    if (isError) {
+                        String errorReason = item.error() != null ? item.error().reason() : "HTTP status " + item.status();
+                        String errorType = item.error() != null ? item.error().type() : null;
+                        failures.add(SearchBulkFailure.builder()
+                                .index(item.index())
+                                .id(item.id())
+                                .status(item.status())
+                                .errorReason(errorReason)
+                                .errorType(errorType)
+                                .build());
+                    }
+                }
+            }
+
+            int failureCount = failures.size();
+            int successCount = totalItems - failureCount;
+            SearchBulkResult result = SearchBulkResult.builder()
+                    .successCount(successCount)
+                    .failureCount(failureCount)
+                    .took(response.took())
+                    .failures(Collections.unmodifiableList(failures))
+                    .build();
+
+            // 3. 严格模式下快速失败，抛出强类型受管异常
+            if (!lenient && result.hasFailures()) {
+                SearchBulkFailure first = failures.get(0);
+                String summary = String.format("Bulk operation failed for %d item(s) out of %d. First error on id [%s] (status %d): %s",
+                        failureCount, totalItems, first.getId(), first.getStatus(), first.getErrorReason());
+                throw new SearchBulkException(summary, result.getFailures(), successCount, failureCount);
+            }
+
+            return result;
+        } catch (SearchException se) {
+            throw se;
+        } catch (Exception e) {
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Bulk operation execution failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static SearchBulkResult emptyBulkResult() {
+        return SearchBulkResult.builder()
+                .successCount(0)
+                .failureCount(0)
+                .took(0L)
+                .failures(Collections.emptyList())
+                .build();
+    }
+
+    // ==================== 6. 底层逃生舱 (Execute) ====================
 
     /**
      * 原生底层逃生舱执行器

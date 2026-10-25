@@ -3,8 +3,12 @@ package io.github.atengk.boot.search;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
 import io.github.atengk.boot.search.entity.UserDoc;
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.SearchResultCode;
+import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
+import io.github.atengk.boot.search.model.SearchBulkFailure;
+import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.template.SearchTemplate;
@@ -21,6 +25,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -536,6 +541,328 @@ class SearchTemplateMockServerTest {
         });
 
         assertThat(username).isEqualTo("escape");
+    }
+
+    // ==================== 批量操作测试 (Bulk Operations Tests) ====================
+
+    @Test
+    @DisplayName("测试批量索引全量成功及NDJSON序列化")
+    void testIndexBatchSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 15,
+                  "errors": false,
+                  "items": [
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 0,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    },
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678902",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 1,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        UserDoc doc1 = UserDoc.builder()
+                .id(1849764512345678901L)
+                .username("ateng1")
+                .email("ateng1@example.com")
+                .age(20)
+                .createTime(LocalDateTime.of(2026, 10, 25, 12, 0, 0))
+                .build();
+        UserDoc doc2 = UserDoc.builder()
+                .id(1849764512345678902L)
+                .username("ateng2")
+                .email("ateng2@example.com")
+                .age(22)
+                .createTime(LocalDateTime.of(2026, 10, 25, 12, 0, 0))
+                .build();
+
+        SearchBulkResult result = searchTemplate.indexBatch(List.of(doc1, doc2));
+
+        assertThat(result).isNotNull();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.hasFailures()).isFalse();
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getFailureCount()).isEqualTo(0);
+        assertThat(result.getTook()).isEqualTo(15L);
+        assertThat(result.getFailures()).isEmpty();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/_bulk");
+
+        String body = recordedRequest.getBody().readUtf8();
+        assertThat(body).contains("\"_index\":\"user_idx\"");
+        assertThat(body).contains("\"_id\":\"1849764512345678901\"");
+        assertThat(body).contains("\"_id\":\"1849764512345678902\"");
+        // 关键断言：Jackson 统一序列化规则生效（雪花主键 String、时间标准格式）
+        assertThat(body).contains("\"createTime\":\"2026-10-25 12:00:00\"");
+    }
+
+    @Test
+    @DisplayName("测试批量索引指定自定义索引名覆盖实体注解")
+    void testIndexBatchCustomIndex() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 10,
+                  "errors": false,
+                  "items": [
+                    {
+                      "index": {
+                        "_index": "custom_user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 0,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        UserDoc doc = UserDoc.builder().id(1849764512345678901L).username("custom").build();
+        SearchBulkResult result = searchTemplate.indexBatch("custom_user_idx", List.of(doc));
+
+        assertThat(result.isSuccess()).isTrue();
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getBody().readUtf8()).contains("\"_index\":\"custom_user_idx\"");
+    }
+
+    @Test
+    @DisplayName("测试严格模式批量写入局部失败立即抛出 SearchBulkException")
+    void testIndexBatchStrictPartialFailure() {
+        String mockResponseBody = """
+                {
+                  "took": 25,
+                  "errors": true,
+                  "items": [
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 0,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    },
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678902",
+                        "status": 400,
+                        "error": {
+                          "type": "mapper_parsing_exception",
+                          "reason": "failed to parse field [age] of type [long] in document with id '1849764512345678902'"
+                        }
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        UserDoc doc1 = UserDoc.builder().id(1849764512345678901L).username("ateng1").build();
+        UserDoc doc2 = UserDoc.builder().id(1849764512345678902L).username("ateng2").build();
+
+        assertThatThrownBy(() -> searchTemplate.indexBatch(List.of(doc1, doc2)))
+                .isInstanceOf(SearchBulkException.class)
+                .satisfies(ex -> {
+                    SearchBulkException bulkEx = (SearchBulkException) ex;
+                    assertThat(bulkEx.getResultCode()).isEqualTo(SearchResultCode.SEARCH_BULK_PARTIAL_ERROR);
+                    assertThat(bulkEx.getSuccessCount()).isEqualTo(1);
+                    assertThat(bulkEx.getFailureCount()).isEqualTo(1);
+                    assertThat(bulkEx.getFailures()).hasSize(1);
+                    SearchBulkFailure failure = bulkEx.getFailures().get(0);
+                    assertThat(failure.getId()).isEqualTo("1849764512345678902");
+                    assertThat(failure.getIndex()).isEqualTo("user_idx");
+                    assertThat(failure.getStatus()).isEqualTo(400);
+                    assertThat(failure.getErrorType()).isEqualTo("mapper_parsing_exception");
+                    assertThat(failure.getErrorReason()).contains("failed to parse field [age]");
+                    assertThat(bulkEx.getMessage()).contains("Bulk operation failed for 1 item(s)");
+                    assertThat(bulkEx.getMessage()).contains("1849764512345678902");
+                });
+    }
+
+    @Test
+    @DisplayName("测试宽容模式批量写入局部失败保底返回 SearchBulkResult")
+    void testIndexBatchLenientPartialFailure() {
+        String mockResponseBody = """
+                {
+                  "took": 25,
+                  "errors": true,
+                  "items": [
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 0,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    },
+                    {
+                      "index": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678902",
+                        "status": 409,
+                        "error": {
+                          "type": "version_conflict_engine_exception",
+                          "reason": "version conflict on document"
+                        }
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        UserDoc doc1 = UserDoc.builder().id(1849764512345678901L).username("ateng1").build();
+        UserDoc doc2 = UserDoc.builder().id(1849764512345678902L).username("ateng2").build();
+
+        SearchBulkResult result = searchTemplate.indexBatchLenient(List.of(doc1, doc2));
+
+        assertThat(result).isNotNull();
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.hasFailures()).isTrue();
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+        assertThat(result.getFailureCount()).isEqualTo(1);
+        assertThat(result.getFailures()).hasSize(1);
+        SearchBulkFailure failure = result.getFailures().get(0);
+        assertThat(failure.getId()).isEqualTo("1849764512345678902");
+        assertThat(failure.getStatus()).isEqualTo(409);
+        assertThat(failure.getErrorType()).isEqualTo("version_conflict_engine_exception");
+        assertThat(failure.getErrorReason()).isEqualTo("version conflict on document");
+    }
+
+    @Test
+    @DisplayName("测试空集合与null防卫快速保底返回且不发起远程请求")
+    void testIndexBatchEmptyDefensiveReturn() {
+        SearchBulkResult res1 = searchTemplate.indexBatch(null);
+        assertThat(res1.isSuccess()).isTrue();
+        assertThat(res1.getSuccessCount()).isEqualTo(0);
+        assertThat(res1.getFailures()).isEmpty();
+
+        SearchBulkResult res2 = searchTemplate.indexBatch(Collections.emptyList());
+        assertThat(res2.isSuccess()).isTrue();
+        assertThat(res2.getSuccessCount()).isEqualTo(0);
+
+        SearchBulkResult res3 = searchTemplate.indexBatchLenient(null);
+        assertThat(res3.isSuccess()).isTrue();
+
+        SearchBulkResult res4 = searchTemplate.indexBatchLenient(Collections.emptyList());
+        assertThat(res4.isSuccess()).isTrue();
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试批量局部更新 updateBatch 成功")
+    void testUpdateBatchSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 20,
+                  "errors": false,
+                  "items": [
+                    {
+                      "update": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 2,
+                        "result": "updated",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 5,
+                        "_primary_term": 1,
+                        "status": 200
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        UserDoc partial = UserDoc.builder().id(1849764512345678901L).email("bulk_update@example.com").build();
+        SearchBulkResult result = searchTemplate.updateBatch(List.of(partial));
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("POST");
+        assertThat(request.getPath()).isEqualTo("/_bulk");
+        String body = request.getBody().readUtf8();
+        assertThat(body).contains("\"update\":{");
+        assertThat(body).contains("\"_index\":\"user_idx\"");
+        assertThat(body).contains("\"_id\":\"1849764512345678901\"");
+        assertThat(body).contains("\"doc\":{");
+        assertThat(body).contains("\"email\":\"bulk_update@example.com\"");
+    }
+
+    @Test
+    @DisplayName("测试批量删除 deleteBatch 成功与严格失败")
+    void testDeleteBatch() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 12,
+                  "errors": false,
+                  "items": [
+                    {
+                      "delete": {
+                        "_index": "user_idx",
+                        "_id": "1849764512345678901",
+                        "_version": 3,
+                        "result": "deleted",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 6,
+                        "_primary_term": 1,
+                        "status": 200
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchBulkResult result = searchTemplate.deleteBatch(UserDoc.class, List.of("1849764512345678901"));
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("POST");
+        assertThat(request.getPath()).isEqualTo("/user_idx/_bulk");
+        String deleteBody = request.getBody().readUtf8();
+        assertThat(deleteBody).contains("\"delete\":{");
+        assertThat(deleteBody).contains("\"_index\":\"user_idx\"");
+        assertThat(deleteBody).contains("\"_id\":\"1849764512345678901\"");
     }
 
     @Test
