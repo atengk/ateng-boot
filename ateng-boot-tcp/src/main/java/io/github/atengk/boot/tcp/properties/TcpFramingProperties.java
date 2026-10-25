@@ -27,6 +27,11 @@ public class TcpFramingProperties {
     private String delimiter = "\r\n";
 
     /**
+     * 是否在分帧后自动剔除分隔符字节（当 mode = DELIMITER 时生效，默认 true）
+     */
+    private boolean stripDelimiter = true;
+
+    /**
      * 固定帧字节长度（当 mode = FIXED_LENGTH 时生效，默认 128 字节）
      */
     private int fixedLength = 128;
