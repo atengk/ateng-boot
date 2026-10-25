@@ -1,7 +1,3 @@
 # ConfigData Location Resolvers (Pre-Resolver Hook for Nacos Early Decryption)
 org.springframework.boot.context.config.ConfigDataLocationResolver=\
   io.github.atengk.boot.encrypt.env.EncryptConfigDataLocationResolver
-
-# Environment Post Processors (Fallback for older spring.factories loaders)
-org.springframework.boot.env.EnvironmentPostProcessor=\
-  io.github.atengk.boot.encrypt.env.EncryptEnvironmentPostProcessor

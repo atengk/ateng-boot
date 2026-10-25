@@ -28,6 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * ConfigData 瞬态位置解析穿透守卫（Pre-Resolver Hook）
  * 拥有最高优先级（Ordered.HIGHEST_PRECEDENCE），在所有配置中心解析器（如 Nacos、Apollo）解析外部 import 之前触发，
  * 动态穿透装饰当前已加载的本地配置源，使配置中心客户端在发起网络握手前获取解密后的真实凭据，彻底根除 403 认证死锁。
+ * <p>
+ * 契约说明：穿透探查机制针对 Spring Boot 3.x ConfigDataContributors 内部结构执行非破坏性轻量反射装饰；
+ * 若因极端宿主安全策略限制导致反射未命中，本组件将自动防御性静默，由第二阶段 {@link EncryptEnvironmentPostProcessor} 执行全量保障。
+ * </p>
  *
  * @author Ateng
  * @since 2026-10-25
