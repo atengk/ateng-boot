@@ -2,8 +2,12 @@ package io.github.atengk.boot.search.spi;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import io.github.atengk.boot.search.enums.SearchEngineType;
+import io.github.atengk.boot.search.enums.SearchResultCode;
+import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.template.SearchCallback;
 
 import java.io.Closeable;
+import java.util.Objects;
 
 /**
  * 搜索引擎客户端 SPI 统一抽象接口
@@ -39,5 +43,24 @@ public interface SearchEngineClient extends Closeable {
      */
     default ElasticsearchClient getElasticsearchClient() {
         return getNativeClient(ElasticsearchClient.class);
+    }
+
+    /**
+     * 原生强类型客户端回调执行器（提供底层逃生舱与受管异常闭环）
+     *
+     * @param callback 回调操作逻辑
+     * @param <R>      返回类型泛型
+     * @return 执行结果
+     */
+    default <R> R execute(SearchCallback<R> callback) {
+        Objects.requireNonNull(callback, "callback must not be null");
+        try {
+            return callback.doInSearch(getElasticsearchClient());
+        } catch (SearchException se) {
+            throw se;
+        } catch (Exception e) {
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Failed to execute elasticsearch callback action: " + e.getMessage(), e);
+        }
     }
 }

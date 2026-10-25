@@ -1,15 +1,20 @@
 package io.github.atengk.boot.search.driver;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.exception.SearchVersionConflictException;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
+import io.github.atengk.boot.search.template.SearchCallback;
+import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.Header;
 import org.apache.http.HttpHost;
@@ -21,6 +26,7 @@ import org.apache.http.conn.ssl.TrustAllStrategy;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.message.BasicHeader;
 import org.apache.http.ssl.SSLContextBuilder;
+import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
 import org.slf4j.MDC;
@@ -62,8 +68,10 @@ public class ElasticsearchClientDriver implements SearchEngineClient {
         // 1. 初始化底层 RestClient
         this.restClient = buildRestClient(properties);
 
-        // 2. 桥接 Jackson 序列化器（默认使用 Core 统一 long-to-string 契约）
-        ObjectMapper mapper = customObjectMapper != null ? customObjectMapper : JsonUtil.createLongToStringObjectMapper();
+        // 2. 桥接 Jackson 序列化器（默认使用 Core 统一 long-to-string 契约并忽略 null 字段，防御局部更新覆写）
+        ObjectMapper mapper = customObjectMapper != null ? customObjectMapper.copy() : JsonUtil.createLongToStringObjectMapper();
+        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        mapper.setDefaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL));
         JacksonJsonpMapper jsonpMapper = new JacksonJsonpMapper(mapper);
 
         // 3. 构造 Transport 与 ElasticsearchClient
@@ -98,6 +106,22 @@ public class ElasticsearchClientDriver implements SearchEngineClient {
     @Override
     public ElasticsearchClient getElasticsearchClient() {
         return this.elasticsearchClient;
+    }
+
+    @Override
+    public <R> R execute(SearchCallback<R> callback) {
+        Objects.requireNonNull(callback, "callback must not be null");
+        try {
+            return callback.doInSearch(this.elasticsearchClient);
+        } catch (SearchException se) {
+            throw se;
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isVersionConflict(e)) {
+                throw new SearchVersionConflictException("Version conflict during execute callback: " + e.getMessage(), e);
+            }
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Failed to execute elasticsearch callback action: " + e.getMessage(), e);
+        }
     }
 
     @Override

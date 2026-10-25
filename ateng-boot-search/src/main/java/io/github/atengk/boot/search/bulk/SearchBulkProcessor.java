@@ -1,6 +1,7 @@
 package io.github.atengk.boot.search.bulk;
 
 import co.elastic.clients.elasticsearch.core.BulkRequest;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.search.enums.SearchResultCode;
@@ -14,10 +15,14 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
@@ -91,11 +96,10 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
             this.executor = builder.executor;
             this.ownsExecutor = false;
         } else if (this.concurrentRequests > 0) {
-            this.executor = Executors.newFixedThreadPool(this.concurrentRequests, r -> {
-                Thread t = new Thread(r, "search-bulk-worker");
-                t.setDaemon(true);
-                return t;
-            });
+            this.executor = Executors.newFixedThreadPool(
+                    this.concurrentRequests,
+                    new NamedThreadFactory("search-bulk-worker-", true)
+            );
             this.ownsExecutor = true;
         } else {
             this.executor = null;
@@ -106,11 +110,9 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
             this.scheduler = builder.scheduler;
             this.ownsScheduler = false;
         } else {
-            this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "search-bulk-timer");
-                t.setDaemon(true);
-                return t;
-            });
+            this.scheduler = Executors.newSingleThreadScheduledExecutor(
+                    new NamedThreadFactory("search-bulk-timer-", true)
+            );
             this.ownsScheduler = true;
         }
 
@@ -382,24 +384,14 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         }
 
         List<SearchBulkAction> batch;
-        long batchBytes = 0;
         try {
-            if (queue.isEmpty()) {
-                return;
-            }
-            batch = new ArrayList<>(batchSize);
-            SearchBulkAction item;
-            while (batch.size() < batchSize && (item = queue.poll()) != null) {
-                batch.add(item);
-                batchBytes += item.getEstimatedBytes();
-            }
-            if (batch.isEmpty()) {
-                return;
-            }
-            currentCount.addAndGet(-batch.size());
-            currentBytes.addAndGet(-batchBytes);
+            batch = pollBatch(batchSize, bufferSizeInBytes);
         } finally {
             flushLock.unlock();
+        }
+
+        if (batch.isEmpty()) {
+            return;
         }
 
         // 物理提交当前批次
@@ -483,22 +475,104 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         return bulkBuilder.build();
     }
 
+    private static final ClassValue<Field[]> FIELD_CACHE = new ClassValue<>() {
+        @Override
+        protected Field[] computeValue(Class<?> type) {
+            Field[] all = type.getDeclaredFields();
+            List<Field> instanceFields = new ArrayList<>();
+            for (Field f : all) {
+                if (!Modifier.isStatic(f.getModifiers())) {
+                    f.setAccessible(true);
+                    instanceFields.add(f);
+                }
+            }
+            return instanceFields.toArray(new Field[0]);
+        }
+    };
+
+    /**
+     * 估算文档实体占用内存字节容量（轻量化启发式计算，杜绝全量 JSON 序列化开销）
+     *
+     * @param doc 文档实体
+     * @return 估算字节数
+     */
     private long estimateDocSize(Object doc) {
         if (doc == null) {
             return 0L;
         }
-        if (doc instanceof String str) {
-            return str.length();
+        if (doc instanceof CharSequence cs) {
+            return cs.length();
         }
         if (doc instanceof byte[] bytes) {
             return bytes.length;
         }
-        try {
-            String json = JsonUtil.toJsonString(doc);
-            return json != null ? json.length() : 256L;
-        } catch (Exception e) {
-            return 256L;
+        if (doc instanceof Number || doc instanceof Boolean) {
+            return 16L;
         }
+        if (doc instanceof Map<?, ?> map) {
+            long size = 32L;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                size += estimateDocSize(entry.getKey()) + estimateDocSize(entry.getValue()) + 16L;
+            }
+            return size;
+        }
+        // 对于普通 POJO 实体：基于反射缓存字段进行轻量级估算，避免入队热路径上的全量 JSON 序列化
+        try {
+            Field[] fields = FIELD_CACHE.get(doc.getClass());
+            long size = 32L;
+            for (Field field : fields) {
+                Class<?> type = field.getType();
+                if (type == String.class || CharSequence.class.isAssignableFrom(type)) {
+                    Object val = field.get(doc);
+                    size += val != null ? ((CharSequence) val).length() + 16L : 8L;
+                } else if (type.isPrimitive()) {
+                    size += 16L;
+                } else {
+                    size += 32L;
+                }
+            }
+            return Math.max(64L, size);
+        } catch (Exception e) {
+            return 128L;
+        }
+    }
+
+    /**
+     * 从队列中抽取单批待执行操作项（受 batch-size 条数与 buffer-size 字节容量双重阈值约束）
+     * <p>
+     * 保证在当前批次非空时，若追加下一项将超过 maxBytes，则提前截断批次；
+     * 当批次为空时，首个元素即便单体超过 maxBytes 也允许出队，保障超大文档不阻塞队列向前推进。
+     *
+     * @param maxCount 最大条数限制
+     * @param maxBytes 最大字节限制
+     * @return 抽取的批次列表（无可用元素时返回空列表）
+     */
+    private List<SearchBulkAction> pollBatch(int maxCount, long maxBytes) {
+        if (queue.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SearchBulkAction> batch = new ArrayList<>(Math.min(maxCount, 1000));
+        long batchBytes = 0;
+        while (batch.size() < maxCount) {
+            SearchBulkAction next = queue.peek();
+            if (next == null) {
+                break;
+            }
+            if (!batch.isEmpty() && maxBytes > 0 && (batchBytes + next.getEstimatedBytes()) > maxBytes) {
+                break;
+            }
+            SearchBulkAction polled = queue.poll();
+            if (polled == null) {
+                break;
+            }
+            batch.add(polled);
+            batchBytes += polled.getEstimatedBytes();
+        }
+        if (!batch.isEmpty()) {
+            currentCount.addAndGet(-batch.size());
+            currentBytes.addAndGet(-batchBytes);
+        }
+        return batch;
     }
 
     // ==================== 3. 运维、度量与确定性生命周期 ====================
@@ -528,28 +602,16 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
         while (!queue.isEmpty()) {
             flushLock.lock();
             List<SearchBulkAction> batch;
-            long batchBytes = 0;
             try {
-                if (queue.isEmpty()) {
-                    break;
-                }
-                batch = new ArrayList<>(batchSize);
-                SearchBulkAction item;
-                while (batch.size() < batchSize && (item = queue.poll()) != null) {
-                    batch.add(item);
-                    batchBytes += item.getEstimatedBytes();
-                }
-                if (!batch.isEmpty()) {
-                    currentCount.addAndGet(-batch.size());
-                    currentBytes.addAndGet(-batchBytes);
-                }
+                batch = pollBatch(batchSize, bufferSizeInBytes);
             } finally {
                 flushLock.unlock();
             }
 
-            if (batch != null && !batch.isEmpty()) {
-                executeBatch(batch);
+            if (batch.isEmpty()) {
+                break;
             }
+            executeBatch(batch);
         }
     }
 
@@ -661,8 +723,10 @@ public class SearchBulkProcessor implements SmartLifecycle, DisposableBean, Auto
 
     @Override
     public int getPhase() {
-        // 确保比底层连接驱动更早停止与排空，避免客户端先销毁导致 Flush 失败
-        return SmartLifecycle.DEFAULT_PHASE - 1000;
+        // Spring SmartLifecycle 停机按 Phase 降序执行（数值大者先停止）。
+        // DEFAULT_PHASE 即为 Integer.MAX_VALUE（最高优先级阶段），
+        // 确保在其他低阶段 Bean（如 Phase 0 的底层连接驱动与普通 Bean）销毁前，优先执行 Flush 安全排空
+        return SmartLifecycle.DEFAULT_PHASE;
     }
 
     @Override

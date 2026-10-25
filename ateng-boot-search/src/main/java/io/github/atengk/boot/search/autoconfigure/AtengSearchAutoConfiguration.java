@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -19,6 +20,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * 搜索引擎自动装配配置类
@@ -30,6 +32,7 @@ import java.util.concurrent.Executor;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration")
 @ConditionalOnClass(ElasticsearchClient.class)
 @ConditionalOnProperty(prefix = "ateng.boot.search", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengSearchProperties.class)
@@ -56,7 +59,9 @@ public class AtengSearchAutoConfiguration {
     public SearchBulkProcessor searchBulkProcessor(SearchTemplate searchTemplate,
                                                    AtengSearchProperties properties,
                                                    ObjectProvider<BulkListener> bulkListenerProvider,
-                                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+                                                   @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                                                   @Qualifier("taskScheduler") ObjectProvider<ScheduledExecutorService> taskSchedulerProvider,
+                                                   ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider) {
         log.info("Auto-configuring SearchBulkProcessor with batchSize={}, flushInterval={}, bufferSize={}",
                 properties.getBulk().getBatchSize(),
                 properties.getBulk().getFlushInterval(),
@@ -64,6 +69,10 @@ public class AtengSearchAutoConfiguration {
         SearchBulkProcessor.Builder builder = searchTemplate.newBulkProcessorBuilder();
         bulkListenerProvider.ifAvailable(builder::listener);
         taskExecutorProvider.ifAvailable(builder::executor);
+        ScheduledExecutorService scheduler = taskSchedulerProvider.getIfAvailable(scheduledExecutorProvider::getIfAvailable);
+        if (scheduler != null) {
+            builder.scheduler(scheduler);
+        }
         return builder.build();
     }
 }

@@ -24,6 +24,7 @@ import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
+import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
@@ -32,6 +33,7 @@ import io.github.atengk.boot.search.model.SearchScrollResult;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
+import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +41,7 @@ import org.elasticsearch.client.ResponseException;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -138,6 +141,18 @@ public class SearchTemplate {
     }
 
     /**
+     * 索引（新增或全量替换）文档，支持基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param document   待索引的文档实体
+     * @param occVersion 期望的 OCC 版本元数据
+     * @param <T>        实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String index(T document, OccVersion occVersion) {
+        return index(document, occVersion != null ? occVersion.seqNo() : null, occVersion != null ? occVersion.primaryTerm() : null);
+    }
+
+    /**
      * 索引（新增或全量替换）文档，支持乐观并发控制 (OCC)
      *
      * @param document      待索引的文档实体
@@ -165,6 +180,19 @@ public class SearchTemplate {
     }
 
     /**
+     * 索引（新增或全量替换）文档至指定索引，支持基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param index      目标索引名
+     * @param document   待索引的文档实体
+     * @param occVersion 期望的 OCC 版本元数据
+     * @param <T>        实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String index(String index, T document, OccVersion occVersion) {
+        return index(index, document, occVersion != null ? occVersion.seqNo() : null, occVersion != null ? occVersion.primaryTerm() : null);
+    }
+
+    /**
      * 索引（新增或全量替换）文档至指定索引，支持乐观并发控制 (OCC)
      *
      * @param index         目标索引名
@@ -175,7 +203,9 @@ public class SearchTemplate {
      * @return 索引后的文档 ID
      */
     public <T> String index(String index, T document, Long ifSeqNo, Long ifPrimaryTerm) {
-        Objects.requireNonNull(index, "index must not be null");
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
         Objects.requireNonNull(document, "document must not be null");
 
         String documentId = SearchMetadataHelper.resolveDocumentId(document);
@@ -198,7 +228,7 @@ public class SearchTemplate {
             log.debug("Indexed document [id={}] to index [{}], result: {}", response.id(), index, response.result());
             return response.id();
         } catch (Exception e) {
-            if (isVersionConflict(e)) {
+            if (SearchExceptionClassifier.isVersionConflict(e)) {
                 throw new SearchVersionConflictException(
                         "Document version conflict on index [" + index + "] id [" + documentId + "]: " + e.getMessage(),
                         ifSeqNo, ifPrimaryTerm, e);
@@ -321,9 +351,13 @@ public class SearchTemplate {
      * @return 命中文档载荷 SearchHit，若不存在返回 null
      */
     public <T> SearchHit<T> getHitById(String index, Class<T> clazz, String id, String routing) {
-        Objects.requireNonNull(index, "index must not be null");
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
         Objects.requireNonNull(clazz, "clazz must not be null");
-        Objects.requireNonNull(id, "document id must not be null");
+        if (!StringUtils.hasText(id)) {
+            throw new IllegalArgumentException("Document id must not be blank");
+        }
 
         // 分片路由防漏校验：若实体标注了 @SearchRouting 但未提供 routing，执行 Fail-Fast
         if (SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
@@ -352,7 +386,7 @@ public class SearchTemplate {
             }
             return null;
         } catch (Exception e) {
-            if (extractStatusCode(e) == 404) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
                 log.debug("Document or index not found for index [{}] and id [{}]", index, id);
                 return null;
             }
@@ -404,7 +438,21 @@ public class SearchTemplate {
      */
     public boolean update(String index, String id, Map<String, Object> partialDoc, boolean docAsUpsert,
                           Long ifSeqNo, Long ifPrimaryTerm) {
-        return doUpdate(index, id, partialDoc, docAsUpsert, ifSeqNo, ifPrimaryTerm);
+        return update(index, id, partialDoc, docAsUpsert, OccVersion.of(ifSeqNo, ifPrimaryTerm));
+    }
+
+    /**
+     * 局部更新文档字段，支持 docAsUpsert 与基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param index       目标索引名
+     * @param id          文档 ID
+     * @param partialDoc  局部变更字段键值对
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @return 是否成功更新
+     */
+    public boolean update(String index, String id, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+        return doUpdate(index, id, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -445,9 +493,23 @@ public class SearchTemplate {
      */
     public boolean update(Class<?> clazz, String id, Map<String, Object> partialDoc, boolean docAsUpsert,
                           Long ifSeqNo, Long ifPrimaryTerm) {
+        return update(clazz, id, partialDoc, docAsUpsert, OccVersion.of(ifSeqNo, ifPrimaryTerm));
+    }
+
+    /**
+     * 局部更新文档字段（从实体类自动解析索引名），支持 docAsUpsert 与基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param clazz       实体类类型
+     * @param id          文档 ID
+     * @param partialDoc  局部变更字段键值对
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @return 是否成功更新
+     */
+    public boolean update(Class<?> clazz, String id, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return update(index, id, partialDoc, docAsUpsert, ifSeqNo, ifPrimaryTerm);
+        return update(index, id, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -478,7 +540,22 @@ public class SearchTemplate {
      */
     public <T> boolean update(String index, String id, T partialDoc, boolean docAsUpsert,
                               Long ifSeqNo, Long ifPrimaryTerm) {
-        return doUpdate(index, id, partialDoc, docAsUpsert, ifSeqNo, ifPrimaryTerm);
+        return update(index, id, partialDoc, docAsUpsert, OccVersion.of(ifSeqNo, ifPrimaryTerm));
+    }
+
+    /**
+     * 局部更新文档实体字段，支持 docAsUpsert 与基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param index       目标索引名
+     * @param id          文档 ID
+     * @param partialDoc  局部变更实体
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @param <T>         实体类型
+     * @return 是否成功更新
+     */
+    public <T> boolean update(String index, String id, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+        return doUpdate(index, id, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -515,19 +592,35 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public <T> boolean update(T partialDoc, boolean docAsUpsert, Long ifSeqNo, Long ifPrimaryTerm) {
+        return update(partialDoc, docAsUpsert, OccVersion.of(ifSeqNo, ifPrimaryTerm));
+    }
+
+    /**
+     * 局部更新文档实体字段，支持 docAsUpsert 与基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param partialDoc  局部变更实体
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @param <T>         实体类型
+     * @return 是否成功更新
+     */
+    public <T> boolean update(T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
         String index = SearchMetadataHelper.resolveIndexName(partialDoc.getClass());
         String documentId = SearchMetadataHelper.resolveDocumentId(partialDoc);
         if (!StringUtils.hasText(documentId)) {
             throw new IllegalArgumentException("Cannot update document without an ID. Ensure @SearchId is configured on the entity.");
         }
-        return update(index, documentId, partialDoc, docAsUpsert, ifSeqNo, ifPrimaryTerm);
+        return update(index, documentId, partialDoc, docAsUpsert, occVersion);
     }
 
-    private <T> boolean doUpdate(String index, String id, T partialDoc, boolean docAsUpsert,
-                                 Long ifSeqNo, Long ifPrimaryTerm) {
-        Objects.requireNonNull(index, "index must not be null");
-        Objects.requireNonNull(id, "document id must not be null");
+    private <T> boolean doUpdate(String index, String id, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        if (!StringUtils.hasText(id)) {
+            throw new IllegalArgumentException("Document id must not be blank");
+        }
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
 
         String routing = SearchMetadataHelper.resolveRouting(partialDoc);
@@ -541,8 +634,8 @@ public class SearchTemplate {
                 if (StringUtils.hasText(routing)) {
                     builder.routing(routing);
                 }
-                if (ifSeqNo != null && ifPrimaryTerm != null) {
-                    builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
+                if (occVersion != null && occVersion.isSpecified()) {
+                    builder.ifSeqNo(occVersion.seqNo()).ifPrimaryTerm(occVersion.primaryTerm());
                 }
                 return builder;
             }, Void.class);
@@ -550,12 +643,14 @@ public class SearchTemplate {
             log.debug("Updated document [id={}] on index [{}], result: {}", id, index, response.result());
             return response.result() == Result.Updated || response.result() == Result.Created || response.result() == Result.NoOp;
         } catch (Exception e) {
-            if (isVersionConflict(e)) {
+            if (SearchExceptionClassifier.isVersionConflict(e)) {
                 throw new SearchVersionConflictException(
                         "Document version conflict on update for index [" + index + "] id [" + id + "]: " + e.getMessage(),
-                        ifSeqNo, ifPrimaryTerm, e);
+                        occVersion != null ? occVersion.seqNo() : null,
+                        occVersion != null ? occVersion.primaryTerm() : null,
+                        e);
             }
-            if (extractStatusCode(e) == 404) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
                 log.debug("Document or index not found for update on index [{}] and id [{}]", index, id);
                 return false;
             }
@@ -620,8 +715,12 @@ public class SearchTemplate {
      * @return 是否成功删除（若文档不存在则返回 false）
      */
     public boolean deleteById(String index, String id, String routing) {
-        Objects.requireNonNull(index, "index must not be null");
-        Objects.requireNonNull(id, "document id must not be null");
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        if (!StringUtils.hasText(id)) {
+            throw new IllegalArgumentException("Document id must not be blank");
+        }
 
         try {
             DeleteResponse response = getClient().delete(builder -> {
@@ -634,7 +733,7 @@ public class SearchTemplate {
             log.debug("Deleted document [id={}] from index [{}], result: {}", id, index, response.result());
             return response.result() == Result.Deleted;
         } catch (Exception e) {
-            if (extractStatusCode(e) == 404) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
                 log.debug("Document or index not found for deletion on index [{}] and id [{}]", index, id);
                 return false;
             }
@@ -1034,6 +1133,33 @@ public class SearchTemplate {
     }
 
     /**
+     * 执行深度游标滚动分页检索（首页检索）
+     *
+     * @param query 查询规格对象
+     * @param size  每页大小
+     * @param clazz 实体类类型
+     * @param <T>   实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(SearchQuery query, int size, Class<T> clazz) {
+        return searchAfter(query, Collections.emptyList(), size, clazz);
+    }
+
+    /**
+     * 在指定索引上执行深度游标滚动分页检索（首页检索）
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @param size  每页大小
+     * @param clazz 实体类类型
+     * @param <T>   实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(String index, SearchQuery query, int size, Class<T> clazz) {
+        return searchAfter(index, query, Collections.emptyList(), size, clazz);
+    }
+
+    /**
      * 执行深度游标滚动分页检索 (SearchAfter)
      * <p>
      * 自动从实体类解析 @SearchIndex 索引名；通过透传上一批末尾的 sortValues 实现无内存膨胀的深翻页。
@@ -1073,6 +1199,42 @@ public class SearchTemplate {
         int pageSize = size > 0 ? size : query.getSize();
         SearchResponse<T> response = doSearch(index, query, clazz, true, sortValues, pageSize);
         return buildSearchScrollResult(response, pageSize, clazz);
+    }
+
+    /**
+     * 执行深度游标滚动分页检索 (SearchAfter，支持 Object[] 数组形式的排序凭据)
+     *
+     * @param query      查询规格对象
+     * @param sortValues 上一批最后一条记录的排序凭据数组（首页为 null 或空数组）
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(SearchQuery query, Object[] sortValues, int size, Class<T> clazz) {
+        return searchAfter(query, toSortValuesList(sortValues), size, clazz);
+    }
+
+    /**
+     * 在指定索引上执行深度游标滚动分页检索 (SearchAfter，支持 Object[] 数组形式的排序凭据)
+     *
+     * @param index      目标索引名
+     * @param query      查询规格对象
+     * @param sortValues 上一批最后一条记录的排序凭据数组（首页为 null 或空数组）
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(String index, SearchQuery query, Object[] sortValues, int size, Class<T> clazz) {
+        return searchAfter(index, query, toSortValuesList(sortValues), size, clazz);
+    }
+
+    private static List<String> toSortValuesList(Object[] sortValues) {
+        if (sortValues == null || sortValues.length == 0) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(sortValues).filter(Objects::nonNull).map(Object::toString).toList();
     }
 
     private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
@@ -1263,47 +1425,10 @@ public class SearchTemplate {
      */
     public <R> R execute(SearchCallback<R> callback) {
         Objects.requireNonNull(callback, "SearchCallback must not be null");
-        try {
-            return callback.doInSearch(getClient());
-        } catch (SearchException se) {
-            throw se;
-        } catch (Exception e) {
-            if (isVersionConflict(e)) {
-                throw new SearchVersionConflictException("Document version conflict: " + e.getMessage(), e);
-            }
-            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
-                    "Elasticsearch operation failed: " + e.getMessage(), e);
-        }
+        return searchEngineClient.execute(callback);
     }
 
     // ==================== 私有辅助方法 ====================
-
-    private static int extractStatusCode(Throwable t) {
-        if (t == null) {
-            return -1;
-        }
-        if (t instanceof ElasticsearchException ee) {
-            return ee.status();
-        }
-        if (t instanceof ResponseException re) {
-            return re.getResponse().getStatusLine().getStatusCode();
-        }
-        return extractStatusCode(t.getCause());
-    }
-
-    private static boolean isVersionConflict(Throwable t) {
-        if (t == null) {
-            return false;
-        }
-        if (extractStatusCode(t) == 409) {
-            return true;
-        }
-        String msg = t.getMessage();
-        if (msg != null && (msg.contains("version_conflict_engine_exception") || msg.contains("version conflict"))) {
-            return true;
-        }
-        return false;
-    }
 
     private static String formatFieldValue(FieldValue fv) {
         if (fv == null || fv.isNull()) {

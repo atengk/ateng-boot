@@ -4,6 +4,9 @@ import io.github.atengk.boot.search.annotation.HighlightField;
 import io.github.atengk.boot.search.annotation.SearchId;
 import io.github.atengk.boot.search.annotation.SearchIndex;
 import io.github.atengk.boot.search.annotation.SearchRouting;
+import io.github.atengk.boot.search.enums.SearchResultCode;
+import io.github.atengk.boot.search.exception.SearchException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.convert.TypeDescriptor;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
@@ -32,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Ateng
  * @since 2026-10-25
  */
+@Slf4j
 public final class SearchMetadataHelper {
 
     private static final ExpressionParser SPEL_PARSER = new SpelExpressionParser();
@@ -84,8 +88,9 @@ public final class SearchMetadataHelper {
                 idField.setAccessible(true);
                 Object val = idField.get(doc);
                 return val != null ? String.valueOf(val) : null;
-            } catch (Exception ignored) {
-                // 静默忽略反射错误
+            } catch (Exception e) {
+                throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                        "Failed to access @SearchId field [" + idField.getName() + "] on entity: " + doc.getClass().getName(), e);
             }
         }
         return null;
@@ -142,8 +147,9 @@ public final class SearchMetadataHelper {
                 routingField.setAccessible(true);
                 Object val = routingField.get(doc);
                 return val != null ? String.valueOf(val) : null;
-            } catch (Exception ignored) {
-                // 静默忽略反射错误
+            } catch (Exception e) {
+                throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                        "Failed to access @SearchRouting field [" + routingField.getName() + "] on entity: " + doc.getClass().getName(), e);
             }
         }
         return null;
@@ -183,7 +189,8 @@ public final class SearchMetadataHelper {
             Expression expression = SPEL_PARSER.parseExpression(expressionStr, ParserContext.TEMPLATE_EXPRESSION);
             Object evaluated = expression.getValue(context);
             return evaluated != null ? evaluated.toString() : expressionStr;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.warn("Failed to evaluate SpEL expression [{}] for @SearchIndex: {}", expressionStr, e.getMessage(), e);
             return expressionStr;
         }
     }
@@ -272,7 +279,9 @@ public final class SearchMetadataHelper {
                     } else if (List.class.isAssignableFrom(meta.field().getType())) {
                         meta.field().set(target, fragments);
                     }
-                } catch (IllegalAccessException ignored) {
+                } catch (IllegalAccessException e) {
+                    log.warn("Failed to populate highlight field [{}] on entity {}: {}",
+                            meta.field().getName(), target.getClass().getName(), e.getMessage(), e);
                 }
             }
         }

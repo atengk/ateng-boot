@@ -89,11 +89,11 @@ public class SearchHit<T> implements Serializable {
     }
 
     /**
-     * 获取文档实体载荷数据（等价于 getContent）
+     * 获取检索高亮匹配片段集合（等价于 getHighlightFields）
      *
-     * @return 文档实体
+     * @return 高亮片段字典
      */
-    public T getData() {
-        return this.content;
+    public Map<String, List<String>> getHighlights() {
+        return this.highlightFields != null ? this.highlightFields : Collections.emptyMap();
     }
 }

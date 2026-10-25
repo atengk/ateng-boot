@@ -74,6 +74,15 @@ class AtengSearchAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("测试装配类声明了 @AutoConfigureAfter 包含 JacksonAutoConfiguration")
+    void testAutoConfigureAfterJackson() {
+        org.springframework.boot.autoconfigure.AutoConfigureAfter after =
+                AtengSearchAutoConfiguration.class.getAnnotation(org.springframework.boot.autoconfigure.AutoConfigureAfter.class);
+        assertThat(after).isNotNull();
+        assertThat(after.name()).contains("org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration");
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomSearchConfiguration {
 

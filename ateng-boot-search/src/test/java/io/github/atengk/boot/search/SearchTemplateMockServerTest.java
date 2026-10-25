@@ -16,6 +16,7 @@ import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
+import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
@@ -1435,7 +1436,7 @@ class SearchTemplateMockServerTest {
         mockWebServer.enqueue(esResponse(200, firstPageResp));
 
         SearchQuery query = SearchQuery.builder().match("title", "Item").build();
-        SearchScrollResult<SearchItemDoc> firstPage = searchTemplate.searchAfter(query, null, 1, SearchItemDoc.class);
+        SearchScrollResult<SearchItemDoc> firstPage = searchTemplate.searchAfter(query, (List<String>) null, 1, SearchItemDoc.class);
 
         assertThat(firstPage.getHits()).hasSize(1);
         assertThat(firstPage.isHasMore()).isTrue();
@@ -1575,5 +1576,250 @@ class SearchTemplateMockServerTest {
         assertThat(body).contains("\"terms\":{\"dept_id\":[\"101\",\"102\"]}");
         assertThat(body).contains("\"term\":{\"create_by\":{\"value\":\"user_001\"}}");
         assertThat(body).contains("\"terms\":{\"owner_dept\":[\"D1\",\"D2\"]}");
+    }
+
+    @Test
+    @DisplayName("测试实体局部更新不序列化 null 字段防御静默覆写")
+    void testPartialUpdateEntityOmitsNullFields() throws Exception {
+        String mockResp = """
+                {
+                  "_index": "user_idx",
+                  "_id": "1849764512345678901",
+                  "_version": 5,
+                  "result": "updated",
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                  "_seq_no": 5,
+                  "_primary_term": 1
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        UserDoc partial = UserDoc.builder()
+                .id(1849764512345678901L)
+                .email("no_nulls@example.com")
+                .build();
+
+        boolean updated = searchTemplate.update(partial);
+        assertThat(updated).isTrue();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"email\":\"no_nulls@example.com\"");
+        assertThat(requestBody).doesNotContain("\"username\":");
+        assertThat(requestBody).doesNotContain("\"score\":");
+        assertThat(requestBody).doesNotContain("\"age\":");
+    }
+
+    @Test
+    @DisplayName("测试基于 OccVersion 的强类型 OCC 索引与更新重载")
+    void testOccVersionOverloads() throws Exception {
+        String mockIndexResp = """
+                {
+                  "_index": "user_idx",
+                  "_id": "1849764512345678901",
+                  "_version": 2,
+                  "result": "created",
+                  "_seq_no": 5,
+                  "_primary_term": 2,
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(201, mockIndexResp));
+
+        UserDoc doc = UserDoc.builder()
+                .id(1849764512345678901L)
+                .username("occ_user")
+                .build();
+
+        OccVersion occ = OccVersion.of(5L, 2L);
+        assertThat(occ.isSpecified()).isTrue();
+        assertThat(occ.seqNo()).isEqualTo(5L);
+        assertThat(occ.primaryTerm()).isEqualTo(2L);
+
+        String id = searchTemplate.index(doc, occ);
+        assertThat(id).isEqualTo("1849764512345678901");
+
+        RecordedRequest req1 = mockWebServer.takeRequest();
+        assertThat(req1.getRequestUrl().queryParameter("if_seq_no")).isEqualTo("5");
+        assertThat(req1.getRequestUrl().queryParameter("if_primary_term")).isEqualTo("2");
+
+        // 测试 update(doc, false, occVersion)
+        String mockUpdateResp = """
+                {
+                  "_index": "user_idx",
+                  "_id": "1849764512345678901",
+                  "_version": 3,
+                  "result": "updated",
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                  "_seq_no": 8,
+                  "_primary_term": 3
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockUpdateResp));
+
+        boolean updated = searchTemplate.update(doc, false, OccVersion.of(8L, 3L));
+        assertThat(updated).isTrue();
+
+        RecordedRequest req2 = mockWebServer.takeRequest();
+        assertThat(req2.getRequestUrl().queryParameter("if_seq_no")).isEqualTo("8");
+        assertThat(req2.getRequestUrl().queryParameter("if_primary_term")).isEqualTo("3");
+    }
+
+    @Test
+    @DisplayName("测试 index/getHitById/deleteById/doUpdate 遇到空白参数快速失败")
+    void testFailFastValidationForBlankIndexAndId() {
+        UserDoc doc = UserDoc.builder().id(1L).username("test").build();
+
+        assertThatThrownBy(() -> searchTemplate.index("", doc))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.index("   ", doc))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.getHitById("", UserDoc.class, "1"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.getHitById("user_idx", UserDoc.class, ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Document id must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.deleteById("", "1"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.deleteById("user_idx", "   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Document id must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.update("", "1", Map.of("a", "b")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.update("user_idx", "", Map.of("a", "b")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Document id must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 execute 回调遭遇 409 版本冲突受管拦截")
+    void testExecuteCallbackConflictInterception() {
+        String errorResp = """
+                {
+                  "error": {
+                    "root_cause": [
+                      {
+                        "type": "version_conflict_engine_exception",
+                        "reason": "[1]: version conflict, required seqNo [1], primary term [1]. current version [2]"
+                      }
+                    ],
+                    "type": "version_conflict_engine_exception",
+                    "reason": "[1]: version conflict, required seqNo [1], primary term [1]. current version [2]",
+                    "index": "user_idx",
+                    "shard": "0"
+                  },
+                  "status": 409
+                }
+                """;
+        mockWebServer.enqueue(esResponse(409, errorResp));
+
+        assertThatThrownBy(() -> searchTemplate.execute(client -> {
+            return client.index(i -> i.index("user_idx").id("1").document(Map.of("name", "v1")).ifSeqNo(1L).ifPrimaryTerm(1L));
+        })).isInstanceOf(SearchVersionConflictException.class);
+    }
+
+    @Test
+    @DisplayName("测试 searchAfter 支持 Object[] 数组形式的排序凭据")
+    void testSearchAfterWithObjectArraySortValues() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": {
+                    "total": { "value": 1, "relation": "eq" },
+                    "hits": [
+                      {
+                        "_index": "search_item",
+                        "_id": "item_101",
+                        "_score": null,
+                        "_source": {
+                          "id": 101,
+                          "title": "Item 101"
+                        },
+                        "sort": [1700000000, "item_101"]
+                      }
+                    ]
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().match("title", "Item").build();
+        Object[] sortValues = new Object[]{1699999999L, "item_100"};
+        SearchScrollResult<SearchItemDoc> result = searchTemplate.searchAfter(query, sortValues, 10, SearchItemDoc.class);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getHits()).hasSize(1);
+        assertThat(result.getNextSortValues()).containsExactly("1700000000", "item_101");
+        assertThat(result.getNextSortValuesArray()).containsExactly("1700000000", "item_101");
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"search_after\":[\"1699999999\",\"item_100\"]");
+    }
+
+    @Test
+    @DisplayName("测试 SearchHit.getHighlights() 别名方法契约")
+    void testSearchHitGetHighlights() {
+        SearchHit<String> hit = SearchHit.<String>builder()
+                .id("1")
+                .content("hello")
+                .highlightFields(Map.of("title", List.of("<em>hello</em>")))
+                .build();
+
+        assertThat(hit.getHighlights()).isEqualTo(hit.getHighlightFields());
+        assertThat(hit.getHighlights().get("title")).containsExactly("<em>hello</em>");
+    }
+
+    @Test
+    @DisplayName("测试 searchAfter 三参数首页便捷重载方法")
+    void testSearchAfterFirstPageConvenienceMethod() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": {
+                    "total": { "value": 1, "relation": "eq" },
+                    "hits": [
+                      {
+                        "_index": "search_item",
+                        "_id": "item_201",
+                        "_score": null,
+                        "_source": {
+                          "id": 201,
+                          "title": "Item 201"
+                        },
+                        "sort": ["item_201"]
+                      }
+                    ]
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().match("title", "Item").build();
+        SearchScrollResult<SearchItemDoc> result = searchTemplate.searchAfter(query, 5, SearchItemDoc.class);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getHits()).hasSize(1);
+        assertThat(result.getNextSortValues()).containsExactly("item_201");
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).doesNotContain("\"search_after\"");
     }
 }

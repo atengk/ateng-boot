@@ -39,6 +39,18 @@ public class SearchScrollResult<T> implements Serializable {
     private List<String> nextSortValues;
 
     /**
+     * 获取下一次游标滚动所需的排序凭据数组（等价于 nextSortValues.toArray()）
+     *
+     * @return 排序凭据对象数组，无更多数据时为 null
+     */
+    public Object[] getNextSortValuesArray() {
+        if (nextSortValues == null || nextSortValues.isEmpty()) {
+            return null;
+        }
+        return nextSortValues.toArray(new Object[0]);
+    }
+
+    /**
      * 是否还有下一页数据
      */
     private boolean hasMore;

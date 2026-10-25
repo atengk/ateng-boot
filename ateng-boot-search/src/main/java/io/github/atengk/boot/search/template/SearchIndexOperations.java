@@ -13,6 +13,7 @@ import co.elastic.clients.elasticsearch.indices.update_aliases.Action;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -148,7 +149,7 @@ public class SearchIndexOperations {
             log.info("Deleted index [{}] acknowledged: {}", index, response.acknowledged());
             return response.acknowledged();
         } catch (Exception e) {
-            if (extractStatusCode(e) == 404) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
                 log.debug("Index [{}] does not exist, deletion returns false", index);
                 return false;
             }
@@ -218,7 +219,7 @@ public class SearchIndexOperations {
             }
             return null;
         } catch (Exception e) {
-            if (extractStatusCode(e) == 404) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
                 return null;
             }
             throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
@@ -294,18 +295,5 @@ public class SearchIndexOperations {
             throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
                     "Failed to swap alias [" + aliasName + "] from [" + oldIndex + "] to [" + newIndex + "]: " + e.getMessage(), e);
         }
-    }
-
-    private static int extractStatusCode(Throwable t) {
-        if (t == null) {
-            return -1;
-        }
-        if (t instanceof ElasticsearchException ee) {
-            return ee.status();
-        }
-        if (t instanceof ResponseException re) {
-            return re.getResponse().getStatusLine().getStatusCode();
-        }
-        return extractStatusCode(t.getCause());
     }
 }

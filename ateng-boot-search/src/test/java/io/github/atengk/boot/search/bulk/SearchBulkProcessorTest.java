@@ -446,4 +446,65 @@ class SearchBulkProcessorTest {
         assertThatThrownBy(() -> processor.delete("user_idx", ""))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("测试 SmartLifecycle 停机时序阶段必须为最高优先级 DEFAULT_PHASE 保证优先排空")
+    void testSmartLifecyclePhase() {
+        processor = searchTemplate.bulkProcessor();
+        assertThat(processor.getPhase()).isEqualTo(org.springframework.context.SmartLifecycle.DEFAULT_PHASE);
+        assertThat(processor.getPhase()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("测试批次提取受 buffer-size 容量上限截断约束")
+    void testPollBatchBoundedByBufferSize() throws Exception {
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+
+        processor = searchTemplate.newBulkProcessorBuilder()
+                .batchSize(1000)
+                .flushInterval(Duration.ofDays(1))
+                .bufferSize(DataSize.ofBytes(150))
+                .concurrentRequests(1)
+                .build();
+
+        for (int i = 1; i <= 4; i++) {
+            processor.add(UserDoc.builder().id((long) i).username("user_batch_limit_" + i).build());
+        }
+
+        processor.flush();
+
+        assertThat(mockWebServer.getRequestCount()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("测试 Spring ApplicationContext 关闭时触发 SmartLifecycle 级联优雅停机与安全排空")
+    void testApplicationContextCloseFlushesPendingBuffer() throws Exception {
+        mockWebServer.enqueue(esResponse(200, successBulkResponseBody()));
+
+        try (org.springframework.context.annotation.AnnotationConfigApplicationContext context =
+                     new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.registerBean("searchTemplate", SearchTemplate.class, () -> searchTemplate);
+            context.registerBean("searchBulkProcessor", SearchBulkProcessor.class, () ->
+                    searchTemplate.newBulkProcessorBuilder()
+                            .batchSize(1000)
+                            .flushInterval(Duration.ofDays(1))
+                            .bufferSize(DataSize.ofMegabytes(10))
+                            .build()
+            );
+            context.refresh();
+
+            SearchBulkProcessor springProcessor = context.getBean(SearchBulkProcessor.class);
+            springProcessor.add(UserDoc.builder().id(999L).username("spring_shutdown_user").build());
+            assertThat(springProcessor.getQueueSize()).isEqualTo(1);
+
+            // 关闭 Spring 应用上下文，触发 SmartLifecycle.stop()
+            context.close();
+
+            RecordedRequest request = mockWebServer.takeRequest(3, TimeUnit.SECONDS);
+            assertThat(request).isNotNull();
+            assertThat(request.getBody().readUtf8()).contains("spring_shutdown_user");
+            assertThat(springProcessor.getQueueSize()).isEqualTo(0);
+        }
+    }
 }
