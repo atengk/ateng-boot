@@ -510,6 +510,7 @@
                                 <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-storage</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-job-local</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>

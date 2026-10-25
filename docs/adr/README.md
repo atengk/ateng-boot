@@ -59,6 +59,7 @@
 | **0049** | 动态多数据源与物理多租户隔离架构决策 | `Accepted` | 面向 SaaS 物理多租户透明分库、高可用主从读写分离、从库自愈熔断、写后读主防延迟、编程式对称门面 DynamicDatasourceTemplate、事务假切源刚性守卫 DynamicDatasourceGuard 与零明文国密密码解密的生产就绪多数据源中间件基础设施 | `ateng-boot-datasource` / `core` / `mybatis-plus` | [查看](./0049-dynamic-datasource-and-physical-multi-tenancy-architecture.md) |
 | **0050** | 配置加解密与运行时安全防御架构决策 | `Accepted` | 纯 JDK 原生零臃肿、全属性源动态透明解密、Nacos 启动时序穿透、公私钥职责隔离、生产防明文误提交及 Actuator 运行时防窥探的生产就绪配置加密基础设施 | `ateng-boot-encrypt` / `core` / `observability` | [查看](./0050-configuration-encryption-and-runtime-defense-architecture.md) |
 | **0051** | 高性能无状态业务状态机底座架构决策 | `Accepted` | 纯内存无状态单例规则树模型，四大流转拓扑（外部/内部/多源汇聚/Choice动态分支），强类型 Fluent Builder DSL，Fail-Fast 与安全探测双模触发，实体零侵入 Lambda 状态自动回写，联动 Spring 本地事务原子回滚与 CAS 乐观锁防重，三阶段拦截器 SPI、MDC 链路日志、Micrometer 度量打标与 Mermaid 动态导出 | `ateng-boot-statemachine` / `core` | [查看](./0051-high-performance-stateless-business-state-machine-architecture.md) |
+| **0052** | 工业级单机定时任务与轻量调度底座架构决策 | `Accepted` | 声明式 @LocalJob 与编程式对称门面 LocalJobTemplate，时钟调度与 Worker 线程池物理隔离，四阶重叠并发防卫策略（OverlappingStrategy），硬超时强中断熔断与指数退避重试，32位无锁 MDC traceId 全链路追踪，两级存储仲裁与有界环形淘汰防 OOM，轻量集群互斥锁与防死锁租约机制，SmartLifecycle 确定性停机排空，/actuator/localjobs 运维管控端点与领域事件告警桥接 | `ateng-boot-job-local` / `core` | [查看](./0052-industrial-grade-standalone-local-job-and-scheduling-architecture.md) |
 
 ---
 
