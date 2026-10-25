@@ -48,12 +48,25 @@ public class Sm2ConfigDecryptor implements ConfigDecryptor {
     }
 
     /**
+     * SM2 密钥对别名载体
+     */
+    public static class Sm2KeyPair extends Sm2Engine.Sm2KeyPair {
+        public Sm2KeyPair(BigInteger privateKey, Sm2Engine.Point publicKey) {
+            super(privateKey, publicKey);
+        }
+
+        public Sm2KeyPair(Sm2Engine.Sm2KeyPair pair) {
+            super(pair.getPrivateKey(), pair.getPublicKey());
+        }
+    }
+
+    /**
      * 生成 SM2 椭圆曲线非对称密钥对
      *
      * @return SM2 密钥对
      */
-    public static Sm2Engine.Sm2KeyPair generateKeyPair() {
-        return Sm2Engine.generateKeyPair();
+    public static Sm2KeyPair generateKeyPair() {
+        return new Sm2KeyPair(Sm2Engine.generateKeyPair());
     }
 
     /**

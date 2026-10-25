@@ -62,6 +62,19 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
         this(delegate, new CiphertextParser(), keyDetector, null, defaultAlgorithm, true);
     }
 
+    public EncryptPropertySourceWrapper(PropertySource<?> delegate,
+                                        CiphertextParser parser,
+                                        io.github.atengk.boot.encrypt.key.MultiKeyRegistry keyRegistry,
+                                        List<ConfigDecryptor> decryptors,
+                                        EncryptAlgorithm defaultAlgorithm,
+                                        boolean failOnError) {
+        this(delegate, parser, new KeyDetector(keyRegistry), decryptors, defaultAlgorithm, failOnError);
+    }
+
+    public EncryptPropertySourceWrapper(PropertySource<?> delegate, io.github.atengk.boot.encrypt.key.MultiKeyRegistry keyRegistry) {
+        this(delegate, new CiphertextParser(), new KeyDetector(keyRegistry), null, EncryptAlgorithm.AES_GCM, true);
+    }
+
     private static List<ConfigDecryptor> initDecryptors(List<ConfigDecryptor> customDecryptors) {
         List<ConfigDecryptor> list = new ArrayList<>();
         if (customDecryptors != null) {

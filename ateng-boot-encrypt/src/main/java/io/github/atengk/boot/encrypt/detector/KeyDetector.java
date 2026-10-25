@@ -1,13 +1,13 @@
 package io.github.atengk.boot.encrypt.detector;
 
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.env.PropertySources;
 
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -24,14 +24,14 @@ public class KeyDetector {
     public static final String ENV_PASSWORD = "ATENG_BOOT_ENCRYPT_PASSWORD";
     public static final String KEYS_PREFIX = "ateng.boot.encrypt.keys.";
 
-    private final Map<String, String> keyRegistry = new LinkedHashMap<>();
-    private String defaultPassword;
+    private final MultiKeyRegistry registry;
 
     public KeyDetector(String defaultPassword, Map<String, String> keys) {
-        this.defaultPassword = defaultPassword;
-        if (keys != null) {
-            this.keyRegistry.putAll(keys);
-        }
+        this.registry = new MultiKeyRegistry(defaultPassword, keys);
+    }
+
+    public KeyDetector(MultiKeyRegistry registry) {
+        this.registry = registry != null ? registry : new MultiKeyRegistry();
     }
 
     public KeyDetector() {
@@ -153,23 +153,24 @@ public class KeyDetector {
      * 获取指定 keyId 对应的解密密钥
      *
      * @param keyId 密钥别名（null 或 "default" 对应默认全局密钥）
-     * @return 密钥字符串；未找到返回 null
+     * @return 密钥字符串；未找到时回退到默认全局密钥
      */
     public String getPassword(String keyId) {
-        if (keyId == null || keyId.trim().isEmpty() || "default".equalsIgnoreCase(keyId.trim())) {
-            return defaultPassword;
-        }
-        String key = keyRegistry.get(keyId.trim());
-        return key != null ? key : defaultPassword;
+        return registry.getKeyOrDefault(keyId);
     }
 
     public void registerKey(String keyId, String password) {
-        if (keyId != null && password != null) {
-            this.keyRegistry.put(keyId.trim(), password.trim());
-        }
+        registry.registerKey(keyId, password);
     }
 
     public void setDefaultPassword(String defaultPassword) {
-        this.defaultPassword = defaultPassword;
+        registry.setDefaultKey(defaultPassword);
+    }
+
+    /**
+     * 获取底层的多密钥命名注册表
+     */
+    public MultiKeyRegistry getRegistry() {
+        return registry;
     }
 }

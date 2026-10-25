@@ -178,6 +178,13 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
     }
 
     /**
+     * 将公钥编码为标准 X.509 PEM 格式（语义别名）
+     */
+    public static String encodePublicKeyToPem(PublicKey publicKey) {
+        return encodePublicKey(publicKey);
+    }
+
+    /**
      * 将私钥编码为标准 PKCS#8 PEM 格式
      *
      * @param privateKey RSA 私钥
@@ -194,6 +201,13 @@ public class RsaConfigDecryptor implements ConfigDecryptor {
         } finally {
             Arrays.fill(encoded, (byte) 0);
         }
+    }
+
+    /**
+     * 将私钥编码为标准 PKCS#8 PEM 格式（语义别名）
+     */
+    public static String encodePrivateKeyToPem(PrivateKey privateKey) {
+        return encodePrivateKey(privateKey);
     }
 
     /**

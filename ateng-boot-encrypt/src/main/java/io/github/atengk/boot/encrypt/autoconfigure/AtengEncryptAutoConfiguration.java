@@ -8,6 +8,7 @@ import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.guard.PlaintextIngressGuard;
 import io.github.atengk.boot.encrypt.guard.SanitizingGuard;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import org.springframework.boot.actuate.endpoint.SanitizingFunction;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -28,6 +29,12 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(EncryptProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.encrypt", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengEncryptAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MultiKeyRegistry multiKeyRegistry(EncryptProperties properties) {
+        return MultiKeyRegistry.fromProperties(properties);
+    }
 
     @Bean
     @ConditionalOnMissingBean

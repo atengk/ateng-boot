@@ -47,7 +47,12 @@ public enum EncryptAlgorithm {
      * 纯原生国密非对称 SM2
      * 国密公钥加密，私钥解密
      */
-    SM2("SM2", "SM2");
+    SM2("SM2", "SM2"),
+
+    /**
+     * 云 KMS / 硬件加密机 (HSM) 外部 SPI 逃生舱
+     */
+    KMS("KMS", "KMS");
 
     private final String code;
     private final String transformation;

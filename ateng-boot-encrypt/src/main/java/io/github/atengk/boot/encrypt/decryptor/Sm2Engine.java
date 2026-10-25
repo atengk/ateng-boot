@@ -583,5 +583,13 @@ public final class Sm2Engine {
         public String getPublicKeyHex() {
             return publicKey.toHex();
         }
+
+        public String privateKeyHex() {
+            return getPrivateKeyHex();
+        }
+
+        public String publicKeyHex() {
+            return getPublicKeyHex();
+        }
     }
 }
