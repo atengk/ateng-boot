@@ -10,6 +10,8 @@ import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.handler.JobHandler;
+import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
+import io.github.atengk.boot.job.local.lock.JobLockHandle;
 import io.github.atengk.boot.job.local.model.JobContext;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
@@ -67,6 +69,7 @@ public class ScheduledJobTask implements Runnable {
     private final ThreadPoolTaskScheduler taskScheduler;
     private final AsyncTaskExecutor workerExecutor;
     private final JobLogStorageProvider logStorageProvider;
+    private final JobClusterLockProvider clusterLockProvider;
     private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
@@ -97,28 +100,37 @@ public class ScheduledJobTask implements Runnable {
     private volatile String lastTraceId;
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler) {
-        this(definition, handler, null, null, null);
+        this(definition, handler, null, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler, ThreadPoolTaskScheduler taskScheduler) {
-        this(definition, handler, taskScheduler, null, null);
+        this(definition, handler, taskScheduler, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
                             ThreadPoolTaskScheduler taskScheduler,
                             AsyncTaskExecutor workerExecutor) {
-        this(definition, handler, taskScheduler, workerExecutor, null);
+        this(definition, handler, taskScheduler, workerExecutor, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
                             ThreadPoolTaskScheduler taskScheduler,
                             AsyncTaskExecutor workerExecutor,
                             JobLogStorageProvider logStorageProvider) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.logStorageProvider = logStorageProvider;
+        this.clusterLockProvider = clusterLockProvider;
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
@@ -208,7 +220,7 @@ public class ScheduledJobTask implements Runnable {
                         return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
                     try {
-                        return doExecute(triggerType, params, traceId);
+                        return executeWithClusterLock(triggerType, params, traceId);
                     } finally {
                         if (lock.isHeldByCurrentThread()) {
                             lock.unlock();
@@ -218,7 +230,7 @@ public class ScheduledJobTask implements Runnable {
                 case QUEUE:
                     lock.lock();
                     try {
-                        return doExecute(triggerType, params, traceId);
+                        return executeWithClusterLock(triggerType, params, traceId);
                     } finally {
                         if (lock.isHeldByCurrentThread()) {
                             lock.unlock();
@@ -226,7 +238,7 @@ public class ScheduledJobTask implements Runnable {
                     }
 
                 case CONCURRENT:
-                    return doExecute(triggerType, params, traceId);
+                    return executeWithClusterLock(triggerType, params, traceId);
 
                 case INTERRUPT:
                     Thread previousThread = executingThread.getAndSet(Thread.currentThread());
@@ -236,7 +248,7 @@ public class ScheduledJobTask implements Runnable {
                     }
                     lock.lock();
                     try {
-                        return doExecute(triggerType, params, traceId);
+                        return executeWithClusterLock(triggerType, params, traceId);
                     } finally {
                         executingThread.compareAndSet(Thread.currentThread(), null);
                         if (lock.isHeldByCurrentThread()) {
@@ -262,6 +274,33 @@ public class ScheduledJobTask implements Runnable {
             }
             TenantContextHolder.restore(previousTenant);
         }
+    }
+
+    /**
+     * 挂载轻量集群互斥锁防重门禁
+     */
+    protected JobResult executeWithClusterLock(TriggerType triggerType, Map<String, Object> params, String traceId) {
+        if (definition.isClusterLock() && clusterLockProvider != null) {
+            Duration leaseTime = definition.getClusterLockLeaseTime() != null
+                    ? definition.getClusterLockLeaseTime()
+                    : Duration.ofMinutes(5);
+            String jobName = definition.getJobName();
+            JobLockHandle lockHandle = clusterLockProvider.tryLock(jobName, leaseTime);
+            if (lockHandle == null || !lockHandle.isAcquired()) {
+                log.info("Job [{}] skipped execution because cluster lock is currently held by another node", jobName);
+                this.lastStatus = "SKIPPED_CLUSTER_LOCKED";
+                this.lastResultMsg = "Skipped: cluster lock held by another node";
+                saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "SKIPPED_CLUSTER_LOCKED",
+                        "Skipped: cluster lock held by another node", null, null, 0, Collections.emptyList());
+                return JobResult.builder().success(true).message("Skipped: cluster lock held by another node").build();
+            }
+            try {
+                return doExecute(triggerType, params, traceId);
+            } finally {
+                clusterLockProvider.unlock(lockHandle);
+            }
+        }
+        return doExecute(triggerType, params, traceId);
     }
 
     /**
@@ -495,6 +534,9 @@ public class ScheduledJobTask implements Runnable {
      * 根据任务定义构建对应的 Trigger
      */
     public static Trigger buildTrigger(JobDefinition definition) {
+        if (TriggerType.MANUAL.equals(definition.getTriggerType())) {
+            return null;
+        }
         if (definition.getCron() != null && !definition.getCron().isBlank()) {
             return new CronTrigger(definition.getCron());
         }
@@ -514,9 +556,7 @@ public class ScheduledJobTask implements Runnable {
             }
             return periodicTrigger;
         }
-        throw new IllegalArgumentException(
-                "Job [" + definition.getJobName() + "] must specify either cron, fixedRate, or fixedDelay"
-        );
+        return null;
     }
 
     private void saveExecutionRecord(String traceId, TriggerType triggerType, Instant fireTime, Instant finishTime,

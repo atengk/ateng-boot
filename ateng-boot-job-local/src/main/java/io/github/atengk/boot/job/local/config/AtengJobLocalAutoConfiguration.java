@@ -2,6 +2,8 @@ package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
+import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
+import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
@@ -105,12 +107,24 @@ public class AtengJobLocalAutoConfiguration {
     }
 
     /**
+     * 单机定时任务集群互斥锁 SPI 默认本地兜底实现 Bean
+     *
+     * @return JobClusterLockProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public JobClusterLockProvider jobClusterLockProvider() {
+        return new LocalJobClusterLockProvider();
+    }
+
+    /**
      * 单机定时任务注册中心与运行时管理器 Bean
      *
      * @param localJobTaskScheduler  专职调度器
      * @param workerExecutorProvider Worker 线程池提供者
      * @param metadataRepository     元数据存储仓储
      * @param logStorageProvider     历史日志存储提供者
+     * @param clusterLockProvider    集群互斥锁提供者
      * @param properties             配置属性
      * @return LocalJobRegistry
      */
@@ -121,9 +135,10 @@ public class AtengJobLocalAutoConfiguration {
             @Qualifier("localJobWorkerExecutor") ObjectProvider<ThreadPoolTaskExecutor> workerExecutorProvider,
             JobMetadataRepository metadataRepository,
             JobLogStorageProvider logStorageProvider,
+            JobClusterLockProvider clusterLockProvider,
             JobLocalProperties properties) {
         return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable(),
-                metadataRepository, logStorageProvider, properties);
+                metadataRepository, logStorageProvider, clusterLockProvider, properties);
     }
 
     /**

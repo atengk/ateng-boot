@@ -3,6 +3,7 @@ package io.github.atengk.boot.job.local.registry;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.handler.JobHandler;
+import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.model.JobDefinition;
 import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
@@ -47,15 +48,16 @@ public class LocalJobRegistry implements DisposableBean {
     private final AsyncTaskExecutor workerExecutor;
     private final JobMetadataRepository metadataRepository;
     private final JobLogStorageProvider logStorageProvider;
+    private final JobClusterLockProvider clusterLockProvider;
     private final JobLocalProperties properties;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
-        this(taskScheduler, null, null, null, null);
+        this(taskScheduler, null, null, null, null, null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler, AsyncTaskExecutor workerExecutor) {
-        this(taskScheduler, workerExecutor, null, null, null);
+        this(taskScheduler, workerExecutor, null, null, null, null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -63,10 +65,20 @@ public class LocalJobRegistry implements DisposableBean {
                             JobMetadataRepository metadataRepository,
                             JobLogStorageProvider logStorageProvider,
                             JobLocalProperties properties) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties) {
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.metadataRepository = metadataRepository;
         this.logStorageProvider = logStorageProvider;
+        this.clusterLockProvider = clusterLockProvider;
         this.properties = properties;
     }
 
@@ -104,7 +116,8 @@ public class LocalJobRegistry implements DisposableBean {
             metadataRepository.save(definition);
         }
 
-        ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor, logStorageProvider);
+        ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
+                logStorageProvider, clusterLockProvider);
         taskMap.put(jobName, task);
 
         // 3. 仅在已启动（started == true）且任务状态为 RUNNING 时调度
@@ -368,6 +381,10 @@ public class LocalJobRegistry implements DisposableBean {
 
     public JobLogStorageProvider getLogStorageProvider() {
         return logStorageProvider;
+    }
+
+    public JobClusterLockProvider getClusterLockProvider() {
+        return clusterLockProvider;
     }
 
     public boolean isStarted() {

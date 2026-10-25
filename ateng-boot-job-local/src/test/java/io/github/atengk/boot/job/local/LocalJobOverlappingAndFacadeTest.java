@@ -208,7 +208,7 @@ class LocalJobOverlappingAndFacadeTest {
         volatile CountDownLatch interruptStartedLatch;
         final AtomicBoolean interruptedFlag = new AtomicBoolean(false);
 
-        @LocalJob(name = "discardJob", strategy = OverlappingStrategy.DISCARD, fixedDelay = "1h")
+        @LocalJob(name = "discardJob", strategy = OverlappingStrategy.DISCARD, fixedDelay = "1h", initialDelay = "1h")
         public void executeDiscard() {
             if (discardStartedLatch != null) {
                 discardStartedLatch.countDown();
@@ -222,7 +222,7 @@ class LocalJobOverlappingAndFacadeTest {
             }
         }
 
-        @LocalJob(name = "queueJob", strategy = OverlappingStrategy.QUEUE, fixedDelay = "1h")
+        @LocalJob(name = "queueJob", strategy = OverlappingStrategy.QUEUE, fixedDelay = "1h", initialDelay = "1h")
         public void executeQueue() {
             try {
                 Thread.sleep(200);
@@ -232,7 +232,7 @@ class LocalJobOverlappingAndFacadeTest {
             queueCount.incrementAndGet();
         }
 
-        @LocalJob(name = "concurrentJob", strategy = OverlappingStrategy.CONCURRENT, fixedDelay = "1h")
+        @LocalJob(name = "concurrentJob", strategy = OverlappingStrategy.CONCURRENT, fixedDelay = "1h", initialDelay = "1h")
         public void executeConcurrent() {
             try {
                 Thread.sleep(200);
@@ -242,7 +242,7 @@ class LocalJobOverlappingAndFacadeTest {
             concurrentCount.incrementAndGet();
         }
 
-        @LocalJob(name = "interruptJob", strategy = OverlappingStrategy.INTERRUPT, fixedDelay = "1h")
+        @LocalJob(name = "interruptJob", strategy = OverlappingStrategy.INTERRUPT, fixedDelay = "1h", initialDelay = "1h")
         public void executeInterrupt() {
             if (interruptStartedLatch != null && interruptStartedLatch.getCount() > 0) {
                 interruptStartedLatch.countDown();
@@ -255,14 +255,14 @@ class LocalJobOverlappingAndFacadeTest {
             }
         }
 
-        @LocalJob(name = "contextJob", fixedDelay = "1h")
+        @LocalJob(name = "contextJob", fixedDelay = "1h", initialDelay = "1h")
         public JobResult executeWithContext(JobContext context) {
             context.log("processing batch");
             Object batchSize = context.getParams().getOrDefault("batchSize", 0);
             return JobResult.success("Processed " + batchSize + " records");
         }
 
-        @LocalJob(name = "stringReturnJob", fixedDelay = "1h")
+        @LocalJob(name = "stringReturnJob", fixedDelay = "1h", initialDelay = "1h")
         public String executeStringReturn() {
             return "Custom String Summary";
         }

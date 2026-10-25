@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
+import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
@@ -37,6 +38,7 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
             assertThat(context).hasSingleBean(JobMetadataRepository.class);
             assertThat(context).hasSingleBean(JobLogStorageProvider.class);
+            assertThat(context).hasSingleBean(JobClusterLockProvider.class);
             assertThat(context).hasSingleBean(LocalJobRegistry.class);
             assertThat(context).hasSingleBean(LocalJobLifecycleManager.class);
             assertThat(context).hasSingleBean(LocalJobTemplate.class);
@@ -63,6 +65,7 @@ class AtengJobLocalAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ThreadPoolTaskExecutor.class);
                     assertThat(context).doesNotHaveBean(JobMetadataRepository.class);
                     assertThat(context).doesNotHaveBean(JobLogStorageProvider.class);
+                    assertThat(context).doesNotHaveBean(JobClusterLockProvider.class);
                     assertThat(context).doesNotHaveBean(LocalJobRegistry.class);
                     assertThat(context).doesNotHaveBean(LocalJobLifecycleManager.class);
                     assertThat(context).doesNotHaveBean(LocalJobTemplate.class);
