@@ -1,0 +1,37 @@
+package io.github.atengk.boot.statemachine.builder;
+
+import io.github.atengk.boot.statemachine.core.StateMachine;
+
+/**
+ * 强类型状态机 Fluent DSL 构建器顶层契约
+ *
+ * @param <S> 业务状态类型
+ * @param <E> 触发事件类型
+ * @param <C> 业务上下文类型
+ * @author Ateng
+ * @since 2026-10-25
+ */
+public interface StateMachineBuilder<S, E, C> {
+
+    /**
+     * 声明标准外部状态跃迁 (S1 -> S2)
+     *
+     * @return 外部跃迁装配入口
+     */
+    ExternalTransitionBuilder.From<S, E, C> externalTransition();
+
+    /**
+     * 声明内部自状态跃迁 (S1 -> S1，状态保持不变)
+     *
+     * @return 内部自跃迁装配入口
+     */
+    InternalTransitionBuilder.From<S, E, C> internalTransition();
+
+    /**
+     * 构建只读不可变状态机实例
+     *
+     * @param machineId 状态机全局唯一标识
+     * @return 状态机实例
+     */
+    StateMachine<S, E, C> build(String machineId);
+}
