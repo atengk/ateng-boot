@@ -59,6 +59,7 @@
         <module>ateng-boot-mqtt</module>
         <module>ateng-boot-pay</module>
         <module>ateng-boot-datasource</module>
+        <module>ateng-boot-encrypt</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -338,6 +339,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-datasource</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-encrypt</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
