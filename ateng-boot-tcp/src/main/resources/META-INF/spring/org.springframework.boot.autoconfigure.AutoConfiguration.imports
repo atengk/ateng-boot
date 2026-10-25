@@ -1,1 +1,3 @@
 io.github.atengk.boot.tcp.config.AtengTcpAutoConfiguration
+io.github.atengk.boot.tcp.config.TcpServerAutoConfiguration
+
