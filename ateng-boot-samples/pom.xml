@@ -42,6 +42,7 @@
         <module>ateng-boot-sample-datasource</module>
         <module>ateng-boot-sample-encrypt</module>
         <module>ateng-boot-sample-statemachine</module>
+        <module>ateng-boot-sample-job-local</module>
     </modules>
 
     <properties>

@@ -61,6 +61,7 @@
         <module>ateng-boot-datasource</module>
         <module>ateng-boot-encrypt</module>
         <module>ateng-boot-statemachine</module>
+        <module>ateng-boot-job-local</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-samples</module>
     </modules>
@@ -355,6 +356,11 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-job-local</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-search</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -510,6 +516,7 @@
                                 <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-storage</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-job-local</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>
