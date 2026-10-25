@@ -160,6 +160,12 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     S to = transition.getTargetState();
                     if (transition.getType() == TransitionType.INTERNAL) {
                         renderedLines.add(String.format("    %s --> %s : %s", from, from, event));
+                    } else if (transition instanceof ChoiceTransition) {
+                        ChoiceTransition<S, E, C> choice = (ChoiceTransition<S, E, C>) transition;
+                        for (ChoiceBranch<S, C> branch : choice.getBranches()) {
+                            renderedLines.add(String.format("    %s --> %s : %s [choice]", from, branch.getTargetState(), event));
+                        }
+                        renderedLines.add(String.format("    %s --> %s : %s [default]", from, choice.getDefaultTargetState(), event));
                     } else {
                         renderedLines.add(String.format("    %s --> %s : %s", from, to, event));
                     }
@@ -187,6 +193,12 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     S to = transition.getTargetState();
                     if (transition.getType() == TransitionType.INTERNAL) {
                         renderedLines.add(String.format("%s --> %s : %s", from, from, event));
+                    } else if (transition instanceof ChoiceTransition) {
+                        ChoiceTransition<S, E, C> choice = (ChoiceTransition<S, E, C>) transition;
+                        for (ChoiceBranch<S, C> branch : choice.getBranches()) {
+                            renderedLines.add(String.format("%s --> %s : %s [choice]", from, branch.getTargetState(), event));
+                        }
+                        renderedLines.add(String.format("%s --> %s : %s [default]", from, choice.getDefaultTargetState(), event));
                     } else {
                         renderedLines.add(String.format("%s --> %s : %s", from, to, event));
                     }

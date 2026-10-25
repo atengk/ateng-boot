@@ -28,6 +28,20 @@ public interface StateMachineBuilder<S, E, C> {
     InternalTransitionBuilder.From<S, E, C> internalTransition();
 
     /**
+     * 声明多源汇聚状态跃迁 ([S1, S2, ...] -> S3)
+     *
+     * @return 多源汇聚跃迁装配入口
+     */
+    MultiFromTransitionBuilder.From<S, E, C> multiFromTransition();
+
+    /**
+     * 声明动态条件分支路由跃迁 (Choice: S1 -> S2 if C1 else S3)
+     *
+     * @return 条件分支路由跃迁装配入口
+     */
+    ChoiceTransitionBuilder.From<S, E, C> choiceTransition();
+
+    /**
      * 构建只读不可变状态机实例
      *
      * @param machineId 状态机全局唯一标识
