@@ -1,6 +1,9 @@
 package io.github.atengk.boot.search;
 
+import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
+import io.github.atengk.boot.search.entity.DynamicLogDoc;
+import io.github.atengk.boot.search.entity.RoutedOrderDoc;
 import io.github.atengk.boot.search.entity.UserDoc;
 import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchResultCode;
@@ -12,6 +15,7 @@ import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
 import io.github.atengk.boot.search.properties.AtengSearchProperties;
 import io.github.atengk.boot.search.template.SearchTemplate;
+import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
@@ -22,7 +26,10 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -872,5 +879,353 @@ class SearchTemplateMockServerTest {
         assertThat(driver.getElasticsearchClient()).isNotNull();
         assertThat(driver.getNativeClient(co.elastic.clients.elasticsearch.ElasticsearchClient.class)).isNotNull();
         assertThat(driver.getNativeClient(org.elasticsearch.client.RestClient.class)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试 @SearchIndex 动态 SpEL 时序索引推导解析")
+    void testDynamicIndexSpelResolution() {
+        String expectedSuffix = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String expectedIndex = "log_" + expectedSuffix;
+        String actualIndex = SearchMetadataHelper.resolveIndexName(DynamicLogDoc.class);
+        assertThat(actualIndex).isEqualTo(expectedIndex);
+    }
+
+    @Test
+    @DisplayName("测试写入文档时自动提取 @SearchRouting 并注入请求参数")
+    void testRoutingExtractionOnIndex() throws Exception {
+        String mockResponseBody = """
+                {
+                  "_index": "routed_order_idx",
+                  "_id": "order_1001",
+                  "_version": 1,
+                  "result": "created",
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                  "_seq_no": 0,
+                  "_primary_term": 1
+                }
+                """;
+        mockWebServer.enqueue(esResponse(201, mockResponseBody));
+
+        RoutedOrderDoc doc = RoutedOrderDoc.builder()
+                .orderId("order_1001")
+                .tenantId("tenant_east")
+                .amount(new BigDecimal("99.90"))
+                .description("Sample routed order")
+                .build();
+
+        String indexedId = searchTemplate.index(doc);
+        assertThat(indexedId).isEqualTo("order_1001");
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("PUT");
+        assertThat(request.getPath()).isEqualTo("/routed_order_idx/_doc/order_1001?routing=tenant_east");
+    }
+
+    @Test
+    @DisplayName("测试更新文档时自动提取 @SearchRouting 并注入请求参数")
+    void testRoutingExtractionOnUpdate() throws Exception {
+        String mockResponseBody = """
+                {
+                  "_index": "routed_order_idx",
+                  "_id": "order_1001",
+                  "_version": 2,
+                  "result": "updated",
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                  "_seq_no": 1,
+                  "_primary_term": 1
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        RoutedOrderDoc doc = RoutedOrderDoc.builder()
+                .orderId("order_1001")
+                .tenantId("tenant_east")
+                .description("Updated description")
+                .build();
+
+        boolean updated = searchTemplate.update(doc, false);
+        assertThat(updated).isTrue();
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("POST");
+        assertThat(request.getPath()).isEqualTo("/routed_order_idx/_update/order_1001?routing=tenant_east");
+    }
+
+    @Test
+    @DisplayName("测试批量操作中自动提取并填充 @SearchRouting 路由键")
+    void testRoutingExtractionOnBulkIndexAndUpdate() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 15,
+                  "errors": false,
+                  "items": [
+                    {
+                      "index": {
+                        "_index": "routed_order_idx",
+                        "_id": "order_1001",
+                        "_version": 1,
+                        "result": "created",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 0,
+                        "_primary_term": 1,
+                        "status": 201
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        RoutedOrderDoc doc = RoutedOrderDoc.builder()
+                .orderId("order_1001")
+                .tenantId("tenant_east")
+                .amount(new BigDecimal("100.00"))
+                .build();
+
+        SearchBulkResult indexResult = searchTemplate.indexBatch(List.of(doc));
+        assertThat(indexResult.isSuccess()).isTrue();
+
+        RecordedRequest bulkIndexReq = mockWebServer.takeRequest();
+        String bulkIndexBody = bulkIndexReq.getBody().readUtf8();
+        assertThat(bulkIndexBody).contains("\"routing\":\"tenant_east\"");
+        assertThat(bulkIndexBody).contains("\"_id\":\"order_1001\"");
+
+        // 测试批量 update
+        String mockUpdateBody = """
+                {
+                  "took": 10,
+                  "errors": false,
+                  "items": [
+                    {
+                      "update": {
+                        "_index": "routed_order_idx",
+                        "_id": "order_1001",
+                        "_version": 2,
+                        "result": "updated",
+                        "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                        "_seq_no": 1,
+                        "_primary_term": 1,
+                        "status": 200
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockUpdateBody));
+
+        SearchBulkResult updateResult = searchTemplate.updateBatch(List.of(doc));
+        assertThat(updateResult.isSuccess()).isTrue();
+
+        RecordedRequest bulkUpdateReq = mockWebServer.takeRequest();
+        String bulkUpdateBody = bulkUpdateReq.getBody().readUtf8();
+        assertThat(bulkUpdateBody).contains("\"routing\":\"tenant_east\"");
+        assertThat(bulkUpdateBody).contains("\"_id\":\"order_1001\"");
+    }
+
+    @Test
+    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 getById/getHitById 触发防御性前置阻断")
+    void testRoutingRequiredGuardOnGetAndGetHit() {
+        assertThatThrownBy(() -> searchTemplate.getById(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThatThrownBy(() -> searchTemplate.getHitById(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                });
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 deleteById 触发防御性前置阻断")
+    void testRoutingRequiredGuardOnDelete() {
+        assertThatThrownBy(() -> searchTemplate.deleteById(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试提供 routing 参数的 getById 和 deleteById 正常请求")
+    void testRoutedGetByIdAndDeleteByIdSuccess() throws Exception {
+        // 1. getById 响应
+        String mockGetBody = """
+                {
+                  "_index": "routed_order_idx",
+                  "_id": "order_1001",
+                  "_version": 1,
+                  "_seq_no": 0,
+                  "_primary_term": 1,
+                  "found": true,
+                  "_routing": "tenant_east",
+                  "_source": {
+                    "orderId": "order_1001",
+                    "tenantId": "tenant_east",
+                    "amount": 99.90,
+                    "description": "Sample routed order"
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockGetBody));
+
+        RoutedOrderDoc foundDoc = searchTemplate.getById(RoutedOrderDoc.class, "order_1001", "tenant_east");
+        assertThat(foundDoc).isNotNull();
+        assertThat(foundDoc.getOrderId()).isEqualTo("order_1001");
+        assertThat(foundDoc.getTenantId()).isEqualTo("tenant_east");
+
+        RecordedRequest getReq = mockWebServer.takeRequest();
+        assertThat(getReq.getMethod()).isEqualTo("GET");
+        assertThat(getReq.getPath()).isEqualTo("/routed_order_idx/_doc/order_1001?routing=tenant_east");
+
+        // 2. deleteById 响应
+        String mockDeleteBody = """
+                {
+                  "_index": "routed_order_idx",
+                  "_id": "order_1001",
+                  "_version": 2,
+                  "result": "deleted",
+                  "_shards": { "total": 1, "successful": 1, "failed": 0 },
+                  "_seq_no": 1,
+                  "_primary_term": 1
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockDeleteBody));
+
+        boolean deleted = searchTemplate.deleteById(RoutedOrderDoc.class, "order_1001", "tenant_east");
+        assertThat(deleted).isTrue();
+
+        RecordedRequest deleteReq = mockWebServer.takeRequest();
+        assertThat(deleteReq.getMethod()).isEqualTo("DELETE");
+        assertThat(deleteReq.getPath()).isEqualTo("/routed_order_idx/_doc/order_1001?routing=tenant_east");
+    }
+
+    @Test
+    @DisplayName("测试 SearchIndexOperations 索引 DDL 生命周期操作")
+    void testSearchIndexOperations() throws Exception {
+        // 1. exists
+        mockWebServer.enqueue(esResponse(200, ""));
+        boolean exists = searchTemplate.indices().exists("my_index");
+        assertThat(exists).isTrue();
+        RecordedRequest existsReq = mockWebServer.takeRequest();
+        assertThat(existsReq.getMethod()).isEqualTo("HEAD");
+        assertThat(existsReq.getPath()).isEqualTo("/my_index");
+
+        // exists class
+        mockWebServer.enqueue(esResponse(404, ""));
+        boolean userExists = searchTemplate.indices().exists(UserDoc.class);
+        assertThat(userExists).isFalse();
+        RecordedRequest userExistsReq = mockWebServer.takeRequest();
+        assertThat(userExistsReq.getMethod()).isEqualTo("HEAD");
+        assertThat(userExistsReq.getPath()).isEqualTo("/user_idx");
+
+        // 2. existsAlias
+        mockWebServer.enqueue(esResponse(200, ""));
+        boolean aliasExists = searchTemplate.indices().existsAlias("my_alias");
+        assertThat(aliasExists).isTrue();
+        RecordedRequest aliasReq = mockWebServer.takeRequest();
+        assertThat(aliasReq.getMethod()).isEqualTo("HEAD");
+        assertThat(aliasReq.getPath()).isEqualTo("/_alias/my_alias");
+
+        // 3. create
+        String createResp = """
+                {
+                  "acknowledged": true,
+                  "shards_acknowledged": true,
+                  "index": "my_index"
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, createResp));
+        boolean created = searchTemplate.indices().create("my_index");
+        assertThat(created).isTrue();
+        RecordedRequest createReq = mockWebServer.takeRequest();
+        assertThat(createReq.getMethod()).isEqualTo("PUT");
+        assertThat(createReq.getPath()).isEqualTo("/my_index");
+
+        // 4. putMapping
+        String ackResp = "{\"acknowledged\": true}";
+        mockWebServer.enqueue(esResponse(200, ackResp));
+        boolean mappingPut = searchTemplate.indices().putMapping("my_index", "{\"properties\":{\"title\":{\"type\":\"text\"}}}");
+        assertThat(mappingPut).isTrue();
+        RecordedRequest mappingReq = mockWebServer.takeRequest();
+        assertThat(mappingReq.getMethod()).isEqualTo("PUT");
+        assertThat(mappingReq.getPath()).isEqualTo("/my_index/_mapping");
+
+        // 5. getMapping
+        String getMappingResp = """
+                {
+                  "my_index": {
+                    "mappings": {
+                      "properties": {
+                        "title": { "type": "text" }
+                      }
+                    }
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, getMappingResp));
+        TypeMapping mapping = searchTemplate.indices().getMapping("my_index");
+        assertThat(mapping).isNotNull();
+        assertThat(mapping.properties()).containsKey("title");
+        RecordedRequest getMappingReq = mockWebServer.takeRequest();
+        assertThat(getMappingReq.getMethod()).isEqualTo("GET");
+        assertThat(getMappingReq.getPath()).isEqualTo("/my_index/_mapping");
+
+        // 6. putIndexTemplate
+        mockWebServer.enqueue(esResponse(200, ackResp));
+        boolean templatePut = searchTemplate.indices().putIndexTemplate("log_template", "{\"index_patterns\":[\"log_*\"]}");
+        assertThat(templatePut).isTrue();
+        RecordedRequest putTemplateReq = mockWebServer.takeRequest();
+        assertThat(putTemplateReq.getMethod()).isEqualTo("PUT");
+        assertThat(putTemplateReq.getPath()).isEqualTo("/_index_template/log_template");
+
+        // 7. existsIndexTemplate
+        mockWebServer.enqueue(esResponse(200, ""));
+        boolean tplExists = searchTemplate.indices().existsIndexTemplate("log_template");
+        assertThat(tplExists).isTrue();
+        RecordedRequest existsTemplateReq = mockWebServer.takeRequest();
+        assertThat(existsTemplateReq.getMethod()).isEqualTo("HEAD");
+        assertThat(existsTemplateReq.getPath()).isEqualTo("/_index_template/log_template");
+
+        // 8. delete
+        mockWebServer.enqueue(esResponse(200, ackResp));
+        boolean deleted = searchTemplate.indices().delete("my_index");
+        assertThat(deleted).isTrue();
+        RecordedRequest deleteReq = mockWebServer.takeRequest();
+        assertThat(deleteReq.getMethod()).isEqualTo("DELETE");
+        assertThat(deleteReq.getPath()).isEqualTo("/my_index");
+    }
+
+    @Test
+    @DisplayName("测试生产原子别名热切换 swapAlias 接口向 /_aliases 发送单次原子操作")
+    void testAtomicAliasSwap() throws Exception {
+        String ackResp = "{\"acknowledged\": true}";
+        mockWebServer.enqueue(esResponse(200, ackResp));
+
+        boolean swapped = searchTemplate.indices().swapAlias("order_alias", "order_v1", "order_v2");
+        assertThat(swapped).isTrue();
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("POST");
+        assertThat(request.getPath()).isEqualTo("/_aliases");
+        String body = request.getBody().readUtf8();
+        assertThat(body).contains("\"actions\":[");
+        assertThat(body).contains("\"remove\":{");
+        assertThat(body).contains("\"index\":\"order_v1\"");
+        assertThat(body).contains("\"alias\":\"order_alias\"");
+        assertThat(body).contains("\"add\":{");
+        assertThat(body).contains("\"index\":\"order_v2\"");
+        assertThat(body).contains("\"alias\":\"order_alias\"");
     }
 }

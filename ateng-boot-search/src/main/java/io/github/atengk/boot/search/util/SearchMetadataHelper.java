@@ -2,13 +2,24 @@ package io.github.atengk.boot.search.util;
 
 import io.github.atengk.boot.search.annotation.SearchId;
 import io.github.atengk.boot.search.annotation.SearchIndex;
+import io.github.atengk.boot.search.annotation.SearchRouting;
+import org.springframework.core.convert.TypeDescriptor;
+import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.MethodExecutor;
+import org.springframework.expression.MethodResolver;
+import org.springframework.expression.ParserContext;
+import org.springframework.expression.TypedValue;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Field;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -23,6 +34,8 @@ public final class SearchMetadataHelper {
     private static final ExpressionParser SPEL_PARSER = new SpelExpressionParser();
     private static final Map<Class<?>, String> INDEX_NAME_CACHE = new ConcurrentHashMap<>();
     private static final Map<Class<?>, Field> ID_FIELD_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, Field> ROUTING_FIELD_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, Boolean> HAS_ROUTING_CACHE = new ConcurrentHashMap<>();
 
     private SearchMetadataHelper() {
     }
@@ -94,6 +107,57 @@ public final class SearchMetadataHelper {
         return fallbackIdField;
     }
 
+    /**
+     * 判断实体类是否显式标注了 @SearchRouting 注解
+     *
+     * @param clazz 实体类类型
+     * @return true 表示配置了分片路由注解
+     */
+    public static boolean hasRoutingAnnotation(Class<?> clazz) {
+        if (clazz == null) {
+            return false;
+        }
+        return HAS_ROUTING_CACHE.computeIfAbsent(clazz, k -> findRoutingField(k) != null);
+    }
+
+    /**
+     * 解析实体对象的分片自定义路由键 (Routing Key)
+     * 自动提取标注了 @SearchRouting 的字段值
+     *
+     * @param doc 实体对象
+     * @return 路由键字符串，若无则返回 null
+     */
+    public static String resolveRouting(Object doc) {
+        if (doc == null) {
+            return null;
+        }
+        Field routingField = ROUTING_FIELD_CACHE.computeIfAbsent(doc.getClass(), SearchMetadataHelper::findRoutingField);
+        if (routingField != null) {
+            try {
+                routingField.setAccessible(true);
+                Object val = routingField.get(doc);
+                return val != null ? String.valueOf(val) : null;
+            } catch (Exception ignored) {
+                // 静默忽略反射错误
+            }
+        }
+        return null;
+    }
+
+    private static Field findRoutingField(Class<?> clazz) {
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            Field[] fields = current.getDeclaredFields();
+            for (Field field : fields) {
+                if (field.isAnnotationPresent(SearchRouting.class)) {
+                    return field;
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return null;
+    }
+
     private static boolean isJpaId(Field field) {
         for (java.lang.annotation.Annotation annotation : field.getAnnotations()) {
             String name = annotation.annotationType().getName();
@@ -105,20 +169,40 @@ public final class SearchMetadataHelper {
     }
 
     private static String evaluateSpel(String expressionStr) {
-        try {
-            int start = expressionStr.indexOf("#{");
-            int end = expressionStr.indexOf('}', start);
-            if (start >= 0 && end > start) {
-                String prefix = expressionStr.substring(0, start);
-                String expr = expressionStr.substring(start + 2, end);
-                String suffix = expressionStr.substring(end + 1);
-                Expression expression = SPEL_PARSER.parseExpression(expr);
-                Object evaluated = expression.getValue(new StandardEvaluationContext());
-                return prefix + (evaluated != null ? evaluated.toString() : "") + suffix;
-            }
-        } catch (Exception ignored) {
+        if (!StringUtils.hasText(expressionStr)) {
+            return expressionStr;
         }
-        return expressionStr;
+        try {
+            StandardEvaluationContext context = new StandardEvaluationContext();
+            context.addMethodResolver(new DateFormatMethodResolver());
+            Expression expression = SPEL_PARSER.parseExpression(expressionStr, ParserContext.TEMPLATE_EXPRESSION);
+            Object evaluated = expression.getValue(context);
+            return evaluated != null ? evaluated.toString() : expressionStr;
+        } catch (Exception ignored) {
+            return expressionStr;
+        }
+    }
+
+    private static class DateFormatMethodResolver implements MethodResolver {
+        @Override
+        public MethodExecutor resolve(
+                EvaluationContext context,
+                Object targetObject,
+                String name,
+                List<TypeDescriptor> argumentTypes) {
+            if ("format".equals(name) && argumentTypes != null && argumentTypes.size() == 1
+                    && String.class.isAssignableFrom(argumentTypes.get(0).getType())) {
+                if (targetObject instanceof LocalDate) {
+                    return (ctx, target, args) -> new TypedValue(((LocalDate) target)
+                            .format(DateTimeFormatter.ofPattern((String) args[0])));
+                }
+                if (targetObject instanceof LocalDateTime) {
+                    return (ctx, target, args) -> new TypedValue(((LocalDateTime) target)
+                            .format(DateTimeFormatter.ofPattern((String) args[0])));
+                }
+            }
+            return null;
+        }
     }
 
     private static String toSnakeCase(String name) {

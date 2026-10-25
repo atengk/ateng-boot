@@ -42,10 +42,24 @@ import java.util.Objects;
  * @since 2026-10-25
  */
 @Slf4j
-@RequiredArgsConstructor
 public class SearchTemplate {
 
     private final SearchEngineClient searchEngineClient;
+    private final SearchIndexOperations searchIndexOperations;
+
+    public SearchTemplate(SearchEngineClient searchEngineClient) {
+        this.searchEngineClient = Objects.requireNonNull(searchEngineClient, "searchEngineClient must not be null");
+        this.searchIndexOperations = new SearchIndexOperations(this);
+    }
+
+    /**
+     * 获取专职结构面 (DDL) 索引运维门面
+     *
+     * @return SearchIndexOperations
+     */
+    public SearchIndexOperations indices() {
+        return this.searchIndexOperations;
+    }
 
     /**
      * 获取原生强类型 ElasticsearchClient 客户端
@@ -122,12 +136,16 @@ public class SearchTemplate {
         Objects.requireNonNull(document, "document must not be null");
 
         String documentId = SearchMetadataHelper.resolveDocumentId(document);
+        String routing = SearchMetadataHelper.resolveRouting(document);
 
         try {
             IndexResponse response = getClient().index(builder -> {
                 builder.index(index).document(document);
                 if (StringUtils.hasText(documentId)) {
                     builder.id(documentId);
+                }
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
                 }
                 if (ifSeqNo != null && ifPrimaryTerm != null) {
                     builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
@@ -163,9 +181,22 @@ public class SearchTemplate {
      * @return 文档实体对象，若不存在返回 null
      */
     public <T> T getById(Class<T> clazz, String id) {
+        return getById(clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键查询文档实体
+     *
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @param <T>     实体类型
+     * @return 文档实体对象，若不存在返回 null
+     */
+    public <T> T getById(Class<T> clazz, String id, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return getById(index, clazz, id);
+        return getById(index, clazz, id, routing);
     }
 
     /**
@@ -178,7 +209,21 @@ public class SearchTemplate {
      * @return 文档实体对象，若不存在返回 null
      */
     public <T> T getById(String index, Class<T> clazz, String id) {
-        SearchHit<T> hit = getHitById(index, clazz, id);
+        return getById(index, clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键从指定索引查询文档实体
+     *
+     * @param index   目标索引名
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键
+     * @param <T>     实体类型
+     * @return 文档实体对象，若不存在返回 null
+     */
+    public <T> T getById(String index, Class<T> clazz, String id, String routing) {
+        SearchHit<T> hit = getHitById(index, clazz, id, routing);
         return hit != null ? hit.getContent() : null;
     }
 
@@ -191,9 +236,22 @@ public class SearchTemplate {
      * @return 命中文档载荷 SearchHit，若不存在返回 null
      */
     public <T> SearchHit<T> getHitById(Class<T> clazz, String id) {
+        return getHitById(clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键查询完整命中文档模型
+     *
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @param <T>     实体类型
+     * @return 命中文档载荷 SearchHit，若不存在返回 null
+     */
+    public <T> SearchHit<T> getHitById(Class<T> clazz, String id, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return getHitById(index, clazz, id);
+        return getHitById(index, clazz, id, routing);
     }
 
     /**
@@ -206,12 +264,38 @@ public class SearchTemplate {
      * @return 命中文档载荷 SearchHit，若不存在返回 null
      */
     public <T> SearchHit<T> getHitById(String index, Class<T> clazz, String id) {
+        return getHitById(index, clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键从指定索引查询完整命中文档模型
+     *
+     * @param index   目标索引名
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 且为 null 时将抛出业务异常）
+     * @param <T>     实体类型
+     * @return 命中文档载荷 SearchHit，若不存在返回 null
+     */
+    public <T> SearchHit<T> getHitById(String index, Class<T> clazz, String id, String routing) {
         Objects.requireNonNull(index, "index must not be null");
         Objects.requireNonNull(clazz, "clazz must not be null");
         Objects.requireNonNull(id, "document id must not be null");
 
+        // 分片路由防漏校验：若实体标注了 @SearchRouting 但未提供 routing，执行 Fail-Fast
+        if (SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
+            throw new SearchException(SearchResultCode.SEARCH_ROUTING_REQUIRED,
+                    "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use getById/getHitById with routing parameter.");
+        }
+
         try {
-            GetResponse<T> response = getClient().get(builder -> builder.index(index).id(id), clazz);
+            GetResponse<T> response = getClient().get(builder -> {
+                builder.index(index).id(id);
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
+                }
+                return builder;
+            }, clazz);
             if (response.found() && response.source() != null) {
                 return SearchHit.<T>builder()
                         .id(response.id())
@@ -403,12 +487,17 @@ public class SearchTemplate {
         Objects.requireNonNull(id, "document id must not be null");
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
 
+        String routing = SearchMetadataHelper.resolveRouting(partialDoc);
+
         try {
             UpdateResponse<Void> response = getClient().update(builder -> {
                 builder.index(index)
                         .id(id)
                         .doc(partialDoc)
                         .docAsUpsert(docAsUpsert);
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
+                }
                 if (ifSeqNo != null && ifPrimaryTerm != null) {
                     builder.ifSeqNo(ifSeqNo).ifPrimaryTerm(ifPrimaryTerm);
                 }
@@ -447,9 +536,25 @@ public class SearchTemplate {
      * @return 是否成功删除（若文档不存在则返回 false）
      */
     public boolean deleteById(Class<?> clazz, String id) {
+        return deleteById(clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键删除文档
+     *
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @return 是否成功删除（若文档不存在则返回 false）
+     */
+    public boolean deleteById(Class<?> clazz, String id, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
+        if (SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
+            throw new SearchException(SearchResultCode.SEARCH_ROUTING_REQUIRED,
+                    "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use deleteById with routing parameter.");
+        }
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return deleteById(index, id);
+        return deleteById(index, id, routing);
     }
 
     /**
@@ -460,11 +565,29 @@ public class SearchTemplate {
      * @return 是否成功删除（若文档不存在则返回 false）
      */
     public boolean deleteById(String index, String id) {
+        return deleteById(index, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键从指定索引删除文档
+     *
+     * @param index   目标索引名
+     * @param id      文档 ID
+     * @param routing 分片路由键
+     * @return 是否成功删除（若文档不存在则返回 false）
+     */
+    public boolean deleteById(String index, String id, String routing) {
         Objects.requireNonNull(index, "index must not be null");
         Objects.requireNonNull(id, "document id must not be null");
 
         try {
-            DeleteResponse response = getClient().delete(builder -> builder.index(index).id(id));
+            DeleteResponse response = getClient().delete(builder -> {
+                builder.index(index).id(id);
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
+                }
+                return builder;
+            });
             log.debug("Deleted document [id={}] from index [{}], result: {}", id, index, response.result());
             return response.result() == Result.Deleted;
         } catch (Exception e) {
@@ -657,10 +780,14 @@ public class SearchTemplate {
             }
             String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
             String docId = SearchMetadataHelper.resolveDocumentId(doc);
+            String routing = SearchMetadataHelper.resolveRouting(doc);
             bulkBuilder.operations(op -> op.index(idx -> {
                 idx.index(docIndex).document(doc);
                 if (StringUtils.hasText(docId)) {
                     idx.id(docId);
+                }
+                if (StringUtils.hasText(routing)) {
+                    idx.routing(routing);
                 }
                 return idx;
             }));
@@ -691,14 +818,19 @@ public class SearchTemplate {
             }
             String docIndex = StringUtils.hasText(index) ? index : SearchMetadataHelper.resolveIndexName(doc.getClass());
             String docId = SearchMetadataHelper.resolveDocumentId(doc);
+            String routing = SearchMetadataHelper.resolveRouting(doc);
             if (!StringUtils.hasText(docId)) {
                 throw new IllegalArgumentException("Cannot update document without an ID in batch update. Ensure @SearchId is configured on the entity.");
             }
-            bulkBuilder.operations(op -> op.update(u -> u
-                    .index(docIndex)
-                    .id(docId)
-                    .action(a -> a.doc(doc).docAsUpsert(docAsUpsert))
-            ));
+            bulkBuilder.operations(op -> op.update(u -> {
+                u.index(docIndex)
+                        .id(docId)
+                        .action(a -> a.doc(doc).docAsUpsert(docAsUpsert));
+                if (StringUtils.hasText(routing)) {
+                    u.routing(routing);
+                }
+                return u;
+            }));
             validItemCount++;
         }
 
