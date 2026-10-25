@@ -42,6 +42,20 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
+        <!-- 可选依赖：Spring Boot Actuator (用于 /actuator/localjobs 运维管控端点) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：协同通知组件 (用于任务失败与超时群告警桥接) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-notification</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Lombok (编译期使用，不传递) -->
         <dependency>
             <groupId>org.projectlombok</groupId>

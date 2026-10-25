@@ -57,10 +57,29 @@ public class JobLocalProperties {
     private int logRetentionDays = 7;
 
     /**
+     * Actuator 运维端点配置
+     */
+    @NestedConfigurationProperty
+    private ActuatorProperties actuator = new ActuatorProperties();
+
+    /**
      * 任务失败告警配置
      */
     @NestedConfigurationProperty
     private AlertProperties alert = new AlertProperties();
+
+    /**
+     * Actuator 端点嵌套配置类
+     */
+    @Getter
+    @Setter
+    public static class ActuatorProperties {
+
+        /**
+         * 是否启用 /actuator/localjobs 运维管控端点（默认 true）
+         */
+        private boolean enabled = true;
+    }
 
     /**
      * 告警属性嵌套配置类
@@ -73,5 +92,10 @@ public class JobLocalProperties {
          * 是否启用任务执行失败或超时群告警推送（默认 false）
          */
         private boolean enabled = false;
+
+        /**
+         * 协同通知通道名称（可选，缺省由协同通知组件选用默认通道）
+         */
+        private String channel;
     }
 }

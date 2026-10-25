@@ -8,6 +8,11 @@ import io.github.atengk.boot.core.util.RetryUtil.RetryConfig;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
+import io.github.atengk.boot.job.local.event.JobDiscardedEvent;
+import io.github.atengk.boot.job.local.event.JobFailedEvent;
+import io.github.atengk.boot.job.local.event.JobStartingEvent;
+import io.github.atengk.boot.job.local.event.JobSuccessEvent;
+import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.handler.JobHandler;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
@@ -23,6 +28,8 @@ import lombok.Setter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.context.ApplicationEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -70,6 +77,7 @@ public class ScheduledJobTask implements Runnable {
     private final AsyncTaskExecutor workerExecutor;
     private final JobLogStorageProvider logStorageProvider;
     private final JobClusterLockProvider clusterLockProvider;
+    private final ApplicationEventPublisher eventPublisher;
     private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
@@ -100,24 +108,24 @@ public class ScheduledJobTask implements Runnable {
     private volatile String lastTraceId;
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler) {
-        this(definition, handler, null, null, null, null);
+        this(definition, handler, null, null, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler, ThreadPoolTaskScheduler taskScheduler) {
-        this(definition, handler, taskScheduler, null, null, null);
+        this(definition, handler, taskScheduler, null, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
                             ThreadPoolTaskScheduler taskScheduler,
                             AsyncTaskExecutor workerExecutor) {
-        this(definition, handler, taskScheduler, workerExecutor, null, null);
+        this(definition, handler, taskScheduler, workerExecutor, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
                             ThreadPoolTaskScheduler taskScheduler,
                             AsyncTaskExecutor workerExecutor,
                             JobLogStorageProvider logStorageProvider) {
-        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, null);
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
@@ -125,12 +133,22 @@ public class ScheduledJobTask implements Runnable {
                             AsyncTaskExecutor workerExecutor,
                             JobLogStorageProvider logStorageProvider,
                             JobClusterLockProvider clusterLockProvider) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            ApplicationEventPublisher eventPublisher) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.logStorageProvider = logStorageProvider;
         this.clusterLockProvider = clusterLockProvider;
+        this.eventPublisher = eventPublisher;
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
@@ -207,6 +225,8 @@ public class ScheduledJobTask implements Runnable {
             TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
         }
 
+        publishEvent(new JobStartingEvent(this, jobName, triggerType, traceId, params));
+
         activeExecutions.incrementAndGet();
         try {
             switch (strategy) {
@@ -217,6 +237,7 @@ public class ScheduledJobTask implements Runnable {
                         this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
                         saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "DISCARDED",
                                 "Skipped due to overlapping DISCARD policy", null, null, 0, Collections.emptyList());
+                        publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId, "Skipped due to overlapping DISCARD policy"));
                         return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
                     try {
@@ -292,6 +313,7 @@ public class ScheduledJobTask implements Runnable {
                 this.lastResultMsg = "Skipped: cluster lock held by another node";
                 saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "SKIPPED_CLUSTER_LOCKED",
                         "Skipped: cluster lock held by another node", null, null, 0, Collections.emptyList());
+                publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId, "Skipped: cluster lock held by another node"));
                 return JobResult.builder().success(true).message("Skipped: cluster lock held by another node").build();
             }
             try {
@@ -334,6 +356,7 @@ public class ScheduledJobTask implements Runnable {
             this.lastResultMsg = resultMsg;
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "SUCCESS",
                     resultMsg, null, null, retryCount.get(), context.getLogs());
+            publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, result));
             return JobResult.success(resultMsg, result);
         } catch (JobTimeoutException ex) {
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -343,6 +366,7 @@ public class ScheduledJobTask implements Runnable {
             log.error("Execution timed out for job [{}] after {}: {}", jobName, ex.getTimeout(), ex.getMessage());
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
+            publishEvent(new JobTimeoutEvent(this, jobName, triggerType, traceId, duration, ex.getTimeout(), retryCount.get()));
             throw ex;
         } catch (Throwable ex) {
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -352,6 +376,7 @@ public class ScheduledJobTask implements Runnable {
             log.error("Execution failed for job [{}] with exception: {}", jobName, ex.getMessage(), ex);
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
+            publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), ex, ex.getMessage()));
             return JobResult.failure(ex.getMessage());
         }
     }
@@ -557,6 +582,16 @@ public class ScheduledJobTask implements Runnable {
             return periodicTrigger;
         }
         return null;
+    }
+
+    private void publishEvent(ApplicationEvent event) {
+        if (eventPublisher != null) {
+            try {
+                eventPublisher.publishEvent(event);
+            } catch (Throwable t) {
+                log.warn("Failed to publish job event [{}]: {}", event.getClass().getSimpleName(), t.getMessage());
+            }
+        }
     }
 
     private void saveExecutionRecord(String traceId, TriggerType triggerType, Instant fireTime, Instant finishTime,

@@ -1,6 +1,11 @@
 package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
+import io.github.atengk.boot.job.local.alert.JobAlertHandler;
+import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
+import io.github.atengk.boot.job.local.alert.LoggingJobAlertHandler;
+import io.github.atengk.boot.job.local.alert.NotificationJobAlertHandler;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
@@ -13,16 +18,19 @@ import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
 import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
 import io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
@@ -180,5 +188,46 @@ public class AtengJobLocalAutoConfiguration {
     public static LocalJobAnnotationBeanPostProcessor localJobAnnotationBeanPostProcessor(
             ObjectProvider<LocalJobRegistry> registryProvider) {
         return new LocalJobAnnotationBeanPostProcessor(registryProvider);
+    }
+
+    /**
+     * Actuator 运维管控端点自动装配（当类路径存在 Actuator Endpoint 且未显式禁用时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(Endpoint.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.actuator", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class LocalJobActuatorAutoConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public LocalJobEndpoint localJobEndpoint(LocalJobTemplate localJobTemplate) {
+            return new LocalJobEndpoint(localJobTemplate);
+        }
+    }
+
+    /**
+     * 任务异常失败与超时告警桥接自动装配（当 ateng.boot.job.local.alert.enabled=true 时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.alert", name = "enabled", havingValue = "true")
+    static class LocalJobAlertAutoConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public JobAlertHandler jobAlertHandler(
+                ObjectProvider<NotificationTemplate> notificationTemplateProvider,
+                JobLocalProperties properties) {
+            NotificationTemplate notificationTemplate = notificationTemplateProvider.getIfAvailable();
+            if (notificationTemplate != null) {
+                return new NotificationJobAlertHandler(notificationTemplate, properties.getAlert().getChannel());
+            }
+            return new LoggingJobAlertHandler();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler) {
+            return new LocalJobAlertListener(jobAlertHandler);
+        }
     }
 }

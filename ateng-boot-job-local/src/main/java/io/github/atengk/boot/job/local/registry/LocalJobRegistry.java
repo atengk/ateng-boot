@@ -14,6 +14,8 @@ import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -39,7 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @author Ateng
  * @since 2026-10-25
  */
-public class LocalJobRegistry implements DisposableBean {
+public class LocalJobRegistry implements DisposableBean, ApplicationEventPublisherAware {
 
     private static final Logger log = LoggerFactory.getLogger(LocalJobRegistry.class);
 
@@ -51,6 +53,7 @@ public class LocalJobRegistry implements DisposableBean {
     private final JobClusterLockProvider clusterLockProvider;
     private final JobLocalProperties properties;
     private final AtomicBoolean started = new AtomicBoolean(false);
+    private ApplicationEventPublisher eventPublisher;
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
         this(taskScheduler, null, null, null, null, null);
@@ -117,7 +120,7 @@ public class LocalJobRegistry implements DisposableBean {
         }
 
         ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
-                logStorageProvider, clusterLockProvider);
+                logStorageProvider, clusterLockProvider, eventPublisher);
         taskMap.put(jobName, task);
 
         // 3. 仅在已启动（started == true）且任务状态为 RUNNING 时调度
@@ -389,6 +392,15 @@ public class LocalJobRegistry implements DisposableBean {
 
     public boolean isStarted() {
         return started.get();
+    }
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+        this.eventPublisher = applicationEventPublisher;
+    }
+
+    public ApplicationEventPublisher getEventPublisher() {
+        return eventPublisher;
     }
 
     @Override

@@ -1,5 +1,8 @@
 package io.github.atengk.boot.job.local.config;
 
+import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
+import io.github.atengk.boot.job.local.alert.JobAlertHandler;
+import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
@@ -43,6 +46,8 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(context).hasSingleBean(LocalJobLifecycleManager.class);
             assertThat(context).hasSingleBean(LocalJobTemplate.class);
             assertThat(context).hasSingleBean(LocalJobAnnotationBeanPostProcessor.class);
+            assertThat(context).hasSingleBean(LocalJobEndpoint.class);
+            assertThat(context).doesNotHaveBean(LocalJobAlertListener.class);
 
             JobLocalProperties properties = context.getBean(JobLocalProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -70,6 +75,27 @@ class AtengJobLocalAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(LocalJobLifecycleManager.class);
                     assertThat(context).doesNotHaveBean(LocalJobTemplate.class);
                     assertThat(context).doesNotHaveBean(LocalJobAnnotationBeanPostProcessor.class);
+                    assertThat(context).doesNotHaveBean(LocalJobEndpoint.class);
+                    assertThat(context).doesNotHaveBean(LocalJobAlertListener.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当 ateng.boot.job.local.alert.enabled=true 时成功自动装配告警处理器与监听器")
+    void testAlertAutoConfigurationEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.job.local.alert.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(JobAlertHandler.class);
+                    assertThat(context).hasSingleBean(LocalJobAlertListener.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当 ateng.boot.job.local.actuator.enabled=false 时不装配 LocalJobEndpoint")
+    void testActuatorEndpointDisabled() {
+        contextRunner.withPropertyValues("ateng.boot.job.local.actuator.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(LocalJobEndpoint.class);
                 });
     }
 
