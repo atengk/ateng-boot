@@ -1,9 +1,16 @@
 package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
+import io.github.atengk.boot.job.local.storage.InMemoryJobLogStorageProvider;
+import io.github.atengk.boot.job.local.storage.InMemoryJobMetadataRepository;
+import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
+import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
+import io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate;
+import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -75,18 +82,61 @@ public class AtengJobLocalAutoConfiguration {
     }
 
     /**
+     * 任务元数据存储与配置仲裁 SPI 默认内存实现 Bean
+     *
+     * @return JobMetadataRepository
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public JobMetadataRepository jobMetadataRepository() {
+        return new InMemoryJobMetadataRepository();
+    }
+
+    /**
+     * 任务执行历史日志存储 SPI 默认有界内存环形队列 Bean（防 OOM 自动 FIFO 淘汰）
+     *
+     * @param properties 配置属性
+     * @return JobLogStorageProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public JobLogStorageProvider jobLogStorageProvider(JobLocalProperties properties) {
+        return new InMemoryJobLogStorageProvider(properties.getInMemoryLogCapacity());
+    }
+
+    /**
      * 单机定时任务注册中心与运行时管理器 Bean
      *
      * @param localJobTaskScheduler  专职调度器
      * @param workerExecutorProvider Worker 线程池提供者
+     * @param metadataRepository     元数据存储仓储
+     * @param logStorageProvider     历史日志存储提供者
+     * @param properties             配置属性
      * @return LocalJobRegistry
      */
     @Bean
     @ConditionalOnMissingBean
     public LocalJobRegistry localJobRegistry(
             ThreadPoolTaskScheduler localJobTaskScheduler,
-            @Qualifier("localJobWorkerExecutor") ObjectProvider<ThreadPoolTaskExecutor> workerExecutorProvider) {
-        return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable());
+            @Qualifier("localJobWorkerExecutor") ObjectProvider<ThreadPoolTaskExecutor> workerExecutorProvider,
+            JobMetadataRepository metadataRepository,
+            JobLogStorageProvider logStorageProvider,
+            JobLocalProperties properties) {
+        return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable(),
+                metadataRepository, logStorageProvider, properties);
+    }
+
+    /**
+     * 单机定时任务生命周期与优雅停机编排管理器 Bean（赋予 SmartLifecycle 最高阶段延迟激活调度）
+     *
+     * @param localJobRegistry 任务注册中心
+     * @param properties       配置属性
+     * @return LocalJobLifecycleManager
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public LocalJobLifecycleManager localJobLifecycleManager(LocalJobRegistry localJobRegistry, JobLocalProperties properties) {
+        return new LocalJobLifecycleManager(localJobRegistry, properties);
     }
 
     /**
@@ -97,8 +147,8 @@ public class AtengJobLocalAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public io.github.atengk.boot.job.local.template.LocalJobTemplate localJobTemplate(LocalJobRegistry localJobRegistry) {
-        return new io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate(localJobRegistry);
+    public LocalJobTemplate localJobTemplate(LocalJobRegistry localJobRegistry) {
+        return new DefaultLocalJobTemplate(localJobRegistry);
     }
 
     /**
@@ -113,7 +163,7 @@ public class AtengJobLocalAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public static LocalJobAnnotationBeanPostProcessor localJobAnnotationBeanPostProcessor(
-            org.springframework.beans.factory.ObjectProvider<LocalJobRegistry> registryProvider) {
+            ObjectProvider<LocalJobRegistry> registryProvider) {
         return new LocalJobAnnotationBeanPostProcessor(registryProvider);
     }
 }

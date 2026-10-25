@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.local.model;
 
+import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import lombok.Builder;
@@ -94,4 +95,10 @@ public class JobDefinition {
      */
     @Builder.Default
     private boolean enabled = true;
+
+    /**
+     * 运行时生命周期状态
+     */
+    @Builder.Default
+    private JobStatus status = JobStatus.RUNNING;
 }

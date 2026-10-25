@@ -12,8 +12,10 @@ import io.github.atengk.boot.job.local.exception.JobTimeoutException;
 import io.github.atengk.boot.job.local.handler.JobHandler;
 import io.github.atengk.boot.job.local.model.JobContext;
 import io.github.atengk.boot.job.local.model.JobDefinition;
+import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
+import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
 import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;
@@ -27,7 +29,9 @@ import org.springframework.scheduling.support.PeriodicTrigger;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -62,6 +66,8 @@ public class ScheduledJobTask implements Runnable {
 
     private final ThreadPoolTaskScheduler taskScheduler;
     private final AsyncTaskExecutor workerExecutor;
+    private final JobLogStorageProvider logStorageProvider;
+    private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
     @Setter
@@ -91,22 +97,40 @@ public class ScheduledJobTask implements Runnable {
     private volatile String lastTraceId;
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler) {
-        this(definition, handler, null, null);
+        this(definition, handler, null, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler, ThreadPoolTaskScheduler taskScheduler) {
-        this(definition, handler, taskScheduler, null);
+        this(definition, handler, taskScheduler, null, null);
     }
 
     public ScheduledJobTask(JobDefinition definition, JobHandler handler,
                             ThreadPoolTaskScheduler taskScheduler,
                             AsyncTaskExecutor workerExecutor) {
+        this(definition, handler, taskScheduler, workerExecutor, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
-        this.status = definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED;
+        this.logStorageProvider = logStorageProvider;
+        this.status = definition.getStatus() != null ? definition.getStatus()
+                : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
+    }
+
+    /**
+     * 判断当前任务是否有正在运行中的执行实例
+     *
+     * @return true 表示存在活跃执行
+     */
+    public boolean isExecuting() {
+        return activeExecutions.get() > 0;
     }
 
     /**
@@ -171,6 +195,7 @@ public class ScheduledJobTask implements Runnable {
             TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
         }
 
+        activeExecutions.incrementAndGet();
         try {
             switch (strategy) {
                 case DISCARD:
@@ -178,6 +203,8 @@ public class ScheduledJobTask implements Runnable {
                         log.info("Job [{}] execution skipped due to overlapping DISCARD policy (previous execution is still running)", jobName);
                         this.lastStatus = "DISCARDED";
                         this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
+                        saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "DISCARDED",
+                                "Skipped due to overlapping DISCARD policy", null, null, 0, Collections.emptyList());
                         return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
                     try {
@@ -221,6 +248,7 @@ public class ScheduledJobTask implements Runnable {
                     throw new IllegalStateException("Unsupported overlapping strategy: " + strategy);
             }
         } finally {
+            activeExecutions.decrementAndGet();
             // 3. 严格清理现场或精准恢复原现场，100% 杜绝线程池污染
             if (previousTraceId != null) {
                 MDC.put("traceId", previousTraceId);
@@ -265,6 +293,8 @@ public class ScheduledJobTask implements Runnable {
 
             String resultMsg = extractResultMessage(result);
             this.lastResultMsg = resultMsg;
+            saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "SUCCESS",
+                    resultMsg, null, null, retryCount.get(), context.getLogs());
             return JobResult.success(resultMsg, result);
         } catch (JobTimeoutException ex) {
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -272,6 +302,8 @@ public class ScheduledJobTask implements Runnable {
             this.lastStatus = "TIMEOUT";
             this.lastResultMsg = ex.getMessage();
             log.error("Execution timed out for job [{}] after {}: {}", jobName, ex.getTimeout(), ex.getMessage());
+            saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
+                    ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
             throw ex;
         } catch (Throwable ex) {
             long duration = Duration.between(startTime, Instant.now()).toMillis();
@@ -279,6 +311,8 @@ public class ScheduledJobTask implements Runnable {
             this.lastStatus = "FAILED";
             this.lastResultMsg = ex.getMessage();
             log.error("Execution failed for job [{}] with exception: {}", jobName, ex.getMessage(), ex);
+            saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
+                    ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
             return JobResult.failure(ex.getMessage());
         }
     }
@@ -483,5 +517,42 @@ public class ScheduledJobTask implements Runnable {
         throw new IllegalArgumentException(
                 "Job [" + definition.getJobName() + "] must specify either cron, fixedRate, or fixedDelay"
         );
+    }
+
+    private void saveExecutionRecord(String traceId, TriggerType triggerType, Instant fireTime, Instant finishTime,
+                                     Long durationMs, String status, String resultMsg, String errorMsg,
+                                     String errorStack, int retryCount, List<String> logs) {
+        if (logStorageProvider == null) {
+            return;
+        }
+        try {
+            JobExecutionRecord record = JobExecutionRecord.builder()
+                    .id(IdUtil.fastSimpleUUID())
+                    .jobName(definition.getJobName())
+                    .traceId(traceId)
+                    .triggerType(triggerType)
+                    .fireTime(fireTime)
+                    .finishTime(finishTime)
+                    .durationMs(durationMs)
+                    .status(status)
+                    .resultMsg(resultMsg)
+                    .errorMessage(errorMsg)
+                    .errorStack(errorStack)
+                    .retryCount(retryCount)
+                    .logs(logs != null ? new ArrayList<>(logs) : Collections.emptyList())
+                    .build();
+            logStorageProvider.saveLog(record);
+        } catch (Throwable t) {
+            log.warn("Failed to persist execution log for job [{}]: {}", definition.getJobName(), t.getMessage());
+        }
+    }
+
+    private String getStackTraceString(Throwable t) {
+        if (t == null) {
+            return null;
+        }
+        java.io.StringWriter sw = new java.io.StringWriter();
+        t.printStackTrace(new java.io.PrintWriter(sw));
+        return sw.toString();
     }
 }

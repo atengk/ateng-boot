@@ -138,6 +138,15 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
 
     @Override
     public List<JobExecutionRecord> listRecentLogs(String jobName, int limit) {
-        return Collections.emptyList();
+        Assert.hasText(jobName, "jobName must not be empty");
+        return registry.listRecentLogs(jobName, limit);
+    }
+
+    @Override
+    public int cleanExpiredLogs(Duration retentionDuration) {
+        if (retentionDuration == null || retentionDuration.isZero() || retentionDuration.isNegative()) {
+            return 0;
+        }
+        return registry.cleanExpiredLogs(retentionDuration);
     }
 }

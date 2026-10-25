@@ -1,8 +1,12 @@
 package io.github.atengk.boot.job.local.config;
 
+import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
+import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
+import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
+import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -25,19 +29,28 @@ class AtengJobLocalAutoConfigurationTest {
             .withConfiguration(AutoConfigurations.of(AtengJobLocalAutoConfiguration.class));
 
     @Test
-    @DisplayName("默认配置下成功自动装配核心调度组件与线程池")
+    @DisplayName("默认配置下成功自动装配核心调度组件、存储 SPI 与生命周期管理器")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(JobLocalProperties.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
+            assertThat(context).hasSingleBean(JobMetadataRepository.class);
+            assertThat(context).hasSingleBean(JobLogStorageProvider.class);
             assertThat(context).hasSingleBean(LocalJobRegistry.class);
-            assertThat(context).hasSingleBean(io.github.atengk.boot.job.local.template.LocalJobTemplate.class);
+            assertThat(context).hasSingleBean(LocalJobLifecycleManager.class);
+            assertThat(context).hasSingleBean(LocalJobTemplate.class);
             assertThat(context).hasSingleBean(LocalJobAnnotationBeanPostProcessor.class);
 
             JobLocalProperties properties = context.getBean(JobLocalProperties.class);
             assertThat(properties.isEnabled()).isTrue();
             assertThat(properties.getThreadNamePrefix()).isEqualTo("ateng-job-local-");
+            assertThat(properties.isPreferDatabaseConfig()).isTrue();
+            assertThat(properties.getInMemoryLogCapacity()).isEqualTo(100);
+
+            LocalJobLifecycleManager lifecycleManager = context.getBean(LocalJobLifecycleManager.class);
+            assertThat(lifecycleManager.getPhase()).isEqualTo(Integer.MAX_VALUE - 100);
+            assertThat(lifecycleManager.isAutoStartup()).isTrue();
         });
     }
 
@@ -48,7 +61,11 @@ class AtengJobLocalAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(ThreadPoolTaskScheduler.class);
                     assertThat(context).doesNotHaveBean(ThreadPoolTaskExecutor.class);
+                    assertThat(context).doesNotHaveBean(JobMetadataRepository.class);
+                    assertThat(context).doesNotHaveBean(JobLogStorageProvider.class);
                     assertThat(context).doesNotHaveBean(LocalJobRegistry.class);
+                    assertThat(context).doesNotHaveBean(LocalJobLifecycleManager.class);
+                    assertThat(context).doesNotHaveBean(LocalJobTemplate.class);
                     assertThat(context).doesNotHaveBean(LocalJobAnnotationBeanPostProcessor.class);
                 });
     }

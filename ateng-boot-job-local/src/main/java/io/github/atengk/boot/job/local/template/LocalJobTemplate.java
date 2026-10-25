@@ -136,4 +136,22 @@ public interface LocalJobTemplate {
      * @return 执行审计记录列表（保证非 null 空安全）
      */
     List<JobExecutionRecord> listRecentLogs(String jobName, int limit);
+
+    /**
+     * 获取指定任务最近的执行历史记录清单（默认最多返回 100 条）
+     *
+     * @param jobName 任务名称
+     * @return 执行审计记录列表（保证非 null 空安全）
+     */
+    default List<JobExecutionRecord> listRecentLogs(String jobName) {
+        return listRecentLogs(jobName, 100);
+    }
+
+    /**
+     * 滚动清理超出指定保留时长的历史执行记录
+     *
+     * @param retentionDuration 最长保留时长
+     * @return 实际清理的记录条数
+     */
+    int cleanExpiredLogs(Duration retentionDuration);
 }
