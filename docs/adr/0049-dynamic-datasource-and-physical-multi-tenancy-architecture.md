@@ -37,7 +37,7 @@ flowchart TD
         direction TB
         GUARD["DynamicDatasourceGuard (事务假切源检测与刚性阻断)"]
         ADVISOR["AtengDynamicDataSourceAnnotationAdvisor (切源切面)"]
-        ASYNC_PROPAGATOR["DynamicDatasourceContextPropagator (异步五维上下文透传)"]
+        ASYNC_PROPAGATOR["DataSourceAsyncContextSnapshotProvider (异步五维上下文透传)"]
     end
 
     subgraph RoutingEngine["动态自适应路由引擎 (AtengDynamicRoutingDataSource)"]
@@ -100,7 +100,7 @@ flowchart TD
 ### 5. 零明文凭据安全与全链路异步透传
 
 - **零明文解密**：实现 `DataSourcePasswordDecryptor`，自动识别 `enc:sm4:`（国密 SM4）与 `enc:aes:`（国际 AES）密文密码，在连接池创建前完成瞬态解密，并立即还原配置对象，确保内存与日志中杜绝明文凭据残留；
-- **异步五维上下文透传**：注册 `DynamicDatasourceContextPropagator` 接入 Core 模块的 `AsyncContext` 基础设施，实现 `MDC TraceId`、`User`、`TenantId`、`IgnoreTenant` 与 `DataSourceKey` 五维快照跨线程池全链路透传与安全清理。
+- **异步五维上下文透传**：注册 `DataSourceAsyncContextSnapshotProvider` 接入 Core 模块的 `AsyncContext` 基础设施，实现 `MDC TraceId`、`User`、`TenantId`、`IgnoreTenant` 与 `DataSourceKey` 五维快照跨线程池全链路透传与安全清理。
 
 ---
 

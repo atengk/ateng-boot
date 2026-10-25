@@ -42,6 +42,16 @@ public class DynamicDatasourceGuard {
     }
 
     /**
+     * 校验当前执行上下文是否已隔离且切源操作安全
+     * 对应架构规格中编程式切源前置安全校验契约
+     *
+     * @param targetDsKey 目标数据源 Key
+     */
+    public void validateContextIsolated(String targetDsKey) {
+        validateSwitch(targetDsKey);
+    }
+
+    /**
      * 校验当前执行上下文切源操作是否安全
      *
      * @param targetDsKey 目标数据源 Key
@@ -200,14 +210,22 @@ public class DynamicDatasourceGuard {
     }
 
     /**
-     * 解析默认主数据源 Key
+     * 解析当前事务默认数据源 Key（感知读写分离事务状态）
      */
     private String resolveDefaultDataSourceKey() {
+        if (datasourceProperties.getReadWriteSplit() != null && datasourceProperties.getReadWriteSplit().isEnabled()) {
+            if (TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+                String slaveKey = datasourceProperties.getReadWriteSplit().getSlaveDataSource();
+                if (StringUtils.hasText(slaveKey)) {
+                    return slaveKey;
+                }
+            }
+            if (StringUtils.hasText(datasourceProperties.getReadWriteSplit().getMasterDataSource())) {
+                return datasourceProperties.getReadWriteSplit().getMasterDataSource();
+            }
+        }
         if (datasourceProperties.getMultiTenancy() != null && StringUtils.hasText(datasourceProperties.getMultiTenancy().getDefaultDataSource())) {
             return datasourceProperties.getMultiTenancy().getDefaultDataSource();
-        }
-        if (datasourceProperties.getReadWriteSplit() != null && StringUtils.hasText(datasourceProperties.getReadWriteSplit().getMasterDataSource())) {
-            return datasourceProperties.getReadWriteSplit().getMasterDataSource();
         }
         return "master";
     }

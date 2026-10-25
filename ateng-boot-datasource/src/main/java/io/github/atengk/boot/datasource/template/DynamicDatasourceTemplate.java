@@ -92,7 +92,7 @@ public class DynamicDatasourceTemplate {
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
 
         if (guard != null) {
-            guard.validateSwitch(dsKey);
+            guard.validateContextIsolated(dsKey);
         }
 
         DynamicDataSourceContextHolder.push(dsKey);
@@ -131,22 +131,27 @@ public class DynamicDatasourceTemplate {
         Objects.requireNonNull(action, "执行动作 (action) 不能为空");
 
         DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
-        String tenantDsKey = resolveTenantDataSourceKey(tenantId);
+        MultiTenancyMode mode = multiTenancy.getMode();
 
         String targetDsKey;
-        if (containsDataSource(tenantDsKey)) {
-            targetDsKey = tenantDsKey;
+        if (TenantContextHolder.isIgnoreTenant() || mode == MultiTenancyMode.IGNORE) {
+            targetDsKey = multiTenancy.getDefaultDataSource();
+            log.debug("检测到免租户标记 (isIgnoreTenant=true) 或 IGNORE 模式，租户 [{}] 路由至默认主库: [{}]",
+                    tenantId, targetDsKey);
         } else {
-            MultiTenancyMode mode = multiTenancy.getMode();
-            if (mode == MultiTenancyMode.STRICT) {
-                throw new TenantDataSourceNotFoundException(tenantId, tenantDsKey);
-            }
-            if (mode == MultiTenancyMode.FALLBACK_MASTER) {
-                targetDsKey = multiTenancy.getDefaultDataSource();
-                log.debug("租户 [{}] 未匹配到物理数据源 [{}]，FALLBACK_MASTER 模式回退默认主库 [{}]",
-                        tenantId, tenantDsKey, targetDsKey);
+            String tenantDsKey = resolveTenantDataSourceKey(tenantId);
+            if (containsDataSource(tenantDsKey)) {
+                targetDsKey = tenantDsKey;
             } else {
-                targetDsKey = multiTenancy.getDefaultDataSource();
+                if (mode == MultiTenancyMode.STRICT) {
+                    throw new TenantDataSourceNotFoundException(tenantId, tenantDsKey);
+                } else if (mode == MultiTenancyMode.FALLBACK_MASTER) {
+                    targetDsKey = multiTenancy.getDefaultDataSource();
+                    log.debug("租户 [{}] 未匹配到物理数据源 [{}]，FALLBACK_MASTER 模式回退默认主库 [{}]",
+                            tenantId, tenantDsKey, targetDsKey);
+                } else {
+                    targetDsKey = multiTenancy.getDefaultDataSource();
+                }
             }
         }
 
@@ -281,7 +286,8 @@ public class DynamicDatasourceTemplate {
                     if (t instanceof Error error) {
                         throw error;
                     }
-                    throw new RuntimeException("数据源 [" + dsKey + "] 批处理执行异常", t);
+                    throw new DataSourceSwitchException("数据源 [" + dsKey + "] 批处理执行异常: " + t.getMessage(), t,
+                            DatasourceResultCode.DATASOURCE_SWITCH_ERROR);
                 }
                 log.warn("数据源 [{}] 批处理执行失败，FAIL_SAFE 容错隔离继续: {}", dsKey, t.getMessage(), t);
             }
@@ -408,7 +414,8 @@ public class DynamicDatasourceTemplate {
                     if (t instanceof Error error) {
                         throw error;
                     }
-                    throw new RuntimeException("租户 [" + tenantId + "] 批处理执行异常", t);
+                    throw new DataSourceSwitchException("租户 [" + tenantId + "] 批处理执行异常: " + t.getMessage(), t,
+                            DatasourceResultCode.DATASOURCE_SWITCH_ERROR);
                 }
                 log.warn("租户 [{}] 批处理执行失败，FAIL_SAFE 容错隔离继续: {}", tenantId, t.getMessage(), t);
             }
@@ -445,7 +452,9 @@ public class DynamicDatasourceTemplate {
             dataSource.addDataSource(dsKey, newDs);
             log.info("ateng-boot-datasource: 动态注册受管数据源成功 [dsKey={}]", dsKey);
         } finally {
-            lifecycleLock.unlock();
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
     }
 
@@ -467,7 +476,9 @@ public class DynamicDatasourceTemplate {
             dataSource.addDataSource(dsKey, newDs);
             log.info("ateng-boot-datasource: 动态注册受管物理数据源成功 [dsKey={}]", dsKey);
         } finally {
-            lifecycleLock.unlock();
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
     }
 
@@ -503,7 +514,9 @@ public class DynamicDatasourceTemplate {
             closeDataSource(targetDs);
             log.info("ateng-boot-datasource: 受管数据源已安全物理关闭 [dsKey={}]", dsKey);
         } finally {
-            lifecycleLock.unlock();
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
         }
     }
 

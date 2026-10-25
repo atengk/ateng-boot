@@ -2,8 +2,11 @@ package io.github.atengk.boot.datasource.template;
 
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.datasource.enums.BatchExecutionPolicy;
+import io.github.atengk.boot.datasource.enums.DatasourceResultCode;
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
+import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.exception.TenantDataSourceNotFoundException;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
@@ -290,5 +293,58 @@ class DynamicDatasourceTemplateTest {
         assertThat(visited).containsExactly("1001");
         assertThat(TenantContextHolder.getTenantId()).isNull();
         assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 IGNORE 模式下 callInTenantDataSource 即使存在物理租户库也强制路由至主库")
+    void testCallInTenantDataSource_IgnoreModeRoutesToMaster() {
+        properties.getMultiTenancy().setMode(MultiTenancyMode.IGNORE);
+
+        String result = template.callInTenantDataSource("1001", () -> {
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("master");
+            return "ignore_mode_result";
+        });
+
+        assertThat(result).isEqualTo("ignore_mode_result");
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 isIgnoreTenant=true 时 callInTenantDataSource 自动路由至主库")
+    void testCallInTenantDataSource_IgnoreFlagRoutesToMaster() {
+        TenantContextHolder.setIgnoreTenant(true);
+
+        String result = template.callInTenantDataSource("1001", () -> {
+            assertThat(template.getCurrentDataSourceKey()).isEqualTo("master");
+            return "ignore_flag_result";
+        });
+
+        assertThat(result).isEqualTo("ignore_flag_result");
+        assertThat(template.getCurrentDataSourceKey()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 FAIL_FAST 模式下受检异常转译为语义化 DataSourceSwitchException 并保留因果链")
+    void testForEachDataSource_FailFast_CheckedExceptionWrapped() {
+        List<String> order = List.of("master", "tenant_1001");
+        Exception checkedException = new Exception("底层受检 SQL 异常");
+
+        assertThatThrownBy(() -> template.forEachDataSource(order, BatchExecutionPolicy.FAIL_FAST, dsKey -> {
+            if ("tenant_1001".equals(dsKey)) {
+                sneakyThrow(checkedException);
+            }
+        }))
+                .isInstanceOf(DataSourceSwitchException.class)
+                .isInstanceOf(BusinessException.class)
+                .hasCause(checkedException)
+                .satisfies(e -> {
+                    DataSourceSwitchException ex = (DataSourceSwitchException) e;
+                    assertThat(ex.getCode()).isEqualTo(DatasourceResultCode.DATASOURCE_SWITCH_ERROR.getCode());
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <E extends Throwable> void sneakyThrow(Throwable t) throws E {
+        throw (E) t;
     }
 }

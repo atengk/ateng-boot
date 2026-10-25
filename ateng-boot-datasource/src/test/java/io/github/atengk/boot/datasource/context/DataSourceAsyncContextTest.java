@@ -119,4 +119,31 @@ class DataSourceAsyncContextTest {
         );
         assertThat(cleanCheck.get(2, TimeUnit.SECONDS)).isTrue();
     }
+
+    @Test
+    @DisplayName("验证工作线程已有既有上下文时任务完成后精准还原工作线程原始上下文")
+    void shouldRestorePreviousWorkerThreadContext() throws Exception {
+        // 先在 worker 线程上设置已有上下文
+        executor.submit(() -> DynamicDataSourceContextHolder.push("worker-previous-ds")).get();
+
+        MDC.put("traceId", "task-trace");
+        DynamicDataSourceContextHolder.push("parent-ds");
+
+        Runnable task = AsyncContext.wrap(() -> {
+            assertThat(DynamicDataSourceContextHolder.peek()).isEqualTo("parent-ds");
+        });
+
+        executor.submit(task).get();
+
+        // 验证任务执行后，worker 线程恢复为原先的 worker-previous-ds，且栈深没有累积
+        Future<String> check = executor.submit(() -> {
+            String current = DynamicDataSourceContextHolder.peek();
+            DynamicDataSourceContextHolder.poll();
+            String afterPoll = DynamicDataSourceContextHolder.peek();
+            assertThat(afterPoll).isNull();
+            return current;
+        });
+
+        assertThat(check.get()).isEqualTo("worker-previous-ds");
+    }
 }

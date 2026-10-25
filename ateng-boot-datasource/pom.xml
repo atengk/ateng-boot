@@ -61,6 +61,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Jakarta Servlet API (提供 Web 请求生命周期资源清理扩展支持) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试依赖 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.datasource;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteContextHolder;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
 import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -119,5 +120,8 @@ class OrderControllerMockMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.orderNo").value(orderNo));
+
+        // 3. 验证 ReadAfterWriteFilter 在请求结束后已严格清理 ThreadLocal 上下文
+        org.assertj.core.api.Assertions.assertThat(ReadAfterWriteContextHolder.isWriteOccurred()).isFalse();
     }
 }

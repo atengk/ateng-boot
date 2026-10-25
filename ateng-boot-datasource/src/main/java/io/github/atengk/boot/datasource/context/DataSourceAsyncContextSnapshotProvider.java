@@ -30,16 +30,27 @@ public class DataSourceAsyncContextSnapshotProvider implements AsyncContextSnaps
             DynamicDataSourceContextHolder.push(dsKey);
         } else {
             // 若父线程无数据源上下文，确保工作线程处于纯净无切源状态
-            DynamicDataSourceContextHolder.poll();
+            DynamicDataSourceContextHolder.clear();
         }
     }
 
     @Override
     public void restore(Object previous) {
-        // 彻底弹出工作任务期间压入的上下文
-        DynamicDataSourceContextHolder.poll();
+        // 彻底清理工作任务期间的上下文并精准恢复工作线程原有现场
+        DynamicDataSourceContextHolder.clear();
         if (previous instanceof String dsKey && !dsKey.isBlank()) {
             DynamicDataSourceContextHolder.push(dsKey);
         }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        return o != null && getClass() == o.getClass();
+    }
+
+    @Override
+    public int hashCode() {
+        return getClass().hashCode();
     }
 }

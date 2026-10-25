@@ -123,24 +123,6 @@ public class OrderService {
     }
 
     /**
-     * 显式从库注解查询 (@DS("slave_1"))
-     *
-     * @param orderNo 业务订单号
-     * @return 订单展示视图对象
-     */
-    @DS("slave_1")
-    public OrderResponse getOrderFromExplicitSlave(String orderNo) {
-        OrderEntity entity = orderMapper.selectOne(
-                new LambdaQueryWrapper<OrderEntity>()
-                        .eq(OrderEntity::getOrderNo, orderNo)
-        );
-        if (entity == null) {
-            return null;
-        }
-        return convertToVo(entity, dynamicDatasourceTemplate.getCurrentDataSourceKey());
-    }
-
-    /**
      * 持久层实体转换为出参视图对象 (契约绝对解耦)
      */
     private OrderResponse convertToVo(OrderEntity entity, String routedDs) {

@@ -8,7 +8,7 @@
 
 本样例工程提供 100% 离线自洽的嵌入式多 H2 内存数据库测试沙箱，涵盖以下核心特性：
 - **物理多租户透明切库**：根据请求头 `X-Tenant-Id` 或 `TenantContextHolder` 自动路由至对应租户数据库（`tenant_1001_db`、`tenant_1002_db`），支持 `FALLBACK_MASTER` 平滑回退与 `STRICT` 刚性隔离；
-- **读写分离与写后读主防延迟**：只读事务 `@Transactional(readOnly = true)` 自动路由读从库（`slave_1`），写事务 `@Transactional` 自动绑定写主库（`master`）并激活写后读主标记，时间窗口内后续读操作自动重定向回主库；
+- **读写分离与写后读主防延迟**：读操作自动路由至读从库（`slave`），写事务 `@Transactional` 自动绑定写主库（`master`）并激活写后读主标记，时间窗口内后续读操作自动重定向回主库；
 - **编程式多数据源对称门面**：使用 `DynamicDatasourceTemplate` 实现全库巡检（`forEachDataSource`）、全租户遍历（`forEachTenant`）、指定库执行（`runInDataSource`/`callInTenantDataSource`）；
 - **动态生命周期受管治理**：运行时动态挂载新数据源（`addDataSource`）并执行建表操作，支持超时等待在途连接归还的优雅排空（`removeDataSource`）；
 - **事务假切源刚性守卫**：在 Spring 单连接事务中尝试跨物理连接切源时，被 `DynamicDatasourceGuard` 刚性拦截阻断，彻底杜绝数据串库隐患；

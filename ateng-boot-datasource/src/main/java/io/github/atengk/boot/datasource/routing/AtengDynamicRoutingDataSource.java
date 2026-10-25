@@ -73,9 +73,10 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
         String explicitKey = DynamicDataSourceContextHolder.peek();
 
-        // 1. 写后读主防延迟检查：若当前上下文命中防延迟且目标路由为读从库，强制回退至主库
+        // 1. 写后读主防延迟检查：若当前处于防延迟期且目标路由为读从库（显式 @DS("slave") 或无租户只读事务），强制回退至主库
         if (readWrite.isEnabled() && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
-            if (Objects.equals(explicitKey, slaveKey) || (!StringUtils.hasText(explicitKey) && !StringUtils.hasText(TenantContextHolder.getTenantId()))) {
+            if (Objects.equals(explicitKey, slaveKey)
+                    || (!StringUtils.hasText(explicitKey) && !StringUtils.hasText(TenantContextHolder.getTenantId()) && TransactionSynchronizationManager.isCurrentTransactionReadOnly())) {
                 log.debug("写后读主 (Read-After-Write) 防延迟生效，强制只读查询路由至主库: [{}] (原路由: [{}])", masterKey, explicitKey);
                 return resolveWithFailover(masterKey);
             }
@@ -86,42 +87,25 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             return resolveWithFailover(explicitKey);
         }
 
-        // 3. 读写分离路由：检测当前是否处于只读事务中 (@Transactional(readOnly = true))
-        if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
-            if (containsDataSource(slaveKey)) {
-                log.debug("只读事务 (@Transactional(readOnly = true)) 自动路由至读从库组: [{}]", slaveKey);
-                return resolveWithFailover(slaveKey);
-            } else {
-                log.debug("未找到读从库 [{}]，只读事务平滑回退主库: [{}]", slaveKey, masterKey);
-                return resolveWithFailover(masterKey);
-            }
-        }
-
-        // 4. 写事务路由：当前处于活动 Spring 事务中且非只读，强制绑定至主库并触发写标记
-        if (readWrite.isEnabled() && TransactionSynchronizationManager.isActualTransactionActive()) {
-            log.debug("写事务 (@Transactional) 自动绑定至主库: [{}]", masterKey);
-            if (readAfterWriteManager != null) {
-                readAfterWriteManager.markWriteOccurred();
-            }
-            return resolveWithFailover(masterKey);
-        }
-
-        // 5. 物理多租户全自动透明切源
+        // 3. 物理多租户全自动透明切源 (优先于全局事务读写分离，严守租户物理分库隔离边界)
         DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
-        String currentTenantId = TenantContextHolder.getTenantId();
-        if (multiTenancy.isEnabled() && StringUtils.hasText(currentTenantId)) {
+        if (multiTenancy.isEnabled()) {
             // 免租户标记或 IGNORE 模式直接路由至默认主库
             if (TenantContextHolder.isIgnoreTenant() || multiTenancy.getMode() == MultiTenancyMode.IGNORE) {
                 log.debug("检测到免租户标记 (isIgnoreTenant=true) 或 IGNORE 模式，路由至默认主库: [{}]", multiTenancy.getDefaultDataSource());
                 return resolveWithFailover(multiTenancy.getDefaultDataSource());
             }
 
-            String tenantDsKey = tenantDataSourceProvider != null
-                    ? tenantDataSourceProvider.resolveDataSourceKey(currentTenantId)
-                    : (multiTenancy.getDataSourcePrefix() != null ? multiTenancy.getDataSourcePrefix() : "") + currentTenantId;
+            String currentTenantId = TenantContextHolder.getTenantId();
+            if (StringUtils.hasText(currentTenantId)) {
+                String tenantDsKey = tenantDataSourceProvider != null
+                        ? tenantDataSourceProvider.resolveDataSourceKey(currentTenantId)
+                        : null;
+                if (!StringUtils.hasText(tenantDsKey)) {
+                    String prefix = multiTenancy.getDataSourcePrefix();
+                    tenantDsKey = (prefix != null ? prefix : "") + currentTenantId;
+                }
 
-            if (StringUtils.hasText(tenantDsKey)) {
-                // 目标独立物理库已注册
                 if (containsDataSource(tenantDsKey)) {
                     log.debug("租户物理分库透明切源命中: tenantId=[{}], dsKey=[{}]", currentTenantId, tenantDsKey);
                     return resolveWithFailover(tenantDsKey);
@@ -138,6 +122,26 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
                     return resolveWithFailover(multiTenancy.getDefaultDataSource());
                 }
             }
+        }
+
+        // 4. 读写分离路由：检测当前是否处于只读事务中 (@Transactional(readOnly = true))
+        if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+            if (containsDataSource(slaveKey)) {
+                log.debug("只读事务 (@Transactional(readOnly = true)) 自动路由至读从库组: [{}]", slaveKey);
+                return resolveWithFailover(slaveKey);
+            } else {
+                log.debug("未找到读从库 [{}]，只读事务平滑回退主库: [{}]", slaveKey, masterKey);
+                return resolveWithFailover(masterKey);
+            }
+        }
+
+        // 5. 写事务路由：当前处于活动 Spring 事务中且非只读，强制绑定至主库并触发写标记
+        if (readWrite.isEnabled() && TransactionSynchronizationManager.isActualTransactionActive()) {
+            log.debug("写事务 (@Transactional) 自动绑定至主库: [{}]", masterKey);
+            if (readAfterWriteManager != null) {
+                readAfterWriteManager.markWriteOccurred();
+            }
+            return resolveWithFailover(masterKey);
         }
 
         // 6. 默认路由至主数据源（基于 Baomidou 原生 primary 机制）
@@ -213,12 +217,27 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
     }
 
     /**
-     * 反向查找已注册的物理数据源 Key
+     * 反向查找已注册的物理数据源 Key（遍历单物理库与从库分组库内各节点）
      */
     private String findDataSourceKey(DataSource targetDs) {
+        if (targetDs == null) {
+            return null;
+        }
         for (Map.Entry<String, DataSource> entry : getDataSources().entrySet()) {
             if (entry.getValue() == targetDs) {
                 return entry.getKey();
+            }
+        }
+        for (Map.Entry<String, GroupDataSource> groupEntry : getGroupDataSources().entrySet()) {
+            if (groupEntry.getValue() == targetDs) {
+                return groupEntry.getKey();
+            }
+            if (groupEntry.getValue().getDataSourceMap() != null) {
+                for (Map.Entry<String, DataSource> nodeEntry : groupEntry.getValue().getDataSourceMap().entrySet()) {
+                    if (nodeEntry.getValue() == targetDs) {
+                        return nodeEntry.getKey();
+                    }
+                }
             }
         }
         return null;

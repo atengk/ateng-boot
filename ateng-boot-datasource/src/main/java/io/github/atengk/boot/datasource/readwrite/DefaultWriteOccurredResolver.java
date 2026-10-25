@@ -23,9 +23,17 @@ public class DefaultWriteOccurredResolver implements WriteOccurredResolver {
 
     @Override
     public void markWrite(Duration windowTtl) {
+        if (writeWindowCache.size() > 2000) {
+            pruneExpiredEntries();
+        }
         String key = resolveCurrentKey();
         long ttlMillis = (windowTtl != null && !windowTtl.isNegative()) ? windowTtl.toMillis() : 3000L;
         writeWindowCache.put(key, System.currentTimeMillis() + ttlMillis);
+    }
+
+    private void pruneExpiredEntries() {
+        long now = System.currentTimeMillis();
+        writeWindowCache.entrySet().removeIf(entry -> entry.getValue() == null || now >= entry.getValue());
     }
 
     @Override

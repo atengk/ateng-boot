@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.datasource;
 
+import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.security.DataSourcePasswordDecryptor;
@@ -38,6 +39,7 @@ class DatasourceAsyncAndTransactionGuardIntegrationTest {
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
+        DynamicDataSourceContextHolder.clear();
     }
 
     @Test
@@ -63,12 +65,33 @@ class DatasourceAsyncAndTransactionGuardIntegrationTest {
     }
 
     @Test
+    @DisplayName("事务守卫多源协调放行: @DSTransactional 本地多源事务切源，安全放行")
+    void testTransactionGuardAllowsDsTransactional() {
+        txGuardService.transactionWithDsTransactional("ORD-DSTX-M-01", "ORD-DSTX-T-01");
+    }
+
+    @Test
+    @DisplayName("事务守卫 NESTED 嵌套拦截: @Transactional 嵌套 NESTED 事务切源 (共享连接)，被刚性拦截")
+    void testTransactionGuardInterceptsNestedFalseSwitch() {
+        assertThatThrownBy(() ->
+                txGuardService.transactionWithNestedIllegalSwitch("ORD-NEST-M-01", "ORD-NEST-T-01")
+        ).isInstanceOf(DataSourceSwitchException.class)
+         .hasMessageContaining("假切源致命风险");
+    }
+
+    @Test
     @DisplayName("异步上下文透传: AsyncContext 自动将当前线程绑定的数据源与租户上下文透传至异步子线程")
     void testAsyncContextPropagation() throws Exception {
         TenantContextHolder.setTenantId("1001");
-        CompletableFuture<String> future = asyncContextService.executeAsyncTaskWithContext();
-        String result = future.get(5, TimeUnit.SECONDS);
-        assertThat(result).isEqualTo("SUCCESS");
+        DynamicDataSourceContextHolder.push("tenant_1001");
+        try {
+            CompletableFuture<String> future = asyncContextService.executeAsyncTaskWithContext();
+            String result = future.get(5, TimeUnit.SECONDS);
+            // 真实断言子线程获取到了当前主线程的 dsKey 与 tenantId
+            assertThat(result).isEqualTo("tenant_1001:1001");
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
     }
 
     @Test

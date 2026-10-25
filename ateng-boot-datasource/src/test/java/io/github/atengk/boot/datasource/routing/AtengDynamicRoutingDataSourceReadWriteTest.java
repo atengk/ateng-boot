@@ -169,4 +169,24 @@ class AtengDynamicRoutingDataSourceReadWriteTest {
         // 验证故障从库已被加入黑名单
         assertThat(healthAwareStrategy.getBlacklistedDataSources()).isNotEmpty();
     }
+
+    @Test
+    @DisplayName("测试租户物理分库透明路由优先于全局事务读写分离 (防止事务劫持租户路由)")
+    void testTenantRoutingTakesPrecedenceOverTransactionalReadOnlyAndWrite() {
+        DataSource tenant1001Ds = mock(DataSource.class);
+        routingDataSource.addDataSource("tenant_1001", tenant1001Ds);
+
+        TenantContextHolder.setTenantId("1001");
+
+        // 1. 写事务 (@Transactional) 依然严格路由至租户专属物理库
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+        DataSource resolvedWrite = routingDataSource.determineDataSource();
+        assertThat(resolvedWrite).isSameAs(tenant1001Ds);
+
+        // 2. 只读事务 (@Transactional(readOnly = true)) 也严格路由至租户专属物理库
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        DataSource resolvedReadOnly = routingDataSource.determineDataSource();
+        assertThat(resolvedReadOnly).isSameAs(tenant1001Ds);
+    }
 }

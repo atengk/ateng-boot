@@ -19,6 +19,7 @@ import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationIn
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
+import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteFilter;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
 import io.github.atengk.boot.datasource.readwrite.WriteOccurredResolver;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
@@ -29,6 +30,7 @@ import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStr
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
+import jakarta.servlet.Filter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.aop.Advisor;
@@ -39,9 +41,12 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.expression.BeanFactoryResolver;
+import org.springframework.core.Ordered;
 import org.springframework.util.ClassUtils;
 
 import javax.sql.DataSource;
@@ -196,6 +201,22 @@ public class AtengDatasourceAutoConfiguration {
     public ReadAfterWriteManager readAfterWriteManager(DatasourceProperties datasourceProperties,
                                                        WriteOccurredResolver writeOccurredResolver) {
         return new ReadAfterWriteManager(datasourceProperties.getReadWriteSplit().getReadAfterWrite(), writeOccurredResolver);
+    }
+
+    /**
+     * 注册请求作用域写后读主上下文清理过滤器 (Servlet 环境)
+     *
+     * @return 过滤器注册 Bean
+     */
+    @Bean
+    @ConditionalOnClass(Filter.class)
+    @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
+    @ConditionalOnProperty(prefix = "ateng.boot.datasource.read-write-split.read-after-write", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(name = "readAfterWriteFilterRegistrationBean")
+    public FilterRegistrationBean<ReadAfterWriteFilter> readAfterWriteFilterRegistrationBean() {
+        FilterRegistrationBean<ReadAfterWriteFilter> registration = new FilterRegistrationBean<>(new ReadAfterWriteFilter());
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 50);
+        return registration;
     }
 
     /**

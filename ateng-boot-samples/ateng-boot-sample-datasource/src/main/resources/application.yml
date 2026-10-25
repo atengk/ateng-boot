@@ -47,7 +47,7 @@ ateng:
         slave-data-source: slave
         read-after-write:
           enabled: true
-          scope: REQUEST
+          scope: WINDOW
           window-ttl: 3s
         failover:
           enabled: true

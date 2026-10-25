@@ -66,6 +66,7 @@ class DynamicDatasourceGuardTest {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
         }
+        TransactionSynchronizationManager.unbindResourceIfPossible(DynamicDatasourceGuard.TX_BOUND_DATASOURCE_RESOURCE_KEY);
         TransactionSynchronizationManager.clear();
         TransactionContext.remove();
         DynamicDataSourceContextHolder.clear();
@@ -227,6 +228,26 @@ class DynamicDatasourceGuardTest {
         Object dsTxResult = interceptor.invoke(invocationRequired);
         assertThat(dsTxResult).isEqualTo("ds_tx_success");
         assertThat(DynamicDataSourceContextHolder.peek()).isNull();
+    }
+
+    @Test
+    @DisplayName("测试只读事务下准确识别从库为事务数据源并安全放行从库操作")
+    void testReadOnlyTransaction_IdentifiesSlaveDataSource() {
+        properties.getReadWriteSplit().setEnabled(true);
+        properties.getReadWriteSplit().setMasterDataSource("master");
+        properties.getReadWriteSplit().setSlaveDataSource("slave");
+
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+
+        // 验证只读事务初始绑定的数据源为 slave
+        String currentTxDsKey = guard.getCurrentTransactionDataSourceKey();
+        assertThat(currentTxDsKey).isEqualTo("slave");
+
+        // 目标切向 slave 时安全放行
+        guard.validateSwitch("slave");
+        guard.validateContextIsolated("slave");
     }
 
     /**

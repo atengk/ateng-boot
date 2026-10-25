@@ -76,7 +76,7 @@ public final class AsyncContext {
                 parent.apply();
                 task.run();
             } finally {
-                previous.apply();
+                previous.restore();
             }
         };
     }
@@ -99,7 +99,7 @@ public final class AsyncContext {
                 parent.apply();
                 return task.call();
             } finally {
-                previous.apply();
+                previous.restore();
             }
         };
     }
@@ -123,7 +123,7 @@ public final class AsyncContext {
                 parent.apply();
                 return task.get();
             } finally {
-                previous.apply();
+                previous.restore();
             }
         };
     }
@@ -225,6 +225,42 @@ public final class AsyncContext {
             for (Map.Entry<AsyncContextSnapshotProvider, Object> entry : this.extensions.entrySet()) {
                 try {
                     entry.getKey().apply(entry.getValue());
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        /**
+         * 还原工作线程执行前的原始现场（对称清理扩展上下文与核心维度）
+         */
+        public void restore() {
+            try {
+                if (this.mdc != null && !this.mdc.isEmpty()) {
+                    MDC.setContextMap(this.mdc);
+                } else {
+                    MDC.clear();
+                }
+            } finally {
+                try {
+                    if (this.user != null) {
+                        UserContextHolder.set(this.user);
+                    } else {
+                        UserContextHolder.clear();
+                    }
+                } finally {
+                    try {
+                        TenantContextHolder.restore(this.tenant);
+                    } finally {
+                        restoreExtensions();
+                    }
+                }
+            }
+        }
+
+        private void restoreExtensions() {
+            for (Map.Entry<AsyncContextSnapshotProvider, Object> entry : this.extensions.entrySet()) {
+                try {
+                    entry.getKey().restore(entry.getValue());
                 } catch (Throwable ignored) {
                 }
             }

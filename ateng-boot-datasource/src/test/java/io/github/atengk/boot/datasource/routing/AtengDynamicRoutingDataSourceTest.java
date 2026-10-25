@@ -143,4 +143,40 @@ class AtengDynamicRoutingDataSourceTest {
         TenantContextHolder.setTenantId("888");
         assertThat(customRouting.determineDataSource()).isSameAs(tenant1001DataSource);
     }
+
+    @Test
+    @DisplayName("测试 STRICT 严格模式下自定义 SPI 返回 null 拒绝静默穿透并抛出异常")
+    void testStrictModeThrowsExceptionWhenProviderReturnsNull() {
+        properties.getMultiTenancy().setMode(MultiTenancyMode.STRICT);
+        TenantDataSourceProvider nullReturningProvider = tenantId -> null;
+        AtengDynamicRoutingDataSource strictRouting = new AtengDynamicRoutingDataSource(
+                Collections.emptyList(), properties, nullReturningProvider);
+        strictRouting.setPrimary("master");
+        strictRouting.addDataSource("master", masterDataSource);
+
+        TenantContextHolder.setTenantId("unregistered_tenant");
+
+        assertThatThrownBy(strictRouting::determineDataSource)
+                .isInstanceOf(TenantDataSourceNotFoundException.class)
+                .hasMessageContaining("未找到租户 [unregistered_tenant]");
+    }
+
+    @Test
+    @DisplayName("测试未设置 tenantId 时单独设置 isIgnoreTenant=true 依然正确路由至主库")
+    void testIgnoreTenantFlagWithoutTenantIdRoutesToMaster() {
+        TenantContextHolder.setIgnoreTenant(true);
+
+        DataSource resolved = routingDataSource.determineDataSource();
+        assertThat(resolved).isSameAs(masterDataSource);
+    }
+
+    @Test
+    @DisplayName("测试 IGNORE 模式下即使存在租户数据源也强制路由至主库")
+    void testIgnoreModeRoutesToMasterEvenWithMatchingTenantDataSource() {
+        properties.getMultiTenancy().setMode(MultiTenancyMode.IGNORE);
+        TenantContextHolder.setTenantId("1001");
+
+        DataSource resolved = routingDataSource.determineDataSource();
+        assertThat(resolved).isSameAs(masterDataSource);
+    }
 }

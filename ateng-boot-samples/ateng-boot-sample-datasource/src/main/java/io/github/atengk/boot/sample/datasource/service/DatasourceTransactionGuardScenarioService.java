@@ -120,4 +120,56 @@ public class DatasourceTransactionGuardScenarioService {
         tenantOrder.setStatus("REQUIRES_NEW_OK");
         orderMapper.insert(tenantOrder);
     }
+
+    /**
+     * 使用 @DSTransactional 本地多源协调事务跨库执行 (被 DynamicDatasourceGuard 安全放行)
+     *
+     * @param masterOrderNo 主库订单号
+     * @param tenantOrderNo 租户库订单号
+     */
+    @com.baomidou.dynamic.datasource.annotation.DSTransactional(rollbackFor = Exception.class)
+    @DS("master")
+    public void transactionWithDsTransactional(String masterOrderNo, String tenantOrderNo) {
+        log.info("[TxGuardScenario] @DSTransactional 多源协调事务安全切源: master={}, tenant={}", masterOrderNo, tenantOrderNo);
+        OrderEntity masterOrder = new OrderEntity();
+        masterOrder.setOrderNo(masterOrderNo);
+        masterOrder.setProductName("Master DSTx");
+        masterOrder.setAmount(new BigDecimal("100.00"));
+        masterOrder.setStatus("DSTX_MASTER");
+        orderMapper.insert(masterOrder);
+
+        self.insertInTenantDs(tenantOrderNo);
+    }
+
+    /**
+     * 在 @Transactional 内通过 Propagation.NESTED 嵌套事务切源 (依然共享同一物理连接，预期被刚性拦截)
+     *
+     * @param masterOrderNo 主库订单号
+     * @param tenantOrderNo 租户库订单号
+     */
+    @Transactional(rollbackFor = Exception.class)
+    @DS("master")
+    public void transactionWithNestedIllegalSwitch(String masterOrderNo, String tenantOrderNo) {
+        log.info("[TxGuardScenario] 主事务中插入 master 订单: {}", masterOrderNo);
+        OrderEntity masterOrder = new OrderEntity();
+        masterOrder.setOrderNo(masterOrderNo);
+        masterOrder.setProductName("Master Nested Outer");
+        masterOrder.setAmount(new BigDecimal("200.00"));
+        masterOrder.setStatus("NESTED_OUTER");
+        orderMapper.insert(masterOrder);
+
+        self.insertInTenantWithNested(tenantOrderNo);
+    }
+
+    @DS("tenant_1001")
+    @Transactional(propagation = Propagation.NESTED, rollbackFor = Exception.class)
+    public void insertInTenantWithNested(String orderNo) {
+        log.info("[TxGuardScenario] NESTED 嵌套事务尝试切源至 tenant_1001 (预期被拦截)");
+        OrderEntity tenantOrder = new OrderEntity();
+        tenantOrder.setOrderNo(orderNo);
+        tenantOrder.setProductName("Tenant Nested Tx");
+        tenantOrder.setAmount(new BigDecimal("50.00"));
+        tenantOrder.setStatus("NESTED_TX");
+        orderMapper.insert(tenantOrder);
+    }
 }

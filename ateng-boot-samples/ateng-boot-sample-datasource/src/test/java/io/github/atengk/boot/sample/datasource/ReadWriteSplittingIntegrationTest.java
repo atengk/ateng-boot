@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.datasource;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
+import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStrategy;
 import io.github.atengk.boot.sample.datasource.dto.OrderCreateRequest;
 import io.github.atengk.boot.sample.datasource.service.OrderService;
 import io.github.atengk.boot.sample.datasource.vo.OrderResponse;
@@ -12,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -30,10 +32,14 @@ class ReadWriteSplittingIntegrationTest {
     @Autowired
     private ReadAfterWriteManager readAfterWriteManager;
 
+    @Autowired
+    private HealthAwareDynamicDataSourceStrategy failoverStrategy;
+
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
         readAfterWriteManager.clear();
+        failoverStrategy.clearBlacklist();
     }
 
     @Test
@@ -65,5 +71,24 @@ class ReadWriteSplittingIntegrationTest {
         // 5. 再次调用只读事务查询：自动路由到 slave 读从库，由于 slave 库未同步 master 数据，此时读取返回 null
         OrderResponse slaveReadRes = orderService.getOrderReadWrite(orderNo);
         assertThat(slaveReadRes).isNull();
+    }
+
+    @Test
+    @DisplayName("从库自愈熔断高可用: 从库异常进入黑名单冷却隔离，全灭时自动保底降级路由至主库")
+    void testSlaveFailoverAndFallbackToMaster() {
+        // 1. 模拟从库 slave 节点发生异常，记录失败置入黑名单
+        failoverStrategy.recordFailure("slave");
+
+        // 2. 断言从库已被熔断隔离
+        assertThat(failoverStrategy.isBlacklisted("slave")).isTrue();
+
+        // 3. 当从库集群全灭时，路由策略根据 fallback-to-master=true 保底降级返回 master
+        String determinedKey = failoverStrategy.determineKey(List.of("slave"));
+        assertThat(determinedKey).isEqualTo("master");
+
+        // 4. 清理黑名单自愈恢复
+        failoverStrategy.clearBlacklist();
+        assertThat(failoverStrategy.isBlacklisted("slave")).isFalse();
+        assertThat(failoverStrategy.determineKey(List.of("slave"))).isEqualTo("slave");
     }
 }
