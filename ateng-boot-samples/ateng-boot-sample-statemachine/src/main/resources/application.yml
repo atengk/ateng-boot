@@ -25,10 +25,9 @@ ateng:
       enabled: true
       logging:
         enabled: true
-        include-context: true
+        log-context: true
       metrics:
         enabled: true
-        slow-execution-threshold: 200ms
     mybatis-plus:
       tenant:
         enabled: false

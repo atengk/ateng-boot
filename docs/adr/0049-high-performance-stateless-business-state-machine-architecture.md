@@ -119,3 +119,4 @@ flowchart TD
 | `59003` | `ACTION_EXECUTION_FAILED`| 状态跃迁动作执行失败（携带原始根因） | 500 Internal Error |
 | `59004` | `DUPLICATE_MACHINE_ID` | 状态机标识重复定义冲突 | 500 Internal Error |
 | `59005` | `CONCURRENT_CAS_CONFLICT`| 状态并发更新冲突（CAS 乐观锁防重拦截） | 409 Conflict |
+| `59006` | `MACHINE_NOT_FOUND` | 未找到指定标识的状态机实例 | 404 Not Found |

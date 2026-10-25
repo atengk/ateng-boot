@@ -23,6 +23,12 @@ public class Transition<S, E, C> {
     private final List<Action<S, E, C>> actions;
 
     public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions) {
+        if (sourceState == null) {
+            throw new IllegalArgumentException("sourceState must not be null");
+        }
+        if (event == null) {
+            throw new IllegalArgumentException("event must not be null");
+        }
         this.sourceState = sourceState;
         this.targetState = targetState;
         this.event = event;

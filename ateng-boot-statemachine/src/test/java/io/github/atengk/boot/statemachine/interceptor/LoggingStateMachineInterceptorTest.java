@@ -70,4 +70,16 @@ class LoggingStateMachineInterceptorTest {
             interceptor.onException("WAIT_PAY", "PAY", null, new RuntimeException("Error"));
         });
     }
+
+    @Test
+    @DisplayName("测试基础字符串上下文脱敏格式化")
+    void testFormatContextDesensitization() {
+        StateMachineProperties.Logging loggingConfig = new StateMachineProperties.Logging();
+        LoggingStateMachineInterceptor interceptor = new LoggingStateMachineInterceptor(loggingConfig);
+
+        assertThat(interceptor.formatContext("13812345678")).isEqualTo("138****5678");
+        assertThat(interceptor.formatContext("test@example.com")).isEqualTo("t**t@example.com");
+        assertThat(interceptor.formatContext("custom-payload")).isEqualTo("custom-payload");
+        assertThat(interceptor.formatContext(null)).isEqualTo("null");
+    }
 }

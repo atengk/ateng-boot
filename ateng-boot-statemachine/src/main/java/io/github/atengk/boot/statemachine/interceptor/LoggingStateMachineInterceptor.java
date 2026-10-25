@@ -1,5 +1,6 @@
 package io.github.atengk.boot.statemachine.interceptor;
 
+import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.statemachine.core.StateMachineInterceptor;
 import io.github.atengk.boot.statemachine.properties.StateMachineProperties;
 import org.slf4j.Logger;
@@ -33,7 +34,7 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
             return;
         }
         if (loggingProperties.isLogContext() && context != null) {
-            log.info("[StateMachine] 开始执行状态跃迁: from={}, event={}, context={}", from, event, context);
+            log.info("[StateMachine] 开始执行状态跃迁: from={}, event={}, context={}", from, event, formatContext(context));
         } else {
             log.info("[StateMachine] 开始执行状态跃迁: from={}, event={}", from, event);
         }
@@ -55,5 +56,28 @@ public class LoggingStateMachineInterceptor implements StateMachineInterceptor<O
         }
         String errorMsg = ex != null ? ex.getMessage() : "未知异常";
         log.warn("[StateMachine] 状态跃迁执行失败: from={}, event={}, 异常={}", from, event, errorMsg);
+    }
+
+    /**
+     * 格式化业务上下文并执行脱敏保护
+     *
+     * @param context 业务上下文
+     * @return 脱敏后的上下文描述字符串
+     */
+    protected String formatContext(Object context) {
+        if (context == null) {
+            return "null";
+        }
+        if (context instanceof CharSequence) {
+            String str = context.toString();
+            if (str.matches("^1[3-9]\\d{9}$")) {
+                return DesensitizeUtil.mobilePhone(str);
+            }
+            if (str.contains("@") && str.contains(".")) {
+                return DesensitizeUtil.email(str);
+            }
+            return str;
+        }
+        return String.valueOf(context);
     }
 }

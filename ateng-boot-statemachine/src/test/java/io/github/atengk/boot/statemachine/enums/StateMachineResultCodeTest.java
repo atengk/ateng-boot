@@ -30,5 +30,8 @@ class StateMachineResultCodeTest {
 
         assertThat(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode()).isEqualTo(59005);
         assertThat(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getMsg()).isEqualTo("状态并发更新冲突（CAS 乐观锁防重拦截）");
+
+        assertThat(StateMachineResultCode.MACHINE_NOT_FOUND.getCode()).isEqualTo(59006);
+        assertThat(StateMachineResultCode.MACHINE_NOT_FOUND.getMsg()).isEqualTo("未找到指定标识的状态机实例");
     }
 }

@@ -58,6 +58,7 @@ class MetricsStateMachineInterceptorTest {
 
         Counter counter = registry.find("statemachine.transition.total")
                 .tag("from", "WAIT_PAY")
+                .tag("to", "ERROR")
                 .tag("event", "PAY_EVENT")
                 .tag("status", "failure")
                 .counter();

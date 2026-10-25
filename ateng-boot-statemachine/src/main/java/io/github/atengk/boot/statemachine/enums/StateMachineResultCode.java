@@ -37,7 +37,12 @@ public enum StateMachineResultCode implements IResultCode {
     /**
      * 状态并发更新冲突（CAS 乐观锁防重拦截）
      */
-    CONCURRENT_CAS_CONFLICT(59005, "状态并发更新冲突（CAS 乐观锁防重拦截）");
+    CONCURRENT_CAS_CONFLICT(59005, "状态并发更新冲突（CAS 乐观锁防重拦截）"),
+
+    /**
+     * 未找到指定标识的状态机实例
+     */
+    MACHINE_NOT_FOUND(59006, "未找到指定标识的状态机实例");
 
     private final Integer code;
     private final String msg;

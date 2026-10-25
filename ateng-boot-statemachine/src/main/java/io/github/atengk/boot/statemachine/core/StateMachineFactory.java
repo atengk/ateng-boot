@@ -44,6 +44,22 @@ public final class StateMachineFactory {
     }
 
     /**
+     * 注册或更新状态机实例至全局工厂
+     *
+     * @param stateMachine 状态机实例
+     */
+    public static void registerOrUpdate(StateMachine<?, ?, ?> stateMachine) {
+        if (stateMachine == null) {
+            throw new IllegalArgumentException("StateMachine must not be null");
+        }
+        String machineId = stateMachine.getMachineId();
+        if (machineId == null || machineId.trim().isEmpty()) {
+            throw new IllegalArgumentException("machineId must not be blank");
+        }
+        REGISTRY.put(machineId, stateMachine);
+    }
+
+    /**
      * 根据 machineId 获取强类型状态机实例
      *
      * @param machineId 状态机唯一标识
@@ -61,7 +77,7 @@ public final class StateMachineFactory {
         StateMachine<?, ?, ?> machine = REGISTRY.get(machineId);
         if (machine == null) {
             throw new StateMachineException(
-                    StateMachineResultCode.TRANSITION_NOT_FOUND,
+                    StateMachineResultCode.MACHINE_NOT_FOUND,
                     String.format("全局状态机工厂未找到标识为 [%s] 的状态机实例", machineId)
             );
         }

@@ -58,16 +58,10 @@ public class MetricsStateMachineInterceptor implements StateMachineInterceptor<O
         Counter.builder("statemachine.transition.total")
                 .description("Total number of state machine transitions")
                 .tag("from", String.valueOf(from))
+                .tag("to", "ERROR")
                 .tag("event", String.valueOf(event))
                 .tag("status", "failure")
                 .register(meterRegistry)
                 .increment();
-
-        Timer.builder("statemachine.transition.timer")
-                .description("Latency of state machine transitions")
-                .tag("from", String.valueOf(from))
-                .tag("event", String.valueOf(event))
-                .tag("status", "failure")
-                .register(meterRegistry);
     }
 }

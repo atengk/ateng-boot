@@ -279,4 +279,38 @@ class ChoiceTransitionTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Incomplete choice transition configuration");
     }
+
+    @Test
+    @DisplayName("测试 Choice 分支条件执行抛出异常时的因果链转译与静默承载")
+    void testChoiceConditionExceptionHandling() {
+        StateMachineBuilder<OrderState, OrderEvent, RiskContext> builder = StateMachineBuilderFactory.create();
+        builder.choiceTransition()
+                .from(OrderState.PAID)
+                .on(OrderEvent.PAY_SUCCESS)
+                .when(ctx -> {
+                    throw new RuntimeException("风控系统超时");
+                })
+                .to(OrderState.WAIT_AUDIT)
+                .defaultTo(OrderState.WAIT_DELIVER);
+
+        StateMachine<OrderState, OrderEvent, RiskContext> machine = builder.build("RISK_CHOICE_EX");
+        RiskContext ctx = new RiskContext(100, true, false);
+
+        // 1. Fail-Fast 模式
+        assertThatThrownBy(() -> machine.fireEvent(OrderState.PAID, OrderEvent.PAY_SUCCESS, ctx))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.CONDITION_FAILED.getCode());
+                    assertThat(smEx.getCause()).isInstanceOf(RuntimeException.class);
+                    assertThat(smEx.getCause()).hasMessage("风控系统超时");
+                });
+
+        // 2. 静默探测模式
+        TransitionResult<OrderState> result = machine.fireEventQuietly(OrderState.PAID, OrderEvent.PAY_SUCCESS, ctx);
+        assertThat(result.isAccepted()).isFalse();
+        assertThat(result.getFailureReason()).contains("确定目标状态时异常");
+        assertThat(result.getCause()).isInstanceOf(RuntimeException.class);
+        assertThat(result.getCause()).hasMessage("风控系统超时");
+    }
 }

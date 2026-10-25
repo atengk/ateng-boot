@@ -65,5 +65,18 @@ class StateMachineExceptionTest {
         assertThat(exWithoutCause.getEvent()).isEqualTo("PAY_EVENT");
         assertThat(exWithoutCause.getMessage()).isEqualTo("并发冲突");
         assertThat(exWithoutCause.getCause()).isNull();
+
+        StateMachineException exWithEventAndCause = new StateMachineException(
+                StateMachineResultCode.CONDITION_FAILED,
+                "WAIT_PAY",
+                "PAY_EVENT",
+                "卫语句异常",
+                new IllegalArgumentException("参数不合法")
+        );
+        assertThat(exWithEventAndCause.getCode()).isEqualTo(59002);
+        assertThat(exWithEventAndCause.getSourceState()).isEqualTo("WAIT_PAY");
+        assertThat(exWithEventAndCause.getTargetState()).isNull();
+        assertThat(exWithEventAndCause.getEvent()).isEqualTo("PAY_EVENT");
+        assertThat(exWithEventAndCause.getCause()).isInstanceOf(IllegalArgumentException.class);
     }
 }

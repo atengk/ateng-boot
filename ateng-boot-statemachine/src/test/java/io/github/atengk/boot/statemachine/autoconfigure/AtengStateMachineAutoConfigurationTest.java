@@ -120,4 +120,34 @@ class AtengStateMachineAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MetricsStateMachineInterceptor.class);
                 });
     }
+
+    @Configuration
+    static class DuplicateMachineIdConfiguration {
+        @Bean
+        public StateMachine<TestState, TestEvent, Object> machineA() {
+            StateMachineBuilder<TestState, TestEvent, Object> builder = StateMachineBuilderFactory.create();
+            builder.externalTransition().from(TestState.S1).to(TestState.S2).on(TestEvent.E1);
+            return builder.build("CONFLICT_ID");
+        }
+
+        @Bean
+        public StateMachine<TestState, TestEvent, Object> machineB() {
+            StateMachineBuilder<TestState, TestEvent, Object> builder = StateMachineBuilderFactory.create();
+            builder.externalTransition().from(TestState.S1).to(TestState.S2).on(TestEvent.E1);
+            return builder.build("CONFLICT_ID");
+        }
+    }
+
+    @Test
+    @DisplayName("测试容器中定义重复 machineId 的不同 Bean 时触发 DUPLICATE_MACHINE_ID 启动失败")
+    void testDuplicateMachineIdConflict() {
+        contextRunner
+                .withUserConfiguration(DuplicateMachineIdConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .isInstanceOf(io.github.atengk.boot.statemachine.exception.StateMachineException.class)
+                            .hasMessageContaining("重复注册冲突");
+                });
+    }
 }

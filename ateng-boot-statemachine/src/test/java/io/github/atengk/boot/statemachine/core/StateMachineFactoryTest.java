@@ -78,7 +78,7 @@ class StateMachineFactoryTest {
                 .isInstanceOf(StateMachineException.class)
                 .satisfies(ex -> {
                     StateMachineException smEx = (StateMachineException) ex;
-                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode());
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.MACHINE_NOT_FOUND.getCode());
                     assertThat(smEx.getMessage()).contains("未找到标识为 [NON_EXISTENT] 的状态机实例");
                 });
     }

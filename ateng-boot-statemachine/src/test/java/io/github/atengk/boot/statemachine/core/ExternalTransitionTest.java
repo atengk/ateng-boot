@@ -160,4 +160,49 @@ class ExternalTransitionTest {
         assertThat(result.isAccepted()).isFalse();
         assertThat(result.getCause()).isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    @DisplayName("测试 Condition 卫语句抛出异常时转译为 StateMachineException 并保持因果链")
+    void testConditionExceptionPreservesCause() {
+        StateMachineBuilder<TestState, TestEvent, OrderContext> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(TestState.WAIT_PAY)
+                .to(TestState.PAID)
+                .on(TestEvent.PAY_SUCCESS)
+                .when(ctx -> {
+                    throw new IllegalStateException("风控前置校验异常");
+                });
+
+        StateMachine<TestState, TestEvent, OrderContext> machine = builder.build("ORDER_FLOW");
+        OrderContext ctx = new OrderContext(100);
+
+        // 1. Fail-Fast 模式
+        assertThatThrownBy(() -> machine.fireEvent(TestState.WAIT_PAY, TestEvent.PAY_SUCCESS, ctx))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.CONDITION_FAILED.getCode());
+                    assertThat(smEx.getCause()).isInstanceOf(IllegalStateException.class);
+                    assertThat(smEx.getCause()).hasMessage("风控前置校验异常");
+                });
+
+        // 2. 静默探测模式
+        TransitionResult<TestState> result = machine.fireEventQuietly(TestState.WAIT_PAY, TestEvent.PAY_SUCCESS, ctx);
+        assertThat(result.isAccepted()).isFalse();
+        assertThat(result.getFailureReason()).contains("前置条件卫语句执行异常");
+        assertThat(result.getCause()).isInstanceOf(IllegalStateException.class);
+        assertThat(result.getCause()).hasMessage("风控前置校验异常");
+    }
+
+    @Test
+    @DisplayName("测试 Transition 构造方法对源状态和事件的防御性空值校验")
+    void testTransitionConstructorNullDefense() {
+        assertThatThrownBy(() -> new Transition<>(null, TestState.PAID, TestEvent.PAY_SUCCESS, TransitionType.EXTERNAL, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceState must not be null");
+
+        assertThatThrownBy(() -> new Transition<>(TestState.WAIT_PAY, TestState.PAID, null, TransitionType.EXTERNAL, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("event must not be null");
+    }
 }

@@ -85,8 +85,24 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         List<Transition<S, E, C>> buildTransitions();
     }
 
-    private static class ExternalTransitionHolder<S, E, C> implements
-            TransitionHolder<S, E, C>,
+    private abstract static class AbstractTransitionHolder<S, E, C> implements TransitionHolder<S, E, C> {
+        protected final List<Condition<C>> conditions = new ArrayList<>();
+        protected final List<Action<S, E, C>> actions = new ArrayList<>();
+
+        protected void addCondition(Condition<C> condition) {
+            if (condition != null) {
+                this.conditions.add(condition);
+            }
+        }
+
+        protected void addAction(Action<S, E, C> action) {
+            if (action != null) {
+                this.actions.add(action);
+            }
+        }
+    }
+
+    private static class ExternalTransitionHolder<S, E, C> extends AbstractTransitionHolder<S, E, C> implements
             ExternalTransitionBuilder.From<S, E, C>,
             ExternalTransitionBuilder.To<S, E, C>,
             ExternalTransitionBuilder.On<S, E, C>,
@@ -95,8 +111,6 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private S sourceState;
         private S targetState;
         private E event;
-        private final List<Condition<C>> conditions = new ArrayList<>();
-        private final List<Action<S, E, C>> actions = new ArrayList<>();
 
         @Override
         public ExternalTransitionBuilder.To<S, E, C> from(S sourceState) {
@@ -127,17 +141,13 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         @Override
         public ExternalTransitionBuilder.WhenOrPerform<S, E, C> when(Condition<C> condition) {
-            if (condition != null) {
-                this.conditions.add(condition);
-            }
+            addCondition(condition);
             return this;
         }
 
         @Override
         public ExternalTransitionBuilder.WhenOrPerform<S, E, C> perform(Action<S, E, C> action) {
-            if (action != null) {
-                this.actions.add(action);
-            }
+            addAction(action);
             return this;
         }
 
@@ -150,16 +160,13 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
     }
 
-    private static class InternalTransitionHolder<S, E, C> implements
-            TransitionHolder<S, E, C>,
+    private static class InternalTransitionHolder<S, E, C> extends AbstractTransitionHolder<S, E, C> implements
             InternalTransitionBuilder.From<S, E, C>,
             InternalTransitionBuilder.On<S, E, C>,
             InternalTransitionBuilder.WhenOrPerform<S, E, C> {
 
         private S sourceState;
         private E event;
-        private final List<Condition<C>> conditions = new ArrayList<>();
-        private final List<Action<S, E, C>> actions = new ArrayList<>();
 
         @Override
         public InternalTransitionBuilder.On<S, E, C> from(S sourceState) {
@@ -181,17 +188,13 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         @Override
         public InternalTransitionBuilder.WhenOrPerform<S, E, C> when(Condition<C> condition) {
-            if (condition != null) {
-                this.conditions.add(condition);
-            }
+            addCondition(condition);
             return this;
         }
 
         @Override
         public InternalTransitionBuilder.WhenOrPerform<S, E, C> perform(Action<S, E, C> action) {
-            if (action != null) {
-                this.actions.add(action);
-            }
+            addAction(action);
             return this;
         }
 
@@ -204,8 +207,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
     }
 
-    private static class MultiFromTransitionHolder<S, E, C> implements
-            TransitionHolder<S, E, C>,
+    private static class MultiFromTransitionHolder<S, E, C> extends AbstractTransitionHolder<S, E, C> implements
             MultiFromTransitionBuilder.From<S, E, C>,
             MultiFromTransitionBuilder.To<S, E, C>,
             MultiFromTransitionBuilder.On<S, E, C>,
@@ -214,8 +216,6 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private final Set<S> sourceStates = new LinkedHashSet<>();
         private S targetState;
         private E event;
-        private final List<Condition<C>> conditions = new ArrayList<>();
-        private final List<Action<S, E, C>> actions = new ArrayList<>();
 
         @SafeVarargs
         @Override
@@ -266,17 +266,13 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         @Override
         public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> when(Condition<C> condition) {
-            if (condition != null) {
-                this.conditions.add(condition);
-            }
+            addCondition(condition);
             return this;
         }
 
         @Override
         public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> perform(Action<S, E, C> action) {
-            if (action != null) {
-                this.actions.add(action);
-            }
+            addAction(action);
             return this;
         }
 
@@ -293,8 +289,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
     }
 
-    private static class ChoiceTransitionHolder<S, E, C> implements
-            TransitionHolder<S, E, C>,
+    private static class ChoiceTransitionHolder<S, E, C> extends AbstractTransitionHolder<S, E, C> implements
             ChoiceTransitionBuilder.From<S, E, C>,
             ChoiceTransitionBuilder.On<S, E, C>,
             ChoiceTransitionBuilder.BranchWhen<S, E, C>,
@@ -306,7 +301,6 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private E event;
         private final List<ChoiceBranch<S, C>> branches = new ArrayList<>();
         private S defaultTargetState;
-        private final List<Action<S, E, C>> actions = new ArrayList<>();
 
         private List<Condition<C>> currentBranchConditions = new ArrayList<>();
 
@@ -361,9 +355,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         @Override
         public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> perform(Action<S, E, C> action) {
-            if (action != null) {
-                this.actions.add(action);
-            }
+            addAction(action);
             return this;
         }
 
