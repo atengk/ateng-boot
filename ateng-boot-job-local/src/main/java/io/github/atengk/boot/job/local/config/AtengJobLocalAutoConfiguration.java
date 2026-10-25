@@ -25,6 +25,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -210,17 +212,25 @@ public class AtengJobLocalAutoConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty(prefix = "ateng.boot.job.local.alert", name = "enabled", havingValue = "true")
+    @AutoConfigureAfter(name = "io.github.atengk.boot.notification.config.AtengNotificationAutoConfiguration")
     static class LocalJobAlertAutoConfiguration {
 
-        @Bean
-        @ConditionalOnMissingBean
-        public JobAlertHandler jobAlertHandler(
-                ObjectProvider<NotificationTemplate> notificationTemplateProvider,
-                JobLocalProperties properties) {
-            NotificationTemplate notificationTemplate = notificationTemplateProvider.getIfAvailable();
-            if (notificationTemplate != null) {
+        @Configuration(proxyBeanMethods = false)
+        @ConditionalOnClass(NotificationTemplate.class)
+        static class NotificationAlertHandlerConfiguration {
+
+            @Bean
+            @ConditionalOnBean(NotificationTemplate.class)
+            @ConditionalOnMissingBean(JobAlertHandler.class)
+            public JobAlertHandler notificationJobAlertHandler(NotificationTemplate notificationTemplate,
+                                                               JobLocalProperties properties) {
                 return new NotificationJobAlertHandler(notificationTemplate, properties.getAlert().getChannel());
             }
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(JobAlertHandler.class)
+        public JobAlertHandler loggingJobAlertHandler() {
             return new LoggingJobAlertHandler();
         }
 

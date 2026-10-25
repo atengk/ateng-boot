@@ -20,6 +20,8 @@ import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronTrigger;
+import org.springframework.scheduling.support.PeriodicTrigger;
+import org.springframework.util.Assert;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -93,6 +95,10 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
      * @return 注册后的受管任务
      */
     public ScheduledJobTask register(JobDefinition definition, JobHandler handler) {
+        Assert.notNull(definition, "JobDefinition must not be null");
+        Assert.hasText(definition.getJobName(), "jobName must not be empty");
+        Assert.notNull(handler, "JobHandler must not be null");
+
         String jobName = definition.getJobName();
         if (taskMap.containsKey(jobName)) {
             throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);
@@ -107,9 +113,17 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                     definition.setStatus(persisted.getStatus());
                     definition.setEnabled(persisted.getStatus() == JobStatus.RUNNING);
                 }
+                if (persisted.getTriggerType() != null) {
+                    definition.setTriggerType(persisted.getTriggerType());
+                }
                 if (persisted.getCron() != null && !persisted.getCron().isBlank()) {
                     definition.setCron(persisted.getCron());
-                    definition.setTriggerType(TriggerType.CRON);
+                }
+                if (persisted.getFixedRate() != null) {
+                    definition.setFixedRate(persisted.getFixedRate());
+                }
+                if (persisted.getFixedDelay() != null) {
+                    definition.setFixedDelay(persisted.getFixedDelay());
                 }
             }
         }
@@ -121,7 +135,10 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
 
         ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
                 logStorageProvider, clusterLockProvider, eventPublisher);
-        taskMap.put(jobName, task);
+        ScheduledJobTask existing = taskMap.putIfAbsent(jobName, task);
+        if (existing != null) {
+            throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);
+        }
 
         // 3. 仅在已启动（started == true）且任务状态为 RUNNING 时调度
         if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
@@ -280,14 +297,18 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
      * @return 是否更新并重新调度成功
      */
     public boolean updateCron(String jobName, String newCron) {
+        Assert.hasText(jobName, "jobName must not be empty");
+        Assert.hasText(newCron, "newCron must not be empty");
         ScheduledJobTask task = taskMap.get(jobName);
         if (task == null) {
             return false;
         }
+        // 先实例化并校验 Cron 表达式合法性，防御语法错误导致取消原调度后任务悬挂
+        CronTrigger newTrigger = new CronTrigger(newCron);
         cancelSchedule(task);
         task.getDefinition().setCron(newCron);
         task.getDefinition().setTriggerType(TriggerType.CRON);
-        task.setTrigger(new CronTrigger(newCron));
+        task.setTrigger(newTrigger);
         if (metadataRepository != null) {
             metadataRepository.updateCron(jobName, newCron);
         }
@@ -295,6 +316,68 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
             scheduleTask(task);
         }
         log.info("Updated Cron expression for local job [{}] to [{}]", jobName, newCron);
+        return true;
+    }
+
+    /**
+     * 动态修改固定频率调度周期
+     *
+     * @param jobName      任务名称
+     * @param newFixedRate 新的固定频率时长
+     * @return 是否更新并重新调度成功
+     */
+    public boolean updateFixedRate(String jobName, Duration newFixedRate) {
+        Assert.hasText(jobName, "jobName must not be empty");
+        Assert.notNull(newFixedRate, "newFixedRate must not be null");
+        Assert.isTrue(!newFixedRate.isZero() && !newFixedRate.isNegative(), "newFixedRate must be positive");
+        ScheduledJobTask task = taskMap.get(jobName);
+        if (task == null) {
+            return false;
+        }
+        PeriodicTrigger newTrigger = new PeriodicTrigger(newFixedRate);
+        newTrigger.setFixedRate(true);
+        if (task.getDefinition().getInitialDelay() != null) {
+            newTrigger.setInitialDelay(task.getDefinition().getInitialDelay());
+        }
+        cancelSchedule(task);
+        task.getDefinition().setFixedRate(newFixedRate);
+        task.getDefinition().setTriggerType(TriggerType.FIXED_RATE);
+        task.setTrigger(newTrigger);
+        if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
+            scheduleTask(task);
+        }
+        log.info("Updated fixedRate for local job [{}] to [{}]", jobName, newFixedRate);
+        return true;
+    }
+
+    /**
+     * 动态修改固定延迟调度周期
+     *
+     * @param jobName       任务名称
+     * @param newFixedDelay 新的固定延迟时长
+     * @return 是否更新并重新调度成功
+     */
+    public boolean updateFixedDelay(String jobName, Duration newFixedDelay) {
+        Assert.hasText(jobName, "jobName must not be empty");
+        Assert.notNull(newFixedDelay, "newFixedDelay must not be null");
+        Assert.isTrue(!newFixedDelay.isZero() && !newFixedDelay.isNegative(), "newFixedDelay must be positive");
+        ScheduledJobTask task = taskMap.get(jobName);
+        if (task == null) {
+            return false;
+        }
+        PeriodicTrigger newTrigger = new PeriodicTrigger(newFixedDelay);
+        newTrigger.setFixedRate(false);
+        if (task.getDefinition().getInitialDelay() != null) {
+            newTrigger.setInitialDelay(task.getDefinition().getInitialDelay());
+        }
+        cancelSchedule(task);
+        task.getDefinition().setFixedDelay(newFixedDelay);
+        task.getDefinition().setTriggerType(TriggerType.FIXED_DELAY);
+        task.setTrigger(newTrigger);
+        if (started.get() && task.getStatus() == JobStatus.RUNNING && taskScheduler != null) {
+            scheduleTask(task);
+        }
+        log.info("Updated fixedDelay for local job [{}] to [{}]", jobName, newFixedDelay);
         return true;
     }
 

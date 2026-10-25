@@ -28,17 +28,17 @@ public class LocalJobAlertListener {
         if (alertHandler == null || event == null) {
             return;
         }
-        JobAlertContext context = JobAlertContext.builder()
-                .jobName(event.getJobName())
-                .triggerType(event.getTriggerType())
-                .traceId(event.getTraceId())
-                .alertType("FAILED")
-                .durationMs(event.getDurationMs())
-                .retryCount(event.getRetryCount())
-                .errorMsg(event.getErrorMsg())
-                .throwable(event.getThrowable())
-                .timestamp(event.getEventTime())
-                .build();
+        JobAlertContext context = buildAlertContext(
+                event.getJobName(),
+                event.getTriggerType(),
+                event.getTraceId(),
+                JobAlertContext.ALERT_TYPE_FAILED,
+                event.getDurationMs(),
+                event.getRetryCount(),
+                event.getErrorMsg(),
+                event.getThrowable(),
+                event.getEventTime()
+        );
         alertHandler.handleAlert(context);
     }
 
@@ -52,16 +52,39 @@ public class LocalJobAlertListener {
         if (alertHandler == null || event == null) {
             return;
         }
-        JobAlertContext context = JobAlertContext.builder()
-                .jobName(event.getJobName())
-                .triggerType(event.getTriggerType())
-                .traceId(event.getTraceId())
-                .alertType("TIMEOUT")
-                .durationMs(event.getDurationMs())
-                .retryCount(event.getRetryCount())
-                .errorMsg("Job execution timed out after " + event.getTimeout())
-                .timestamp(event.getEventTime())
-                .build();
+        JobAlertContext context = buildAlertContext(
+                event.getJobName(),
+                event.getTriggerType(),
+                event.getTraceId(),
+                JobAlertContext.ALERT_TYPE_TIMEOUT,
+                event.getDurationMs(),
+                event.getRetryCount(),
+                "Job execution timed out after " + event.getTimeout(),
+                null,
+                event.getEventTime()
+        );
         alertHandler.handleAlert(context);
+    }
+
+    private JobAlertContext buildAlertContext(String jobName,
+                                              io.github.atengk.boot.job.local.enums.TriggerType triggerType,
+                                              String traceId,
+                                              String alertType,
+                                              long durationMs,
+                                              int retryCount,
+                                              String errorMsg,
+                                              Throwable throwable,
+                                              java.time.Instant timestamp) {
+        return JobAlertContext.builder()
+                .jobName(jobName)
+                .triggerType(triggerType)
+                .traceId(traceId)
+                .alertType(alertType)
+                .durationMs(durationMs)
+                .retryCount(retryCount)
+                .errorMsg(errorMsg)
+                .throwable(throwable)
+                .timestamp(timestamp)
+                .build();
     }
 }

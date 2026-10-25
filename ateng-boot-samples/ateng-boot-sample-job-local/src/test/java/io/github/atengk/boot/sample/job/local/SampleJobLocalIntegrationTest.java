@@ -251,5 +251,24 @@ class SampleJobLocalIntegrationTest {
         JobInfo dynamicJob = localJobTemplate.getJob("dynamicHealthCheckJob");
         assertThat(dynamicJob).isNotNull();
         assertThat(dynamicJob.getCron()).isEqualTo("0 0 * * * ?");
+
+        // 7. POST /api/v1/jobs/dynamic-register (FixedRate)
+        String fixedRateRequestJson = """
+                {
+                    "jobName": "dynamicFixedRateJob",
+                    "fixedRate": "10s",
+                    "description": "动态注册的固定频率任务"
+                }
+                """;
+        mockMvc.perform(post("/api/v1/jobs/dynamic-register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(fixedRateRequestJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        JobInfo dynamicRateJob = localJobTemplate.getJob("dynamicFixedRateJob");
+        assertThat(dynamicRateJob).isNotNull();
+        assertThat(dynamicRateJob.getFixedRate()).isNotNull();
     }
 }

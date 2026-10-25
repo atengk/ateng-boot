@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.ReflectionUtils;
@@ -18,6 +19,9 @@ import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * {@link LocalJob} 注解 Bean 后置处理器
@@ -28,11 +32,12 @@ import java.time.Duration;
  * @author Ateng
  * @since 2026-10-25
  */
-public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor {
+public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor, SmartInitializingSingleton {
 
     private static final Logger log = LoggerFactory.getLogger(LocalJobAnnotationBeanPostProcessor.class);
 
     private final ObjectProvider<LocalJobRegistry> registryProvider;
+    private final List<Consumer<LocalJobRegistry>> pendingRegistrations = new CopyOnWriteArrayList<>();
 
     public LocalJobAnnotationBeanPostProcessor(ObjectProvider<LocalJobRegistry> registryProvider) {
         this.registryProvider = registryProvider;
@@ -51,13 +56,6 @@ public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor {
     }
 
     private void processMethod(Object bean, Class<?> targetClass, Method method, LocalJob annotation) {
-        LocalJobRegistry registry = registryProvider.getIfAvailable();
-        if (registry == null) {
-            log.warn("LocalJobRegistry is not available yet, skipping job registration for method: {}#{}",
-                    targetClass.getSimpleName(), method.getName());
-            return;
-        }
-
         String jobName = resolveJobName(targetClass, method, annotation);
         TriggerType triggerType = resolveTriggerType(jobName, annotation);
 
@@ -79,9 +77,41 @@ public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor {
                 .build();
 
         MethodInvokingJobHandler handler = new MethodInvokingJobHandler(bean, method);
-        registry.register(definition, handler);
-        log.info("Discovered @LocalJob on method [{}#{}] as job [{}] with trigger [{}]",
-                targetClass.getSimpleName(), method.getName(), jobName, triggerType);
+
+        Consumer<LocalJobRegistry> registrationAction = registry -> {
+            registry.register(definition, handler);
+            log.info("Discovered @LocalJob on method [{}#{}] as job [{}] with trigger [{}]",
+                    targetClass.getSimpleName(), method.getName(), jobName, triggerType);
+        };
+
+        LocalJobRegistry registry = registryProvider.getIfAvailable();
+        if (registry != null) {
+            registrationAction.accept(registry);
+        } else {
+            log.debug("LocalJobRegistry not yet available for method [{}#{}], queuing for post-initialization",
+                    targetClass.getSimpleName(), method.getName());
+            pendingRegistrations.add(registrationAction);
+        }
+    }
+
+    @Override
+    public void afterSingletonsInstantiated() {
+        if (!pendingRegistrations.isEmpty()) {
+            LocalJobRegistry registry = registryProvider.getIfAvailable();
+            if (registry != null) {
+                log.info("Flushing {} queued @LocalJob registrations to LocalJobRegistry", pendingRegistrations.size());
+                for (Consumer<LocalJobRegistry> action : pendingRegistrations) {
+                    try {
+                        action.accept(registry);
+                    } catch (Throwable t) {
+                        log.error("Failed to register queued @LocalJob: {}", t.getMessage(), t);
+                    }
+                }
+                pendingRegistrations.clear();
+            } else {
+                log.warn("LocalJobRegistry is still unavailable after all singletons instantiated!");
+            }
+        }
     }
 
     private String resolveJobName(Class<?> targetClass, Method method, LocalJob annotation) {

@@ -219,6 +219,26 @@ class LocalJobTimeoutRetryAndMdcTest {
         assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-100");
     }
 
+    @Test
+    @DisplayName("JobResult.failure 触发自适应退避重试：前 2 次显式返回 failure 后第 3 次返回 success 自愈，并验证 TenantId 透传")
+    void testRetryOnJobResultFailure() {
+        String jobName = "jobResultRetryJob";
+        tasks.jobResultRetryCount.set(0);
+        tasks.capturedTenant.set(null);
+
+        TenantContextHolder.setTenantId("tenant-456");
+
+        JobResult result = jobTemplate.trigger(jobName);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getMessage()).isEqualTo("Recovered from business failure on attempt 3");
+        assertThat(tasks.jobResultRetryCount.get()).isEqualTo(3);
+        assertThat(tasks.capturedTenant.get()).isEqualTo("tenant-456");
+
+        JobInfo jobInfo = jobTemplate.getJob(jobName);
+        assertThat(jobInfo.getLastStatus()).isEqualTo("SUCCESS");
+        assertThat(jobInfo.getLastResultMsg()).isEqualTo("Recovered from business failure on attempt 3");
+    }
+
     @Configuration
     @Import(AtengJobLocalAutoConfiguration.class)
     static class TestAppConfig {
@@ -236,6 +256,8 @@ class LocalJobTimeoutRetryAndMdcTest {
         final AtomicInteger retrySuccessCount = new AtomicInteger(0);
         final AtomicInteger retryExhaustedCount = new AtomicInteger(0);
         final AtomicInteger timeoutRetryCount = new AtomicInteger(0);
+        final AtomicInteger jobResultRetryCount = new AtomicInteger(0);
+        final AtomicReference<String> capturedTenant = new AtomicReference<>();
 
         final AtomicReference<String> capturedTraceId = new AtomicReference<>();
         final AtomicReference<String> capturedMdcTraceId = new AtomicReference<>();
@@ -286,6 +308,16 @@ class LocalJobTimeoutRetryAndMdcTest {
                 }
             }
             return "Recovered after timeout on attempt " + attempt;
+        }
+
+        @LocalJob(name = "jobResultRetryJob", maxRetries = 2, retryInterval = "50ms", fixedDelay = "1h", initialDelay = "1h")
+        public JobResult executeJobResultRetry() {
+            capturedTenant.set(TenantContextHolder.getTenantId());
+            int attempt = jobResultRetryCount.incrementAndGet();
+            if (attempt <= 2) {
+                return JobResult.failure("Business error attempt " + attempt);
+            }
+            return JobResult.success("Recovered from business failure on attempt " + attempt);
         }
     }
 }

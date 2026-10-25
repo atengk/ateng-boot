@@ -56,6 +56,20 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
     }
 
     @Override
+    public boolean updateFixedRate(String jobName, Duration newFixedRate) {
+        Assert.hasText(jobName, "jobName must not be empty");
+        Assert.notNull(newFixedRate, "newFixedRate must not be null");
+        return registry.updateFixedRate(jobName, newFixedRate);
+    }
+
+    @Override
+    public boolean updateFixedDelay(String jobName, Duration newFixedDelay) {
+        Assert.hasText(jobName, "jobName must not be empty");
+        Assert.notNull(newFixedDelay, "newFixedDelay must not be null");
+        return registry.updateFixedDelay(jobName, newFixedDelay);
+    }
+
+    @Override
     public boolean register(JobDefinition definition, JobHandler handler) {
         Assert.notNull(definition, "JobDefinition must not be null");
         Assert.notNull(handler, "JobHandler must not be null");
@@ -75,10 +89,7 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
                 .strategy(OverlappingStrategy.DISCARD)
                 .enabled(true)
                 .build();
-        return register(definition, context -> {
-            runnable.run();
-            return null;
-        });
+        return register(definition, adaptRunnable(runnable));
     }
 
     @Override
@@ -94,10 +105,7 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
                 .strategy(OverlappingStrategy.DISCARD)
                 .enabled(true)
                 .build();
-        return register(definition, context -> {
-            runnable.run();
-            return null;
-        });
+        return register(definition, adaptRunnable(runnable));
     }
 
     @Override
@@ -113,10 +121,14 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
                 .strategy(OverlappingStrategy.DISCARD)
                 .enabled(true)
                 .build();
-        return register(definition, context -> {
+        return register(definition, adaptRunnable(runnable));
+    }
+
+    private static JobHandler adaptRunnable(Runnable runnable) {
+        return context -> {
             runnable.run();
             return null;
-        });
+        };
     }
 
     @Override

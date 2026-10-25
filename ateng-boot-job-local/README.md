@@ -27,6 +27,8 @@
 | **操作门面** | 暂停周期性调度 | `LocalJobTemplate` | - | `boolean pause(String jobName)`，暂停指定任务的自动触发，状态变更为 `PAUSED` | `LocalJobOverlappingAndFacadeTest` / `JobSampleController` |
 | **操作门面** | 恢复周期性调度 | `LocalJobTemplate` | - | `boolean resume(String jobName)`，恢复暂停的任务，重新挂载至时钟调度池 | `LocalJobOverlappingAndFacadeTest` / `JobSampleController` |
 | **操作门面** | 动态修改 Cron 周期 | `LocalJobTemplate` | - | `boolean updateCron(String jobName, String cronExpression)`，动态重置周期并立即重调度 | `LocalJobOverlappingAndFacadeTest` / `SampleJobLocalIntegrationTest` |
+| **操作门面** | 动态修改固定频率周期 | `LocalJobTemplate` | - | `boolean updateFixedRate(String jobName, Duration newFixedRate)`，动态修改频率并重调度 | `LocalJobOverlappingAndFacadeTest` |
+| **操作门面** | 动态修改固定延迟周期 | `LocalJobTemplate` | - | `boolean updateFixedDelay(String jobName, Duration newFixedDelay)`，动态修改延迟并重调度 | `LocalJobOverlappingAndFacadeTest` |
 | **操作门面** | 编程式注册通用任务 | `LocalJobTemplate` | - | `boolean register(JobDefinition definition, JobHandler handler)`，完整元数据注册 | `LocalJobOverlappingAndFacadeTest` |
 | **操作门面** | 编程式极简注册 Cron | `LocalJobTemplate` | - | `boolean registerCron(String jobName, String cron, Runnable runnable)`，快捷注册 Cron 任务 | `LocalJobOverlappingAndFacadeTest` / `JobSampleController` |
 | **操作门面** | 编程式注册固定频率 | `LocalJobTemplate` | - | `boolean registerFixedRate(String jobName, Duration fixedRate, Runnable runnable)` | `LocalJobOverlappingAndFacadeTest` |
@@ -35,7 +37,7 @@
 | **操作门面** | 查询单任务运行状态 | `LocalJobTemplate` | - | `JobInfo getJob(String jobName)`，获取任务定义、运行状态、统计指标与最近日志 | `LocalJobActuatorAndEventTest` / `JobSampleController` |
 | **操作门面** | 巡检所有受管任务清单 | `LocalJobTemplate` | - | `List<JobInfo> listJobs()`，获取系统内全量任务运行时清单（保证非 null 空安全） | `LocalJobActuatorAndEventTest` / `JobSampleController` |
 | **操作门面** | 查询最近执行审计日志 | `LocalJobTemplate` | - | `List<JobExecutionRecord> listRecentLogs(String jobName, int limit)`，回查审计记录 | `LocalJobStorageAndLifecycleTest` / `JobSampleController` |
-| **操作门面** | 滚动清理过期历史日志 | `LocalJobTemplate` | `log.retention-duration` | `int cleanExpiredLogs(Duration retentionDuration)`，手动或周期清理过期历史记录 | `LocalJobStorageAndLifecycleTest` |
+| **操作门面** | 滚动清理过期历史日志 | `LocalJobTemplate` | `log-retention-days` | `int cleanExpiredLogs(Duration retentionDuration)`，手动或周期清理过期历史记录 | `LocalJobStorageAndLifecycleTest` |
 | **上下文句柄** | 结构化任务日志追加 | `JobContext` | - | `context.log(String message)`，在任务执行过程中记录结构化执行日志并持久化 | `LocalJobOverlappingAndFacadeTest` / `SampleScheduledJobs` |
 | **上下文句柄** | 获取当前任务名称 | `JobContext` | - | `String getJobName()`，返回当前正在执行的任务标识 | `LocalJobOverlappingAndFacadeTest` |
 | **上下文句柄** | 获取链路追踪 ID | `JobContext` | - | `String getTraceId()`，返回自动生成的 32 位无锁全局链路追踪 MDC traceId | `LocalJobTimeoutRetryAndMdcTest` / `SampleScheduledJobs` |
@@ -47,7 +49,7 @@
 | **集群互斥** | 集群互斥锁 SPI | `JobClusterLockProvider` | - | `JobLockHandle tryLock(String jobName, Duration leaseTime)`，抢锁失败返回 null | `LocalJobClusterLockTest` / `LocalJobClusterLockProvider` |
 | **集群互斥** | 锁持有生命周期句柄 | `JobLockHandle` | - | `close()` 释放锁 / `isExpired()` 探测是否失效 / `getOwner()` 属主签名校验 | `LocalJobClusterLockTest` |
 | **存储扩展** | 任务元数据仓储 SPI | `JobMetadataRepository` | `prefer-database-config` | `save` / `findById` / `findAll` / `deleteById`，支持数据库配置仲裁覆盖静态代码 | `LocalJobStorageAndLifecycleTest` / `InMemoryJobMetadataRepository` |
-| **存储扩展** | 日志存储与防 OOM SPI | `JobLogStorageProvider` | `log.max-retained-records-per-job` | `saveRecord` / `findRecentLogs` / `cleanExpiredLogs`，有界环形淘汰防堆溢出 | `LocalJobStorageAndLifecycleTest` / `InMemoryJobLogStorageProvider` |
+| **存储扩展** | 日志存储与防 OOM SPI | `JobLogStorageProvider` | `in-memory-log-capacity` | `saveRecord` / `findRecentLogs` / `cleanExpiredLogs`，有界环形淘汰防堆溢出 | `LocalJobStorageAndLifecycleTest` / `InMemoryJobLogStorageProvider` |
 | **告警扩展** | 异常失败告警转发 SPI | `JobAlertHandler` | `alert.enabled`<br>`alert.channel` | `void handleAlert(JobAlertContext context)`，接收告警上下文并转发群机器人 | `LocalJobActuatorAndEventTest` / `NotificationJobAlertHandler` |
 | **领域事件** | 任务启动开始事件 | `JobStartingEvent` | - | 任务被调度触发或手动触发启动时发布，携带 `jobName` 与 `traceId` | `LocalJobActuatorAndEventTest` / `SampleJobEventListener` |
 | **领域事件** | 任务执行成功事件 | `JobSuccessEvent` | - | 任务单次执行成功完毕后发布，携带执行耗时 `durationMs` 与执行成果 `result` | `LocalJobActuatorAndEventTest` / `SampleJobEventListener` |
@@ -57,7 +59,7 @@
 | **运维监控** | 任务清单状态巡检端点 | `LocalJobEndpoint` | `actuator.enabled` | `GET /actuator/localjobs`，全量受管任务清单与调度状态巡检 | `LocalJobActuatorAndEventTest` / `SampleJobLocalIntegrationTest` |
 | **运维监控** | 单任务详情与日志端点 | `LocalJobEndpoint` | `actuator.enabled` | `GET /actuator/localjobs/{jobName}`，单任务元数据、执行统计与审计日志回查 | `LocalJobActuatorAndEventTest` / `SampleJobLocalIntegrationTest` |
 | **运维监控** | 动态运维管控端点 | `LocalJobEndpoint` | `actuator.enabled` | `POST /actuator/localjobs/{jobName}`，支持 `{"action":"trigger\|pause\|resume"}` | `LocalJobActuatorAndEventTest` / `SampleJobLocalIntegrationTest` |
-| **生命周期** | 延迟就绪与停机排空 | `LocalJobLifecycleManager` | `shutdown-wait-time` | Spring `SmartLifecycle` phase=`MAX-100`，就绪后激活时钟，停机时排空 Worker | `LocalJobStorageAndLifecycleTest` |
+| **生命周期** | 延迟就绪与停机排空 | `LocalJobLifecycleManager` | `shutdown-await-termination-period` | Spring `SmartLifecycle` phase=`MAX-100`，就绪后激活时钟，停机时排空 Worker | `LocalJobStorageAndLifecycleTest` |
 | **自动装配** | 模块自动装配入口 | `AtengJobLocalAutoConfiguration` | `enabled` | Spring Boot 3 标准自动装配，标配 `@AutoConfiguration` 与全套缺省 Bean 守卫 | `AtengJobLocalAutoConfigurationTest` |
 
 ---
@@ -99,9 +101,9 @@ ateng:
       local:
         enabled: true
         pool-size: 5
-        node-id: sample-node-01
-        log:
-          max-retained-records-per-job: 50
+        in-memory-log-capacity: 50
+        log-retention-days: 7
+        shutdown-await-termination-period: 30s
         actuator:
           enabled: true
         alert:

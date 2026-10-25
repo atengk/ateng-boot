@@ -112,6 +112,23 @@ class LocalJobSchedulingTest {
         assertThat(sampleTasks.fixedRateCount.get()).isGreaterThan(beforeCount);
     }
 
+    @Test
+    @DisplayName("LocalJobRegistry 注册前置 Fail-Fast 卫语句防卫")
+    void testRegistryDefensiveValidation() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                registry.register(null, context -> null));
+
+        io.github.atengk.boot.job.local.model.JobDefinition emptyNameDef =
+                io.github.atengk.boot.job.local.model.JobDefinition.builder().jobName("").build();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                registry.register(emptyNameDef, context -> null));
+
+        io.github.atengk.boot.job.local.model.JobDefinition validDef =
+                io.github.atengk.boot.job.local.model.JobDefinition.builder().jobName("validJob").build();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                registry.register(validDef, null));
+    }
+
     @Configuration
     @Import(AtengJobLocalAutoConfiguration.class)
     static class TestAppConfig {

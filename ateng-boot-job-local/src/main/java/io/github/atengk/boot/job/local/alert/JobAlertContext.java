@@ -18,6 +18,9 @@ import java.time.Instant;
 @ToString
 public class JobAlertContext {
 
+    public static final String ALERT_TYPE_FAILED = "FAILED";
+    public static final String ALERT_TYPE_TIMEOUT = "TIMEOUT";
+
     /**
      * 任务名称
      */

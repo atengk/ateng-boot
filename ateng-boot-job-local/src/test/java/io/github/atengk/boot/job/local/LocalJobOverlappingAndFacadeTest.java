@@ -149,6 +149,14 @@ class LocalJobOverlappingAndFacadeTest {
         assertThat(stringResult.isSuccess()).isTrue();
         assertThat(stringResult.getMessage()).isEqualTo("Custom String Summary");
         assertThat(jobTemplate.getJob("stringReturnJob").getLastResultMsg()).isEqualTo("Custom String Summary");
+
+        // 3. 验证业务返回 JobResult.failure 状态保留不被篡改
+        JobResult failedResult = jobTemplate.trigger("failedJob");
+        assertThat(failedResult.isSuccess()).isFalse();
+        assertThat(failedResult.getMessage()).isEqualTo("Business deduction failed");
+        JobInfo failedInfo = jobTemplate.getJob("failedJob");
+        assertThat(failedInfo.getLastStatus()).isEqualTo("FAILED");
+        assertThat(failedInfo.getLastResultMsg()).isEqualTo("Business deduction failed");
     }
 
     @Test
@@ -170,6 +178,20 @@ class LocalJobOverlappingAndFacadeTest {
         boolean updated = jobTemplate.updateCron(dynamicJobName, "0/1 * * * * ?");
         assertThat(updated).isTrue();
         assertThat(jobTemplate.getJob(dynamicJobName).getCron()).isEqualTo("0/1 * * * * ?");
+
+        // 3.1 动态更新固定频率与固定延迟
+        boolean rateUpdated = jobTemplate.updateFixedRate(dynamicJobName, Duration.ofMillis(200));
+        assertThat(rateUpdated).isTrue();
+        assertThat(jobTemplate.getJob(dynamicJobName).getFixedRate()).isEqualTo(Duration.ofMillis(200));
+
+        boolean delayUpdated = jobTemplate.updateFixedDelay(dynamicJobName, Duration.ofMillis(300));
+        assertThat(delayUpdated).isTrue();
+        assertThat(jobTemplate.getJob(dynamicJobName).getFixedDelay()).isEqualTo(Duration.ofMillis(300));
+
+        // 3.2 动态更新非法 Cron 表达式防御：抛出异常且任务状态不受损
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () ->
+                jobTemplate.updateCron(dynamicJobName, "invalid cron expression"));
+        assertThat(jobTemplate.getJob(dynamicJobName).getFixedDelay()).isEqualTo(Duration.ofMillis(300));
 
         // 4. 手动触发
         JobResult triggerResult = jobTemplate.trigger(dynamicJobName);
@@ -265,6 +287,11 @@ class LocalJobOverlappingAndFacadeTest {
         @LocalJob(name = "stringReturnJob", fixedDelay = "1h", initialDelay = "1h")
         public String executeStringReturn() {
             return "Custom String Summary";
+        }
+
+        @LocalJob(name = "failedJob", fixedDelay = "1h", initialDelay = "1h")
+        public JobResult executeFailed() {
+            return JobResult.failure("Business deduction failed");
         }
     }
 }

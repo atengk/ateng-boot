@@ -67,6 +67,24 @@ public interface LocalJobTemplate {
     boolean updateCron(String jobName, String cronExpression);
 
     /**
+     * 动态修改指定任务的固定频率调度周期并立即重新调度
+     *
+     * @param jobName      任务名称
+     * @param newFixedRate 新的固定频率时长
+     * @return 是否更新并重新调度成功
+     */
+    boolean updateFixedRate(String jobName, Duration newFixedRate);
+
+    /**
+     * 动态修改指定任务的固定延迟调度周期并立即重新调度
+     *
+     * @param jobName       任务名称
+     * @param newFixedDelay 新的固定延迟时长
+     * @return 是否更新并重新调度成功
+     */
+    boolean updateFixedDelay(String jobName, Duration newFixedDelay);
+
+    /**
      * 编程式注册一个受管任务
      *
      * @param definition 任务定义元数据

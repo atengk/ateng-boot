@@ -5,6 +5,7 @@ import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
+import io.github.atengk.boot.job.local.util.DurationParser;
 import io.github.atengk.boot.sample.job.local.dto.DynamicJobRegisterRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
@@ -95,16 +97,25 @@ public class JobSampleController {
     }
 
     /**
-     * 编程式动态注册一个 Cron 任务
+     * 编程式动态注册定时任务（支持 Cron、FixedRate、FixedDelay）
      */
     @PostMapping("/dynamic-register")
     public Result<Boolean> registerDynamicJob(@Valid @RequestBody DynamicJobRegisterRequest request) {
-        log.info("Registering dynamic cron job: {}", request.getJobName());
-        boolean success = localJobTemplate.registerCron(
-                request.getJobName(),
-                request.getCron() != null ? request.getCron() : "0 0 * * * ?",
-                () -> log.info("Dynamic job [{}] executed successfully", request.getJobName())
-        );
+        log.info("Registering dynamic job: {}", request.getJobName());
+        boolean success;
+        Runnable taskLogic = () -> log.info("Dynamic job [{}] executed successfully", request.getJobName());
+
+        if (request.getCron() != null && !request.getCron().isBlank()) {
+            success = localJobTemplate.registerCron(request.getJobName(), request.getCron().trim(), taskLogic);
+        } else if (request.getFixedRate() != null && !request.getFixedRate().isBlank()) {
+            Duration rate = DurationParser.parse(request.getFixedRate());
+            success = localJobTemplate.registerFixedRate(request.getJobName(), rate, taskLogic);
+        } else if (request.getFixedDelay() != null && !request.getFixedDelay().isBlank()) {
+            Duration delay = DurationParser.parse(request.getFixedDelay());
+            success = localJobTemplate.registerFixedDelay(request.getJobName(), delay, taskLogic);
+        } else {
+            success = localJobTemplate.registerCron(request.getJobName(), "0 0 * * * ?", taskLogic);
+        }
         return Result.success(success);
     }
 }

@@ -134,21 +134,21 @@ class LocalJobStorageAndLifecycleTest {
     void testPreferDatabaseConfigArbitration() {
         String jobName = "arbitratedJob";
 
-        // 1. 预先在持久化存储中存入经由管理后台调整后的配置：PAUSED 且修改了 Cron
+        // 1. 预先在持久化存储中存入经由管理后台调整后的配置：PAUSED 且修改了 Cron 与 fixedRate
         JobDefinition persistedDef = JobDefinition.builder()
                 .jobName(jobName)
-                .triggerType(TriggerType.CRON)
-                .cron("0 0 12 * * ?")
+                .triggerType(TriggerType.FIXED_RATE)
+                .fixedRate(Duration.ofMinutes(15))
                 .status(JobStatus.PAUSED)
                 .enabled(false)
                 .build();
         metadataRepository.save(persistedDef);
 
-        // 2. 模拟系统重启或 Bean 初始化，代码中静态注解配置为 RUNNING 且 Cron 为 "0 0 1 * * ?"
+        // 2. 模拟系统重启或 Bean 初始化，代码中静态注解配置为 RUNNING 且 fixedRate 为 5 分钟
         JobDefinition staticDef = JobDefinition.builder()
                 .jobName(jobName)
-                .triggerType(TriggerType.CRON)
-                .cron("0 0 1 * * ?")
+                .triggerType(TriggerType.FIXED_RATE)
+                .fixedRate(Duration.ofMinutes(5))
                 .strategy(OverlappingStrategy.DISCARD)
                 .status(JobStatus.RUNNING)
                 .enabled(true)
@@ -156,9 +156,9 @@ class LocalJobStorageAndLifecycleTest {
 
         ScheduledJobTask task = registry.register(staticDef, context -> JobResult.success("arbitrated ok"));
 
-        // 3. 验证仲裁结果：成功继承持久化中的 PAUSED 状态与 Cron，未被代码中的静态配置覆盖
+        // 3. 验证仲裁结果：成功继承持久化中的 PAUSED 状态与 fixedRate 15分钟，未被代码中的静态配置覆盖
         assertThat(task.getStatus()).isEqualTo(JobStatus.PAUSED);
-        assertThat(task.getDefinition().getCron()).isEqualTo("0 0 12 * * ?");
+        assertThat(task.getDefinition().getFixedRate()).isEqualTo(Duration.ofMinutes(15));
         assertThat(task.getDefinition().isEnabled()).isFalse();
 
         // 启动生命周期，验证 PAUSED 任务不会被 schedule

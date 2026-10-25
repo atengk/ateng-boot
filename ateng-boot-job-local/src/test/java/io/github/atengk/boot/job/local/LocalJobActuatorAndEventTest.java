@@ -90,6 +90,13 @@ class LocalJobActuatorAndEventTest {
         alertHandler.clear();
     }
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        org.slf4j.MDC.clear();
+        io.github.atengk.boot.core.context.UserContextHolder.clear();
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
+    }
+
     @Test
     @DisplayName("Actuator 运维端点：listJobs() 巡检返回全局任务清单状态")
     void testActuatorListJobs() {

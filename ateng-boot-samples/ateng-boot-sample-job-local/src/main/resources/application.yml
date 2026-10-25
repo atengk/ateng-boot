@@ -23,9 +23,9 @@ ateng:
       local:
         enabled: true
         pool-size: 5
-        node-id: sample-node-01
-        log:
-          max-retained-records-per-job: 50
+        in-memory-log-capacity: 50
+        log-retention-days: 7
+        shutdown-await-termination-period: 30s
         actuator:
           enabled: true
         alert:

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.local.registry;
 
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.IdUtil;
@@ -240,42 +241,35 @@ public class ScheduledJobTask implements Runnable {
                         publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId, "Skipped due to overlapping DISCARD policy"));
                         return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
-                    try {
-                        return executeWithClusterLock(triggerType, params, traceId);
-                    } finally {
-                        if (lock.isHeldByCurrentThread()) {
-                            lock.unlock();
-                        }
-                    }
+                    return executeUnderLock(triggerType, params, traceId);
 
                 case QUEUE:
-                    lock.lock();
                     try {
-                        return executeWithClusterLock(triggerType, params, traceId);
-                    } finally {
-                        if (lock.isHeldByCurrentThread()) {
-                            lock.unlock();
-                        }
+                        lock.lockInterruptibly();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        log.warn("Job [{}] interrupted while waiting for lock in QUEUE policy", jobName);
+                        return JobResult.failure("Interrupted while waiting in QUEUE policy");
                     }
+                    return executeUnderLock(triggerType, params, traceId);
 
                 case CONCURRENT:
                     return executeWithClusterLock(triggerType, params, traceId);
 
                 case INTERRUPT:
-                    Thread previousThread = executingThread.getAndSet(Thread.currentThread());
-                    if (previousThread != null && previousThread.isAlive() && previousThread != Thread.currentThread()) {
-                        log.warn("Job [{}] interrupting previous active thread [{}] due to INTERRUPT policy", jobName, previousThread.getName());
-                        previousThread.interrupt();
+                    Thread runningThread = executingThread.get();
+                    if (runningThread != null && runningThread.isAlive() && runningThread != Thread.currentThread()) {
+                        log.warn("Job [{}] interrupting previous active thread [{}] due to INTERRUPT policy", jobName, runningThread.getName());
+                        runningThread.interrupt();
                     }
-                    lock.lock();
                     try {
-                        return executeWithClusterLock(triggerType, params, traceId);
-                    } finally {
-                        executingThread.compareAndSet(Thread.currentThread(), null);
-                        if (lock.isHeldByCurrentThread()) {
-                            lock.unlock();
-                        }
+                        lock.lockInterruptibly();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        log.warn("Job [{}] interrupted while waiting for lock in INTERRUPT policy", jobName);
+                        return JobResult.failure("Interrupted while waiting in INTERRUPT policy");
                     }
+                    return executeUnderLock(triggerType, params, traceId);
 
                 default:
                     throw new IllegalStateException("Unsupported overlapping strategy: " + strategy);
@@ -294,6 +288,19 @@ public class ScheduledJobTask implements Runnable {
                 UserContextHolder.clear();
             }
             TenantContextHolder.restore(previousTenant);
+        }
+    }
+
+    /**
+     * 在细粒度条带锁保护下安全执行任务并确保锁确定性释放
+     */
+    private JobResult executeUnderLock(TriggerType triggerType, Map<String, Object> params, String traceId) {
+        try {
+            return executeWithClusterLock(triggerType, params, traceId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -350,20 +357,45 @@ public class ScheduledJobTask implements Runnable {
 
             long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
-            this.lastStatus = "SUCCESS";
 
+            if (result instanceof JobResult jobResult && !jobResult.isSuccess()) {
+                this.lastStatus = "FAILED";
+                String resultMsg = extractResultMessage(jobResult);
+                this.lastResultMsg = resultMsg;
+                saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
+                        resultMsg, jobResult.getMessage(), null, retryCount.get(), context.getLogs());
+                publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), null, resultMsg));
+                return jobResult;
+            }
+
+            this.lastStatus = "SUCCESS";
             String resultMsg = extractResultMessage(result);
             this.lastResultMsg = resultMsg;
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "SUCCESS",
                     resultMsg, null, null, retryCount.get(), context.getLogs());
             publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, result));
+            if (result instanceof JobResult jobResult) {
+                return jobResult;
+            }
             return JobResult.success(resultMsg, result);
+        } catch (JobExecutionFailureException ex) {
+            // 重试耗尽后仍返回失败的 JobResult，记录终态并发布领域失败事件
+            long duration = Duration.between(startTime, Instant.now()).toMillis();
+            this.lastDurationMs = duration;
+            this.lastStatus = "FAILED";
+            JobResult jobResult = ex.getResult();
+            String resultMsg = extractResultMessage(jobResult);
+            this.lastResultMsg = resultMsg;
+            saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "FAILED",
+                    resultMsg, jobResult.getMessage(), null, retryCount.get(), context.getLogs());
+            publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), null, resultMsg));
+            return jobResult;
         } catch (JobTimeoutException ex) {
+            // 防御 Log-and-Throw 异常双重污染：直接记录现场与发布事件后向外抛出，不在内部打印 log.error
             long duration = Duration.between(startTime, Instant.now()).toMillis();
             this.lastDurationMs = duration;
             this.lastStatus = "TIMEOUT";
             this.lastResultMsg = ex.getMessage();
-            log.error("Execution timed out for job [{}] after {}: {}", jobName, ex.getTimeout(), ex.getMessage());
             saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "TIMEOUT",
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
             publishEvent(new JobTimeoutEvent(this, jobName, triggerType, traceId, duration, ex.getTimeout(), retryCount.get()));
@@ -388,7 +420,11 @@ public class ScheduledJobTask implements Runnable {
 
         Supplier<Object> supplier = () -> {
             try {
-                return executeSingleAttempt(context);
+                Object res = executeSingleAttempt(context);
+                if (res instanceof JobResult jr && !jr.isSuccess() && maxRetries > 0) {
+                    throw new JobExecutionFailureException(jr);
+                }
+                return res;
             } catch (Throwable t) {
                 sneakyThrow(t);
                 return null;
@@ -416,8 +452,9 @@ public class ScheduledJobTask implements Runnable {
 
     private Object executeSingleAttempt(JobContext context) throws Throwable {
         Duration timeout = definition.getTimeout();
-        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
-            return executeWithTimeout(context, timeout);
+        // 调度池与执行池物理隔离：只要配置了 workerExecutor 或有 timeout，均委托至独立 Worker 执行池
+        if (workerExecutor != null || (taskScheduler != null && timeout != null && !timeout.isZero())) {
+            return executeInWorker(context, timeout);
         } else {
             return executeDirectly(context);
         }
@@ -433,42 +470,31 @@ public class ScheduledJobTask implements Runnable {
         }
     }
 
-    private Object executeWithTimeout(JobContext context, Duration timeout) throws Throwable {
+    private Object executeInWorker(JobContext context, Duration timeout) throws Throwable {
         String jobName = definition.getJobName();
         AtomicReference<Thread> workerThreadRef = new AtomicReference<>();
 
-        Callable<Object> workerTask = () -> {
+        Callable<Object> rawTask = () -> {
             Thread worker = Thread.currentThread();
             workerThreadRef.set(worker);
             executingThread.set(worker);
-
-            String traceId = context.getTraceId();
-            if (traceId != null) {
-                MDC.put("traceId", traceId);
-            }
-            if (UserContextHolder.get() == null) {
-                UserContextHolder.set("SYSTEM");
-            }
             try {
                 return handler.execute(context);
             } finally {
-                try {
-                    MDC.remove("traceId");
-                } finally {
-                    try {
-                        UserContextHolder.clear();
-                    } finally {
-                        TenantContextHolder.clear();
-                    }
-                }
                 executingThread.compareAndSet(worker, null);
             }
         };
 
+        // 依托 Core 模块 AsyncContext.wrap 实现四维/五维快照全链路透传并在执行后对称恢复现场
+        Callable<Object> workerTask = AsyncContext.wrap(rawTask);
         Future<Object> future = submitTask(workerTask);
 
         try {
-            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+                return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            } else {
+                return future.get();
+            }
         } catch (TimeoutException te) {
             future.cancel(true);
             Thread worker = workerThreadRef.get();
@@ -486,6 +512,10 @@ public class ScheduledJobTask implements Runnable {
             throw cause != null ? cause : ee;
         } catch (InterruptedException ie) {
             future.cancel(true);
+            Thread worker = workerThreadRef.get();
+            if (worker != null && worker.isAlive()) {
+                worker.interrupt();
+            }
             Thread.currentThread().interrupt();
             throw ie;
         }
@@ -498,16 +528,30 @@ public class ScheduledJobTask implements Runnable {
         if (taskScheduler != null) {
             return taskScheduler.submit(task);
         }
-        CompletableFuture<Object> cf = new CompletableFuture<>();
-        Thread t = new Thread(() -> {
-            try {
-                cf.complete(task.call());
-            } catch (Throwable ex) {
-                cf.completeExceptionally(ex);
-            }
-        }, "ateng-job-worker-fallback");
-        t.start();
-        return cf;
+        // 兜底降级：严禁私自 new Thread 创建野线程，同步执行并返回已完成的 CompletableFuture
+        try {
+            return CompletableFuture.completedFuture(task.call());
+        } catch (Throwable ex) {
+            CompletableFuture<Object> cf = new CompletableFuture<>();
+            cf.completeExceptionally(ex);
+            return cf;
+        }
+    }
+
+    /**
+     * 用于在自适应重试期间触发 JobResult.failure 退避重试的受控标记异常
+     */
+    static class JobExecutionFailureException extends RuntimeException {
+        private final JobResult result;
+
+        JobExecutionFailureException(JobResult result) {
+            super(result != null ? result.getMessage() : "Job execution failed");
+            this.result = result;
+        }
+
+        public JobResult getResult() {
+            return result;
+        }
     }
 
     @SuppressWarnings("unchecked")
