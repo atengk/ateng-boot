@@ -1,0 +1,70 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-datasource
+  datasource:
+    dynamic:
+      primary: master
+      strict: false
+      datasource:
+        master:
+          url: jdbc:h2:mem:master_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        slave:
+          url: jdbc:h2:mem:slave_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        tenant_1001:
+          url: jdbc:h2:mem:tenant_1001_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+        tenant_1002:
+          url: jdbc:h2:mem:tenant_1002_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+          username: sa
+          password: ""
+          driver-class-name: org.h2.Driver
+
+ateng:
+  boot:
+    web:
+      enabled: true
+    datasource:
+      enabled: true
+      multi-tenancy:
+        enabled: true
+        mode: FALLBACK_MASTER
+        default-data-source: master
+        data-source-prefix: "tenant_"
+      read-write-split:
+        enabled: true
+        master-data-source: master
+        slave-data-source: slave
+        read-after-write:
+          enabled: true
+          scope: WINDOW
+          window-ttl: 3s
+        failover:
+          enabled: true
+          cooldown-window: 30s
+          fallback-to-master: true
+      guard:
+        enabled: true
+        fail-on-false-switch: true
+      dynamic-load:
+        enabled: true
+        probe-timeout: 2s
+        drain-timeout: 5s
+      security:
+        password-decryption-enabled: true
+        secret-key: "0123456789abcdeffedcba9876543210"
+
+logging:
+  level:
+    io.github.atengk.boot.datasource: DEBUG
+    io.github.atengk.boot.sample.datasource: DEBUG

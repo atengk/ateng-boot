@@ -58,6 +58,8 @@
         <module>ateng-boot-document</module>
         <module>ateng-boot-mqtt</module>
         <module>ateng-boot-pay</module>
+        <module>ateng-boot-datasource</module>
+        <module>ateng-boot-encrypt</module>
         <module>ateng-boot-statemachine</module>
         <module>ateng-boot-samples</module>
     </modules>
@@ -87,6 +89,7 @@
         <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
         <wechatpay-java.version>0.2.17</wechatpay-java.version>
         <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
+        <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -336,8 +339,23 @@
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-datasource</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-encrypt</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-statemachine</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>dynamic-datasource-spring-boot3-starter</artifactId>
+                <version>${dynamic-datasource.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.github.wechatpay-apiv3</groupId>
@@ -396,7 +414,7 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
-                        <argLine>${argLine}</argLine>
+                        <argLine>${argLine} -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8</argLine>
                     </configuration>
                 </plugin>
             </plugins>

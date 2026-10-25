@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-samples</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-sample-datasource</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot 动态多数据源与物理隔离底座场景样例（多租户透明切库 / 读写分离 / 写后读主 / 批处理巡检 / 运行时动态增删 / 密文解密）</description>
+
+    <dependencies>
+        <!-- 动态多数据源与物理隔离底座 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-datasource</artifactId>
+        </dependency>
+
+        <!-- Web 契约与运行时组件 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- H2 内存数据库 (运行时自验) -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

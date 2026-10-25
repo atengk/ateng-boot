@@ -123,4 +123,69 @@ class CryptoUtilTest {
                 () -> CryptoUtil.encryptCbc("data", validKey, null));
         assertTrue(exNullIv.getMessage().contains("IV 初始向量不能为空"));
     }
+
+    @Test
+    @DisplayName("国密 SM4/CBC 加解密字符串与字节闭环验证")
+    void shouldEncryptAndDecryptSm4Cbc() {
+        byte[] key = "0123456789abcdef".getBytes(StandardCharsets.UTF_8);
+        byte[] iv = "fedcba9876543210".getBytes(StandardCharsets.UTF_8);
+        String plaintext = "国密SM4-机密数据库密码: Root@Pass_2026";
+
+        String ciphertext = CryptoUtil.encryptSm4Cbc(plaintext, key, iv);
+        assertNotNull(ciphertext);
+        assertNotEquals(plaintext, ciphertext);
+
+        String decrypted = CryptoUtil.decryptSm4Cbc(ciphertext, key, iv);
+        assertEquals(plaintext, decrypted);
+
+        // 字节级闭环
+        byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
+        byte[] cipherBytes = CryptoUtil.encryptSm4Cbc(plainBytes, key, iv);
+        byte[] decryptedBytes = CryptoUtil.decryptSm4Cbc(cipherBytes, key, iv);
+        assertEquals(plaintext, new String(decryptedBytes, StandardCharsets.UTF_8));
+
+        // 空值安全
+        assertNull(CryptoUtil.encryptSm4Cbc((String) null, key, iv));
+        assertNull(CryptoUtil.decryptSm4Cbc((String) null, key, iv));
+        assertNull(CryptoUtil.encryptSm4Cbc((byte[]) null, key, iv));
+        assertNull(CryptoUtil.decryptSm4Cbc((byte[]) null, key, iv));
+    }
+
+    @Test
+    @DisplayName("国密 SM4/ECB 加解密字符串与字节闭环验证")
+    void shouldEncryptAndDecryptSm4Ecb() {
+        byte[] key = "0123456789abcdef".getBytes(StandardCharsets.UTF_8);
+        String plaintext = "ECB模式国密SM4凭证测试";
+
+        String ciphertext = CryptoUtil.encryptSm4Ecb(plaintext, key);
+        assertNotNull(ciphertext);
+        assertNotEquals(plaintext, ciphertext);
+
+        String decrypted = CryptoUtil.decryptSm4Ecb(ciphertext, key);
+        assertEquals(plaintext, decrypted);
+
+        // 字节级闭环
+        byte[] plainBytes = plaintext.getBytes(StandardCharsets.UTF_8);
+        byte[] cipherBytes = CryptoUtil.encryptSm4Ecb(plainBytes, key);
+        byte[] decryptedBytes = CryptoUtil.decryptSm4Ecb(cipherBytes, key);
+        assertEquals(plaintext, new String(decryptedBytes, StandardCharsets.UTF_8));
+
+        // 空值安全
+        assertNull(CryptoUtil.encryptSm4Ecb((String) null, key));
+        assertNull(CryptoUtil.decryptSm4Ecb((String) null, key));
+        assertNull(CryptoUtil.encryptSm4Ecb((byte[]) null, key));
+        assertNull(CryptoUtil.decryptSm4Ecb((byte[]) null, key));
+    }
+
+    @Test
+    @DisplayName("国密 SM4 非法密钥与 IV 校验防御")
+    void shouldValidateSm4KeyAndIv() {
+        byte[] invalidKey = new byte[8];
+        byte[] validKey = new byte[16];
+        byte[] invalidIv = new byte[10];
+
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Cbc("data", invalidKey, validKey));
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Cbc("data", validKey, invalidIv));
+        assertThrows(IllegalArgumentException.class, () -> CryptoUtil.encryptSm4Ecb("data", invalidKey));
+    }
 }
