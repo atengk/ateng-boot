@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-job-local</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot 工业级单机定时任务与轻量调度基础设施（支持声明式 @LocalJob、四阶重叠防卫、MDC 链路追踪、超时熔断重试、轻量集群互斥与 Actuator 运维管控）</description>
+
+    <dependencies>
+        <!-- 核心底座依赖 (提供统一异常契约、结果码、四维上下文透传与 RetryUtil 退避重试) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 核心基础设施 (提供 ThreadPoolTaskScheduler、Trigger、事件总线与生命周期) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 配置处理器 (可选，编译期生成 IDE 配置元数据) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 日志门面 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Lombok (编译期使用，不传递) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 测试依赖套件 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>
