@@ -39,6 +39,7 @@
         <module>ateng-boot-sample-document</module>
         <module>ateng-boot-sample-mqtt</module>
         <module>ateng-boot-sample-pay</module>
+        <module>ateng-boot-sample-statemachine</module>
     </modules>
 
     <properties>

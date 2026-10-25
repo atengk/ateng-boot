@@ -26,6 +26,15 @@ public class TransitionResult<S> implements Serializable {
     private final boolean accepted;
 
     /**
+     * 是否成功（accepted 语义别名）
+     *
+     * @return true 代表跃迁成功
+     */
+    public boolean isSuccess() {
+        return accepted;
+    }
+
+    /**
      * 源状态
      */
     private final S sourceState;

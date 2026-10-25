@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import java.util.Collections;
 import java.util.List;
@@ -35,13 +36,20 @@ public class AtengStateMachineAutoConfiguration {
         return new LoggingStateMachineInterceptor(properties.getLogging());
     }
 
-    @Bean
+    /**
+     * Micrometer 监控指标隔离配置（平滑探测：类路径无 Micrometer 时不触发类内省）
+     */
+    @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(MeterRegistry.class)
-    @ConditionalOnBean(MeterRegistry.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.statemachine.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
-    @ConditionalOnMissingBean(MetricsStateMachineInterceptor.class)
-    public MetricsStateMachineInterceptor metricsStateMachineInterceptor(MeterRegistry meterRegistry) {
-        return new MetricsStateMachineInterceptor(meterRegistry);
+    public static class MetricsConfiguration {
+
+        @Bean
+        @ConditionalOnBean(MeterRegistry.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.statemachine.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
+        @ConditionalOnMissingBean(MetricsStateMachineInterceptor.class)
+        public MetricsStateMachineInterceptor metricsStateMachineInterceptor(MeterRegistry meterRegistry) {
+            return new MetricsStateMachineInterceptor(meterRegistry);
+        }
     }
 
     @Bean

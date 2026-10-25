@@ -14,6 +14,18 @@ import io.github.atengk.boot.statemachine.core.StateMachine;
 public interface StateMachineBuilder<S, E, C> {
 
     /**
+     * 极简静态工厂方法，快速创建一个全新的强类型状态机 Fluent DSL 构建器
+     *
+     * @param <S> 业务状态类型
+     * @param <E> 触发事件类型
+     * @param <C> 业务上下文类型
+     * @return 状态机构建器实例
+     */
+    static <S, E, C> StateMachineBuilder<S, E, C> builder() {
+        return StateMachineBuilderFactory.create();
+    }
+
+    /**
      * 声明标准外部状态跃迁 (S1 -> S2)
      *
      * @return 外部跃迁装配入口

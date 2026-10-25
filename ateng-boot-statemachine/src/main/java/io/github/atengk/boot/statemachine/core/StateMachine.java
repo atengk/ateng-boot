@@ -141,6 +141,15 @@ public interface StateMachine<S, E, C> {
     String generateMermaid();
 
     /**
+     * 导出 Mermaid 图例语法文本（generateMermaid 语义别名）
+     *
+     * @return Mermaid 状态机图例定义文本
+     */
+    default String exportMermaidDiagram() {
+        return generateMermaid();
+    }
+
+    /**
      * 动态导出 PlantUML 状态图格式文本
      *
      * @return PlantUML 状态机图例定义文本
