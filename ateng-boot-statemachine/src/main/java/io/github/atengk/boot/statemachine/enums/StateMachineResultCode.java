@@ -32,7 +32,12 @@ public enum StateMachineResultCode implements IResultCode {
     /**
      * 状态机标识重复定义
      */
-    DUPLICATE_MACHINE_ID(59004, "状态机标识重复定义");
+    DUPLICATE_MACHINE_ID(59004, "状态机标识重复定义"),
+
+    /**
+     * 状态并发更新冲突（CAS 乐观锁防重拦截）
+     */
+    CONCURRENT_CAS_CONFLICT(59005, "状态并发更新冲突（CAS 乐观锁防重拦截）");
 
     private final Integer code;
     private final String msg;

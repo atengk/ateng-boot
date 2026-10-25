@@ -1,5 +1,7 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.statemachine.cas.CasUpdater;
+import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 
 import java.util.function.BiConsumer;
@@ -69,6 +71,67 @@ public interface StateMachine<S, E, C> {
      * @return 结构化跃迁结果
      */
     TransitionResult<S> fireEventQuietly(S sourceState, E event, C context);
+
+    /**
+     * 实体状态安全探测流转门面（静默模式）
+     * <p>自动通过 getter 提取当前状态并探测跃迁，接受跃迁后自动通过 setter 回写实体状态</p>
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param setter  状态回写消费器
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 结构化跃迁结果
+     */
+    default <T> TransitionResult<S> fireEventQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context) {
+        if (entity == null) {
+            return TransitionResult.failure(null, event, "Target entity must not be null");
+        }
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        S currentState = getter.apply(entity);
+        TransitionResult<S> result = fireEventQuietly(currentState, event, context);
+        if (result.isAccepted()) {
+            setter.accept(entity, result.getTargetState());
+        }
+        return result;
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重流转门面（Fail-Fast 模式）
+     * <p>触发跃迁后执行持久化 CAS 条件更新，受影响行数为 0 时判定为并发冲突并抛出异常</p>
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 跃迁并成功持久化后的目标状态
+     */
+    default <T> S fireEventWithCas(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
+        return StateMachineCasTemplate.execute(this, entity, getter, setter, event, context, casUpdater);
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重安全探测门面（静默模式）
+     * <p>探测跃迁并执行持久化 CAS 条件更新，受影响行数为 0 时返回失败结果</p>
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param context    业务上下文
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 结构化跃迁结果
+     */
+    default <T> TransitionResult<S> fireEventWithCasQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
+        return StateMachineCasTemplate.executeQuietly(this, entity, getter, setter, event, context, casUpdater);
+    }
 
     /**
      * 动态导出 Mermaid 状态图格式文本（stateDiagram-v2）

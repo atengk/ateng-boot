@@ -51,5 +51,19 @@ class StateMachineExceptionTest {
         assertThat(ex.getEvent()).isEqualTo("PAY_EVENT");
         assertThat(ex.getMessage()).isEqualTo("非法跃迁");
         assertThat(ex.getCause()).isInstanceOf(IllegalStateException.class);
+
+        StateMachineException exWithoutCause = new StateMachineException(
+                StateMachineResultCode.CONCURRENT_CAS_CONFLICT,
+                "WAIT_PAY",
+                "PAID",
+                "PAY_EVENT",
+                "并发冲突"
+        );
+        assertThat(exWithoutCause.getCode()).isEqualTo(59005);
+        assertThat(exWithoutCause.getSourceState()).isEqualTo("WAIT_PAY");
+        assertThat(exWithoutCause.getTargetState()).isEqualTo("PAID");
+        assertThat(exWithoutCause.getEvent()).isEqualTo("PAY_EVENT");
+        assertThat(exWithoutCause.getMessage()).isEqualTo("并发冲突");
+        assertThat(exWithoutCause.getCause()).isNull();
     }
 }

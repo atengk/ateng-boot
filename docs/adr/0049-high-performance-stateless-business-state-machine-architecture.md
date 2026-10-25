@@ -114,7 +114,8 @@ flowchart TD
 
 | 错误码 | 标识符 | 中文语义说明 | HTTP 映射 |
 | :---: | :--- | :--- | :---: |
-| `SM_4001` | `TRANSITION_NOT_FOUND` | 当前状态未找到匹配的事件跃迁路由 | 400 Bad Request |
-| `SM_4002` | `CONDITION_FAILED` | 状态跃迁前置条件卫语句校验不满足 | 400 Bad Request |
-| `SM_5001` | `ACTION_EXECUTION_FAILED`| 状态跃迁动作执行失败（携带原始根因） | 500 Internal Error |
-| `SM_4003` | `DUPLICATE_MACHINE_ID` | 状态机标识重复定义冲突 | 500 Internal Error |
+| `59001` | `TRANSITION_NOT_FOUND` | 当前状态未找到匹配的事件跃迁路由 | 400 Bad Request |
+| `59002` | `CONDITION_FAILED` | 状态跃迁前置条件卫语句校验不满足 | 400 Bad Request |
+| `59003` | `ACTION_EXECUTION_FAILED`| 状态跃迁动作执行失败（携带原始根因） | 500 Internal Error |
+| `59004` | `DUPLICATE_MACHINE_ID` | 状态机标识重复定义冲突 | 500 Internal Error |
+| `59005` | `CONCURRENT_CAS_CONFLICT`| 状态并发更新冲突（CAS 乐观锁防重拦截） | 409 Conflict |

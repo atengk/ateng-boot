@@ -27,5 +27,8 @@ class StateMachineResultCodeTest {
 
         assertThat(StateMachineResultCode.DUPLICATE_MACHINE_ID.getCode()).isEqualTo(59004);
         assertThat(StateMachineResultCode.DUPLICATE_MACHINE_ID.getMsg()).isEqualTo("状态机标识重复定义");
+
+        assertThat(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode()).isEqualTo(59005);
+        assertThat(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getMsg()).isEqualTo("状态并发更新冲突（CAS 乐观锁防重拦截）");
     }
 }

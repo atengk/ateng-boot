@@ -67,6 +67,10 @@ public class StateMachineException extends BusinessException {
         this.event = event;
     }
 
+    public StateMachineException(IResultCode resultCode, Object sourceState, Object targetState, Object event, String message) {
+        this(resultCode, sourceState, targetState, event, message, null);
+    }
+
     public StateMachineException(IResultCode resultCode, Object sourceState, Object targetState, Object event, String message, Throwable cause) {
         super(resultCode, message, cause);
         this.sourceState = sourceState;
