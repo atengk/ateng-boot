@@ -29,7 +29,10 @@ public final class KeyDerivationHelper {
         }
         byte[] raw = password.getBytes(StandardCharsets.UTF_8);
         if (raw.length == requiredLength) {
-            return raw;
+            byte[] result = new byte[requiredLength];
+            System.arraycopy(raw, 0, result, 0, requiredLength);
+            java.util.Arrays.fill(raw, (byte) 0);
+            return result;
         }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -42,6 +45,8 @@ public final class KeyDerivationHelper {
             return result;
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 算法在当前 JVM 中不可用", e);
+        } finally {
+            java.util.Arrays.fill(raw, (byte) 0);
         }
     }
 }

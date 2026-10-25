@@ -107,16 +107,11 @@ public class KeyDetector {
             if (source.containsProperty(PROPERTY_PASSWORD)) {
                 Object val = source.getProperty(PROPERTY_PASSWORD);
                 if (val != null && !val.toString().trim().isEmpty()) {
-                    // 确认外部真实安全通道是否已提供，若外部完全没有提供而纯靠配置文件自身明文，立即阻断
-                    String sysProp = System.getProperty(PROPERTY_PASSWORD);
-                    String envVar = System.getenv(ENV_PASSWORD);
-                    if ((sysProp == null || sysProp.isEmpty()) && (envVar == null || envVar.isEmpty())) {
-                        throw new ConfigSecurityException(String.format(
-                                "[ateng-boot-encrypt] 安全阻断：检测到在本地配置源 '%s' 中直接声明了主密钥 '%s'！" +
-                                        "主密钥与密文共存于同一文件将导致加密机制形同虚设。" +
-                                        "请立即将密钥移除并改为通过环境变量 (%s)、JVM 启动参数 (-D%s) 或容器 Secret 注入！",
-                                name, PROPERTY_PASSWORD, ENV_PASSWORD, PROPERTY_PASSWORD));
-                    }
+                    throw new ConfigSecurityException(String.format(
+                            "[ateng-boot-encrypt] 安全阻断：检测到在本地配置源 '%s' 中直接声明了主密钥 '%s'！" +
+                                    "主密钥与密文共存于同一配置文件将导致加密机制形同虚设。" +
+                                    "请立即从配置文件中移除该密钥，并统一改为通过环境变量 (%s)、JVM 启动参数 (-D%s) 或容器 Secret 注入！",
+                            name, PROPERTY_PASSWORD, ENV_PASSWORD, PROPERTY_PASSWORD));
                 }
             }
         }

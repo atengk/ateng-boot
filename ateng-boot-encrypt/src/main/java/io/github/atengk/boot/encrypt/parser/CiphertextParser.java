@@ -67,28 +67,23 @@ public class CiphertextParser {
         String result = value;
         // 1. 处理自定义前后缀模式（若配置了非默认前后缀）
         if (customPattern != null) {
-            Matcher matcher = customPattern.matcher(result);
-            StringBuilder sb = new StringBuilder();
-            while (matcher.find()) {
-                String rawToken = matcher.group(0);
-                String content = matcher.group(1);
-                ParsedToken token = parseContent(rawToken, null, content);
-                String replacement = decryptorTokenFunction.apply(token);
-                matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
-            }
-            matcher.appendTail(sb);
-            result = sb.toString();
+            result = applyRegexReplacement(result, customPattern,
+                    m -> parseContent(m.group(0), null, m.group(1)), decryptorTokenFunction);
         }
 
         // 2. 处理标准 ENC 模式
-        Matcher matcher = defaultPattern.matcher(result);
+        return applyRegexReplacement(result, defaultPattern,
+                m -> parseContent(m.group(0), m.group(1), m.group(2)), decryptorTokenFunction);
+    }
+
+    private String applyRegexReplacement(String text, Pattern pattern,
+                                         Function<Matcher, ParsedToken> tokenExtractor,
+                                         Function<ParsedToken, String> decryptor) {
+        Matcher matcher = pattern.matcher(text);
         StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
-            String rawToken = matcher.group(0);
-            String keyId = matcher.group(1);
-            String content = matcher.group(2);
-            ParsedToken token = parseContent(rawToken, keyId, content);
-            String replacement = decryptorTokenFunction.apply(token);
+            ParsedToken token = tokenExtractor.apply(matcher);
+            String replacement = decryptor.apply(token);
             matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(sb);
