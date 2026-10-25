@@ -1,0 +1,37 @@
+server:
+  port: 8089
+
+spring:
+  application:
+    name: ateng-boot-sample-statemachine
+  datasource:
+    url: jdbc:h2:mem:sample_statemachine_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+ateng:
+  boot:
+    statemachine:
+      enabled: true
+      logging:
+        enabled: true
+        log-context: true
+      metrics:
+        enabled: true
+    mybatis-plus:
+      tenant:
+        enabled: false
+      data-permission:
+        enabled: false
+      crypto:
+        secret-key: "1234567890123456"
