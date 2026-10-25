@@ -30,6 +30,7 @@ class AtengJobLocalAutoConfigurationTest {
             assertThat(context).hasSingleBean(JobLocalProperties.class);
             assertThat(context).hasSingleBean(ThreadPoolTaskScheduler.class);
             assertThat(context).hasSingleBean(LocalJobRegistry.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.job.local.template.LocalJobTemplate.class);
             assertThat(context).hasSingleBean(LocalJobAnnotationBeanPostProcessor.class);
 
             JobLocalProperties properties = context.getBean(JobLocalProperties.class);

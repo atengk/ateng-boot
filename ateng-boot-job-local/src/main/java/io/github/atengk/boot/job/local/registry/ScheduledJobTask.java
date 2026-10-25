@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.registry;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.handler.JobHandler;
 import io.github.atengk.boot.job.local.model.JobContext;
@@ -19,6 +20,8 @@ import java.time.Instant;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 受管定时任务运行时封装包装器
@@ -29,6 +32,9 @@ import java.util.concurrent.ScheduledFuture;
 public class ScheduledJobTask implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(ScheduledJobTask.class);
+
+    private final ReentrantLock lock = new ReentrantLock();
+    private final AtomicReference<Thread> executingThread = new AtomicReference<>();
 
     @Getter
     private final JobDefinition definition;
@@ -91,9 +97,66 @@ public class ScheduledJobTask implements Runnable {
     }
 
     /**
-     * 执行任务核心管道
+     * 执行任务核心管道（集成四阶并发重叠策略）
      */
     protected JobResult executeInternal(TriggerType triggerType, Map<String, Object> params) {
+        OverlappingStrategy strategy = definition.getStrategy() != null ? definition.getStrategy() : OverlappingStrategy.DISCARD;
+        String jobName = definition.getJobName();
+
+        switch (strategy) {
+            case DISCARD:
+                if (!lock.tryLock()) {
+                    log.info("Job [{}] execution skipped due to overlapping DISCARD policy (previous execution is still running)", jobName);
+                    this.lastStatus = "DISCARDED";
+                    this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
+                    return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
+                }
+                try {
+                    return doExecute(triggerType, params);
+                } finally {
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+
+            case QUEUE:
+                lock.lock();
+                try {
+                    return doExecute(triggerType, params);
+                } finally {
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+
+            case CONCURRENT:
+                return doExecute(triggerType, params);
+
+            case INTERRUPT:
+                Thread previousThread = executingThread.getAndSet(Thread.currentThread());
+                if (previousThread != null && previousThread.isAlive() && previousThread != Thread.currentThread()) {
+                    log.warn("Job [{}] interrupting previous active thread [{}] due to INTERRUPT policy", jobName, previousThread.getName());
+                    previousThread.interrupt();
+                }
+                lock.lock();
+                try {
+                    return doExecute(triggerType, params);
+                } finally {
+                    executingThread.compareAndSet(Thread.currentThread(), null);
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+
+            default:
+                throw new IllegalStateException("Unsupported overlapping strategy: " + strategy);
+        }
+    }
+
+    /**
+     * 实际调用处理器执行任务并计算统计指标
+     */
+    protected JobResult doExecute(TriggerType triggerType, Map<String, Object> params) {
         Instant startTime = Instant.now();
         this.lastExecutionTime = startTime;
         String jobName = definition.getJobName();

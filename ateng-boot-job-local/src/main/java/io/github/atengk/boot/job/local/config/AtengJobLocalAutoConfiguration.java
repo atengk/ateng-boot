@@ -50,13 +50,25 @@ public class AtengJobLocalAutoConfiguration {
     /**
      * 单机定时任务注册中心与运行时管理器 Bean
      *
-     * @param taskScheduler 专职调度器
+     * @param localJobTaskScheduler 专职调度器
      * @return LocalJobRegistry
      */
     @Bean
     @ConditionalOnMissingBean
     public LocalJobRegistry localJobRegistry(ThreadPoolTaskScheduler localJobTaskScheduler) {
         return new LocalJobRegistry(localJobTaskScheduler);
+    }
+
+    /**
+     * 单机定时任务统一操作门面 Bean
+     *
+     * @param localJobRegistry 任务注册中心
+     * @return LocalJobTemplate
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public io.github.atengk.boot.job.local.template.LocalJobTemplate localJobTemplate(LocalJobRegistry localJobRegistry) {
+        return new io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate(localJobRegistry);
     }
 
     /**
