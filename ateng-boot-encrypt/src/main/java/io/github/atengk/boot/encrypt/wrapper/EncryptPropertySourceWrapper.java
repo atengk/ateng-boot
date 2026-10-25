@@ -49,6 +49,14 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
         this.failOnError = failOnError;
     }
 
+    public EncryptPropertySourceWrapper(PropertySource<?> delegate, KeyDetector keyDetector) {
+        this(delegate, new CiphertextParser(), keyDetector, null, EncryptAlgorithm.AES_GCM, true);
+    }
+
+    public EncryptPropertySourceWrapper(PropertySource<?> delegate, KeyDetector keyDetector, EncryptAlgorithm defaultAlgorithm) {
+        this(delegate, new CiphertextParser(), keyDetector, null, defaultAlgorithm, true);
+    }
+
     private static List<ConfigDecryptor> initDecryptors(List<ConfigDecryptor> customDecryptors) {
         List<ConfigDecryptor> list = new ArrayList<>();
         if (customDecryptors != null) {

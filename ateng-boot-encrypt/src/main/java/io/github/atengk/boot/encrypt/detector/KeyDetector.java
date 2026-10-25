@@ -47,6 +47,8 @@ public class KeyDetector {
     public static KeyDetector detect(ConfigurableEnvironment environment) {
         KeyDetector detector = new KeyDetector();
         if (environment == null) {
+            String defaultPassword = resolveDefaultPassword(null);
+            detector.setDefaultPassword(defaultPassword);
             return detector;
         }
 
@@ -124,7 +126,8 @@ public class KeyDetector {
         return sourceName.contains("commandLineArgs")
                 || sourceName.contains("systemProperties")
                 || sourceName.contains("systemEnvironment")
-                || sourceName.contains("SimpleCommandLinePropertySource");
+                || sourceName.contains("SimpleCommandLinePropertySource")
+                || sourceName.equals("configurationProperties");
     }
 
     private static void resolveNamedKeys(ConfigurableEnvironment environment, KeyDetector detector) {
