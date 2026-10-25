@@ -53,5 +53,9 @@
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-realtime</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-encrypt</artifactId>
+        </dependency>
     </dependencies>
 </project>

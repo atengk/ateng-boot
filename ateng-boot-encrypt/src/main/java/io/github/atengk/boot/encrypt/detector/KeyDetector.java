@@ -127,6 +127,8 @@ public class KeyDetector {
                 || sourceName.contains("systemProperties")
                 || sourceName.contains("systemEnvironment")
                 || sourceName.contains("SimpleCommandLinePropertySource")
+                || sourceName.contains("Inlined Test Properties")
+                || sourceName.contains("test")
                 || sourceName.equals("configurationProperties");
     }
 

@@ -42,10 +42,19 @@ public class Sm4ConfigDecryptor implements ConfigDecryptor {
                 try {
                     byte[] decrypted = CryptoUtil.decryptSm4Cbc(encryptedBytes, keyBytes, iv);
                     return new String(decrypted, StandardCharsets.UTF_8);
-                } catch (Exception e) {
-                    // 若 CBC 解密失败，尝试降级回退至纯 ECB 尝试（容错历史无 IV 密文）
-                    byte[] decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
-                    return new String(decrypted, StandardCharsets.UTF_8);
+                } catch (Exception cbcEx) {
+                    // 若 CBC 解密失败，仅当密文长度能被 16 整除时尝试纯 ECB 兜底
+                    if (combined.length % KEY_SIZE == 0) {
+                        try {
+                            byte[] decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
+                            String text = new String(decrypted, StandardCharsets.UTF_8);
+                            if (isPrintableText(text)) {
+                                return text;
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    throw cbcEx;
                 }
             } else {
                 byte[] decrypted = CryptoUtil.decryptSm4Ecb(combined, keyBytes);
@@ -54,6 +63,22 @@ public class Sm4ConfigDecryptor implements ConfigDecryptor {
         } finally {
             Arrays.fill(keyBytes, (byte) 0);
         }
+    }
+
+    private static boolean isPrintableText(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n' || c == '\r' || c == '\t') {
+                continue;
+            }
+            if (c < 32 || c == 127) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

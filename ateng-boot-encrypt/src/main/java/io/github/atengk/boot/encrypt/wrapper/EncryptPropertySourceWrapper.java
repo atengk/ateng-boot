@@ -9,8 +9,10 @@ import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
+import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
 
 import java.util.ArrayList;
@@ -23,11 +25,12 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 加密属性源动态装饰器
  * 对 Spring 属性源进行透明代理，拦截 getProperty 调用并执行懒解密与并发安全缓存
+ * 继承自 MapPropertySource，完美兼顾与 Spring Boot 内部处理器（如 SpringBootTestRandomPort 等）强转契约的兼容性
  *
  * @author Ateng
  * @since 2026-10-25
  */
-public class EncryptPropertySourceWrapper extends EnumerablePropertySource<PropertySource<?>> {
+public class EncryptPropertySourceWrapper extends MapPropertySource {
 
     private final PropertySource<?> delegate;
     private final CiphertextParser parser;
@@ -39,13 +42,21 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
     private final Map<String, Object> decryptedCache = new ConcurrentHashMap<>();
     private final Set<String> encryptedPropertyNames = ConcurrentHashMap.newKeySet();
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> extractSourceMap(PropertySource<?> delegate) {
+        if (delegate instanceof MapPropertySource mapSource) {
+            return mapSource.getSource();
+        }
+        return Collections.emptyMap();
+    }
+
     public EncryptPropertySourceWrapper(PropertySource<?> delegate,
                                         CiphertextParser parser,
                                         KeyDetector keyDetector,
                                         List<ConfigDecryptor> decryptors,
                                         EncryptAlgorithm defaultAlgorithm,
                                         boolean failOnError) {
-        super(delegate.getName(), delegate);
+        super(delegate.getName(), extractSourceMap(delegate));
         this.delegate = delegate;
         this.parser = parser != null ? parser : new CiphertextParser();
         this.keyDetector = keyDetector != null ? keyDetector : new KeyDetector();

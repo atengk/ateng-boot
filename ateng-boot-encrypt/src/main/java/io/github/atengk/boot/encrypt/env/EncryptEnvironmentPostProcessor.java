@@ -75,7 +75,10 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
             log.trace("[ateng-boot-encrypt] 属性源已装配解密代理: {}", source.getName());
         }
 
-        // 4. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
+        // 4. 重新挂载 ConfigurationPropertySources，确保 @ConfigurationProperties Binder 能够感知代理包装
+        ConfigurationPropertySources.attach(environment);
+
+        // 5. 若开启生产明文强制门禁 (enforce-encrypted: true)，前置扫描并阻断未加密的裸明文敏感属性
         String enforceStr = environment.getProperty("ateng.boot.encrypt.enforce-encrypted");
         if (Boolean.parseBoolean(enforceStr)) {
             String pattern = environment.getProperty("ateng.boot.encrypt.sensitive-key-pattern",

@@ -1,0 +1,43 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-encrypt
+
+# ===================================================================
+# ateng-boot 配置加解密底座核心配置
+# ===================================================================
+ateng:
+  boot:
+    encrypt:
+      enabled: true
+      algorithm: AES-GCM
+      # 命名密钥映射表（KeyId -> Password/PrivateKey），用于多 Key 轮换与分域解密
+      keys:
+        redis-cluster: RedisSpecialClusterKey2026!
+
+# ===================================================================
+# 业务机密属性（配置已加密的密文，由 Starter 运行时透明懒解密还原）
+# 注意：全局主解密密钥严禁硬编码在本地 application.yml 中，统一通过环境变量或启动参数注入！
+# ===================================================================
+sample:
+  secret:
+    # 数据库密码：采用默认 AES-GCM 算法加密
+    database-password: ENC(CZAQmB7bsLk2Z8AWBDWuLuEdXBkLlPSelifEvpUKZF8hnxMYmS5qiJ0QPqAICQ==) # 数据库生产连接密码
+    # 缓存密码：指定多 Key 路由 [redis-cluster] 执行解密
+    redis-password: ENC[redis-cluster](YbIg1S6F2964mdnyLgtvn1D4SjJ2QqxN8M45CBCnWs0VpgEJ4b5wEZyEKOJyDA==) # Redis集群访问密码
+    # 第三方API令牌：显式指定国密 SM4-CBC 算法加解密
+    third-party-token: ENC(SM4-CBC@ODPVE+KjssNqGN6yrBqMlXcYvDKQgNYADkGV+HV6vL+/H/Juo4KFpgIuVeRMmIT+) # 支付网关安全令牌
+
+# ===================================================================
+# Actuator 监控端点配置（用于自验运行时物理掩码脱敏防泄露机制）
+# ===================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: env,health,info
+  endpoint:
+    env:
+      show-values: ALWAYS
