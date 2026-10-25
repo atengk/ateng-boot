@@ -139,6 +139,25 @@ class EncryptEnvironmentPostProcessorTest {
     }
 
     @Test
+    @DisplayName("测试全局配置默认算法：当配置 ateng.boot.encrypt.algorithm=SM4-CBC 时默认采用国密SM4解密")
+    void testConfiguredDefaultAlgorithm() {
+        StandardEnvironment environment = new StandardEnvironment();
+
+        // 配置默认算法为国密 SM4-CBC
+        String sm4Cipher = io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor.encryptCbc(
+                "sm4-protected-credential", PASSWORD);
+
+        Map<String, Object> configMap = new HashMap<>();
+        configMap.put("ateng.boot.encrypt.algorithm", "SM4-CBC");
+        configMap.put("custom.sm4.secret", "ENC(" + sm4Cipher + ")"); // 无显式算法头
+        environment.getPropertySources().addLast(new MapPropertySource("sm4Source", configMap));
+
+        postProcessor.postProcessEnvironment(environment, new SpringApplication());
+
+        assertThat(environment.getProperty("custom.sm4.secret")).isEqualTo("sm4-protected-credential");
+    }
+
+    @Test
     @DisplayName("测试空环境防御性返回")
     void testNullEnvironmentSafeReturn() {
         // 不应抛出任何异常

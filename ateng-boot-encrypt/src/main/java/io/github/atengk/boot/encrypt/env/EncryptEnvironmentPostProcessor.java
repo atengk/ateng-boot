@@ -51,7 +51,12 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
         // 1. 级联探测主密钥与命名多密钥，并触发本地自加密风险刚性拦截
         KeyDetector keyDetector = KeyDetector.detect(environment);
 
-        // 2. 扫描并无差别装饰所有尚未被包装的属性源
+        // 2. 动态读取配置的环境默认算法，未配置时保底为 AES_GCM
+        String algoCode = environment.getProperty("ateng.boot.encrypt.algorithm");
+        EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
+        EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
+
+        // 3. 扫描并无差别装饰所有尚未被包装的属性源
         MutablePropertySources propertySources = environment.getPropertySources();
         List<PropertySource<?>> toWrap = new ArrayList<>();
 
@@ -63,7 +68,7 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
 
         for (PropertySource<?> source : toWrap) {
             EncryptPropertySourceWrapper wrapper = new EncryptPropertySourceWrapper(
-                    source, keyDetector, EncryptAlgorithm.AES_GCM);
+                    source, keyDetector, defaultAlgorithm);
             propertySources.replace(source.getName(), wrapper);
             log.trace("[ateng-boot-encrypt] 属性源已装配解密代理: {}", source.getName());
         }
