@@ -58,6 +58,7 @@
         <module>ateng-boot-document</module>
         <module>ateng-boot-mqtt</module>
         <module>ateng-boot-pay</module>
+        <module>ateng-boot-statemachine</module>
         <module>ateng-boot-samples</module>
     </modules>
 

@@ -133,6 +133,11 @@
                 <version>${project.version}</version>
             </dependency>
             <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-statemachine</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.github.wechatpay-apiv3</groupId>
                 <artifactId>wechatpay-java</artifactId>
                 <version>${wechatpay-java.version}</version>
