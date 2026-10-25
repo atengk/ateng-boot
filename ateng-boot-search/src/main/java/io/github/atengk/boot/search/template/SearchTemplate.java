@@ -2,22 +2,34 @@ package io.github.atengk.boot.search.template;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
+import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.Result;
+import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import co.elastic.clients.elasticsearch.core.search.Hit;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
 import io.github.atengk.boot.search.model.SearchHit;
+import io.github.atengk.boot.search.model.SearchPage;
+import io.github.atengk.boot.search.model.SearchScrollResult;
+import io.github.atengk.boot.search.properties.AtengSearchProperties;
+import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import lombok.RequiredArgsConstructor;
@@ -46,9 +58,15 @@ public class SearchTemplate {
 
     private final SearchEngineClient searchEngineClient;
     private final SearchIndexOperations searchIndexOperations;
+    private final AtengSearchProperties properties;
 
     public SearchTemplate(SearchEngineClient searchEngineClient) {
+        this(searchEngineClient, new AtengSearchProperties());
+    }
+
+    public SearchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties) {
         this.searchEngineClient = Objects.requireNonNull(searchEngineClient, "searchEngineClient must not be null");
+        this.properties = properties != null ? properties : new AtengSearchProperties();
         this.searchIndexOperations = new SearchIndexOperations(this);
     }
 
@@ -923,7 +941,273 @@ public class SearchTemplate {
                 .build();
     }
 
-    // ==================== 6. 底层逃生舱 (Execute) ====================
+    // ==================== 6. 文档检索与双轨分页 (Search & SearchAfter) ====================
+
+    /**
+     * 执行标准浅分页检索
+     * <p>
+     * 自动从实体类解析 @SearchIndex 索引名；当请求偏移量超过 max-result-window (默认 10,000) 时，
+     * 自动触发安全熔断抛出 {@link SearchPaginationExceededException}。
+     *
+     * @param query 查询规格对象
+     * @param clazz 实体类类型
+     * @param <T>   实体类型
+     * @return 分页结果模型 SearchPage
+     */
+    public <T> SearchPage<T> search(SearchQuery query, Class<T> clazz) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? query.getIndices().get(0)
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return search(index, query, clazz);
+    }
+
+    /**
+     * 在指定索引上执行标准浅分页检索
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @param clazz 实体类类型
+     * @param <T>   实体类型
+     * @return 分页结果模型 SearchPage
+     */
+    public <T> SearchPage<T> search(String index, SearchQuery query, Class<T> clazz) {
+        Objects.requireNonNull(index, "index must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(clazz, "clazz must not be null");
+
+        // 浅分页安全阈值刚性熔断 (Fail-Fast)
+        int requestedWindow = query.getFrom() + query.getSize();
+        int maxWindow = properties.getPagination().getMaxResultWindow();
+        if (requestedWindow > maxWindow) {
+            throw new SearchPaginationExceededException(requestedWindow, maxWindow);
+        }
+
+        SearchResponse<T> response = doSearch(index, query, clazz, false, null, null);
+        return buildSearchPage(response, query, clazz);
+    }
+
+    /**
+     * 执行深度游标滚动分页检索 (SearchAfter)
+     * <p>
+     * 自动从实体类解析 @SearchIndex 索引名；通过透传上一批末尾的 sortValues 实现无内存膨胀的深翻页。
+     *
+     * @param query      查询规格对象
+     * @param sortValues 上一批最后一条记录的排序凭据值列表（首页为 null 或空集合）
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(SearchQuery query, List<String> sortValues, int size, Class<T> clazz) {
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? query.getIndices().get(0)
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return searchAfter(index, query, sortValues, size, clazz);
+    }
+
+    /**
+     * 在指定索引上执行深度游标滚动分页检索 (SearchAfter)
+     *
+     * @param index      目标索引名
+     * @param query      查询规格对象
+     * @param sortValues 上一批最后一条记录的排序凭据值列表（首页为 null 或空集合）
+     * @param size       每页大小
+     * @param clazz      实体类类型
+     * @param <T>        实体类型
+     * @return 深度滚动结果模型 SearchScrollResult
+     */
+    public <T> SearchScrollResult<T> searchAfter(String index, SearchQuery query, List<String> sortValues, int size, Class<T> clazz) {
+        Objects.requireNonNull(index, "index must not be null");
+        Objects.requireNonNull(query, "query must not be null");
+        Objects.requireNonNull(clazz, "clazz must not be null");
+
+        int pageSize = size > 0 ? size : query.getSize();
+        SearchResponse<T> response = doSearch(index, query, clazz, true, sortValues, pageSize);
+        return buildSearchScrollResult(response, pageSize, clazz);
+    }
+
+    private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
+                                          boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
+        try {
+            // 组装多租户隐式过滤
+            Query finalQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+
+            SearchResponse<T> response = getClient().search(b -> {
+                b.index(index);
+                if (finalQuery != null) {
+                    b.query(finalQuery);
+                }
+                if (StringUtils.hasText(query.getRouting())) {
+                    b.routing(query.getRouting());
+                }
+                if (query.isTrackTotalHits()) {
+                    b.trackTotalHits(tth -> tth.enabled(true));
+                }
+
+                // 分页配置
+                if (isSearchAfter) {
+                    b.from(0);
+                    b.size(overrideSize != null && overrideSize > 0 ? overrideSize : query.getSize());
+                    if (sortValues != null && !sortValues.isEmpty()) {
+                        List<FieldValue> fvs = sortValues.stream().map(FieldValue::of).toList();
+                        b.searchAfter(fvs);
+                    }
+                } else {
+                    b.from(query.getFrom());
+                    b.size(query.getSize());
+                    if (CollectionUtil.isNotEmpty(query.getSearchAfter())) {
+                        List<FieldValue> fvs = query.getSearchAfter().stream().map(FieldValue::of).toList();
+                        b.searchAfter(fvs);
+                    }
+                }
+
+                // 排序规则
+                if (CollectionUtil.isNotEmpty(query.getSorts())) {
+                    b.sort(query.getSorts());
+                } else if (isSearchAfter) {
+                    // searchAfter 强制要求至少有一个确定的排序规则（若未指定，保底按 _id 排序）
+                    b.sort(s -> s.field(f -> f.field("_id").order(SortOrder.Asc)));
+                }
+
+                // 高亮配置
+                if (query.getHighlight() != null) {
+                    b.highlight(query.getHighlight());
+                }
+
+                // 聚合配置
+                if (query.getAggregations() != null && !query.getAggregations().isEmpty()) {
+                    b.aggregations(query.getAggregations());
+                }
+
+                // kNN 向量检索
+                if (CollectionUtil.isNotEmpty(query.getKnnSearches())) {
+                    b.knn(query.getKnnSearches());
+                }
+
+                return b;
+            }, clazz);
+
+            return response;
+        } catch (Exception e) {
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+                    "Failed to execute search on index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    private Query wrapTenantFilterIfNecessary(Query baseQuery, Class<?> clazz) {
+        if (!properties.getMultiTenancy().isEnabled()) {
+            return baseQuery;
+        }
+        if (TenantContextHolder.isIgnoreTenant() || SearchMetadataHelper.hasIgnoreTenant(clazz)) {
+            return baseQuery;
+        }
+        String tenantId = TenantContextHolder.getTenantId();
+        if (!StringUtils.hasText(tenantId)) {
+            return baseQuery;
+        }
+
+        String tenantColumn = properties.getMultiTenancy().getColumn();
+        Query tenantFilter = Query.of(q -> q.term(t -> t.field(tenantColumn).value(FieldValue.of(tenantId))));
+
+        // 若原 query 为 BoolQuery，直接追加到 filter；否则包装为外层 BoolQuery
+        if (baseQuery != null && baseQuery.isBool()) {
+            BoolQuery boolQuery = baseQuery.bool();
+            List<Query> filters = new ArrayList<>(boolQuery.filter());
+            filters.add(tenantFilter);
+            return Query.of(q -> q.bool(b -> b
+                    .must(boolQuery.must())
+                    .filter(filters)
+                    .should(boolQuery.should())
+                    .mustNot(boolQuery.mustNot())
+                    .minimumShouldMatch(boolQuery.minimumShouldMatch())
+            ));
+        } else if (baseQuery != null) {
+            return Query.of(q -> q.bool(b -> b
+                    .must(baseQuery)
+                    .filter(tenantFilter)
+            ));
+        } else {
+            return Query.of(q -> q.bool(b -> b.filter(tenantFilter)));
+        }
+    }
+
+    private <T> List<SearchHit<T>> extractHits(SearchResponse<T> response, Class<T> clazz) {
+        if (response == null || response.hits() == null || response.hits().hits() == null) {
+            return Collections.emptyList();
+        }
+
+        List<SearchHit<T>> resultList = new ArrayList<>();
+        for (Hit<T> esHit : response.hits().hits()) {
+            T source = esHit.source();
+            Map<String, List<String>> highlights = esHit.highlight() != null
+                    ? esHit.highlight()
+                    : Collections.emptyMap();
+
+            // 自动回填 @HighlightField
+            if (source != null && !highlights.isEmpty()) {
+                SearchMetadataHelper.populateHighlights(source, highlights);
+            }
+
+            List<String> sortValues = (esHit.sort() != null && !esHit.sort().isEmpty())
+                    ? esHit.sort().stream().map(SearchTemplate::formatFieldValue).toList()
+                    : Collections.emptyList();
+
+            SearchHit<T> hit = SearchHit.<T>builder()
+                    .id(esHit.id())
+                    .index(esHit.index())
+                    .content(source)
+                    .score(esHit.score())
+                    .seqNo(esHit.seqNo())
+                    .primaryTerm(esHit.primaryTerm())
+                    .version(esHit.version())
+                    .routing(esHit.routing())
+                    .sortValues(sortValues)
+                    .highlightFields(highlights)
+                    .build();
+            resultList.add(hit);
+        }
+        return resultList;
+    }
+
+    private <T> SearchPage<T> buildSearchPage(SearchResponse<T> response, SearchQuery query, Class<T> clazz) {
+        List<SearchHit<T>> hits = extractHits(response, clazz);
+        long total = 0L;
+        if (response != null && response.hits() != null && response.hits().total() != null) {
+            total = response.hits().total().value();
+        }
+        return SearchPage.<T>builder()
+                .hits(hits)
+                .total(total)
+                .pageNum(query.getPageNum())
+                .pageSize(query.getSize())
+                .build();
+    }
+
+    private <T> SearchScrollResult<T> buildSearchScrollResult(SearchResponse<T> response, int pageSize, Class<T> clazz) {
+        List<SearchHit<T>> hits = extractHits(response, clazz);
+        List<String> nextSortValues = null;
+        if (!hits.isEmpty()) {
+            SearchHit<T> lastHit = hits.get(hits.size() - 1);
+            if (lastHit.getSortValues() != null && !lastHit.getSortValues().isEmpty()) {
+                nextSortValues = lastHit.getSortValues();
+            }
+        }
+        boolean hasMore = hits.size() >= pageSize;
+        return SearchScrollResult.<T>builder()
+                .hits(hits)
+                .nextSortValues(nextSortValues)
+                .hasMore(hasMore)
+                .build();
+    }
+
+    // ==================== 7. 底层逃生舱 (Execute) ====================
 
     /**
      * 原生底层逃生舱执行器
@@ -974,5 +1258,24 @@ public class SearchTemplate {
             return true;
         }
         return false;
+    }
+
+    private static String formatFieldValue(FieldValue fv) {
+        if (fv == null || fv.isNull()) {
+            return null;
+        }
+        if (fv.isString()) {
+            return fv.stringValue();
+        }
+        if (fv.isLong()) {
+            return String.valueOf(fv.longValue());
+        }
+        if (fv.isDouble()) {
+            return String.valueOf(fv.doubleValue());
+        }
+        if (fv.isBoolean()) {
+            return String.valueOf(fv.booleanValue());
+        }
+        return fv._toJsonString();
     }
 }

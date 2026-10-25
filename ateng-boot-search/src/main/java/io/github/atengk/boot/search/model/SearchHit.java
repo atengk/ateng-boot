@@ -68,6 +68,12 @@ public class SearchHit<T> implements Serializable {
     private String routing;
 
     /**
+     * 排序凭据值列表（用于深度游标 searchAfter 传递）
+     */
+    @Builder.Default
+    private List<String> sortValues = Collections.emptyList();
+
+    /**
      * 检索高亮匹配片段集合（Key 为字段名，Value 为高亮片段列表）
      */
     @Builder.Default
@@ -79,6 +85,15 @@ public class SearchHit<T> implements Serializable {
      * @return 文档实体
      */
     public T getSource() {
+        return this.content;
+    }
+
+    /**
+     * 获取文档实体载荷数据（等价于 getContent）
+     *
+     * @return 文档实体
+     */
+    public T getData() {
         return this.content;
     }
 }

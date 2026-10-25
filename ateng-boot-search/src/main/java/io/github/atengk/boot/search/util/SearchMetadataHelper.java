@@ -1,5 +1,6 @@
 package io.github.atengk.boot.search.util;
 
+import io.github.atengk.boot.search.annotation.HighlightField;
 import io.github.atengk.boot.search.annotation.SearchId;
 import io.github.atengk.boot.search.annotation.SearchIndex;
 import io.github.atengk.boot.search.annotation.SearchRouting;
@@ -15,10 +16,12 @@ import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.util.StringUtils;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,6 +39,8 @@ public final class SearchMetadataHelper {
     private static final Map<Class<?>, Field> ID_FIELD_CACHE = new ConcurrentHashMap<>();
     private static final Map<Class<?>, Field> ROUTING_FIELD_CACHE = new ConcurrentHashMap<>();
     private static final Map<Class<?>, Boolean> HAS_ROUTING_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, Boolean> HAS_IGNORE_TENANT_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Class<?>, List<HighlightFieldMeta>> HIGHLIGHT_FIELDS_CACHE = new ConcurrentHashMap<>();
 
     private SearchMetadataHelper() {
     }
@@ -222,5 +227,84 @@ public final class SearchMetadataHelper {
             }
         }
         return result.toString();
+    }
+
+    /**
+     * 判断实体类型上是否声明了忽略租户注解 (@IgnoreTenant)
+     *
+     * @param clazz 实体类
+     * @return true 表示豁免租户过滤
+     */
+    public static boolean hasIgnoreTenant(Class<?> clazz) {
+        if (clazz == null) {
+            return false;
+        }
+        return HAS_IGNORE_TENANT_CACHE.computeIfAbsent(clazz, c -> {
+            for (Annotation annotation : c.getAnnotations()) {
+                if ("IgnoreTenant".equals(annotation.annotationType().getSimpleName())) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    /**
+     * 自动提取命中文档的高亮富文本片段并反射回填标注了 @HighlightField 的字段
+     * <p>
+     * 遵循内存真明文原则，仅在输出视图层进行富文本字段注入。
+     *
+     * @param target          目标实体对象（通常为文档反序列化实例或 VO）
+     * @param highlightFields 高亮片段 Map（Key 为字段名，Value 为匹配片段列表）
+     * @param <T>             实体泛型
+     */
+    public static <T> void populateHighlights(T target, Map<String, List<String>> highlightFields) {
+        if (target == null || highlightFields == null || highlightFields.isEmpty()) {
+            return;
+        }
+        List<HighlightFieldMeta> metas = HIGHLIGHT_FIELDS_CACHE.computeIfAbsent(target.getClass(), SearchMetadataHelper::findHighlightFields);
+        for (HighlightFieldMeta meta : metas) {
+            List<String> fragments = highlightFields.get(meta.targetKey());
+            if (fragments != null && !fragments.isEmpty()) {
+                try {
+                    if (meta.field().getType().equals(String.class)) {
+                        meta.field().set(target, String.join(" ", fragments));
+                    } else if (List.class.isAssignableFrom(meta.field().getType())) {
+                        meta.field().set(target, fragments);
+                    }
+                } catch (IllegalAccessException ignored) {
+                }
+            }
+        }
+    }
+
+    private static List<HighlightFieldMeta> findHighlightFields(Class<?> clazz) {
+        List<HighlightFieldMeta> metas = new ArrayList<>();
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            for (Field field : current.getDeclaredFields()) {
+                HighlightField annotation = field.getAnnotation(HighlightField.class);
+                if (annotation != null) {
+                    String targetKey = annotation.target();
+                    if (!StringUtils.hasText(targetKey)) {
+                        String name = field.getName();
+                        if (name.startsWith("highlighted") && name.length() > 11) {
+                            targetKey = Character.toLowerCase(name.charAt(11)) + name.substring(12);
+                        } else if (name.startsWith("highlight") && name.length() > 9) {
+                            targetKey = Character.toLowerCase(name.charAt(9)) + name.substring(10);
+                        } else {
+                            targetKey = name;
+                        }
+                    }
+                    field.setAccessible(true);
+                    metas.add(new HighlightFieldMeta(field, targetKey));
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return metas;
+    }
+
+    private record HighlightFieldMeta(Field field, String targetKey) {
     }
 }

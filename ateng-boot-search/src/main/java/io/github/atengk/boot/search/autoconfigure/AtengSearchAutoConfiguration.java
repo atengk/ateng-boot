@@ -40,8 +40,8 @@ public class AtengSearchAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(SearchTemplate.class)
-    public SearchTemplate searchTemplate(SearchEngineClient searchEngineClient) {
+    public SearchTemplate searchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties) {
         log.info("Auto-configuring SearchTemplate");
-        return new SearchTemplate(searchEngineClient);
+        return new SearchTemplate(searchEngineClient, properties);
     }
 }
