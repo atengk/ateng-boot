@@ -42,6 +42,14 @@ public interface StateMachineBuilder<S, E, C> {
     ChoiceTransitionBuilder.From<S, E, C> choiceTransition();
 
     /**
+     * 挂载状态机切面拦截器
+     *
+     * @param interceptor 拦截器
+     * @return 当前构建器
+     */
+    StateMachineBuilder<S, E, C> interceptor(io.github.atengk.boot.statemachine.core.StateMachineInterceptor<? super S, ? super E, ? super C> interceptor);
+
+    /**
      * 构建只读不可变状态机实例
      *
      * @param machineId 状态机全局唯一标识

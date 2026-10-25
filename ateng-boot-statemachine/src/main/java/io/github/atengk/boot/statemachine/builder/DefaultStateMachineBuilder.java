@@ -16,6 +16,15 @@ import java.util.*;
 public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<S, E, C> {
 
     private final List<TransitionHolder<S, E, C>> transitionHolders = new ArrayList<>();
+    private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors = new ArrayList<>();
+
+    @Override
+    public StateMachineBuilder<S, E, C> interceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
+        if (interceptor != null) {
+            this.interceptors.add(interceptor);
+        }
+        return this;
+    }
 
     @Override
     public ExternalTransitionBuilder.From<S, E, C> externalTransition() {
@@ -69,7 +78,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             }
         }
 
-        return new DefaultStateMachine<>(machineId, transitionMap);
+        return new DefaultStateMachine<>(machineId, transitionMap, interceptors);
     }
 
     private interface TransitionHolder<S, E, C> {
