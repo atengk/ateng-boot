@@ -14,8 +14,10 @@ import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.PropertySource;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -35,6 +37,7 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
     private final boolean failOnError;
 
     private final Map<String, Object> decryptedCache = new ConcurrentHashMap<>();
+    private final Set<String> encryptedPropertyNames = ConcurrentHashMap.newKeySet();
 
     public EncryptPropertySourceWrapper(PropertySource<?> delegate,
                                         CiphertextParser parser,
@@ -95,6 +98,8 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
             return rawValue;
         }
 
+        encryptedPropertyNames.add(name);
+
         // 优先从内存缓存中获取已解密值
         Object cached = decryptedCache.get(name);
         if (cached != null) {
@@ -107,8 +112,9 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
                 String keyId = token.getKeyId();
                 String password = keyDetector.getPassword(keyId);
                 if (password == null || password.trim().isEmpty()) {
-                    throw new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']",
-                            keyId != null ? keyId : "default"));
+                    throw new ConfigDecryptionException(name, keyId, defaultAlgorithm.getCode(),
+                            new IllegalStateException(String.format("缺失解密主密钥 [KeyId: '%s']",
+                                    keyId != null ? keyId : "default")));
                 }
                 EncryptAlgorithm algorithm = token.getAlgorithm() != null ? token.getAlgorithm() : defaultAlgorithm;
                 ConfigDecryptor decryptor = findDecryptor(algorithm);
@@ -129,7 +135,8 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
             }
             return rawValue;
         } catch (Exception e) {
-            ConfigDecryptionException ex = new ConfigDecryptionException(name, "未知解密异常", e);
+            ConfigDecryptionException ex = new ConfigDecryptionException(name,
+                    e.getMessage() != null ? e.getMessage() : "未知解密异常", e);
             if (failOnError) {
                 throw ex;
             }
@@ -168,5 +175,32 @@ public class EncryptPropertySourceWrapper extends EnumerablePropertySource<Prope
 
     public PropertySource<?> getDelegate() {
         return delegate;
+    }
+
+    /**
+     * 判断指定属性是否属于被加密的密文属性
+     *
+     * @param name 属性名称
+     * @return 若原始值带有密文标记则返回 true
+     */
+    public boolean isEncryptedProperty(String name) {
+        if (encryptedPropertyNames.contains(name)) {
+            return true;
+        }
+        Object raw = delegate.getProperty(name);
+        if (raw instanceof String str && parser.hasEncrypted(str)) {
+            encryptedPropertyNames.add(name);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 获取当前已被识别的所有加密属性名称集合
+     *
+     * @return 只读属性名集合
+     */
+    public Set<String> getEncryptedPropertyNames() {
+        return Collections.unmodifiableSet(encryptedPropertyNames);
     }
 }

@@ -35,6 +35,13 @@
             <artifactId>spring-boot-autoconfigure</artifactId>
         </dependency>
 
+        <!-- Spring Boot Actuator (可选依赖，用于条件装配 SanitizingFunction 运行时物理脱敏守卫) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-actuator</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot 配置处理器 (可选，编译期生成 IDE 配置元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

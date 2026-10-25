@@ -158,6 +158,21 @@ class EncryptEnvironmentPostProcessorTest {
     }
 
     @Test
+    @DisplayName("测试生产明文强制门禁：配置 enforce-encrypted=true 时裸明文密码阻断启动")
+    void testEnforceEncryptedBlocksPlaintextSensitivePropertyAtPostProcessor() {
+        StandardEnvironment environment = new StandardEnvironment();
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("ateng.boot.encrypt.enforce-encrypted", "true");
+        map.put("spring.datasource.password", "plain_password_123");
+        environment.getPropertySources().addLast(new MapPropertySource("application.yml", map));
+
+        assertThatThrownBy(() -> postProcessor.postProcessEnvironment(environment, new SpringApplication()))
+                .isInstanceOf(ConfigSecurityException.class)
+                .hasMessageContaining("spring.datasource.password");
+    }
+
+    @Test
     @DisplayName("测试空环境防御性返回")
     void testNullEnvironmentSafeReturn() {
         // 不应抛出任何异常
