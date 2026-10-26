@@ -261,4 +261,68 @@ class TreeUtilTest {
             assertEquals(1, tree.get(0).getChildren().size());
         });
     }
+
+    @Test
+    @DisplayName("反向展平树 flatten 验证")
+    void shouldFlattenTreeSuccessfully() {
+        MenuNode r1 = new MenuNode(1L, 0L, "系统管理");
+        MenuNode c11 = new MenuNode(11L, 1L, "用户管理");
+        MenuNode l111 = new MenuNode(111L, 11L, "新增用户按钮");
+        r1.setChildren(List.of(c11));
+        c11.setChildren(List.of(l111));
+        l111.setChildren(Collections.emptyList());
+
+        List<MenuNode> flattened = TreeUtil.flatten(List.of(r1), MenuNode::getChildren);
+        assertEquals(3, flattened.size());
+        assertEquals("系统管理", flattened.get(0).getName());
+        assertEquals("用户管理", flattened.get(1).getName());
+        assertEquals("新增用户按钮", flattened.get(2).getName());
+
+        assertTrue(TreeUtil.flatten(null, MenuNode::getChildren).isEmpty());
+        assertTrue(TreeUtil.flatten(Collections.emptyList(), MenuNode::getChildren).isEmpty());
+    }
+
+    @Test
+    @DisplayName("树节点路径查找 findPath 验证")
+    void shouldFindPathSuccessfully() {
+        MenuNode r1 = new MenuNode(1L, 0L, "系统管理");
+        MenuNode c11 = new MenuNode(11L, 1L, "用户管理");
+        MenuNode c12 = new MenuNode(12L, 1L, "角色管理");
+        MenuNode l111 = new MenuNode(111L, 11L, "新增用户按钮");
+        r1.setChildren(List.of(c11, c12));
+        c11.setChildren(List.of(l111));
+        c12.setChildren(Collections.emptyList());
+        l111.setChildren(Collections.emptyList());
+
+        List<MenuNode> path = TreeUtil.findPath(List.of(r1), node -> node.getId().equals(111L), MenuNode::getChildren);
+        assertEquals(3, path.size());
+        assertEquals(1L, path.get(0).getId());
+        assertEquals(11L, path.get(1).getId());
+        assertEquals(111L, path.get(2).getId());
+
+        // 不存在的节点返回空列表
+        List<MenuNode> notFound = TreeUtil.findPath(List.of(r1), node -> node.getId().equals(999L), MenuNode::getChildren);
+        assertTrue(notFound.isEmpty());
+        assertTrue(TreeUtil.findPath(null, node -> true, MenuNode::getChildren).isEmpty());
+    }
+
+    @Test
+    @DisplayName("提取叶子节点 getLeafNodes 验证")
+    void shouldGetLeafNodesSuccessfully() {
+        MenuNode r1 = new MenuNode(1L, 0L, "系统管理");
+        MenuNode c11 = new MenuNode(11L, 1L, "用户管理");
+        MenuNode c12 = new MenuNode(12L, 1L, "角色管理");
+        MenuNode l111 = new MenuNode(111L, 11L, "新增用户按钮");
+        r1.setChildren(List.of(c11, c12));
+        c11.setChildren(List.of(l111));
+        c12.setChildren(Collections.emptyList());
+        l111.setChildren(Collections.emptyList());
+
+        List<MenuNode> leaves = TreeUtil.getLeafNodes(List.of(r1), MenuNode::getChildren);
+        assertEquals(2, leaves.size());
+        assertEquals("新增用户按钮", leaves.get(0).getName());
+        assertEquals("角色管理", leaves.get(1).getName());
+
+        assertTrue(TreeUtil.getLeafNodes(null, MenuNode::getChildren).isEmpty());
+    }
 }

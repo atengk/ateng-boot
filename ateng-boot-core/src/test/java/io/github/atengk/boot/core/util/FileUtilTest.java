@@ -88,4 +88,43 @@ class FileUtilTest {
             assertEquals("10.00 MB", FileUtil.formatSize(10L * 1024 * 1024));
         });
     }
+
+    @Test
+    @DisplayName("readNBytesSafe: 安全有界流读取与溢出防卫")
+    void shouldReadNBytesSafely() throws java.io.IOException {
+        byte[] data = "Hello World Safe".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(data);
+
+        // 正常读取允许范围内
+        byte[] read = FileUtil.readNBytesSafe(in, 20);
+        assertArrayEquals(data, read);
+
+        // 超出上限抛出异常
+        java.io.ByteArrayInputStream inOverflow = new java.io.ByteArrayInputStream(data);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> FileUtil.readNBytesSafe(inOverflow, 10));
+        assertTrue(ex.getMessage().contains("超出允许的最大安全限制"));
+
+        // 空输入流安全返回
+        assertArrayEquals(new byte[0], FileUtil.readNBytesSafe(null, 10));
+
+        // 负数限制防御
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.readNBytesSafe(new java.io.ByteArrayInputStream(data), -1));
+    }
+
+    @Test
+    @DisplayName("createTempFile: 创建受管安全临时文件")
+    void shouldCreateManagedTempFile() throws java.io.IOException {
+        java.io.File tempFile = FileUtil.createTempFile("test-run-", ".log");
+        assertNotNull(tempFile);
+        assertTrue(tempFile.exists());
+        assertTrue(tempFile.getName().endsWith(".log"));
+        tempFile.delete();
+
+        // 默认前后缀
+        java.io.File defaultTemp = FileUtil.createTempFile(null, null);
+        assertNotNull(defaultTemp);
+        assertTrue(defaultTemp.exists());
+        defaultTemp.delete();
+    }
 }

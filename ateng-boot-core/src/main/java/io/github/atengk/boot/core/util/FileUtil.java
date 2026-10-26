@@ -158,4 +158,49 @@ public final class FileUtil {
         double sizeInUnit = bytes / Math.pow(1024, unitIndex);
         return String.format(java.util.Locale.ROOT, "%,.2f %s", sizeInUnit, SIZE_UNITS[unitIndex]);
     }
+
+    /**
+     * 安全读取输入流指定上限字节数（防 OOM 内存耗尽安全有界读取）
+     * 自动探测流大小，若流实际字节数超出 maxBytes，立即抛出 IllegalArgumentException 快速阻断
+     *
+     * @param inputStream 输入流，为 null 时安全返回空字节数组
+     * @param maxBytes    允许读取的最大字节数（必须大于或等于 0）
+     * @return 读取得到的字节数组
+     * @throws java.io.IOException      IO 异常
+     * @throws IllegalArgumentException 当 maxBytes 小于 0 或输入流实际大小超出 maxBytes 限制时抛出
+     */
+    public static byte[] readNBytesSafe(java.io.InputStream inputStream, int maxBytes) throws java.io.IOException {
+        if (inputStream == null) {
+            return new byte[0];
+        }
+        if (maxBytes < 0) {
+            throw new IllegalArgumentException("maxBytes 不能为负数: " + maxBytes);
+        }
+        // 读取 maxBytes + 1 字节探测是否溢出
+        byte[] bytes = inputStream.readNBytes(maxBytes + 1);
+        if (bytes.length > maxBytes) {
+            throw new IllegalArgumentException("输入流实际字节数超出允许的最大安全限制: " + maxBytes + " bytes (" + formatSize(maxBytes) + ")");
+        }
+        return bytes;
+    }
+
+    /**
+     * 创建并在 JVM 退出时自动删除的安全受管临时文件
+     * 自动对前缀进行路径穿越清洗以确保安全
+     *
+     * @param prefix 临时文件名前缀，为空或 null 时默认使用 "ateng-temp-"
+     * @param suffix 临时文件名后缀（扩展名，如 ".tmp"），为 null 时默认使用 ".tmp"
+     * @return 创建成功的受管临时文件实例
+     * @throws java.io.IOException 创建临时文件失败时抛出
+     */
+    public static java.io.File createTempFile(String prefix, String suffix) throws java.io.IOException {
+        String safePrefix = (prefix != null && !prefix.isBlank()) ? cleanFilename(prefix) : "ateng-temp-";
+        if (safePrefix.length() < 3) {
+            safePrefix = safePrefix + "tmp";
+        }
+        String safeSuffix = suffix != null ? suffix : ".tmp";
+        java.io.File tempFile = java.io.File.createTempFile(safePrefix, safeSuffix);
+        tempFile.deleteOnExit();
+        return tempFile;
+    }
 }

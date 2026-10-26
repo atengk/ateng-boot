@@ -68,4 +68,23 @@ class CollectionUtilTest {
         assertEquals(1, parts.size());
         assertEquals(list, parts.get(0));
     }
+
+    @Test
+    @DisplayName("emptyIfNull 与 first/last 安全提取验证")
+    void shouldVerifyEmptyIfNullAndFirstLast() {
+        assertNotNull(CollectionUtil.emptyIfNull((List<String>) null));
+        assertTrue(CollectionUtil.emptyIfNull((List<String>) null).isEmpty());
+        assertNotNull(CollectionUtil.emptyIfNull((java.util.Set<String>) null));
+        assertNotNull(CollectionUtil.emptyIfNull((Map<String, String>) null));
+
+        List<String> list = List.of("A", "B", "C");
+        assertSame(list, CollectionUtil.emptyIfNull(list));
+        assertEquals("A", CollectionUtil.first(list));
+        assertEquals("C", CollectionUtil.last(list));
+
+        assertNull(CollectionUtil.first(null));
+        assertNull(CollectionUtil.first(Collections.emptyList()));
+        assertNull(CollectionUtil.last(null));
+        assertNull(CollectionUtil.last(Collections.emptyList()));
+    }
 }

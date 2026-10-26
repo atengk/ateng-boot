@@ -1,5 +1,6 @@
 package io.github.atengk.boot.core.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Getter;
 import lombok.Setter;
@@ -161,6 +162,36 @@ public class PageResult<T> implements Serializable {
      */
     public void setRecords(List<T> records) {
         this.records = records != null ? records : Collections.emptyList();
+    }
+
+    /**
+     * 是否存在上一页
+     *
+     * @return 当当前页码大于 1 时返回 true，否则返回 false
+     */
+    @JsonIgnore
+    public boolean hasPrevious() {
+        return this.current > 1;
+    }
+
+    /**
+     * 是否存在下一页
+     *
+     * @return 当当前页码小于总页数时返回 true，否则返回 false
+     */
+    @JsonIgnore
+    public boolean hasNext() {
+        return this.current < this.pages;
+    }
+
+    /**
+     * 当前分页结果集是否为空
+     *
+     * @return 当 records 为 null 或没有任何记录时返回 true，否则返回 false
+     */
+    @JsonIgnore
+    public boolean isEmpty() {
+        return this.records == null || this.records.isEmpty();
     }
 
     /**

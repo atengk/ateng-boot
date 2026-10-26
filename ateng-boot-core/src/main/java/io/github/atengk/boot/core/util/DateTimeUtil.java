@@ -746,6 +746,115 @@ public final class DateTimeUtil {
         return Period.between(startDateInclusive, endDateExclusive);
     }
 
+    /**
+     * 判断指定日期是否为工作日（非周六与周日）
+     *
+     * @param date 目标日期
+     * @return true 若为周一至周五；false 若为周末或 null
+     */
+    public static boolean isWorkday(LocalDate date) {
+        if (date == null) {
+            return false;
+        }
+        java.time.DayOfWeek dow = date.getDayOfWeek();
+        return dow != java.time.DayOfWeek.SATURDAY && dow != java.time.DayOfWeek.SUNDAY;
+    }
+
+    /**
+     * 在指定日期基础上增加（或扣减）指定工作日天数（自动跳过周六周日）
+     *
+     * @param date     基准日期
+     * @param workdays 工作日天数（支持正负数）
+     * @return 计算后的日期；若 date 为 null 则返回 null
+     */
+    public static LocalDate plusWorkdays(LocalDate date, int workdays) {
+        if (date == null || workdays == 0) {
+            return date;
+        }
+        LocalDate current = date;
+        int step = workdays > 0 ? 1 : -1;
+        int remaining = Math.abs(workdays);
+        while (remaining > 0) {
+            current = current.plusDays(step);
+            if (isWorkday(current)) {
+                remaining--;
+            }
+        }
+        return current;
+    }
+
+    /**
+     * 计算两个日期之间的工作日天数（开闭区间：[startDateInclusive, endDateExclusive)）
+     *
+     * @param startInclusive 起始日期（包含）
+     * @param endExclusive   结束日期（不包含）
+     * @return 工作日天数（若 startInclusive > endExclusive 则返回负数）
+     */
+    public static long betweenWorkdays(LocalDate startInclusive, LocalDate endExclusive) {
+        if (startInclusive == null || endExclusive == null || startInclusive.isEqual(endExclusive)) {
+            return 0L;
+        }
+        boolean negative = startInclusive.isAfter(endExclusive);
+        LocalDate start = negative ? endExclusive : startInclusive;
+        LocalDate end = negative ? startInclusive : endExclusive;
+        long count = 0;
+        LocalDate current = start;
+        while (current.isBefore(end)) {
+            if (isWorkday(current)) {
+                count++;
+            }
+            current = current.plusDays(1);
+        }
+        return negative ? -count : count;
+    }
+
+    /**
+     * 将 LocalDateTime 从源时区换算至目标时区（同一物理瞬时的时间表示互转）
+     *
+     * @param dateTime 原始日期时间
+     * @param fromZone 源时区（为 null 时使用系统默认时区）
+     * @param toZone   目标时区（为 null 时使用系统默认时区）
+     * @return 目标时区的 LocalDateTime
+     */
+    public static LocalDateTime atZone(LocalDateTime dateTime, ZoneId fromZone, ZoneId toZone) {
+        if (dateTime == null) {
+            return null;
+        }
+        ZoneId src = obtainZoneId(fromZone);
+        ZoneId dst = obtainZoneId(toZone);
+        return dateTime.atZone(src).withZoneSameInstant(dst).toLocalDateTime();
+    }
+
+    /**
+     * 判定目标日期时间是否处于指定闭区间内 [startInclusive, endInclusive]
+     *
+     * @param target         待判定日期时间
+     * @param startInclusive 起始时间（包含）
+     * @param endInclusive   结束时间（包含）
+     * @return true 若处于区间内；否则 false
+     */
+    public static boolean isBetween(LocalDateTime target, LocalDateTime startInclusive, LocalDateTime endInclusive) {
+        if (target == null || startInclusive == null || endInclusive == null) {
+            return false;
+        }
+        return !target.isBefore(startInclusive) && !target.isAfter(endInclusive);
+    }
+
+    /**
+     * 判定目标日期是否处于指定闭区间内 [startInclusive, endInclusive]
+     *
+     * @param target         待判定日期
+     * @param startInclusive 起始日期（包含）
+     * @param endInclusive   结束日期（包含）
+     * @return true 若处于区间内；否则 false
+     */
+    public static boolean isBetween(LocalDate target, LocalDate startInclusive, LocalDate endInclusive) {
+        if (target == null || startInclusive == null || endInclusive == null) {
+            return false;
+        }
+        return !target.isBefore(startInclusive) && !target.isAfter(endInclusive);
+    }
+
     private static ZoneId obtainZoneId(ZoneId zoneId) {
         return zoneId != null ? zoneId : DEFAULT_ZONE;
     }

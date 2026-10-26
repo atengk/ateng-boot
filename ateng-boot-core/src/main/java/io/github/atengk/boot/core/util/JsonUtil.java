@@ -17,6 +17,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.constant.DatePattern;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
@@ -378,6 +379,58 @@ public final class JsonUtil {
             return defaultMapper.readTree(json);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("JSON 读取树节点失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将字节数组解析为树形结构的 JsonNode
+     *
+     * @param bytes JSON 字节数组
+     * @return JsonNode；入参为空或长度为 0 时安全返回 null
+     */
+    public static JsonNode readTree(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        try {
+            return defaultMapper.readTree(bytes);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 读取树节点失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 从输入流解析为树形结构的 JsonNode
+     *
+     * @param inputStream JSON 输入流
+     * @return JsonNode；入参为 null 时安全返回 null
+     */
+    public static JsonNode readTree(InputStream inputStream) {
+        if (inputStream == null) {
+            return null;
+        }
+        try {
+            return defaultMapper.readTree(inputStream);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 读取树节点失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 判断给定字符串是否为合法的 JSON 格式（支持 JSON Object、JSON Array 或基础标量）
+     *
+     * @param json 待校验字符串
+     * @return 若是合法 JSON 则返回 true；若为 null、空白串或非法 JSON 格式则返回 false
+     */
+    public static boolean isValidJson(String json) {
+        if (json == null || json.isBlank()) {
+            return false;
+        }
+        try {
+            defaultMapper.readTree(json);
+            return true;
+        } catch (Throwable e) {
+            return false;
         }
     }
 

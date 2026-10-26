@@ -106,6 +106,11 @@ class PageResultTest {
         assertTrue(json.contains("\"current\":1"));
         assertTrue(json.contains("\"pages\":1"));
 
+        // 验证辅助流式判断属性被 @JsonIgnore，绝不污染外泄至 JSON 5 要素传输契约
+        assertFalse(json.contains("hasPrevious"));
+        assertFalse(json.contains("hasNext"));
+        assertFalse(json.contains("\"empty\""));
+
         // 反序列化
         PageResult<?> deserialized = objectMapper.readValue(json, PageResult.class);
         assertEquals(2L, deserialized.getTotal());
@@ -113,5 +118,37 @@ class PageResultTest {
         assertEquals(10L, deserialized.getSize());
         assertEquals(1L, deserialized.getPages());
         assertEquals(2, deserialized.getRecords().size());
+    }
+
+    @Test
+    @DisplayName("验证 hasPrevious、hasNext 与 isEmpty 辅助断言方法")
+    void shouldVerifyNavigationAndEmptyHelpers() {
+        // 第一页（总共 3 页）
+        PageResult<String> page1 = PageResult.of(Arrays.asList("A", "B"), 30L, 1L, 10L, 3L);
+        assertFalse(page1.hasPrevious());
+        assertTrue(page1.hasNext());
+        assertFalse(page1.isEmpty());
+
+        // 第二页（总共 3 页）
+        PageResult<String> page2 = PageResult.of(Arrays.asList("C", "D"), 30L, 2L, 10L, 3L);
+        assertTrue(page2.hasPrevious());
+        assertTrue(page2.hasNext());
+        assertFalse(page2.isEmpty());
+
+        // 第三页（最后一页）
+        PageResult<String> page3 = PageResult.of(Arrays.asList("E"), 30L, 3L, 10L, 3L);
+        assertTrue(page3.hasPrevious());
+        assertFalse(page3.hasNext());
+        assertFalse(page3.isEmpty());
+
+        // 空分页
+        PageResult<String> emptyPage = PageResult.empty();
+        assertFalse(emptyPage.hasPrevious());
+        assertFalse(emptyPage.hasNext());
+        assertTrue(emptyPage.isEmpty());
+
+        // 显式 setRecords 为 null / empty
+        emptyPage.setRecords(null);
+        assertTrue(emptyPage.isEmpty());
     }
 }

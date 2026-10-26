@@ -217,4 +217,39 @@ class DateTimeUtilTest {
         assertEquals(Duration.ZERO, DateTimeUtil.betweenDuration(null, t2));
         assertEquals(Period.ZERO, DateTimeUtil.betweenPeriod(null, d2));
     }
+
+    @Test
+    @DisplayName("验证工作日与时区/区间计算")
+    void shouldVerifyWorkdaysAndZoneHelpers() {
+        // 2026-10-23 是周五，2026-10-24 是周六，2026-10-25 是周日，2026-10-26 是周一
+        LocalDate friday = LocalDate.of(2026, 10, 23);
+        LocalDate saturday = LocalDate.of(2026, 10, 24);
+        LocalDate sunday = LocalDate.of(2026, 10, 25);
+        LocalDate monday = LocalDate.of(2026, 10, 26);
+
+        assertTrue(DateTimeUtil.isWorkday(friday));
+        assertFalse(DateTimeUtil.isWorkday(saturday));
+        assertFalse(DateTimeUtil.isWorkday(sunday));
+        assertTrue(DateTimeUtil.isWorkday(monday));
+        assertFalse(DateTimeUtil.isWorkday(null));
+
+        // 周五加 1 个工作日 -> 周一
+        assertEquals(monday, DateTimeUtil.plusWorkdays(friday, 1));
+        // 周一减 1 个工作日 -> 周五
+        assertEquals(friday, DateTimeUtil.plusWorkdays(monday, -1));
+
+        // 工作日跨度
+        assertEquals(1L, DateTimeUtil.betweenWorkdays(friday, monday));
+        assertEquals(-1L, DateTimeUtil.betweenWorkdays(monday, friday));
+
+        // 时区转换 (UTC+8 12:00 -> UTC 04:00)
+        LocalDateTime beijing = LocalDateTime.of(2026, 10, 26, 12, 0, 0);
+        LocalDateTime utc = DateTimeUtil.atZone(beijing, ZoneId.of("Asia/Shanghai"), ZoneId.of("UTC"));
+        assertEquals(4, utc.getHour());
+
+        // isBetween 闭区间判定
+        assertTrue(DateTimeUtil.isBetween(friday, friday, monday));
+        assertTrue(DateTimeUtil.isBetween(saturday, friday, monday));
+        assertFalse(DateTimeUtil.isBetween(LocalDate.of(2026, 10, 22), friday, monday));
+    }
 }

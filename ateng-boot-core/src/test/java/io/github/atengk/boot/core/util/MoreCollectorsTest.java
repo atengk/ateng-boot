@@ -72,4 +72,24 @@ class MoreCollectorsTest {
 
         assertEquals("1+2", map.get("count"));
     }
+
+    @Test
+    @DisplayName("distinctByKey: 支持依据属性去重")
+    void shouldFilterDistinctByKey() {
+        List<Item> items = Arrays.asList(
+                new Item("k1", "v1"),
+                new Item("k1", "v2"),
+                new Item("k2", "v3"),
+                new Item("k3", "v4")
+        );
+
+        List<Item> distinctItems = items.stream()
+                .filter(MoreCollectors.distinctByKey(Item::key))
+                .toList();
+
+        assertEquals(3, distinctItems.size());
+        assertEquals("v1", distinctItems.get(0).value());
+        assertEquals("v3", distinctItems.get(1).value());
+        assertEquals("v4", distinctItems.get(2).value());
+    }
 }

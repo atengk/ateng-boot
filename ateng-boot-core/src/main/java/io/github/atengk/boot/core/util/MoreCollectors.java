@@ -84,4 +84,17 @@ public final class MoreCollectors {
                 }
         );
     }
+
+    /**
+     * 根据指定的键提取函数生成用于 Stream.filter 的去重谓词断言
+     *
+     * @param keyExtractor 键提取函数
+     * @param <T>          元素泛型
+     * @return 去重断言 Predicate
+     */
+    public static <T> java.util.function.Predicate<T> distinctByKey(Function<? super T, ?> keyExtractor) {
+        Objects.requireNonNull(keyExtractor, "keyExtractor 不能为空");
+        java.util.Set<Object> seen = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        return t -> seen.add(keyExtractor.apply(t));
+    }
 }
