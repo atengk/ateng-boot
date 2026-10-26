@@ -45,7 +45,6 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-satoken</artifactId>
-            <optional>true</optional>
         </dependency>
 
         <!-- 可选依赖：Notification 企业协同通知底座（用于机器人卡片告警） -->
