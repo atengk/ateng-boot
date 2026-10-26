@@ -195,4 +195,5 @@
 - **工单操作与 CLI 避坑 (Issue Tracker & CLI)**：操作 GitHub Issues / PR 或编写 PowerShell 交互命令时，遵循 [docs/agents/issue-tracker.md](./docs/agents/issue-tracker.md)（含特殊字符引号包裹、`-F` 文件回写防截断及 Wayfinding 映射）。
 - **分诊标签规范 (Triage Labels)**：分诊或标记 Issue 状态时，遵循 [docs/agents/triage-labels.md](./docs/agents/triage-labels.md)（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。
 - **领域词汇与架构决策 (Domain Docs)**：探索代码库、设计新领域实体或查阅架构决策时，阅读全局映射 [CONTEXT-MAP.md](./CONTEXT-MAP.md) 及各模块独立的 `CONTEXT.md`，架构选型遵循 [docs/adr/](./docs/adr/)，规约详见 [docs/agents/domain.md](./docs/agents/domain.md)。
-- **模块孵化与扩展通用标准 (Modular Extensibility)**：孵化新模块或创建场景样例工程时，遵循 [docs/agents/modular-extensibility.md](./docs/agents/modular-extensibility.md)（“工业级五件套”与端到端纯内存自验门禁）。
+- **模块孵化与扩展通用标准 (Modular Extensibility)**：孵化新模块或创建场景样例工程时，遵循 [docs/agents/modular-extensibility.md](./docs/agents/modular-extensibility.md)（“工业级六件套”全场景对标与端到端纯内存自验门禁）。
+- **存量模块加固与全场景演进标准 (Module Hardening & Scenario Expansion)**：对既有模块进行深度体检、全场景对标、能力补齐与工业级重构时，遵循 [docs/agents/module-hardening-and-expansion.md](./docs/agents/module-hardening-and-expansion.md)（四阶段流水线门禁与企业级全场景矩阵）。
