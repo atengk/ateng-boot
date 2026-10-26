@@ -35,6 +35,15 @@ import java.util.function.Consumer;
  */
 public class SearchQueryBuilder {
 
+    /**
+     * 创建全新查询构造器实例
+     *
+     * @return 新的 SearchQueryBuilder 实例
+     */
+    public static SearchQueryBuilder create() {
+        return new SearchQueryBuilder();
+    }
+
     private final List<Query> mustQueries = new ArrayList<>();
     private final List<Query> filterQueries = new ArrayList<>();
     private final List<Query> shouldQueries = new ArrayList<>();
@@ -412,12 +421,38 @@ public class SearchQueryBuilder {
         for (float v : vector) {
             floatList.add(v);
         }
+        return knn(field, floatList, k, numCandidates);
+    }
+
+    /**
+     * 声明式 KNN 向量近邻检索（支持 List<Float> 集合）
+     *
+     * @param field         稠密向量字段名 (dense_vector)
+     * @param vector        查询向量集合
+     * @param k             召回 TopK 数量
+     * @param numCandidates 每个分片候选集大小 (通常 >= k)
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder knn(String field, List<Float> vector, int k, int numCandidates) {
+        if (!StringUtils.hasText(field) || vector == null || vector.isEmpty()) {
+            return this;
+        }
         knnSearches.add(KnnSearch.of(builder -> builder
                 .field(field)
-                .queryVector(floatList)
+                .queryVector(new ArrayList<>(vector))
                 .k((long) k)
                 .numCandidates((long) numCandidates)
         ));
+        return this;
+    }
+
+    /**
+     * 全量匹配检索 (Match All)
+     *
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchAll() {
+        this.mustQueries.add(Query.of(q -> q.matchAll(m -> m)));
         return this;
     }
 
@@ -472,6 +507,18 @@ public class SearchQueryBuilder {
     public SearchQueryBuilder orderByScore() {
         sorts.add(SortOptions.of(s -> s.score(sc -> sc.order(SortOrder.Desc))));
         return this;
+    }
+
+    /**
+     * 按地理距离升序排序（默认最近优先）
+     *
+     * @param field 地理坐标字段
+     * @param lat   中心点纬度
+     * @param lon   中心点经度
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder orderByGeoDistance(String field, double lat, double lon) {
+        return orderByGeoDistance(field, lat, lon, SortOrder.Asc);
     }
 
     /**

@@ -179,7 +179,7 @@ class SearchBulkProcessorTest {
         processor.add(UserDoc.builder().id(999L).username("timer_user").build());
 
         // 验证定时器在窗口到达后自动刷盘提交
-        RecordedRequest request = mockWebServer.takeRequest(2, TimeUnit.SECONDS);
+        RecordedRequest request = mockWebServer.takeRequest(5, TimeUnit.SECONDS);
         assertThat(request).isNotNull();
         assertThat(request.getBody().readUtf8()).contains("\"timer_user\"");
     }

@@ -23,6 +23,11 @@ public @interface SearchIndex {
     String value() default "";
 
     /**
+     * 索引名称或 SpEL 动态表达式（同 value）
+     */
+    String name() default "";
+
+    /**
      * 主分片数（默认 1）
      */
     int shards() default 1;

@@ -61,12 +61,14 @@ public final class SearchMetadataHelper {
             return "";
         }
         SearchIndex searchIndex = clazz.getAnnotation(SearchIndex.class);
-        if (searchIndex != null && StringUtils.hasText(searchIndex.value())) {
-            String value = searchIndex.value().trim();
-            if (value.contains("#{")) {
-                return evaluateSpel(value);
+        if (searchIndex != null) {
+            String value = StringUtils.hasText(searchIndex.name()) ? searchIndex.name().trim() : searchIndex.value().trim();
+            if (StringUtils.hasText(value)) {
+                if (value.contains("#{")) {
+                    return evaluateSpel(value);
+                }
+                return value;
             }
-            return value;
         }
         return INDEX_NAME_CACHE.computeIfAbsent(clazz, k -> toSnakeCase(k.getSimpleName()));
     }

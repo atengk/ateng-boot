@@ -1,0 +1,41 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-search
+
+ateng:
+  boot:
+    search:
+      enabled: true
+      engine: elasticsearch
+      uris:
+        - http://127.0.0.1:${search.mock.port:9200}
+      connection-timeout: 2s
+      socket-timeout: 5s
+      bulk:
+        enabled: true
+        batch-size: 50
+        flush-interval: 500ms
+        buffer-size: 1MB
+      multi-tenancy:
+        enabled: true
+        column: tenantId
+      pagination:
+        max-result-window: 10000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,metrics,info"
+  endpoint:
+    health:
+      show-details: always
+  health:
+    search:
+      enabled: true
+  metrics:
+    enable:
+      search: true

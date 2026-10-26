@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
@@ -24,6 +25,7 @@ import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
 import io.github.atengk.boot.search.exception.SearchPaginationExceededException;
 import io.github.atengk.boot.search.exception.SearchVersionConflictException;
+import io.github.atengk.boot.search.metrics.SearchMetrics;
 import io.github.atengk.boot.search.model.OccVersion;
 import io.github.atengk.boot.search.model.SearchBulkFailure;
 import io.github.atengk.boot.search.model.SearchBulkResult;
@@ -63,15 +65,29 @@ public class SearchTemplate {
     private final SearchEngineClient searchEngineClient;
     private final SearchIndexOperations searchIndexOperations;
     private final AtengSearchProperties properties;
+    private SearchMetrics searchMetrics;
 
     public SearchTemplate(SearchEngineClient searchEngineClient) {
-        this(searchEngineClient, new AtengSearchProperties());
+        this(searchEngineClient, new AtengSearchProperties(), null);
     }
 
     public SearchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties) {
+        this(searchEngineClient, properties, null);
+    }
+
+    public SearchTemplate(SearchEngineClient searchEngineClient, AtengSearchProperties properties, SearchMetrics searchMetrics) {
         this.searchEngineClient = Objects.requireNonNull(searchEngineClient, "searchEngineClient must not be null");
         this.properties = properties != null ? properties : new AtengSearchProperties();
+        this.searchMetrics = searchMetrics;
         this.searchIndexOperations = new SearchIndexOperations(this);
+    }
+
+    public SearchMetrics getSearchMetrics() {
+        return this.searchMetrics;
+    }
+
+    public void setSearchMetrics(SearchMetrics searchMetrics) {
+        this.searchMetrics = searchMetrics;
     }
 
     /**
@@ -126,6 +142,29 @@ public class SearchTemplate {
     }
 
     // ==================== 1. 文档索引 (Index / Replace) ====================
+
+    /**
+     * 保存（新增或全量替换）文档（语义等价于 {@link #index(Object)}）
+     *
+     * @param document 待索引的文档实体
+     * @param <T>      实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String save(T document) {
+        return index(document);
+    }
+
+    /**
+     * 保存（新增或全量替换）文档，支持基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param document   待索引的文档实体
+     * @param occVersion 期望的 OCC 版本元数据
+     * @param <T>        实体类型
+     * @return 索引后的文档 ID
+     */
+    public <T> String save(T document, OccVersion occVersion) {
+        return index(document, occVersion);
+    }
 
     /**
      * 索引（新增或全量替换）文档
@@ -452,7 +491,7 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public boolean update(String index, String id, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, id, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, id, null, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -513,6 +552,78 @@ public class SearchTemplate {
     }
 
     /**
+     * 局部更新文档字段（从实体类自动解析索引名，支持指定路由键）
+     *
+     * @param clazz      实体类类型
+     * @param id         文档 ID
+     * @param routing    分片路由键
+     * @param partialDoc 局部变更字段键值对
+     * @return 是否成功更新
+     */
+    public boolean update(Class<?> clazz, String id, String routing, Map<String, Object> partialDoc) {
+        return update(clazz, id, routing, partialDoc, false, null);
+    }
+
+    /**
+     * 局部更新文档字段（从实体类自动解析索引名，支持指定路由键与基于 OccVersion 的乐观并发控制）
+     *
+     * @param clazz       实体类类型
+     * @param id          文档 ID
+     * @param routing     分片路由键
+     * @param partialDoc  局部变更字段键值对
+     * @param occVersion  期望的 OCC 版本元数据
+     * @return 是否成功更新
+     */
+    public boolean update(Class<?> clazz, String id, String routing, Map<String, Object> partialDoc, OccVersion occVersion) {
+        return update(clazz, id, routing, partialDoc, false, occVersion);
+    }
+
+    /**
+     * 局部更新文档字段（从实体类自动解析索引名，支持指定路由键、docAsUpsert 与 OCC）
+     *
+     * @param clazz       实体类类型
+     * @param id          文档 ID
+     * @param routing     分片路由键
+     * @param partialDoc  局部变更字段键值对
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @return 是否成功更新
+     */
+    public boolean update(Class<?> clazz, String id, String routing, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return update(index, id, routing, partialDoc, docAsUpsert, occVersion);
+    }
+
+    /**
+     * 局部更新文档字段（支持指定路由键）
+     *
+     * @param index      目标索引名
+     * @param id         文档 ID
+     * @param routing    分片路由键
+     * @param partialDoc 局部变更字段键值对
+     * @return 是否成功更新
+     */
+    public boolean update(String index, String id, String routing, Map<String, Object> partialDoc) {
+        return update(index, id, routing, partialDoc, false, null);
+    }
+
+    /**
+     * 局部更新文档字段（支持指定路由键），支持 docAsUpsert 与基于 OccVersion 的乐观并发控制 (OCC)
+     *
+     * @param index       目标索引名
+     * @param id          文档 ID
+     * @param routing     分片路由键
+     * @param partialDoc  局部变更字段键值对
+     * @param docAsUpsert 若文档不存在是否直接写入
+     * @param occVersion  期望的 OCC 版本元数据
+     * @return 是否成功更新
+     */
+    public boolean update(String index, String id, String routing, Map<String, Object> partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+        return doUpdate(index, id, routing, partialDoc, docAsUpsert, occVersion);
+    }
+
+    /**
      * 局部更新文档实体字段
      *
      * @param index       目标索引名
@@ -555,7 +666,7 @@ public class SearchTemplate {
      * @return 是否成功更新
      */
     public <T> boolean update(String index, String id, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
-        return doUpdate(index, id, partialDoc, docAsUpsert, occVersion);
+        return doUpdate(index, id, null, partialDoc, docAsUpsert, occVersion);
     }
 
     /**
@@ -614,7 +725,7 @@ public class SearchTemplate {
         return update(index, documentId, partialDoc, docAsUpsert, occVersion);
     }
 
-    private <T> boolean doUpdate(String index, String id, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
+    private <T> boolean doUpdate(String index, String id, String routing, T partialDoc, boolean docAsUpsert, OccVersion occVersion) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
@@ -623,7 +734,7 @@ public class SearchTemplate {
         }
         Objects.requireNonNull(partialDoc, "partialDoc must not be null");
 
-        String routing = SearchMetadataHelper.resolveRouting(partialDoc);
+        String resolvedRouting = StringUtils.hasText(routing) ? routing : SearchMetadataHelper.resolveRouting(partialDoc);
 
         try {
             UpdateResponse<Void> response = getClient().update(builder -> {
@@ -631,8 +742,8 @@ public class SearchTemplate {
                         .id(id)
                         .doc(partialDoc)
                         .docAsUpsert(docAsUpsert);
-                if (StringUtils.hasText(routing)) {
-                    builder.routing(routing);
+                if (StringUtils.hasText(resolvedRouting)) {
+                    builder.routing(resolvedRouting);
                 }
                 if (occVersion != null && occVersion.isSpecified()) {
                     builder.ifSeqNo(occVersion.seqNo()).ifPrimaryTerm(occVersion.primaryTerm());
@@ -1027,6 +1138,13 @@ public class SearchTemplate {
      * @return 批量操作结果模型
      */
     public SearchBulkResult executeBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
+        if (searchMetrics != null) {
+            return searchMetrics.recordBulk(() -> doExecuteBulk(bulkRequest, totalItems, lenient));
+        }
+        return doExecuteBulk(bulkRequest, totalItems, lenient);
+    }
+
+    private SearchBulkResult doExecuteBulk(BulkRequest bulkRequest, int totalItems, boolean lenient) {
         // 1. 执行 Elasticsearch 批量提交
         try {
             BulkResponse response = getClient().bulk(bulkRequest);
@@ -1239,6 +1357,14 @@ public class SearchTemplate {
 
     private <T> SearchResponse<T> doSearch(String index, SearchQuery query, Class<T> clazz,
                                           boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
+        if (searchMetrics != null) {
+            return searchMetrics.recordQuery(() -> executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize));
+        }
+        return executeDoSearch(index, query, clazz, isSearchAfter, sortValues, overrideSize);
+    }
+
+    private <T> SearchResponse<T> executeDoSearch(String index, SearchQuery query, Class<T> clazz,
+                                                 boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
         try {
             // 组装多租户隐式过滤
             Query finalQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
@@ -1389,11 +1515,15 @@ public class SearchTemplate {
         if (response != null && response.hits() != null && response.hits().total() != null) {
             total = response.hits().total().value();
         }
+        Map<String, Aggregate> aggregations = (response != null && response.aggregations() != null)
+                ? response.aggregations()
+                : Collections.emptyMap();
         return SearchPage.<T>builder()
                 .hits(hits)
                 .total(total)
                 .pageNum(query.getPageNum())
                 .pageSize(query.getSize())
+                .aggregations(aggregations)
                 .build();
     }
 

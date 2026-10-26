@@ -1,5 +1,6 @@
 package io.github.atengk.boot.search.model;
 
+import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
 import io.github.atengk.boot.core.model.PageResult;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -9,6 +10,7 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -48,6 +50,21 @@ public class SearchPage<T> implements Serializable {
      * 每页大小
      */
     private int pageSize;
+
+    /**
+     * 聚合度量结果集合（Key 为聚合名称，Value 为聚合载荷 Aggregate）
+     */
+    @Builder.Default
+    private Map<String, Aggregate> aggregations = Collections.emptyMap();
+
+    /**
+     * 获取命中总记录数（等价于 getTotal）
+     *
+     * @return 总命中数
+     */
+    public long getTotalHits() {
+        return this.total;
+    }
 
     /**
      * 提取纯文档实体列表

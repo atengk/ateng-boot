@@ -89,6 +89,15 @@ public class SearchHit<T> implements Serializable {
     }
 
     /**
+     * 获取文档实体本体（等价于 getContent / getSource）
+     *
+     * @return 文档实体
+     */
+    public T getData() {
+        return this.content;
+    }
+
+    /**
      * 获取检索高亮匹配片段集合（等价于 getHighlightFields）
      *
      * @return 高亮片段字典

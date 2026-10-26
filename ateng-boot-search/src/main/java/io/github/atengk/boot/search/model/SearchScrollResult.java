@@ -56,6 +56,15 @@ public class SearchScrollResult<T> implements Serializable {
     private boolean hasMore;
 
     /**
+     * 是否还有下一页数据（等价于 isHasMore）
+     *
+     * @return true 表示还有后续数据
+     */
+    public boolean hasNext() {
+        return this.hasMore;
+    }
+
+    /**
      * 提取纯文档实体列表
      *
      * @return 文档实体列表

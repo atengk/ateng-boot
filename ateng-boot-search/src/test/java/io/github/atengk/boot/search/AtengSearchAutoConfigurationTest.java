@@ -83,6 +83,25 @@ class AtengSearchAutoConfigurationTest {
         assertThat(after.name()).contains("org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration");
     }
 
+    @Test
+    @DisplayName("测试在存在 Actuator 与 MeterRegistry 环境下成功装配 SearchHealthIndicator 与 SearchMetrics")
+    void testActuatorAndMetricsAutoConfiguration() {
+        contextRunner
+                .withUserConfiguration(MetricsConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.search.actuator.SearchHealthIndicator.class);
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.search.metrics.SearchMetrics.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MetricsConfiguration {
+        @Bean
+        public io.micrometer.core.instrument.MeterRegistry meterRegistry() {
+            return new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomSearchConfiguration {
 
