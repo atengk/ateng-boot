@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.server;
 import io.github.atengk.boot.tcp.codec.TcpFramingDecoderFactory;
 import io.github.atengk.boot.tcp.codec.TcpPacketFilterHandler;
 import io.github.atengk.boot.tcp.codec.TcpPayloadCodecHandler;
+import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
@@ -42,6 +43,7 @@ public class TcpServer implements SmartLifecycle {
 
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
+    private final TcpRequestCorrelationManager correlationManager;
     private final List<TcpPacketFilter> packetFilters;
     private final List<TcpChannelCustomizer> channelCustomizers;
     private final ApplicationEventPublisher eventPublisher;
@@ -57,8 +59,18 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
+        this(properties, sessionManager, null, packetFilters, channelCustomizers, eventPublisher);
+    }
+
+    public TcpServer(TcpServerProperties properties,
+                     TcpSessionManager sessionManager,
+                     TcpRequestCorrelationManager correlationManager,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher) {
         this.properties = properties;
         this.sessionManager = sessionManager;
+        this.correlationManager = correlationManager;
         this.eventPublisher = eventPublisher;
 
         if (packetFilters != null && !packetFilters.isEmpty()) {
@@ -91,7 +103,7 @@ public class TcpServer implements SmartLifecycle {
                 ? new NioEventLoopGroup(properties.getWorkerThreads())
                 : new NioEventLoopGroup();
 
-        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, eventPublisher);
+        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, correlationManager, eventPublisher);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
 
         try {
@@ -181,6 +193,9 @@ public class TcpServer implements SmartLifecycle {
         // 2. 优雅注销所有存量连接
         try {
             sessionManager.closeAllSessions(CloseReason.SERVER_SHUTDOWN);
+            if (correlationManager != null) {
+                correlationManager.close();
+            }
         } catch (Exception ex) {
             log.warn("注销存量客户端会话异常", ex);
         }
@@ -230,5 +245,9 @@ public class TcpServer implements SmartLifecycle {
 
     public TcpSessionManager getSessionManager() {
         return sessionManager;
+    }
+
+    public TcpRequestCorrelationManager getCorrelationManager() {
+        return correlationManager;
     }
 }

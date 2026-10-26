@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.config;
 
+import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
 import io.github.atengk.boot.tcp.server.TcpServer;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
@@ -39,17 +40,19 @@ public class TcpServerAutoConfiguration {
     @ConditionalOnMissingBean
     public TcpServer tcpServer(AtengTcpProperties properties,
                                TcpSessionManager sessionManager,
+                               ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider,
                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
                                ApplicationEventPublisher eventPublisher) {
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
-        return new TcpServer(properties.getServer(), sessionManager, filters, customizers, eventPublisher);
+        return new TcpServer(properties.getServer(), sessionManager, correlationManagerProvider.getIfAvailable(), filters, customizers, eventPublisher);
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public TcpServerTemplate tcpServerTemplate(TcpSessionManager sessionManager) {
-        return new TcpServerTemplate(sessionManager);
+    public TcpServerTemplate tcpServerTemplate(TcpSessionManager sessionManager,
+                                               ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider) {
+        return new TcpServerTemplate(sessionManager, correlationManagerProvider.getIfAvailable());
     }
 }

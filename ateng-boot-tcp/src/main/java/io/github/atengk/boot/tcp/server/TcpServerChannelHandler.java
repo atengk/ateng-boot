@@ -1,6 +1,7 @@
 package io.github.atengk.boot.tcp.server;
 
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.event.TcpSessionIdleEvent;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
@@ -27,13 +28,22 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
 
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
+    private final TcpRequestCorrelationManager correlationManager;
     private final ApplicationEventPublisher eventPublisher;
 
     public TcpServerChannelHandler(TcpServerProperties properties,
-                                  TcpSessionManager sessionManager,
-                                  ApplicationEventPublisher eventPublisher) {
+                                   TcpSessionManager sessionManager,
+                                   ApplicationEventPublisher eventPublisher) {
+        this(properties, sessionManager, null, eventPublisher);
+    }
+
+    public TcpServerChannelHandler(TcpServerProperties properties,
+                                   TcpSessionManager sessionManager,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   ApplicationEventPublisher eventPublisher) {
         this.properties = properties;
         this.sessionManager = sessionManager;
+        this.correlationManager = correlationManager;
         this.eventPublisher = eventPublisher;
     }
 
@@ -61,6 +71,14 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
         if (session != null) {
             session.touch();
         }
+
+        // 全双工 RPC 响应优先拦截唤醒
+        if (correlationManager != null && correlationManager.hasPendingRequests()) {
+            if (correlationManager.tryComplete(msg)) {
+                return;
+            }
+        }
+
         super.channelRead(ctx, msg);
     }
 
@@ -99,8 +117,7 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
         if (session != null) {
             session.setCloseReason(CloseReason.ERROR);
         }
-        log.warn("TCP 网络连接发生异常，即将断开连接: remote={}, error={}",
-                ctx.channel().remoteAddress(), cause.getMessage());
+        log.error("TCP 连接通道出现异常: remote={}, error={}", ctx.channel().remoteAddress(), cause.getMessage(), cause);
         ctx.close();
     }
 }

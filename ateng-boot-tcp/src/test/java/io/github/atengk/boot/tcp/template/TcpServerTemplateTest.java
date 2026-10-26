@@ -143,4 +143,51 @@ class TcpServerTemplateTest {
 
         assertThat(template.getActiveConnections()).isEqualTo(1);
     }
+
+    @Test
+    @DisplayName("验证服务端发起全双工 request 同步等待与异步响应兑现")
+    void testServerRequest() throws Exception {
+        TcpSessionManager manager = new TcpSessionManager();
+        io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager correlationManager =
+                new io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager, correlationManager);
+
+        EmbeddedChannel channel = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-001", channel);
+        manager.register(session);
+
+        java.util.concurrent.CompletableFuture<io.github.atengk.boot.tcp.model.TcpPacket> future =
+                template.requestAsync("SES-001", "Get Status", java.time.Duration.ofSeconds(5));
+
+        Object outbound = channel.readOutbound();
+        assertThat(outbound).isInstanceOf(io.github.atengk.boot.tcp.model.TcpPacket.class);
+        io.github.atengk.boot.tcp.model.TcpPacket reqPacket = (io.github.atengk.boot.tcp.model.TcpPacket) outbound;
+        assertThat(reqPacket.getRequestId()).isNotNull();
+
+        // 模拟对端回包
+        io.github.atengk.boot.tcp.model.TcpPacket respPacket =
+                io.github.atengk.boot.tcp.model.TcpPacket.of("STATUS", reqPacket.getRequestId(), TcpPayload.of("OK"));
+        correlationManager.complete(reqPacket.getRequestId(), respPacket);
+
+        io.github.atengk.boot.tcp.model.TcpPacket response = future.get(1, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(response).isNotNull();
+        assertThat(response.getPayload().asString()).isEqualTo("OK");
+
+        correlationManager.close();
+    }
+
+    @Test
+    @DisplayName("验证未配置相关性管理器时发起 request 抛出明确异常")
+    void testRequestWithoutCorrelationManager() {
+        TcpSessionManager manager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager);
+
+        EmbeddedChannel channel = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-001", channel);
+        manager.register(session);
+
+        assertThatThrownBy(() -> template.request("SES-001", "ping", java.time.Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未配置 TcpRequestCorrelationManager");
+    }
 }
