@@ -55,23 +55,27 @@ public final class TcpFramingDecoderFactory {
         }
     }
 
-    private static ChannelHandler createDelimiterDecoder(TcpFramingProperties properties, int maxFrameLength) {
-        String delimiter = properties.getDelimiter();
-        byte[] delimiterBytes;
-        if (delimiter == null || delimiter.isEmpty()) {
-            delimiterBytes = "\r\n".getBytes(StandardCharsets.UTF_8);
-        } else if (delimiter.startsWith("0x") || delimiter.startsWith("0X")) {
-            delimiterBytes = ChecksumUtil.fromHexString(delimiter);
-        } else {
-            // 解析常见转义字符如 "\r\n"
-            String unescaped = delimiter
-                    .replace("\\r", "\r")
-                    .replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                    .replace("\\0", "\0");
-            delimiterBytes = unescaped.getBytes(StandardCharsets.UTF_8);
+    public static byte[] resolveDelimiterBytes(TcpFramingProperties properties) {
+        if (properties == null) {
+            return "\r\n".getBytes(StandardCharsets.UTF_8);
         }
+        String delimiter = properties.getDelimiter();
+        if (delimiter == null || delimiter.isEmpty()) {
+            return "\r\n".getBytes(StandardCharsets.UTF_8);
+        }
+        if (delimiter.startsWith("0x") || delimiter.startsWith("0X")) {
+            return ChecksumUtil.fromHexString(delimiter);
+        }
+        String unescaped = delimiter
+                .replace("\\r", "\r")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\0", "\0");
+        return unescaped.getBytes(StandardCharsets.UTF_8);
+    }
 
+    private static ChannelHandler createDelimiterDecoder(TcpFramingProperties properties, int maxFrameLength) {
+        byte[] delimiterBytes = resolveDelimiterBytes(properties);
         ByteBuf delimBuf = Unpooled.copiedBuffer(delimiterBytes);
         return new DelimiterBasedFrameDecoder(maxFrameLength, properties.isStripDelimiter(), delimBuf);
     }

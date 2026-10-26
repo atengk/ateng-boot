@@ -6,6 +6,7 @@ import io.github.atengk.boot.tcp.codec.TcpPacketFilterHandler;
 import io.github.atengk.boot.tcp.codec.TcpPayloadCodecHandler;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
@@ -46,6 +47,7 @@ public class TcpClient implements SmartLifecycle {
     private final List<TcpChannelCustomizer> channelCustomizers;
     private final ApplicationEventPublisher eventPublisher;
     private final TcpRequestCorrelationManager correlationManager;
+    private final TcpDispatcher dispatcher;
 
     private EventLoopGroup workerGroup;
     private Bootstrap bootstrap;
@@ -60,9 +62,19 @@ public class TcpClient implements SmartLifecycle {
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher,
                      TcpRequestCorrelationManager correlationManager) {
+        this(properties, packetFilters, channelCustomizers, eventPublisher, correlationManager, null);
+    }
+
+    public TcpClient(TcpClientProperties properties,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher) {
         this.properties = properties;
         this.eventPublisher = eventPublisher;
         this.correlationManager = correlationManager;
+        this.dispatcher = dispatcher;
 
         if (packetFilters != null && !packetFilters.isEmpty()) {
             List<TcpPacketFilter> sorted = new ArrayList<>(packetFilters);
@@ -91,7 +103,7 @@ public class TcpClient implements SmartLifecycle {
         bootstrap = new Bootstrap();
 
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
-        TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, eventPublisher);
+        TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher);
 
         bootstrap.group(workerGroup)
                 .channel(NioSocketChannel.class)
@@ -109,7 +121,11 @@ public class TcpClient implements SmartLifecycle {
                             pipeline.addLast("idleStateHandler", new IdleStateHandler(0, interval, 0));
                         }
 
-                        // 2. 粘包拆包解码器
+                        // 2. 粘包拆包解码器与对称出站定界符属性绑定
+                        if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
+                            byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
+                            ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
+                        }
                         ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
                         if (frameDecoder != null) {
                             pipeline.addLast("frameDecoder", frameDecoder);
@@ -327,6 +343,10 @@ public class TcpClient implements SmartLifecycle {
 
     public TcpRequestCorrelationManager getCorrelationManager() {
         return correlationManager;
+    }
+
+    public TcpDispatcher getDispatcher() {
+        return dispatcher;
     }
 
     @Override

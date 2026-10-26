@@ -7,6 +7,7 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 
 import java.nio.charset.StandardCharsets;
@@ -25,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 public class TcpPayloadCodecHandler extends ChannelDuplexHandler {
 
     public static final TcpPayloadCodecHandler INSTANCE = new TcpPayloadCodecHandler();
+    public static final AttributeKey<byte[]> DELIMITER_KEY = AttributeKey.valueOf("ateng.tcp.framing.delimiter");
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -45,29 +47,48 @@ public class TcpPayloadCodecHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        ByteBuf buf = null;
         if (msg instanceof TcpPayload) {
             TcpPayload payload = (TcpPayload) msg;
-            ByteBuf buf = ctx.alloc().buffer(payload.length());
+            buf = ctx.alloc().buffer(payload.length() + 8);
             buf.writeBytes(payload.asBytes());
-            ctx.write(buf, promise);
         } else if (msg instanceof TcpPacket) {
             TcpPacket packet = (TcpPacket) msg;
             TcpPayload payload = packet.getPayload();
-            ByteBuf buf = ctx.alloc().buffer(payload.length());
+            buf = ctx.alloc().buffer(payload.length() + 8);
             buf.writeBytes(payload.asBytes());
-            ctx.write(buf, promise);
         } else if (msg instanceof byte[]) {
             byte[] bytes = (byte[]) msg;
-            ByteBuf buf = ctx.alloc().buffer(bytes.length);
+            buf = ctx.alloc().buffer(bytes.length + 8);
             buf.writeBytes(bytes);
-            ctx.write(buf, promise);
         } else if (msg instanceof String) {
             byte[] bytes = ((String) msg).getBytes(StandardCharsets.UTF_8);
-            ByteBuf buf = ctx.alloc().buffer(bytes.length);
+            buf = ctx.alloc().buffer(bytes.length + 8);
             buf.writeBytes(bytes);
+        }
+
+        if (buf != null) {
+            // 对称性定界符守卫：若通道挂载了定界符分帧且出站末尾未包含定界符，自动补齐
+            byte[] delimiter = ctx.channel().attr(DELIMITER_KEY).get();
+            if (delimiter != null && delimiter.length > 0 && !endsWith(buf, delimiter)) {
+                buf.writeBytes(delimiter);
+            }
             ctx.write(buf, promise);
         } else {
             ctx.write(msg, promise);
         }
+    }
+
+    private static boolean endsWith(ByteBuf buf, byte[] delimiter) {
+        if (buf.readableBytes() < delimiter.length) {
+            return false;
+        }
+        int writerIndex = buf.writerIndex();
+        for (int i = 0; i < delimiter.length; i++) {
+            if (buf.getByte(writerIndex - delimiter.length + i) != delimiter[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 }

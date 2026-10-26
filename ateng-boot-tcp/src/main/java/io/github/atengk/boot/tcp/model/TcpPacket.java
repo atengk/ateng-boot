@@ -30,6 +30,11 @@ public class TcpPacket implements Serializable {
     private String command;
 
     /**
+     * 设备唯一硬件标识（如 SN、IMEI、MAC，用于路由绑定与逆向检索，可为空）
+     */
+    private String deviceId;
+
+    /**
      * 消息关联流水号（用于全双工请求-响应 RPC 闭环匹配与链路追踪，可为空）
      */
     private String requestId;
@@ -51,11 +56,16 @@ public class TcpPacket implements Serializable {
         this.headers = new LinkedHashMap<>();
     }
 
-    public TcpPacket(String command, String requestId, TcpPayload payload, Map<String, Object> headers) {
+    public TcpPacket(String command, String deviceId, String requestId, TcpPayload payload, Map<String, Object> headers) {
         this.command = command;
+        this.deviceId = deviceId;
         this.requestId = requestId;
         this.payload = payload != null ? payload : TcpPayload.empty();
         this.headers = headers != null ? headers : new LinkedHashMap<>();
+    }
+
+    public TcpPacket(String command, String requestId, TcpPayload payload, Map<String, Object> headers) {
+        this(command, null, requestId, payload, headers);
     }
 
     /**
@@ -93,6 +103,69 @@ public class TcpPacket implements Serializable {
                 .requestId(requestId)
                 .payload(payload)
                 .build();
+    }
+
+    /**
+     * 快速构建 JSON 载荷数据包
+     *
+     * @param object 待序列化对象
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofJson(Object object) {
+        return of(TcpPayload.fromJson(object));
+    }
+
+    /**
+     * 快速构建带命令字的 JSON 载荷数据包
+     *
+     * @param command 业务命令字
+     * @param object  待序列化对象
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofJson(String command, Object object) {
+        return of(command, TcpPayload.fromJson(object));
+    }
+
+    /**
+     * 快速构建纯文本数据包
+     *
+     * @param text 文本数据
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofText(String text) {
+        return of(TcpPayload.of(text));
+    }
+
+    /**
+     * 快速构建带命令字的纯文本数据包
+     *
+     * @param command 业务命令字
+     * @param text    文本数据
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofText(String command, String text) {
+        return of(command, TcpPayload.of(text));
+    }
+
+    /**
+     * 快速构建原始字节数组数据包
+     *
+     * @param bytes 字节数据
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofBytes(byte[] bytes) {
+        return of(TcpPayload.of(bytes));
+    }
+
+    /**
+     * 快速构建带命令字的原始字节数组数据包
+     *
+     * @param command 业务命令字
+     * @param bytes   字节数据
+     * @return TcpPacket 实例
+     */
+    public static TcpPacket ofBytes(String command, byte[] bytes) {
+        return of(command, TcpPayload.of(bytes));
     }
 
     /**

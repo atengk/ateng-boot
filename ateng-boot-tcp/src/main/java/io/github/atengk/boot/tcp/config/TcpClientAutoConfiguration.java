@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.config;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
 import io.github.atengk.boot.tcp.template.TcpClientTemplate;
@@ -35,10 +36,11 @@ public class TcpClientAutoConfiguration {
                                TcpRequestCorrelationManager correlationManager,
                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
+                               ObjectProvider<TcpDispatcher> dispatcherProvider,
                                ApplicationEventPublisher eventPublisher) {
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
-        return new TcpClient(properties.getClient(), filters, customizers, eventPublisher, correlationManager);
+        return new TcpClient(properties.getClient(), filters, customizers, eventPublisher, correlationManager, dispatcherProvider.getIfAvailable());
     }
 
     @Bean

@@ -6,6 +6,7 @@ import io.github.atengk.boot.tcp.codec.TcpPayloadCodecHandler;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
@@ -44,6 +45,7 @@ public class TcpServer implements SmartLifecycle {
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
+    private final TcpDispatcher dispatcher;
     private final List<TcpPacketFilter> packetFilters;
     private final List<TcpChannelCustomizer> channelCustomizers;
     private final ApplicationEventPublisher eventPublisher;
@@ -59,7 +61,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, null, packetFilters, channelCustomizers, eventPublisher);
+        this(properties, sessionManager, null, null, packetFilters, channelCustomizers, eventPublisher);
     }
 
     public TcpServer(TcpServerProperties properties,
@@ -68,9 +70,20 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
+        this(properties, sessionManager, correlationManager, null, packetFilters, channelCustomizers, eventPublisher);
+    }
+
+    public TcpServer(TcpServerProperties properties,
+                     TcpSessionManager sessionManager,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher) {
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
+        this.dispatcher = dispatcher;
         this.eventPublisher = eventPublisher;
 
         if (packetFilters != null && !packetFilters.isEmpty()) {
@@ -103,7 +116,7 @@ public class TcpServer implements SmartLifecycle {
                 ? new NioEventLoopGroup(properties.getWorkerThreads())
                 : new NioEventLoopGroup();
 
-        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, correlationManager, eventPublisher);
+        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, correlationManager, dispatcher, eventPublisher);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
 
         try {
@@ -127,7 +140,11 @@ public class TcpServer implements SmartLifecycle {
                                         new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
                             }
 
-                            // 2. 粘包拆包解码器
+                            // 2. 粘包拆包解码器与对称出站定界符属性绑定
+                            if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
+                                byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
+                                ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
+                            }
                             ChannelHandler frameDecoder = TcpFramingDecoderFactory.createFrameDecoder(properties.getFraming());
                             if (frameDecoder != null) {
                                 pipeline.addLast("frameDecoder", frameDecoder);
@@ -249,5 +266,9 @@ public class TcpServer implements SmartLifecycle {
 
     public TcpRequestCorrelationManager getCorrelationManager() {
         return correlationManager;
+    }
+
+    public TcpDispatcher getDispatcher() {
+        return dispatcher;
     }
 }

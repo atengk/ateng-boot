@@ -5,8 +5,10 @@ import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
+import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -34,15 +36,25 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
     private final TcpClient client;
     private final TcpClientProperties properties;
     private final TcpRequestCorrelationManager correlationManager;
+    private final TcpDispatcher dispatcher;
     private final ApplicationEventPublisher eventPublisher;
 
     public TcpClientChannelHandler(TcpClient client,
                                    TcpClientProperties properties,
                                    TcpRequestCorrelationManager correlationManager,
                                    ApplicationEventPublisher eventPublisher) {
+        this(client, properties, correlationManager, null, eventPublisher);
+    }
+
+    public TcpClientChannelHandler(TcpClient client,
+                                   TcpClientProperties properties,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   TcpDispatcher dispatcher,
+                                   ApplicationEventPublisher eventPublisher) {
         this.client = client;
         this.properties = properties;
         this.correlationManager = correlationManager;
+        this.dispatcher = dispatcher;
         this.eventPublisher = eventPublisher;
     }
 
@@ -80,6 +92,15 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
         if (isHeartbeatResponse(msg)) {
             log.debug("收到 TCP 服务端返回的心跳响应包: {}", msg);
             return;
+        }
+
+        // 3. 业务命令字路由分发消费
+        if (dispatcher != null && session != null) {
+            TcpPacket packet = toTcpPacket(msg);
+            if (packet != null) {
+                dispatcher.dispatch(session, packet);
+                return;
+            }
         }
 
         super.channelRead(ctx, msg);
@@ -139,5 +160,21 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
             return "PONG".equalsIgnoreCase(((String) msg).trim());
         }
         return false;
+    }
+
+    private TcpPacket toTcpPacket(Object msg) {
+        if (msg instanceof TcpPacket p) {
+            return p;
+        }
+        if (msg instanceof TcpPayload payload) {
+            return TcpPacket.of(payload);
+        }
+        if (msg instanceof byte[] bytes) {
+            return TcpPacket.ofBytes(bytes);
+        }
+        if (msg instanceof String str) {
+            return TcpPacket.ofText(str);
+        }
+        return null;
     }
 }

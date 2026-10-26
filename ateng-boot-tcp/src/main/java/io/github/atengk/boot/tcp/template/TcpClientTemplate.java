@@ -1,6 +1,7 @@
 package io.github.atengk.boot.tcp.template;
 
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.exception.TcpException;
@@ -95,6 +96,63 @@ public class TcpClientTemplate {
         } catch (TimeoutException te) {
             throw new TcpTimeoutException("TCP 请求调用超时: timeout=" + timeout, te);
         }
+    }
+
+    /**
+     * 发起全双工同步请求并等待强类型对端应答（使用默认 requestTimeout）
+     *
+     * @param payload      请求报文
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(Object payload, Class<T> responseType) {
+        return request(payload, responseType, null);
+    }
+
+    /**
+     * 发起全双工同步请求并在指定超时窗口内等待强类型对端应答
+     *
+     * @param payload      请求报文
+     * @param responseType 响应目标类型
+     * @param timeout      超时时长
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(Object payload, Class<T> responseType, Duration timeout) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        TcpPacket responsePacket = timeout != null ? request(payload, timeout) : request(payload);
+        if (responsePacket == null || responsePacket.getPayload() == null) {
+            return null;
+        }
+        if (TcpPacket.class.equals(responseType)) {
+            return responseType.cast(responsePacket);
+        }
+        if (TcpPayload.class.equals(responseType)) {
+            return responseType.cast(responsePacket.getPayload());
+        }
+        if (byte[].class.equals(responseType)) {
+            return responseType.cast(responsePacket.getPayload().asBytes());
+        }
+        if (String.class.equals(responseType)) {
+            String str = responsePacket.getPayload().asString();
+            if (str.endsWith("\r\n")) {
+                str = str.substring(0, str.length() - 2);
+            } else if (str.endsWith("\n")) {
+                str = str.substring(0, str.length() - 1);
+            }
+            if (str.startsWith("{") && str.contains("\"data\"")) {
+                try {
+                    com.fasterxml.jackson.databind.JsonNode node = JsonUtil.parseObject(str, com.fasterxml.jackson.databind.JsonNode.class);
+                    if (node != null && node.has("data")) {
+                        return (T) node.get("data").asText();
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            return (T) str;
+        }
+        return responsePacket.getPayload().asJson(responseType);
     }
 
     /**

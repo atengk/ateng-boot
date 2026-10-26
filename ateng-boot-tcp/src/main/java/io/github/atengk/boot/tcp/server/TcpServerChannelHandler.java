@@ -4,7 +4,9 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.event.TcpSessionIdleEvent;
+import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
+import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.netty.channel.ChannelHandler;
@@ -29,21 +31,31 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
+    private final TcpDispatcher dispatcher;
     private final ApplicationEventPublisher eventPublisher;
 
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, null, eventPublisher);
+        this(properties, sessionManager, null, null, eventPublisher);
     }
 
     public TcpServerChannelHandler(TcpServerProperties properties,
                                    TcpSessionManager sessionManager,
                                    TcpRequestCorrelationManager correlationManager,
                                    ApplicationEventPublisher eventPublisher) {
+        this(properties, sessionManager, correlationManager, null, eventPublisher);
+    }
+
+    public TcpServerChannelHandler(TcpServerProperties properties,
+                                   TcpSessionManager sessionManager,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   TcpDispatcher dispatcher,
+                                   ApplicationEventPublisher eventPublisher) {
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
+        this.dispatcher = dispatcher;
         this.eventPublisher = eventPublisher;
     }
 
@@ -75,6 +87,15 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
         // 全双工 RPC 响应优先拦截唤醒
         if (correlationManager != null && correlationManager.hasPendingRequests()) {
             if (correlationManager.tryComplete(msg)) {
+                return;
+            }
+        }
+
+        // 业务命令字路由分发消费
+        if (dispatcher != null && session != null) {
+            TcpPacket packet = toTcpPacket(msg);
+            if (packet != null) {
+                dispatcher.dispatch(session, packet);
                 return;
             }
         }
@@ -119,5 +140,21 @@ public class TcpServerChannelHandler extends ChannelInboundHandlerAdapter {
         }
         log.error("TCP 连接通道出现异常: remote={}, error={}", ctx.channel().remoteAddress(), cause.getMessage(), cause);
         ctx.close();
+    }
+
+    private TcpPacket toTcpPacket(Object msg) {
+        if (msg instanceof TcpPacket p) {
+            return p;
+        }
+        if (msg instanceof io.github.atengk.boot.tcp.model.TcpPayload payload) {
+            return TcpPacket.of(payload);
+        }
+        if (msg instanceof byte[] bytes) {
+            return TcpPacket.ofBytes(bytes);
+        }
+        if (msg instanceof String str) {
+            return TcpPacket.ofText(str);
+        }
+        return null;
     }
 }

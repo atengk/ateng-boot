@@ -100,6 +100,9 @@ public final class TcpPayload implements Serializable {
         if (object == null) {
             return EMPTY;
         }
+        if (object instanceof String str) {
+            return of(str);
+        }
         String json = JsonUtil.toJsonString(object);
         return of(json);
     }
@@ -129,6 +132,15 @@ public final class TcpPayload implements Serializable {
      */
     public String asHex() {
         return ChecksumUtil.toHexString(data);
+    }
+
+    /**
+     * 转换为 UTF-8 文本字符串（等同于 {@link #asString()}）
+     *
+     * @return 文本内容
+     */
+    public String asText() {
+        return asString();
     }
 
     /**
