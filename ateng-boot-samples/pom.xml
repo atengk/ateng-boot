@@ -43,6 +43,7 @@
         <module>ateng-boot-sample-encrypt</module>
         <module>ateng-boot-sample-statemachine</module>
         <module>ateng-boot-sample-job-local</module>
+        <module>ateng-boot-sample-tcp</module>
     </modules>
 
     <properties>
