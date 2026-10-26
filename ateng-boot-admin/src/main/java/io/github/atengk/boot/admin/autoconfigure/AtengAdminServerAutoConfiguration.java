@@ -10,6 +10,7 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
+import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -19,6 +20,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
 /**
@@ -53,6 +56,13 @@ public class AtengAdminServerAutoConfiguration {
     @ConditionalOnMissingBean
     public AtengActuatorHttpHeadersProvider atengActuatorHttpHeadersProvider(AtengAdminServerProperties properties) {
         return new AtengActuatorHttpHeadersProvider(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @Order(Ordered.HIGHEST_PRECEDENCE + 50)
+    public AdminSsrfGuardFilter adminSsrfGuardFilter(AtengAdminServerProperties properties) {
+        return new AdminSsrfGuardFilter(properties);
     }
 
     @Bean
