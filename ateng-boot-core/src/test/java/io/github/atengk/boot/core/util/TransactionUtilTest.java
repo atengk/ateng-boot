@@ -2,6 +2,7 @@ package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.enums.TransactionCompletionStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -75,8 +76,10 @@ class TransactionUtilTest {
     @Test
     @DisplayName("前置参数防卫: null 入参触发 Fail-Fast")
     void shouldThrowWhenParameterIsNull() {
+        assertThrows(NullPointerException.class, () -> TransactionUtil.executeBeforeCommit(null));
         assertThrows(NullPointerException.class, () -> TransactionUtil.executeAfterCommit(null));
         assertThrows(NullPointerException.class, () -> TransactionUtil.executeAfterRollback(null));
+        assertThrows(NullPointerException.class, () -> TransactionUtil.executeAfterCompletion(null));
         assertThrows(NullPointerException.class, () -> TransactionUtil.executeAfterCommitAsync(null));
         assertThrows(NullPointerException.class, () -> TransactionUtil.publishAfterCommit(null));
     }
@@ -283,5 +286,98 @@ class TransactionUtilTest {
 
         TransactionUtil.publishAfterCommit("order-direct-event");
         assertEquals("order-direct-event", receivedEvent.get());
+    }
+
+    @Test
+    @DisplayName("executeBeforeCommit: 事务环境前置校验与异常阻断事务")
+    void shouldExecuteBeforeCommitAndAbortOnException() {
+        TransactionSynchronizationManager.initSynchronization();
+        assertTrue(TransactionUtil.isSynchronizationActive());
+
+        AtomicBoolean executed = new AtomicBoolean(false);
+        TransactionUtil.executeBeforeCommit(() -> executed.set(true));
+
+        assertFalse(executed.get(), "注册后未触发 beforeCommit 前不得提前执行");
+
+        // 模拟 Spring 触发 beforeCommit
+        TransactionSynchronizationUtils.triggerBeforeCommit(false);
+        assertTrue(executed.get(), "beforeCommit 阶段任务应成功触发");
+
+        // 异常阻断事务测试
+        TransactionSynchronizationManager.clearSynchronization();
+        TransactionSynchronizationManager.initSynchronization();
+
+        TransactionUtil.executeBeforeCommit(() -> {
+            throw new IllegalStateException("前置数据校验未通过，熔断事务");
+        });
+
+        // 验证异常不会被吞咽，而是向外抛出阻断事务提交
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> TransactionSynchronizationUtils.triggerBeforeCommit(false));
+        assertEquals("前置数据校验未通过，熔断事务", ex.getMessage());
+
+        TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    @Test
+    @DisplayName("executeBeforeCommit: 非事务环境下就地同步执行，异常直接抛出")
+    void shouldExecuteBeforeCommitDirectlyWhenNoTransaction() {
+        assertFalse(TransactionUtil.isSynchronizationActive());
+
+        AtomicBoolean executed = new AtomicBoolean(false);
+        TransactionUtil.executeBeforeCommit(() -> executed.set(true));
+        assertTrue(executed.get(), "非事务环境下 executeBeforeCommit 应就地同步执行");
+
+        // 异常直接向上抛出
+        assertThrows(IllegalArgumentException.class, () ->
+                TransactionUtil.executeBeforeCommit(() -> {
+                    throw new IllegalArgumentException("非事务校验失败");
+                }));
+    }
+
+    @Test
+    @DisplayName("executeAfterCompletion: 事务全生命周期完成状态流转透传与异常隔离")
+    void shouldExecuteAfterCompletionWithStatus() {
+        // 1. 事务提交状态透传
+        TransactionSynchronizationManager.initSynchronization();
+        AtomicReference<TransactionCompletionStatus> committedStatus = new AtomicReference<>();
+        TransactionUtil.executeAfterCompletion(committedStatus::set);
+
+        assertNull(committedStatus.get(), "未完成前不得提前执行");
+        TransactionSynchronizationUtils.triggerAfterCompletion(TransactionSynchronization.STATUS_COMMITTED);
+        assertEquals(TransactionCompletionStatus.COMMITTED, committedStatus.get(), "应正确收到 COMMITTED 状态");
+        TransactionSynchronizationManager.clearSynchronization();
+
+        // 2. 事务回滚状态透传
+        TransactionSynchronizationManager.initSynchronization();
+        AtomicReference<TransactionCompletionStatus> rollbackStatus = new AtomicReference<>();
+        TransactionUtil.executeAfterCompletion(rollbackStatus::set);
+
+        TransactionSynchronizationUtils.triggerAfterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+        assertEquals(TransactionCompletionStatus.ROLLED_BACK, rollbackStatus.get(), "应正确收到 ROLLED_BACK 状态");
+        TransactionSynchronizationManager.clearSynchronization();
+
+        // 3. 事务未知状态透传
+        TransactionSynchronizationManager.initSynchronization();
+        AtomicReference<TransactionCompletionStatus> unknownStatus = new AtomicReference<>();
+        TransactionUtil.executeAfterCompletion(unknownStatus::set);
+
+        TransactionSynchronizationUtils.triggerAfterCompletion(TransactionSynchronization.STATUS_UNKNOWN);
+        assertEquals(TransactionCompletionStatus.UNKNOWN, unknownStatus.get(), "应正确收到 UNKNOWN 状态");
+        TransactionSynchronizationManager.clearSynchronization();
+
+        // 4. 回调异常受控隔离
+        TransactionSynchronizationManager.initSynchronization();
+        TransactionUtil.executeAfterCompletion(status -> {
+            throw new RuntimeException("清理回调次生异常");
+        });
+        assertDoesNotThrow(() -> TransactionSynchronizationUtils.triggerAfterCompletion(TransactionSynchronization.STATUS_COMMITTED));
+        TransactionSynchronizationManager.clearSynchronization();
+
+        // 5. 非事务环境降级执行并透传 COMMITTED
+        assertFalse(TransactionUtil.isSynchronizationActive());
+        AtomicReference<TransactionCompletionStatus> directStatus = new AtomicReference<>();
+        TransactionUtil.executeAfterCompletion(directStatus::set);
+        assertEquals(TransactionCompletionStatus.COMMITTED, directStatus.get(), "非事务降级应透传 COMMITTED");
     }
 }

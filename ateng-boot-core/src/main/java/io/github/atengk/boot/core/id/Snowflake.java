@@ -5,6 +5,9 @@ import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Enumeration;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
@@ -219,7 +222,34 @@ public class Snowflake {
         return epoch;
     }
 
+    /**
+     * 将雪花 ID 逆向反解为结构化不可变信息载体（采用当前实例的 epoch）
+     *
+     * @param id 待反解的雪花长整型 ID
+     * @return 包含发号时间戳、Instant、LocalDateTime、数据中心、节点与序列号的结构化信息
+     */
+    public SnowflakeIdInfo parse(long id) {
+        return parse(id, this.epoch);
+    }
+
     // ==================== 静态工具与位段解析方法 ====================
+
+    /**
+     * 将雪花 ID 逆向反解为结构化不可变信息载体（指定基准时间戳 epoch）
+     *
+     * @param id    待反解的雪花长整型 ID
+     * @param epoch 生成该 ID 所使用的基准时间戳（毫秒）
+     * @return 包含发号时间戳、Instant、LocalDateTime、数据中心、节点与序列号的结构化信息
+     */
+    public static SnowflakeIdInfo parse(long id, long epoch) {
+        long timestamp = getTimestamp(id, epoch);
+        long datacenterId = getDatacenterId(id);
+        long workerId = getWorkerId(id);
+        long sequence = getSequence(id);
+        Instant instant = Instant.ofEpochMilli(timestamp);
+        LocalDateTime dateTime = LocalDateTime.ofInstant(instant, ZoneId.systemDefault());
+        return new SnowflakeIdInfo(id, timestamp, instant, dateTime, datacenterId, workerId, sequence, epoch);
+    }
 
     /**
      * 从生成的雪花 ID 中反向解析发号时间戳（毫秒）

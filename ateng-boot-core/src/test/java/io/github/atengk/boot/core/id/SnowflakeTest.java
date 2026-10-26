@@ -196,4 +196,43 @@ class SnowflakeTest {
         assertEquals(1001L, Snowflake.getTimestamp(overflowId, 0L));
         assertEquals(0L, Snowflake.getSequence(overflowId));
     }
+
+    @Test
+    @DisplayName("逆向反解与 SnowflakeIdInfo 结构化信息完整性验证")
+    void shouldParseSnowflakeIdCorrectly() {
+        long fixedEpoch = 1767225600000L;
+        AtomicLong mockClock = new AtomicLong(fixedEpoch + 12345L);
+        Snowflake snowflake = new Snowflake(7, 15, fixedEpoch, mockClock::get);
+
+        long id = snowflake.nextId();
+        // 实例方法反解
+        SnowflakeIdInfo info = snowflake.parse(id);
+
+        assertEquals(id, info.id());
+        assertEquals(7, info.workerId());
+        assertEquals(15, info.datacenterId());
+        assertEquals(0, info.sequence());
+        assertEquals(fixedEpoch + 12345L, info.timestamp());
+        assertEquals(fixedEpoch, info.epoch());
+        assertNotNull(info.instant());
+        assertEquals(fixedEpoch + 12345L, info.instant().toEpochMilli());
+        assertNotNull(info.dateTime());
+
+        // 静态方法反解
+        SnowflakeIdInfo staticInfo = Snowflake.parse(id, fixedEpoch);
+        assertEquals(info, staticInfo);
+
+        // 默认基准时间戳反解（自适应发号）
+        Snowflake defaultSnowflake = new Snowflake(2, 3);
+        long defaultId = defaultSnowflake.nextId();
+        SnowflakeIdInfo defaultInfo = defaultSnowflake.parse(defaultId);
+        assertEquals(2, defaultInfo.workerId());
+        assertEquals(3, defaultInfo.datacenterId());
+        assertTrue(defaultInfo.timestamp() > 0);
+        assertEquals(Snowflake.DEFAULT_EPOCH, defaultInfo.epoch());
+
+        // 静态方法反解带默认 epoch
+        SnowflakeIdInfo staticDefaultInfo = Snowflake.parse(defaultId, Snowflake.DEFAULT_EPOCH);
+        assertEquals(defaultInfo, staticDefaultInfo);
+    }
 }

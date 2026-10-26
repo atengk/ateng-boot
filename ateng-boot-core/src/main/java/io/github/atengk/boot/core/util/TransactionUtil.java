@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.enums.TransactionCompletionStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
@@ -11,6 +12,7 @@ import org.springframework.util.ClassUtils;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.function.Consumer;
 
 /**
  * 事务同步生命周期全局静态门面
@@ -61,6 +63,23 @@ public final class TransactionUtil {
     }
 
     /**
+     * 在事务物理提交前同步执行指定前置校验或数据暂存任务
+     * 该阶段处于实际数据库 commit 指令发出之前；任务执行若抛出任何异常，Spring 事务机制将立即回滚物理事务并中断流程；
+     * 若当前处于非事务上下文或未激活事务同步器，则平滑降级为就地同步执行，任务若抛出异常直接向上冒泡中断后续逻辑
+     *
+     * @param task 待执行任务，不可为 null
+     */
+    public static void executeBeforeCommit(Runnable task) {
+        Objects.requireNonNull(task, "task 不能为空");
+        if (isSynchronizationActive()) {
+            SpringTransactionProvider.registerBeforeCommit(task);
+        } else {
+            log.debug("当前处于非事务上下文或未激活事务同步器，executeBeforeCommit 就地同步执行");
+            task.run();
+        }
+    }
+
+    /**
      * 在事务成功提交后同步执行指定任务
      * 若当前处于非事务上下文或未激活事务同步器，则平滑降级为就地立即同步执行；
      * 任务执行异常会被受控隔离并记录 WARN 日志，绝对不会逆向阻断或破坏主流程
@@ -90,6 +109,24 @@ public final class TransactionUtil {
             SpringTransactionProvider.registerAfterRollback(task);
         } else {
             log.debug("当前处于非事务上下文或未激活事务同步器，跳过 executeAfterRollback 补偿回调执行");
+        }
+    }
+
+    /**
+     * 在事务最终完成（无论是提交还是回滚）后执行全状态资源清理或终态兜底动作
+     * 回调入参将明确透传最终状态（COMMITTED / ROLLED_BACK / UNKNOWN）；
+     * 若当前处于非事务上下文或未激活事务同步器，则平滑降级为就地执行并透传 COMMITTED 状态；
+     * 执行异常会被受控隔离并记录 WARN 日志，绝不逆向冲垮主流程
+     *
+     * @param action 接收事务终态并执行清理的动作回调，不可为 null
+     */
+    public static void executeAfterCompletion(Consumer<TransactionCompletionStatus> action) {
+        Objects.requireNonNull(action, "action 不能为空");
+        if (isSynchronizationActive()) {
+            SpringTransactionProvider.registerAfterCompletion(action);
+        } else {
+            log.debug("当前处于非事务上下文或未激活事务同步器，executeAfterCompletion 就地同步执行");
+            safeRun(() -> action.accept(TransactionCompletionStatus.COMMITTED), "afterCompletion[Direct]");
         }
     }
 
@@ -196,6 +233,15 @@ public final class TransactionUtil {
             return TransactionSynchronizationManager.isSynchronizationActive();
         }
 
+        static void registerBeforeCommit(Runnable task) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void beforeCommit(boolean readOnly) {
+                    task.run();
+                }
+            });
+        }
+
         static void registerAfterCommit(Runnable task) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -212,6 +258,16 @@ public final class TransactionUtil {
                     if (status == STATUS_ROLLED_BACK) {
                         safeRun(task, "afterRollback");
                     }
+                }
+            });
+        }
+
+        static void registerAfterCompletion(Consumer<TransactionCompletionStatus> action) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    TransactionCompletionStatus completionStatus = TransactionCompletionStatus.fromSpringStatus(status);
+                    safeRun(() -> action.accept(completionStatus), "afterCompletion");
                 }
             });
         }
