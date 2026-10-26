@@ -24,6 +24,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -68,9 +69,10 @@ class LocalJobTimeoutRetryAndMdcTest {
 
     @Test
     @DisplayName("硬超时熔断：任务执行超过 timeout 阈值时强制发送中断信号并抛出 JobTimeoutException")
-    void testTimeoutInterruption() {
+    void testTimeoutInterruption() throws InterruptedException {
         String jobName = "timeoutJob";
         tasks.timeoutInterrupted.set(false);
+        tasks.timeoutLatch = new CountDownLatch(1);
 
         long start = System.currentTimeMillis();
 
@@ -88,7 +90,8 @@ class LocalJobTimeoutRetryAndMdcTest {
         // 验证执行耗时明显小于 5000ms（在 450ms~3000ms 之间截断）
         assertThat(elapsed).isLessThan(3500);
 
-        // 验证被超时的工作线程收到了中断信号
+        // 验证被超时的工作线程收到了中断信号（等待最多 2 秒以避免多核调度竞争）
+        assertThat(tasks.timeoutLatch.await(2, TimeUnit.SECONDS)).isTrue();
         assertThat(tasks.timeoutInterrupted.get()).isTrue();
 
         // 验证运行时元数据记录了 TIMEOUT 终态
@@ -253,6 +256,7 @@ class LocalJobTimeoutRetryAndMdcTest {
     static class TimeoutAndRetryTasks {
 
         final AtomicBoolean timeoutInterrupted = new AtomicBoolean(false);
+        volatile CountDownLatch timeoutLatch = new CountDownLatch(1);
         final AtomicInteger retrySuccessCount = new AtomicInteger(0);
         final AtomicInteger retryExhaustedCount = new AtomicInteger(0);
         final AtomicInteger timeoutRetryCount = new AtomicInteger(0);
@@ -269,6 +273,7 @@ class LocalJobTimeoutRetryAndMdcTest {
                 Thread.sleep(5000);
             } catch (InterruptedException e) {
                 timeoutInterrupted.set(true);
+                timeoutLatch.countDown();
                 Thread.currentThread().interrupt();
             }
         }

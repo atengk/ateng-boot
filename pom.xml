@@ -63,6 +63,7 @@
         <module>ateng-boot-statemachine</module>
         <module>ateng-boot-job-local</module>
         <module>ateng-boot-tcp</module>
+        <module>ateng-boot-search</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -362,6 +363,11 @@
             <dependency>
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-tcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-search</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
