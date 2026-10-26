@@ -190,4 +190,29 @@ class TcpServerTemplateTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("未配置 TcpRequestCorrelationManager");
     }
+
+    @Test
+    @DisplayName("验证通过门面主动关闭会话与设备")
+    void testCloseSessionAndDevice() {
+        TcpSessionManager manager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager);
+
+        EmbeddedChannel ch1 = new EmbeddedChannel();
+        TcpSession s1 = new TcpSession("SES-CLOSE-1", ch1);
+        manager.register(s1);
+
+        template.close("SES-CLOSE-1");
+        assertThat(s1.isActive()).isFalse();
+        assertThat(manager.getSession("SES-CLOSE-1")).isNull();
+
+        EmbeddedChannel ch2 = new EmbeddedChannel();
+        TcpSession s2 = new TcpSession("SES-CLOSE-2", ch2);
+        manager.register(s2);
+        manager.bind("SES-CLOSE-2", "DEV-CLOSE-2");
+
+        template.closeDevice("DEV-CLOSE-2");
+        assertThat(s2.isActive()).isFalse();
+        assertThat(manager.getSession("SES-CLOSE-2")).isNull();
+        assertThat(manager.getSessionByDeviceId("DEV-CLOSE-2")).isNull();
+    }
 }

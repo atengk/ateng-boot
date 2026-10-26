@@ -167,7 +167,7 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
         if (session != null) {
             session.setCloseReason(CloseReason.ERROR);
         }
-        log.error("TCP 连接通道出现异常: remote={}, error={}", ctx.channel().remoteAddress(), cause.getMessage(), cause);
+        log.error("TCP 连接通道出现网络异常: remote={}", ctx.channel().remoteAddress(), cause);
         ctx.close();
     }
 

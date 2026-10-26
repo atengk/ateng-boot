@@ -12,6 +12,7 @@ import org.springframework.context.ApplicationEventPublisherAware;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 统一标准 TCP 会话管理器
@@ -30,6 +31,7 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
     private final ConcurrentMap<String, TcpSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> deviceToSession = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Set<String>> groupSessions = new ConcurrentHashMap<>();
+    private final AtomicInteger activeCount = new AtomicInteger(0);
 
     private ApplicationEventPublisher eventPublisher;
 
@@ -47,11 +49,14 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
         if (session == null || session.getSessionId() == null) {
             return;
         }
-        sessions.put(session.getSessionId(), session);
-        log.debug("TCP 会话注册成功: sessionId={}, remote={}", session.getSessionId(), session.getRemoteAddress());
+        TcpSession previous = sessions.putIfAbsent(session.getSessionId(), session);
+        if (previous == null) {
+            activeCount.incrementAndGet();
+            log.debug("TCP 会话注册成功: sessionId={}, remote={}", session.getSessionId(), session.getRemoteAddress());
 
-        if (eventPublisher != null) {
-            eventPublisher.publishEvent(new TcpSessionConnectedEvent(this, session));
+            if (eventPublisher != null) {
+                eventPublisher.publishEvent(new TcpSessionConnectedEvent(this, session));
+            }
         }
     }
 
@@ -69,6 +74,7 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
         if (session == null) {
             return;
         }
+        activeCount.decrementAndGet();
 
         session.setCloseReason(reason);
 
@@ -109,14 +115,24 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
             throw new IllegalStateException("未找到对应的活跃 TCP 会话: sessionId=" + sessionId);
         }
 
-        // 检测是否存在旧会话绑定
+        // 1. 若当前会话之前已绑定过其他旧设备，逆向解绑旧设备的映射，防止旧设备键泄漏
+        String previousDeviceId = session.getDeviceId();
+        if (previousDeviceId != null && !previousDeviceId.equals(deviceId)) {
+            deviceToSession.remove(previousDeviceId, sessionId);
+        }
+
+        // 2. 检测是否存在旧会话绑定该 deviceId（踢旧留新置换治理）
         String oldSessionId = deviceToSession.put(deviceId, sessionId);
         if (oldSessionId != null && !oldSessionId.equals(sessionId)) {
             TcpSession oldSession = sessions.get(oldSessionId);
-            if (oldSession != null && oldSession.isActive()) {
-                log.warn("检测到设备 [{}] 重新连接上线，触发“踢旧留新”置换: 正在切断旧会话 [{}], remote={}",
-                        deviceId, oldSessionId, oldSession.getRemoteAddress());
-                oldSession.close(CloseReason.KICK_OUT);
+            if (oldSession != null) {
+                if (oldSession.isActive()) {
+                    log.warn("检测到设备 [{}] 重新连接上线，触发“踢旧留新”置换: 正在切断旧会话 [{}], remote={}",
+                            deviceId, oldSessionId, oldSession.getRemoteAddress());
+                    oldSession.close(CloseReason.KICK_OUT);
+                }
+                unregister(oldSessionId, CloseReason.KICK_OUT);
+            } else {
                 unregister(oldSessionId, CloseReason.KICK_OUT);
             }
         }
@@ -182,18 +198,12 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
     }
 
     /**
-     * 获取当前活跃且未断开的连接总数
+     * 获取当前活跃且未断开的连接总数（O(1) 线程安全读取）
      *
      * @return 活跃连接数
      */
     public int getActiveCount() {
-        int count = 0;
-        for (TcpSession s : sessions.values()) {
-            if (s.isActive()) {
-                count++;
-            }
-        }
-        return count;
+        return Math.max(0, activeCount.get());
     }
 
     /**
@@ -260,6 +270,22 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
         if (session != null) {
             session.close(reason);
             unregister(sessionId, reason);
+        }
+    }
+
+    /**
+     * 主动根据设备标识关闭其绑定的会话
+     *
+     * @param deviceId 业务设备编号
+     * @param reason   关闭原因
+     */
+    public void closeDevice(String deviceId, CloseReason reason) {
+        if (deviceId == null) {
+            return;
+        }
+        TcpSession session = getSessionByDeviceId(deviceId);
+        if (session != null) {
+            closeSession(session.getSessionId(), reason);
         }
     }
 

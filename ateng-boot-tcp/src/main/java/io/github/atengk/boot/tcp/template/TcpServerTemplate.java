@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.template;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.tcp.cluster.TcpClusterBridge;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
 import io.github.atengk.boot.tcp.model.TcpPacket;
@@ -261,6 +262,50 @@ public class TcpServerTemplate {
                 }
             }
         }
+    }
+
+    /**
+     * 主动断开并注销指定会话连接（默认原因 NORMAL）
+     *
+     * @param sessionId 会话唯一标识
+     */
+    public void close(String sessionId) {
+        close(sessionId, CloseReason.NORMAL);
+    }
+
+    /**
+     * 主动断开并注销指定会话连接
+     *
+     * @param sessionId 会话唯一标识
+     * @param reason    断开关闭原因
+     */
+    public void close(String sessionId, CloseReason reason) {
+        if (sessionId == null) {
+            return;
+        }
+        sessionManager.closeSession(sessionId, reason != null ? reason : CloseReason.NORMAL);
+    }
+
+    /**
+     * 主动断开并注销指定业务设备绑定的会话（默认原因 NORMAL）
+     *
+     * @param deviceId 业务设备唯一编号
+     */
+    public void closeDevice(String deviceId) {
+        closeDevice(deviceId, CloseReason.NORMAL);
+    }
+
+    /**
+     * 主动断开并注销指定业务设备绑定的会话
+     *
+     * @param deviceId 业务设备唯一编号
+     * @param reason   断开关闭原因
+     */
+    public void closeDevice(String deviceId, CloseReason reason) {
+        if (deviceId == null) {
+            return;
+        }
+        sessionManager.closeDevice(deviceId, reason != null ? reason : CloseReason.NORMAL);
     }
 
     /**

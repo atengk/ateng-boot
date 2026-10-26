@@ -47,33 +47,33 @@ public class TcpPayloadCodecHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        ByteBuf buf = null;
-        if (msg instanceof TcpPayload) {
-            TcpPayload payload = (TcpPayload) msg;
-            buf = ctx.alloc().buffer(payload.length() + 8);
-            buf.writeBytes(payload.asBytes());
-        } else if (msg instanceof TcpPacket) {
-            TcpPacket packet = (TcpPacket) msg;
+        byte[] rawBytes = null;
+        if (msg instanceof TcpPayload payload) {
+            rawBytes = payload.asBytes();
+        } else if (msg instanceof TcpPacket packet) {
             TcpPayload payload = packet.getPayload();
-            buf = ctx.alloc().buffer(payload.length() + 8);
-            buf.writeBytes(payload.asBytes());
-        } else if (msg instanceof byte[]) {
-            byte[] bytes = (byte[]) msg;
-            buf = ctx.alloc().buffer(bytes.length + 8);
-            buf.writeBytes(bytes);
-        } else if (msg instanceof String) {
-            byte[] bytes = ((String) msg).getBytes(StandardCharsets.UTF_8);
-            buf = ctx.alloc().buffer(bytes.length + 8);
-            buf.writeBytes(bytes);
+            rawBytes = (payload != null) ? payload.asBytes() : new byte[0];
+        } else if (msg instanceof byte[] bytes) {
+            rawBytes = bytes;
+        } else if (msg instanceof String str) {
+            rawBytes = str.getBytes(StandardCharsets.UTF_8);
         }
 
-        if (buf != null) {
-            // 对称性定界符守卫：若通道挂载了定界符分帧且出站末尾未包含定界符，自动补齐
+        if (rawBytes != null) {
             byte[] delimiter = ctx.channel().attr(DELIMITER_KEY).get();
-            if (delimiter != null && delimiter.length > 0 && !endsWith(buf, delimiter)) {
-                buf.writeBytes(delimiter);
+            int delimiterLen = (delimiter != null) ? delimiter.length : 0;
+            ByteBuf buf = ctx.alloc().buffer(rawBytes.length + delimiterLen);
+            try {
+                buf.writeBytes(rawBytes);
+                // 对称性定界符守卫：若通道挂载了定界符分帧且出站末尾未包含定界符，自动补齐
+                if (delimiterLen > 0 && !endsWith(buf, delimiter)) {
+                    buf.writeBytes(delimiter);
+                }
+                ctx.write(buf, promise);
+            } catch (Throwable t) {
+                ReferenceCountUtil.safeRelease(buf);
+                throw t;
             }
-            ctx.write(buf, promise);
         } else {
             ctx.write(msg, promise);
         }

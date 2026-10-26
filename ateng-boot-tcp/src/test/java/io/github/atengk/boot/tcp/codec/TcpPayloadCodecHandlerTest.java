@@ -93,4 +93,35 @@ class TcpPayloadCodecHandlerTest {
 
         channel.finishAndReleaseAll();
     }
+
+    @Test
+    @DisplayName("验证出站 TcpPacket 载荷为 null 时的安全写入与防 NPE")
+    void testOutboundTcpPacketWithNullPayload() {
+        EmbeddedChannel channel = new EmbeddedChannel(TcpPayloadCodecHandler.INSTANCE);
+
+        TcpPacket packet = TcpPacket.of("HEARTBEAT", "REQ-001", null);
+        channel.writeOutbound(packet);
+
+        ByteBuf outBuf = channel.readOutbound();
+        assertThat(outBuf).isNotNull();
+        assertThat(outBuf.readableBytes()).isEqualTo(0);
+        outBuf.release();
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    @DisplayName("验证挂载 DELIMITER_KEY 时出站自动补齐定界符")
+    void testOutboundAutoAppendDelimiter() {
+        EmbeddedChannel channel = new EmbeddedChannel(TcpPayloadCodecHandler.INSTANCE);
+        channel.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(new byte[]{0x0D, 0x0A});
+
+        channel.writeOutbound("DataWithoutEnding");
+        ByteBuf outBuf = channel.readOutbound();
+        assertThat(outBuf).isNotNull();
+        assertThat(outBuf.toString(StandardCharsets.UTF_8)).isEqualTo("DataWithoutEnding\r\n");
+        outBuf.release();
+
+        channel.finishAndReleaseAll();
+    }
 }

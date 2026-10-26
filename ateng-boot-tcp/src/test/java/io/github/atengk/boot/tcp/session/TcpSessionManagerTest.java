@@ -94,6 +94,66 @@ class TcpSessionManagerTest {
     }
 
     @Test
+    @DisplayName("验证同一会话重绑定新设备时逆向解绑旧设备映射")
+    void testDeviceRebindingCleansUpOldDevice() {
+        TcpSessionManager manager = new TcpSessionManager();
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-REBIND", ch);
+        manager.register(session);
+
+        manager.bind("SES-REBIND", "DEV-OLD");
+        assertThat(manager.getSessionByDeviceId("DEV-OLD")).isSameAs(session);
+
+        // 重绑定到新设备
+        manager.bind("SES-REBIND", "DEV-NEW");
+        assertThat(manager.getSessionByDeviceId("DEV-NEW")).isSameAs(session);
+        assertThat(manager.getSessionByDeviceId("DEV-OLD")).isNull();
+        assertThat(session.getDeviceId()).isEqualTo("DEV-NEW");
+    }
+
+    @Test
+    @DisplayName("验证重连时半死僵尸通道被彻底注销移除")
+    void testKickOutZombieSession() {
+        TcpSessionManager manager = new TcpSessionManager();
+        EmbeddedChannel ch1 = new EmbeddedChannel();
+        TcpSession session1 = new TcpSession("SES-ZOMBIE", ch1);
+        manager.register(session1);
+        manager.bind("SES-ZOMBIE", "DEV-ZOMBIE");
+
+        // 模拟底层网络闪断使通道变为半死非活跃状态
+        ch1.close();
+        assertThat(session1.isActive()).isFalse();
+
+        // 设备使用全新通道上线
+        EmbeddedChannel ch2 = new EmbeddedChannel();
+        TcpSession session2 = new TcpSession("SES-ALIVE", ch2);
+        manager.register(session2);
+        manager.bind("SES-ALIVE", "DEV-ZOMBIE");
+
+        // 验证旧僵尸通道被彻底从 sessions 中移除
+        assertThat(manager.getSession("SES-ZOMBIE")).isNull();
+        assertThat(manager.getSessionByDeviceId("DEV-ZOMBIE")).isSameAs(session2);
+        assertThat(manager.getActiveCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("验证通过设备标识主动关闭会话")
+    void testCloseDevice() {
+        TcpSessionManager manager = new TcpSessionManager();
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-DEV-CLOSE", ch);
+        manager.register(session);
+        manager.bind("SES-DEV-CLOSE", "DEV-TO-CLOSE");
+
+        manager.closeDevice("DEV-TO-CLOSE", CloseReason.NORMAL);
+
+        assertThat(session.isActive()).isFalse();
+        assertThat(manager.getSession("SES-DEV-CLOSE")).isNull();
+        assertThat(manager.getSessionByDeviceId("DEV-TO-CLOSE")).isNull();
+        assertThat(manager.getActiveCount()).isEqualTo(0);
+    }
+
+    @Test
     @DisplayName("验证逻辑分组组播管理")
     void testGroupManagement() {
         TcpSessionManager manager = new TcpSessionManager();
