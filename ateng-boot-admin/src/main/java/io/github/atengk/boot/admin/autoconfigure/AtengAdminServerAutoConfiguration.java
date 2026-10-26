@@ -5,12 +5,15 @@ import cn.dev33.satoken.filter.SaServletFilter;
 import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
+import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
+import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -63,6 +66,15 @@ public class AtengAdminServerAutoConfiguration {
     @Order(Ordered.HIGHEST_PRECEDENCE + 50)
     public AdminSsrfGuardFilter adminSsrfGuardFilter(AtengAdminServerProperties properties) {
         return new AdminSsrfGuardFilter(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(InstanceRepository.class)
+    public AtengAdminNotificationNotifier atengAdminNotificationNotifier(InstanceRepository repository,
+                                                                         ObjectProvider<NotificationTemplate> notificationTemplateProvider,
+                                                                         AtengAdminServerProperties properties) {
+        return new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
     }
 
     @Bean

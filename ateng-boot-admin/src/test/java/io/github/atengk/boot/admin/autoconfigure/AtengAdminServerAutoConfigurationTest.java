@@ -3,7 +3,9 @@ package io.github.atengk.boot.admin.autoconfigure;
 import cn.dev33.satoken.filter.SaServletFilter;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
+import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
+import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
@@ -47,6 +49,11 @@ class AtengAdminServerAutoConfigurationTest {
         public AdminServerProperties adminServerProperties() {
             return new AdminServerProperties();
         }
+
+        @Bean
+        public InstanceRepository instanceRepository() {
+            return org.mockito.Mockito.mock(InstanceRepository.class);
+        }
     }
 
     @Configuration
@@ -82,6 +89,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AdminLoginController.class);
                     assertThat(context).hasSingleBean(AtengActuatorHttpHeadersProvider.class);
                     assertThat(context).hasSingleBean(AdminSsrfGuardFilter.class);
+                    assertThat(context).hasSingleBean(AtengAdminNotificationNotifier.class);
                     assertThat(context).hasBean("adminSaServletFilter");
                     assertThat(context.getBean("adminSaServletFilter")).isInstanceOf(SaServletFilter.class);
                 });
