@@ -230,6 +230,36 @@ class WordTemplateTest {
                             assertThat(anchor.getAllowOverlap()).isTrue();
                             assertThat(anchor.getPositionH().getPosOffset()).isEqualTo(Units.toEMU(15));
                             assertThat(anchor.getPositionV().getPosOffset()).isEqualTo(Units.toEMU(-10));
+
+                            // 验证 ECMA-376 规范必填属性与节点
+                            assertThat(anchor.getDistT()).isEqualTo(0L);
+                            assertThat(anchor.getDistB()).isEqualTo(0L);
+                            assertThat(anchor.getDistL()).isEqualTo(0L);
+                            assertThat(anchor.getDistR()).isEqualTo(0L);
+                            assertThat(anchor.getSimplePos()).isNotNull();
+                            assertThat(anchor.getSimplePos().getX()).isEqualTo(0L);
+                            assertThat(anchor.getSimplePos().getY()).isEqualTo(0L);
+                            assertThat(anchor.isSetEffectExtent()).isTrue();
+                            assertThat(anchor.isSetWrapNone()).isTrue();
+
+                            // 对抗性严格断言：XML 内部节点必须严格遵循 OpenXML Sequence 顺序
+                            String xml = anchor.xmlText();
+                            int idxSimplePos = xml.indexOf("simplePos");
+                            int idxPosH = xml.indexOf("positionH");
+                            int idxPosV = xml.indexOf("positionV");
+                            int idxExtent = xml.indexOf("extent");
+                            int idxEffectExtent = xml.indexOf("effectExtent");
+                            int idxWrapNone = xml.indexOf("wrapNone");
+                            int idxDocPr = xml.indexOf("docPr");
+                            int idxGraphic = xml.indexOf("graphic");
+
+                            assertThat(idxSimplePos).isLessThan(idxPosH);
+                            assertThat(idxPosH).isLessThan(idxPosV);
+                            assertThat(idxPosV).isLessThan(idxExtent);
+                            assertThat(idxExtent).isLessThan(idxEffectExtent);
+                            assertThat(idxEffectExtent).isLessThan(idxWrapNone);
+                            assertThat(idxWrapNone).isLessThan(idxDocPr);
+                            assertThat(idxDocPr).isLessThan(idxGraphic);
                         }
                     }
                 }

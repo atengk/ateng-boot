@@ -102,6 +102,16 @@ public class MailProperties {
     private boolean starttls = false;
 
     /**
+     * 顶级单账号快捷配置：发件人邮箱地址（别名字段，对齐 mail.from 与 defaultFrom）
+     */
+    private String from;
+
+    /**
+     * 顶级单账号快捷配置：发件人中文昵称（别名字段，对齐 mail.from-name 与 defaultFromName）
+     */
+    private String fromName;
+
+    /**
      * 顶级单账号快捷配置：默认发件人邮箱
      */
     private String defaultFrom;
@@ -110,6 +120,42 @@ public class MailProperties {
      * 顶级单账号快捷配置：默认发件人中文昵称
      */
     private String defaultFromName;
+
+    public String getFrom() {
+        return from != null && !from.isBlank() ? from : defaultFrom;
+    }
+
+    public void setFrom(String from) {
+        this.from = from;
+        this.defaultFrom = from;
+    }
+
+    public String getDefaultFrom() {
+        return defaultFrom != null && !defaultFrom.isBlank() ? defaultFrom : from;
+    }
+
+    public void setDefaultFrom(String defaultFrom) {
+        this.defaultFrom = defaultFrom;
+        this.from = defaultFrom;
+    }
+
+    public String getFromName() {
+        return fromName != null && !fromName.isBlank() ? fromName : defaultFromName;
+    }
+
+    public void setFromName(String fromName) {
+        this.fromName = fromName;
+        this.defaultFromName = fromName;
+    }
+
+    public String getDefaultFromName() {
+        return defaultFromName != null && !defaultFromName.isBlank() ? defaultFromName : fromName;
+    }
+
+    public void setDefaultFromName(String defaultFromName) {
+        this.defaultFromName = defaultFromName;
+        this.fromName = defaultFromName;
+    }
 
     /**
      * 顶级单账号快捷配置：额外 JavaMail 属性

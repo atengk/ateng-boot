@@ -23,6 +23,32 @@
             <artifactId>ateng-boot-all</artifactId>
         </dependency>
 
+        <!-- 专有/非核心 Starter（由 smoke-test 显式引入以维系全量 Starter 装配冒烟门禁） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-storage</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-http</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-realtime</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-encrypt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-statemachine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-tcp</artifactId>
+        </dependency>
+
         <!-- SpringDoc OpenAPI (用于端到端验证 Knife4j / Swagger 鉴权组件装配) -->
         <dependency>
             <groupId>org.springdoc</groupId>

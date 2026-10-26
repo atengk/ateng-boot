@@ -57,8 +57,8 @@ public class TemplateInitializer {
         // 若类路径中已存在全部模板资源，无需在文件系统中重复写入，保障环境宿主中立与打包运行弹性
         if (TemplateInitializer.class.getResource("/templates/contract-template.docx") != null
                 && TemplateInitializer.class.getResource("/templates/attachment-clause.docx") != null
-                && TemplateInitializer.class.getResource("/templates/finance-statement.pdf") != null
-                && TemplateInitializer.class.getResource("/templates/supplier-entry-form.pdf") != null) {
+                && TemplateInitializer.class.getResource("/templates/sample-statement.pdf") != null
+                && TemplateInitializer.class.getResource("/templates/supplier-form.pdf") != null) {
             return;
         }
 

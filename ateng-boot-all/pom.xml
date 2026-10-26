@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 依赖聚合全家桶（一键全量引入 core、web、mybatis-plus、redis、excel、satoken、storage、http、realtime、statemachine）</description>
+    <description>ateng-boot 核心聚合全家桶（一键引入 core、web、mybatis-plus、redis、excel、satoken 六大核心单体骨干构件）</description>
 
     <dependencies>
         <dependency>
@@ -40,30 +40,6 @@
         <dependency>
             <groupId>io.github.atengk</groupId>
             <artifactId>ateng-boot-satoken</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-storage</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-http</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-realtime</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-encrypt</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-statemachine</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-tcp</artifactId>
         </dependency>
     </dependencies>
 </project>

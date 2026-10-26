@@ -50,6 +50,16 @@ public class MailAccountProperties {
     private boolean starttls = false;
 
     /**
+     * 发件人邮箱地址（别名字段，对齐 accounts.*.from 与 defaultFrom）
+     */
+    private String from;
+
+    /**
+     * 发件人中文昵称（别名字段，对齐 accounts.*.from-name 与 defaultFromName）
+     */
+    private String fromName;
+
+    /**
      * 默认发件人邮箱地址（若未配置则回退到 username）
      */
     private String defaultFrom;
@@ -63,4 +73,40 @@ public class MailAccountProperties {
      * 额外的底层 JavaMail 专有属性键值对
      */
     private Map<String, String> properties = new LinkedHashMap<>();
+
+    public String getFrom() {
+        return from != null && !from.isBlank() ? from : defaultFrom;
+    }
+
+    public void setFrom(String from) {
+        this.from = from;
+        this.defaultFrom = from;
+    }
+
+    public String getDefaultFrom() {
+        return defaultFrom != null && !defaultFrom.isBlank() ? defaultFrom : from;
+    }
+
+    public void setDefaultFrom(String defaultFrom) {
+        this.defaultFrom = defaultFrom;
+        this.from = defaultFrom;
+    }
+
+    public String getFromName() {
+        return fromName != null && !fromName.isBlank() ? fromName : defaultFromName;
+    }
+
+    public void setFromName(String fromName) {
+        this.fromName = fromName;
+        this.defaultFromName = fromName;
+    }
+
+    public String getDefaultFromName() {
+        return defaultFromName != null && !defaultFromName.isBlank() ? defaultFromName : fromName;
+    }
+
+    public void setDefaultFromName(String defaultFromName) {
+        this.defaultFromName = defaultFromName;
+        this.fromName = defaultFromName;
+    }
 }

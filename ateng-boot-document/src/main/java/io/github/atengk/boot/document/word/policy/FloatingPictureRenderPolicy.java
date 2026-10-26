@@ -8,8 +8,10 @@ import org.apache.poi.util.Units;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.openxmlformats.schemas.drawingml.x2006.main.CTGraphicalObject;
 import org.openxmlformats.schemas.drawingml.x2006.main.CTNonVisualDrawingProps;
+import org.openxmlformats.schemas.drawingml.x2006.main.CTPoint2D;
 import org.openxmlformats.schemas.drawingml.x2006.main.CTPositiveSize2D;
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTAnchor;
+import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTEffectExtent;
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTInline;
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTPosH;
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTPosV;
@@ -119,29 +121,71 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
         CTNonVisualDrawingProps docPr = inline.getDocPr();
 
         CTAnchor anchor = CTAnchor.Factory.newInstance();
-        anchor.setGraphic(graphic);
-        if (extent != null) {
-            anchor.setExtent(extent);
-        }
-        if (docPr != null) {
-            anchor.setDocPr(docPr);
-        }
-        anchor.setBehindDoc(!aboveText);
-        anchor.setLayoutInCell(true);
-        anchor.setAllowOverlap(true);
-        anchor.setLocked(false);
+
+        // 1. 设置 CTAnchor 规范属性（根据 ECMA-376 规范，distT/B/L/R 须明确赋值）
+        anchor.setDistT(0L);
+        anchor.setDistB(0L);
+        anchor.setDistL(0L);
+        anchor.setDistR(0L);
         anchor.setSimplePos2(false);
         anchor.setRelativeHeight(251658240L);
+        anchor.setBehindDoc(!aboveText);
+        anchor.setLocked(false);
+        anchor.setLayoutInCell(true);
+        anchor.setAllowOverlap(true);
 
+        // 2. 严格依照 OpenXML dml-wordprocessingDrawing.xsd 序列（Sequence）组装子节点
+        // ① simplePos（必填首节点，即使 simplePos="false" 也必须出现）
+        CTPoint2D simplePos = anchor.addNewSimplePos();
+        simplePos.setX(0L);
+        simplePos.setY(0L);
+
+        // ② positionH 水平相对定位
         CTPosH posH = anchor.addNewPositionH();
         posH.setRelativeFrom(STRelFromH.COLUMN);
         posH.setPosOffset(Units.toEMU(dx));
 
+        // ③ positionV 垂直相对定位
         CTPosV posV = anchor.addNewPositionV();
         posV.setRelativeFrom(STRelFromV.PARAGRAPH);
         posV.setPosOffset(Units.toEMU(dy));
 
+        // ④ extent 尺寸定义
+        if (extent != null) {
+            CTPositiveSize2D anchorExtent = anchor.addNewExtent();
+            anchorExtent.setCx(extent.getCx());
+            anchorExtent.setCy(extent.getCy());
+        }
+
+        // ⑤ effectExtent 边缘扩展
+        CTEffectExtent effectExtent = anchor.addNewEffectExtent();
+        effectExtent.setL(0L);
+        effectExtent.setT(0L);
+        effectExtent.setR(0L);
+        effectExtent.setB(0L);
+
+        // ⑥ wrapNone 无环绕浮动图层
         anchor.addNewWrapNone();
+
+        // ⑦ docPr 非视觉绘图属性
+        if (docPr != null) {
+            CTNonVisualDrawingProps anchorDocPr = anchor.addNewDocPr();
+            anchorDocPr.setId(docPr.getId());
+            anchorDocPr.setName(docPr.getName());
+            if (docPr.isSetDescr()) {
+                anchorDocPr.setDescr(docPr.getDescr());
+            }
+        }
+
+        // ⑧ cNvGraphicFramePr 框架锁定属性
+        if (inline.isSetCNvGraphicFramePr()) {
+            anchor.setCNvGraphicFramePr(inline.getCNvGraphicFramePr());
+        } else {
+            anchor.addNewCNvGraphicFramePr();
+        }
+
+        // ⑨ graphic 图形载荷数据（置于序列末尾）
+        anchor.setGraphic(graphic);
 
         drawing.setAnchorArray(new CTAnchor[]{anchor});
         drawing.removeInline(0);
