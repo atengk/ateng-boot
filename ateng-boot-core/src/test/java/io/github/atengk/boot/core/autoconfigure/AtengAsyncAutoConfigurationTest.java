@@ -10,6 +10,8 @@ import org.springframework.context.annotation.Configuration;
 import org.junit.jupiter.api.condition.EnabledForJreRange;
 import org.junit.jupiter.api.condition.JRE;
 import org.slf4j.MDC;
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.properties.AsyncProperties;
@@ -490,6 +492,39 @@ class AtengAsyncAutoConfigurationTest {
                     assertThat(context).hasBean("orderTaskExecutor");
                     assertThat(context.getBean("order")).isEqualTo("existing-order-bean");
                 });
+    }
+
+    @Test
+    @DisplayName("自动收集容器中声明的 AsyncContextSnapshotProvider 并注册到 AsyncContext")
+    void shouldAutoRegisterSnapshotProvidersFromContext() {
+        TestSnapshotProvider testProvider = new TestSnapshotProvider();
+        try {
+            contextRunner.withBean(AsyncContextSnapshotProvider.class, () -> testProvider)
+                    .run(context -> {
+                        assertThat(context).hasSingleBean(AsyncContextSnapshotProvider.class);
+
+                        // 验证通过 AsyncContext.ContextSnapshot.capture() 能够抓取到该 provider
+                        AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
+                        assertThat(snapshot.getExtension(testProvider)).isEqualTo("test-snapshot-val");
+                    });
+        } finally {
+            AsyncContext.unregisterSnapshotProvider(testProvider);
+        }
+    }
+
+    static class TestSnapshotProvider implements AsyncContextSnapshotProvider {
+        @Override
+        public Object capture() {
+            return "test-snapshot-val";
+        }
+
+        @Override
+        public void apply(Object snapshot) {
+        }
+
+        @Override
+        public void restore(Object previous) {
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

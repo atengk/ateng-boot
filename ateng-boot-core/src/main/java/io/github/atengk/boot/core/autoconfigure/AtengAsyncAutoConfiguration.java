@@ -1,8 +1,11 @@
 package io.github.atengk.boot.core.autoconfigure;
 
+import io.github.atengk.boot.core.context.AsyncContext;
+import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.core.properties.AsyncProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -21,12 +24,14 @@ import org.springframework.scheduling.annotation.AsyncConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
  * 上下文感知自适应双模受管异步任务执行器自动装配
  * 依据运行环境线程模型（{@link ConditionalOnThreading}）自适应装配虚拟线程执行器（{@link SimpleAsyncTaskExecutor}）
- * 或平台线程池（{@link ThreadPoolTaskExecutor}），统一挂载 {@link ContextCopyingTaskDecorator}
+ * 或平台线程池（{@link ThreadPoolTaskExecutor}），统一挂载 {@link io.github.atengk.boot.core.context.ContextCopyingTaskDecorator}，
+ * 自动收集并向 {@link AsyncContext} 注册 Spring 容器中受管的 {@link AsyncContextSnapshotProvider} 扩展快照提供者，
  * 并实现 {@link AsyncConfigurer} 为 Spring 异步任务体系统一提供四维上下文流转与未捕获异常处理
  *
  * @author Ateng
@@ -42,12 +47,31 @@ import java.util.concurrent.Executor;
         AtengAsyncAutoConfiguration.PlatformThreadsConfiguration.class,
         DynamicAsyncPoolRegistrar.class
 })
-public class AtengAsyncAutoConfiguration implements AsyncConfigurer {
+public class AtengAsyncAutoConfiguration implements AsyncConfigurer, InitializingBean {
 
     private final ObjectProvider<Executor> taskExecutorProvider;
+    private final ObjectProvider<List<AsyncContextSnapshotProvider>> snapshotProvidersProvider;
 
-    public AtengAsyncAutoConfiguration(@Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+    public AtengAsyncAutoConfiguration(
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<List<AsyncContextSnapshotProvider>> snapshotProvidersProvider) {
         this.taskExecutorProvider = taskExecutorProvider;
+        this.snapshotProvidersProvider = snapshotProvidersProvider;
+    }
+
+    @Override
+    public void afterPropertiesSet() {
+        if (snapshotProvidersProvider != null) {
+            List<AsyncContextSnapshotProvider> providers = snapshotProvidersProvider.getIfAvailable();
+            if (providers != null && !providers.isEmpty()) {
+                for (AsyncContextSnapshotProvider provider : providers) {
+                    if (provider != null) {
+                        AsyncContext.registerSnapshotProvider(provider);
+                        log.info("ateng-boot: 自动注册 Spring 受管异步上下文快照提供者 [{}]", provider.getClass().getName());
+                    }
+                }
+            }
+        }
     }
 
     /**

@@ -103,6 +103,17 @@ public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProce
     }
 
     /**
+     * 判断容器中是否包含指定名称的 Bean
+     *
+     * @param name Bean 名称
+     * @return 若包含则返回 true，否则返回 false
+     */
+    public static boolean containsBean(String name) {
+        Objects.requireNonNull(name, "name 不能为空");
+        return getApplicationContext().containsBean(name);
+    }
+
+    /**
      * 根据 Bean 名称与类型获取实例
      *
      * @param name  Bean 名称
