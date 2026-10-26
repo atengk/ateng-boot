@@ -1003,27 +1003,14 @@ public final class BusinessAssert {
     // ==================== 内部格式化辅助 ====================
 
     /**
-     * 替换模板字符串中的 "{}" 占位符（惰性格式化）
+     * 替换模板字符串中的 "{}" 占位符（惰性格式化，统一收敛复用 StringUtil 原生原语）
      *
      * @param template 模板字符串
      * @param args     参数列表
      * @return 格式化后的字符串
      */
     private static String format(String template, Object... args) {
-        if (template == null || args == null || args.length == 0 || !template.contains("{}")) {
-            return template;
-        }
-        StringBuilder sb = new StringBuilder(template.length() + 32 * args.length);
-        int cursor = 0;
-        int argIndex = 0;
-        int placeholderIndex;
-        while ((placeholderIndex = template.indexOf("{}", cursor)) != -1 && argIndex < args.length) {
-            sb.append(template, cursor, placeholderIndex);
-            sb.append(args[argIndex++]);
-            cursor = placeholderIndex + 2;
-        }
-        sb.append(template, cursor, template.length());
-        return sb.toString();
+        return StringUtil.format(template, args);
     }
 
     /**

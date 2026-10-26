@@ -121,6 +121,16 @@ public final class NetUtil {
     }
 
     /**
+     * 检查本地指定端口当前是否空闲可用（{@link #isPortAvailable(int)} 兼容别名）
+     *
+     * @param port 待检测的端口号（1 ~ 65535）
+     * @return 若当前端口可用返回 true，若被占用或超出有效端口范围返回 false
+     */
+    public static boolean isUsableLocalPort(int port) {
+        return isPortAvailable(port);
+    }
+
+    /**
      * 动态寻找系统随机分配的可用端口
      *
      * @return 本地可用端口号
@@ -175,5 +185,17 @@ public final class NetUtil {
         } catch (IOException ignored) {
             return false;
         }
+    }
+
+    /**
+     * 检测远程主机与端口的网络套接字可达性（{@link #isReachable(String, int, int)} 兼容别名）
+     *
+     * @param host          目标主机地址（域名或 IP，不能为空）
+     * @param port          目标端口
+     * @param timeoutMillis 连接超时时间（毫秒，必须大于 0）
+     * @return 若网络连通返回 true，若连接超时或失败返回 false
+     */
+    public static boolean canConnect(String host, int port, int timeoutMillis) {
+        return isReachable(host, port, timeoutMillis);
     }
 }

@@ -96,5 +96,10 @@ class ConvertUtilTest {
         List<Object> mixed = List.of("str", 123, "another-str");
         List<String> filtered = ConvertUtil.toList(mixed, String.class);
         assertThat(filtered).containsExactly("str", "another-str");
+
+        // 单参 toList 泛型转换
+        List<Object> allItems = ConvertUtil.toList(mixed);
+        assertThat(allItems).containsExactly("str", 123, "another-str");
+        assertThat(ConvertUtil.toList(null)).isEmpty();
     }
 }

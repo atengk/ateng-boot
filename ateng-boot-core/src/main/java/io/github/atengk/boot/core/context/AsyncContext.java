@@ -60,17 +60,43 @@ public final class AsyncContext {
     }
 
     /**
+     * 已包装上下文快照的 Runnable 标记接口（防御重复包装与双重上下文开销）
+     */
+    @FunctionalInterface
+    public interface WrappedRunnable extends Runnable {
+    }
+
+    /**
+     * 已包装上下文快照的 Callable 标记接口（防御重复包装与双重上下文开销）
+     *
+     * @param <V> 任务返回值泛型
+     */
+    @FunctionalInterface
+    public interface WrappedCallable<V> extends Callable<V> {
+    }
+
+    /**
+     * 已包装上下文快照的 Supplier 标记接口（防御重复包装与双重上下文开销）
+     *
+     * @param <T> 任务返回值泛型
+     */
+    @FunctionalInterface
+    public interface WrappedSupplier<T> extends java.util.function.Supplier<T> {
+    }
+
+    /**
      * 包装 Runnable 任务以实现四维/五维上下文异步传播与自恢复
+     * 内置幂等防卫，若传入任务已包装则直接返回，杜绝与 TaskDecorator 复合调度时的双重捕获与恢复开销
      *
      * @param task 原始 Runnable 任务
      * @return 增强上下文传播能力的 Runnable 任务，若入参为 null 则返回 null
      */
     public static Runnable wrap(Runnable task) {
-        if (task == null) {
-            return null;
+        if (task == null || task instanceof WrappedRunnable) {
+            return task;
         }
         ContextSnapshot parent = ContextSnapshot.capture();
-        return () -> {
+        return (WrappedRunnable) () -> {
             ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
                 parent.apply();
@@ -83,17 +109,18 @@ public final class AsyncContext {
 
     /**
      * 包装 Callable 任务以实现四维/五维上下文异步传播与自恢复
+     * 内置幂等防卫，若传入任务已包装则直接返回，杜绝重复捕获与恢复开销
      *
      * @param task 原始 Callable 任务
      * @param <V>  任务返回值泛型
      * @return 增强上下文传播能力的 Callable 任务，若入参为 null 则返回 null
      */
     public static <V> Callable<V> wrap(Callable<V> task) {
-        if (task == null) {
-            return null;
+        if (task == null || task instanceof WrappedCallable) {
+            return task;
         }
         ContextSnapshot parent = ContextSnapshot.capture();
-        return () -> {
+        return (WrappedCallable<V>) () -> {
             ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
                 parent.apply();
@@ -106,18 +133,19 @@ public final class AsyncContext {
 
     /**
      * 包装 Supplier 任务以实现四维/五维上下文异步传播与自恢复
-     * 专为 CompletableFuture.supplyAsync 等现代异步场景提供原生支持，避免与 Callable 产生 lambda 重载歧义
+     * 专为 CompletableFuture.supplyAsync 等现代异步场景提供原生支持，避免与 Callable 产生 lambda 重载歧义，
+     * 内置幂等防卫，若传入任务已包装则直接返回
      *
      * @param task 原始 Supplier 任务
      * @param <T>  任务返回值泛型
      * @return 增强上下文传播能力的 Supplier 任务，若入参为 null 则返回 null
      */
     public static <T> java.util.function.Supplier<T> wrapSupplier(java.util.function.Supplier<T> task) {
-        if (task == null) {
-            return null;
+        if (task == null || task instanceof WrappedSupplier) {
+            return task;
         }
         ContextSnapshot parent = ContextSnapshot.capture();
-        return () -> {
+        return (WrappedSupplier<T>) () -> {
             ContextSnapshot previous = ContextSnapshot.capturePrevious();
             try {
                 parent.apply();

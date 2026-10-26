@@ -282,9 +282,11 @@ public class CoreDataProcessingScenarioService {
     public Map<String, Object> demonstrateGeneralPrimitives() {
         Map<String, Object> results = new HashMap<>();
 
-        // StringUtil 命名风格转换
+        // StringUtil 命名风格转换、模板格式化与安全截断
         results.put("camelCase", StringUtil.toCamelCase("user_profile_name"));
         results.put("underlineCase", StringUtil.toUnderlineCase("userProfileName"));
+        results.put("formattedText", StringUtil.format("User {} role is {}", "Admin", "SuperAdmin"));
+        results.put("truncatedText", StringUtil.truncate("VeryLongBusinessDescription", 10));
 
         // StopWatch 毫秒秒表
         StopWatch sw = new StopWatch("sampleTask");

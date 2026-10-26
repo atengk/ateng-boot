@@ -92,4 +92,28 @@ class MoreCollectorsTest {
         assertEquals("v3", distinctItems.get(1).value());
         assertEquals("v4", distinctItems.get(2).value());
     }
+
+    @Test
+    @DisplayName("toDistinctList / distinctByKeyCollector: 支持作为 Collector 原生收集去重 List")
+    void shouldCollectToDistinctList() {
+        List<Item> items = Arrays.asList(
+                new Item("k1", "v1"),
+                new Item("k1", "v2"),
+                new Item("k2", "v3"),
+                new Item("k3", "v4")
+        );
+
+        List<Item> collectedList = items.stream()
+                .collect(MoreCollectors.toDistinctList(Item::key));
+
+        assertEquals(3, collectedList.size());
+        assertEquals("v1", collectedList.get(0).value());
+        assertEquals("v3", collectedList.get(1).value());
+        assertEquals("v4", collectedList.get(2).value());
+
+        // 并行流测试与别名契约
+        List<Item> parallelList = items.parallelStream()
+                .collect(MoreCollectors.distinctByKeyCollector(Item::key));
+        assertEquals(3, parallelList.size());
+    }
 }

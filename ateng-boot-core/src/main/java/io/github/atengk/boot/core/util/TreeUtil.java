@@ -207,6 +207,18 @@ public final class TreeUtil {
         return result;
     }
 
+    /**
+     * 将树形/森林结构按先序遍历（Pre-order DFS）深度展平为一维扁平列表（契约别名方法，等同于 {@link #flatten(List, Function)}）
+     *
+     * @param roots          根节点列表
+     * @param childrenGetter 子节点集合提取函数
+     * @param <T>            节点实体类型
+     * @return 扁平化后的节点列表；入参为空时返回空列表（空安全）
+     */
+    public static <T> List<T> flattenTree(List<T> roots, Function<T, List<T>> childrenGetter) {
+        return flatten(roots, childrenGetter);
+    }
+
     private static <T> void flattenRecursive(T node, Function<T, List<T>> childrenGetter, List<T> result) {
         if (node == null) {
             return;

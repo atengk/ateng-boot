@@ -30,6 +30,7 @@ public final class AsyncUtil {
     private static final String TASK_EXECUTOR_SUFFIX = "TaskExecutor";
 
     private static volatile ThreadPoolTaskExecutor fallbackExecutor;
+    private static volatile Thread fallbackShutdownHook;
 
     private AsyncUtil() {
     }
@@ -220,11 +221,13 @@ public final class AsyncUtil {
 
     private static Executor resolveDefaultExecutor() {
         if (SpringUtil.isInitialized()) {
-            if (SpringUtil.containsBean(DEFAULT_TASK_EXECUTOR_BEAN)) {
-                return (Executor) SpringUtil.getBean(DEFAULT_TASK_EXECUTOR_BEAN);
+            Executor executor = findExecutorBean(DEFAULT_TASK_EXECUTOR_BEAN);
+            if (executor != null) {
+                return executor;
             }
-            if (SpringUtil.containsBean(APPLICATION_TASK_EXECUTOR_BEAN)) {
-                return (Executor) SpringUtil.getBean(APPLICATION_TASK_EXECUTOR_BEAN);
+            executor = findExecutorBean(APPLICATION_TASK_EXECUTOR_BEAN);
+            if (executor != null) {
+                return executor;
             }
             try {
                 return SpringUtil.getBean(Executor.class);
@@ -241,36 +244,39 @@ public final class AsyncUtil {
         }
 
         // 1. 尝试直接按名称获取
-        if (SpringUtil.containsBean(poolName)) {
-            Object bean = SpringUtil.getBean(poolName);
-            if (bean instanceof Executor executor) {
-                return executor;
-            }
+        Executor executor = findExecutorBean(poolName);
+        if (executor != null) {
+            return executor;
         }
 
         // 2. 尝试添加 TaskExecutor 后缀获取（如 export -> exportTaskExecutor）
         if (!poolName.endsWith(TASK_EXECUTOR_SUFFIX)) {
-            String candidate = poolName + TASK_EXECUTOR_SUFFIX;
-            if (SpringUtil.containsBean(candidate)) {
-                Object bean = SpringUtil.getBean(candidate);
-                if (bean instanceof Executor executor) {
-                    return executor;
-                }
+            executor = findExecutorBean(poolName + TASK_EXECUTOR_SUFFIX);
+            if (executor != null) {
+                return executor;
             }
         }
 
         // 3. 尝试去除 TaskExecutor 后缀查找别名（如 exportTaskExecutor -> export）
         if (poolName.endsWith(TASK_EXECUTOR_SUFFIX)) {
             String candidate = poolName.substring(0, poolName.length() - TASK_EXECUTOR_SUFFIX.length());
-            if (StringUtils.hasText(candidate) && SpringUtil.containsBean(candidate)) {
-                Object bean = SpringUtil.getBean(candidate);
-                if (bean instanceof Executor executor) {
-                    return executor;
-                }
+            executor = findExecutorBean(candidate);
+            if (executor != null) {
+                return executor;
             }
         }
 
         throw new IllegalArgumentException("未找到名称或别名为 [" + poolName + "] 的受管异步执行器 Bean");
+    }
+
+    private static Executor findExecutorBean(String beanName) {
+        if (StringUtils.hasText(beanName) && SpringUtil.containsBean(beanName)) {
+            Object bean = SpringUtil.getBean(beanName);
+            if (bean instanceof Executor executor) {
+                return executor;
+            }
+        }
+        return null;
     }
 
     private static void resizeTaskExecutor(ThreadPoolTaskExecutor taskExecutor, int corePoolSize, int maxPoolSize) {
@@ -316,7 +322,13 @@ public final class AsyncUtil {
                     executor.setTaskDecorator(new ContextCopyingTaskDecorator());
                     executor.initialize();
 
-                    Runtime.getRuntime().addShutdownHook(new Thread(executor::shutdown, "ateng-fallback-async-shutdown"));
+                    Thread hook = new Thread(executor::shutdown, "ateng-fallback-async-shutdown");
+                    try {
+                        Runtime.getRuntime().addShutdownHook(hook);
+                        fallbackShutdownHook = hook;
+                    } catch (IllegalStateException ignored) {
+                        // JVM 正在关闭时忽略
+                    }
                     fallbackExecutor = executor;
                 }
             }
@@ -328,6 +340,14 @@ public final class AsyncUtil {
      * 重置脱离 Spring 容器时的保底线程池（仅供单元测试清理现场使用）
      */
     static synchronized void resetFallbackExecutor() {
+        if (fallbackShutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(fallbackShutdownHook);
+            } catch (IllegalStateException ignored) {
+                // JVM 正在关闭时忽略
+            }
+            fallbackShutdownHook = null;
+        }
         if (fallbackExecutor != null) {
             fallbackExecutor.shutdown();
             fallbackExecutor = null;

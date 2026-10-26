@@ -62,13 +62,16 @@ class NetUtilTest {
         try (ServerSocket serverSocket = new ServerSocket(port)) {
             // 当前端口已被占用
             assertThat(NetUtil.isPortAvailable(port)).isFalse();
+            assertThat(NetUtil.isUsableLocalPort(port)).isFalse();
 
             // 套接字应当成功连通
             assertThat(NetUtil.isReachable("127.0.0.1", port, 1000)).isTrue();
+            assertThat(NetUtil.canConnect("127.0.0.1", port, 1000)).isTrue();
         }
 
         // 服务端关闭后恢复可用
         assertThat(NetUtil.isPortAvailable(port)).isTrue();
+        assertThat(NetUtil.isUsableLocalPort(port)).isTrue();
 
         // 非法入参防御
         assertThat(NetUtil.isReachable(null, port, 1000)).isFalse();

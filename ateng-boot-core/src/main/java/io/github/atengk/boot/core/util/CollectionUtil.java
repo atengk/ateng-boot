@@ -5,6 +5,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * 集合增强实用工具
@@ -154,5 +156,16 @@ public final class CollectionUtil {
             return null;
         }
         return list.get(list.size() - 1);
+    }
+
+    /**
+     * 根据指定的键提取函数生成用于 Stream.filter 的去重谓词断言
+     *
+     * @param keyExtractor 键提取函数
+     * @param <T>          元素泛型
+     * @return 去重断言 Predicate
+     */
+    public static <T> Predicate<T> distinctByKey(Function<? super T, ?> keyExtractor) {
+        return MoreCollectors.distinctByKey(keyExtractor);
     }
 }

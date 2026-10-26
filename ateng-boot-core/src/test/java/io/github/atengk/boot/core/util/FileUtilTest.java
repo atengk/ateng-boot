@@ -99,6 +99,11 @@ class FileUtilTest {
         byte[] read = FileUtil.readNBytesSafe(in, 20);
         assertArrayEquals(data, read);
 
+        // Integer.MAX_VALUE 边界防溢出测试
+        java.io.ByteArrayInputStream inMax = new java.io.ByteArrayInputStream(data);
+        byte[] readMax = FileUtil.readNBytesSafe(inMax, Integer.MAX_VALUE);
+        assertArrayEquals(data, readMax);
+
         // 超出上限抛出异常
         java.io.ByteArrayInputStream inOverflow = new java.io.ByteArrayInputStream(data);
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
@@ -113,18 +118,26 @@ class FileUtilTest {
     }
 
     @Test
-    @DisplayName("createTempFile: 创建受管安全临时文件")
-    void shouldCreateManagedTempFile() throws java.io.IOException {
-        java.io.File tempFile = FileUtil.createTempFile("test-run-", ".log");
+    @DisplayName("createTempFile: 创建受管安全临时文件与隔离目录测试")
+    void shouldCreateManagedTempFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws java.io.IOException {
+        // 在受隔离的 TempDir 目录下创建受管临时文件
+        java.io.File tempFile = FileUtil.createTempFile(tempDir.toFile(), "test-run-", ".log");
         assertNotNull(tempFile);
         assertTrue(tempFile.exists());
         assertTrue(tempFile.getName().endsWith(".log"));
+        assertEquals(tempDir.toFile().getCanonicalPath(), tempFile.getParentFile().getCanonicalPath());
         tempFile.delete();
 
-        // 默认前后缀
-        java.io.File defaultTemp = FileUtil.createTempFile(null, null);
+        // 默认前后缀创建于隔离目录
+        java.io.File defaultTemp = FileUtil.createTempFile(tempDir.toFile(), null, null);
         assertNotNull(defaultTemp);
         assertTrue(defaultTemp.exists());
         defaultTemp.delete();
+
+        // 无目录入参系统临时目录重载
+        java.io.File sysTemp = FileUtil.createTempFile("sys-temp-", ".tmp");
+        assertNotNull(sysTemp);
+        assertTrue(sysTemp.exists());
+        sysTemp.delete();
     }
 }

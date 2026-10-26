@@ -1,8 +1,12 @@
 package io.github.atengk.boot.core.util;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.BinaryOperator;
 import java.util.function.Function;
 import java.util.stream.Collector;
@@ -96,5 +100,51 @@ public final class MoreCollectors {
         Objects.requireNonNull(keyExtractor, "keyExtractor 不能为空");
         java.util.Set<Object> seen = java.util.concurrent.ConcurrentHashMap.newKeySet();
         return t -> seen.add(keyExtractor.apply(t));
+    }
+
+    /**
+     * 根据指定的键提取函数返回去重收集器（将流收集为按指定 Key 去重后的有序 List）
+     * 满足 Collector 标准契约，保留元素遭遇顺序（Encounter Order）
+     *
+     * @param keyExtractor 键提取函数
+     * @param <T>          元素泛型
+     * @return 按 Key 去重的 List 收集器
+     */
+    public static <T> Collector<T, ?, List<T>> toDistinctList(Function<? super T, ?> keyExtractor) {
+        Objects.requireNonNull(keyExtractor, "keyExtractor 不能为空");
+        class DistinctAccumulator {
+            final Set<Object> seen = new HashSet<>();
+            final List<T> list = new ArrayList<>();
+
+            void add(T item) {
+                if (seen.add(keyExtractor.apply(item))) {
+                    list.add(item);
+                }
+            }
+
+            DistinctAccumulator combine(DistinctAccumulator other) {
+                for (T item : other.list) {
+                    add(item);
+                }
+                return this;
+            }
+        }
+        return Collector.of(
+                DistinctAccumulator::new,
+                DistinctAccumulator::add,
+                DistinctAccumulator::combine,
+                acc -> acc.list
+        );
+    }
+
+    /**
+     * 根据指定的键提取函数返回去重收集器（契约别名方法，等同于 {@link #toDistinctList(Function)}）
+     *
+     * @param keyExtractor 键提取函数
+     * @param <T>          元素泛型
+     * @return 按 Key 去重的 List 收集器
+     */
+    public static <T> Collector<T, ?, List<T>> distinctByKeyCollector(Function<? super T, ?> keyExtractor) {
+        return toDistinctList(keyExtractor);
     }
 }

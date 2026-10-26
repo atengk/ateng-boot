@@ -1,5 +1,6 @@
 package io.github.atengk.boot.core.enums;
 
+import io.github.atengk.boot.core.model.ThreadPoolStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,11 +70,8 @@ public enum AsyncRejectedPolicy {
 
         @Override
         public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
-            log.warn("ateng-boot: 异步线程池任务饱和触发拒绝 [poolSize={}/{}, activeCount={}, queueSize={}, remainingCapacity={}, task={}]，降级由当前调用线程直接同步执行",
-                    e.getPoolSize(), e.getMaximumPoolSize(), e.getActiveCount(),
-                    e.getQueue() != null ? e.getQueue().size() : 0,
-                    e.getQueue() != null ? e.getQueue().remainingCapacity() : 0,
-                    r);
+            ThreadPoolStatus status = ThreadPoolStatus.of(e);
+            log.warn("ateng-boot: 异步线程池任务饱和触发拒绝 [status={}, task={}]，降级由当前调用线程直接同步执行", status, r);
             if (!e.isShutdown()) {
                 r.run();
             }
@@ -88,11 +86,8 @@ public enum AsyncRejectedPolicy {
 
         @Override
         public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
-            log.warn("ateng-boot: 异步线程池任务饱和触发拒绝 [poolSize={}/{}, activeCount={}, queueSize={}, remainingCapacity={}, task={}]，抛出异常快速失败",
-                    e.getPoolSize(), e.getMaximumPoolSize(), e.getActiveCount(),
-                    e.getQueue() != null ? e.getQueue().size() : 0,
-                    e.getQueue() != null ? e.getQueue().remainingCapacity() : 0,
-                    r);
+            ThreadPoolStatus status = ThreadPoolStatus.of(e);
+            log.warn("ateng-boot: 异步线程池任务饱和触发拒绝 [status={}, task={}]，抛出异常快速失败", status, r);
             throw new RejectedExecutionException("Task " + r.toString() + " rejected from " + e.toString());
         }
     }

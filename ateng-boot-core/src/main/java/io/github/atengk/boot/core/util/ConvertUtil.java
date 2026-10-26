@@ -242,6 +242,17 @@ public final class ConvertUtil {
     }
 
     /**
+     * 将异构对象安全转换为通用 Object List 集合（{@link #toList(Object, Class)} 的泛型通用重载）
+     * 支持 Collection、Array 与单个对象包装；若为 null 则保底返回空列表
+     *
+     * @param value 待转换对象
+     * @return 转换后的元素列表，永不返回 null
+     */
+    public static List<Object> toList(Object value) {
+        return toList(value, Object.class);
+    }
+
+    /**
      * 将异构对象安全转换为 List 集合
      * 支持 Collection、Array 与单个对象包装；若为 null 则保底返回空列表
      *

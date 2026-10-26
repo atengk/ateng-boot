@@ -74,8 +74,9 @@ public class SlidingWindowCounter {
             throw new IllegalArgumentException("delta 必须大于 0");
         }
         long now = System.currentTimeMillis();
-        Slice slice = locateSlice(now);
-        slice.add(delta);
+        long bucketTime = now - (now % sliceMillis);
+        int index = (int) Math.floorMod(now / sliceMillis, sliceCount);
+        slices[index].add(bucketTime, delta);
         return getCount(now);
     }
 
@@ -106,8 +107,9 @@ public class SlidingWindowCounter {
             long now = System.currentTimeMillis();
             long currentCount = getCount(now);
             if (currentCount + delta <= threshold) {
-                Slice slice = locateSlice(now);
-                slice.add(delta);
+                long bucketTime = now - (now % sliceMillis);
+                int index = (int) Math.floorMod(now / sliceMillis, sliceCount);
+                slices[index].add(bucketTime, delta);
                 return true;
             }
             return false;
@@ -134,28 +136,10 @@ public class SlidingWindowCounter {
         }
     }
 
-    private Slice locateSlice(long now) {
-        long bucketTime = now - (now % sliceMillis);
-        int index = (int) Math.floorMod(now / sliceMillis, sliceCount);
-        Slice slice = slices[index];
-        if (slice.timestamp.get() != bucketTime) {
-            synchronized (slice) {
-                if (slice.timestamp.get() != bucketTime) {
-                    slice.reset(bucketTime);
-                }
-            }
-        }
-        return slice;
-    }
-
     private long getCount(long now) {
         long sum = 0;
         for (Slice slice : slices) {
-            long time = slice.timestamp.get();
-            // 处于 [now - windowMillis, now] 范围内的切片属于有效窗口数据
-            if (time > 0 && (now - time) < windowMillis && (now - time) >= 0) {
-                sum += slice.counter.sum();
-            }
+            sum += slice.getCount(now, windowMillis);
         }
         return sum;
     }
@@ -164,13 +148,34 @@ public class SlidingWindowCounter {
         private final AtomicLong timestamp = new AtomicLong(0);
         private final LongAdder counter = new LongAdder();
 
-        void add(long delta) {
-            counter.add(delta);
+        void add(long bucketTime, long delta) {
+            if (this.timestamp.get() == bucketTime) {
+                this.counter.add(delta);
+                return;
+            }
+            synchronized (this) {
+                if (this.timestamp.get() != bucketTime) {
+                    this.counter.reset();
+                    this.timestamp.set(bucketTime);
+                }
+                this.counter.add(delta);
+            }
         }
 
         void reset(long newTimestamp) {
-            timestamp.set(newTimestamp);
-            counter.reset();
+            synchronized (this) {
+                this.counter.reset();
+                this.timestamp.set(newTimestamp);
+            }
+        }
+
+        long getCount(long now, long windowMillis) {
+            long time = this.timestamp.get();
+            // 处于 [now - windowMillis, now] 范围内的切片属于有效窗口数据
+            if (time > 0 && (now - time) < windowMillis && (now - time) >= 0) {
+                return this.counter.sum();
+            }
+            return 0;
         }
     }
 }

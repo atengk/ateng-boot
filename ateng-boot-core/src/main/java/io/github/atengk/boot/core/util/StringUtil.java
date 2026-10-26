@@ -202,4 +202,83 @@ public final class StringUtil {
     public static String toSnakeCase(String str) {
         return toUnderlineCase(str);
     }
+
+    /**
+     * 安全截断超长字符串
+     *
+     * @param str       待截断字符序列
+     * @param maxLength 允许保留的最大字符长度（小于等于 0 时返回空字符串）
+     * @return 截断后的字符串；若原字符串长度未超过则返回其自身字符串形式，若为 null 则返回 null
+     */
+    public static String truncate(CharSequence str, int maxLength) {
+        if (str == null) {
+            return null;
+        }
+        if (maxLength <= 0) {
+            return EMPTY;
+        }
+        if (str.length() <= maxLength) {
+            return str.toString();
+        }
+        return str.subSequence(0, maxLength).toString();
+    }
+
+    /**
+     * 检查目标字符序列是否包含给定的任意一个子串
+     *
+     * @param str        目标字符序列
+     * @param searchStrs 候选子串数组
+     * @return 若包含任意一个非空匹配子串则返回 true，否则返回 false
+     */
+    public static boolean containsAny(CharSequence str, CharSequence... searchStrs) {
+        if (isEmpty(str) || searchStrs == null || searchStrs.length == 0) {
+            return false;
+        }
+        String s = str.toString();
+        for (CharSequence search : searchStrs) {
+            if (search != null && s.contains(search)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 忽略大小写检查目标字符序列是否包含指定子串
+     * 基于 String.regionMatches 原生无正则实现，无内存临时分配
+     *
+     * @param str       目标字符序列
+     * @param searchStr 检索子串
+     * @return 若包含则返回 true，否则返回 false
+     */
+    public static boolean containsIgnoreCase(CharSequence str, CharSequence searchStr) {
+        if (str == null || searchStr == null) {
+            return false;
+        }
+        int len = searchStr.length();
+        if (len == 0) {
+            return true;
+        }
+        int max = str.length() - len;
+        String s1 = str.toString();
+        String s2 = searchStr.toString();
+        for (int i = 0; i <= max; i++) {
+            if (s1.regionMatches(true, i, s2, 0, len)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 通用字符区间动态掩码（委托至 {@link DesensitizeUtil#mask(String, int, int)}）
+     *
+     * @param str          待脱敏原始字符串
+     * @param startInclude 掩码起始索引（包含）
+     * @param endExclude   掩码结束索引（不包含）
+     * @return 脱敏后的掩码字符串
+     */
+    public static String mask(String str, int startInclude, int endExclude) {
+        return DesensitizeUtil.mask(str, startInclude, endExclude);
+    }
 }

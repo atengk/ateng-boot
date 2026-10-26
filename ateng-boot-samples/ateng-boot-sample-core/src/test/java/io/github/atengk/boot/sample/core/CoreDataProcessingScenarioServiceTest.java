@@ -234,7 +234,15 @@ class CoreDataProcessingScenarioServiceTest {
         Pair<byte[], String> pair = dataProcessingService.demonstrateFileAndStreamSafety(payload);
 
         assertThat(pair.left()).isEqualTo(payload);
-        assertThat(new File(pair.right())).exists();
+        File tempFile = new File(pair.right());
+        try {
+            assertThat(tempFile).exists();
+        } finally {
+            // 测试结束后确定性物理删除，杜绝磁盘残留
+            if (tempFile.exists()) {
+                tempFile.delete();
+            }
+        }
     }
 
     @Test
@@ -282,6 +290,8 @@ class CoreDataProcessingScenarioServiceTest {
 
         assertThat(map.get("camelCase")).isEqualTo("userProfileName");
         assertThat(map.get("underlineCase")).isEqualTo("user_profile_name");
+        assertThat(map.get("formattedText")).isEqualTo("User Admin role is SuperAdmin");
+        assertThat(map.get("truncatedText")).isEqualTo("VeryLongBu");
         assertThat((Long) map.get("stopWatchTotalMillis")).isNotNegative();
         assertThat(map.get("localIp")).isNotNull();
         assertThat(map.get("convertedLong")).isEqualTo(9876543210L);

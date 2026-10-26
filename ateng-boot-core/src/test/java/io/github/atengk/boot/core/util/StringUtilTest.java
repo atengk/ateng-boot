@@ -77,4 +77,36 @@ class StringUtilTest {
         assertThat(StringUtil.toUnderlineCase("HTTPRequest")).isEqualTo("http_request");
         assertThat(StringUtil.toSnakeCase("userOrderId")).isEqualTo("user_order_id");
     }
+
+    @Test
+    @DisplayName("truncate: 安全文本截断")
+    void shouldTruncateCorrectly() {
+        assertThat(StringUtil.truncate(null, 5)).isNull();
+        assertThat(StringUtil.truncate("hello", 0)).isEqualTo("");
+        assertThat(StringUtil.truncate("hello", -1)).isEqualTo("");
+        assertThat(StringUtil.truncate("hello", 3)).isEqualTo("hel");
+        assertThat(StringUtil.truncate("hello", 10)).isEqualTo("hello");
+    }
+
+    @Test
+    @DisplayName("containsAny 与 containsIgnoreCase 检索断言")
+    void shouldCheckContainsCorrectly() {
+        assertThat(StringUtil.containsAny("apple,banana,orange", "pear", "banana")).isTrue();
+        assertThat(StringUtil.containsAny("apple,banana", "watermelon", "grape")).isFalse();
+        assertThat(StringUtil.containsAny(null, "test")).isFalse();
+        assertThat(StringUtil.containsAny("apple")).isFalse();
+
+        assertThat(StringUtil.containsIgnoreCase("HelloWorld", "world")).isTrue();
+        assertThat(StringUtil.containsIgnoreCase("HelloWorld", "WORLD")).isTrue();
+        assertThat(StringUtil.containsIgnoreCase("HelloWorld", "java")).isFalse();
+        assertThat(StringUtil.containsIgnoreCase(null, "java")).isFalse();
+        assertThat(StringUtil.containsIgnoreCase("hello", null)).isFalse();
+    }
+
+    @Test
+    @DisplayName("mask 动态掩码委托测试")
+    void shouldMaskCorrectly() {
+        assertThat(StringUtil.mask("13812345678", 3, 7)).isEqualTo("138****5678");
+        assertThat(StringUtil.mask(null, 1, 2)).isNull();
+    }
 }

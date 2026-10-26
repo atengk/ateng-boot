@@ -176,6 +176,14 @@ public final class FileUtil {
         if (maxBytes < 0) {
             throw new IllegalArgumentException("maxBytes 不能为负数: " + maxBytes);
         }
+        // 当 maxBytes 达到 Integer.MAX_VALUE 时，避免 maxBytes + 1 发生整型溢出
+        if (maxBytes == Integer.MAX_VALUE) {
+            byte[] bytes = inputStream.readNBytes(maxBytes);
+            if (inputStream.read() != -1) {
+                throw new IllegalArgumentException("输入流实际字节数超出允许的最大安全限制: " + maxBytes + " bytes (" + formatSize(maxBytes) + ")");
+            }
+            return bytes;
+        }
         // 读取 maxBytes + 1 字节探测是否溢出
         byte[] bytes = inputStream.readNBytes(maxBytes + 1);
         if (bytes.length > maxBytes) {
@@ -185,7 +193,7 @@ public final class FileUtil {
     }
 
     /**
-     * 创建并在 JVM 退出时自动删除的安全受管临时文件
+     * 在默认临时目录创建并在 JVM 退出时自动删除的安全受管临时文件
      * 自动对前缀进行路径穿越清洗以确保安全
      *
      * @param prefix 临时文件名前缀，为空或 null 时默认使用 "ateng-temp-"
@@ -194,12 +202,26 @@ public final class FileUtil {
      * @throws java.io.IOException 创建临时文件失败时抛出
      */
     public static java.io.File createTempFile(String prefix, String suffix) throws java.io.IOException {
+        return createTempFile(null, prefix, suffix);
+    }
+
+    /**
+     * 在指定目录创建并在 JVM 退出时自动删除的安全受管临时文件
+     * 自动对前缀进行路径穿越清洗以确保安全
+     *
+     * @param directory 目标存储目录，为 null 时使用系统默认临时目录
+     * @param prefix    临时文件名前缀，为空或 null 时默认使用 "ateng-temp-"
+     * @param suffix    临时文件名后缀（扩展名，如 ".tmp"），为 null 时默认使用 ".tmp"
+     * @return 创建成功的受管临时文件实例
+     * @throws java.io.IOException 创建临时文件失败时抛出
+     */
+    public static java.io.File createTempFile(java.io.File directory, String prefix, String suffix) throws java.io.IOException {
         String safePrefix = (prefix != null && !prefix.isBlank()) ? cleanFilename(prefix) : "ateng-temp-";
         if (safePrefix.length() < 3) {
             safePrefix = safePrefix + "tmp";
         }
         String safeSuffix = suffix != null ? suffix : ".tmp";
-        java.io.File tempFile = java.io.File.createTempFile(safePrefix, safeSuffix);
+        java.io.File tempFile = java.io.File.createTempFile(safePrefix, safeSuffix, directory);
         tempFile.deleteOnExit();
         return tempFile;
     }

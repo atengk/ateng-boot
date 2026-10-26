@@ -4,7 +4,10 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.AsyncContextSnapshotProvider;
 import io.github.atengk.boot.core.properties.AsyncProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -47,10 +50,11 @@ import java.util.concurrent.Executor;
         AtengAsyncAutoConfiguration.PlatformThreadsConfiguration.class,
         DynamicAsyncPoolRegistrar.class
 })
-public class AtengAsyncAutoConfiguration implements AsyncConfigurer, InitializingBean {
+public class AtengAsyncAutoConfiguration implements AsyncConfigurer, InitializingBean, DisposableBean {
 
     private final ObjectProvider<Executor> taskExecutorProvider;
     private final ObjectProvider<List<AsyncContextSnapshotProvider>> snapshotProvidersProvider;
+    private final List<AsyncContextSnapshotProvider> registeredProviders = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public AtengAsyncAutoConfiguration(
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
@@ -67,11 +71,21 @@ public class AtengAsyncAutoConfiguration implements AsyncConfigurer, Initializin
                 for (AsyncContextSnapshotProvider provider : providers) {
                     if (provider != null) {
                         AsyncContext.registerSnapshotProvider(provider);
+                        registeredProviders.add(provider);
                         log.info("ateng-boot: 自动注册 Spring 受管异步上下文快照提供者 [{}]", provider.getClass().getName());
                     }
                 }
             }
         }
+    }
+
+    @Override
+    public void destroy() {
+        for (AsyncContextSnapshotProvider provider : registeredProviders) {
+            AsyncContext.unregisterSnapshotProvider(provider);
+            log.info("ateng-boot: 成功注销 Spring 受管异步上下文快照提供者 [{}]", provider.getClass().getName());
+        }
+        registeredProviders.clear();
     }
 
     /**

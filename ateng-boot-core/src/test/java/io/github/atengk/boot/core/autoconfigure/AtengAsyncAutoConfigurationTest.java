@@ -495,21 +495,21 @@ class AtengAsyncAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("自动收集容器中声明的 AsyncContextSnapshotProvider 并注册到 AsyncContext")
+    @DisplayName("自动收集容器中声明的 AsyncContextSnapshotProvider 并注册到 AsyncContext，且在容器销毁时对称注销")
     void shouldAutoRegisterSnapshotProvidersFromContext() {
         TestSnapshotProvider testProvider = new TestSnapshotProvider();
-        try {
-            contextRunner.withBean(AsyncContextSnapshotProvider.class, () -> testProvider)
-                    .run(context -> {
-                        assertThat(context).hasSingleBean(AsyncContextSnapshotProvider.class);
+        contextRunner.withBean(AsyncContextSnapshotProvider.class, () -> testProvider)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AsyncContextSnapshotProvider.class);
 
-                        // 验证通过 AsyncContext.ContextSnapshot.capture() 能够抓取到该 provider
-                        AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
-                        assertThat(snapshot.getExtension(testProvider)).isEqualTo("test-snapshot-val");
-                    });
-        } finally {
-            AsyncContext.unregisterSnapshotProvider(testProvider);
-        }
+                    // 验证通过 AsyncContext.ContextSnapshot.capture() 能够抓取到该 provider
+                    AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
+                    assertThat(snapshot.getExtension(testProvider)).isEqualTo("test-snapshot-val");
+                });
+
+        // 验证容器销毁后，testProvider 已被 AtengAsyncAutoConfiguration.destroy() 对称注销
+        AsyncContext.ContextSnapshot afterCloseSnapshot = AsyncContext.ContextSnapshot.capture();
+        assertThat(afterCloseSnapshot.getExtension(testProvider)).isNull();
     }
 
     static class TestSnapshotProvider implements AsyncContextSnapshotProvider {

@@ -265,4 +265,23 @@ class AsyncContextTest {
             customContext.remove();
         }
     }
+
+    @Test
+    @DisplayName("包装幂等性防卫：重复调用 wrap/wrapSupplier 返回同一实例，杜绝双重捕获开销")
+    void shouldBeIdempotentOnMultipleWrap() {
+        Runnable runnable = () -> {};
+        Runnable wrapped1 = AsyncContext.wrap(runnable);
+        Runnable wrapped2 = AsyncContext.wrap(wrapped1);
+        assertSame(wrapped1, wrapped2);
+
+        Callable<String> callable = () -> "test";
+        Callable<String> wrappedCallable1 = AsyncContext.wrap(callable);
+        Callable<String> wrappedCallable2 = AsyncContext.wrap(wrappedCallable1);
+        assertSame(wrappedCallable1, wrappedCallable2);
+
+        java.util.function.Supplier<String> supplier = () -> "test";
+        java.util.function.Supplier<String> wrappedSupplier1 = AsyncContext.wrapSupplier(supplier);
+        java.util.function.Supplier<String> wrappedSupplier2 = AsyncContext.wrapSupplier(wrappedSupplier1);
+        assertSame(wrappedSupplier1, wrappedSupplier2);
+    }
 }

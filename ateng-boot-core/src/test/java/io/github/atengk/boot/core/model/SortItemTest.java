@@ -165,4 +165,15 @@ class SortItemTest {
         assertNotEquals(item1, item3);
         assertNotNull(item1.toString());
     }
+
+    @Test
+    @DisplayName("Jackson 序列化契约纯洁性：不外泄 column 与 asc 冗余辅助字段")
+    void shouldSerializeCleanlyWithoutLeakingAuxiliaryFields() {
+        SortItem item = SortItem.asc("age");
+        String json = io.github.atengk.boot.core.util.JsonUtil.toJsonString(item);
+        assertTrue(json.contains("\"property\":\"age\""));
+        assertTrue(json.contains("\"direction\":\"ASC\""));
+        assertFalse(json.contains("\"column\""));
+        assertFalse(json.contains("\"asc\""));
+    }
 }

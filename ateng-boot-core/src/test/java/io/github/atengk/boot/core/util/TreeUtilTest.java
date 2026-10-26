@@ -263,7 +263,7 @@ class TreeUtilTest {
     }
 
     @Test
-    @DisplayName("反向展平树 flatten 验证")
+    @DisplayName("反向展平树 flatten 与 flattenTree 契约验证")
     void shouldFlattenTreeSuccessfully() {
         MenuNode r1 = new MenuNode(1L, 0L, "系统管理");
         MenuNode c11 = new MenuNode(11L, 1L, "用户管理");
@@ -278,8 +278,13 @@ class TreeUtilTest {
         assertEquals("用户管理", flattened.get(1).getName());
         assertEquals("新增用户按钮", flattened.get(2).getName());
 
+        // 验证 flattenTree 契约别名完全等价
+        List<MenuNode> flattenedAlias = TreeUtil.flattenTree(List.of(r1), MenuNode::getChildren);
+        assertEquals(flattened, flattenedAlias);
+
         assertTrue(TreeUtil.flatten(null, MenuNode::getChildren).isEmpty());
         assertTrue(TreeUtil.flatten(Collections.emptyList(), MenuNode::getChildren).isEmpty());
+        assertTrue(TreeUtil.flattenTree(null, MenuNode::getChildren).isEmpty());
     }
 
     @Test

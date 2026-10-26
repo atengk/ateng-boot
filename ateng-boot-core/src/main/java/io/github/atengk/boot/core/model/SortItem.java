@@ -1,5 +1,6 @@
 package io.github.atengk.boot.core.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -153,9 +154,11 @@ public class SortItem implements Serializable {
 
     /**
      * 获取排序列名称（兼容列名语义，等同于 {@link #getProperty()}）
+     * 标注 @JsonIgnore 避免序列化时产生冗余字段污染传输契约
      *
      * @return 排序列或属性名称
      */
+    @JsonIgnore
     public String getColumn() {
         return getProperty();
     }
@@ -171,9 +174,11 @@ public class SortItem implements Serializable {
 
     /**
      * 判断当前是否为升序排序
+     * 标注 @JsonIgnore 避免序列化时产生冗余布尔字段污染传输契约
      *
      * @return true 若为升序或 direction 为 null（保底为升序）；否则 false
      */
+    @JsonIgnore
     public boolean isAsc() {
         return direction == null || direction.isAscending();
     }
