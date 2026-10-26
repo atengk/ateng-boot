@@ -3,10 +3,12 @@ package io.github.atengk.boot.sample.core;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.model.Triple;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.sample.core.service.CoreResilienceScenarioService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -138,5 +140,60 @@ class CoreResilienceScenarioServiceTest {
     void testVerifySpringUtil() {
         String appName = resilienceScenarioService.verifySpringUtil();
         assertThat(appName).isEqualTo("ateng-boot-sample-core");
+    }
+
+    @Test
+    @DisplayName("测试Snowflake逆向反解与Base62短码互转")
+    void testParseSnowflakeAndBase62() {
+        long snowflakeId = IdUtil.nextId();
+        Pair<SnowflakeIdInfo, String> pair = resilienceScenarioService.parseSnowflakeAndBase62(snowflakeId);
+
+        SnowflakeIdInfo info = pair.left();
+        String base62 = pair.right();
+
+        assertThat(info.id()).isEqualTo(snowflakeId);
+        assertThat(info.timestamp()).isPositive();
+        assertThat(info.dateTime()).isNotNull();
+        assertThat(base62).isNotBlank();
+        assertThat(IdUtil.fromBase62(base62)).isEqualTo(snowflakeId);
+    }
+
+    @Test
+    @DisplayName("测试SlidingWindowCounter内存平滑滑动窗口限流")
+    void testSlidingWindowCounter() {
+        Pair<Long, Boolean> result = resilienceScenarioService.demonstrateSlidingWindowCounter();
+        assertThat(result.left()).isEqualTo(4L);
+        assertThat(result.right()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试BusinessAssert扩展断言与占位符格式化")
+    void testAssertBusinessRulesExtended() {
+        // 成功分支
+        resilienceScenarioService.assertBusinessRulesExtended("user-001", new BigDecimal("100.50"));
+
+        // 占位符格式化失败断言
+        assertThatThrownBy(() -> resilienceScenarioService.assertBusinessRulesExtended("user-001", BigDecimal.ZERO))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("用户 [user-001] 账户余额 [0] 必须大于 0");
+
+        // 区间失败断言
+        assertThatThrownBy(() -> resilienceScenarioService.assertBusinessRulesExtended("user-001", new BigDecimal("20000000")))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("余额超出安全范围");
+    }
+
+    @Test
+    @DisplayName("测试PageResult导航判断")
+    void testPageResultNavigation() {
+        PageResult<String> pageResult = resilienceScenarioService.demonstratePageResultNavigation();
+        assertThat(pageResult.hasPrevious()).isTrue();
+        assertThat(pageResult.hasNext()).isTrue();
+        assertThat(pageResult.isEmpty()).isFalse();
+
+        PageResult<Object> empty = PageResult.empty();
+        assertThat(empty.hasPrevious()).isFalse();
+        assertThat(empty.hasNext()).isFalse();
+        assertThat(empty.isEmpty()).isTrue();
     }
 }

@@ -5,11 +5,13 @@ import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.CryptoUtil;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
+import io.github.atengk.boot.core.util.HexUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 
 /**
@@ -112,5 +114,36 @@ public class CoreSecurityScenarioService {
 
         log.info("DigestUtil 摘要计算: raw={}, sha256={}, md5={}", rawText, sha256Hex, md5Hex);
         return Pair.of(sha256Hex, md5Hex);
+    }
+
+    /**
+     * 6. 验证 DesensitizeUtil 扩展敏感类型掩码（统一社会信用代码、密钥Token、护照号）
+     *
+     * @return Triple<String(统一社会信用代码), String(密钥Token), String(护照号)>
+     */
+    public Triple<String, String, String> desensitizeExtendedTypes() {
+        String creditCode = DesensitizeUtil.unifiedCreditCode("91110000000000000X");
+        String secretKey = DesensitizeUtil.secretKey("sk-proj-1234567890abcdef");
+        String passport = DesensitizeUtil.passport("G12345678");
+
+        log.info("DesensitizeUtil 扩展类型脱敏: creditCode={}, secretKey={}, passport={}", creditCode, secretKey, passport);
+        return Triple.of(creditCode, secretKey, passport);
+    }
+
+    /**
+     * 7. 验证 HexUtil 十六进制编解码与格式化
+     *
+     * @param rawText 原始文本
+     * @return Pair<String(十六进制字符串), String(解码还原文本)>
+     */
+    public Pair<String, String> demonstrateHexEncoding(String rawText) {
+        byte[] bytes = rawText.getBytes(StandardCharsets.UTF_8);
+        String hexString = HexUtil.encodeHex(bytes);
+        byte[] decodedBytes = HexUtil.decodeHex(hexString);
+        String decodedText = new String(decodedBytes, StandardCharsets.UTF_8);
+
+        log.info("HexUtil 十六进制编解码: raw={}, hex={}, decoded={}",
+                rawText, hexString, decodedText);
+        return Pair.of(hexString, decodedText);
     }
 }

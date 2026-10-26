@@ -2,7 +2,10 @@ package io.github.atengk.boot.sample.core;
 
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.enums.TransactionCompletionStatus;
 import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.ThreadPoolStatus;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.sample.core.service.CoreContextScenarioService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -112,5 +115,47 @@ class CoreContextScenarioServiceTest {
         // 无事务时 executeAfterCommit 同步就地执行，executeAfterRollback 安全跳过
         assertThat(hooks.left()).isTrue();
         assertThat(hooks.right()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 AsyncUtil 门面异步调度并透明透传四维上下文")
+    void testExecuteWithAsyncUtil() throws Exception {
+        CompletableFuture<Map<String, String>> future = contextScenarioService.executeWithAsyncUtil(
+                "trace-async-util",
+                "user-async-util",
+                "tenant-async-util"
+        );
+        Map<String, String> snapshot = future.get(3, TimeUnit.SECONDS);
+
+        assertThat(snapshot.get("threadName")).startsWith("sample-export-async-");
+        assertThat(snapshot).containsEntry("traceId", "trace-async-util")
+                .containsEntry("userId", "user-async-util")
+                .containsEntry("tenantId", "tenant-async-util")
+                .containsEntry("ignoreTenant", "false");
+    }
+
+    @Test
+    @DisplayName("测试 ThreadPoolStatus 监控指标与 AsyncUtil.resize 在线调参")
+    void testDemonstrateThreadPoolGovernance() {
+        Pair<ThreadPoolStatus, ThreadPoolStatus> pair = contextScenarioService.demonstrateThreadPoolGovernance("export", 3, 6);
+        ThreadPoolStatus before = pair.left();
+        ThreadPoolStatus after = pair.right();
+
+        assertThat(before.corePoolSize()).isEqualTo(2);
+        assertThat(before.maxPoolSize()).isEqualTo(4);
+        assertThat(after.corePoolSize()).isEqualTo(3);
+        assertThat(after.maxPoolSize()).isEqualTo(6);
+
+        // 恢复原有配置
+        AsyncUtil.resize("export", 2, 4);
+    }
+
+    @Test
+    @DisplayName("测试 TransactionUtil 提交前与终态全状态机钩子")
+    void testDemonstrateFullTransactionLifecycle() {
+        Pair<Boolean, TransactionCompletionStatus> lifecycle = contextScenarioService.demonstrateFullTransactionLifecycle();
+        // 无事务时 executeBeforeCommit 就地执行，executeAfterCompletion 降级透传 COMMITTED
+        assertThat(lifecycle.left()).isTrue();
+        assertThat(lifecycle.right()).isEqualTo(TransactionCompletionStatus.COMMITTED);
     }
 }

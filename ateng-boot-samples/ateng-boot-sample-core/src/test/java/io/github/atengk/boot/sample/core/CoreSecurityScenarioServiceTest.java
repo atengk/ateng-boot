@@ -88,4 +88,26 @@ class CoreSecurityScenarioServiceTest {
         // MD5 32 位十六进制
         assertThat(digests.right()).hasSize(32);
     }
+
+    @Test
+    @DisplayName("测试DesensitizeUtil扩展敏感类型掩码")
+    void testDesensitizeExtendedTypes() {
+        Triple<String, String, String> result = securityScenarioService.desensitizeExtendedTypes();
+        // 统一社会信用代码前2后4明文，中间12位掩码
+        assertThat(result.left()).isEqualTo("91************000X");
+        // 密钥/Token保留前4后4
+        assertThat(result.middle()).isEqualTo("sk-p****************cdef");
+        // 护照号保留前2后3
+        assertThat(result.right()).isEqualTo("G1****678");
+    }
+
+    @Test
+    @DisplayName("测试HexUtil十六进制编解码与对称还原")
+    void testDemonstrateHexEncoding() {
+        String raw = "AtengBoot2026";
+        Pair<String, String> pair = securityScenarioService.demonstrateHexEncoding(raw);
+
+        assertThat(pair.left()).matches("^[0-9a-f]+$");
+        assertThat(pair.right()).isEqualTo(raw);
+    }
 }

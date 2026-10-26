@@ -1,15 +1,22 @@
 package io.github.atengk.boot.sample.core.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.BeanUtil;
 import io.github.atengk.boot.core.util.CollectionUtil;
+import io.github.atengk.boot.core.util.ConvertUtil;
 import io.github.atengk.boot.core.util.DateTimeUtil;
+import io.github.atengk.boot.core.util.ExceptionUtil;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.LambdaUtil;
 import io.github.atengk.boot.core.util.MoreCollectors;
+import io.github.atengk.boot.core.util.NetUtil;
 import io.github.atengk.boot.core.util.RandomUtil;
+import io.github.atengk.boot.core.util.StopWatch;
+import io.github.atengk.boot.core.util.StringUtil;
+import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.core.util.TreeUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.core.validation.ValidList;
@@ -18,9 +25,16 @@ import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Core 场景三：数据处理、校验与工具原语服务
@@ -182,5 +196,116 @@ public class CoreDataProcessingScenarioService {
 
         log.info("DateTimeUtil 与 RandomUtil: formattedDate={}, smsCode={}", formattedDate, smsCode);
         return Pair.of(formattedDate, smsCode);
+    }
+
+    /**
+     * 11. 验证 TreeUtil 高阶能力：扁平展平、面包屑路径探寻与叶子节点提取
+     *
+     * @param roots 树形根节点列表
+     * @return Triple<List(扁平所有节点), List(面包屑路径), List(叶子节点)>
+     */
+    public Triple<List<SampleMenuNodeDTO>, List<SampleMenuNodeDTO>, List<SampleMenuNodeDTO>> demonstrateAdvancedTreeOperations(List<SampleMenuNodeDTO> roots) {
+        List<SampleMenuNodeDTO> flattened = TreeUtil.flatten(roots, SampleMenuNodeDTO::getChildren);
+        List<SampleMenuNodeDTO> breadcrumbs = TreeUtil.findPath(roots, node -> "用户导出".equals(node.getName()), SampleMenuNodeDTO::getChildren);
+        List<SampleMenuNodeDTO> leafNodes = TreeUtil.getLeafNodes(roots, SampleMenuNodeDTO::getChildren);
+
+        log.info("TreeUtil 高阶能力: flattenedSize={}, breadcrumbsSize={}, leavesSize={}",
+                flattened.size(), breadcrumbs.size(), leafNodes.size());
+        return Triple.of(flattened, breadcrumbs, leafNodes);
+    }
+
+    /**
+     * 12. 验证 FileUtil 安全有界读取与临时文件创建
+     *
+     * @param payload 测试字节
+     * @return Pair<byte[](安全读取字节), String(临时文件绝对路径)>
+     */
+    public Pair<byte[], String> demonstrateFileAndStreamSafety(byte[] payload) {
+        try {
+            byte[] safeBytes = FileUtil.readNBytesSafe(new ByteArrayInputStream(payload), 1024);
+            File tempFile = FileUtil.createTempFile("sample-test-", ".txt");
+            log.info("FileUtil 安全流与临时文件: readLen={}, tempPath={}", safeBytes.length, tempFile.getAbsolutePath());
+            return Pair.of(safeBytes, tempFile.getAbsolutePath());
+        } catch (IOException e) {
+            throw new IllegalStateException("File IO failed", e);
+        }
+    }
+
+    /**
+     * 13. 验证 DateTimeUtil 工作日智能推演与跨度计算
+     *
+     * @param start 起始日期
+     * @return Triple<Boolean(是否工作日), LocalDate(顺延3个工作日后), Long(工作日间隔)>
+     */
+    public Triple<Boolean, LocalDate, Long> demonstrateWorkdays(LocalDate start) {
+        boolean isWorkday = DateTimeUtil.isWorkday(start);
+        LocalDate plus3Workdays = DateTimeUtil.plusWorkdays(start, 3);
+        long between = DateTimeUtil.betweenWorkdays(start, plus3Workdays);
+
+        log.info("DateTimeUtil 工作日推演: start={}, isWorkday={}, plus3={}, between={}",
+                start, isWorkday, plus3Workdays, between);
+        return Triple.of(isWorkday, plus3Workdays, between);
+    }
+
+    /**
+     * 14. 验证 JsonUtil 校验探针与树流读取
+     *
+     * @param json JSON字符串
+     * @return Pair<Boolean(格式是否有效), JsonNode(树结构节点)>
+     */
+    public Pair<Boolean, JsonNode> demonstrateJsonAdvanced(String json) {
+        boolean valid = JsonUtil.isValidJson(json);
+        JsonNode tree = JsonUtil.readTree(json.getBytes(StandardCharsets.UTF_8));
+        log.info("JsonUtil 高级特性: isValid={}, hasNode={}", valid, tree != null);
+        return Pair.of(valid, tree);
+    }
+
+    /**
+     * 15. 验证 MoreCollectors.distinctByKey 函数式去重
+     *
+     * @param users 输入用户列表
+     * @return 按名称去重后的用户列表
+     */
+    public List<SampleUserDTO> demonstrateStreamDistinct(List<SampleUserDTO> users) {
+        List<SampleUserDTO> distinct = users.stream()
+                .filter(MoreCollectors.distinctByKey(SampleUserDTO::getName))
+                .collect(Collectors.toList());
+        log.info("MoreCollectors.distinctByKey 去重: before={}, after={}", users.size(), distinct.size());
+        return distinct;
+    }
+
+    /**
+     * 16. 验证通用新原语 (StringUtil, StopWatch, NetUtil, ConvertUtil, ExceptionUtil, SpringUtil)
+     *
+     * @return 原语执行结果集合
+     */
+    public Map<String, Object> demonstrateGeneralPrimitives() {
+        Map<String, Object> results = new HashMap<>();
+
+        // StringUtil 命名风格转换
+        results.put("camelCase", StringUtil.toCamelCase("user_profile_name"));
+        results.put("underlineCase", StringUtil.toUnderlineCase("userProfileName"));
+
+        // StopWatch 毫秒秒表
+        StopWatch sw = new StopWatch("sampleTask");
+        sw.start("step1");
+        sw.stop();
+        results.put("stopWatchTotalMillis", sw.getTotalTimeMillis());
+
+        // NetUtil 本地IP
+        results.put("localIp", NetUtil.getLocalIpv4());
+
+        // ConvertUtil 安全强转
+        results.put("convertedLong", ConvertUtil.toLong("9876543210", 0L));
+
+        // ExceptionUtil 根因提取
+        Exception testEx = new RuntimeException("外层异常", new IllegalArgumentException("真实根因"));
+        results.put("rootCauseMessage", ExceptionUtil.getMessage(ExceptionUtil.getRootCause(testEx)));
+
+        // SpringUtil 容器探测
+        results.put("hasServiceBean", SpringUtil.containsBean("coreDataProcessingScenarioService"));
+
+        log.info("通用新原语验证结果: {}", results);
+        return results;
     }
 }

@@ -23,29 +23,36 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **API 响应契约** | 强类型通用统一响应模型 | `Result<T>` | - | `Result.success()`, `Result.success(data)`, `Result.fail(...)`, `getOrThrow()`, `map()`, `peek()`, `ifFail()`, `orElseGet()`, `orElseThrow()` | `ResultTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **标准状态码** | 统一状态码契约与预置枚举 | `IResultCode`, `CommonResultCode` | - | `CommonResultCode.SUCCESS(200)`, `BAD_REQUEST(400)`, `UNAUTHORIZED(401)`, `FORBIDDEN(403)`, `NOT_FOUND(404)`, `INTERNAL_SERVER_ERROR(500)` | `CommonResultCodeTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **分页传输契约** | 防越界分页入参、强类型排序与纯净出参模型 | `PageQuery`, `SortItem`, `PageResult<T>` | - | `PageQuery.getCurrent()`, `PageQuery.getSize()`, `PageQuery.addAsc/Desc()`, `SortItem.asc/desc()`, `PageResult.of(list, total, current, size)`, `PageResult.map(mapper)` | `PageQueryTest.java`, `SortItemTest.java`, `PageResultTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **因果异常体系** | 业务受控异常与因果堆栈双模 | `BusinessException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留堆栈）, `BusinessException(..., writableStackTrace)` | `BusinessExceptionTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)` | `BusinessAssertTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **分布式发号器** | 2026 纪元雪花发号器与无锁短 ID | `IdUtil`, `Snowflake` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `CoreContextScenarioServiceTest.java` |
-| **多业务异步底座** | 多业务受管线程池与自适应双模运行时 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy`, `pools.*` | 声明式配置驱动多业务受管线程池动态注册；主池标记 `@Primary` 兜底；子池自动装配 `${name}TaskExecutor` 及别名 `${name}`；自适应双模与智能前缀推导；四维上下文无损穿透与自动优雅停机 | `AtengAsyncAutoConfigurationTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
+| **分页传输契约** | 防越界分页入参、强类型排序与纯净出参模型 | `PageQuery`, `SortItem`, `PageResult<T>` | - | `PageQuery.getCurrent()`, `PageQuery.getSize()`, `PageQuery.addAsc/Desc()`, `SortItem.asc/desc()`, `PageResult.of(list, total, current, size)`, `PageResult.map(mapper)`, `hasPrevious()`, `hasNext()`, `isEmpty()` | `PageQueryTest.java`, `SortItemTest.java`, `PageResultTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **因果异常体系** | 业务受控异常与因果堆栈双模 | `BusinessException` | - | `BusinessException(resultCode)`, `BusinessException(code, msg, cause)`（有 cause 默认保留完整调用栈与因果链，无 cause 零抓栈开销）, `BusinessException(..., writableStackTrace)` | `BusinessExceptionTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)`, `{}` 占位符惰性格式化, `Supplier<String>`, 数值区间断言 (`gt`, `gte`, `lt`, `lte`, `between`) | `BusinessAssertTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照 | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `CoreContextScenarioServiceTest.java` |
+| **多业务异步底座与治理** | 多业务受管线程池、动态调参、状态监控与告警策略 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy`, `AsyncUtil`, `ThreadPoolStatus` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy` (`WARN_CALLER_RUNS`, `WARN_ABORT`), `pools.*` | 声明式多业务线程池注册；`AsyncUtil.getStatus(executor)` 提取 `ThreadPoolStatus` 监控指标；`AsyncUtil.updatePoolSize(executor, core, max)` 动态热调参；`AsyncUtil.runAsync()`, `supplyAsync()`, `allMatches()`, `allOf()` 编程式异步协调 | `AtengAsyncAutoConfigurationTest.java`, `AsyncUtilTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
-| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `toJsonStringWithLongToString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)` | `JsonUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **敏感数据脱敏** | 12 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.desensitize(str, type)`, `mobilePhone(str)`, `idCard(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面与树流读取 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)`, `isValidJson(json)`, `readTree(String/byte[]/InputStream)` | `JsonUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **敏感数据脱敏** | 15 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **加解密与摘要** | 原生安全加解密与摘要算法门面 | `CryptoUtil`, `DigestUtil` | - | `CryptoUtil.aesEncrypt/Decrypt`, `sm4Encrypt/Decrypt`, `DigestUtil.md5`, `sha256`, `sm3` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
-| **安全文件处理** | 路径穿越防御与扩展名容量格式化 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `getExtName(name)`, `getBaseName(name)`, `formatSize(bytes)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **集合切片防空** | 零内存拷贝分批切片与判空防御 | `CollectionUtil` | - | `CollectionUtil.isEmpty/isNotEmpty(col/map)`, `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转） | `CollectionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **加解密与十六进制** | 原生安全加解密、摘要算法与 Hex 编解码 | `CryptoUtil`, `DigestUtil`, `HexUtil` | - | `CryptoUtil.encryptGcm/decryptGcm`, `encryptCbc/decryptCbc`, `DigestUtil.sha256Hex`, `md5Hex`, `HexUtil.encodeHex(bytes)`, `HexUtil.decodeHex(hexStr)` | `CryptoUtilTest.java`, `DigestUtilTest.java`, `HexUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **安全文件与流处理** | 路径穿越防御、安全有界读取与临时文件 | `FileUtil` | - | `FileUtil.cleanFilename(name)`（防御 `../` 路径穿越）, `cleanPath(path)`, `getExtName(name)`, `formatSize(bytes)`, `readNBytesSafe(stream, maxBytes)` (防 OOM 安全有界读取), `createTempFile(prefix, suffix)` | `FileUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **集合切片与去重** | 零内存拷贝分批切片与函数式去重 | `CollectionUtil`, `MoreCollectors` | - | `CollectionUtil.partition(list, batchSize)`（基于 subList 视图切片，防 OOM 批量流转）, `MoreCollectors.toSafeMap(...)`, `MoreCollectors.distinctByKey(keyExtractor)` | `CollectionUtilTest.java`, `MoreCollectorsTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **树形森林装配与析取** | O(N) 线性组装、递归剪枝、展平与路径探寻 | `TreeUtil` | - | `TreeUtil.build(...)`, `buildForest(...)`, `filter(...)`, `flatten(roots, childrenGetter)` (先序深度优先展平), `findPath(...)` (面包屑导航路径), `getLeafNodes(...)` (提取所有叶子终端节点) | `TreeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **类型安全引用** | SerializedLambda 强类型字段推导 | `LambdaUtil`, `PropertyFunc` | - | `LambdaUtil.getFieldName(func)`（解析 `User::getName` -> `"name"`，带本地并发缓存）, `LambdaUtil.resolve(func)` | `LambdaUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **标准日期常量** | 标准日期格式串与预编译格式化器 | `DatePattern` | - | `NORM_DATETIME_PATTERN`, `NORM_DATE_PATTERN`, `NORM_TIME_PATTERN`, `NORM_DATETIME_FORMATTER` 等不可变格式化常量 | `DatePatternTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **通用辅助原语** | 对象拷贝、不可变元组、收集器与树 | `BeanUtil`, `Pair`, `Triple`, `MoreCollectors`, `TreeUtil`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copyProperties`, `Pair.of`, `Triple.of`, `MoreCollectors.toLinkedMap`, `TreeUtil.buildTree`, `SpringUtil.getBean`, `SpringUtil.isInitialized` | `BeanUtilTest.java`, `PairTripleTest.java`, `TreeUtilTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **标准日期与工作日** | 标准日期常量、无损互转与工作日推演 | `DatePattern`, `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(...)`, `isWorkday(date)`, `plusWorkdays(date, workdays)`, `betweenWorkdays(start, end)` | `DatePatternTest.java`, `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **通用辅助原语** | 对象拷贝、不可变元组与 Spring 容器门面 | `BeanUtil`, `Pair`, `Triple`, `SpringUtil`, `AtengCoreAutoConfiguration` | - | `BeanUtil.copy(...)`, `copyList(...)`, `copyNonNullProperties(...)`, `Pair.of(...)`, `Triple.of(...)`, `SpringUtil.getBean(...)`, `containsBean(...)`, `isDev/isProd/isTest()`, `getServerPort()` | `BeanUtilTest.java`, `PairTripleTest.java`, `SpringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **事务同步门面** | 事务生命周期门面与上下文穿透 | `TransactionUtil` | - | `executeAfterCommit(task)`, `executeAfterRollback(task)`, `executeAfterCommitAsync(task)`, `publishAfterCommit(event)`, `isActualTransactionActive()`, `isSynchronizationActive()` | `TransactionUtilTest.java`, `CoreContextScenarioServiceTest.java` |
 | **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
-| **日期时间门面** | 原生日期时间互转与跨度计算 | `DateTimeUtil` | - | `DateTimeUtil.toLocalDateTime(date)`, `toDate(ldt)`, `toEpochMilli(ldt)`, `beginOfDay(ldt)`, `endOfDay(ldt)`, `betweenDays(t1, t2)`, `format(ldt)`, `parseDateTime(str)` | `DateTimeUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **高性能随机件** | 无锁安全随机与列表抽样洗牌 | `RandomUtil` | - | `RandomUtil.randomNumbers(len)`, `randomString(len)`, `randomInt(min, max)`, `randomEle(list)`, `randomEles(list, count)`, `shuffle(list)`, `shuffleNew(list)` | `RandomUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **网络通信地址工具** | 内网 IPv4 探测与端口可用性校验 | `NetUtil` | - | `NetUtil.getLocalIpv4()`, `isUsableLocalPort(port)`, `findAvailablePort(min, max)`, `canConnect(host, port, timeout)` | `NetUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **通用字符串算法** | 下划线与驼峰互转及文本安全截断 | `StringUtil` | - | `StringUtil.toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **跨中间件消息传播契约** | 消息头标准常量、四维透传、毒丸判定与异常 | `MessageHeaderConstants`, `MessageContextPropagator`, `FatalExceptionClassifier`, `MessageDeliveryException` | - | `MessageHeaderConstants.TRACE_ID`, `TENANT_ID`, `USER_ID`, `TIMESTAMP`; `MessageContextPropagator.inject(...)`, `extractAndSet(...)`, `executeWithContext(...)`; `FatalExceptionClassifier.isFatal(ex)`; `MessageDeliveryException` | `MessageContextPropagatorTest.java`, `FatalExceptionClassifierTest.java`, `MessageDeliveryExceptionTest.java` |
 
 ---
 
@@ -192,6 +199,15 @@ String uuid = IdUtil.fastUUID(); // "4a6df7a0-bc12-49b8-9182-31012ab987de"
 
 // 5. 21 位 URL 安全 NanoId（随机无碰撞短链接/文件代号）
 String nanoId = IdUtil.nanoId(); // "V1StGXR8_Z5jdHi6B-myT"
+
+// 6. 雪花 ID 逆向反解结构化不可变元数据 (SnowflakeIdInfo)
+SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+log.info("发号时间戳: {}, 时间: {}, 数据中心: {}, 工作节点: {}, 序列号: {}",
+        info.timestamp(), info.dateTime(), info.datacenterId(), info.workerId(), info.sequence());
+
+// 7. 纯原生零依赖无锁 Base62 双向短码（将 18~19 位十进制雪花 ID 压缩为 10~11 位紧凑短码）
+String base62 = IdUtil.toBase62(id); // 如 "7zWk0S0l8K"
+long restoredId = IdUtil.fromBase62(base62); // 100% 无损还原原始雪花长整型 ID
 ```
 
 ### 部署与节点自定义覆盖
@@ -269,10 +285,16 @@ DesensitizeUtil.carLicense("粤B12345D"); // 粤B****5D
 DesensitizeUtil.ipv4("192.168.1.100"); // 192.168.*.*
 DesensitizeUtil.ipv6("2001:0db8:85a3:0000:0000:8a2e:0370:7334"); // 2001:db8:****:7334
 
-// 9. 统一社会信用代码（18位法人证照）
-DesensitizeUtil.socialCreditCode("91110000000000001X"); // 91110000********1X
+// 9. 统一社会信用代码（18位法人证照，保留前2后4）
+DesensitizeUtil.unifiedCreditCode("91110000000000000X"); // 91************000X
 
-// 10. 自定义首尾保留位数（例如保留前2位、后2位）
+// 10. 密钥 / Token / 凭据（保留前4后4，中间等长掩码）
+DesensitizeUtil.secretKey("sk-proj-1234567890abcdef"); // sk-p****************cdef
+
+// 11. 护照号码（保留前2后3，中间等长掩码）
+DesensitizeUtil.passport("G12345678"); // G1****678
+
+// 12. 自定义首尾保留位数（例如保留前2位、后2位）
 DesensitizeUtil.keepHeadAndTail("TOPSECRETTOKEN123456", 2, 2); // TO****************56
 ```
 
@@ -359,6 +381,19 @@ List<MenuNode> filteredTree = TreeUtil.filter(
         MenuNode::getChildren,
         MenuNode::setChildren
 );
+
+// 4. 将嵌套树形结构反向扁平展平为列表（深度优先先序遍历）
+List<MenuNode> allNodes = TreeUtil.flatten(menuTree, MenuNode::getChildren);
+
+// 5. 探寻根节点到目标节点的完整路径（面包屑导航）
+List<MenuNode> breadcrumbs = TreeUtil.findPath(
+        menuTree,
+        node -> "用户导出".equals(node.getName()),
+        MenuNode::getChildren
+);
+
+// 6. 提取树形结构中的所有终端叶子节点（无子节点节点）
+List<MenuNode> leafNodes = TreeUtil.getLeafNodes(menuTree, MenuNode::getChildren);
 ```
 
 ---
@@ -568,11 +603,47 @@ public class CoreReportExportScenarioService {
   - `VIRTUAL`：在 JDK 21+ 下强制使用虚拟线程（`SimpleAsyncTaskExecutor`），适用于高并发 IO 密集型调用；若当前环境低于 JDK 21 则自动安全降级为平台线程并输出告警，保障编译与运行时平滑兼容；
 - **强类型饱和拒绝策略 (`rejected-policy`)**：
   - `CALLER_RUNS`（默认）：调用方线程同步回退执行，提供天然的背压削峰能力；
+  - `WARN_CALLER_RUNS`：打印 WARN 告警日志后由调用方线程同步执行，高并发线上排障首选；
+  - `WARN_ABORT`：打印 WARN 告警日志后抛出 `RejectedExecutionException` 快速失败；
   - `ABORT`：抛出 `RejectedExecutionException` 立即快速失败，防止上游过载；
   - `DISCARD` / `DISCARD_OLDEST`：静默丢弃当前任务或移除工作队列队头任务；
 - **全生命周期优雅停机**：所有动态装配的子池统一步调注册 Spring 容器销毁钩子（平台线程委托 `shutdown()`，虚拟线程委托 `close()`），保障进程关闭时在 `await-termination` 超时内平滑排空存量任务。
 
-#### 6. 核心生产边界与非功能语义 (Production Boundary)
+#### 6. 受管线程池全景治理与运行时调参门面 (`AsyncUtil` & `ThreadPoolStatus`)
+支持在业务运行时无感获取任意受管平台线程池的度量指标快照，并支持热调整核心与最大线程数（动态调优），同时提供四维上下文感知的编程式异步执行与批量协调工具：
+
+```java
+import io.github.atengk.boot.core.model.ThreadPoolStatus;
+import io.github.atengk.boot.core.util.AsyncUtil;
+
+// 1. 获取指定受管业务线程池的运行度量快照
+ThreadPoolStatus status = AsyncUtil.getStatus("export");
+log.info("线程池核心数: {}, 最大数: {}, 活跃线程: {}, 队列积压: {}, 剩余容量: {}, 是否饱和: {}",
+        status.corePoolSize(), status.maxPoolSize(), status.activeCount(),
+        status.queueSize(), status.remainingQueueCapacity(), status.isSaturated());
+
+// 2. 动态热调参：无需重启服务平滑扩缩容（内部严格遵循 core <= max 阶梯步调调控）
+AsyncUtil.updatePoolSize("export", 3, 6);
+
+// 3. 编程式异步调度（自动透传四维上下文快照：MDC、User、TenantId、IgnoreTenant）
+CompletableFuture<Void> future1 = AsyncUtil.runAsync(() -> auditService.record(), "export");
+CompletableFuture<String> future2 = AsyncUtil.supplyAsync(() -> reportService.generate(), "export");
+
+// 4. 高阶批量任务协调
+// 4.1 协调所有任务均返回 true（遇首个 false 提前短路）
+CompletableFuture<Boolean> allMatchFuture = AsyncUtil.allMatches(
+        List.of(() -> checkRuleA(), () -> checkRuleB()),
+        "export"
+);
+
+// 4.2 协调等待多个有返回值任务并行完成并收集结果集合
+CompletableFuture<List<String>> allOfFuture = AsyncUtil.allOf(
+        List.of(() -> fetchPartA(), () -> fetchPartB()),
+        "export"
+);
+```
+
+#### 7. 核心生产边界与非功能语义 (Production Boundary)
 - **`@Primary` 兜底路由守卫**：多业务池共存场景下，主池 `taskExecutor` 统一显式标注 `@Primary`。开发者直接 `@Autowired Executor defaultExecutor` 或无参数 `@Async` 方法稳定命中主池，彻底消除 Spring 多候选 Bean 导致的 `NoUniqueBeanDefinitionException`；
 - **“四维上下文快照”无损穿透与零污染保证**：所有受管子池统一强制挂载 `ContextCopyingTaskDecorator`。在任务执行前捕获调用方父线程的 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照并在工作线程精准还原；任务执行完毕后在 `finally` 块中严格恢复原始工作线程现场，杜绝线程复用污染与跨租户越权漏洞。
 
@@ -595,8 +666,14 @@ DataSource dataSource = SpringUtil.getBean("dataSource", DataSource.class);
 String port = SpringUtil.getProperty("server.port", "8080");
 Integer timeout = SpringUtil.getProperty("rpc.timeout", Integer.class, 3000);
 String activeProfile = SpringUtil.getActiveProfile();
+boolean isDev = SpringUtil.isDev(); // 是否开发环境
+boolean containsUserBean = SpringUtil.containsBean("userService");
+Integer serverPort = SpringUtil.getServerPort(); // 智能探测 Web 服务端口
 
-// 3. 发布应用事件
+// 3. 动态向容器注册单例 Bean
+SpringUtil.registerBean("dynamicService", new CustomServiceImpl());
+
+// 4. 发布应用事件
 SpringUtil.publishEvent(new UserRegisteredEvent(userId));
 ```
 
@@ -631,6 +708,11 @@ for (List<Order> batch : batches) {
 // 2. 防 NPE 与防 DuplicateKey 的流收集器（原生 Collectors.toMap 当 Value 为 null 时会抛出 NPE）
 Map<Long, String> userMap = userList.stream()
         .collect(MoreCollectors.toSafeMap(User::getId, User::getRemark));
+
+// 3. 基于键提取函数的 Stream.filter 去重谓词
+List<User> distinctUsers = userList.stream()
+        .filter(MoreCollectors.distinctByKey(User::getName))
+        .collect(Collectors.toList());
 ```
 
 ### 4. 自动实例化反射拷贝与非空合并 (`BeanUtil`)
@@ -708,6 +790,12 @@ String base = FileUtil.getBaseName("avatar.png");   // "avatar"
 String size1 = FileUtil.formatSize(1536);          // "1.50 KB"
 String size2 = FileUtil.formatSize(10485760);       // "10.00 MB"
 String size3 = FileUtil.formatSize(2684354560L);    // "2.50 GB"
+
+// 4. 安全有界输入流读取（探测超限立即抛出异常，防 OOM 内存攻击）
+byte[] safeBytes = FileUtil.readNBytesSafe(inputStream, 1024 * 1024); // 最多读取 1MB
+
+// 5. 创建 JVM 退出自动物理销毁的安全临时文件
+File tempFile = FileUtil.createTempFile("export-task-", ".xlsx");
 ```
 
 ### 7. 命名线程工厂标准件 (`NamedThreadFactory`)
@@ -973,9 +1061,196 @@ List<String> luckyTwo = RandomUtil.randomEles(users, 2); // 随机抽取 2 人�
 List<String> shuffled = RandomUtil.shuffleNew(users);
 ```
 
+### 15. 进程内高性能滑动窗口流控标准件 (`SlidingWindowCounter`)
+
+#### 场景痛点与特性
+在无需或不便引入 Redis 等外部中间件的单体服务、本地批处理或网关边界中，微突发限流、短信防刷、IP 频次统计及重复告警去重极其普遍。
+若使用简单的固定窗口，在窗口交界处易产生 2 倍瞬时流量洪峰击穿系统；若使用传统令牌桶则需复杂的背景线程持续填充。
+`SlidingWindowCounter` 基于**环形时间切片（Ring Slices）与原子累加器**实现：
+- **纯内存高性能无外部依赖**：基于 `System.currentTimeMillis()` 动态切片滑动与 `LongAdder` 累加，无外部网络 IO 与序列化开销；
+- **滑动窗口平滑削峰**：支持自定义窗口总时长（如 1 秒）与切片分片数量（如 5 片、10 片），窗口平滑向前推进，杜绝交界处流量突刺；
+- **双重防刷与限流门面**：提供 `incrementAndGet(delta)` 计数并返回当前窗口累计总数；提供 `tryAcquire(delta, threshold)` 原子判定许可，未超限放行并自增，超限立即拦截快速失败。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.concurrent.SlidingWindowCounter;
+import java.time.Duration;
+
+// 1. 创建 1 秒滑动窗口、切分为 5 个时间切片的计数器
+SlidingWindowCounter counter = new SlidingWindowCounter(Duration.ofSeconds(1), 5);
+
+// 2. 原子自增 1 并获取当前滑动窗口内的总计数值
+long count1 = counter.incrementAndGet();
+
+// 3. 尝试获取许可（限流门面：判断当前窗口计数值 + 请求增量是否 <= 阈值 5）
+boolean acquired = counter.tryAcquire(1, 5); // 放行并累加计数
+if (!acquired) {
+    throw new BusinessException("请求频次过高，已被限流");
+}
+
+// 4. 读取当前窗口内的有效总数
+long currentTotal = counter.getCount();
+```
+
+### 16. 高性能纳秒级任务秒表与函数剖析 (`StopWatch`)
+
+#### 场景痛点与特性
+复杂的批处理任务、长事务链路或排查接口性能瓶颈时，传统手工打印 `System.currentTimeMillis()` 充斥散落冗余减法计算代码且精度仅达毫秒级。
+`StopWatch` 坚持纯原生无重型依赖：
+- **纳秒级高精度统计**：依托 `System.nanoTime()` 实现纳秒级高精度耗时测算；
+- **多分段任务阶梯监控**：支持 `start("taskName")` 与 `stop()` 分步阶梯记录，计算分段绝对耗时与全链路耗时百分比（`%`）；
+- **可视化美化报告输出**：`prettyPrint()` 生成格式对齐的标准表格文本，清晰呈现实测耗时与占比；
+- **函数式闭包极简测量**：提供 `measureMillis(Runnable)`、`measure(Supplier<T>)` 与 `measureNanos` 静态辅助门面，一行代码测算耗时并返回结果。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.StopWatch;
+import io.github.atengk.boot.core.model.Pair;
+
+// 1. 阶梯分段任务秒表
+StopWatch sw = new StopWatch("orderProcess");
+sw.start("1.验证参数");
+Thread.sleep(10);
+sw.stop();
+
+sw.start("2.落库持久化");
+Thread.sleep(20);
+sw.stop();
+
+// 输出美化分析报告
+log.info("\n{}", sw.prettyPrint());
+
+// 2. 函数式闭包一行测算耗时与结果
+Pair<UserVO, Long> result = StopWatch.measure(() -> userService.queryUserDetail(1001L));
+log.info("查询耗时: {} ms, 用户: {}", result.right(), result.left().getName());
+```
+
+### 17. 网络通信地址探测与端口工具 (`NetUtil`)
+
+#### 场景痛点与特性
+服务节点注册、全链路日志、告警通知中常需获取当前机器内网真实 IP。直接调用 `InetAddress.getLocalHost()` 在多网卡、Docker 容器或虚拟网卡（VMware/VirtualBox）环境下常被解析为 `127.0.0.1` 或无意义内网 IP；同时在本地动态绑定端口时缺乏可用端口探测防护。
+`NetUtil` 提供纯原生网络与通信门面：
+- **智能遍历多物理网卡**：`getLocalIpv4()` 遍历系统物理网卡，自动过滤回环、未激活网卡与常见虚拟网卡，优先获取 SiteLocal 私有局域网真实 IPv4（如 `192.168.x.x` 或 `10.x.x.x`），探测失败保底返回 `127.0.0.1`；
+- **本地端口安全探测**：`isUsableLocalPort(port)` 探查指定端口是否空闲未被占用；`findAvailablePort(min, max)` 在区间内快速探测并返回一个可用端口；
+- **远程服务连通性探针**：`canConnect(host, port, timeoutMillis)` 快速探测远程 Socket 连通性，防止网络不可达引发线程阻塞。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.NetUtil;
+
+// 1. 获取本机真实内网非回环 IPv4
+String localIp = NetUtil.getLocalIpv4(); // 如 "192.168.3.6"
+
+// 2. 本地端口状态校验与可用端口搜索
+boolean isPortFree = NetUtil.isUsableLocalPort(8080);
+int freePort = NetUtil.findAvailablePort(9000, 9100);
+
+// 3. 远程网络探针
+boolean ping = NetUtil.canConnect("192.168.3.1", 3306, 200);
+```
+
+### 18. 纯原生强类型安全转换门面 (`ConvertUtil`)
+
+#### 场景痛点与特性
+从 JSON 反序列化字典、外部 RPC、HTTP 参数或环境变量中读取数据时，常常遇到 `Object` 到 `Long`、`Integer`、`BigDecimal`、`Boolean` 的类型转换。直接进行 `(Long) obj` 强转在类型稍有不匹配时引发 `ClassCastException`，调用 `Long.parseLong` 遇空或非法字符直接抛出 `NumberFormatException`。
+`ConvertUtil` 提供纯原生安全转换：
+- **安全强转与默认值保底**：支持 `toLong(obj, defaultVal)`、`toInt`、`toBoolean`、`toDouble`、`toBigDecimal` 等，遇 `null`、空白或格式异常安全返回指定兜底值，彻底消除运行时空指针与类型转换异常；
+- **强类型集合安全解包**：提供 `toList(obj, elementType)` 与 `toSet(obj, elementType)`，兼容数组、集合及迭代器对象的安全类型转换。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.ConvertUtil;
+import java.math.BigDecimal;
+
+// 1. 安全数值转换（容错字符串、Double、浮点数与异常输入）
+Long userId = ConvertUtil.toLong("9876543210", 0L);
+Integer port = ConvertUtil.toInt("8080", 8080);
+Boolean active = ConvertUtil.toBoolean("true", false);
+BigDecimal amount = ConvertUtil.toBigDecimal("99.95", BigDecimal.ZERO);
+```
+
+### 19. 异常深度分析、因果追溯与有界堆栈截断 (`ExceptionUtil`)
+
+#### 场景痛点与特性
+在多层抽象、中间件转译或 RPC 远程调用场景中，真实根因异常常被多层 `NestedServletException` 或 `UndeclaredThrowableException` 嵌套包裹。同时在持久化错误日志或向外输出时，未经截断的全量堆栈极易撑爆数据库字段或日志采集缓冲区。
+`ExceptionUtil` 提供稳健的异常分析能力：
+- **最深层根本原因 (Root Cause) 因果回溯**：`getRootCause(t)` 递归下钻提取深层根本原因，内置循环引用因果链（Cyclic Cause）检测，绝不发生死循环；
+- **自解释消息提取**：`getMessage(t)` 当异常未设置 message 时安全回退为其全限定类名，杜绝返回空串；
+- **安全有界堆栈序列化**：`stackTraceToString(t, maxLen)` 将异常堆栈转为字符串，超过最大长度时优雅截断并追加 `... [truncated]` 标记，防持久化与告警风暴撑爆。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.ExceptionUtil;
+
+try {
+    orderService.submitOrder();
+} catch (Throwable e) {
+    // 1. 递归提取最深层真实根因
+    Throwable rootCause = ExceptionUtil.getRootCause(e);
+    String rootMsg = ExceptionUtil.getMessage(rootCause); // 如 "连接池已被耗尽"
+
+    // 2. 有界堆栈序列化（限制最大 2000 字符，超长优雅截断）
+    String safeTrace = ExceptionUtil.stackTraceToString(e, 2000);
+    log.error("订单提交失败，根因: {}, 堆栈: {}", rootMsg, safeTrace);
+}
+```
+
+### 20. 纯原生高性能十六进制编解码 (`HexUtil`)
+
+#### 场景痛点与特性
+安全加解密、校验和计算、消息签名及硬件通信中需要频繁在二进制字节数组与十六进制字符串之间互转。传统代码常引入第三方全量包，或手写循环导致前导零丢失或大小写混乱。
+`HexUtil` 基于 **JDK 17 原生 `HexFormat`** 提供纯原生高吞吐实现：
+- **零外部依赖与高吞吐**：100% 依托 JDK 17 `java.util.HexFormat`，消除 Commons-Codec 或 Hutool 依赖；
+- **前导零严格对齐与大小写可控**：`encodeHex(bytes)` 默认小写，支持 `encodeHex(bytes, toLowerCase)`；
+- **奇偶长度与非法字符安全校验**：`decodeHex(hexStr)` 自动清洗两端空白，遇到非 Hex 字符或奇数长度严密抛出 `IllegalArgumentException` 快速失败。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.HexUtil;
+import java.nio.charset.StandardCharsets;
+
+byte[] bytes = "AtengBoot2026".getBytes(StandardCharsets.UTF_8);
+
+// 1. 编码为小写十六进制字符串
+String hexStr = HexUtil.encodeHex(bytes); // "4174656e67426f6f7432303236"
+
+// 2. 解码还原为原始二进制字节
+byte[] decoded = HexUtil.decodeHex(hexStr);
+String text = new String(decoded, StandardCharsets.UTF_8); // "AtengBoot2026"
+```
+
+### 21. 纯原生高性能通用字符串算法 (`StringUtil`)
+
+#### 场景痛点与特性
+实体与数据库字段映射、DTO 属性生成及文本清洗中，下划线与驼峰命名转换极其频繁。`StringUtil` 坚持纯原生字符扫描：
+- **纯原生字符状态机互转**：`toCamelCase(str)`（如 `"user_profile_name"` -> `"userProfileName"`）与 `toUnderlineCase(str)`（如 `"userProfileName"` -> `"user_profile_name"`），彻底杜绝正则替换的内存拷贝与 CPU 损耗；
+- **安全文本截断与敏感探测**：`truncate(str, maxLen)` 优雅截断超长字符串并追加省略标记；`containsAny(str, testStrs)` 与 `containsIgnoreCase` 提供高效子串包含探针。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.StringUtil;
+
+// 1. 驼峰与下划线风格双向互转
+String camel = StringUtil.toCamelCase("user_profile_name"); // "userProfileName"
+String snake = StringUtil.toUnderlineCase("userProfileName"); // "user_profile_name"
+
+// 2. 安全文本截断（超长时自动保留前缀并截断）
+String truncated = StringUtil.truncate("这是一个非常长的业务备注文本超过了阈值", 10);
+```
+
+### 22. 跨中间件消息传播契约标准件
+
+#### 场景痛点与特性
+在全反应堆引入消息队列（如 RabbitMQ、Kafka、RocketMQ）时，消息出入站极易发生 TraceId 链路追踪断链、租户身份丢失、反序列化毒丸异常导致无限重试死循环。
+`ateng-boot-core` 下沉通用消息传播标准契约：
+- **标准化消息头键名 (`MessageHeaderConstants`)**：统一定义 `X-Trace-Id`、`X-Tenant-Id`、`X-User-Id` 与发送时间戳，杜绝命名漂移；
+- **全生命周期上下文传播器 (`MessageContextPropagator`)**：提供出站四维上下文抓取与注入、入站上下文提取还原并在消费完成后保证在 `finally` 块中执行确定性清理；
+- **毒丸异常分类判定器 (`FatalExceptionClassifier`)**：精准识别反序列化异常、JSR-303 参数校验异常与显式致命逻辑错误，指导消费者快速失败转入死信队列或丢弃；
+- **受管投递物理异常 (`MessageDeliveryException`)**：封装底层发送物理异常，解耦上层调用与底层驱动。
+
 ---
 
-## 13. 模块配置属性参考 (`application.yml`)
+## 23. 模块配置属性参考 (`application.yml`)
 
 `ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，并原生支持多业务受管线程池（Multi-Pool）舱壁隔离，可在 `application.yml` 中按需定制配置：
 
@@ -1008,8 +1283,8 @@ ateng:
       virtual-thread-name-prefix: "ateng-vt-async-"
       # 虚拟线程并发任务限制数（默认 -1 即无界；可按需配置限制防下游 HikariCP 连接池击穿）
       concurrency-limit: -1
-      # 平台线程饱和拒绝策略（默认 CALLER_RUNS；支持 CALLER_RUNS / ABORT / DISCARD / DISCARD_OLDEST）
-      rejected-policy: CALLER_RUNS
+      # 平台线程饱和拒绝策略（默认 CALLER_RUNS；支持 CALLER_RUNS / WARN_CALLER_RUNS / WARN_ABORT / ABORT / DISCARD / DISCARD_OLDEST）
+      rejected-policy: WARN_CALLER_RUNS
       # 容器关闭时是否等待任务执行完成（优雅停机，默认 true）
       wait-for-tasks-to-complete-on-shutdown: true
       # 优雅停机等待超时时间（强类型 Duration 格式，支持 60s, 1m 等，默认 60s；向后兼容 await-termination-seconds: 60）
@@ -1026,7 +1301,7 @@ ateng:
           queue-capacity: 50            # 专属阻塞队列容量（默认 1000）
           keep-alive: 60s               # 空闲线程存活时间（强类型 Duration，默认 60s）
           thread-name-prefix: "sample-export-async-" # 专属线程名前缀（缺省时自动推导为 ateng-async-export-）
-          rejected-policy: CALLER_RUNS  # 饱和拒绝策略（CALLER_RUNS / ABORT / DISCARD / DISCARD_OLDEST）
+          rejected-policy: WARN_CALLER_RUNS # 饱和拒绝策略（CALLER_RUNS / WARN_CALLER_RUNS / WARN_ABORT / ABORT / DISCARD / DISCARD_OLDEST）
           wait-for-tasks-to-complete-on-shutdown: true # 容器关闭时是否等待任务执行完毕（默认 true）
           await-termination: 60s        # 优雅停机最大等待时间（强类型 Duration，默认 60s）
 

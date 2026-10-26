@@ -205,3 +205,48 @@ _Avoid_: MqErrorClassifier, PoisonPillHandler, FatalExceptionChecker, ErrorJudge
 **MessageDeliveryException**:
 表征消息出站投递或发送阶段物理中断的受控业务异常，继承自 `BusinessException`，完整封装原始底层驱动异常（cause）与目标 Topic、业务主键及追踪上下文，实现上层调用与底层驱动解耦。
 _Avoid_: MqSendException, MqException, ProducerException, DeliveryException
+
+**ThreadPoolStatus**:
+受管线程池运行时核心度量指标快照不可变 Record，精确表征核心/最大线程数、当前存活数、活跃执行数、排队积压数、剩余队列容量、已完成任务数与是否饱和标记。
+_Avoid_: PoolMetrics, ThreadPoolInfo, PoolStat
+
+**AsyncUtil**:
+受管异步执行器全景治理与函数式异步任务执行门面，提供多业务线程池动态参数调优（热调整）、运行监控指标提取、全链路上下文安全传播异步执行及任务批量并行协调（allMatches / allOf）。
+_Avoid_: AsyncHelper, ThreadPoolHelper, TaskExecutorUtil
+
+**SnowflakeIdInfo**:
+雪花算法 64 位长整型 ID 逆向反解结构化不可变信息载体 Record，提取包含发号毫秒时间戳、Instant、LocalDateTime、数据中心 ID、工作节点 ID、毫秒内自增序列号与所采用的基准纪元。
+_Avoid_: SnowflakeParsed, SnowflakeMeta, IdParsedInfo
+
+**Base62**:
+纯原生零依赖无锁 Base62 双向短码编解码门面，支持 64 位长整型数值与 10~11 位紧凑 URL 安全短字符串的双向无损互转，内置完整负数与边界值溢出防卫。
+_Avoid_: ShortIdUtil, Base62Codec, NumberCompressor
+
+**SlidingWindowCounter**:
+基于环形时间切片（Ring Slices）与原子累加器实现的进程内高性能单机内存滑动窗口计数器，无需外部中间件即可实现精准平滑限流、防刷与频次统计。
+_Avoid_: WindowLimiter, SlidingCounter, RateLimiterUtil
+
+**StopWatch**:
+纳秒级高精度多分段任务耗时秒表与函数剖析门面，支持分段任务阶梯耗时统计、格式化可视化报告输出与函数闭包执行耗时精准测算。
+_Avoid_: TimeWatcher, CostTimer, ProfilerUtil
+
+**NetUtil**:
+网络与内网通信地址识别通用工具类，提供多物理网卡内网非回环 IPv4 智能探测、本地空闲端口安全校验与远程服务端口连通性探针。
+_Avoid_: NetworkUtil, IpUtil, PortUtil
+
+**ConvertUtil**:
+纯原生强类型安全类型转换门面工具类，提供任意基础类型（Long、Integer、Boolean、BigDecimal、Double）与集合的安全强转，提供保底默认值防御，彻底杜绝 NPE 与 ClassCastException。
+_Avoid_: TypeConverter, ConvertHelper, CastUtil
+
+**ExceptionUtil**:
+异常分析与堆栈序列化通用工具类，提供多层嵌套异常链最深层根本原因（Root Cause）回溯、循环因果检测与带长度截断防御的安全堆栈字符串序列化。
+_Avoid_: ExceptionHelper, ThrowableUtil, StackTraceUtil
+
+**HexUtil**:
+基于 JDK 17 原生 HexFormat 的高性能纯原生十六进制编解码工具类，提供字节数组与 16 进制字符串双向转换，支持大小写指定与奇偶长度校验。
+_Avoid_: HexCodec, HexHelper, ByteHexUtil
+
+**StringUtil**:
+纯原生高性能字符串通用算法门面，提供下划线与驼峰命名互转、文本安全截断、敏感子串包含探测与首尾掩码。
+_Avoid_: StrUtil, StringHelper, StringUtils
+

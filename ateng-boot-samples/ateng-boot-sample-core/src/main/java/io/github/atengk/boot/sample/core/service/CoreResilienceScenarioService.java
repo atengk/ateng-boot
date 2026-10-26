@@ -3,7 +3,9 @@ package io.github.atengk.boot.sample.core.service;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.concurrent.SlidingWindowCounter;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.model.Pair;
@@ -219,5 +221,63 @@ public class CoreResilienceScenarioService {
         String appName = SpringUtil.getProperty("spring.application.name", "unknown");
         log.info("SpringUtil 读取配置 spring.application.name={}", appName);
         return appName;
+    }
+
+    /**
+     * 9. 验证雪花 ID 逆向反解与 Base62 短码无损互转
+     *
+     * @param id 雪花算法生成的长整型 ID
+     * @return Pair<SnowflakeIdInfo(逆向反解信息), String(Base62短码)>
+     */
+    public Pair<SnowflakeIdInfo, String> parseSnowflakeAndBase62(long id) {
+        SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+        String base62 = IdUtil.toBase62(id);
+        long restored = IdUtil.fromBase62(base62);
+
+        log.info("Snowflake 逆向反解与 Base62: id={}, datacenter={}, worker={}, seq={}, base62={}, restoredMatch={}",
+                id, info.datacenterId(), info.workerId(), info.sequence(), base62, id == restored);
+        return Pair.of(info, base62);
+    }
+
+    /**
+     * 10. 验证 SlidingWindowCounter 进程内无外部依赖高性能滑动窗口流控
+     *
+     * @return Pair<Long(窗口内累计计数), Boolean(尝试获取许可结果)>
+     */
+    public Pair<Long, Boolean> demonstrateSlidingWindowCounter() {
+        SlidingWindowCounter counter = new SlidingWindowCounter(Duration.ofSeconds(1), 5);
+        long count1 = counter.incrementAndGet();
+        long count2 = counter.incrementAndGet(2);
+        boolean acquired = counter.tryAcquire(1, 5);
+        boolean rejected = counter.tryAcquire(10, 5);
+
+        log.info("SlidingWindowCounter 滑动窗口限流: count1={}, count2={}, acquired={}, rejected={}",
+                count1, count2, acquired, !rejected);
+        return Pair.of(counter.getCount(), acquired);
+    }
+
+    /**
+     * 11. 验证 BusinessAssert 惰性占位符格式化与数值区间断言
+     *
+     * @param userId  用户ID
+     * @param balance 账户余额
+     */
+    public void assertBusinessRulesExtended(String userId, java.math.BigDecimal balance) {
+        BusinessAssert.hasText(userId, "用户ID不能为空");
+        BusinessAssert.gt(balance, java.math.BigDecimal.ZERO, "用户 [{}] 账户余额 [{}] 必须大于 0", userId, balance);
+        BusinessAssert.between(balance, java.math.BigDecimal.ONE, new java.math.BigDecimal("1000000"), "余额超出安全范围");
+        log.info("BusinessAssert 扩展断言通过: userId={}, balance={}", userId, balance);
+    }
+
+    /**
+     * 12. 验证 PageResult 导航辅助与空判断
+     *
+     * @return 分页结果实例
+     */
+    public PageResult<String> demonstratePageResultNavigation() {
+        PageResult<String> pageResult = PageResult.of(List.of("Data-A", "Data-B"), 100L, 2L, 10L);
+        log.info("PageResult 导航属性: hasPrevious={}, hasNext={}, isEmpty={}",
+                pageResult.hasPrevious(), pageResult.hasNext(), pageResult.isEmpty());
+        return pageResult;
     }
 }

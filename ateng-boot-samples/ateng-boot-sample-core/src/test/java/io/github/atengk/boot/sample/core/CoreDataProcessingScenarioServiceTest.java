@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.core;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
@@ -14,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.io.File;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -193,5 +196,96 @@ class CoreDataProcessingScenarioServiceTest {
 
         assertThat(pair.left()).isEqualTo("2026-10-19 14:30:00");
         assertThat(pair.right()).hasSize(6).containsOnlyDigits();
+    }
+
+    @Test
+    @DisplayName("测试TreeUtil展平、路径探寻与叶子节点提取")
+    void testAdvancedTreeOperations() {
+        List<SampleMenuNodeDTO> flatList = new ArrayList<>();
+        flatList.add(new SampleMenuNodeDTO(1L, 0L, "系统管理", "/sys", 1));
+        flatList.add(new SampleMenuNodeDTO(2L, 1L, "用户管理", "/sys/user", 1));
+        flatList.add(new SampleMenuNodeDTO(3L, 2L, "用户导出", "/sys/user/export", 1));
+        flatList.add(new SampleMenuNodeDTO(4L, 1L, "角色管理", "/sys/role", 2));
+
+        List<SampleMenuNodeDTO> fullTree = dataProcessingService.assembleTree(flatList);
+        Triple<List<SampleMenuNodeDTO>, List<SampleMenuNodeDTO>, List<SampleMenuNodeDTO>> result =
+                dataProcessingService.demonstrateAdvancedTreeOperations(fullTree);
+
+        // 扁平展平包含 4 个节点
+        assertThat(result.left()).hasSize(4);
+
+        // 面包屑链路为 系统管理 -> 用户管理 -> 用户导出
+        List<SampleMenuNodeDTO> breadcrumbs = result.middle();
+        assertThat(breadcrumbs).hasSize(3);
+        assertThat(breadcrumbs.get(0).getName()).isEqualTo("系统管理");
+        assertThat(breadcrumbs.get(1).getName()).isEqualTo("用户管理");
+        assertThat(breadcrumbs.get(2).getName()).isEqualTo("用户导出");
+
+        // 叶子节点为 用户导出 与 角色管理
+        List<SampleMenuNodeDTO> leaves = result.right();
+        assertThat(leaves).hasSize(2);
+        assertThat(leaves.stream().map(SampleMenuNodeDTO::getName)).containsExactlyInAnyOrder("用户导出", "角色管理");
+    }
+
+    @Test
+    @DisplayName("测试FileUtil安全读取与受管临时文件")
+    void testFileAndStreamSafety() {
+        byte[] payload = "SecurePayloadData".getBytes();
+        Pair<byte[], String> pair = dataProcessingService.demonstrateFileAndStreamSafety(payload);
+
+        assertThat(pair.left()).isEqualTo(payload);
+        assertThat(new File(pair.right())).exists();
+    }
+
+    @Test
+    @DisplayName("测试DateTimeUtil工作日顺延与跨度推演")
+    void testWorkdays() {
+        // 2026-10-23 是周五
+        LocalDate friday = LocalDate.of(2026, 10, 23);
+        Triple<Boolean, LocalDate, Long> triple = dataProcessingService.demonstrateWorkdays(friday);
+
+        assertThat(triple.left()).isTrue();
+        // 周五顺延 3 个工作日：周一(26)、周二(27)、周三(28)
+        assertThat(triple.middle()).isEqualTo(LocalDate.of(2026, 10, 28));
+        assertThat(triple.right()).isEqualTo(3L);
+    }
+
+    @Test
+    @DisplayName("测试JsonUtil校验探针与树流读取")
+    void testJsonAdvanced() {
+        String json = "{\"service\":\"ateng-core\",\"active\":true}";
+        Pair<Boolean, JsonNode> pair = dataProcessingService.demonstrateJsonAdvanced(json);
+
+        assertThat(pair.left()).isTrue();
+        assertThat(pair.right().get("service").asText()).isEqualTo("ateng-core");
+        assertThat(pair.right().get("active").asBoolean()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试MoreCollectors.distinctByKey流式按属性去重")
+    void testStreamDistinct() {
+        List<SampleUserDTO> users = List.of(
+                SampleUserDTO.builder().id(1L).name("张三").build(),
+                SampleUserDTO.builder().id(2L).name("李四").build(),
+                SampleUserDTO.builder().id(3L).name("张三").build() // 重复名称
+        );
+
+        List<SampleUserDTO> distinct = dataProcessingService.demonstrateStreamDistinct(users);
+        assertThat(distinct).hasSize(2);
+        assertThat(distinct.stream().map(SampleUserDTO::getName)).containsExactly("张三", "李四");
+    }
+
+    @Test
+    @DisplayName("测试通用新原语(StringUtil, StopWatch, NetUtil, ConvertUtil, ExceptionUtil, SpringUtil)")
+    void testGeneralPrimitives() {
+        Map<String, Object> map = dataProcessingService.demonstrateGeneralPrimitives();
+
+        assertThat(map.get("camelCase")).isEqualTo("userProfileName");
+        assertThat(map.get("underlineCase")).isEqualTo("user_profile_name");
+        assertThat((Long) map.get("stopWatchTotalMillis")).isNotNegative();
+        assertThat(map.get("localIp")).isNotNull();
+        assertThat(map.get("convertedLong")).isEqualTo(9876543210L);
+        assertThat(map.get("rootCauseMessage")).isEqualTo("真实根因");
+        assertThat(map.get("hasServiceBean")).isEqualTo(true);
     }
 }

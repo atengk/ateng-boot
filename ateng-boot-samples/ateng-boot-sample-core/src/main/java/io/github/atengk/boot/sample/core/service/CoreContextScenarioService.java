@@ -4,7 +4,10 @@ import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.enums.TransactionCompletionStatus;
 import io.github.atengk.boot.core.model.Pair;
+import io.github.atengk.boot.core.model.ThreadPoolStatus;
+import io.github.atengk.boot.core.util.AsyncUtil;
 import io.github.atengk.boot.core.util.TransactionUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -163,5 +166,72 @@ public class CoreContextScenarioService {
         TransactionUtil.executeAfterRollback(() -> rollbackExecuted.set(true));
 
         return Pair.of(commitExecuted.get(), rollbackExecuted.get());
+    }
+
+    /**
+     * 8. 演示 AsyncUtil 统一门面调度受管线程池并透明透传四维上下文快照
+     *
+     * @param traceId  链路追踪 ID
+     * @param userId   用户 ID
+     * @param tenantId 租户 ID
+     * @return 异步工作线程内部抓取到的上下文镜像
+     */
+    public CompletableFuture<Map<String, String>> executeWithAsyncUtil(String traceId, String userId, String tenantId) {
+        MDC.put("traceId", traceId);
+        UserContextHolder.setUserId(userId);
+        TenantContextHolder.setTenantId(tenantId);
+
+        return AsyncUtil.supply("export", () -> {
+            String currentThread = Thread.currentThread().getName();
+            String asyncTraceId = MDC.get("traceId");
+            String asyncUserId = UserContextHolder.getUserId();
+            String asyncTenantId = TenantContextHolder.getTenantId();
+            boolean asyncIgnore = TenantContextHolder.isIgnoreTenant();
+
+            log.info("AsyncUtil 异步调度成功 [thread={}, traceId={}, userId={}, tenantId={}, ignoreTenant={}]",
+                    currentThread, asyncTraceId, asyncUserId, asyncTenantId, asyncIgnore);
+
+            return Map.of(
+                    "threadName", currentThread,
+                    "traceId", asyncTraceId != null ? asyncTraceId : "",
+                    "userId", asyncUserId != null ? asyncUserId : "",
+                    "tenantId", asyncTenantId != null ? asyncTenantId : "",
+                    "ignoreTenant", String.valueOf(asyncIgnore)
+            );
+        });
+    }
+
+    /**
+     * 9. 演示 ThreadPoolStatus 实时全景指标快照探测与 AsyncUtil.resize 在线动态调参
+     *
+     * @param poolName 目标线程池名称
+     * @param newCore  调整后的核心线程数
+     * @param newMax   调整后的最大线程数
+     * @return 调参前后的监控指标快照对
+     */
+    public Pair<ThreadPoolStatus, ThreadPoolStatus> demonstrateThreadPoolGovernance(String poolName, int newCore, int newMax) {
+        ThreadPoolStatus before = AsyncUtil.getStatus(poolName);
+        log.info("线程池 [{}] 调参前监控状态: {}", poolName, before);
+
+        AsyncUtil.resize(poolName, newCore, newMax);
+        ThreadPoolStatus after = AsyncUtil.getStatus(poolName);
+        log.info("线程池 [{}] 调参后监控状态: {}", poolName, after);
+
+        return Pair.of(before, after);
+    }
+
+    /**
+     * 10. 演示 TransactionUtil 提交前校验阻断与终态全状态机钩子平滑降级
+     *
+     * @return 包含提交前与终态回调状态的数据对
+     */
+    public Pair<Boolean, TransactionCompletionStatus> demonstrateFullTransactionLifecycle() {
+        AtomicBoolean beforeCommitExecuted = new AtomicBoolean(false);
+        java.util.concurrent.atomic.AtomicReference<TransactionCompletionStatus> completionStatus = new java.util.concurrent.atomic.AtomicReference<>();
+
+        TransactionUtil.executeBeforeCommit(() -> beforeCommitExecuted.set(true));
+        TransactionUtil.executeAfterCompletion(completionStatus::set);
+
+        return Pair.of(beforeCommitExecuted.get(), completionStatus.get());
     }
 }
