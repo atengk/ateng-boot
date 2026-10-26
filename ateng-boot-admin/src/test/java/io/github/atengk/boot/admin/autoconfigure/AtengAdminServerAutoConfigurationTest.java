@@ -6,6 +6,7 @@ import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
+import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AdminAuthProvider.class);
                     assertThat(context.getBean(AdminAuthProvider.class)).isInstanceOf(DefaultPropertiesAdminAuthProvider.class);
                     assertThat(context).hasSingleBean(AdminLoginController.class);
+                    assertThat(context).hasSingleBean(AtengActuatorHttpHeadersProvider.class);
                     assertThat(context).hasBean("adminSaServletFilter");
                     assertThat(context.getBean("adminSaServletFilter")).isInstanceOf(SaServletFilter.class);
                 });

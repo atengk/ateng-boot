@@ -2,3 +2,4 @@ io.github.atengk.boot.observability.autoconfigure.AtengObservabilityAutoConfigur
 io.github.atengk.boot.observability.autoconfigure.AtengMetricsAutoConfiguration
 io.github.atengk.boot.observability.autoconfigure.AtengHealthAutoConfiguration
 io.github.atengk.boot.observability.autoconfigure.AtengSecurityAutoConfiguration
+io.github.atengk.boot.observability.autoconfigure.AtengAdminClientAutoConfiguration

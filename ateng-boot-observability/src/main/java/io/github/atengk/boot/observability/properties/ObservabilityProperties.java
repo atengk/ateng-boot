@@ -43,6 +43,12 @@ public class ObservabilityProperties {
     private SecurityProperties security = new SecurityProperties();
 
     /**
+     * Spring Boot Admin 客户端注册与握手凭据配置
+     */
+    @NestedConfigurationProperty
+    private AdminClientProperties adminClient = new AdminClientProperties();
+
+    /**
      * 指标导出相关配置
      */
     @Getter
@@ -194,5 +200,33 @@ public class ObservabilityProperties {
          * 若为空字符串，则高危敏感端点完全禁止匿名外部访问，直接返回 403/404。
          */
         private String token = "";
+    }
+
+    /**
+     * Spring Boot Admin 客户端透明增强与安全握手配置
+     */
+    @Getter
+    @Setter
+    public static class AdminClientProperties {
+
+        /**
+         * 是否自动向 SBA Server 上报端点凭据与密钥（默认开启）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 向 SBA Server 发起注册时的握手通信密钥（对应服务端的 client-secret）
+         */
+        private String clientSecret;
+
+        /**
+         * 显式指定上报给 SBA 的业务地址（支持 K8s 域名与公网网关）
+         */
+        private String serviceUrl;
+
+        /**
+         * 显式指定独立管理端口访问地址（针对双端口物理隔离架构）
+         */
+        private String managementUrl;
     }
 }

@@ -8,6 +8,7 @@ import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
+import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -46,6 +47,12 @@ public class AtengAdminServerAutoConfiguration {
                                                      ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
         AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
         return new AdminLoginController(authProvider, adminServerProperties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AtengActuatorHttpHeadersProvider atengActuatorHttpHeadersProvider(AtengAdminServerProperties properties) {
+        return new AtengActuatorHttpHeadersProvider(properties);
     }
 
     @Bean

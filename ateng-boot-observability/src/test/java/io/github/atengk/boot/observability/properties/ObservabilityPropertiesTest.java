@@ -51,6 +51,13 @@ class ObservabilityPropertiesTest {
         assertThat(properties.getSecurity()).isNotNull();
         assertThat(properties.getSecurity().isLockdownEnabled()).isTrue();
         assertThat(properties.getSecurity().getToken()).isEmpty();
+
+        // Admin 客户端默认配置
+        assertThat(properties.getAdminClient()).isNotNull();
+        assertThat(properties.getAdminClient().isEnabled()).isTrue();
+        assertThat(properties.getAdminClient().getClientSecret()).isNull();
+        assertThat(properties.getAdminClient().getServiceUrl()).isNull();
+        assertThat(properties.getAdminClient().getManagementUrl()).isNull();
     }
 
     @Test
@@ -65,7 +72,11 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.health.storage.enabled=false",
                         "ateng.boot.observability.health.rocketmq.enabled=false",
                         "ateng.boot.observability.security.lockdown-enabled=true",
-                        "ateng.boot.observability.security.token=SEC_TOKEN_123456"
+                        "ateng.boot.observability.security.token=SEC_TOKEN_123456",
+                        "ateng.boot.observability.admin-client.enabled=true",
+                        "ateng.boot.observability.admin-client.client-secret=SBA_SECRET_777",
+                        "ateng.boot.observability.admin-client.service-url=http://app:8080",
+                        "ateng.boot.observability.admin-client.management-url=http://app:8081"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(ObservabilityProperties.class);
@@ -80,6 +91,10 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
+                    assertThat(props.getAdminClient().isEnabled()).isTrue();
+                    assertThat(props.getAdminClient().getClientSecret()).isEqualTo("SBA_SECRET_777");
+                    assertThat(props.getAdminClient().getServiceUrl()).isEqualTo("http://app:8080");
+                    assertThat(props.getAdminClient().getManagementUrl()).isEqualTo("http://app:8081");
                 });
     }
 }

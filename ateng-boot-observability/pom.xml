@@ -70,6 +70,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Spring Boot Admin Client (用于 SBA 客户端透明增强与握手凭据注入) -->
+        <dependency>
+            <groupId>de.codecentric</groupId>
+            <artifactId>spring-boot-admin-starter-client</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot 自动装配支持 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
