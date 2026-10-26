@@ -140,5 +140,46 @@ class ThreadPoolStatusTest {
         assertThatThrownBy(() -> ThreadPoolStatus.of((ThreadPoolTaskExecutor) null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("taskExecutor 不能为空");
+
+        assertThatThrownBy(() -> ThreadPoolStatus.ofVirtual(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("executor 不能为空");
+    }
+
+    @Test
+    @DisplayName("基于 SimpleAsyncTaskExecutor 正确提取虚拟线程运行态度量")
+    void shouldCaptureMetricsFromSimpleAsyncTaskExecutor() {
+        org.springframework.core.task.SimpleAsyncTaskExecutor executor = new org.springframework.core.task.SimpleAsyncTaskExecutor();
+        executor.setConcurrencyLimit(16);
+
+        try {
+            ThreadPoolStatus status = ThreadPoolStatus.ofVirtual(executor);
+            assertThat(status.virtual()).isTrue();
+            assertThat(status.isVirtual()).isTrue();
+            assertThat(status.concurrencyLimit()).isEqualTo(16);
+            assertThat(status.getConcurrencyLimit()).isEqualTo(16);
+            assertThat(status.corePoolSize()).isEqualTo(0);
+            assertThat(status.maxPoolSize()).isEqualTo(16);
+            assertThat(status.queueSize()).isEqualTo(0);
+            assertThat(status.remainingQueueCapacity()).isEqualTo(0);
+            assertThat(status.isSaturated()).isFalse();
+
+            // 测试饱和度检测
+            ThreadPoolStatus saturatedStatus = ThreadPoolStatus.ofVirtual(executor, 16, 16);
+            assertThat(saturatedStatus.isSaturated()).isTrue();
+            assertThat(saturatedStatus.activeCount()).isEqualTo(16);
+        } finally {
+            executor.close();
+        }
+    }
+
+    @Test
+    @DisplayName("8 参数向后兼容构造器默认赋予非虚拟线程且无并发限制参数")
+    void shouldMaintainBackwardCompatibilityWithLegacyConstructor() {
+        ThreadPoolStatus legacyStatus = new ThreadPoolStatus(2, 4, 1, 1, 0, 10, 5L, false);
+        assertThat(legacyStatus.virtual()).isFalse();
+        assertThat(legacyStatus.concurrencyLimit()).isEqualTo(-1);
+        assertThat(legacyStatus.corePoolSize()).isEqualTo(2);
+        assertThat(legacyStatus.maxPoolSize()).isEqualTo(4);
     }
 }

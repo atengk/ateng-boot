@@ -118,29 +118,56 @@ public final class AsyncUtil {
     }
 
     /**
-     * 获取默认受管主线程池的运行时全景指标快照
+     * 获取默认受管主线程池的运行时全景指标快照（自适应平台线程池与虚拟线程）
      *
      * @return 线程池运行时状态快照
-     * @throws UnsupportedOperationException 若当前执行器不支持指标提取（例如虚拟线程执行器）
      */
     public static ThreadPoolStatus getStatus() {
-        return getStatus(null);
+        return getStatus((String) null);
     }
 
     /**
-     * 获取指定名称受管线程池的运行时全景指标快照
+     * 获取指定名称受管线程池的运行时全景指标快照（自适应平台线程池与虚拟线程）
      *
      * @param poolName 目标线程池 Bean 名称或业务别名（为 null 或空白时使用默认主线程池）
      * @return 线程池运行时状态快照
-     * @throws UnsupportedOperationException 若当前执行器不支持指标提取（例如虚拟线程执行器）
      */
     public static ThreadPoolStatus getStatus(String poolName) {
         Executor executor = getExecutor(poolName);
+        return getStatus(executor, poolName);
+    }
+
+    /**
+     * 获取指定执行器的运行时全景指标快照（自适应平台线程池与虚拟线程）
+     *
+     * @param executor 目标执行器（非空）
+     * @return 线程池运行时状态快照
+     * @throws NullPointerException 当 executor 为 null 时抛出
+     * @throws UnsupportedOperationException 若当前执行器不支持指标提取
+     */
+    public static ThreadPoolStatus getStatus(Executor executor) {
+        return getStatus(executor, null);
+    }
+
+    /**
+     * 获取指定执行器的运行时全景指标快照（自适应平台线程池与虚拟线程）
+     *
+     * @param executor 目标执行器（非空）
+     * @param poolName 线程池逻辑名称（仅用于异常日志提示）
+     * @return 线程池运行时状态快照
+     * @throws NullPointerException 当 executor 为 null 时抛出
+     * @throws UnsupportedOperationException 若当前执行器不支持指标提取
+     */
+    public static ThreadPoolStatus getStatus(Executor executor, String poolName) {
+        Objects.requireNonNull(executor, "executor 不能为空");
         if (executor instanceof ThreadPoolTaskExecutor taskExecutor) {
             return ThreadPoolStatus.of(taskExecutor);
         }
         if (executor instanceof ThreadPoolExecutor tpe) {
             return ThreadPoolStatus.of(tpe);
+        }
+        if (executor instanceof org.springframework.core.task.SimpleAsyncTaskExecutor sate) {
+            return ThreadPoolStatus.ofVirtual(sate);
         }
         throw new UnsupportedOperationException("执行器 [" + (StringUtils.hasText(poolName) ? poolName : "default")
                 + "] 类型为 [" + executor.getClass().getName() + "]，不支持获取 ThreadPoolStatus 监控指标");

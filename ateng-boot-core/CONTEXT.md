@@ -207,7 +207,7 @@ _Avoid_: MqErrorClassifier, PoisonPillHandler, FatalExceptionChecker, ErrorJudge
 _Avoid_: MqSendException, MqException, ProducerException, DeliveryException
 
 **ThreadPoolStatus**:
-受管线程池运行时核心度量指标快照不可变 Record，精确表征核心/最大线程数、当前存活数、活跃执行数、排队积压数、剩余队列容量、已完成任务数与是否饱和标记。
+受管线程池运行时核心度量指标快照不可变 Record，精确表征核心/最大线程数、当前存活数、活跃执行数、排队积压数、剩余队列容量、已完成任务数、是否饱和标记以及虚拟线程自适应参数。
 _Avoid_: PoolMetrics, ThreadPoolInfo, PoolStat
 
 **AsyncUtil**:

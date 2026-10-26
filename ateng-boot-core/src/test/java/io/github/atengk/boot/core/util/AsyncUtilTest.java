@@ -269,27 +269,43 @@ class AsyncUtilTest {
     }
 
     @Test
-    @DisplayName("对不支持的执行器类型调用 getStatus 与 resize 抛出 UnsupportedOperationException")
-    void shouldThrowWhenResizeOrStatusOnUnsupportedExecutor() {
+    @DisplayName("对虚拟线程执行器自适应抓取 getStatus 指标，而 resize 仍抛出 UnsupportedOperationException")
+    void shouldAdaptVirtualExecutorForGetStatusAndThrowOnResize() {
         GenericApplicationContext context = new GenericApplicationContext();
         org.springframework.core.task.SimpleAsyncTaskExecutor virtualExecutor = new org.springframework.core.task.SimpleAsyncTaskExecutor();
+        virtualExecutor.setConcurrencyLimit(8);
+
+        Executor customExecutor = Runnable::run;
 
         try {
             context.getBeanFactory().registerSingleton("virtualExecutor", virtualExecutor);
+            context.getBeanFactory().registerSingleton("customExecutor", customExecutor);
             context.refresh();
 
             SpringUtil springUtil = new SpringUtil();
             springUtil.setApplicationContext(context);
 
-            assertThatThrownBy(() -> AsyncUtil.getStatus("virtualExecutor"))
-                    .isInstanceOf(UnsupportedOperationException.class)
-                    .hasMessageContaining("不支持获取 ThreadPoolStatus 监控指标");
+            // 1. 验证虚拟线程执行器能成功提取状态快照
+            ThreadPoolStatus status = AsyncUtil.getStatus("virtualExecutor");
+            assertThat(status.virtual()).isTrue();
+            assertThat(status.concurrencyLimit()).isEqualTo(8);
 
+            // 2. 验证直接传入 Executor 实例重载
+            ThreadPoolStatus statusByInstance = AsyncUtil.getStatus(virtualExecutor);
+            assertThat(statusByInstance.virtual()).isTrue();
+
+            // 3. 虚拟线程不支持动态 resize
             assertThatThrownBy(() -> AsyncUtil.resize("virtualExecutor", 2, 4))
                     .isInstanceOf(UnsupportedOperationException.class)
                     .hasMessageContaining("不支持动态在线调参");
+
+            // 4. 对完全不支持的执行器抛出异常
+            assertThatThrownBy(() -> AsyncUtil.getStatus("customExecutor"))
+                    .isInstanceOf(UnsupportedOperationException.class)
+                    .hasMessageContaining("不支持获取 ThreadPoolStatus 监控指标");
         } finally {
             context.close();
+            virtualExecutor.close();
         }
     }
 
