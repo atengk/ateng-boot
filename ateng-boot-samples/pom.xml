@@ -45,6 +45,7 @@
         <module>ateng-boot-sample-job-local</module>
         <module>ateng-boot-sample-search</module>
         <module>ateng-boot-sample-tcp</module>
+        <module>ateng-boot-sample-admin</module>
     </modules>
 
     <properties>

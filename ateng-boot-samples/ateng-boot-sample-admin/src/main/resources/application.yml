@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-admin
+  boot:
+    admin:
+      context-path: /admin
+
+ateng:
+  boot:
+    admin:
+      server:
+        enabled: true
+        username: admin
+        password: admin
+        client-secret: CLUSTER_SECRET_DEMO_2026
+        default-actuator-token: DEFAULT_ACTUATOR_TOKEN_DEMO
+        debounce-duration: 30s
+        allow-local-instances: true
+    observability:
+      security:
+        token: CLIENT_ACTUATOR_TOKEN_DEMO
+      admin-client:
+        enabled: true
+        client-secret: CLUSTER_SECRET_DEMO_2026
