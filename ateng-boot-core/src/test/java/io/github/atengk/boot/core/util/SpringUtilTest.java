@@ -105,6 +105,31 @@ class SpringUtilTest {
     }
 
     @Test
+    @DisplayName("环境探针与动态单例 Bean 注册验证")
+    void shouldProbeEnvironmentAndRegisterSingletonBean() {
+        // 配置 active profile 为 dev
+        context.getEnvironment().setActiveProfiles("dev");
+
+        assertTrue(SpringUtil.isDev());
+        assertFalse(SpringUtil.isProd());
+        assertFalse(SpringUtil.isTest());
+
+        assertEquals("9090", String.valueOf(SpringUtil.getServerPort()));
+        assertEquals("", SpringUtil.getApplicationName());
+
+        assertTrue(SpringUtil.containsBean("sampleBean"));
+        assertFalse(SpringUtil.containsBean("nonExistentBean"));
+
+        // 注入 beanFactory 验证 registerBean
+        SpringUtil springUtil = new SpringUtil();
+        springUtil.postProcessBeanFactory(context.getBeanFactory());
+
+        SpringUtil.registerBean("dynamicService", "dynamic-service-instance");
+        assertTrue(SpringUtil.containsBean("dynamicService"));
+        assertEquals("dynamic-service-instance", SpringUtil.getBean("dynamicService"));
+    }
+
+    @Test
     @DisplayName("未初始化防御：在未注入 Context 时抛出清晰异常")
     void shouldThrowWhenNotInitialized() {
         SpringUtil.clear();

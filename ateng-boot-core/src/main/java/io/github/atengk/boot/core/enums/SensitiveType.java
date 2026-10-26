@@ -74,6 +74,21 @@ public enum SensitiveType {
     SOCIAL_CREDIT_CODE(DesensitizeUtil::socialCreditCode),
 
     /**
+     * 统一社会信用代码（规范命名，如：91************BC12）
+     */
+    UNIFIED_CREDIT_CODE(DesensitizeUtil::unifiedCreditCode),
+
+    /**
+     * 密钥 / AccessToken（如：sk-p****************def）
+     */
+    SECRET_KEY(DesensitizeUtil::secretKey),
+
+    /**
+     * 护照号码（如：E1****678）
+     */
+    PASSPORT(DesensitizeUtil::passport),
+
+    /**
      * 首尾保留掩码（由 keepHead、keepTail 与 maskChar 决定，超长防御原样返回）
      */
     KEEP_HEAD_TAIL(null),
@@ -92,6 +107,16 @@ public enum SensitiveType {
 
     SensitiveType(Function<String, String> maskFunction) {
         this.maskFunction = maskFunction;
+    }
+
+    /**
+     * 对字符串执行默认脱敏转换
+     *
+     * @param value 原始待脱敏字符串
+     * @return 脱敏后的字符串
+     */
+    public String mask(String value) {
+        return mask(value, 0, 0, 0, 0, '*');
     }
 
     /**

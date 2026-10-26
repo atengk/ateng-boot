@@ -187,4 +187,37 @@ class DesensitizeUtilTest {
         // 负数保留防御
         assertEquals("*****", DesensitizeUtil.maskKeepHeadTail("12345", -1, -2));
     }
+
+    @Test
+    @DisplayName("统一社会信用代码规范别名脱敏验证")
+    void shouldDesensitizeUnifiedCreditCode() {
+        assertNull(DesensitizeUtil.unifiedCreditCode(null));
+        assertEquals("", DesensitizeUtil.unifiedCreditCode(""));
+        assertEquals("91************BC12", DesensitizeUtil.unifiedCreditCode("91110000MA001ABC12"));
+        assertEquals("91************BC12", io.github.atengk.boot.core.enums.SensitiveType.UNIFIED_CREDIT_CODE.mask("91110000MA001ABC12"));
+    }
+
+    @Test
+    @DisplayName("密钥与 AccessToken 脱敏验证（前4后4，中间全打码）")
+    void shouldDesensitizeSecretKey() {
+        assertNull(DesensitizeUtil.secretKey(null));
+        assertEquals("", DesensitizeUtil.secretKey(""));
+        assertEquals("sk-p****************cdef", DesensitizeUtil.secretKey("sk-proj-1234567890abcdef"));
+        assertEquals("sk-p****************cdef", io.github.atengk.boot.core.enums.SensitiveType.SECRET_KEY.mask("sk-proj-1234567890abcdef"));
+        // 长度 <= 8 做全打码
+        assertEquals("********", DesensitizeUtil.secretKey("12345678"));
+        assertEquals("****", DesensitizeUtil.secretKey("abcd"));
+    }
+
+    @Test
+    @DisplayName("护照号码脱敏验证（前2后3，中间全打码）")
+    void shouldDesensitizePassport() {
+        assertNull(DesensitizeUtil.passport(null));
+        assertEquals("", DesensitizeUtil.passport(""));
+        assertEquals("E1****678", DesensitizeUtil.passport("E12345678"));
+        assertEquals("E1****678", io.github.atengk.boot.core.enums.SensitiveType.PASSPORT.mask("E12345678"));
+        // 短护照号边界防御：<= 5 位全打码
+        assertEquals("*****", DesensitizeUtil.passport("E1235"));
+        assertEquals("****", DesensitizeUtil.passport("1234"));
+    }
 }
