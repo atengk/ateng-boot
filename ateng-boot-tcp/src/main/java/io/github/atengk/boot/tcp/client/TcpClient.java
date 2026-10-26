@@ -10,17 +10,20 @@ import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
+import io.github.atengk.boot.tcp.ssl.TcpSslContextFactory;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
+import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +45,7 @@ public class TcpClient implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(TcpClient.class);
 
+    private final String name;
     private final TcpClientProperties properties;
     private final List<TcpPacketFilter> packetFilters;
     private final List<TcpChannelCustomizer> channelCustomizers;
@@ -51,7 +55,8 @@ public class TcpClient implements SmartLifecycle {
 
     private EventLoopGroup workerGroup;
     private Bootstrap bootstrap;
-    private volatile Channel channel;
+    private Channel channel;
+    private SslContext sslContext;
     private volatile TcpSession session;
     private volatile boolean running = false;
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
@@ -62,7 +67,7 @@ public class TcpClient implements SmartLifecycle {
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher,
                      TcpRequestCorrelationManager correlationManager) {
-        this(properties, packetFilters, channelCustomizers, eventPublisher, correlationManager, null);
+        this("default", properties, packetFilters, channelCustomizers, eventPublisher, correlationManager, null);
     }
 
     public TcpClient(TcpClientProperties properties,
@@ -71,6 +76,21 @@ public class TcpClient implements SmartLifecycle {
                      ApplicationEventPublisher eventPublisher,
                      TcpRequestCorrelationManager correlationManager,
                      TcpDispatcher dispatcher) {
+        this("default", properties, packetFilters, channelCustomizers, eventPublisher, correlationManager, dispatcher);
+    }
+
+    public TcpClient(String name, TcpClientProperties properties) {
+        this(name, properties, Collections.emptyList(), Collections.emptyList(), null, null, null);
+    }
+
+    public TcpClient(String name,
+                     TcpClientProperties properties,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher) {
+        this.name = StringUtils.hasText(name) ? name : "default";
         this.properties = properties;
         this.eventPublisher = eventPublisher;
         this.correlationManager = correlationManager;
@@ -102,6 +122,7 @@ public class TcpClient implements SmartLifecycle {
         workerGroup = new NioEventLoopGroup();
         bootstrap = new Bootstrap();
 
+        this.sslContext = TcpSslContextFactory.buildClientSslContext(properties.getSsl());
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
         TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher);
 
@@ -114,6 +135,11 @@ public class TcpClient implements SmartLifecycle {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline pipeline = ch.pipeline();
+
+                        // 0. TLS/mTLS 链路加密
+                        if (sslContext != null) {
+                            pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc(), properties.getHost(), properties.getPort()));
+                        }
 
                         // 1. 心跳探测
                         if (properties.getHeartbeat().isEnabled()) {
@@ -144,7 +170,7 @@ public class TcpClient implements SmartLifecycle {
 
                         // 6. 通道定制逃生舱
                         for (TcpChannelCustomizer customizer : channelCustomizers) {
-                            customizer.customize(ch);
+                            customizer.customize(ch, "CLIENT", name);
                         }
                     }
                 });
@@ -153,11 +179,11 @@ public class TcpClient implements SmartLifecycle {
 
         try {
             doConnectSync();
-            log.info("ateng-boot-tcp 客户端成功启动并连接至服务端: host={}, port={}", properties.getHost(), properties.getPort());
+            log.info("ateng-boot-tcp 客户端 [{}] 成功启动并连接至服务端: host={}, port={}", this.name, properties.getHost(), properties.getPort());
         } catch (Exception ex) {
             if (properties.getReconnect().isEnabled()) {
-                log.warn("ateng-boot-tcp 客户端初次连接未就绪 (host={}, port={})，已自动进入后台指数退避自愈守护: {}",
-                        properties.getHost(), properties.getPort(), ex.getMessage());
+                log.warn("ateng-boot-tcp 客户端 [{}] 初次连接未就绪 (host={}, port={})，已自动进入后台指数退避自愈守护: {}",
+                        this.name, properties.getHost(), properties.getPort(), ex.getMessage());
                 scheduleReconnect();
             } else {
                 stop();
@@ -317,6 +343,10 @@ public class TcpClient implements SmartLifecycle {
      */
     public Channel getChannel() {
         return channel;
+    }
+
+    public String getName() {
+        return name;
     }
 
     /**

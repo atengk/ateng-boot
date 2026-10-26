@@ -10,17 +10,20 @@ import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
 import io.github.atengk.boot.tcp.spi.TcpPacketFilter;
+import io.github.atengk.boot.tcp.ssl.TcpSslContextFactory;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.IdleStateHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
+import org.springframework.util.StringUtils;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
@@ -42,6 +45,7 @@ public class TcpServer implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(TcpServer.class);
 
+    private final String name;
     private final TcpServerProperties properties;
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
@@ -53,6 +57,7 @@ public class TcpServer implements SmartLifecycle {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
+    private SslContext sslContext;
     private volatile boolean running = false;
     private int actualPort;
 
@@ -61,7 +66,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, null, null, packetFilters, channelCustomizers, eventPublisher);
+        this("default", properties, sessionManager, null, null, packetFilters, channelCustomizers, eventPublisher);
     }
 
     public TcpServer(TcpServerProperties properties,
@@ -70,7 +75,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this(properties, sessionManager, correlationManager, null, packetFilters, channelCustomizers, eventPublisher);
+        this("default", properties, sessionManager, correlationManager, null, packetFilters, channelCustomizers, eventPublisher);
     }
 
     public TcpServer(TcpServerProperties properties,
@@ -80,6 +85,18 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
+        this("default", properties, sessionManager, correlationManager, dispatcher, packetFilters, channelCustomizers, eventPublisher);
+    }
+
+    public TcpServer(String name,
+                     TcpServerProperties properties,
+                     TcpSessionManager sessionManager,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher) {
+        this.name = StringUtils.hasText(name) ? name : "default";
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
@@ -116,6 +133,7 @@ public class TcpServer implements SmartLifecycle {
                 ? new NioEventLoopGroup(properties.getWorkerThreads())
                 : new NioEventLoopGroup();
 
+        this.sslContext = TcpSslContextFactory.buildServerSslContext(properties.getSsl());
         TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, correlationManager, dispatcher, eventPublisher);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
 
@@ -130,6 +148,11 @@ public class TcpServer implements SmartLifecycle {
                         @Override
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
+
+                            // 0. TLS/mTLS 链路加密
+                            if (sslContext != null) {
+                                pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc()));
+                            }
 
                             // 1. 空闲心跳检测处理器
                             Duration r = properties.getIdle().getReaderIdleTime();
@@ -163,7 +186,7 @@ public class TcpServer implements SmartLifecycle {
 
                             // 6. 执行通道定制逃生舱
                             for (TcpChannelCustomizer customizer : channelCustomizers) {
-                                customizer.customize(ch);
+                                customizer.customize(ch, "SERVER", name);
                             }
                         }
                     });
@@ -178,12 +201,12 @@ public class TcpServer implements SmartLifecycle {
             }
 
             this.running = true;
-            log.info("ateng-boot-tcp 服务端成功启动并监听: host={}, port={}, actualPort={}",
-                    properties.getHost(), properties.getPort(), this.actualPort);
+            log.info("ateng-boot-tcp 服务端 [{}] 成功启动并监听: host={}, port={}, actualPort={}",
+                    this.name, properties.getHost(), properties.getPort(), this.actualPort);
 
         } catch (Exception ex) {
             stop();
-            throw new IllegalStateException("启动 TCP 服务端失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
+            throw new IllegalStateException("启动 TCP 服务端 [" + this.name + "] 失败: host=" + properties.getHost() + ", port=" + properties.getPort(), ex);
         }
     }
 
@@ -195,7 +218,7 @@ public class TcpServer implements SmartLifecycle {
             return;
         }
 
-        log.info("正在平滑关闭 TCP 服务端: port={}...", actualPort);
+        log.info("正在平滑关闭 TCP 服务端 [{}]: port={}...", this.name, actualPort);
 
         // 1. 立即停止接收新连接
         if (serverChannel != null) {
@@ -254,6 +277,10 @@ public class TcpServer implements SmartLifecycle {
 
     public int getActualPort() {
         return actualPort;
+    }
+
+    public String getName() {
+        return name;
     }
 
     public TcpServerProperties getProperties() {

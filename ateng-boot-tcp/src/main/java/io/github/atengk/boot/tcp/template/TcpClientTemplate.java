@@ -38,6 +38,10 @@ public class TcpClientTemplate {
     private final TcpClientProperties properties;
     private final TcpRequestCorrelationManager correlationManager;
 
+    public TcpClientTemplate(TcpClient client, TcpClientProperties properties) {
+        this(client, properties, client != null ? client.getCorrelationManager() : null);
+    }
+
     public TcpClientTemplate(TcpClient client,
                              TcpClientProperties properties,
                              TcpRequestCorrelationManager correlationManager) {
