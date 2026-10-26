@@ -145,6 +145,25 @@ flowchart TD
 - **`ExceptionUtil`**：提供递归下钻提取深层根本原因（`getRootCause`，内置循环因果死循环防御）、自解释提示信息提取及带长度截断防御的有界堆栈序列化；
 - **`TreeUtil` / `FileUtil` / `MoreCollectors`**：增补展平与路径探寻（`flatten`, `findPath`, `getLeafNodes`）、防 OOM 安全有界流读取与受管临时文件（`readNBytesSafe`, `createTempFile`）、流式属性去重谓词（`distinctByKey`）。
 
+### 15. 纯原生有界 LRU 缓存原语与底层防 OOM 加固 (`ConcurrentLruCache` & `LambdaUtil`)
+- **纯原生零外部依赖**：基于 JDK 17 `LinkedHashMap(accessOrder=true)` 与 `ReentrantLock` 构建纯原生并发安全有界 LRU 缓存容器 `ConcurrentLruCache`；
+- **容量自动淘汰与惰性 TTL**：设置最大容量上限，读写自动刷新访问顺序并在超限时确定性淘汰最久未访问条目；可选支持 `Duration TTL` 惰性过期与主动 `cleanUp()`；
+- **拔除历史无界内存隐患**：彻底重构 `LambdaUtil` 等底层工具类中原有无界 `ConcurrentHashMap`，统一改用容量为 1024 的 `ConcurrentLruCache`，防范高基数动态输入引发的内存泄漏与 OOM 隐患。
+
+### 16. 虚拟线程运行态度量统一与并发状态自适应 (`ThreadPoolStatus` & `AsyncUtil`)
+- **模型度量无缝统一**：在 `ThreadPoolStatus` 不可变快照中扩充 `virtual`（是否虚拟线程执行器）与 `concurrencyLimit`（并发限额阈值）维度；
+- **虚拟与平台线程自适应**：当异步执行器工作在虚拟线程模式时，`getStatus()` 智能解析虚拟线程并发槽位与活跃计数，避免将虚拟线程误判为常驻平台线程池导致的度量指标畸形。
+
+### 17. 业务状态码千位号段规约与唯一性防重校验 (`ResultCodeSegment` & `ResultCodeUtil`)
+- **跨 Starter 领域号段划分**：确立千位划分的标准号段契约 `ResultCodeSegment`，将状态码严格归属于核心底座（1000~1999）、认证鉴权（2000~2999）、对象存储（3000~3999）、网络通信（4000~4999）、持久事务（5000~5999）及业务预留（6000~9999）；
+- **自防卫与冲突阻断**：提供 `ResultCodeUtil.assertInSegment` 强制约束状态码落在合规区间，`assertUnique(IResultCode...)` 在启动期与单测阶段快速失败拦截编号冲突与碰撞。
+
+### 18. 安全受限 SpEL 表达式求值门面与 AST 缓存 (`SpelUtil`)
+- **安全沙箱 (彻底阻断 RCE)**：`SpelUtil` 默认基于 `SimpleEvaluationContext.forReadOnlyDataBinding()` 建立安全沙箱，严格阻断构造器实例化、任意类加载（`T(...)`）与运行时反射调用，从根源杜绝表达式注入高危漏洞；
+- **AST 编译 LRU 缓存**：内部组合 `ConcurrentLruCache<String, Expression>`（容量 1024）缓存 AST 语法树，消除高并发下重复编译解析的 CPU 尖刺与 GC 压力；
+- **参数语义自适应绑定**：集成 Spring `DefaultParameterNameDiscoverer` 自动提取方法形参名，并同时支持 `#paramName` 与 `#p0`/`#a0` 别名绑定；
+- **受控可信逃生舱**：提供带显式安全警告说明的 `evaluateTrusted` 逃逸方法，支持管理台内部脚本的全反射能力。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

@@ -28,7 +28,7 @@
 | **业务语义断言** | 快速失败业务语义前置防卫门面 | `BusinessAssert` | - | `isTrue(...)`, `isFalse(...)`, `notNull(...)`, `isNull(...)`, `hasText(...)`, `notEmpty(...)`, `equals(...)`, `{}` 占位符惰性格式化, `Supplier<String>`, 数值区间断言 (`gt`, `gte`, `lt`, `lte`, `between`) | `BusinessAssertTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **分布式发号器与短码** | 2026 纪元雪花发号器、逆向反解与 Base62 短码 | `IdUtil`, `Snowflake`, `SnowflakeIdInfo` | - | `IdUtil.nextId()`, `IdUtil.nextIdStr()`, `IdUtil.parseSnowflake(id)` / `Snowflake.parse(id)` 逆向反解元数据，`IdUtil.toBase62(long)`, `IdUtil.fromBase62(str)`, `IdUtil.fastSimpleUUID()`, `IdUtil.fastUUID()`, `IdUtil.nanoId()` | `IdUtilTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **四维异步传播** | 受管线程池上下文捕获与还原 | `AsyncContext`, `ContextCopyingTaskDecorator` | `ateng.boot.async.*` | `AsyncContext.wrap(runnable)`, `wrap(callable)`, `wrapSupplier(supplier)`, 传递 $\langle\text{MDC}, \text{User}, \text{TenantId}, \text{IgnoreTenant}\rangle$ 快照 | `AsyncContextTest.java`, `ContextCopyingTaskDecoratorTest.java`, `CoreContextScenarioServiceTest.java` |
-| **多业务异步底座与治理** | 多业务受管线程池、动态调参、状态监控与告警策略 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy`, `AsyncUtil`, `ThreadPoolStatus` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy` (`WARN_CALLER_RUNS`, `WARN_ABORT`), `pools.*` | 声明式多业务线程池注册；`AsyncUtil.getStatus(executor)` 提取 `ThreadPoolStatus` 监控指标；`AsyncUtil.updatePoolSize(executor, core, max)` 动态热调参；`AsyncUtil.runAsync()`, `supplyAsync()`, `allMatches()`, `allOf()` 编程式异步协调 | `AtengAsyncAutoConfigurationTest.java`, `AsyncUtilTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
+| **多业务异步底座与治理** | 多业务受管线程池、动态调参、状态监控与告警策略 | `AsyncProperties`, `AsyncPoolProperties`, `DynamicAsyncPoolRegistrar`, `AtengAsyncAutoConfiguration`, `AsyncExecutionMode`, `AsyncRejectedPolicy`, `AsyncUtil`, `ThreadPoolStatus` | `ateng.boot.async.enabled`, `core-pool-size`, `max-pool-size`, `queue-capacity`, `keep-alive`, `thread-name-prefix`, `virtual-thread-name-prefix`, `concurrency-limit`, `mode`, `rejected-policy` (`WARN_CALLER_RUNS`, `WARN_ABORT`), `pools.*` | 声明式多业务线程池注册；`AsyncUtil.getStatus(executor)` 提取 `ThreadPoolStatus` 监控指标（含 `virtual()`、`concurrencyLimit()` 虚拟线程自适应参数）；`AsyncUtil.resize(executor, core, max)` 动态热调参；`AsyncUtil.runAsync()`, `supply()`, `allMatches()`, `allOf()` 编程式异步协调 | `AtengAsyncAutoConfigurationTest.java`, `AsyncUtilTest.java`, `CoreReportExportScenarioServiceTest.java`, `CoreContextScenarioServiceTest.java` |
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
@@ -53,6 +53,9 @@
 | **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **跨中间件消息传播契约** | 消息头标准常量、四维透传、毒丸判定与异常 | `MessageHeaderConstants`, `MessageContextPropagator`, `FatalExceptionClassifier`, `MessageDeliveryException` | - | `MessageHeaderConstants.TRACE_ID`, `TENANT_ID`, `USER_ID`, `TIMESTAMP`; `MessageContextPropagator.inject(...)`, `extractAndSet(...)`, `executeWithContext(...)`; `FatalExceptionClassifier.isFatal(ex)`; `MessageDeliveryException` | `MessageContextPropagatorTest.java`, `FatalExceptionClassifierTest.java`, `MessageDeliveryExceptionTest.java` |
+| **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **标准错误码号段规约** | 业务状态码号段规约与唯一性防重校验 | `ResultCodeSegment`, `ResultCodeUtil` | - | `ResultCodeSegment.SYSTEM_CORE/AUTH_SECURITY/...`, `ResultCodeUtil.getSegment(code)`, `isInSegment(code, segment)`, `assertInSegment(code, segment)`, `assertUnique(IResultCode...)` | `ResultCodeUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 
 ---
 
@@ -1248,9 +1251,97 @@ String truncated = StringUtil.truncate("这是一个非常长的业务备注文�
 - **毒丸异常分类判定器 (`FatalExceptionClassifier`)**：精准识别反序列化异常、JSR-303 参数校验异常与显式致命逻辑错误，指导消费者快速失败转入死信队列或丢弃；
 - **受管投递物理异常 (`MessageDeliveryException`)**：封装底层发送物理异常，解耦上层调用与底层驱动。
 
+### 23. 纯原生有界 LRU 缓存容器 (`ConcurrentLruCache`)
+
+#### 场景痛点与特性
+在高性能中间件底座中，若直接使用未受保护的 `ConcurrentHashMap` 缓存元数据，在遭遇高基数动态输入时极易导致无界内存膨胀甚至 OOM 崩溃。
+`ateng-boot-core` 下沉 `ConcurrentLruCache<K, V>` 纯原生有界并发缓存原语：
+- **纯 JDK 17 原生零臃肿**：基于 access-order `LinkedHashMap` 与 `ReentrantLock` 构建，无第三方缓存工具库依赖；
+- **容量自动淘汰**：达到最大容量时自动以 LRU 策略淘汰最久未访问条目；
+- **可选 TTL 惰性过期**：支持 `Duration` 存活时间过期防腐并提供主动 `cleanUp()` 回收；
+- **原子计算写入**：提供并发安全的 `computeIfAbsent` 原语，杜绝并发击穿与重复计算。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
+
+// 1. 构造容量上限为 2 的有界 LRU 缓存
+ConcurrentLruCache<String, String> cache = new ConcurrentLruCache<>(2);
+cache.put("k1", "v1");
+cache.put("k2", "v2");
+
+// 2. 读取条目自动刷新访问热度（使 k2 变为最久未访问）
+String k1Value = cache.get("k1"); // "v1"
+
+// 3. 写入超限自动淘汰最久未访问条目 (k2)
+cache.put("k3", "v3");
+boolean hasK2 = cache.containsKey("k2"); // false (已被淘汰)
+boolean hasK1 = cache.containsKey("k1"); // true
+
+// 4. 原子计算写入
+String computed = cache.computeIfAbsent("k4", key -> "computed_" + key);
+```
+
+### 24. 状态码号段规约与唯一性防重校验 (`ResultCodeSegment` & `ResultCodeUtil`)
+
+#### 场景痛点与特性
+随着 Starter 数量与微服务生态扩展，状态码容易产生编号碰撞、号段口径不一以及越界乱用。
+`ateng-boot-core` 提供标准千位号段划分与防重检测设施：
+- **领域号段规约 (`ResultCodeSegment`)**：统一定义核心底座（1000~1999）、认证鉴权（2000~2999）、对象存储（3000~3999）、网络通信（4000~4999）、持久化事务（5000~5999）与业务扩展（6000~9999）的标准区间；
+- **号段探测与合规防卫 (`ResultCodeUtil`)**：支持 `getSegment` 反查与 `assertInSegment` 强制校验，防止错误码越界乱用；
+- **全局唯一性冲突检测**：`assertUnique(IResultCode...)` 快速失败拦截状态码定义冲突。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.code.IResultCode;
+import io.github.atengk.boot.core.code.ResultCodeSegment;
+import io.github.atengk.boot.core.code.ResultCodeUtil;
+
+// 1. 获取业务状态码归属的标准领域号段
+ResultCodeSegment segment = ResultCodeUtil.getSegment(1001); // ResultCodeSegment.SYSTEM_CORE
+
+// 2. 校验状态码必须落在合规号段内
+ResultCodeUtil.assertInSegment(SampleBusinessResultCode.USER_NOT_FOUND, ResultCodeSegment.SYSTEM_CORE);
+
+// 3. 规约断言：启动期或单测校验全量枚举状态码数值无重复冲突
+ResultCodeUtil.assertUnique(SampleBusinessResultCode.values());
+```
+
+### 25. 安全受限 SpEL 表达式求值门面与 AST 缓存 (`SpelUtil`)
+
+#### 场景痛点与特性
+在分布式锁动态 Key 计算、操作审计占位符求值与业务规则解析中，直接使用 SpEL 默认配置极易触发高危 RCE 注入漏洞（如恶意反射调用 `Runtime.exec`）；且高频重复解析表达式会导致严重 CPU 尖刺与 GC 压力。
+`SpelUtil` 提供跨中间件通用的安全受限表达式求值门面：
+- **安全沙箱 (防 RCE)**：默认采用 `SimpleEvaluationContext.forReadOnlyDataBinding()`，严格阻断类型加载（`T(...)`）、构造器与任意实例方法调用；
+- **AST 编译 LRU 缓存**：内部组合容量 1024 的 `ConcurrentLruCache<String, Expression>`，消除高并发重复解析开销；
+- **方法参数动态绑定**：基于 `DefaultParameterNameDiscoverer` 提取形参名，并同时支持 `#paramName` 与 `#p0`/`#a0` 别名解析；
+- **显式可信逃生舱**：提供带显式安全警示的 `evaluateTrusted` 开放完整反射能力，满足受控管理台脚本的反射求值诉求。
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.util.SpelUtil;
+
+// 1. 基础算术与只读对象属性访问
+Integer math = SpelUtil.evaluate("100 * 2 + 50", Integer.class); // 250
+String userName = SpelUtil.evaluate("name", user, String.class);
+
+// 2. 外部变量映射求值
+String varResult = SpelUtil.evaluate("#prefix + '-' + #seq", Map.of("prefix", "ORD", "seq", 9999), String.class);
+
+// 3. 针对方法参数求值（形参名与 #p0/#a0 别名双向支持）
+Method method = getClass().getMethod("demonstrateSpelEvaluation", Long.class, String.class, SampleUserDTO.class);
+Object[] args = new Object[]{orderId, clientType, user};
+String paramBinding = SpelUtil.evaluateMethod(method, args, "#orderId + ':' + #clientType + ':' + #user.name", String.class);
+String positionalBinding = SpelUtil.evaluateMethod(method, args, "#p0 + '-' + #a1", String.class);
+
+// 4. AST 缓存状态与清空
+int cacheSize = SpelUtil.getCacheSize();
+SpelUtil.clearCache();
+```
+
 ---
 
-## 23. 模块配置属性参考 (`application.yml`)
+## 24. 模块配置属性参考 (`application.yml`)
 
 `ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，并原生支持多业务受管线程池（Multi-Pool）舱壁隔离，可在 `application.yml` 中按需定制配置：
 

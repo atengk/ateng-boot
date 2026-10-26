@@ -196,4 +196,14 @@ class CoreResilienceScenarioServiceTest {
         assertThat(empty.hasNext()).isFalse();
         assertThat(empty.isEmpty()).isTrue();
     }
+
+    @Test
+    @DisplayName("测试ResultCodeSegment号段划分与ResultCodeUtil状态码唯一性断言")
+    void testDemonstrateResultCodeGovernance() {
+        java.util.Map<String, Object> results = resilienceScenarioService.demonstrateResultCodeGovernance();
+
+        assertThat(results.get("coreSegment")).isEqualTo("SYSTEM_CORE");
+        assertThat(results.get("isAuthSecurity")).isEqualTo(true);
+        assertThat(results.get("uniqueAssertPassed")).isEqualTo(true);
+    }
 }

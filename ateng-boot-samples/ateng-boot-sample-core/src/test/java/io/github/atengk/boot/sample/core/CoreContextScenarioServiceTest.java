@@ -158,4 +158,14 @@ class CoreContextScenarioServiceTest {
         assertThat(lifecycle.left()).isTrue();
         assertThat(lifecycle.right()).isEqualTo(TransactionCompletionStatus.COMMITTED);
     }
+
+    @Test
+    @DisplayName("测试 ThreadPoolStatus 虚拟线程感知与自适应字段探测")
+    void testDemonstrateVirtualThreadAwareness() {
+        ThreadPoolStatus status = contextScenarioService.demonstrateVirtualThreadAwareness("export");
+        assertThat(status).isNotNull();
+        // export 线程池配置为 PLATFORM 模式
+        assertThat(status.virtual()).isFalse();
+        assertThat(status.concurrencyLimit()).isEqualTo(-1);
+    }
 }

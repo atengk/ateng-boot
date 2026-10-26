@@ -298,4 +298,32 @@ class CoreDataProcessingScenarioServiceTest {
         assertThat(map.get("rootCauseMessage")).isEqualTo("真实根因");
         assertThat(map.get("hasServiceBean")).isEqualTo(true);
     }
+
+    @Test
+    @DisplayName("测试ConcurrentLruCache纯原生有界LRU缓存淘汰与原子计算")
+    void testDemonstrateConcurrentLruCache() {
+        Map<String, Object> results = dataProcessingService.demonstrateConcurrentLruCache();
+
+        assertThat(results.get("initialSize")).isEqualTo(2);
+        assertThat(results.get("k1Value")).isEqualTo("v1");
+        assertThat(results.get("afterEvictSize")).isEqualTo(2);
+        assertThat(results.get("hasK1")).isEqualTo(true);
+        assertThat(results.get("hasK2")).isEqualTo(false); // 淘汰
+        assertThat(results.get("hasK3")).isEqualTo(true);
+        assertThat(results.get("computedValue")).isEqualTo("computed_k4");
+    }
+
+    @Test
+    @DisplayName("测试SpelUtil安全受限求值与方法参数动态别名绑定")
+    void testDemonstrateSpelEvaluation() {
+        SampleUserDTO user = SampleUserDTO.builder().id(999L).name("诸葛孔明").build();
+        Map<String, Object> results = dataProcessingService.demonstrateSpelEvaluation(10086L, "ANDROID", user);
+
+        assertThat(results.get("mathResult")).isEqualTo(250);
+        assertThat(results.get("userName")).isEqualTo("诸葛孔明");
+        assertThat(results.get("varResult")).isEqualTo("ORD-9999");
+        assertThat(results.get("paramBinding")).isEqualTo("10086:ANDROID:诸葛孔明");
+        assertThat(results.get("positionalBinding")).isEqualTo("10086-ANDROID");
+        assertThat(results.get("injectionBlocked")).isEqualTo(true);
+    }
 }

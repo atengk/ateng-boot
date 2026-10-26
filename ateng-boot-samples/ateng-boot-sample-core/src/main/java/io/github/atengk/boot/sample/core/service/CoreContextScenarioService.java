@@ -234,4 +234,17 @@ public class CoreContextScenarioService {
 
         return Pair.of(beforeCommitExecuted.get(), completionStatus.get());
     }
+
+    /**
+     * 11. 演示 ThreadPoolStatus 虚拟线程感知与自适应指标探测
+     *
+     * @param poolName 线程池名称
+     * @return 线程池监控状态快照
+     */
+    public ThreadPoolStatus demonstrateVirtualThreadAwareness(String poolName) {
+        ThreadPoolStatus status = AsyncUtil.getStatus(poolName);
+        log.info("线程池 [{}] 虚拟线程状态探测: isVirtual={}, concurrencyLimit={}, activeCount={}",
+                poolName, status.virtual(), status.concurrencyLimit(), status.activeCount());
+        return status;
+    }
 }

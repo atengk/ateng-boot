@@ -3,6 +3,8 @@ package io.github.atengk.boot.sample.core.service;
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.code.ResultCodeSegment;
+import io.github.atengk.boot.core.code.ResultCodeUtil;
 import io.github.atengk.boot.core.concurrent.SlidingWindowCounter;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
@@ -279,5 +281,44 @@ public class CoreResilienceScenarioService {
         log.info("PageResult 导航属性: hasPrevious={}, hasNext={}, isEmpty={}",
                 pageResult.hasPrevious(), pageResult.hasNext(), pageResult.isEmpty());
         return pageResult;
+    }
+
+    /**
+     * 场景演示用业务领域错误码枚举（规范落在千位划分的各领域号段内）
+     */
+    @lombok.Getter
+    @lombok.AllArgsConstructor
+    public enum SampleBusinessResultCode implements io.github.atengk.boot.core.code.IResultCode {
+        USER_NOT_FOUND(1001, "核心底座: 用户记录未找到"),
+        TOKEN_INVALID(2001, "认证鉴权: 令牌无效"),
+        FILE_TOO_LARGE(3001, "文件存储: 超出大小限制");
+
+        private final Integer code;
+        private final String msg;
+    }
+
+    /**
+     * 13. 验证 ResultCodeSegment 号段归属、区间匹配与 ResultCodeUtil 错误码唯一性断言
+     *
+     * @return 错误码治理分析结果 Map
+     */
+    public java.util.Map<String, Object> demonstrateResultCodeGovernance() {
+        java.util.Map<String, Object> results = new java.util.HashMap<>();
+
+        // 1. 规约号段探测
+        ResultCodeSegment coreSegment = ResultCodeUtil.getSegment(SampleBusinessResultCode.USER_NOT_FOUND);
+        results.put("coreSegment", coreSegment != null ? coreSegment.name() : null);
+
+        // 2. 号段区间合规性防卫断言与 isInSegment 判定
+        ResultCodeUtil.assertInSegment(SampleBusinessResultCode.USER_NOT_FOUND, ResultCodeSegment.SYSTEM_CORE);
+        boolean isAuthSecurity = ResultCodeUtil.isInSegment(SampleBusinessResultCode.TOKEN_INVALID, ResultCodeSegment.AUTH_SECURITY);
+        results.put("isAuthSecurity", isAuthSecurity);
+
+        // 3. 规约断言：验证状态码数组无重复编号碰撞
+        ResultCodeUtil.assertUnique(SampleBusinessResultCode.values());
+        results.put("uniqueAssertPassed", true);
+
+        log.info("ResultCode 治理分析结果: {}", results);
+        return results;
     }
 }

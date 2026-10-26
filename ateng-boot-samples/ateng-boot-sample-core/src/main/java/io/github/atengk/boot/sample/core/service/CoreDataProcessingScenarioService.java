@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.core.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.BeanUtil;
@@ -14,6 +15,7 @@ import io.github.atengk.boot.core.util.LambdaUtil;
 import io.github.atengk.boot.core.util.MoreCollectors;
 import io.github.atengk.boot.core.util.NetUtil;
 import io.github.atengk.boot.core.util.RandomUtil;
+import io.github.atengk.boot.core.util.SpelUtil;
 import io.github.atengk.boot.core.util.StopWatch;
 import io.github.atengk.boot.core.util.StringUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
@@ -308,6 +310,89 @@ public class CoreDataProcessingScenarioService {
         results.put("hasServiceBean", SpringUtil.containsBean("coreDataProcessingScenarioService"));
 
         log.info("通用新原语验证结果: {}", results);
+        return results;
+    }
+
+    /**
+     * 17. 验证 ConcurrentLruCache 纯原生有界 LRU 缓存（容量淘汰、命中刷新与原子计算）
+     *
+     * @return 缓存验证结果状态 Map
+     */
+    public Map<String, Object> demonstrateConcurrentLruCache() {
+        Map<String, Object> results = new HashMap<>();
+
+        // 构造最大容量为 2 的 LRU 缓存
+        ConcurrentLruCache<String, String> cache = new ConcurrentLruCache<>(2);
+        cache.put("k1", "v1");
+        cache.put("k2", "v2");
+        results.put("initialSize", cache.size()); // 2
+
+        // 读取 k1 刷新访问热度（使 k2 变为最久未访问）
+        String k1Value = cache.get("k1");
+        results.put("k1Value", k1Value);
+
+        // 写入 k3 触发容量超限淘汰最久未访问条目 (k2)
+        cache.put("k3", "v3");
+        results.put("afterEvictSize", cache.size()); // 2
+        results.put("hasK1", cache.containsKey("k1")); // true
+        results.put("hasK2", cache.containsKey("k2")); // false (淘汰)
+        results.put("hasK3", cache.containsKey("k3")); // true
+
+        // 原子计算计算写入
+        String computed = cache.computeIfAbsent("k4", key -> "computed_" + key);
+        results.put("computedValue", computed);
+
+        log.info("ConcurrentLruCache 验证结果: {}", results);
+        return results;
+    }
+
+    /**
+     * 18. 验证 SpelUtil 安全受限表达式求值门面（只读属性、变量绑定、方法形参与索引别名、防注入沙箱）
+     *
+     * @param orderId    订单编号
+     * @param clientType 客户端类型
+     * @param user       用户对象
+     * @return SpEL 各项求值验证结果 Map
+     */
+    public Map<String, Object> demonstrateSpelEvaluation(Long orderId, String clientType, SampleUserDTO user) {
+        Map<String, Object> results = new HashMap<>();
+
+        // 1. 基础算术与只读对象属性访问
+        Integer mathResult = SpelUtil.evaluate("100 * 2 + 50", Integer.class);
+        String userName = SpelUtil.evaluate("name", user, String.class);
+        results.put("mathResult", mathResult);
+        results.put("userName", userName);
+
+        // 2. 外部变量映射求值
+        String varResult = SpelUtil.evaluate("#prefix + '-' + #seq", Map.of("prefix", "ORD", "seq", 9999), String.class);
+        results.put("varResult", varResult);
+
+        // 3. 基于当前方法的参数动态求值（形参名与 #p0/#a0 别名双向支持）
+        try {
+            java.lang.reflect.Method method = getClass().getMethod("demonstrateSpelEvaluation", Long.class, String.class, SampleUserDTO.class);
+            Object[] args = new Object[]{orderId, clientType, user};
+
+            // 形参名绑定求值
+            String paramBinding = SpelUtil.evaluateMethod(method, args, "#orderId + ':' + #clientType + ':' + #user.name", String.class);
+            results.put("paramBinding", paramBinding);
+
+            // 位置别名求值
+            String positionalBinding = SpelUtil.evaluateMethod(method, args, "#p0 + '-' + #a1", String.class);
+            results.put("positionalBinding", positionalBinding);
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException("Reflect method failed", e);
+        }
+
+        // 4. 防注入沙箱拦截验证
+        boolean injectionBlocked = false;
+        try {
+            SpelUtil.evaluate("T(java.lang.Runtime).getRuntime().exec('calc')");
+        } catch (Exception ex) {
+            injectionBlocked = true;
+        }
+        results.put("injectionBlocked", injectionBlocked);
+
+        log.info("SpelUtil 场景求值结果: {}", results);
         return results;
     }
 }
