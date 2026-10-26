@@ -53,4 +53,21 @@ class LambdaUtilTest {
     void shouldHandleNullDefensively() {
         assertThrows(NullPointerException.class, () -> LambdaUtil.getFieldName(null));
     }
+
+    @Test
+    @DisplayName("缓存读写与清空验证")
+    void shouldCacheAndClearMetadata() {
+        LambdaUtil.clearCache();
+        assertEquals(0, LambdaUtil.getCacheSize());
+
+        assertEquals("name", LambdaUtil.getFieldName(SampleUser::getName));
+        assertEquals(1, LambdaUtil.getCacheSize());
+
+        // 重复调用命中缓存
+        assertEquals("name", LambdaUtil.getFieldName(SampleUser::getName));
+        assertEquals(1, LambdaUtil.getCacheSize());
+
+        LambdaUtil.clearCache();
+        assertEquals(0, LambdaUtil.getCacheSize());
+    }
 }

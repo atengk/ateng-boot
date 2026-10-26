@@ -250,3 +250,20 @@ _Avoid_: HexCodec, HexHelper, ByteHexUtil
 纯原生高性能字符串通用算法门面，提供下划线与驼峰命名互转、文本安全截断、敏感子串包含探测与首尾掩码。
 _Avoid_: StrUtil, StringHelper, StringUtils
 
+**SpelUtil**:
+基于 Spring 表达式引擎与 AST 语法树有界缓存构建的静态门面，提供线程安全、方法入参自适应绑定与防注入安全求值。
+_Avoid_: SpelHelper, ExpressionUtil, SpelParser
+
+**ConcurrentLruCache**:
+纯 JDK 17 原生零依赖的线程安全有界 LRU 缓存容器，杜绝无界内存泄露风险。
+_Avoid_: LruCache, CacheUtil, SimpleLruMap
+
+**ResultCodeUtil**:
+全局状态码号段分配校验与元数据注册门面，规范微服务与各 Starter 的错误码分段契约。
+_Avoid_: ErrorCodeUtil, ResultCodeHelper, StatusCodeManager
+
+**ResultCodeSegment**:
+框架标准业务状态码号段枚举与划分规范，定义系统、鉴权、文件、通信与持久层的号段区间契约。
+_Avoid_: ErrorCodeRange, CodeSegment, StatusRange
+
+
