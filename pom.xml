@@ -64,6 +64,7 @@
         <module>ateng-boot-job-local</module>
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
+        <module>ateng-boot-admin</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -93,6 +94,7 @@
         <wechatpay-java.version>0.2.17</wechatpay-java.version>
         <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
+        <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -369,6 +371,21 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-search</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-admin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>de.codecentric</groupId>
+                <artifactId>spring-boot-admin-starter-server</artifactId>
+                <version>${spring-boot-admin.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>de.codecentric</groupId>
+                <artifactId>spring-boot-admin-starter-client</artifactId>
+                <version>${spring-boot-admin.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.baomidou</groupId>
