@@ -28,12 +28,13 @@
 | 序号 | 自验场景 | 覆盖核心机制 / API | 验证动作 / HTTP 接口 | 预期结果 / 校验点 |
 | :--- | :--- | :--- | :--- | :--- |
 | **01** | 车机长连接建立与登录认证 | `TcpClient`<br>`@TcpMapping("LOGIN")`<br>`TcpSessionManager.bind` | 仿真终端连接并发送 `LOGIN` 数据帧 | 连接建立，触发 `TcpDeviceBoundEvent`，设备标识与长连接双向映射成功 |
-| **02** | 高频定位遥测数据帧上报 | `@TcpMapping("LOCATION_REPORT")`<br>`@TcpDeviceId`<br>`AsyncContext` 异步隔离 | 仿真终端发送经纬度、车速与流水号 | 异步受管线程池接管执行，更新车辆实时定位与在线状态，日志透传 MDC `traceId` |
-| **03** | 全双工同步 RPC 参数查询 | `TcpServerTemplate.requestToDevice`<br>`TcpRequestCorrelationManager` | `POST /api/tcp/vehicle/query-params?deviceId=...` | 服务端下发 `PARAM_QUERY`，仿真终端拦截并返回回执，服务端 3 秒内同步返回应答 VO |
-| **04** | 全网广播限速预警通知 | `TcpServerTemplate.broadcast`<br>`TcpPacket.ofJson` | `POST /api/tcp/vehicle/broadcast-alert?message=...` | 向全网在线终端下发 `ALERT_BROADCAST`，车机仿真终端成功接收预警内容 |
-| **05** | 网络重连与“踢旧留新”置换 | `TcpSessionManager.bind`<br>`CloseReason.KICK_OUT` | 启动新模拟器以相同 `deviceId` 登录 | 旧长连接被切断注销，新通道接管设备标识，防止僵尸连接 |
-| **06** | Actuator 生产管控诊断 | `TcpActuatorEndpoint`<br>`/actuator/tcp` | `GET /actuator/tcp`<br>`GET /actuator/tcp/{deviceId}` | 输出整体运行概览、活跃长连接数及单设备长连接通道状态诊断详情 |
-| **07** | Micrometer 网络黄金度量 | `TcpMetricsCollector`<br>Prometheus Registry | 查询度量注册表 | 活跃连接 Gauge、收发报文 Counter、网络字节量 Counter 及 RPC 往返耗时 Timer 正常递增 |
+| **02** | 高频定位遥测上报与自动 ACK | `@TcpMapping("LOCATION_REPORT")`<br>`@TcpDeviceId`<br>`AsyncContext` 异步隔离 | 仿真终端发送经纬度、车速、发动机状态与流水号 | 异步受管线程池接管执行，更新车辆实时定位与在线状态，服务端自动回写 `LOCATION_ACK` 回执 |
+| **03** | 远程单车控制指令下发 | `TcpServerTemplate.requestToDevice`<br>`VehicleCommandRequest` | `POST /api/tcp/vehicle/control` (JSON) | 服务端下发 `LOCK` / `UNLOCK`，车机执行并返回执行回执 `VehicleControlAck` |
+| **04** | 全双工同步 RPC 参数查询 | `TcpServerTemplate.requestToDevice`<br>`TcpRequestCorrelationManager` | `POST /api/tcp/vehicle/query-params` (JSON) | 服务端下发 `PARAM_QUERY`，仿真终端拦截并返回回执，服务端 3 秒内同步返回应答 VO |
+| **05** | 全网广播限速预警通知 | `TcpServerTemplate.broadcast`<br>`TcpPacket.ofJson` | `POST /api/tcp/vehicle/broadcast-alert` (JSON) | 向全网在线终端下发 `ALERT_BROADCAST`，车机仿真终端成功接收预警内容 |
+| **06** | 网络重连与“踢旧留新”置换 | `TcpSessionManager.bind`<br>`CloseReason.KICK_OUT` | 启动新模拟器以相同 `deviceId` 登录 | 旧长连接被切断注销，新通道接管设备标识，防止僵尸连接 |
+| **07** | Actuator 生产管控诊断 | `TcpActuatorEndpoint`<br>`/actuator/tcp` | `GET /actuator/tcp`<br>`GET /actuator/tcp/{deviceId}` | 输出整体运行概览、活跃长连接数及单设备长连接通道状态诊断详情 |
+| **08** | Micrometer 网络黄金度量 | `TcpMetricsCollector`<br>Prometheus Registry | 查询度量注册表 | 活跃连接 Gauge、收发报文 Counter、网络字节量 Counter 及 RPC 往返耗时 Timer 正常递增 |
 
 ---
 
@@ -53,19 +54,31 @@ mvn -pl ateng-boot-samples/ateng-boot-sample-tcp spring-boot:run
 curl -X GET "http://localhost:8080/api/tcp/vehicle/status?deviceId=VEHICLE-E2E-8888"
 ```
 
-### 3. 下发全双工 RPC 参数查询 (HTTP POST)
+### 3. 下发远程控制指令 (HTTP POST)
 
 ```bash
-curl -X POST "http://localhost:8080/api/tcp/vehicle/query-params?deviceId=VEHICLE-E2E-8888&paramType=SYSTEM"
+curl -X POST "http://localhost:8080/api/tcp/vehicle/control" \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"VEHICLE-E2E-8888","command":"LOCK","params":{"mode":"SAFE"}}'
 ```
 
-### 4. 广播限速预警 (HTTP POST)
+### 4. 下发全双工 RPC 参数查询 (HTTP POST)
 
 ```bash
-curl -X POST "http://localhost:8080/api/tcp/vehicle/broadcast-alert?message=前方施工请减速慢行"
+curl -X POST "http://localhost:8080/api/tcp/vehicle/query-params" \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"VEHICLE-E2E-8888","paramType":"SYSTEM"}'
 ```
 
-### 5. 查看 Actuator 监控与诊断 (HTTP GET)
+### 5. 广播限速预警 (HTTP POST)
+
+```bash
+curl -X POST "http://localhost:8080/api/tcp/vehicle/broadcast-alert" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"前方施工请减速慢行"}'
+```
+
+### 6. 查看 Actuator 监控与诊断 (HTTP GET)
 
 ```bash
 # 全局概览

@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * TCP 双轨消息路由分发与线程池异步隔离引擎
@@ -124,20 +125,17 @@ public class TcpDispatcher implements ApplicationContextAware, InitializingBean 
             return;
         }
 
-        // 2. 准备 MDC traceId 穿透
-        String traceId = MDC.get(MDC_TRACE_ID);
-        boolean generatedTraceId = false;
-        if (!StringUtils.hasText(traceId)) {
-            if (StringUtils.hasText(packet.getRequestId())) {
-                traceId = packet.getRequestId();
-            } else {
-                traceId = IdUtil.fastSimpleUUID();
-            }
-            MDC.put(MDC_TRACE_ID, traceId);
-            generatedTraceId = true;
+        // 2. 准备 MDC traceId 穿透（严格隔离 Netty I/O 线程，防止 EventLoop MDC 泄漏）
+        String existingTraceId = MDC.get(MDC_TRACE_ID);
+        final String resolvedTraceId;
+        if (StringUtils.hasText(existingTraceId)) {
+            resolvedTraceId = existingTraceId;
+        } else if (StringUtils.hasText(packet.getRequestId())) {
+            resolvedTraceId = packet.getRequestId();
+        } else {
+            resolvedTraceId = IdUtil.fastSimpleUUID();
         }
 
-        final boolean finalGenerated = generatedTraceId;
         Runnable task = () -> {
             try {
                 if (mappingMeta != null) {
@@ -148,20 +146,24 @@ public class TcpDispatcher implements ApplicationContextAware, InitializingBean 
                 }
             } catch (Throwable ex) {
                 log.error("[TCP-DISPATCHER] 业务处理异常: command={}, 会话={}", finalCommand, session.getSessionId(), ex);
-            } finally {
-                if (finalGenerated) {
-                    MDC.remove(MDC_TRACE_ID);
-                }
             }
         };
 
-        // 3. 异步派发至受管线程池隔离执行
-        Runnable wrappedTask = AsyncContext.wrap(task);
-        if (businessExecutor != null) {
-            businessExecutor.execute(wrappedTask);
+        // 3. 异步派发至受管线程池隔离执行（I/O 线程安全捕获快照并即刻清理现场）
+        final Runnable wrappedTask;
+        if (!StringUtils.hasText(existingTraceId)) {
+            MDC.put(MDC_TRACE_ID, resolvedTraceId);
+            try {
+                wrappedTask = AsyncContext.wrap(task);
+            } finally {
+                MDC.remove(MDC_TRACE_ID);
+            }
         } else {
-            wrappedTask.run();
+            wrappedTask = AsyncContext.wrap(task);
         }
+
+        Executor targetExecutor = this.businessExecutor != null ? this.businessExecutor : ForkJoinPool.commonPool();
+        targetExecutor.execute(wrappedTask);
     }
 
     /**
@@ -171,12 +173,12 @@ public class TcpDispatcher implements ApplicationContextAware, InitializingBean 
         Object[] args = resolveArguments(session, packet, meta.method);
         Object result = meta.method.invoke(meta.bean, args);
 
-        // 如果调用端发起了 RPC 等待（带有 requestId），且处理方法有返回值，自动发回响应
-        if (result != null && StringUtils.hasText(packet.getRequestId())) {
+        // 如果处理方法有返回值，自动发回响应（支持带 requestId 的 RPC 回执或普通双向业务回包）
+        if (result != null) {
             TcpPacket responsePacket;
             if (result instanceof TcpPacket p) {
                 responsePacket = p;
-                if (!StringUtils.hasText(responsePacket.getRequestId())) {
+                if (!StringUtils.hasText(responsePacket.getRequestId()) && StringUtils.hasText(packet.getRequestId())) {
                     responsePacket.setRequestId(packet.getRequestId());
                 }
             } else {
@@ -188,13 +190,16 @@ public class TcpDispatcher implements ApplicationContextAware, InitializingBean 
                         if (!node.has("requestId") && StringUtils.hasText(packet.getRequestId())) {
                             node.put("requestId", packet.getRequestId());
                         }
+                        String respCommand = node.has("command") ? node.get("command").asText() : command;
                         if (!node.has("command") && StringUtils.hasText(command)) {
                             node.put("command", command);
                         }
-                        responsePacket = TcpPacket.of(command, packet.getRequestId(), TcpPayload.of(node.toString()));
+                        responsePacket = TcpPacket.of(respCommand, packet.getRequestId(), TcpPayload.of(node.toString()));
                     } else {
                         Map<String, Object> respMap = new LinkedHashMap<>();
-                        respMap.put("requestId", packet.getRequestId());
+                        if (StringUtils.hasText(packet.getRequestId())) {
+                            respMap.put("requestId", packet.getRequestId());
+                        }
                         respMap.put("command", command);
                         respMap.put("data", result);
                         responsePacket = TcpPacket.of(command, packet.getRequestId(), TcpPayload.fromJson(respMap));
@@ -203,9 +208,9 @@ public class TcpDispatcher implements ApplicationContextAware, InitializingBean 
                     responsePacket = TcpPacket.ofJson(command, result);
                     responsePacket.setRequestId(packet.getRequestId());
                 }
-                if (StringUtils.hasText(packet.getDeviceId())) {
-                    responsePacket.setDeviceId(packet.getDeviceId());
-                }
+            }
+            if (StringUtils.hasText(packet.getDeviceId())) {
+                responsePacket.setDeviceId(packet.getDeviceId());
             }
 
             // 保持分帧定界符对称性（若请求以换行符结尾，响应也追加换行符）

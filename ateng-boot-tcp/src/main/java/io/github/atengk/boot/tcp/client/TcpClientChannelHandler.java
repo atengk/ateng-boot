@@ -5,14 +5,17 @@ import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
+import io.github.atengk.boot.tcp.exception.TcpException;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
 import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import org.slf4j.Logger;
@@ -29,7 +32,7 @@ import org.springframework.context.ApplicationEventPublisher;
  * @since 2026-10-26
  */
 @ChannelHandler.Sharable
-public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
+public class TcpClientChannelHandler extends ChannelDuplexHandler {
 
     private static final Logger log = LoggerFactory.getLogger(TcpClientChannelHandler.class);
 
@@ -38,12 +41,13 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
     private final TcpRequestCorrelationManager correlationManager;
     private final TcpDispatcher dispatcher;
     private final ApplicationEventPublisher eventPublisher;
+    private final TcpMetricsCollector metricsCollector;
 
     public TcpClientChannelHandler(TcpClient client,
                                    TcpClientProperties properties,
                                    TcpRequestCorrelationManager correlationManager,
                                    ApplicationEventPublisher eventPublisher) {
-        this(client, properties, correlationManager, null, eventPublisher);
+        this(client, properties, correlationManager, null, eventPublisher, null);
     }
 
     public TcpClientChannelHandler(TcpClient client,
@@ -51,11 +55,21 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
                                    TcpRequestCorrelationManager correlationManager,
                                    TcpDispatcher dispatcher,
                                    ApplicationEventPublisher eventPublisher) {
+        this(client, properties, correlationManager, dispatcher, eventPublisher, null);
+    }
+
+    public TcpClientChannelHandler(TcpClient client,
+                                   TcpClientProperties properties,
+                                   TcpRequestCorrelationManager correlationManager,
+                                   TcpDispatcher dispatcher,
+                                   ApplicationEventPublisher eventPublisher,
+                                   TcpMetricsCollector metricsCollector) {
         this.client = client;
         this.properties = properties;
         this.correlationManager = correlationManager;
         this.dispatcher = dispatcher;
         this.eventPublisher = eventPublisher;
+        this.metricsCollector = metricsCollector;
     }
 
     @Override
@@ -66,6 +80,10 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
 
         client.onConnected(ctx.channel(), session);
         log.info("TCP 客户端通道已激活: sessionId={}, remote={}", sessionId, ctx.channel().remoteAddress());
+
+        if (metricsCollector != null) {
+            metricsCollector.recordConnection();
+        }
 
         if (eventPublisher != null) {
             eventPublisher.publishEvent(new TcpSessionConnectedEvent(client, session));
@@ -79,6 +97,10 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
         TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
         if (session != null) {
             session.touch();
+        }
+
+        if (metricsCollector != null) {
+            metricsCollector.recordMessageReceived(resolveByteLength(msg));
         }
 
         // 1. 全双工 RPC 关联应答优先拦截唤醒
@@ -107,11 +129,24 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
     }
 
     @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        if (metricsCollector != null) {
+            metricsCollector.recordMessageSent(resolveByteLength(msg));
+        }
+        super.write(ctx, msg, promise);
+    }
+
+    @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
         CloseReason reason = session != null && session.getCloseReason() != null
                 ? session.getCloseReason()
                 : CloseReason.NORMAL;
+
+        // 通道断开时通知相关性管理器补偿失败全量在途请求，消除悬挂 Future 导致的内存泄漏
+        if (correlationManager != null) {
+            correlationManager.failAll(new TcpException("TCP 客户端通道已断开连接: remote=" + ctx.channel().remoteAddress()));
+        }
 
         client.onDisconnected(ctx.channel());
         log.warn("TCP 客户端连接已断开: remote={}, reason={}", ctx.channel().remoteAddress(), reason);
@@ -176,5 +211,24 @@ public class TcpClientChannelHandler extends ChannelInboundHandlerAdapter {
             return TcpPacket.ofText(str);
         }
         return null;
+    }
+
+    private long resolveByteLength(Object msg) {
+        if (msg == null) {
+            return 0;
+        }
+        if (msg instanceof TcpPayload payload) {
+            return payload.getBytes().length;
+        }
+        if (msg instanceof TcpPacket packet && packet.getPayload() != null) {
+            return packet.getPayload().getBytes().length;
+        }
+        if (msg instanceof byte[] bytes) {
+            return bytes.length;
+        }
+        if (msg instanceof String str) {
+            return str.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        }
+        return 0;
     }
 }

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.tcp.config;
 
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
 import io.github.atengk.boot.tcp.route.CompositeRouteKeyExtractor;
 import io.github.atengk.boot.tcp.route.JsonRouteKeyExtractor;

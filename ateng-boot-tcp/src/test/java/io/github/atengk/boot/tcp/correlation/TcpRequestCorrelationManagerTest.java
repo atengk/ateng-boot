@@ -2,8 +2,11 @@ package io.github.atengk.boot.tcp.correlation;
 
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -137,5 +140,46 @@ class TcpRequestCorrelationManagerTest {
                 .hasCauseInstanceOf(TcpException.class);
 
         assertThat(correlationManager.getPendingCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("验证 failAll 确定性补偿终止所有挂起在途 Future 并清空映射表")
+    void testFailAllCompensatesPendingFutures() {
+        CompletableFuture<TcpPacket> f1 = correlationManager.register("REQ-FAIL-1", Duration.ofSeconds(10));
+        CompletableFuture<TcpPacket> f2 = correlationManager.register("REQ-FAIL-2", Duration.ofSeconds(10));
+
+        assertThat(correlationManager.getPendingCount()).isEqualTo(2);
+
+        IllegalStateException cause = new IllegalStateException("TCP 物理连接异常中断");
+        correlationManager.failAll(cause);
+
+        assertThatThrownBy(f1::join)
+                .isInstanceOf(Exception.class)
+                .hasCause(cause);
+        assertThatThrownBy(f2::join)
+                .isInstanceOf(Exception.class)
+                .hasCause(cause);
+
+        assertThat(correlationManager.getPendingCount()).isEqualTo(0);
+        assertThat(correlationManager.hasPendingRequests()).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证关联请求完成时正确激活 TcpMetricsCollector 耗时指标打点")
+    void testMetricsCollectorDurationRecording() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        TcpMetricsCollector collector = new TcpMetricsCollector(meterRegistry, null);
+        correlationManager.setMetricsCollector(collector);
+
+        String requestId = "REQ-METRIC-1";
+        correlationManager.register(requestId, Duration.ofSeconds(5));
+
+        TcpPacket response = TcpPacket.of("TEST", requestId, TcpPayload.of("OK"));
+        boolean matched = correlationManager.complete(requestId, response);
+        assertThat(matched).isTrue();
+
+        Timer timer = meterRegistry.find(TcpMetricsCollector.METRIC_REQUEST_DURATION).timer();
+        assertThat(timer).isNotNull();
+        assertThat(timer.count()).isEqualTo(1L);
     }
 }

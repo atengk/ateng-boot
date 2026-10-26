@@ -2,11 +2,13 @@ package io.github.atengk.boot.tcp.config;
 
 import io.github.atengk.boot.tcp.actuator.TcpActuatorEndpoint;
 import io.github.atengk.boot.tcp.client.TcpClientRegistry;
+import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.server.TcpServerRegistry;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -32,6 +34,17 @@ public class TcpObservabilityAutoConfiguration {
         public TcpMetricsCollector tcpMetricsCollector(ObjectProvider<MeterRegistry> meterRegistryProvider,
                                                        ObjectProvider<TcpSessionManager> sessionManagerProvider) {
             return new TcpMetricsCollector(meterRegistryProvider.getIfAvailable(), sessionManagerProvider.getIfAvailable());
+        }
+
+        @Bean
+        public SmartInitializingSingleton tcpMetricsBinder(TcpMetricsCollector collector,
+                                                           ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider) {
+            return () -> {
+                TcpRequestCorrelationManager manager = correlationManagerProvider.getIfAvailable();
+                if (manager != null) {
+                    manager.setMetricsCollector(collector);
+                }
+            };
         }
     }
 

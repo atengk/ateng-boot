@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.correlation;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.netty.util.HashedWheelTimer;
@@ -63,14 +64,25 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
     private final HashedWheelTimer timer;
     private volatile int maxPendingRequests = 10000;
     private volatile TcpCorrelationIdExtractor correlationIdExtractor = DEFAULT_EXTRACTOR;
+    private volatile TcpMetricsCollector metricsCollector;
 
     public TcpRequestCorrelationManager() {
         this(new HashedWheelTimer(new DefaultThreadFactory("Netty-Correlation-Timer", true)), 10000);
     }
 
+    public TcpRequestCorrelationManager(TcpMetricsCollector metricsCollector) {
+        this();
+        this.metricsCollector = metricsCollector;
+    }
+
     public TcpRequestCorrelationManager(HashedWheelTimer timer, int maxPendingRequests) {
+        this(timer, maxPendingRequests, null);
+    }
+
+    public TcpRequestCorrelationManager(HashedWheelTimer timer, int maxPendingRequests, TcpMetricsCollector metricsCollector) {
         this.timer = Objects.requireNonNull(timer, "timer 不能为空");
         this.maxPendingRequests = maxPendingRequests > 0 ? maxPendingRequests : 10000;
+        this.metricsCollector = metricsCollector;
     }
 
     /**
@@ -132,6 +144,10 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
         PendingRequest pending = pendingRequests.remove(requestId);
         if (pending != null) {
             pending.timeoutTask.cancel();
+            if (metricsCollector != null) {
+                long durationMs = System.currentTimeMillis() - pending.createTime;
+                metricsCollector.recordRequestDuration(Duration.ofMillis(Math.max(0, durationMs)));
+            }
             pending.future.complete(response);
             return true;
         }
@@ -152,10 +168,31 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
         PendingRequest pending = pendingRequests.remove(requestId);
         if (pending != null) {
             pending.timeoutTask.cancel();
+            if (metricsCollector != null) {
+                long durationMs = System.currentTimeMillis() - pending.createTime;
+                metricsCollector.recordRequestDuration(Duration.ofMillis(Math.max(0, durationMs)));
+            }
             pending.future.completeExceptionally(cause);
             return true;
         }
         return false;
+    }
+
+    /**
+     * 异常补偿中止所有当前在途挂起的 RPC 请求（例如底层网络通道断开连接时，防挂起句柄泄漏）
+     *
+     * @param cause 失败原因
+     */
+    public void failAll(Throwable cause) {
+        if (pendingRequests.isEmpty()) {
+            return;
+        }
+        Throwable error = cause != null ? cause : new TcpException("TCP 连接已断开，终止在途 RPC 请求");
+        for (PendingRequest pending : pendingRequests.values()) {
+            pending.timeoutTask.cancel();
+            pending.future.completeExceptionally(error);
+        }
+        pendingRequests.clear();
     }
 
     /**
@@ -195,6 +232,14 @@ public class TcpRequestCorrelationManager implements AutoCloseable {
      */
     public int getPendingCount() {
         return pendingRequests.size();
+    }
+
+    public TcpMetricsCollector getMetricsCollector() {
+        return metricsCollector;
+    }
+
+    public void setMetricsCollector(TcpMetricsCollector metricsCollector) {
+        this.metricsCollector = metricsCollector;
     }
 
     public TcpCorrelationIdExtractor getCorrelationIdExtractor() {

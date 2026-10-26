@@ -1,6 +1,7 @@
 package io.github.atengk.boot.tcp.cluster;
 
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClusterProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
@@ -112,5 +113,40 @@ class TcpClusterBridgeTest {
 
         // 验证被防回环守卫拦截，未重复向设备下发
         assertThat(ch.outboundMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 TcpPacket 跨节点广播序列化与反序列化全量保留 Command、RequestId 与 Headers 元数据")
+    void testBroadcastMessagePacketPreservation() {
+        TcpPacket originalPacket = TcpPacket.builder()
+                .command("CONFIG_SYNC")
+                .requestId("REQ-SYNC-888")
+                .deviceId("DEV-DEVICE-999")
+                .payload(TcpPayload.of("{\"sampleKey\":\"sampleVal\"}"))
+                .build();
+        originalPacket.getHeaders().put("traceId", "T-123456");
+        originalPacket.getHeaders().put("version", 2);
+
+        TcpClusterBroadcastMessage message = TcpClusterBroadcastMessage.of("DEV-DEVICE-999", "node-master", originalPacket);
+        assertThat(message.getPayloadType()).isEqualTo("PACKET");
+        assertThat(message.getPacketCommand()).isEqualTo("CONFIG_SYNC");
+        assertThat(message.getPacketRequestId()).isEqualTo("REQ-SYNC-888");
+        assertThat(message.getPacketDeviceId()).isEqualTo("DEV-DEVICE-999");
+        assertThat(message.getPacketHeaders()).containsEntry("traceId", "T-123456");
+
+        // 模拟 Redis JSON 序列化与跨节点反序列化
+        String json = JsonUtil.toJsonString(message);
+        TcpClusterBroadcastMessage deserialized = JsonUtil.parseObject(json, TcpClusterBroadcastMessage.class);
+        assertThat(deserialized).isNotNull();
+
+        Object resolved = deserialized.resolvePayload();
+        assertThat(resolved).isInstanceOf(TcpPacket.class);
+        TcpPacket packet = (TcpPacket) resolved;
+
+        assertThat(packet.getCommand()).isEqualTo("CONFIG_SYNC");
+        assertThat(packet.getRequestId()).isEqualTo("REQ-SYNC-888");
+        assertThat(packet.getDeviceId()).isEqualTo("DEV-DEVICE-999");
+        assertThat(packet.getPayload().asString()).isEqualTo("{\"sampleKey\":\"sampleVal\"}");
+        assertThat(packet.getHeaders()).containsEntry("traceId", "T-123456");
     }
 }

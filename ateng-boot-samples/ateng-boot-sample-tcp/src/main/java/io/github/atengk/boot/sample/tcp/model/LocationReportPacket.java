@@ -43,6 +43,11 @@ public class LocationReportPacket implements Serializable {
     private Double speed;
 
     /**
+     * 发动机工作状态（ON / OFF / ACC）
+     */
+    private String engineStatus;
+
+    /**
      * 上报毫秒时间戳
      */
     private Long timestamp;
@@ -51,11 +56,16 @@ public class LocationReportPacket implements Serializable {
     }
 
     public LocationReportPacket(String deviceId, Long seq, Double longitude, Double latitude, Double speed, Long timestamp) {
+        this(deviceId, seq, longitude, latitude, speed, "ON", timestamp);
+    }
+
+    public LocationReportPacket(String deviceId, Long seq, Double longitude, Double latitude, Double speed, String engineStatus, Long timestamp) {
         this.deviceId = deviceId;
         this.seq = seq;
         this.longitude = longitude;
         this.latitude = latitude;
         this.speed = speed;
+        this.engineStatus = engineStatus;
         this.timestamp = timestamp;
     }
 
@@ -105,6 +115,14 @@ public class LocationReportPacket implements Serializable {
 
     public void setSpeed(Double speed) {
         this.speed = speed;
+    }
+
+    public String getEngineStatus() {
+        return engineStatus;
+    }
+
+    public void setEngineStatus(String engineStatus) {
+        this.engineStatus = engineStatus;
     }
 
     public Long getTimestamp() {

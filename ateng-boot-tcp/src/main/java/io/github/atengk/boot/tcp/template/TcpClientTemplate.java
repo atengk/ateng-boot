@@ -126,6 +126,11 @@ public class TcpClientTemplate {
     public <T> T request(Object payload, Class<T> responseType, Duration timeout) {
         Objects.requireNonNull(responseType, "responseType 不能为空");
         TcpPacket responsePacket = timeout != null ? request(payload, timeout) : request(payload);
+        return castResponse(responsePacket, responseType);
+    }
+
+    @SuppressWarnings("unchecked")
+    static <T> T castResponse(TcpPacket responsePacket, Class<T> responseType) {
         if (responsePacket == null || responsePacket.getPayload() == null) {
             return null;
         }

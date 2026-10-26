@@ -130,6 +130,46 @@ public class TcpServerTemplate {
     }
 
     /**
+     * 向指定会话发起全双工同步请求并等待强类型对端应答（默认 10s 超时）
+     *
+     * @param sessionId    会话唯一标识
+     * @param payload      报文载荷
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(String sessionId, Object payload, Class<T> responseType) {
+        return request(sessionId, payload, Duration.ofSeconds(10), responseType);
+    }
+
+    /**
+     * 向指定会话发起全双工同步请求并在指定超时窗口内等待强类型对端应答
+     *
+     * @param sessionId    会话唯一标识
+     * @param payload      报文载荷
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T request(String sessionId, Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        TcpPacket responsePacket = request(sessionId, payload, timeout);
+        return TcpClientTemplate.castResponse(responsePacket, responseType);
+    }
+
+    /**
+     * 向指定会话发起全双工异步 RPC 请求（默认 10s 超时）
+     *
+     * @param sessionId 会话唯一标识
+     * @param payload   报文载荷
+     * @return 响应 Future
+     */
+    public CompletableFuture<TcpPacket> requestAsync(String sessionId, Object payload) {
+        return requestAsync(sessionId, payload, Duration.ofSeconds(10));
+    }
+
+    /**
      * 向指定会话发起全双工异步 RPC 请求并在指定超时窗口内等待响应
      *
      * @param sessionId 会话唯一标识
@@ -201,6 +241,46 @@ public class TcpServerTemplate {
         } catch (TimeoutException te) {
             throw new TcpTimeoutException("TCP 请求调用超时: timeout=" + timeout, te);
         }
+    }
+
+    /**
+     * 向指定业务设备标识发起全双工同步请求并等待强类型对端应答（默认 10s 超时）
+     *
+     * @param deviceId     业务设备唯一编号
+     * @param payload      报文载荷
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T requestToDevice(String deviceId, Object payload, Class<T> responseType) {
+        return requestToDevice(deviceId, payload, Duration.ofSeconds(10), responseType);
+    }
+
+    /**
+     * 向指定业务设备标识发起全双工同步请求并在指定超时窗口内等待强类型对端应答
+     *
+     * @param deviceId     业务设备唯一编号
+     * @param payload      报文载荷
+     * @param timeout      超时时长
+     * @param responseType 响应目标类型
+     * @param <T>          响应强类型
+     * @return 对端响应对象
+     */
+    public <T> T requestToDevice(String deviceId, Object payload, Duration timeout, Class<T> responseType) {
+        Objects.requireNonNull(responseType, "responseType 不能为空");
+        TcpPacket responsePacket = requestToDevice(deviceId, payload, timeout);
+        return TcpClientTemplate.castResponse(responsePacket, responseType);
+    }
+
+    /**
+     * 向指定业务设备标识发起全双工异步 RPC 请求（默认 10s 超时）
+     *
+     * @param deviceId 业务设备唯一编号
+     * @param payload  报文载荷
+     * @return 响应 Future
+     */
+    public CompletableFuture<TcpPacket> requestToDeviceAsync(String deviceId, Object payload) {
+        return requestToDeviceAsync(deviceId, payload, Duration.ofSeconds(10));
     }
 
     /**

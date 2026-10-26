@@ -38,6 +38,11 @@ public class VehicleStatusVO implements Serializable {
     private Double lastSpeed;
 
     /**
+     * 发动机工作状态（ON / OFF / ACC）
+     */
+    private String engineStatus;
+
+    /**
      * 最后心跳/定位更新时间戳
      */
     private Long updateTime;
@@ -46,11 +51,16 @@ public class VehicleStatusVO implements Serializable {
     }
 
     public VehicleStatusVO(String deviceId, Boolean online, Double lastLongitude, Double lastLatitude, Double lastSpeed, Long updateTime) {
+        this(deviceId, online, lastLongitude, lastLatitude, lastSpeed, "OFF", updateTime);
+    }
+
+    public VehicleStatusVO(String deviceId, Boolean online, Double lastLongitude, Double lastLatitude, Double lastSpeed, String engineStatus, Long updateTime) {
         this.deviceId = deviceId;
         this.online = online;
         this.lastLongitude = lastLongitude;
         this.lastLatitude = lastLatitude;
         this.lastSpeed = lastSpeed;
+        this.engineStatus = engineStatus;
         this.updateTime = updateTime;
     }
 
@@ -92,6 +102,14 @@ public class VehicleStatusVO implements Serializable {
 
     public void setLastSpeed(Double lastSpeed) {
         this.lastSpeed = lastSpeed;
+    }
+
+    public String getEngineStatus() {
+        return engineStatus;
+    }
+
+    public void setEngineStatus(String engineStatus) {
+        this.engineStatus = engineStatus;
     }
 
     public Long getUpdateTime() {

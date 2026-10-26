@@ -12,6 +12,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+
 /**
  * 车载长连接遥测数据与控制指令监听器
  *
@@ -54,20 +56,30 @@ public class VehicleTelemetryListener {
     }
 
     /**
-     * 接收终端上报的高频定位遥测数据包
+     * 接收终端上报的高频定位遥测数据包并自动返回 ACK 回执
      *
      * @param session  当前 TCP 会话
      * @param deviceId 通过 @TcpDeviceId 自动提取当前长连接已绑定的硬件标识
      * @param report   定位数据实体
+     * @return 自动向车机回写的定位回执 ACK 载荷
      */
     @TcpMapping(command = "LOCATION_REPORT")
-    public void onLocationReport(TcpSession session, @TcpDeviceId String deviceId, LocationReportPacket report) {
+    public Map<String, Object> onLocationReport(TcpSession session, @TcpDeviceId String deviceId, LocationReportPacket report) {
         String targetDeviceId = deviceId != null ? deviceId : (report != null ? report.getDeviceId() : null);
         if (targetDeviceId != null && session != null && session.getDeviceId() == null) {
             sessionManager.bind(session.getSessionId(), targetDeviceId);
         }
-        log.info("接收到车机定位上报: deviceId={}, seq={}, speed={}km/h",
-                targetDeviceId, report != null ? report.getSeq() : null, report != null ? report.getSpeed() : null);
+        log.info("接收到车机定位上报: deviceId={}, seq={}, speed={}km/h, engine={}",
+                targetDeviceId,
+                report != null ? report.getSeq() : null,
+                report != null ? report.getSpeed() : null,
+                report != null ? report.getEngineStatus() : null);
         vehicleControlService.updateLocation(targetDeviceId, report);
+
+        return Map.of(
+                "command", "LOCATION_ACK",
+                "seq", report != null && report.getSeq() != null ? report.getSeq() : 0L,
+                "status", "SUCCESS"
+        );
     }
 }

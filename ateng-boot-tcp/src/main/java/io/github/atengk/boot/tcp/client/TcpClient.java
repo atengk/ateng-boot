@@ -5,6 +5,7 @@ import io.github.atengk.boot.tcp.codec.TcpFramingDecoderFactory;
 import io.github.atengk.boot.tcp.codec.TcpPacketFilterHandler;
 import io.github.atengk.boot.tcp.codec.TcpPayloadCodecHandler;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
 import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSession;
@@ -52,6 +53,7 @@ public class TcpClient implements SmartLifecycle {
     private final ApplicationEventPublisher eventPublisher;
     private final TcpRequestCorrelationManager correlationManager;
     private final TcpDispatcher dispatcher;
+    private final TcpMetricsCollector metricsCollector;
 
     private EventLoopGroup workerGroup;
     private Bootstrap bootstrap;
@@ -90,11 +92,23 @@ public class TcpClient implements SmartLifecycle {
                      ApplicationEventPublisher eventPublisher,
                      TcpRequestCorrelationManager correlationManager,
                      TcpDispatcher dispatcher) {
+        this(name, properties, packetFilters, channelCustomizers, eventPublisher, correlationManager, dispatcher, null);
+    }
+
+    public TcpClient(String name,
+                     TcpClientProperties properties,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher,
+                     TcpMetricsCollector metricsCollector) {
         this.name = StringUtils.hasText(name) ? name : "default";
         this.properties = properties;
         this.eventPublisher = eventPublisher;
         this.correlationManager = correlationManager;
         this.dispatcher = dispatcher;
+        this.metricsCollector = metricsCollector;
 
         if (packetFilters != null && !packetFilters.isEmpty()) {
             List<TcpPacketFilter> sorted = new ArrayList<>(packetFilters);
@@ -124,7 +138,7 @@ public class TcpClient implements SmartLifecycle {
 
         this.sslContext = TcpSslContextFactory.buildClientSslContext(properties.getSsl());
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
-        TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher);
+        TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher, metricsCollector);
 
         bootstrap.group(workerGroup)
                 .channel(NioSocketChannel.class)
@@ -218,6 +232,9 @@ public class TcpClient implements SmartLifecycle {
 
         // 第 3 阶段：安全关闭通道与线程池
         try {
+            if (correlationManager != null) {
+                correlationManager.failAll(new IllegalStateException("TCP 客户端 [" + this.name + "] 正在平滑关闭"));
+            }
             if (channel != null && channel.isOpen()) {
                 channel.close().syncUninterruptibly();
             }
@@ -397,6 +414,10 @@ public class TcpClient implements SmartLifecycle {
 
     public TcpDispatcher getDispatcher() {
         return dispatcher;
+    }
+
+    public TcpMetricsCollector getMetricsCollector() {
+        return metricsCollector;
     }
 
     @Override

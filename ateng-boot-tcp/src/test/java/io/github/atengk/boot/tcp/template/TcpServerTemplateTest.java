@@ -215,4 +215,50 @@ class TcpServerTemplateTest {
         assertThat(manager.getSession("SES-CLOSE-2")).isNull();
         assertThat(manager.getSessionByDeviceId("DEV-CLOSE-2")).isNull();
     }
+
+    @Test
+    @DisplayName("验证服务端发起强类型 request 与 requestToDevice 同步转换")
+    void testServerTypedRequest() {
+        TcpSessionManager manager = new TcpSessionManager();
+        io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager correlationManager =
+                new io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager();
+        TcpServerTemplate template = new TcpServerTemplate(manager, correlationManager);
+
+        EmbeddedChannel channel = new EmbeddedChannel();
+        TcpSession session = new TcpSession("SES-TYPED", channel);
+        manager.register(session);
+        manager.bind("SES-TYPED", "DEV-TYPED-1");
+
+        java.util.concurrent.ScheduledExecutorService executor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+            // 异步线程模拟 sessionId 应答
+            executor.schedule(() -> {
+                Object outbound = channel.readOutbound();
+                if (outbound instanceof io.github.atengk.boot.tcp.model.TcpPacket reqPacket) {
+                    io.github.atengk.boot.tcp.model.TcpPacket respPacket =
+                            io.github.atengk.boot.tcp.model.TcpPacket.of("RESP", reqPacket.getRequestId(), TcpPayload.of("SERVER_TYPED_OK\n"));
+                    correlationManager.complete(reqPacket.getRequestId(), respPacket);
+                }
+            }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+            String result = template.request("SES-TYPED", "PING", String.class);
+            assertThat(result).isEqualTo("SERVER_TYPED_OK");
+
+            // 异步线程模拟 deviceId 应答
+            executor.schedule(() -> {
+                Object outbound = channel.readOutbound();
+                if (outbound instanceof io.github.atengk.boot.tcp.model.TcpPacket reqPacket) {
+                    io.github.atengk.boot.tcp.model.TcpPacket respPacket =
+                            io.github.atengk.boot.tcp.model.TcpPacket.of("RESP", reqPacket.getRequestId(), TcpPayload.of("DEVICE_OK"));
+                    correlationManager.complete(reqPacket.getRequestId(), respPacket);
+                }
+            }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+            String devResult = template.requestToDevice("DEV-TYPED-1", "DEV_PING", String.class);
+            assertThat(devResult).isEqualTo("DEVICE_OK");
+        } finally {
+            executor.shutdownNow();
+            correlationManager.close();
+        }
+    }
 }

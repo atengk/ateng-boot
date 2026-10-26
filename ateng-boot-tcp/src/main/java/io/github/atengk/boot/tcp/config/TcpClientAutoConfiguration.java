@@ -4,6 +4,7 @@ import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.client.TcpClientRegistry;
 import io.github.atengk.boot.tcp.correlation.TcpCorrelationIdExtractor;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.AtengTcpProperties;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
 import io.github.atengk.boot.tcp.route.TcpDispatcher;
@@ -46,6 +47,7 @@ public class TcpClientAutoConfiguration {
                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
                                ObjectProvider<TcpDispatcher> dispatcherProvider,
+                               ObjectProvider<TcpMetricsCollector> metricsCollectorProvider,
                                ApplicationEventPublisher eventPublisher) {
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
@@ -56,7 +58,8 @@ public class TcpClientAutoConfiguration {
                 customizers,
                 eventPublisher,
                 correlationManager,
-                dispatcherProvider.getIfAvailable()
+                dispatcherProvider.getIfAvailable(),
+                metricsCollectorProvider.getIfAvailable()
         );
     }
 
@@ -78,10 +81,12 @@ public class TcpClientAutoConfiguration {
                                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
                                                ObjectProvider<TcpDispatcher> dispatcherProvider,
+                                               ObjectProvider<TcpMetricsCollector> metricsCollectorProvider,
                                                ApplicationEventPublisher eventPublisher) {
         TcpClientRegistry registry = new TcpClientRegistry();
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
+        TcpMetricsCollector metricsCollector = metricsCollectorProvider.getIfAvailable();
 
         // 1. 纳管默认主客户端（若已装配）
         TcpClient defaultClient = defaultClientProvider.getIfAvailable();
@@ -97,7 +102,7 @@ public class TcpClientAutoConfiguration {
                 String clientName = entry.getKey();
                 TcpClientProperties clientProps = entry.getValue();
                 if (clientProps != null && clientProps.isEnabled()) {
-                    TcpRequestCorrelationManager customCorrelationManager = new TcpRequestCorrelationManager();
+                    TcpRequestCorrelationManager customCorrelationManager = new TcpRequestCorrelationManager(metricsCollector);
                     if (correlationIdExtractorProvider.getIfAvailable() != null) {
                         customCorrelationManager.setCorrelationIdExtractor(correlationIdExtractorProvider.getIfAvailable());
                     }
@@ -108,7 +113,8 @@ public class TcpClientAutoConfiguration {
                             customizers,
                             eventPublisher,
                             customCorrelationManager,
-                            dispatcherProvider.getIfAvailable()
+                            dispatcherProvider.getIfAvailable(),
+                            metricsCollector
                     );
                     TcpClientTemplate template = new TcpClientTemplate(client, clientProps, customCorrelationManager);
                     registry.register(clientName, client, template);
