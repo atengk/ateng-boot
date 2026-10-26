@@ -168,4 +168,18 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(AtengAdminServerProperties.class);
                 });
     }
+
+    @Test
+    @DisplayName("normalizeContextPath 能够严密防御 null、空白、无前导斜杠及多余末尾斜杠")
+    void shouldNormalizeContextPathCorrectly() {
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath(null)).isEmpty();
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("")).isEmpty();
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("   ")).isEmpty();
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/")).isEmpty();
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("admin")).isEqualTo("/admin");
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/admin")).isEqualTo("/admin");
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/admin/")).isEqualTo("/admin");
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("/admin///")).isEqualTo("/admin");
+        assertThat(AtengAdminServerAutoConfiguration.normalizeContextPath("  /sba/  ")).isEqualTo("/sba");
+    }
 }

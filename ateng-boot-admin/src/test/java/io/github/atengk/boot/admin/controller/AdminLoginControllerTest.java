@@ -1,7 +1,14 @@
 package io.github.atengk.boot.admin.controller;
 
+import cn.dev33.satoken.SaManager;
+import cn.dev33.satoken.exception.NotLoginException;
+import cn.dev33.satoken.filter.SaServletFilter;
+import cn.dev33.satoken.fun.strategy.SaRouteMatchFunction;
+import cn.dev33.satoken.spring.SaTokenContextForSpringInJakartaServlet;
+import cn.dev33.satoken.strategy.SaStrategy;
 import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
+import io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfiguration;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
@@ -10,9 +17,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.util.AntPathMatcher;
 
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -152,5 +161,50 @@ class AdminLoginControllerTest {
         customMvc.perform(post("/logout"))
                 .andExpect(status().is3xxRedirection())
                 .andExpect(redirectedUrl("/admin/login?logout=true"));
+    }
+
+    @Test
+    @DisplayName("挂载 SaServletFilter 时，未登录访问受保护路径触发 302 重定向至登录页，Ajax/JSON 请求返回 401")
+    void shouldInterceptUnauthenticatedAccessViaSaFilter() throws Exception {
+        adminServerProperties.setContextPath("/admin");
+        AdminLoginController controller = new AdminLoginController(authProvider, adminServerProperties);
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<AdminServerProperties> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(adminServerProperties);
+
+        AtengAdminServerAutoConfiguration autoConfig = new AtengAdminServerAutoConfiguration();
+        SaServletFilter filter = autoConfig.adminSaServletFilter(provider);
+
+        MockMvc filterMvc = MockMvcBuilders.standaloneSetup(controller)
+                .addFilters(filter)
+                .defaultResponseCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8)
+                .build();
+
+        stpUtilMock.when(StpUtil::checkLogin).thenThrow(new NotLoginException("未登录", "-1", "-1"));
+
+        SaRouteMatchFunction originalRouteMatcher = SaStrategy.instance.routeMatcher;
+        AntPathMatcher antPathMatcher = new AntPathMatcher();
+        SaStrategy.instance.routeMatcher = antPathMatcher::match;
+        SaManager.setSaTokenContext(new SaTokenContextForSpringInJakartaServlet());
+        try {
+            // 1. 未登录 HTML 访问受保护看板页面 /admin，自动 302 重定向至 /admin/login
+            filterMvc.perform(get("/admin").accept(MediaType.TEXT_HTML))
+                    .andExpect(status().is3xxRedirection())
+                    .andExpect(redirectedUrl("/admin/login"));
+
+            // 2. 未登录 Ajax / JSON 请求受保护资源，返回 401 Unauthorized
+            filterMvc.perform(get("/admin/instances").accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.code").value(401))
+                    .andExpect(jsonPath("$.message").value("Unauthorized"));
+
+            // 3. 访问登录页面处于放行白名单，不受登录拦截
+            filterMvc.perform(get("/login"))
+                    .andExpect(status().isOk());
+        } finally {
+            SaStrategy.instance.routeMatcher = originalRouteMatcher;
+            SaManager.setSaTokenContext(null);
+        }
     }
 }

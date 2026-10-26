@@ -14,6 +14,7 @@ import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -62,6 +63,16 @@ class AdminSampleIntegrationTest {
 
     @Autowired
     private AtengAdminNotificationNotifier notificationNotifier;
+
+    @AfterEach
+    void tearDown() {
+        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO
+        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
+        if (logger != null) {
+            logger.setLevel(Level.INFO);
+        }
+    }
 
     @Test
     @DisplayName("场景 1：未登录访问 /admin 时自动 302 重定向至 /admin/login；访问登录页成功返回原生 HTML")
@@ -177,14 +188,16 @@ class AdminSampleIntegrationTest {
         assertThat(logger.getLevel()).isEqualTo(Level.INFO);
         assertThat(logger.isDebugEnabled()).isFalse();
 
-        // 在线动态调整为 DEBUG
-        logger.setLevel(Level.DEBUG);
-        assertThat(logger.getLevel()).isEqualTo(Level.DEBUG);
-        assertThat(logger.isDebugEnabled()).isTrue();
-
-        // 恢复为 INFO
-        logger.setLevel(Level.INFO);
-        assertThat(logger.getLevel()).isEqualTo(Level.INFO);
+        try {
+            // 在线动态调整为 DEBUG
+            logger.setLevel(Level.DEBUG);
+            assertThat(logger.getLevel()).isEqualTo(Level.DEBUG);
+            assertThat(logger.isDebugEnabled()).isTrue();
+        } finally {
+            // 恢复为 INFO，防前置断言中断污染后续测试
+            logger.setLevel(Level.INFO);
+            assertThat(logger.getLevel()).isEqualTo(Level.INFO);
+        }
     }
 
     @Test

@@ -5,6 +5,7 @@ import de.codecentric.boot.admin.client.registration.BlockingRegistrationClient;
 import io.github.atengk.boot.observability.interceptor.AdminClientSecretHttpRequestInterceptor;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
@@ -29,7 +30,8 @@ import java.util.LinkedHashMap;
  * @author Ateng
  * @since 2026-10-26
  */
-@AutoConfiguration
+@Slf4j
+@AutoConfiguration(afterName = "de.codecentric.boot.admin.client.config.SpringBootAdminClientAutoConfiguration")
 @ConditionalOnClass(InstanceProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.observability.admin-client", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(ObservabilityProperties.class)
@@ -113,8 +115,8 @@ public class AtengAdminClientAutoConfiguration {
                                     rt.getInterceptors().add(new AdminClientSecretHttpRequestInterceptor(clientSecret));
                                 }
                             }
-                        } catch (Exception ignored) {
-                            // 防御性忽略异常，保持系统弹性
+                        } catch (Exception ex) {
+                            log.debug("[SBA Client] 防御性探测 BlockingRegistrationClient restTemplate 失败，依赖 RestTemplateCustomizer 装配: {}", ex.getMessage());
                         }
                     }
                 }

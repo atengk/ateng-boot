@@ -8,12 +8,12 @@ import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
-import org.springframework.web.util.ContentCachingRequestWrapper;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
@@ -61,7 +61,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
 
         // 仅拦截向 SBA 注册新实例的 POST 请求（如 /instances 或 {contextPath}/instances）
-        if ("POST".equalsIgnoreCase(request.getMethod()) && (path.endsWith("/instances") || path.endsWith("/instances/"))) {
+        if ("POST".equalsIgnoreCase(request.getMethod()) && isInstancesEndpoint(path)) {
             // 1. 验证集群共享客户端通信密钥
             if (properties != null && StringUtils.hasText(properties.getClientSecret())) {
                 String clientSecret = request.getHeader(CLIENT_SECRET_HEADER);
@@ -152,6 +152,17 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
     }
 
     /**
+     * 判断请求路径是否匹配 SBA 注册根端点 (/instances 或 {contextPath}/instances)，规避形如 /api/user-instances 的边界误伤
+     */
+    private boolean isInstancesEndpoint(String path) {
+        if (!StringUtils.hasText(path)) {
+            return false;
+        }
+        String normalized = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+        return normalized.endsWith("/instances");
+    }
+
+    /**
      * 恒定时间比对密钥，防范时序侧信道反推攻击
      */
     private boolean isSecretMatch(String actual, String expected) {
@@ -171,10 +182,10 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
     }
 
     /**
-     * 可无损重复读取的 ContentCachingRequestWrapper 实现
+     * 可无损重复读取的 HttpServletRequestWrapper 实现
      * 包装原始请求流，实现对 Request Body 的安全预读与下游多次消费
      */
-    public static class ResettableContentCachingRequestWrapper extends ContentCachingRequestWrapper {
+    public static class ResettableContentCachingRequestWrapper extends HttpServletRequestWrapper {
 
         private final byte[] cachedBody;
 
@@ -183,7 +194,6 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
             this.cachedBody = request.getInputStream().readAllBytes();
         }
 
-        @Override
         public byte[] getContentAsByteArray() {
             return this.cachedBody;
         }

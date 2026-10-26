@@ -216,6 +216,14 @@ class AdminSsrfGuardFilterTest {
         AtomicBoolean loginExecuted = new AtomicBoolean(false);
         filter.doFilter(loginRequest, loginResponse, (req, res) -> loginExecuted.set(true));
         assertThat(loginExecuted.get()).isTrue();
+
+        // 验证非 SBA /instances 根端点的同后缀业务 POST 接口不被误伤（如 /api/user-instances）
+        MockHttpServletRequest businessPost = new MockHttpServletRequest("POST", "/api/user-instances");
+        MockHttpServletResponse businessRes = new MockHttpServletResponse();
+        AtomicBoolean businessExecuted = new AtomicBoolean(false);
+        filter.doFilter(businessPost, businessRes, (req, res) -> businessExecuted.set(true));
+        assertThat(businessExecuted.get()).isTrue();
+        assertThat(businessRes.getStatus()).isEqualTo(200);
     }
 
     @Test

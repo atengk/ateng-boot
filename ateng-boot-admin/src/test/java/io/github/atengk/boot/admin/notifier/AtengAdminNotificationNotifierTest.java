@@ -175,4 +175,22 @@ class AtengAdminNotificationNotifierTest {
         assertThat(notifier.getAlertedInstances()).isEmpty();
         assertThat(notifier.getDeregisteredInstances()).isEmpty();
     }
+
+    @Test
+    @DisplayName("场景 6：SBA 反应式事件管道派发注销事件时，直接通过 notify(InstanceEvent) 拦截并进入发版静默")
+    void shouldTriggerGracefulDeregistrationViaReactiveNotifyPipeline() {
+        when(repository.find(instanceId)).thenReturn(reactor.core.publisher.Mono.empty());
+        InstanceDeregisteredEvent deregisteredEvent = new InstanceDeregisteredEvent(instanceId, 1L);
+        notifier.notify(deregisteredEvent).block();
+
+        assertThat(notifier.getDeregisteredInstances()).containsKey(instanceId);
+    }
+
+    @Test
+    @DisplayName("场景 7：三参数默认构造器使用 Spring 调度设施回退平滑初始化")
+    void shouldSupportDefaultConstructorWithFallbackScheduler() {
+        AtengAdminNotificationNotifier defaultNotifier = new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
+        assertThat(defaultNotifier).isNotNull();
+        defaultNotifier.stop();
+    }
 }

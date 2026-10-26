@@ -2,6 +2,7 @@ package io.github.atengk.boot.admin.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
+import io.github.atengk.boot.admin.autoconfigure.AtengAdminServerAutoConfiguration;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
@@ -80,13 +81,9 @@ public class AdminLoginController {
 
     public AdminLoginController(AdminAuthProvider authProvider, AdminServerProperties adminServerProperties) {
         this.authProvider = authProvider;
-        String path = (adminServerProperties != null && StringUtils.hasText(adminServerProperties.getContextPath()))
-                ? adminServerProperties.getContextPath().strip()
-                : "";
-        if (path.endsWith("/") && path.length() > 1) {
-            path = path.substring(0, path.length() - 1);
-        }
-        this.adminPath = path;
+        this.adminPath = AtengAdminServerAutoConfiguration.normalizeContextPath(
+                adminServerProperties != null ? adminServerProperties.getContextPath() : null
+        );
     }
 
     @GetMapping(value = {"/login", "${spring.boot.admin.context-path:}/login"}, produces = "text/html;charset=UTF-8")

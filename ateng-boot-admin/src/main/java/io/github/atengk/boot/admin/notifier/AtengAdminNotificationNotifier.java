@@ -8,15 +8,17 @@ import de.codecentric.boot.admin.server.domain.events.InstanceStatusChangedEvent
 import de.codecentric.boot.admin.server.domain.values.InstanceId;
 import de.codecentric.boot.admin.server.notify.AbstractStatusChangeNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
-import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
@@ -34,6 +36,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier implements SmartLifecycle {
+
+    /**
+     * K8s 优雅下线默认发版静默窗口期：60 秒
+     */
+    public static final Duration DEFAULT_DEREGISTRATION_SILENCE_WINDOW = Duration.ofSeconds(60);
 
     private final ObjectProvider<NotificationTemplate> notificationTemplateProvider;
     private final AtengAdminServerProperties properties;
@@ -58,8 +65,15 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
     public AtengAdminNotificationNotifier(InstanceRepository repository,
                                           ObjectProvider<NotificationTemplate> notificationTemplateProvider,
                                           AtengAdminServerProperties properties) {
+        this(repository, notificationTemplateProvider, properties, (ScheduledExecutorService) null);
+    }
+
+    public AtengAdminNotificationNotifier(InstanceRepository repository,
+                                          ObjectProvider<NotificationTemplate> notificationTemplateProvider,
+                                          AtengAdminServerProperties properties,
+                                          ThreadPoolTaskScheduler taskScheduler) {
         this(repository, notificationTemplateProvider, properties,
-                Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("sba-notify-debounce-", true)));
+                taskScheduler != null ? taskScheduler.getScheduledExecutor() : null);
     }
 
     public AtengAdminNotificationNotifier(InstanceRepository repository,
@@ -69,7 +83,31 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         super(repository);
         this.notificationTemplateProvider = notificationTemplateProvider;
         this.properties = properties;
-        this.scheduler = scheduler;
+        if (scheduler != null) {
+            this.scheduler = scheduler;
+        } else {
+            ThreadPoolTaskScheduler defaultScheduler = new ThreadPoolTaskScheduler();
+            defaultScheduler.setPoolSize(1);
+            defaultScheduler.setThreadNamePrefix("sba-notify-debounce-");
+            defaultScheduler.setDaemon(true);
+            defaultScheduler.initialize();
+            this.scheduler = defaultScheduler.getScheduledExecutor();
+        }
+    }
+
+    /**
+     * 重写 SBA 顶层通知管道入口，确保注销事件无论是经由 SBA 事件流分发还是 Spring ApplicationContext 广播，
+     * 均能 100% 被捕获并触发发版静默治理
+     *
+     * @param event 实例事件
+     * @return 响应式 Mono 结果
+     */
+    @Override
+    public Mono<Void> notify(InstanceEvent event) {
+        if (event instanceof InstanceDeregisteredEvent deregisteredEvent) {
+            onInstanceDeregistered(deregisteredEvent);
+        }
+        return super.notify(event);
     }
 
     /**
@@ -82,6 +120,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         if (event == null || event.getInstance() == null) {
             return;
         }
+        evictExpiredDeregistrations();
         InstanceId id = event.getInstance();
         deregisteredInstances.put(id, System.currentTimeMillis());
         log.info("[SBA Notifier] 实例 [{}] 收到受控注销信号，标记进入发版静默状态", id);
@@ -107,8 +146,8 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             // 1. 检查是否在发版静默期内（注销后 60 秒内）
             Long deregisteredAt = deregisteredInstances.get(id);
             if (deregisteredAt != null) {
-                if (System.currentTimeMillis() - deregisteredAt < 60_000L) {
-                    String appName = instance.isRegistered() ? instance.getRegistration().getName() : id.getValue();
+                if (System.currentTimeMillis() - deregisteredAt < DEFAULT_DEREGISTRATION_SILENCE_WINDOW.toMillis()) {
+                    String appName = resolveInstanceName(instance, id);
                     log.info("[SBA Notifier] 实例 [{}] 属于正常优雅下线排空，静默忽略状态变迁", appName);
                     return;
                 } else {
@@ -137,7 +176,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             existing.cancel(true);
         }
 
-        String appName = instance.isRegistered() ? instance.getRegistration().getName() : id.getValue();
+        String appName = resolveInstanceName(instance, id);
         log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 秒防抖倒计时...", appName, status, delaySeconds);
 
         ScheduledFuture<?> scheduledTask = scheduler.schedule(() -> {
@@ -151,7 +190,7 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
     private void handleRecoveryStatus(Instance instance) {
         InstanceId id = instance.getId();
-        String appName = instance.isRegistered() ? instance.getRegistration().getName() : id.getValue();
+        String appName = resolveInstanceName(instance, id);
 
         // 1. 取消挂起的防抖告警任务（成功自愈，不发宕机告警）
         ScheduledFuture<?> scheduled = pendingTasks.remove(id);
@@ -172,8 +211,10 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             return;
         }
 
-        String appName = instance.isRegistered() ? instance.getRegistration().getName() : instance.getId().getValue();
-        String serviceUrl = instance.isRegistered() ? instance.getRegistration().getServiceUrl() : "-";
+        String appName = resolveInstanceName(instance, instance.getId());
+        String serviceUrl = instance.isRegistered() && instance.getRegistration() != null
+                ? instance.getRegistration().getServiceUrl()
+                : "-";
         String timeStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
         String content = String.format("""
@@ -185,6 +226,32 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
         CardMessage card = CardMessage.of(title, content);
         notifier.sendAsync(card);
+    }
+
+    /**
+     * 防御性驱逐超过发版静默窗口期的历史下线实例，防止长时间运行造成内存滞留
+     */
+    private void evictExpiredDeregistrations() {
+        long now = System.currentTimeMillis();
+        long silenceWindowMillis = DEFAULT_DEREGISTRATION_SILENCE_WINDOW.toMillis();
+        deregisteredInstances.entrySet().removeIf(entry -> now - entry.getValue() > silenceWindowMillis);
+    }
+
+    /**
+     * 统一提取实例应用名称，防御 null 与空字符串
+     *
+     * @param instance SBA 实例对象
+     * @param id       实例标识
+     * @return 实例展示名称
+     */
+    private String resolveInstanceName(Instance instance, InstanceId id) {
+        if (instance != null && instance.isRegistered() && instance.getRegistration() != null) {
+            String name = instance.getRegistration().getName();
+            if (StringUtils.hasText(name)) {
+                return name;
+            }
+        }
+        return id != null ? id.getValue() : "UNKNOWN";
     }
 
     @Override
