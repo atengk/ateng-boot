@@ -5,6 +5,7 @@ import io.github.atengk.boot.tcp.codec.TcpPacketFilterHandler;
 import io.github.atengk.boot.tcp.codec.TcpPayloadCodecHandler;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
+import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
 import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
@@ -53,6 +54,7 @@ public class TcpServer implements SmartLifecycle {
     private final List<TcpPacketFilter> packetFilters;
     private final List<TcpChannelCustomizer> channelCustomizers;
     private final ApplicationEventPublisher eventPublisher;
+    private final TcpMetricsCollector metricsCollector;
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
@@ -66,7 +68,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this("default", properties, sessionManager, null, null, packetFilters, channelCustomizers, eventPublisher);
+        this("default", properties, sessionManager, null, null, packetFilters, channelCustomizers, eventPublisher, null);
     }
 
     public TcpServer(TcpServerProperties properties,
@@ -75,7 +77,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this("default", properties, sessionManager, correlationManager, null, packetFilters, channelCustomizers, eventPublisher);
+        this("default", properties, sessionManager, correlationManager, null, packetFilters, channelCustomizers, eventPublisher, null);
     }
 
     public TcpServer(TcpServerProperties properties,
@@ -85,7 +87,7 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
-        this("default", properties, sessionManager, correlationManager, dispatcher, packetFilters, channelCustomizers, eventPublisher);
+        this("default", properties, sessionManager, correlationManager, dispatcher, packetFilters, channelCustomizers, eventPublisher, null);
     }
 
     public TcpServer(String name,
@@ -96,12 +98,25 @@ public class TcpServer implements SmartLifecycle {
                      List<TcpPacketFilter> packetFilters,
                      List<TcpChannelCustomizer> channelCustomizers,
                      ApplicationEventPublisher eventPublisher) {
+        this(name, properties, sessionManager, correlationManager, dispatcher, packetFilters, channelCustomizers, eventPublisher, null);
+    }
+
+    public TcpServer(String name,
+                     TcpServerProperties properties,
+                     TcpSessionManager sessionManager,
+                     TcpRequestCorrelationManager correlationManager,
+                     TcpDispatcher dispatcher,
+                     List<TcpPacketFilter> packetFilters,
+                     List<TcpChannelCustomizer> channelCustomizers,
+                     ApplicationEventPublisher eventPublisher,
+                     TcpMetricsCollector metricsCollector) {
         this.name = StringUtils.hasText(name) ? name : "default";
         this.properties = properties;
         this.sessionManager = sessionManager;
         this.correlationManager = correlationManager;
         this.dispatcher = dispatcher;
         this.eventPublisher = eventPublisher;
+        this.metricsCollector = metricsCollector;
 
         if (packetFilters != null && !packetFilters.isEmpty()) {
             List<TcpPacketFilter> sorted = new ArrayList<>(packetFilters);
@@ -134,7 +149,8 @@ public class TcpServer implements SmartLifecycle {
                 : new NioEventLoopGroup();
 
         this.sslContext = TcpSslContextFactory.buildServerSslContext(properties.getSsl());
-        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(properties, sessionManager, correlationManager, dispatcher, eventPublisher);
+        TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(
+                properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
 
         try {
@@ -220,7 +236,7 @@ public class TcpServer implements SmartLifecycle {
 
         log.info("正在平滑关闭 TCP 服务端 [{}]: port={}...", this.name, actualPort);
 
-        // 1. 立即停止接收新连接
+        // 第 1 阶段：解除端口监听（关闭 Boss Channel），拒绝新的 TCP 连接
         if (serverChannel != null) {
             try {
                 serverChannel.close().syncUninterruptibly();
@@ -230,7 +246,22 @@ public class TcpServer implements SmartLifecycle {
             serverChannel = null;
         }
 
-        // 2. 优雅注销所有存量连接
+        // 第 2 阶段：开启受管等待窗口，排空在途传输与未完成的 RPC Future
+        long drainTimeoutMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
+        if (drainTimeoutMillis > 0 && correlationManager != null && correlationManager.hasPendingRequests()) {
+            log.info("TCP 服务端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待在途请求完成...", this.name, drainTimeoutMillis);
+            long deadline = System.currentTimeMillis() + drainTimeoutMillis;
+            while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        // 第 3 阶段：平滑注销存量会话，优雅关闭 Netty EventLoopGroup
         try {
             sessionManager.closeAllSessions(CloseReason.SERVER_SHUTDOWN);
             if (correlationManager != null) {
@@ -240,19 +271,19 @@ public class TcpServer implements SmartLifecycle {
             log.warn("注销存量客户端会话异常", ex);
         }
 
-        // 3. 释放 Netty 线程池
+        // 释放 Netty 线程池
         long drainMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
         if (workerGroup != null) {
-            workerGroup.shutdownGracefully(100, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
+            workerGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
             workerGroup = null;
         }
         if (bossGroup != null) {
-            bossGroup.shutdownGracefully(100, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
+            bossGroup.shutdownGracefully(50, drainMillis, TimeUnit.MILLISECONDS).syncUninterruptibly();
             bossGroup = null;
         }
 
         this.running = false;
-        log.info("TCP 服务端已安全停止");
+        log.info("TCP 服务端 [{}] 已平滑安全停止", this.name);
     }
 
     public boolean isRunning() {

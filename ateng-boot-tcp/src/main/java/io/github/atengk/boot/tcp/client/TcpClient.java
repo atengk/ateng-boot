@@ -197,7 +197,26 @@ public class TcpClient implements SmartLifecycle {
         if (!running) {
             return;
         }
+        // 第 1 阶段：标记停止状态，暂停重连调度
         this.running = false;
+        log.info("正在平滑关闭 TCP 客户端 [{}]...", this.name);
+
+        // 第 2 阶段：开启受管排空窗口期，排空未完成的挂起 RPC Future
+        long drainTimeoutMillis = 3000L;
+        if (correlationManager != null && correlationManager.hasPendingRequests()) {
+            log.info("TCP 客户端 [{}] 进入受管排空窗口期 (timeout={}ms)，等待未决请求完成...", this.name, drainTimeoutMillis);
+            long deadline = System.currentTimeMillis() + drainTimeoutMillis;
+            while (correlationManager.hasPendingRequests() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        // 第 3 阶段：安全关闭通道与线程池
         try {
             if (channel != null && channel.isOpen()) {
                 channel.close().syncUninterruptibly();
@@ -207,9 +226,10 @@ public class TcpClient implements SmartLifecycle {
             }
         } finally {
             if (workerGroup != null) {
-                workerGroup.shutdownGracefully(100, 2000, TimeUnit.MILLISECONDS);
+                workerGroup.shutdownGracefully(50, 2000, TimeUnit.MILLISECONDS).syncUninterruptibly();
+                workerGroup = null;
             }
-            log.info("ateng-boot-tcp 客户端已平滑关闭");
+            log.info("ateng-boot-tcp 客户端 [{}] 已平滑安全关闭", this.name);
         }
     }
 

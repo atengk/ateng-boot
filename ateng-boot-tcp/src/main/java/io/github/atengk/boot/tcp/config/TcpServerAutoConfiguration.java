@@ -53,6 +53,7 @@ public class TcpServerAutoConfiguration {
                                ObjectProvider<TcpDispatcher> dispatcherProvider,
                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
+                               ObjectProvider<io.github.atengk.boot.tcp.metric.TcpMetricsCollector> metricsCollectorProvider,
                                ApplicationEventPublisher eventPublisher) {
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
@@ -64,15 +65,17 @@ public class TcpServerAutoConfiguration {
                 dispatcherProvider.getIfAvailable(),
                 filters,
                 customizers,
-                eventPublisher
+                eventPublisher,
+                metricsCollectorProvider.getIfAvailable()
         );
     }
 
     @Bean
     @ConditionalOnMissingBean
     public TcpServerTemplate tcpServerTemplate(TcpSessionManager sessionManager,
-                                               ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider) {
-        return new TcpServerTemplate(sessionManager, correlationManagerProvider.getIfAvailable());
+                                               ObjectProvider<TcpRequestCorrelationManager> correlationManagerProvider,
+                                               ObjectProvider<io.github.atengk.boot.tcp.cluster.TcpClusterBridge> clusterBridgeProvider) {
+        return new TcpServerTemplate(sessionManager, correlationManagerProvider.getIfAvailable(), clusterBridgeProvider.getIfAvailable());
     }
 
     @Bean
@@ -84,10 +87,12 @@ public class TcpServerAutoConfiguration {
                                                ObjectProvider<TcpDispatcher> dispatcherProvider,
                                                ObjectProvider<List<TcpPacketFilter>> packetFiltersProvider,
                                                ObjectProvider<List<TcpChannelCustomizer>> channelCustomizersProvider,
+                                               ObjectProvider<io.github.atengk.boot.tcp.metric.TcpMetricsCollector> metricsCollectorProvider,
                                                ApplicationEventPublisher eventPublisher) {
         TcpServerRegistry registry = new TcpServerRegistry();
         List<TcpPacketFilter> filters = packetFiltersProvider.getIfAvailable(Collections::emptyList);
         List<TcpChannelCustomizer> customizers = channelCustomizersProvider.getIfAvailable(Collections::emptyList);
+        io.github.atengk.boot.tcp.metric.TcpMetricsCollector metricsCollector = metricsCollectorProvider.getIfAvailable();
 
         // 1. 纳管默认主服务端（若已通过 Bean 装配）
         TcpServer defaultServer = defaultServerProvider.getIfAvailable();
@@ -110,7 +115,8 @@ public class TcpServerAutoConfiguration {
                             dispatcherProvider.getIfAvailable(),
                             filters,
                             customizers,
-                            eventPublisher
+                            eventPublisher,
+                            metricsCollector
                     );
                     registry.register(serverName, customServer);
                 }

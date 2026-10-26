@@ -1,6 +1,7 @@
 package io.github.atengk.boot.tcp.template;
 
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.tcp.cluster.TcpClusterBridge;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
@@ -35,14 +36,22 @@ public class TcpServerTemplate {
 
     private final TcpSessionManager sessionManager;
     private final TcpRequestCorrelationManager correlationManager;
+    private final TcpClusterBridge clusterBridge;
 
     public TcpServerTemplate(TcpSessionManager sessionManager) {
-        this(sessionManager, null);
+        this(sessionManager, null, null);
     }
 
     public TcpServerTemplate(TcpSessionManager sessionManager, TcpRequestCorrelationManager correlationManager) {
+        this(sessionManager, correlationManager, null);
+    }
+
+    public TcpServerTemplate(TcpSessionManager sessionManager,
+                             TcpRequestCorrelationManager correlationManager,
+                             TcpClusterBridge clusterBridge) {
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager 不能为空");
         this.correlationManager = correlationManager;
+        this.clusterBridge = clusterBridge;
     }
 
     /**
@@ -313,5 +322,38 @@ public class TcpServerTemplate {
             return payload;
         }
         return TcpPayload.fromJson(payload);
+    }
+
+    /**
+     * 向微服务集群中的指定设备下发数据报文（两级自适应拓扑：本地优先直发，未命中自动转为分布式广播）
+     *
+     * @param deviceId 目标设备唯一标识
+     * @param payload  下发报文载荷
+     * @return 是否成功触达设备或投递广播
+     */
+    public boolean sendToCluster(String deviceId, Object payload) {
+        if (clusterBridge != null) {
+            return clusterBridge.sendToCluster(deviceId, wrapPayload(payload));
+        }
+        TcpSession session = sessionManager.getSessionByDeviceId(deviceId);
+        if (session != null && session.isActive()) {
+            session.send(wrapPayload(payload));
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 向微服务集群中全部在线设备全量广播报文
+     *
+     * @param payload 广播报文载荷
+     * @return 是否成功触发广播
+     */
+    public boolean broadcastToCluster(Object payload) {
+        if (clusterBridge != null) {
+            return clusterBridge.broadcastToCluster(wrapPayload(payload));
+        }
+        broadcast(payload);
+        return true;
     }
 }
