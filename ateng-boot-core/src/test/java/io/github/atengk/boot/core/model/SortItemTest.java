@@ -89,6 +89,25 @@ class SortItemTest {
         assertTrue(SortItem.isValidProperty(property));
         SortItem sortItem = SortItem.asc(property);
         assertEquals(property, sortItem.getProperty());
+        assertEquals(property, sortItem.getColumn());
+    }
+
+    @Test
+    @DisplayName("64 位长度边界与 column 别名访问验证")
+    void shouldVerifyLengthBoundaryAndColumnAlias() {
+        String exact64 = "a".repeat(64);
+        assertTrue(SortItem.isValidProperty(exact64));
+        SortItem item = SortItem.asc(exact64);
+        assertEquals(exact64, item.getColumn());
+
+        String over64 = "a".repeat(65);
+        assertFalse(SortItem.isValidProperty(over64));
+        assertThrows(IllegalArgumentException.class, () -> SortItem.asc(over64));
+
+        SortItem setterItem = new SortItem();
+        setterItem.setColumn("custom_col");
+        assertEquals("custom_col", setterItem.getColumn());
+        assertEquals("custom_col", setterItem.getProperty());
     }
 
     @ParameterizedTest

@@ -122,12 +122,10 @@ public enum SensitiveType {
         if (value == null || value.isEmpty()) {
             return value;
         }
-        if (this == CUSTOM) {
-            return DesensitizeUtil.mask(value, startInclude, endExclude, maskChar);
-        }
-        if (this == KEEP_HEAD_TAIL) {
-            return DesensitizeUtil.maskKeepHeadTail(value, keepHead, keepTail, maskChar);
-        }
-        return maskFunction != null ? maskFunction.apply(value) : value;
+        return switch (this) {
+            case CUSTOM -> DesensitizeUtil.mask(value, startInclude, endExclude, maskChar);
+            case KEEP_HEAD_TAIL -> DesensitizeUtil.maskKeepHeadTail(value, keepHead, keepTail, maskChar);
+            default -> maskFunction != null ? maskFunction.apply(value) : value;
+        };
     }
 }

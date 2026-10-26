@@ -27,9 +27,9 @@ public class SortItem implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 排序字段安全白名单校验正则（仅允许字母、数字和下划线，防御注入）
+     * 排序字段安全白名单校验正则（仅允许字母、数字和下划线且长度不超过64位，防御注入）
      */
-    public static final String PROPERTY_REGEX = "^[a-zA-Z0-9_]+$";
+    public static final String PROPERTY_REGEX = "^[a-zA-Z0-9_]{1,64}$";
 
     /**
      * 排序字段安全白名单预编译正则
@@ -146,9 +146,27 @@ public class SortItem implements Serializable {
      */
     public void setProperty(String property) {
         if (property != null && !property.trim().isEmpty() && !isValidProperty(property.trim())) {
-            throw new IllegalArgumentException("排序属性名称格式非法，仅支持字母、数字和下划线: " + property);
+            throw new IllegalArgumentException("排序属性名称格式非法，仅支持字母、数字和下划线且长度不超过64位: " + property);
         }
         this.property = property != null ? property.trim() : null;
+    }
+
+    /**
+     * 获取排序列名称（兼容列名语义，等同于 {@link #getProperty()}）
+     *
+     * @return 排序列或属性名称
+     */
+    public String getColumn() {
+        return getProperty();
+    }
+
+    /**
+     * 设置排序列名称（兼容列名语义，等同于 {@link #setProperty(String)}）
+     *
+     * @param column 排序列或属性名称
+     */
+    public void setColumn(String column) {
+        setProperty(column);
     }
 
     /**
