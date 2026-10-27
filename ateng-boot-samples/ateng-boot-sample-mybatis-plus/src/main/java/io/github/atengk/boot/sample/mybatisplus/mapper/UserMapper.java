@@ -1,10 +1,12 @@
 package io.github.atengk.boot.sample.mybatisplus.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Constants;
 import io.github.atengk.boot.mybatisplus.annotation.DataScope;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
+import io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -28,4 +30,13 @@ public interface UserMapper extends AtengBaseMapper<UserEntity> {
     @DataScope(deptColumn = "dept_id")
     @Select("SELECT * FROM sys_user ${ew.customSqlSegment}")
     List<UserEntity> selectAccessibleUsers(@Param(Constants.WRAPPER) Wrapper<UserEntity> wrapper);
+
+    /**
+     * 多表联查部门与用户分页方法（XML 实现，支持 AST 别名自愈与动态条件注入）
+     *
+     * @param page    分页对象
+     * @param wrapper 包含动态条件与排序的 Wrapper
+     * @return 包含用户与部门联合投影的 IPage 分页结果
+     */
+    IPage<UserDeptDetailVO> selectUserDeptPage(IPage<UserDeptDetailVO> page, @Param(Constants.WRAPPER) Wrapper<UserDeptDetailVO> wrapper);
 }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="io.github.atengk.boot.sample.mybatisplus.mapper.UserMapper">
+
+    <!-- 多表联查用户与部门分页列表（支持 AST 别名推导与动态 Wrapper 条件注入） -->
+    <select id="selectUserDeptPage" resultType="io.github.atengk.boot.sample.mybatisplus.model.UserDeptDetailVO">
+        SELECT 
+            u.id AS user_id,
+            u.name AS user_name,
+            u.age,
+            u.email,
+            u.phone,
+            u.dept_id,
+            d.dept_name,
+            d.status AS dept_status,
+            u.create_time
+        FROM sys_user u
+        LEFT JOIN sys_dept d ON u.dept_id = d.id
+        ${ew.customSqlSegment}
+    </select>
+
+</mapper>

@@ -330,32 +330,6 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
-     * 注册通用受管动态查询执行模板组件
-     *
-     * @param sqlSessionTemplateProvider 可选的 SqlSessionTemplate 提供者
-     * @param sqlSessionFactoryProvider 可选的 SqlSessionFactory 提供者
-     * @param dynamicSqlRegistryProvider 可选的动态 SQL 注册中心提供者
-     * @return 动态查询执行模板实例
-     */
-    @Bean
-    @ConditionalOnMissingBean(DynamicQueryTemplate.class)
-    @ConditionalOnBean(SqlSessionFactory.class)
-    @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-query", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public DynamicQueryTemplate dynamicQueryTemplate(
-            ObjectProvider<SqlSessionTemplate> sqlSessionTemplateProvider,
-            ObjectProvider<SqlSessionFactory> sqlSessionFactoryProvider,
-            ObjectProvider<DynamicSqlRegistry> dynamicSqlRegistryProvider) {
-        SqlSessionTemplate sqlSessionTemplate = sqlSessionTemplateProvider.getIfAvailable(() -> {
-            SqlSessionFactory sqlSessionFactory = sqlSessionFactoryProvider.getIfAvailable();
-            if (sqlSessionFactory != null) {
-                return new SqlSessionTemplate(sqlSessionFactory);
-            }
-            throw new IllegalStateException("未能找到 SqlSessionTemplate 或 SqlSessionFactory 实例，无法初始化 DynamicQueryTemplate");
-        });
-        return new DynamicQueryTemplate(sqlSessionTemplate, dynamicSqlRegistryProvider.getIfAvailable());
-    }
-
-    /**
      * 注册通用编程式动态 SQL 执行器
      *
      * @param sqlSessionTemplateProvider 可选的 SqlSessionTemplate 提供者

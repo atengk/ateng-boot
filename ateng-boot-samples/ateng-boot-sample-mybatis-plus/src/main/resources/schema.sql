@@ -64,3 +64,15 @@ CREATE TABLE IF NOT EXISTS soft_delete_item (
     update_by VARCHAR(64),
     CONSTRAINT uk_code_deleted UNIQUE (code, deleted)
 );
+
+CREATE TABLE IF NOT EXISTS sys_dept (
+    id BIGINT NOT NULL PRIMARY KEY,
+    dept_name VARCHAR(64) NOT NULL,
+    status VARCHAR(32) DEFAULT 'ACTIVE',
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64),
+    version INT DEFAULT 0,
+    deleted INT DEFAULT 0
+);

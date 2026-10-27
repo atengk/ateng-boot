@@ -40,6 +40,7 @@ ateng:
           - demo_json_user
           - task_queue
           - soft_delete_item
+          - sys_dept
       data-permission:
         enabled: true
       audit-change:

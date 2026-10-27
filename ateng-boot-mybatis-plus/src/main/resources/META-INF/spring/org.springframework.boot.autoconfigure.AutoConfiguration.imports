@@ -1,1 +1,3 @@
 io.github.atengk.boot.mybatisplus.autoconfigure.AtengMybatisPlusAutoConfiguration
+io.github.atengk.boot.mybatisplus.autoconfigure.AtengMybatisPlusDynamicQueryAutoConfiguration
+

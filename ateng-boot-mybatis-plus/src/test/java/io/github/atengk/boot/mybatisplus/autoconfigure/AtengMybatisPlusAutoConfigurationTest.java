@@ -32,7 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AtengMybatisPlusAutoConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(AtengMybatisPlusAutoConfiguration.class));
+            .withConfiguration(AutoConfigurations.of(
+                    AtengMybatisPlusAutoConfiguration.class,
+                    AtengMybatisPlusDynamicQueryAutoConfiguration.class));
 
     @Test
     @DisplayName("默认配置下成功装配审计填充器、MybatisPlusInterceptor 插件链与雪花发号器")

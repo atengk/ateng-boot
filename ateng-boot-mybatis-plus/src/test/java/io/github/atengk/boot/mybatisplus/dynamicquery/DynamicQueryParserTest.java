@@ -81,10 +81,10 @@ class DynamicQueryParserTest {
     @Test
     @DisplayName("冒号操作符语法解析：field:operator=value")
     void shouldParseColonOperatorSyntax() {
-        String query = "userName:like=admin&age:ge=18&score:lt=100.0&status:ne=0";
+        String query = "userName:like=admin&age:ge=18&score:lt=100.0&status:ne=0&level:gte=5&rank:lte=10";
         DynamicQueryRequest req = DynamicQueryParser.parse(query);
 
-        assertThat(req.getConditions()).hasSize(4);
+        assertThat(req.getConditions()).hasSize(6);
 
         QueryCondition c1 = req.getConditions().get(0);
         assertEquals("userName", c1.getField());
@@ -106,6 +106,16 @@ class DynamicQueryParserTest {
         assertEquals("status", c4.getField());
         assertEquals(QueryOperator.NE, c4.getOperator());
         assertEquals("0", c4.getValue());
+
+        QueryCondition c5 = req.getConditions().get(4);
+        assertEquals("level", c5.getField());
+        assertEquals(QueryOperator.GE, c5.getOperator());
+        assertEquals("5", c5.getValue());
+
+        QueryCondition c6 = req.getConditions().get(5);
+        assertEquals("rank", c6.getField());
+        assertEquals(QueryOperator.LE, c6.getOperator());
+        assertEquals("10", c6.getValue());
     }
 
     @Test

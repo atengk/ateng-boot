@@ -91,6 +91,12 @@ public enum QueryOperator {
             return EQ;
         }
         String clean = value.trim().replace("-", "").replace("_", "").toUpperCase(java.util.Locale.ROOT);
+        if ("GTE".equals(clean)) {
+            return GE;
+        }
+        if ("LTE".equals(clean)) {
+            return LE;
+        }
         for (QueryOperator operator : values()) {
             String opClean = operator.name().replace("_", "");
             if (opClean.equals(clean)) {
