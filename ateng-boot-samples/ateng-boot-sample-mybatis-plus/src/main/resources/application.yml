@@ -32,6 +32,11 @@ ateng:
         max-sql-length: 4096
       crypto:
         secret-key: "1234567890123456"
+      slow-sql:
+        enabled: true
+        threshold: 1s
+        format-sql: true
+        mask-sensitive: true
       tenant:
         enabled: true
         column: tenant_id
