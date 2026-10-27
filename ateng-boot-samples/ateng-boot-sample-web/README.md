@@ -27,6 +27,7 @@
 | `WebTrafficSampleController` | `@RateLimiter`, `LimitType`, `InMemoryRateLimiterStore`, `@Idempotent`, `InMemoryIdempotentStore` | `WebTrafficSampleControllerTest` |
 | `WebAuditSampleController` | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `@WebLog`, `@FieldSensitive` | `WebAuditSampleControllerTest` |
 | `WebRuntimePipelineSampleController` | `TraceFilter`, `TraceUtil`, `ContentCachingFilter`, `SlowRequestFilter`, `SecurityHeadersFilter`, `ShallowEtagHeaderFilter`, `IpUtil`, `ServletUtil`, `/pre-stop` | `WebRuntimePipelineSampleControllerTest`, `WebSecurityHeadersAndEtagSampleTest` |
+| `WebXssSampleController` | `XssFilter`, `XssCleaner`, `XssStringDeserializer`, `@XssIgnore`, `XssHttpServletRequestWrapper` | `WebXssSampleControllerTest`, `WebXssStripModeSampleTest` |
 | `MemoryOperateLogStorageProvider` | `OperateLogStorageProvider` SPI 内存解耦实现 | 注入自验上下文 |
 
 ---
@@ -123,6 +124,24 @@ public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
 - **容器指纹剥离**：彻底过滤与消除 `Server` 响应头（如 Tomcat 特征）；
 - **ETag 协商缓存**：开启 `ateng.boot.web.etag.enabled=true` 时，二次携带 `If-None-Match` 返回 `304 Not Modified` 且响应体为空，显著节省带宽。
 
+### 5. XSS 跨站脚本双轨无害化清洗与字段级富文本豁免 (`XssFilter` & `@XssIgnore`)
+```java
+// 1. 混合 DTO 接收：普通字段自动清洗，@XssIgnore 标注字段安全豁免放行
+@PostMapping("/article")
+public Result<ArticlePublishDTO> publishArticle(@Valid @RequestBody ArticlePublishDTO dto) {
+    return Result.success(dto);
+}
+
+// 2. 类级别整实体豁免放行
+@PostMapping("/announcement")
+public Result<AnnouncementPublishDTO> publishAnnouncement(@Valid @RequestBody AnnouncementPublishDTO dto) {
+    return Result.success(dto);
+}
+```
+- **双轨清洗**：支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `XssMode.STRIP`（标签剔除），同时覆盖 Query、Form 表单与 JSON 请求体；
+- **精准豁免**：富文本正文标注 `@XssIgnore` 杜绝误伤合法 HTML 业务标签；
+- **路径白名单**：配置 `exclude-urls`（如 `/api/sample/xss/excluded/**`）全局放行特定管理发布端点。
+
 ---
 
 ## 4. 定向集成测试准出
@@ -135,7 +154,7 @@ mvn test -pl ateng-boot-samples/ateng-boot-sample-web -am -T 1C -nsu -B
 ```
 [INFO] Results:
 [INFO] 
-[INFO] Tests run: 47, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 54, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS

@@ -187,5 +187,29 @@ class AtengWebAutoConfigurationTest {
                     assertThat(context).hasBean("shallowEtagHeaderFilterRegistration");
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下不装配 XSS 清洗器与过滤器")
+    void shouldNotAutoConfigureXssByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean("xssFilterRegistration");
+            assertThat(context).doesNotHaveBean("xssCleaner");
+            assertThat(context).doesNotHaveBean("xssJacksonCustomizer");
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.xss.enabled=true 时自动装配 XssFilter、XssCleaner 与 xssJacksonCustomizer")
+    void shouldAutoConfigureXssWhenEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.web.xss.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("xssFilterRegistration");
+                    assertThat(context).hasBean("xssCleaner");
+                    assertThat(context).hasBean("xssJacksonCustomizer");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("xssFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.xss.XssFilter.ORDER);
+                });
+    }
 }
 

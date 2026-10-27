@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.properties;
 
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
+import io.github.atengk.boot.web.xss.XssMode;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -473,6 +474,12 @@ public class WebProperties {
     private EtagProperties etag = new EtagProperties();
 
     /**
+     * XSS 跨站脚本安全清洗配置
+     */
+    @NestedConfigurationProperty
+    private XssProperties xss = new XssProperties();
+
+    /**
      * HTTP 安全响应头属性配置
      */
     @Getter
@@ -536,6 +543,29 @@ public class WebProperties {
          * 是否生成弱 ETag (W/"...")，默认 false 生成强 ETag
          */
         private boolean writeWeakETag = false;
+    }
+
+    /**
+     * XSS 跨站脚本安全清洗属性配置
+     */
+    @Getter
+    @Setter
+    public static class XssProperties {
+
+        /**
+         * 是否启用 XSS 跨站脚本安全清洗（默认 false，按需开启）
+         */
+        private boolean enabled = false;
+
+        /**
+         * XSS 安全清洗模式（默认 ESCAPE 转义 HTML 实体；可选 STRIP 剔除标签）
+         */
+        private XssMode mode = XssMode.ESCAPE;
+
+        /**
+         * XSS 清洗排除路径白名单列表（Ant 风格匹配，如 /api/admin/announcement/**）
+         */
+        private List<String> excludeUrls = new ArrayList<>();
     }
 }
 

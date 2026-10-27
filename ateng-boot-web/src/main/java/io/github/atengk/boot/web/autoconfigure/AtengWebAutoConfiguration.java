@@ -9,6 +9,9 @@ import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
 import io.github.atengk.boot.web.filter.SecurityHeadersFilter;
 import io.github.atengk.boot.web.filter.SlowRequestFilter;
+import io.github.atengk.boot.web.xss.XssCleaner;
+import io.github.atengk.boot.web.xss.XssFilter;
+import io.github.atengk.boot.web.xss.XssStringDeserializer;
 import org.springframework.web.filter.ShallowEtagHeaderFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
@@ -168,6 +171,54 @@ public class AtengWebAutoConfiguration {
         FilterRegistrationBean<ShallowEtagHeaderFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(SecurityHeadersFilter.ORDER + 1);
         return registration;
+    }
+
+    /**
+     * 注册 XSS 安全清洗器
+     *
+     * @param webProperties Web 配置属性
+     * @return XssCleaner 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.xss", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(XssCleaner.class)
+    public XssCleaner xssCleaner(WebProperties webProperties) {
+        return new XssCleaner(webProperties.getXss().getMode());
+    }
+
+    /**
+     * 注册 XSS 跨站脚本安全清洗过滤器
+     *
+     * @param webProperties Web 配置属性
+     * @param xssCleaner    XSS 清洗器
+     * @param xssFilterProvider 自定义 XssFilter 提供者
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.xss", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "xssFilterRegistration")
+    public FilterRegistrationBean<XssFilter> xssFilterRegistration(
+            WebProperties webProperties,
+            XssCleaner xssCleaner,
+            ObjectProvider<XssFilter> xssFilterProvider) {
+        XssFilter filter = xssFilterProvider.getIfAvailable(() ->
+                new XssFilter(webProperties.getXss(), xssCleaner));
+        FilterRegistrationBean<XssFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(XssFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 注册 Jackson JSON 字符串入参 XSS 安全清洗定制器
+     *
+     * @param xssCleaner XSS 清洗器
+     * @return Jackson2ObjectMapperBuilderCustomizer 实例
+     */
+    @Bean
+    @ConditionalOnClass(Jackson2ObjectMapperBuilderCustomizer.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.web.xss", name = "enabled", havingValue = "true")
+    public Jackson2ObjectMapperBuilderCustomizer xssJacksonCustomizer(XssCleaner xssCleaner) {
+        return builder -> builder.deserializerByType(String.class, new XssStringDeserializer(xssCleaner));
     }
 
     /**

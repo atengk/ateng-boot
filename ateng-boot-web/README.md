@@ -35,6 +35,7 @@
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
+| **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除），拦截 Query/Form 表单参数与 JSON 请求体，通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与安全清洗 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`，穿透 X-Forwarded-For 等多级代理，过滤内网伪造，规整 IPv6 本地环回 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 
@@ -600,7 +601,86 @@ ateng:
 
 ---
 
-## 18. 模块配置属性参考 (`application.yml`)
+## 18. XSS 跨站脚本双轨无害化清洗与字段级富文本豁免 (`XssFilter` & `@XssIgnore`)
+
+### 场景痛点
+1. **跨站脚本注入攻击**：攻击者在 Query 参数、Form 表单或 JSON 请求体注入恶意 `<script>` 脚本或带 `onerror` 事件的 HTML 标签，一旦未经处理存入数据库并回显给用户，极易引发会话劫持与数据泄露；
+2. **富文本业务误伤冲突**：电商商品详情、系统公告、博客文章等业务字段天然需要接收与存储合法的 HTML/Markdown 标签，若采取全局一刀切的硬编码过滤，将导致合法富文本标签被粗暴破坏；
+3. **多协议传输入口不一致**：部分过滤器仅清洗 Servlet 的 Query 参数，而漏掉当下主流的 RESTful JSON 请求体（`@RequestBody`），形成安全死角。
+
+### 核心机制与不变量
+- **双轨无害化清洗模式 (`XssMode`)**：
+  - `XssMode.ESCAPE`（默认）：将 HTML 关键特殊字符转义为标准 HTML 实体（如 `<` 转为 `&lt;`，`>` 转为 `&gt;`，`"` 转为 `&quot;` 等），既消除脚本执行能力，又完整保留用户输入意图；
+  - `XssMode.STRIP`：彻底剥离 `<script>...</script>`、`<style>...</style>`、HTML 注释与 HTML 标签，循环收敛对抗畸形嵌套标签构造，仅保留纯文本；
+- **传输边界全覆盖管道**：
+  - **Query 与 Form 表单**：通过 `XssFilter`（`ORDER = SecurityHeadersFilter.ORDER + 2`）与 `XssHttpServletRequestWrapper` 拦截 `getParameter`、`getParameterValues` 与 `getParameterMap` 并无害化清洗；
+  - **JSON 请求体**：通过 `XssStringDeserializer` 挂载至 Jackson 反序列化管道，对入站 JSON 对象的字符串属性透明清洗；
+- **声明式细粒度豁免 (`@XssIgnore`)**：
+  - 可标注于 DTO 实体字段：精准放行单个富文本字段（如公告正文、Markdown 内容），Jackson 反序列化时跳过清洗；
+  - 可标注于 DTO 实体类：批量放行该 DTO 下的所有 String 属性；
+- **Ant 白名单路径排除 (`exclude-urls`)**：
+  - 命中的 URL 路径（如后台富文本发布端点）自动跳过 `XssFilter` 请求包装，并在请求上下文注入 `XssFilter.XSS_SKIP_ATTRIBUTE` 标记，促使下游 Jackson 反序列化器整体跳过清洗。
+
+### 场景端到端代码范式
+```java
+// 1. 混合 DTO：普通字段自动转义/剔除，正文字段使用 @XssIgnore 安全放行
+@Data
+public class ArticlePublishDTO {
+
+    @NotBlank(message = "文章标题不能为空")
+    private String title; // 自动转义：<script>alert(1)</script> -> &lt;script&gt;alert(1)&lt;/script&gt;
+
+    @NotBlank(message = "文章正文不能为空")
+    @XssIgnore
+    private String content; // 豁免清洗：保留原始 HTML <h1>Title</h1><p>Content</p>
+
+    private String author; // 自动清洗
+}
+
+// 2. 类级别豁免 DTO：整实体放行
+@Data
+@XssIgnore
+public class AnnouncementPublishDTO {
+    private String title;
+    private String content;
+}
+
+// 3. 控制器接收并处理
+@RestController
+@RequestMapping("/api/sample/xss")
+public class WebXssSampleController {
+
+    @PostMapping("/article")
+    public Result<ArticlePublishDTO> publishArticle(@Valid @RequestBody ArticlePublishDTO dto) {
+        return Result.success(dto);
+    }
+
+    @GetMapping("/query")
+    public Result<String> search(@RequestParam String keyword) {
+        return Result.success(keyword); // Query 参数经 XssHttpServletRequestWrapper 自动清洗
+    }
+}
+```
+
+### 生产配置与扩展范式
+```yaml
+ateng:
+  boot:
+    web:
+      xss:
+        # 是否启用 XSS 跨站脚本安全清洗（默认 false，按需开启）
+        enabled: true
+        # 清洗模式（默认 ESCAPE 转义实体；可选 STRIP 剔除标签）
+        mode: ESCAPE
+        # XSS 清洗排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/api/sample/xss/excluded/**"
+          - "/api/admin/announcement/**"
+```
+
+---
+
+## 19. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -637,6 +717,14 @@ ateng:
         enabled: false
         # 是否生成弱 ETag（默认 false 为强 ETag）
         write-weak-etag: false
+      xss:
+        # 是否启用 XSS 跨站脚本安全清洗（默认 false，按需开启）
+        enabled: false
+        # XSS 清洗模式（默认 ESCAPE 实体转义；可选 STRIP 标签剔除）
+        mode: ESCAPE
+        # XSS 排除路径白名单（Ant 风格匹配）
+        exclude-urls:
+          - "/api/sample/xss/excluded/**"
       slow-request:
         # 是否启用慢请求性能告警过滤器（默认 true）
         enabled: true
