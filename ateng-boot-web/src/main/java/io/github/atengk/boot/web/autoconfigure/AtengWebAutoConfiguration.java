@@ -13,6 +13,7 @@ import io.github.atengk.boot.web.xss.XssCleaner;
 import io.github.atengk.boot.web.xss.XssFilter;
 import io.github.atengk.boot.web.xss.XssStringDeserializer;
 import org.springframework.web.filter.ShallowEtagHeaderFilter;
+import io.github.atengk.boot.web.handler.GlobalExceptionCustomizer;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
@@ -223,13 +224,15 @@ public class AtengWebAutoConfiguration {
 
     /**
      * 注册全局统一异常安全拦截处理器
+     * 自动感知并链式装配容器中的 GlobalExceptionCustomizer 扩展点
      *
+     * @param customizerProvider 全局异常定制器提供者
      * @return GlobalExceptionHandler 实例
      */
     @Bean
     @ConditionalOnMissingBean(GlobalExceptionHandler.class)
-    public GlobalExceptionHandler globalExceptionHandler() {
-        return new GlobalExceptionHandler();
+    public GlobalExceptionHandler globalExceptionHandler(ObjectProvider<GlobalExceptionCustomizer> customizerProvider) {
+        return new GlobalExceptionHandler(customizerProvider.orderedStream().toList());
     }
 
     /**

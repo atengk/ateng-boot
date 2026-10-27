@@ -22,7 +22,7 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **链路追踪** | HTTP 链路追踪过滤器与门面 | `TraceFilter`, `TraceUtil` | `ateng.boot.web.trace.enabled`, `header` (或 `header-name`) | `TraceUtil.getTraceId()`, `setTraceId(id)`, `clear()`, MDC `traceId` 注入并在 `finally` 严格清理 | `TraceFilterTest.java`, `TraceUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
-| **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler` | - | 拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/500 脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java` |
+| **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebAuditSampleControllerTest.java` |
 | **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户多维限流防刷 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java` |
@@ -69,14 +69,15 @@ TraceUtil.clear();
 
 ---
 
-## 4. 全局统一异常安全防御拦截 (`GlobalExceptionHandler`)
+## 4. 全局统一异常安全防御拦截 (`GlobalExceptionHandler`) 与 SPI 扩展 (`GlobalExceptionCustomizer`)
 
 ### 场景痛点
 1. 杜绝向前端直接泄露底层 SQL 语法报错、数据表结构、类名或死锁堆栈；
-2. 将 JSR-303 参数校验错误、路由不存在、方法不支持与受控业务异常统一转译为标准 `Result<Void>` 契约；
-3. 对携带根因 `cause` 的业务异常保留完整日志调用栈以供排障，对轻量前置校验保持低日志开销。
+2. 将 JSR-303 参数校验错误、路由不存在、方法不支持、超限与媒体类型错误统一转译为标准 `Result<Void>` 契约；
+3. 对携带根因 `cause` 的业务异常保留完整日志调用栈以供排障，对轻量前置校验保持低日志开销；
+4. 业务模块可能存在第三方 SDK 抛出的特定领域异常（如第三方支付通道异常、风控阻断异常），需要对外转译为特定业务状态码，但不宜侵入全局异常处理器核心源码。
 
-### 核心表现与双模日志机制
+### 核心表现与精细化转译机制
 ```java
 // 1. 业务逻辑抛出自定义受控异常（无 cause：INFO 日志，轻量响应）
 throw new BusinessException(403, "账户已被封禁");
@@ -93,9 +94,35 @@ try {
 // 拦截 MethodArgumentNotValidException、HandlerMethodValidationException (Spring 6.1+)、ConstraintViolationException 与 BindException
 // 自动提取首个不合规字段的友好提示: {"code":400, "msg":"手机号格式不正确", "success":false, "traceId":"..."}
 
-// 4. 未知根异常（如 NullPointerException, SQLException）
+// 4. 精细化 Web 传输层异常拦截
+// 413: MaxUploadSizeExceededException -> {"code":413, "msg":"上传文件大小超出限制", "success":false, "traceId":"..."}
+// 415: HttpMediaTypeNotSupportedException -> {"code":415, "msg":"不支持的媒体类型: ...", "success":false, "traceId":"..."}
+// 406: HttpMediaTypeNotAcceptableException -> 直接回写 JSON 契约防次生异常: {"code":406, "msg":"不接受的媒体类型", "success":false, "traceId":"..."}
+// 503: AsyncRequestTimeoutException -> {"code":503, "msg":"异步请求处理超时", "success":false, "traceId":"..."}
+// 400: MissingServletRequestPartException -> {"code":400, "msg":"缺少必要的文件或表单分片: file", "success":false, "traceId":"..."}
+
+// 5. 未知根异常（如 NullPointerException, SQLException）
 // 生产强制脱敏: {"code":500, "msg":"系统繁忙，请稍后再试", "success":false, "traceId":"..."}
 // 真实完整异常堆栈仅打印在后台日志中，并强制携带 traceId 便于快速溯源排查
+```
+
+### 业务领域异常定制 SPI 扩展 (`GlobalExceptionCustomizer`)
+通过实现 `GlobalExceptionCustomizer` 接口并注入 Spring 容器，即可在 `GlobalExceptionHandler` 默认处理链之前挂载自定义转译逻辑。支持通过 `@Order` 控制链式探测顺序：
+```java
+@Component
+@Order(10)
+public class PaymentExceptionCustomizer implements GlobalExceptionCustomizer {
+
+    @Override
+    public Result<?> customize(Throwable throwable) {
+        if (throwable instanceof PaymentChannelException pce) {
+            // 转译为自定义领域状态码 40020
+            return Result.fail(40020, "支付通道异常 [" + pce.getChannelCode() + "]: " + pce.getMessage());
+        }
+        // 返回 null 表示未命中，平滑穿透至下一定制器或默认处理器
+        return null;
+    }
+}
 ```
 
 ---
