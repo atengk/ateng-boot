@@ -1,7 +1,7 @@
 package io.github.atengk.boot.sample.mybatisplus;
 
 import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlEvent;
-import io.github.atengk.boot.sample.mybatisplus.entity.UserEntity;
+import io.github.atengk.boot.sample.mybatisplus.model.UserDynamicVO;
 import io.github.atengk.boot.sample.mybatisplus.service.SlowSqlAlertScenarioService;
 import io.github.atengk.boot.sample.mybatisplus.slowsql.SampleSlowSqlAlertProvider;
 import org.junit.jupiter.api.AfterEach;
@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 1. 执行耗时 SQL 超过阈值时触发 SlowSqlInterceptor 并由 SampleSlowSqlAlertProvider 捕获告警
  * 2. 格式化可执行 SQL 美化缩进与代码调用栈行号精准定位
  * 3. @FieldEncrypt 敏感字段与密码凭据在慢 SQL 告警参数列表中安全脱敏掩码为 ******
- * 4. 防御性空安全：无匹配记录保底返回且不影响告警捕获
+ * 4. 防御性空安全：无匹配记录保底返回且不影响告警捕获（出参统一为强类型 VO，零 Entity 泄露）
  *
  * @author Ateng
  * @since 2026-10-28
@@ -61,7 +61,7 @@ class SlowSqlAlertScenarioTest {
     @Test
     @DisplayName("执行查询超过阈值时触发 SlowSqlInterceptor 并由 SampleSlowSqlAlertProvider 精准捕获")
     void shouldCaptureSlowSqlAlertWhenQueryExceedsThreshold() {
-        UserEntity user = scenarioService.getUserById(1L);
+        UserDynamicVO user = scenarioService.getUserById(1L);
 
         List<SlowSqlEvent> alerts = alertProvider.getEvents();
         assertThat(alerts).isNotEmpty();
@@ -91,6 +91,8 @@ class SlowSqlAlertScenarioTest {
                 "SlowSqlAlertScenarioTest",
                 "SlowSqlAlertScenarioServiceImpl"
         );
+        // 精准断言包含代码行号定位
+        assertThat(event.getCallLocation()).matches(".*:\\d+\\)?.*");
     }
 
     @Test
@@ -120,9 +122,25 @@ class SlowSqlAlertScenarioTest {
     }
 
     @Test
+    @DisplayName("SQL 绑定密码/凭据敏感参数在慢 SQL 告警参数列表中被安全掩码为 ****** 杜绝泄露")
+    void shouldMaskPasswordParametersInSlowSqlAlert() {
+        String sensitivePassword = "SuperSecretPassword123!";
+        scenarioService.triggerSlowSqlWithPasswordParam("AdminUser", sensitivePassword);
+
+        SlowSqlEvent event = alertProvider.getLatestEvent();
+        assertThat(event).isNotNull();
+        assertThat(event.getStatementId()).contains("UserMapper.selectByUsernameAndPassword");
+
+        List<Object> parameters = event.getParameters();
+        assertThat(parameters).isNotEmpty();
+        assertThat(parameters).contains("******");
+        assertThat(parameters).doesNotContain(sensitivePassword);
+    }
+
+    @Test
     @DisplayName("防御性单实体查询无记录时平滑返回 null 并正确触发慢 SQL 审计")
     void shouldHandleNonExistentRecordSafely() {
-        UserEntity nonExistent = scenarioService.getUserById(-99999L);
+        UserDynamicVO nonExistent = scenarioService.getUserById(-99999L);
         assertThat(nonExistent).isNull();
 
         SlowSqlEvent event = alertProvider.getLatestEvent();

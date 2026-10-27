@@ -54,6 +54,8 @@ import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditProvider;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.util.JsonUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.concurrent.Executor;
 import java.util.List;
 
@@ -72,6 +74,8 @@ import java.util.List;
 @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(MybatisPlusProperties.class)
 public class AtengMybatisPlusAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(AtengMybatisPlusAutoConfiguration.class);
 
     private final MybatisPlusProperties properties;
 
@@ -127,16 +131,20 @@ public class AtengMybatisPlusAutoConfiguration {
         return () -> {
             if (properties.getPagination() != null && properties.getPagination().getDbType() != null) {
                 io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setDbType(properties.getPagination().getDbType());
-                return;
             }
             javax.sql.DataSource dataSource = dataSourceProvider.getIfAvailable();
             if (dataSource != null) {
                 try (java.sql.Connection conn = dataSource.getConnection()) {
-                    String jdbcUrl = conn.getMetaData().getURL();
+                    java.sql.DatabaseMetaData meta = conn.getMetaData();
+                    String jdbcUrl = meta.getURL();
                     com.baomidou.mybatisplus.annotation.DbType dbType = com.baomidou.mybatisplus.extension.toolkit.JdbcUtils.getDbType(jdbcUrl);
-                    io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setDbType(dbType);
-                } catch (Exception ignored) {
-                    // 静默兼容，避免连接未准备就绪时崩溃
+                    if (dbType != null) {
+                        io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setDbType(dbType);
+                    }
+                    String databaseProductVersion = meta.getDatabaseProductVersion();
+                    io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setMysqlVersion(databaseProductVersion);
+                } catch (Exception e) {
+                    log.debug("探测数据库方言及版本信息异常: {}", e.getMessage());
                 }
             }
         };
@@ -221,7 +229,8 @@ public class AtengMybatisPlusAutoConfiguration {
 
         // 3. 装配逻辑删除动态穿透与误删恢复插件（置于分页插件之前，保障穿透查询的分页 count 与数据列表均基于剥离后的 SQL 统计）
         if (properties.getLogicDelete().isEnabled()) {
-            interceptor.addInnerInterceptor(new io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor());
+            interceptor.addInnerInterceptor(new io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor(
+                    properties.getLogicDelete().getColumns()));
         }
 
         // 4. 装配分页插件
@@ -300,7 +309,7 @@ public class AtengMybatisPlusAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(ExternalSqlLoader.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
-    public ResourceExternalSqlLoader externalSqlLoader(ResourcePatternResolver resourceResolver) {
+    public ExternalSqlLoader externalSqlLoader(ResourcePatternResolver resourceResolver) {
         return new ResourceExternalSqlLoader(properties.getDynamicSql(), resourceResolver);
     }
 

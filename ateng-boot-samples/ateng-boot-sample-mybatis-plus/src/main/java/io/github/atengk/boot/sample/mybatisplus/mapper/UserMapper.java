@@ -39,4 +39,14 @@ public interface UserMapper extends AtengBaseMapper<UserEntity> {
      * @return 包含用户与部门联合投影的 IPage 分页结果
      */
     IPage<UserDeptDetailVO> selectUserDeptPage(IPage<UserDeptDetailVO> page, @Param(Constants.WRAPPER) Wrapper<UserDeptDetailVO> wrapper);
+
+    /**
+     * 演示包含密码/凭据敏感参数的查询方法（用于慢 SQL 拦截器密码脱敏实测）
+     *
+     * @param username 用户名
+     * @param password 密码凭据
+     * @return 匹配的用户列表
+     */
+    @Select("SELECT * FROM sys_user WHERE name = #{username} AND #{password} IS NOT NULL")
+    List<UserEntity> selectByUsernameAndPassword(@Param("username") String username, @Param("password") String password);
 }

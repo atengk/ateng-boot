@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.SharedString;
 import io.github.atengk.boot.mybatisplus.enums.LockMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.EnumSet;
@@ -19,7 +21,14 @@ import java.util.Set;
  */
 public final class PessimisticLockUtil {
 
+    private static final Logger log = LoggerFactory.getLogger(PessimisticLockUtil.class);
+
     private static volatile DbType currentDbType;
+    private static volatile String currentDatabaseVersion;
+    private static volatile boolean mysqlSkipLockedSupported = true;
+
+    private static final ThreadLocal<DbType> LOCAL_DB_TYPE = new InheritableThreadLocal<>();
+    private static final ThreadLocal<Boolean> LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED = new InheritableThreadLocal<>();
 
     private static final Field LAST_SQL_FIELD;
 
@@ -28,7 +37,8 @@ public final class PessimisticLockUtil {
         try {
             field = AbstractWrapper.class.getDeclaredField("lastSql");
             field.setAccessible(true);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.debug("反射获取 AbstractWrapper.lastSql 字段异常: {}", e.getMessage());
         }
         LAST_SQL_FIELD = field;
     }
@@ -54,11 +64,29 @@ public final class PessimisticLockUtil {
             DbType.SQL_SERVER2005
     );
 
+    /**
+     * 原生支持 NOWAIT / SKIP LOCKED 的现代数据库白名单（不含需要版本识别的 MySQL）
+     */
+    private static final Set<DbType> SUPPORTED_SKIP_LOCKED_DIALECTS = EnumSet.of(
+            DbType.POSTGRE_SQL,
+            DbType.ORACLE,
+            DbType.ORACLE_12C,
+            DbType.MARIADB,
+            DbType.H2,
+            DbType.KINGBASE_ES,
+            DbType.OPENGAUSS,
+            DbType.HIGH_GO,
+            DbType.OCEAN_BASE,
+            DbType.DM,
+            DbType.GAUSS,
+            DbType.GAUSS_DB
+    );
+
     private PessimisticLockUtil() {
     }
 
     /**
-     * 设置当前数据库方言类型
+     * 设置当前数据库方言类型（全局默认）
      *
      * @param dbType 数据库方言枚举
      */
@@ -67,19 +95,56 @@ public final class PessimisticLockUtil {
     }
 
     /**
-     * 获取当前配置的数据库方言类型
+     * 设置当前数据库版本（用于识别 MySQL 5.7 等低版本快速失败）
+     *
+     * @param version 数据库版本字符串（如 "5.7.44" 或 "8.0.32"）
+     */
+    public static void setMysqlVersion(String version) {
+        currentDatabaseVersion = version;
+        if (version != null && (version.startsWith("5.7") || version.startsWith("5.6") || version.startsWith("5.5"))) {
+            mysqlSkipLockedSupported = false;
+        } else {
+            mysqlSkipLockedSupported = true;
+        }
+    }
+
+    /**
+     * 设置当前线程独立的数据库方言上下文（多数据源动态切源时防并发覆盖）
+     *
+     * @param dbType 数据库方言枚举
+     */
+    public static void setLocalDbType(DbType dbType) {
+        LOCAL_DB_TYPE.set(dbType);
+    }
+
+    /**
+     * 设置当前线程独立的 MySQL SKIP_LOCKED 支持状态
+     *
+     * @param supported 是否支持
+     */
+    public static void setLocalMysqlSkipLockedSupported(boolean supported) {
+        LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED.set(supported);
+    }
+
+    /**
+     * 获取当前生效的数据库方言类型（优先线程独立上下文，保底全局默认）
      *
      * @return 数据库方言枚举，未显式探测或配置时返回 null
      */
     public static DbType getDbType() {
-        return currentDbType;
+        DbType local = LOCAL_DB_TYPE.get();
+        return local != null ? local : currentDbType;
     }
 
     /**
-     * 重置数据库方言类型（主要用于单测与多数据源现场清理）
+     * 重置数据库方言类型与版本状态（主要用于单测与多数据源现场清理）
      */
     public static void resetDbType() {
         currentDbType = null;
+        currentDatabaseVersion = null;
+        mysqlSkipLockedSupported = true;
+        LOCAL_DB_TYPE.remove();
+        LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED.remove();
     }
 
     /**
@@ -150,7 +215,8 @@ public final class PessimisticLockUtil {
         try {
             SharedString sharedString = (SharedString) LAST_SQL_FIELD.get(wrapper);
             return sharedString != null ? sharedString.getStringValue() : null;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.debug("获取 Wrapper.lastSql 失败: {}", e.getMessage());
             return null;
         }
     }
@@ -161,7 +227,7 @@ public final class PessimisticLockUtil {
      * @param lockMode 悲观锁控制模式
      */
     private static void validateDialect(LockMode lockMode) {
-        DbType dbType = currentDbType;
+        DbType dbType = getDbType();
         if (dbType == null) {
             return;
         }
@@ -169,6 +235,15 @@ public final class PessimisticLockUtil {
             throw new UnsupportedOperationException("当前数据库方言 [" + dbType + "] 不支持悲观行级锁特性");
         }
         if (lockMode == LockMode.SKIP_LOCKED || lockMode == LockMode.NOWAIT) {
+            if (dbType == DbType.MYSQL) {
+                Boolean localSupported = LOCAL_MYSQL_SKIP_LOCKED_SUPPORTED.get();
+                boolean supported = localSupported != null ? localSupported : mysqlSkipLockedSupported;
+                if (!supported) {
+                    String verDesc = currentDatabaseVersion != null ? currentDatabaseVersion : "5.7 及以下";
+                    throw new UnsupportedOperationException("当前 MySQL 版本 [" + verDesc + "] 不支持 " + lockMode.name() + " 悲观排队锁特性，最低需 MySQL 8.0+");
+                }
+                return;
+            }
             if (UNSUPPORTED_SKIP_LOCKED_DIALECTS.contains(dbType)) {
                 throw new UnsupportedOperationException("当前数据库方言 [" + dbType + "] 不支持 " + lockMode.name() + " 悲观排队锁特性");
             }

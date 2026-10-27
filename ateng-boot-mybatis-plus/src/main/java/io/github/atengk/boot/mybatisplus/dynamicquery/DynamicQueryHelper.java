@@ -15,6 +15,12 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -154,8 +160,9 @@ public final class DynamicQueryHelper {
                 if (column == null) {
                     continue;
                 }
+                Class<?> targetType = resolveFieldType(field.trim(), column, projectionMapping, metaInfo);
 
-                ValidConditionItem item = new ValidConditionItem(column, condition);
+                ValidConditionItem item = new ValidConditionItem(column, condition, targetType);
                 if (condition.getOrGroup() != null && !condition.getOrGroup().trim().isEmpty()) {
                     orGroupMap.computeIfAbsent(condition.getOrGroup().trim(), k -> new ArrayList<>()).add(item);
                 } else {
@@ -166,7 +173,7 @@ public final class DynamicQueryHelper {
             // 应用常规 AND 顶层条件
             for (ValidConditionItem item : andItems) {
                 applyCondition(wrapper, item.column(), item.condition().getOperator(),
-                        item.condition().getValue(), item.condition().getValues());
+                        item.condition().getValue(), item.condition().getValues(), item.targetType());
             }
 
             // 应用 or_组号 作用域嵌套 OR 逻辑块
@@ -182,7 +189,7 @@ public final class DynamicQueryHelper {
                             orWrapper.or();
                         }
                         applyCondition(orWrapper, groupItem.column(), groupItem.condition().getOperator(),
-                                groupItem.condition().getValue(), groupItem.condition().getValues());
+                                groupItem.condition().getValue(), groupItem.condition().getValues(), groupItem.targetType());
                         first = false;
                     }
                 });
@@ -382,7 +389,7 @@ public final class DynamicQueryHelper {
             if (value instanceof Collection<?> col) {
                 values = new ArrayList<>(col);
             }
-            applyCondition(wrapper, targetColumn, operator, value, values);
+            applyCondition(wrapper, targetColumn, operator, value, values, field.getType());
         }
 
         // 若 DTO 继承了 PageQuery，自动处理其排序规则
@@ -458,68 +465,221 @@ public final class DynamicQueryHelper {
     }
 
     /**
-     * 将受控操作符条件安全追加至 QueryWrapper
+     * 将受控操作符条件安全追加至 QueryWrapper（具备强类型方言自适应转换能力）
      */
-    private static <T> void applyCondition(QueryWrapper<T> wrapper, String column, QueryOperator operator, Object value, List<Object> values) {
+    private static <T> void applyCondition(QueryWrapper<T> wrapper, String column, QueryOperator operator,
+                                           Object value, List<Object> values, Class<?> targetType) {
         if (operator == null) {
             operator = QueryOperator.EQ;
         }
+        Object convertedValue = convertSingleValue(value, targetType, operator);
+        List<Object> convertedValues = null;
+        if (values != null) {
+            convertedValues = new ArrayList<>(values.size());
+            for (Object v : values) {
+                convertedValues.add(convertSingleValue(v, targetType, operator));
+            }
+        }
+
         switch (operator) {
             case EQ -> {
-                if (value != null) wrapper.eq(column, value);
+                if (convertedValue != null) wrapper.eq(column, convertedValue);
             }
             case NE -> {
-                if (value != null) wrapper.ne(column, value);
+                if (convertedValue != null) wrapper.ne(column, convertedValue);
             }
             case GT -> {
-                if (value != null) wrapper.gt(column, value);
+                if (convertedValue != null) wrapper.gt(column, convertedValue);
             }
             case GE -> {
-                if (value != null) wrapper.ge(column, value);
+                if (convertedValue != null) wrapper.ge(column, convertedValue);
             }
             case LT -> {
-                if (value != null) wrapper.lt(column, value);
+                if (convertedValue != null) wrapper.lt(column, convertedValue);
             }
             case LE -> {
-                if (value != null) wrapper.le(column, value);
+                if (convertedValue != null) wrapper.le(column, convertedValue);
             }
             case LIKE -> {
-                if (value != null && !value.toString().trim().isEmpty()) {
-                    wrapper.like(column, value.toString().trim());
+                if (convertedValue != null && !convertedValue.toString().trim().isEmpty()) {
+                    wrapper.like(column, convertedValue.toString().trim());
                 }
             }
             case LIKE_LEFT -> {
-                if (value != null && !value.toString().trim().isEmpty()) {
-                    wrapper.likeLeft(column, value.toString().trim());
+                if (convertedValue != null && !convertedValue.toString().trim().isEmpty()) {
+                    wrapper.likeLeft(column, convertedValue.toString().trim());
                 }
             }
             case LIKE_RIGHT -> {
-                if (value != null && !value.toString().trim().isEmpty()) {
-                    wrapper.likeRight(column, value.toString().trim());
+                if (convertedValue != null && !convertedValue.toString().trim().isEmpty()) {
+                    wrapper.likeRight(column, convertedValue.toString().trim());
                 }
             }
             case IN -> {
-                if (values != null && !values.isEmpty()) {
-                    wrapper.in(column, values);
-                } else if (value instanceof Collection<?> col && !col.isEmpty()) {
+                if (convertedValues != null && !convertedValues.isEmpty()) {
+                    wrapper.in(column, convertedValues);
+                } else if (convertedValue instanceof Collection<?> col && !col.isEmpty()) {
                     wrapper.in(column, col);
                 }
             }
             case NOT_IN -> {
-                if (values != null && !values.isEmpty()) {
-                    wrapper.notIn(column, values);
-                } else if (value instanceof Collection<?> col && !col.isEmpty()) {
+                if (convertedValues != null && !convertedValues.isEmpty()) {
+                    wrapper.notIn(column, convertedValues);
+                } else if (convertedValue instanceof Collection<?> col && !col.isEmpty()) {
                     wrapper.notIn(column, col);
                 }
             }
             case BETWEEN -> {
-                if (values != null && values.size() >= 2) {
-                    wrapper.between(column, values.get(0), values.get(1));
+                if (convertedValues != null && convertedValues.size() >= 2) {
+                    wrapper.between(column, convertedValues.get(0), convertedValues.get(1));
                 }
             }
             case IS_NULL -> wrapper.isNull(column);
             case IS_NOT_NULL -> wrapper.isNotNull(column);
         }
+    }
+
+    /**
+     * 解析字段的目标强类型（优先从实体/VO 元数据推导，保障 PostgreSQL 等强类型方言参数自适应）
+     *
+     * @param property          原始属性名
+     * @param resolvedColumn    已解析出的物理列名
+     * @param projectionMapping AST 投影字典
+     * @param metaInfo          实体/VO 元数据聚合
+     * @return 目标字段类型，若未推导成功则返回 null
+     */
+    private static Class<?> resolveFieldType(String property, String resolvedColumn, Map<String, String> projectionMapping, EntityMetaInfo metaInfo) {
+        if (metaInfo == null) {
+            return null;
+        }
+        // 1. 尝试直接以属性名匹配
+        if (property != null) {
+            FieldMetaInfo meta = metaInfo.getField(property.trim().toLowerCase(Locale.ROOT));
+            if (meta != null && meta.getFieldType() != null) {
+                return meta.getFieldType();
+            }
+        }
+        // 2. 尝试以解析出的物理列名匹配（如 u.age -> age）
+        if (resolvedColumn != null) {
+            String col = resolvedColumn.trim();
+            int dotIdx = col.lastIndexOf('.');
+            String colWithoutAlias = (dotIdx >= 0) ? col.substring(dotIdx + 1) : col;
+            FieldMetaInfo meta = metaInfo.getField(colWithoutAlias.toLowerCase(Locale.ROOT));
+            if (meta != null && meta.getFieldType() != null) {
+                return meta.getFieldType();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 将输入值根据目标类型与操作符安全自适应转换
+     *
+     * @param value      原始值
+     * @param targetType 目标强类型（可为 null）
+     * @param operator   查询操作符
+     * @return 转换后的强类型对象，若无法推导或解析失败则保底返回原始值
+     */
+    private static Object convertSingleValue(Object value, Class<?> targetType, QueryOperator operator) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String rawStr)) {
+            return value;
+        }
+        String str = rawStr.trim();
+        if (str.isEmpty()) {
+            return (targetType == String.class) ? "" : null;
+        }
+
+        // 模糊匹配系列操作符强制保留字符串，严禁转为数值或对象
+        if (operator == QueryOperator.LIKE || operator == QueryOperator.LIKE_LEFT || operator == QueryOperator.LIKE_RIGHT) {
+            return str;
+        }
+
+        // 1. 若已知目标强类型，执行精准转换
+        if (targetType != null) {
+            try {
+                if (targetType == String.class || targetType == CharSequence.class) {
+                    return str;
+                }
+                if (targetType == Integer.class || targetType == int.class) {
+                    return Integer.valueOf(str);
+                }
+                if (targetType == Long.class || targetType == long.class) {
+                    return Long.valueOf(str);
+                }
+                if (targetType == Short.class || targetType == short.class) {
+                    return Short.valueOf(str);
+                }
+                if (targetType == Byte.class || targetType == byte.class) {
+                    return Byte.valueOf(str);
+                }
+                if (targetType == Double.class || targetType == double.class) {
+                    return Double.valueOf(str);
+                }
+                if (targetType == Float.class || targetType == float.class) {
+                    return Float.valueOf(str);
+                }
+                if (targetType == BigDecimal.class) {
+                    return new BigDecimal(str);
+                }
+                if (targetType == BigInteger.class) {
+                    return new BigInteger(str);
+                }
+                if (targetType == Boolean.class || targetType == boolean.class) {
+                    if ("1".equals(str) || "true".equalsIgnoreCase(str)) {
+                        return Boolean.TRUE;
+                    }
+                    if ("0".equals(str) || "false".equalsIgnoreCase(str)) {
+                        return Boolean.FALSE;
+                    }
+                    return Boolean.valueOf(str);
+                }
+                if (targetType == LocalDate.class) {
+                    if (str.length() >= 10) {
+                        return LocalDate.parse(str.substring(0, 10));
+                    }
+                    return LocalDate.parse(str);
+                }
+                if (targetType == LocalDateTime.class) {
+                    String isoStr = str.replace(' ', 'T');
+                    if (isoStr.length() == 10) {
+                        return LocalDate.parse(isoStr).atStartOfDay();
+                    }
+                    return LocalDateTime.parse(isoStr);
+                }
+                if (targetType == LocalTime.class) {
+                    return LocalTime.parse(str);
+                }
+                if (targetType == Instant.class) {
+                    return Instant.parse(str);
+                }
+            } catch (Exception e) {
+                log.warn("动态查询参数类型转换失败，已保底回退原始值. targetType={}, value={}, error={}", targetType.getSimpleName(), str, e.getMessage());
+                return str;
+            }
+        }
+
+        // 2. 若未提供 targetType，仅在数值比较操作符下尝试启发式推断数值（防御弱类型 SQL 方言）
+        if (operator == QueryOperator.GT || operator == QueryOperator.GE
+                || operator == QueryOperator.LT || operator == QueryOperator.LE
+                || operator == QueryOperator.BETWEEN) {
+            try {
+                if (str.matches("^-?\\d+$")) {
+                    if (str.length() < 10) {
+                        return Integer.valueOf(str);
+                    }
+                    return Long.valueOf(str);
+                }
+                if (str.matches("^-?\\d+\\.\\d+$")) {
+                    return Double.valueOf(str);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        return str;
     }
 
     /**
@@ -774,8 +934,8 @@ public final class DynamicQueryHelper {
     }
 
     /**
-     * 校验合法的单项条件元数据绑定
+     * 校验合法的单项条件元数据绑定（携带目标字段强类型元数据）
      */
-    private record ValidConditionItem(String column, QueryCondition condition) {
+    private record ValidConditionItem(String column, QueryCondition condition, Class<?> targetType) {
     }
 }

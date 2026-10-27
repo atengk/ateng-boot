@@ -607,12 +607,25 @@ public class MybatisPlusProperties {
          */
         private boolean enabled = true;
 
+        /**
+         * 逻辑删除标识列名集合（默认 deleted, is_deleted, del_flag）
+         */
+        private List<String> columns = new ArrayList<>(List.of("deleted", "is_deleted", "del_flag"));
+
         public boolean isEnabled() {
             return enabled;
         }
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+
+        public List<String> getColumns() {
+            return columns;
+        }
+
+        public void setColumns(List<String> columns) {
+            this.columns = columns;
         }
     }
 }

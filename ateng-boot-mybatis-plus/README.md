@@ -1485,6 +1485,10 @@ ateng:
         publish-event: true       # 是否发布 Spring DataChangeEvent 事件（默认 true）
       logic-delete:
         enabled: true             # 是否启用逻辑删除穿透拦截器（默认 true）
+        columns:                  # 逻辑删除标识列名集合（默认 deleted, is_deleted, del_flag）
+          - deleted
+          - is_deleted
+          - del_flag
 ```
 
 ---
@@ -1502,31 +1506,53 @@ ateng:
 
 ### 核心代码范式 (逆向提取自 Sample `JsonFieldScenario`)
 ```java
-@Getter
-@Setter
+@Data
+@EqualsAndHashCode(callSuper = true)
 @ToString(callSuper = true)
+@NoArgsConstructor
+@AllArgsConstructor
 @TableName(value = "demo_json_user", autoResultMap = true)
 public class DemoJsonUserEntity extends BaseEntity {
 
-    private String name;
+    private static final long serialVersionUID = 1L;
 
     /**
-     * 字符串列表：空值保底返回 Collections.emptyList()
+     * 用户名
+     */
+    private String username;
+
+    /**
+     * 字符串列表：空值保底返回不可变 Collections.emptyList()
      */
     @TableField(typeHandler = AtengJacksonTypeHandler.class)
     private List<String> tags;
 
     /**
-     * 强类型 POJO 列表：空值保底返回 Collections.emptyList()
+     * 集合属性：空值保底返回不可变 Collections.emptySet()
      */
     @TableField(typeHandler = AtengJacksonTypeHandler.class)
-    private List<UserRole> roles;
+    private Set<String> roles;
 
     /**
-     * 扩展字典：空值保底返回 Collections.emptyMap()
+     * 扩展字典：空值保底返回不可变 Collections.emptyMap()
      */
     @TableField(typeHandler = AtengJacksonTypeHandler.class)
     private Map<String, Object> extraInfo;
+
+    /**
+     * 嵌套复杂 POJO（支持 LocalDateTime JSR-310 自动序列化）：空值返回 null
+     */
+    @TableField(typeHandler = AtengJacksonTypeHandler.class)
+    private UserProfile profile;
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class UserProfile implements Serializable {
+        private String bio;
+        private Integer level;
+        private LocalDateTime registerTime;
+    }
 }
 ```
 
@@ -1547,16 +1573,19 @@ MyBatis-Plus 在启动期就将 `@TableLogic`（`WHERE deleted = 0`）静态固�
 
 ### 核心代码范式 (逆向提取自 Sample `SoftDeleteUniqueKeyScenario`)
 ```java
-// 1. 穿透闭包查询包含已删除的记录
-UserEntity user = LogicDeleteContextHolder.callWithDeleted(() -> userMapper.selectById(userId));
+// 1. 穿透闭包查询包含已逻辑删除的历史数据
+SoftDeleteItemEntity item = LogicDeleteContextHolder.callWithDeleted(() -> softDeleteItemMapper.selectById(itemId));
 
-// 2. 依托 AtengBaseService 门面极速恢复误删数据（自动触发审计更新）
-boolean restored = userService.restoreById(userId);
+// 2. 依托 AtengBaseService 门面极速恢复误删数据（重置 deleted = 0 并自动触发审计字段更新）
+boolean restored = softDeleteService.restoreById(itemId);
 
-// 3. 回收站专用语法糖查询已删除列表
-UserEntity deletedUser = userService.getByIdWithDeleted(userId);
-List<UserEntity> deletedList = userService.listWithDeleted(
-        new LambdaQueryWrapper<UserEntity>().eq(UserEntity::getDeptId, 100L));
+// 3. 回收站专用语法糖：穿透查询已删除全量列表与分页
+List<SoftDeleteItemEntity> allList = softDeleteService.listWithDeleted(
+        new LambdaQueryWrapper<SoftDeleteItemEntity>().eq(SoftDeleteItemEntity::getCode, "SKU-999"));
+
+// 4. 批量条件恢复（带参数条件的 QueryWrapper 批量安全恢复，内置防全表误恢复卫语句）
+int restoredCount = softDeleteService.restore(
+        new LambdaQueryWrapper<SoftDeleteItemEntity>().eq(SoftDeleteItemEntity::getCode, "SKU-999"));
 ```
 
 ---

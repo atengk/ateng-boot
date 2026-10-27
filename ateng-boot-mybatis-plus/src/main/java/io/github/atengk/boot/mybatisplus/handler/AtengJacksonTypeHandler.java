@@ -43,7 +43,8 @@ public class AtengJacksonTypeHandler<T> extends JacksonTypeHandler {
         // 静态预初始化：使用 Core 加固的 ObjectMapper（标配 JavaTimeModule、东八区时区）预设
         try {
             JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
-        } catch (Throwable ignored) {
+        } catch (Throwable e) {
+            log.debug("静态预设 ObjectMapper 忽略异常: {}", e.getMessage());
         }
     }
 
@@ -113,7 +114,6 @@ public class AtengJacksonTypeHandler<T> extends JacksonTypeHandler {
             Object result = mapper.readValue(json, javaType);
             return result != null ? result : resolveDefaultValue();
         } catch (Exception e) {
-            log.error("JSON 反序列化失败: json={}, targetType={}", json, getFieldType(), e);
             throw new IllegalArgumentException("JSON 反序列化失败: " + json, e);
         }
     }
@@ -126,7 +126,6 @@ public class AtengJacksonTypeHandler<T> extends JacksonTypeHandler {
         try {
             return resolveObjectMapper().writeValueAsString(obj);
         } catch (JsonProcessingException e) {
-            log.error("对象序列化为 JSON 失败: obj={}", obj, e);
             throw new IllegalArgumentException("对象序列化为 JSON 失败", e);
         }
     }

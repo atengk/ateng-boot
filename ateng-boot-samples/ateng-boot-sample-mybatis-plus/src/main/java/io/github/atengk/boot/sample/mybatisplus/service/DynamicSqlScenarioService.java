@@ -5,7 +5,7 @@ import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlDefinition;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlExecutor;
 import io.github.atengk.boot.mybatisplus.dynamicsql.DynamicSqlRegistry;
-import io.github.atengk.boot.mybatisplus.dynamicsql.ResourceExternalSqlLoader;
+import io.github.atengk.boot.mybatisplus.dynamicsql.ExternalSqlLoader;
 import io.github.atengk.boot.sample.mybatisplus.model.UserDynamicVO;
 
 import java.util.List;
@@ -98,9 +98,9 @@ public interface DynamicSqlScenarioService {
     DynamicSqlExecutor getExecutor();
 
     /**
-     * 获取已注入的 ResourceExternalSqlLoader
+     * 获取已注入的 ExternalSqlLoader
      *
      * @return 外部 SQL 资源加载器
      */
-    ResourceExternalSqlLoader getLoader();
+    ExternalSqlLoader getLoader();
 }

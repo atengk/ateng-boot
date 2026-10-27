@@ -19,14 +19,18 @@ import io.github.atengk.boot.mybatisplus.util.BatchUtil;
 import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
 import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.Serializable;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -41,6 +45,8 @@ import java.util.function.Predicate;
  * @since 2026-10-16
  */
 public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceImpl<M, T> implements AtengBaseService<T> {
+
+    private static final Logger log = LoggerFactory.getLogger(AtengServiceImpl.class);
 
     private MybatisPlusProperties properties;
     private DynamicQueryTemplate dynamicQueryTemplate;
@@ -273,6 +279,12 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
     @Transactional(rollbackFor = Exception.class)
     @Override
     public int restore(Wrapper<T> queryWrapper) {
+        if (queryWrapper == null) {
+            throw new IllegalArgumentException("恢复条件 queryWrapper 不能为 null，防御全表误删恢复");
+        }
+        if (queryWrapper.isEmptyOfWhere()) {
+            throw new IllegalArgumentException("恢复条件 queryWrapper 必须包含有效 WHERE 条件，防御全表误删恢复");
+        }
         TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
         if (tableInfo == null) {
             throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
@@ -287,15 +299,31 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         final UpdateWrapper<T> updateWrapper;
         if (queryWrapper instanceof UpdateWrapper<T> uw) {
             updateWrapper = uw;
-        } else {
+        } else if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
             updateWrapper = new UpdateWrapper<>();
-            if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
-                String customSql = abstractWrapper.getCustomSqlSegment();
-                if (customSql != null && !customSql.isBlank()) {
-                    String whereSql = customSql.replaceFirst("^(?i)\\s*WHERE\\s+", "");
-                    updateWrapper.apply(whereSql);
-                }
+            String customSql = abstractWrapper.getCustomSqlSegment();
+            if (customSql != null && !customSql.isBlank()) {
+                String whereSql = customSql.replaceFirst("^(?i)\\s*WHERE\\s+", "");
+                updateWrapper.apply(whereSql);
             }
+            // 复制原 Wrapper 的参数字典，避免参数占位符丢失
+            Map<String, Object> params = abstractWrapper.getParamNameValuePairs();
+            if (params != null && !params.isEmpty()) {
+                updateWrapper.getParamNameValuePairs().putAll(params);
+            }
+            // 调整 updateWrapper 的 paramNameSeq 序号，避免后续 set 操作生成的参数键名与原 where 条件参数冲突
+            try {
+                Field seqField = AbstractWrapper.class.getDeclaredField("paramNameSeq");
+                seqField.setAccessible(true);
+                java.util.concurrent.atomic.AtomicInteger seq = (java.util.concurrent.atomic.AtomicInteger) seqField.get(updateWrapper);
+                if (seq != null) {
+                    seq.set(10000);
+                }
+            } catch (Exception e) {
+                log.debug("调整 UpdateWrapper paramNameSeq 异常: {}", e.getMessage());
+            }
+        } else {
+            throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持恢复条件解析");
         }
         updateWrapper.set(logicField.getColumn(), notDeleteValue);
         applyAuditFieldsOnRestore(updateWrapper, tableInfo);

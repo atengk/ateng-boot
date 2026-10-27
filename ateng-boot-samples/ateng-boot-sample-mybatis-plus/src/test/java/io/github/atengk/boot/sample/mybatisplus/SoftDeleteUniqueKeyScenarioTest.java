@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.mybatisplus;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.sample.mybatisplus.entity.SoftDeleteItemEntity;
@@ -15,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 联合唯一键软删除与误删恢复闭环端到端集成测试
@@ -143,5 +145,44 @@ class SoftDeleteUniqueKeyScenarioTest {
         Page<SoftDeleteItemEntity> penetratedPage = softDeleteService.pageWithDeleted(new Page<>(1, 10), null);
         assertThat(penetratedPage.getTotal()).isEqualTo(5);
         assertThat(penetratedPage.getRecords()).hasSize(5);
+    }
+
+    @Test
+    @DisplayName("3. 验证 restore(Wrapper) 条件恢复与防全表误恢复卫语句拦截")
+    void shouldSupportBatchRestoreByWrapperAndDefendEmptyWhere() {
+        UserContextHolder.set("operator-restore");
+
+        // 预置 2 条数据并逻辑删除
+        SoftDeleteItemEntity item1 = new SoftDeleteItemEntity("RESTORE-001", "物品A");
+        SoftDeleteItemEntity item2 = new SoftDeleteItemEntity("RESTORE-002", "物品B");
+        softDeleteService.save(item1);
+        softDeleteService.save(item2);
+        softDeleteService.removeById(item1.getId());
+        softDeleteService.removeById(item2.getId());
+
+        assertThat(softDeleteService.list()).isEmpty();
+
+        // 1. 防卫测试：null wrapper 必须快速失败
+        assertThatThrownBy(() -> softDeleteService.restore(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能为 null");
+
+        // 2. 防卫测试：空 WHERE 条件 wrapper 必须快速失败，防御全表无差别误恢复
+        QueryWrapper<SoftDeleteItemEntity> emptyWrapper = new QueryWrapper<>();
+        assertThatThrownBy(() -> softDeleteService.restore(emptyWrapper))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("必须包含有效 WHERE 条件");
+
+        // 3. 正常条件恢复：带参数条件的 QueryWrapper 成功恢复指定记录
+        QueryWrapper<SoftDeleteItemEntity> conditionWrapper = new QueryWrapper<>();
+        conditionWrapper.eq("code", "RESTORE-001");
+        int restoredCount = softDeleteService.restore(conditionWrapper);
+        assertThat(restoredCount).isEqualTo(1);
+
+        // 验证数据库状态：RESTORE-001 已恢复为 0，RESTORE-002 依然保持已删除
+        List<SoftDeleteItemEntity> activeList = softDeleteService.list();
+        assertThat(activeList).hasSize(1);
+        assertThat(activeList.get(0).getCode()).isEqualTo("RESTORE-001");
+        assertThat(activeList.get(0).getUpdateBy()).isEqualTo("operator-restore");
     }
 }

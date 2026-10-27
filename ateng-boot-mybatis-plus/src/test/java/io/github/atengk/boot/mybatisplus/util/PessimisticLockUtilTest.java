@@ -107,6 +107,32 @@ class PessimisticLockUtilTest {
     }
 
     @Test
+    @DisplayName("测试低版本 MySQL 5.7 下 SKIP_LOCKED 与 NOWAIT 快速失败阻断")
+    void testFailFastOnMysql57() {
+        PessimisticLockUtil.setDbType(DbType.MYSQL);
+        PessimisticLockUtil.setMysqlVersion("5.7.44");
+
+        // 普通 FOR UPDATE 允许
+        QueryWrapper<Object> wrapper = new QueryWrapper<>();
+        PessimisticLockUtil.apply(wrapper, LockMode.FOR_UPDATE);
+        assertThat(wrapper.getCustomSqlSegment()).contains("FOR UPDATE");
+
+        // SKIP_LOCKED 快速失败
+        QueryWrapper<Object> skipWrapper = new QueryWrapper<>();
+        assertThatThrownBy(() -> PessimisticLockUtil.apply(skipWrapper, LockMode.SKIP_LOCKED))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("5.7")
+                .hasMessageContaining("SKIP_LOCKED");
+
+        // NOWAIT 快速失败
+        QueryWrapper<Object> nowaitWrapper = new QueryWrapper<>();
+        assertThatThrownBy(() -> PessimisticLockUtil.apply(nowaitWrapper, LockMode.NOWAIT))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("5.7")
+                .hasMessageContaining("NOWAIT");
+    }
+
+    @Test
     @DisplayName("测试主流支持跳锁数据库方言放行")
     void testAllowSupportedDialects() {
         for (DbType dbType : new DbType[]{DbType.MYSQL, DbType.POSTGRE_SQL, DbType.ORACLE, DbType.H2, DbType.DM, DbType.KINGBASE_ES}) {
