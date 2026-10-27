@@ -79,7 +79,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return entry.value;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -104,7 +104,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return old.value;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -136,7 +136,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return computed;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -156,7 +156,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return removed.value;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -168,7 +168,7 @@ public class ConcurrentLruCache<K, V> {
         try {
             map.clear();
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -182,7 +182,7 @@ public class ConcurrentLruCache<K, V> {
         try {
             return map.size();
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -215,7 +215,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return true;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -241,7 +241,7 @@ public class ConcurrentLruCache<K, V> {
             }
             return removed;
         } finally {
-            lock.unlock();
+            unlockDefensively();
         }
     }
 
@@ -271,6 +271,15 @@ public class ConcurrentLruCache<K, V> {
      */
     private long calculateExpireTime(long now) {
         return ttl != null ? now + ttl.toMillis() : -1L;
+    }
+
+    /**
+     * 防御性释放并发重入锁，确保仅当当前线程真实持有锁时才触发释放
+     */
+    private void unlockDefensively() {
+        if (lock.isHeldByCurrentThread()) {
+            lock.unlock();
+        }
     }
 
     /**

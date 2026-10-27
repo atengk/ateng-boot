@@ -240,11 +240,7 @@ public final class SpelUtil {
     public static <T> T evaluateTrusted(String expression, Object rootObject, Map<String, Object> variables, Class<T> returnType) {
         Expression parsedExpr = parseExpression(expression);
         StandardEvaluationContext context = new StandardEvaluationContext(rootObject);
-        if (variables != null && !variables.isEmpty()) {
-            for (Map.Entry<String, Object> entry : variables.entrySet()) {
-                context.setVariable(entry.getKey(), entry.getValue());
-            }
-        }
+        populateVariables(context, variables);
         try {
             return parsedExpr.getValue(context, rootObject, returnType);
         } catch (EvaluationException e) {
@@ -276,12 +272,22 @@ public final class SpelUtil {
      */
     private static EvaluationContext createSafeEvaluationContext(Map<String, Object> variables) {
         SimpleEvaluationContext context = SimpleEvaluationContext.forReadOnlyDataBinding().build();
+        populateVariables(context, variables);
+        return context;
+    }
+
+    /**
+     * 向求值上下文中安全批量填充外部变量
+     *
+     * @param context   求值上下文
+     * @param variables 变量映射集合（可为 null）
+     */
+    private static void populateVariables(EvaluationContext context, Map<String, Object> variables) {
         if (variables != null && !variables.isEmpty()) {
             for (Map.Entry<String, Object> entry : variables.entrySet()) {
                 context.setVariable(entry.getKey(), entry.getValue());
             }
         }
-        return context;
     }
 
     /**
