@@ -44,12 +44,13 @@ class AtengMybatisPlusAutoConfigurationTest {
 
             MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
             List<InnerInterceptor> interceptors = interceptor.getInterceptors();
-            assertThat(interceptors).hasSize(3);
-            assertThat(interceptors.get(0)).isInstanceOf(PaginationInnerInterceptor.class);
-            assertThat(interceptors.get(1)).isInstanceOf(BlockAttackInnerInterceptor.class);
-            assertThat(interceptors.get(2)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+            assertThat(interceptors).hasSize(4);
+            assertThat(interceptors.get(0)).isInstanceOf(io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor.class);
+            assertThat(interceptors.get(1)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(interceptors.get(2)).isInstanceOf(BlockAttackInnerInterceptor.class);
+            assertThat(interceptors.get(3)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
 
-            PaginationInnerInterceptor pagination = (PaginationInnerInterceptor) interceptors.get(0);
+            PaginationInnerInterceptor pagination = (PaginationInnerInterceptor) interceptors.get(1);
             assertThat(pagination.getMaxLimit()).isEqualTo(500L);
             assertThat(pagination.isOverflow()).isFalse();
 
@@ -92,6 +93,7 @@ class AtengMybatisPlusAutoConfigurationTest {
     @DisplayName("支持独立禁用各个拦截器插件")
     void shouldSupportDisablingInterceptors() {
         contextRunner.withPropertyValues(
+                "ateng.boot.mybatis-plus.logic-delete.enabled=false",
                 "ateng.boot.mybatis-plus.pagination.enabled=false",
                 "ateng.boot.mybatis-plus.block-attack.enabled=false",
                 "ateng.boot.mybatis-plus.optimistic-locker.enabled=false"
@@ -103,6 +105,17 @@ class AtengMybatisPlusAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("支持独立禁用逻辑删除穿透与恢复拦截器插件")
+    void shouldSupportDisablingLogicDeleteInterceptor() {
+        contextRunner.withPropertyValues("ateng.boot.mybatis-plus.logic-delete.enabled=false")
+                .run(context -> {
+                    MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
+                    assertThat(interceptor.getInterceptors())
+                            .noneMatch(it -> it instanceof io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor);
+                });
+    }
+
+    @Test
     @DisplayName("自定义分页属性 maxLimit 与 overflow 正确注入插件")
     void shouldApplyCustomPaginationProperties() {
         contextRunner.withPropertyValues(
@@ -111,7 +124,7 @@ class AtengMybatisPlusAutoConfigurationTest {
                 "ateng.boot.mybatis-plus.pagination.db-type=mysql"
         ).run(context -> {
             MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
-            PaginationInnerInterceptor pagination = (PaginationInnerInterceptor) interceptor.getInterceptors().get(0);
+            PaginationInnerInterceptor pagination = (PaginationInnerInterceptor) interceptor.getInterceptors().get(1);
             assertThat(pagination.getMaxLimit()).isEqualTo(1000L);
             assertThat(pagination.isOverflow()).isTrue();
         });
@@ -153,11 +166,12 @@ class AtengMybatisPlusAutoConfigurationTest {
 
             MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
             List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
-            assertThat(innerInterceptors).hasSize(4);
+            assertThat(innerInterceptors).hasSize(5);
             assertThat(innerInterceptors.get(0)).isInstanceOf(AtengTenantLineInnerInterceptor.class);
-            assertThat(innerInterceptors.get(1)).isInstanceOf(PaginationInnerInterceptor.class);
-            assertThat(innerInterceptors.get(2)).isInstanceOf(BlockAttackInnerInterceptor.class);
-            assertThat(innerInterceptors.get(3)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+            assertThat(innerInterceptors.get(1)).isInstanceOf(io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor.class);
+            assertThat(innerInterceptors.get(2)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(innerInterceptors.get(3)).isInstanceOf(BlockAttackInnerInterceptor.class);
+            assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
         });
     }
 
@@ -197,16 +211,17 @@ class AtengMybatisPlusAutoConfigurationTest {
 
                     MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
                     List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
-                    assertThat(innerInterceptors).hasSize(4);
+                    assertThat(innerInterceptors).hasSize(5);
                     assertThat(innerInterceptors.get(0)).isInstanceOf(io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor.class);
-                    assertThat(innerInterceptors.get(1)).isInstanceOf(PaginationInnerInterceptor.class);
-                    assertThat(innerInterceptors.get(2)).isInstanceOf(BlockAttackInnerInterceptor.class);
-                    assertThat(innerInterceptors.get(3)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(1)).isInstanceOf(io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(2)).isInstanceOf(PaginationInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(3)).isInstanceOf(BlockAttackInnerInterceptor.class);
+                    assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
                 });
     }
 
     @Test
-    @DisplayName("多租户与数据权限同时开启时拦截器顺序严格保障：多租户 -> 数据权限 -> 分页 -> 防全表 -> 乐观锁")
+    @DisplayName("多租户与数据权限同时开启时拦截器顺序严格保障：多租户 -> 数据权限 -> 逻辑删除 -> 分页 -> 防全表 -> 乐观锁")
     void shouldMaintainStrictInterceptorOrderWhenBothTenantAndDataPermissionEnabled() {
         contextRunner.withPropertyValues(
                 "ateng.boot.mybatis-plus.tenant.enabled=true",
@@ -214,12 +229,13 @@ class AtengMybatisPlusAutoConfigurationTest {
         ).run(context -> {
             MybatisPlusInterceptor interceptor = context.getBean(MybatisPlusInterceptor.class);
             List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
-            assertThat(innerInterceptors).hasSize(5);
+            assertThat(innerInterceptors).hasSize(6);
             assertThat(innerInterceptors.get(0)).isInstanceOf(AtengTenantLineInnerInterceptor.class);
             assertThat(innerInterceptors.get(1)).isInstanceOf(io.github.atengk.boot.mybatisplus.permission.AtengDataPermissionInnerInterceptor.class);
-            assertThat(innerInterceptors.get(2)).isInstanceOf(PaginationInnerInterceptor.class);
-            assertThat(innerInterceptors.get(3)).isInstanceOf(BlockAttackInnerInterceptor.class);
-            assertThat(innerInterceptors.get(4)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
+            assertThat(innerInterceptors.get(2)).isInstanceOf(io.github.atengk.boot.mybatisplus.logicdelete.AtengLogicDeleteInnerInterceptor.class);
+            assertThat(innerInterceptors.get(3)).isInstanceOf(PaginationInnerInterceptor.class);
+            assertThat(innerInterceptors.get(4)).isInstanceOf(BlockAttackInnerInterceptor.class);
+            assertThat(innerInterceptors.get(5)).isInstanceOf(OptimisticLockerInnerInterceptor.class);
         });
     }
 

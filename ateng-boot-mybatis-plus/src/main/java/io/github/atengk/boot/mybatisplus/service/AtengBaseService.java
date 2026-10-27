@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.spring.service.IService;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicLambdaHelper;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperListMethod;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperPageMethod;
@@ -1322,4 +1323,102 @@ public interface AtengBaseService<T> extends IService<T> {
      * @return 实体列表（保底空集合，严禁返回 null）
      */
     List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
+
+    // ==========================================
+    // 8. 逻辑删除穿透检索与误删恢复闭环 (Logic Delete Restore & Penetration Facade)
+    // ==========================================
+
+    /**
+     * 根据主键 ID 恢复已逻辑删除的记录（重置 deleted = 0 并自动刷新审计更新时间与操作人）
+     *
+     * @param id 实体主键 ID
+     * @return true 若恢复成功影响行数大于 0；否则 false
+     */
+    boolean restoreById(Serializable id);
+
+    /**
+     * 根据条件构造器批量恢复已逻辑删除的记录（重置 deleted = 0 并自动刷新审计更新时间与操作人）
+     *
+     * @param queryWrapper 恢复目标记录条件封装器
+     * @return 成功恢复影响的记录行数
+     */
+    int restore(Wrapper<T> queryWrapper);
+
+    /**
+     * 穿透逻辑删除，根据主键 ID 查询实体记录（包含已删除与未删除数据）
+     *
+     * @param id 实体主键 ID
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    default T getByIdWithDeleted(Serializable id) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> getById(id));
+    }
+
+    /**
+     * 穿透逻辑删除，根据主键 ID 查询实体并投影为强类型 VO（零持久层实体泄露）
+     *
+     * @param id      实体主键 ID
+     * @param voClass 目标 VO 类型
+     * @param <V>     目标 VO 泛型
+     * @return VO 对象，无记录时返回 null
+     */
+    default <V> V getByIdWithDeleted(Serializable id, Class<V> voClass) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> getById(id, voClass));
+    }
+
+    /**
+     * 穿透逻辑删除，根据条件封装器查询实体列表（包含已删除与未删除数据）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @return 实体列表（保底空集合，严禁返回 null）
+     */
+    default List<T> listWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> list(queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，根据条件封装器查询实体列表并投影为强类型 VO 列表（零持久层实体泄露）
+     *
+     * @param queryWrapper 查询条件构造器
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return VO 列表（保底空集合，严禁返回 null）
+     */
+    default <V> List<V> listWithDeleted(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> list(queryWrapper, voClass));
+    }
+
+    /**
+     * 穿透逻辑删除，执行实体分页查询（包含已删除与未删除数据）
+     *
+     * @param page         分页对象
+     * @param queryWrapper 查询条件构造器
+     * @param <E>          分页泛型
+     * @return 实体分页结果
+     */
+    default <E extends IPage<T>> E pageWithDeleted(E page, Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> page(page, queryWrapper));
+    }
+
+    /**
+     * 穿透逻辑删除，执行单条记录查询
+     *
+     * @param queryWrapper 查询条件构造器
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    default T getOneWithDeleted(Wrapper<T> queryWrapper) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> getOne(queryWrapper, false));
+    }
+
+    /**
+     * 穿透逻辑删除，执行单条记录查询并投影为强类型 VO
+     *
+     * @param queryWrapper 查询条件构造器
+     * @param voClass      目标 VO 类型
+     * @param <V>          目标 VO 泛型
+     * @return VO 实例，无匹配记录时返回 null
+     */
+    default <V> V getOneWithDeleted(Wrapper<T> queryWrapper, Class<V> voClass) {
+        return LogicDeleteContextHolder.callWithDeleted(() -> getOne(queryWrapper, voClass, false));
+    }
 }

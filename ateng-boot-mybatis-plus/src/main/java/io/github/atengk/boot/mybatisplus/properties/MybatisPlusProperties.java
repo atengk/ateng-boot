@@ -113,6 +113,12 @@ public class MybatisPlusProperties {
     @NestedConfigurationProperty
     private SqlLogProperties sqlLog = new SqlLogProperties();
 
+    /**
+     * 逻辑删除穿透与误删恢复配置
+     */
+    @NestedConfigurationProperty
+    private LogicDeleteProperties logicDelete = new LogicDeleteProperties();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -239,6 +245,14 @@ public class MybatisPlusProperties {
 
     public void setSqlLog(SqlLogProperties sqlLog) {
         this.sqlLog = sqlLog;
+    }
+
+    public LogicDeleteProperties getLogicDelete() {
+        return logicDelete;
+    }
+
+    public void setLogicDelete(LogicDeleteProperties logicDelete) {
+        this.logicDelete = logicDelete;
     }
 
 
@@ -581,6 +595,24 @@ public class MybatisPlusProperties {
 
         public void setDynamicDatasource(boolean dynamicDatasource) {
             this.dynamicDatasource = dynamicDatasource;
+        }
+    }
+
+    /**
+     * 逻辑删除穿透与恢复拦截器配置
+     */
+    public static class LogicDeleteProperties {
+        /**
+         * 是否启用逻辑删除动态穿透与恢复拦截器插件，默认 true
+         */
+        private boolean enabled = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 }

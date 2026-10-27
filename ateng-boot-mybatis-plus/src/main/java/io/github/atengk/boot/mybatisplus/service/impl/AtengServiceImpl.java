@@ -3,9 +3,13 @@ package io.github.atengk.boot.mybatisplus.service.impl;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableFieldInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfo;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.mybatisplus.context.LogicDeleteContextHolder;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
 import io.github.atengk.boot.mybatisplus.enums.LockMode;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
@@ -20,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.Serializable;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
@@ -237,5 +242,105 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
         }
         List<T> list = list(effectiveWrapper);
         return list != null ? list : java.util.Collections.emptyList();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public boolean restoreById(Serializable id) {
+        if (id == null) {
+            return false;
+        }
+        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
+        if (tableInfo == null) {
+            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
+        }
+        if (!tableInfo.isWithLogicDelete()) {
+            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restoreById 操作");
+        }
+
+        String keyColumn = tableInfo.getKeyColumn();
+        TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
+        Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
+
+        UpdateWrapper<T> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.eq(keyColumn, id);
+        updateWrapper.set(logicField.getColumn(), notDeleteValue);
+        applyAuditFieldsOnRestore(updateWrapper, tableInfo);
+
+        return LogicDeleteContextHolder.callWithDeleted(() -> baseMapper.update(null, updateWrapper) > 0);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    @Override
+    public int restore(Wrapper<T> queryWrapper) {
+        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
+        if (tableInfo == null) {
+            throw new IllegalStateException("未能解析到实体 [" + getEntityClass().getName() + "] 的 TableInfo 元数据");
+        }
+        if (!tableInfo.isWithLogicDelete()) {
+            throw new UnsupportedOperationException("实体 [" + getEntityClass().getName() + "] 未配置 @TableLogic 逻辑删除，无法执行 restore 操作");
+        }
+
+        TableFieldInfo logicField = tableInfo.getLogicDeleteFieldInfo();
+        Object notDeleteValue = parseLogicValue(logicField.getLogicNotDeleteValue(), logicField.getPropertyType());
+
+        final UpdateWrapper<T> updateWrapper;
+        if (queryWrapper instanceof UpdateWrapper<T> uw) {
+            updateWrapper = uw;
+        } else {
+            updateWrapper = new UpdateWrapper<>();
+            if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
+                String customSql = abstractWrapper.getCustomSqlSegment();
+                if (customSql != null && !customSql.isBlank()) {
+                    String whereSql = customSql.replaceFirst("^(?i)\\s*WHERE\\s+", "");
+                    updateWrapper.apply(whereSql);
+                }
+            }
+        }
+        updateWrapper.set(logicField.getColumn(), notDeleteValue);
+        applyAuditFieldsOnRestore(updateWrapper, tableInfo);
+
+        return LogicDeleteContextHolder.callWithDeleted(() -> baseMapper.update(null, updateWrapper));
+    }
+
+    private void applyAuditFieldsOnRestore(UpdateWrapper<T> updateWrapper, TableInfo tableInfo) {
+        LocalDateTime now = LocalDateTime.now();
+        for (TableFieldInfo fieldInfo : tableInfo.getFieldList()) {
+            String prop = fieldInfo.getProperty();
+            if ("updateTime".equals(prop)) {
+                updateWrapper.set(fieldInfo.getColumn(), now);
+            } else if ("updateBy".equals(prop)) {
+                String operator = resolveCurrentOperator();
+                updateWrapper.set(fieldInfo.getColumn(), operator);
+            }
+        }
+    }
+
+    private Object parseLogicValue(String valueStr, Class<?> propertyType) {
+        if (valueStr == null || valueStr.isBlank() || "null".equalsIgnoreCase(valueStr.trim())) {
+            return null;
+        }
+        String clean = valueStr.trim().replace("'", "").replace("\"", "");
+        if (Integer.class.equals(propertyType) || int.class.equals(propertyType)) {
+            return Integer.parseInt(clean);
+        }
+        if (Long.class.equals(propertyType) || long.class.equals(propertyType)) {
+            return Long.parseLong(clean);
+        }
+        if (Boolean.class.equals(propertyType) || boolean.class.equals(propertyType)) {
+            return Boolean.parseBoolean(clean) || "1".equals(clean);
+        }
+        return clean;
+    }
+
+    private String resolveCurrentOperator() {
+        String user = UserContextHolder.get();
+        if (user != null && !user.isBlank()) {
+            return user;
+        }
+        if (properties != null && properties.getAudit() != null && properties.getAudit().getDefaultOperator() != null) {
+            return properties.getAudit().getDefaultOperator();
+        }
+        return "SYSTEM";
     }
 }

@@ -51,3 +51,16 @@ CREATE TABLE IF NOT EXISTS task_queue (
     create_by VARCHAR(64),
     update_by VARCHAR(64)
 );
+
+CREATE TABLE IF NOT EXISTS soft_delete_item (
+    id BIGINT NOT NULL PRIMARY KEY,
+    code VARCHAR(64) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    deleted BIGINT DEFAULT 0,
+    version INT DEFAULT 0,
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64),
+    CONSTRAINT uk_code_deleted UNIQUE (code, deleted)
+);
