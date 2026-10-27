@@ -110,4 +110,28 @@ class CoreSecurityScenarioServiceTest {
         assertThat(pair.left()).matches("^[0-9a-f]+$");
         assertThat(pair.right()).isEqualTo(raw);
     }
+
+    @Test
+    @DisplayName("测试HmacUtil密钥加签与防侧信道比对")
+    void testDemonstrateHmacSigning() {
+        String payload = "orderId=10086&amount=88.88";
+        String secretKey = "SecureSampleKey2026";
+
+        Triple<String, String, Boolean> result = securityScenarioService.demonstrateHmacSigning(payload, secretKey);
+
+        assertThat(result.left()).hasSize(64); // SHA-256 Hex 64 字符
+        assertThat(result.middle()).isNotBlank();
+        assertThat(result.right()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试ChecksumUtil数据校验和计算")
+    void testDemonstrateChecksum() {
+        String data = "123456789";
+        Triple<String, String, String> result = securityScenarioService.demonstrateChecksum(data);
+
+        assertThat(result.left()).isEqualTo("cbf43926");
+        assertThat(result.middle()).isEqualTo("e3069283");
+        assertThat(result.right()).isEqualTo("091e01de");
+    }
 }

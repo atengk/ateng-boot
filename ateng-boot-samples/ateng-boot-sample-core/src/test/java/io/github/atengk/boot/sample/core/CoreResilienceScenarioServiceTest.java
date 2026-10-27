@@ -206,4 +206,12 @@ class CoreResilienceScenarioServiceTest {
         assertThat(results.get("isAuthSecurity")).isEqualTo(true);
         assertThat(results.get("uniqueAssertPassed")).isEqualTo(true);
     }
+
+    @Test
+    @DisplayName("测试TokenBucketLimiter纯无锁平滑令牌桶突发限流整形")
+    void testDemonstrateTokenBucketLimiter() {
+        // 容量 5，突发 10 个请求，前 5 个应成功，后 5 个被限流拦截
+        int acquired = resilienceScenarioService.demonstrateTokenBucketLimiter(10);
+        assertThat(acquired).isEqualTo(5);
+    }
 }

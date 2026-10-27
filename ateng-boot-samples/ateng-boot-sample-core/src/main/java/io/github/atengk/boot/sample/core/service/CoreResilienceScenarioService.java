@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.code.ResultCodeSegment;
 import io.github.atengk.boot.core.code.ResultCodeUtil;
 import io.github.atengk.boot.core.concurrent.SlidingWindowCounter;
+import io.github.atengk.boot.core.concurrent.TokenBucketLimiter;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.PageQuery;
@@ -320,5 +321,24 @@ public class CoreResilienceScenarioService {
 
         log.info("ResultCode 治理分析结果: {}", results);
         return results;
+    }
+
+    /**
+     * 14. 验证 TokenBucketLimiter 纯无锁平滑令牌桶突发流量缓冲与限速整形
+     *
+     * @param burstCount 突发流量请求数
+     * @return 成功获取令牌的请求计数
+     */
+    public int demonstrateTokenBucketLimiter(int burstCount) {
+        // 容量 5，每秒填充 2 个令牌
+        TokenBucketLimiter limiter = new TokenBucketLimiter(5, 2.0);
+        int acquired = 0;
+        for (int i = 0; i < burstCount; i++) {
+            if (limiter.tryAcquire()) {
+                acquired++;
+            }
+        }
+        log.info("TokenBucketLimiter 突发限流测试: burstCount={}, acquired={}", burstCount, acquired);
+        return acquired;
     }
 }

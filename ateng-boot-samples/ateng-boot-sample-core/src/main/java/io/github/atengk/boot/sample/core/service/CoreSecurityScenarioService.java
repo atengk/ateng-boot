@@ -3,9 +3,11 @@ package io.github.atengk.boot.sample.core.service;
 import io.github.atengk.boot.core.model.Pair;
 import io.github.atengk.boot.core.model.Triple;
 import io.github.atengk.boot.core.util.CryptoUtil;
+import io.github.atengk.boot.core.util.ChecksumUtil;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.DigestUtil;
 import io.github.atengk.boot.core.util.HexUtil;
+import io.github.atengk.boot.core.util.HmacUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.sample.core.model.SampleUserDTO;
 import lombok.extern.slf4j.Slf4j;
@@ -145,5 +147,38 @@ public class CoreSecurityScenarioService {
         log.info("HexUtil 十六进制编解码: raw={}, hex={}, decoded={}",
                 rawText, hexString, decodedText);
         return Pair.of(hexString, decodedText);
+    }
+
+    /**
+     * 8. 验证 HmacUtil 密钥散列加签与恒定时间防侧信道比对
+     *
+     * @param payload 待签名载荷
+     * @param secretKey 密钥
+     * @return Triple<String(Hex签名), String(Base64签名), Boolean(验签结果)>
+     */
+    public Triple<String, String, Boolean> demonstrateHmacSigning(String payload, String secretKey) {
+        String hexSign = HmacUtil.hmacSha256Hex(payload, secretKey);
+        String base64Sign = HmacUtil.hmacSha256Base64(payload, secretKey);
+        boolean verified = HmacUtil.verifyHex(hexSign, hexSign);
+
+        log.info("HmacUtil 密钥加签: payload={}, hex={}, base64={}, verified={}",
+                payload, hexSign, base64Sign, verified);
+        return Triple.of(hexSign, base64Sign, verified);
+    }
+
+    /**
+     * 9. 验证 ChecksumUtil 数据校验和计算 (CRC32, CRC32C, Adler32)
+     *
+     * @param data 源数据文本
+     * @return Triple<String(CRC32十六进制), String(CRC32C十六进制), String(Adler32十六进制)>
+     */
+    public Triple<String, String, String> demonstrateChecksum(String data) {
+        String crc32Hex = ChecksumUtil.crc32Hex(data);
+        String crc32cHex = ChecksumUtil.crc32cHex(data);
+        String adler32Hex = ChecksumUtil.adler32Hex(data);
+
+        log.info("ChecksumUtil 校验和计算: data={}, crc32={}, crc32c={}, adler32={}",
+                data, crc32Hex, crc32cHex, adler32Hex);
+        return Triple.of(crc32Hex, crc32cHex, adler32Hex);
     }
 }
