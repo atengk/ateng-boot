@@ -19,10 +19,19 @@ import java.lang.annotation.Target;
 public @interface ApiVersion {
 
     /**
-     * API 版本标识（支持数字或语义化版本号，如 "1", "1.0", "2"）
+     * API 版本字符串标识（如 "1", "1.0", "2"）
      * 默认值为 "1"
      *
-     * @return 版本标识
+     * @return 字符串版本标识
      */
     String value() default "1";
+
+    /**
+     * API 主版本数值（如 1, 2）
+     * 当需要显式声明数值主版本时使用（如 {@code @ApiVersion(number = 2)}）；
+     * 若未提供非默认的 value，则优先以 number 数值生效
+     *
+     * @return 主版本数值
+     */
+    int number() default 0;
 }

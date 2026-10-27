@@ -35,7 +35,7 @@ public class ApiVersionRequestMappingHandlerMapping extends RequestMappingHandle
             return null;
         }
         ApiVersion apiVersion = AnnotatedElementUtils.findMergedAnnotation(handlerType, ApiVersion.class);
-        return apiVersion != null ? new ApiVersionCondition(apiVersion.value(), properties) : null;
+        return apiVersion != null ? new ApiVersionCondition(resolveVersion(apiVersion), properties) : null;
     }
 
     @Override
@@ -44,7 +44,7 @@ public class ApiVersionRequestMappingHandlerMapping extends RequestMappingHandle
             return null;
         }
         ApiVersion apiVersion = AnnotatedElementUtils.findMergedAnnotation(method, ApiVersion.class);
-        return apiVersion != null ? new ApiVersionCondition(apiVersion.value(), properties) : null;
+        return apiVersion != null ? new ApiVersionCondition(resolveVersion(apiVersion), properties) : null;
     }
 
     @Override
@@ -58,11 +58,15 @@ public class ApiVersionRequestMappingHandlerMapping extends RequestMappingHandle
         if (apiVersion == null) {
             apiVersion = AnnotatedElementUtils.findMergedAnnotation(handlerType, ApiVersion.class);
         }
-        if (apiVersion == null || !StringUtils.hasText(apiVersion.value())) {
+        if (apiVersion == null) {
+            return info;
+        }
+        String versionStr = resolveVersion(apiVersion);
+        if (!StringUtils.hasText(versionStr)) {
             return info;
         }
 
-        String cleanVer = ApiVersionCondition.cleanVersion(apiVersion.value());
+        String cleanVer = ApiVersionCondition.cleanVersion(versionStr);
         String prefix = "/v" + cleanVer;
 
         Set<String> patterns = info.getPatternValues();
@@ -79,5 +83,27 @@ public class ApiVersionRequestMappingHandlerMapping extends RequestMappingHandle
         }
 
         return info.mutate().paths(newPatterns.toArray(String[]::new)).build();
+    }
+
+    /**
+     * 解析 ApiVersion 注解的版本字符串（智能兼容 value 字符串与 number 主版本数值）
+     *
+     * @param apiVersion 注解对象
+     * @return 解析后的版本字符串
+     */
+    public static String resolveVersion(ApiVersion apiVersion) {
+        if (apiVersion == null) {
+            return "1";
+        }
+        if (apiVersion.number() > 0 && "1".equals(apiVersion.value())) {
+            return String.valueOf(apiVersion.number());
+        }
+        if (StringUtils.hasText(apiVersion.value())) {
+            return apiVersion.value().trim();
+        }
+        if (apiVersion.number() > 0) {
+            return String.valueOf(apiVersion.number());
+        }
+        return "1";
     }
 }

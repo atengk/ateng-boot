@@ -137,9 +137,9 @@ public class Sm2Signer implements ApiSigner {
 
             // 解码签名串为 (r, s)
             byte[] sigBytes = decodeSignatureBytes(signature);
-            BigInteger[] rs = decodeDerOrRaw(sigBytes);
-            BigInteger r = rs[0];
-            BigInteger s = rs[1];
+            Sm2Signature sig = decodeDerOrRaw(sigBytes);
+            BigInteger r = sig.r();
+            BigInteger s = sig.s();
 
             // 1. 校验 r, s 是否处于 [1, n-1]
             if (r.compareTo(BigInteger.ONE) < 0 || r.compareTo(N) >= 0) {
@@ -356,7 +356,13 @@ public class Sm2Signer implements ApiSigner {
         return Base64.getDecoder().decode(clean);
     }
 
-    private static BigInteger[] decodeDerOrRaw(byte[] bytes) {
+    /**
+     * SM2 数字签名元组 (r, s)
+     */
+    private record Sm2Signature(BigInteger r, BigInteger s) {
+    }
+
+    private static Sm2Signature decodeDerOrRaw(byte[] bytes) {
         if (bytes == null || bytes.length < 8) {
             throw new IllegalArgumentException("非法签名载荷长度");
         }
@@ -384,13 +390,13 @@ public class Sm2Signer implements ApiSigner {
             int sLen = bytes[pos++] & 0xFF;
             byte[] sb = Arrays.copyOfRange(bytes, pos, pos + sLen);
 
-            return new BigInteger[]{new BigInteger(1, rb), new BigInteger(1, sb)};
+            return new Sm2Signature(new BigInteger(1, rb), new BigInteger(1, sb));
         }
         // 2. 裸 64 字节 r || s
         if (bytes.length == 64) {
             byte[] rb = Arrays.copyOfRange(bytes, 0, 32);
             byte[] sb = Arrays.copyOfRange(bytes, 32, 64);
-            return new BigInteger[]{new BigInteger(1, rb), new BigInteger(1, sb)};
+            return new Sm2Signature(new BigInteger(1, rb), new BigInteger(1, sb));
         }
         throw new IllegalArgumentException("不支持的 SM2 签名编码格式");
     }

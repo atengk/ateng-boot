@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.web.dto.AuditUserDTO;
 import io.github.atengk.boot.sample.web.vo.UserRegisterVO;
 import io.github.atengk.boot.web.annotation.OperateLog;
 import io.github.atengk.boot.web.annotation.WebLog;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -39,7 +40,7 @@ public class WebAuditSampleController {
             description = "新增系统用户",
             excludeParams = {"password"}
     )
-    public Result<UserRegisterVO> createUser(@RequestBody AuditUserDTO dto) {
+    public Result<UserRegisterVO> createUser(@Valid @RequestBody AuditUserDTO dto) {
         UserRegisterVO vo = UserRegisterVO.builder()
                 .id(1846182948192841920L)
                 .name(dto.getUsername())
@@ -96,7 +97,7 @@ public class WebAuditSampleController {
      */
     @PostMapping("/weblog")
     @WebLog(value = "创建用户接口日志审计", excludeParams = {"password"}, printCostTime = true)
-    public Result<String> webLogDemo(@RequestBody AuditUserDTO dto) {
+    public Result<String> webLogDemo(@Valid @RequestBody AuditUserDTO dto) {
         return Result.success("weblog-ok:" + dto.getUsername());
     }
 }

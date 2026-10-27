@@ -1,12 +1,11 @@
 package io.github.atengk.boot.sample.web.controller;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.web.vo.UserVersionInfoVO;
 import io.github.atengk.boot.web.version.annotation.ApiVersion;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
 
 /**
  * API 版本控制 V2 演示控制器
@@ -25,13 +24,13 @@ public class WebVersionV2SampleController {
      * @return V2 版本数据
      */
     @GetMapping("/info")
-    public Result<Map<String, Object>> getUserInfo() {
-        return Result.success(Map.of(
-                "version", "2",
-                "name", "张三",
-                "level", "VIP",
-                "contract", "enhanced"
-        ));
+    public Result<UserVersionInfoVO> getUserInfo() {
+        return Result.success(UserVersionInfoVO.builder()
+                .version("2")
+                .name("张三")
+                .level("VIP")
+                .contract("enhanced")
+                .build());
     }
 
     /**

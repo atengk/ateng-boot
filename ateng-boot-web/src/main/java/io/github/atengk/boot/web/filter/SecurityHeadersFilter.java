@@ -24,7 +24,7 @@ import java.util.Objects;
  * @author Ateng
  * @since 2026-10-27
  */
-public class SecurityHeadersFilter extends OncePerRequestFilter {
+public class SecurityHeadersFilter extends OncePerRequestFilter implements Ordered {
 
     /**
      * 过滤器执行优先级，紧随链路追踪与运行时监控过滤器之后
@@ -94,6 +94,15 @@ public class SecurityHeadersFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(properties.getPermissionsPolicy()) && !response.containsHeader(HEADER_PERMISSIONS_POLICY)) {
             response.setHeader(HEADER_PERMISSIONS_POLICY, properties.getPermissionsPolicy());
         }
+    }
+
+    @Override
+    public int getOrder() {
+        return ORDER;
+    }
+
+    public WebProperties.SecurityHeadersProperties getProperties() {
+        return properties;
     }
 
     /**

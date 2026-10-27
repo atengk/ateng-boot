@@ -21,9 +21,9 @@ import java.util.regex.Pattern;
 public class ApiVersionCondition implements RequestCondition<ApiVersionCondition> {
 
     /**
-     * URL 路径中提取 API 版本的正则表达式（匹配 /v1/ 或结尾 /v1）
+     * URL 路径中提取 API 版本的正则表达式（严格以 /v{version} 前缀锚定开头，匹配如 /v1/ 或结尾 /v1）
      */
-    private static final Pattern VERSION_PATH_PATTERN = Pattern.compile("/v([0-9]+(?:\\.[0-9]+)?)(?:/|$)");
+    private static final Pattern VERSION_PATH_PATTERN = Pattern.compile("^/v([0-9]+(?:\\.[0-9]+)*)(?:/|$)");
 
     /**
      * 当前接口声明的 API 版本号（如 "1", "2", "1.0"）
@@ -96,11 +96,15 @@ public class ApiVersionCondition implements RequestCondition<ApiVersionCondition
             return properties.getDefaultVersion();
         }
 
-        // 1. 尝试从 URL 路径前缀中提取（如 /v1/user）
+        // 1. 尝试从 URL 路径前缀中提取（如 /v1/user 或 /app/v1/user）
         if (properties.isPathPrefixEnabled()) {
             String uri = request.getRequestURI();
             if (StringUtils.hasText(uri)) {
-                Matcher matcher = VERSION_PATH_PATTERN.matcher(uri);
+                String contextPath = request.getContextPath();
+                String path = (StringUtils.hasText(contextPath) && uri.startsWith(contextPath))
+                        ? uri.substring(contextPath.length())
+                        : uri;
+                Matcher matcher = VERSION_PATH_PATTERN.matcher(path);
                 if (matcher.find()) {
                     return matcher.group(1);
                 }
@@ -134,22 +138,24 @@ public class ApiVersionCondition implements RequestCondition<ApiVersionCondition
     }
 
     /**
-     * 判定请求版本与声明版本是否匹配
+     * 判定请求版本与声明版本是否匹配（基于语义化点分整数段比对）
      */
     public static boolean isVersionMatch(String requestVersion, String targetVersion) {
         String cleanReq = cleanVersion(requestVersion);
         String cleanTarget = cleanVersion(targetVersion);
 
+        if (!StringUtils.hasText(cleanReq) || !StringUtils.hasText(cleanTarget)) {
+            return false;
+        }
+
         if (cleanReq.equalsIgnoreCase(cleanTarget)) {
             return true;
         }
 
-        // 尝试数值兼容比较（如 1 与 1.0）
+        // 统一采用点分整数段比对（兼顾 1 与 1.0 的等价性，并防御 2.10 与 2.1 的浮点混淆）
         try {
-            double reqNum = Double.parseDouble(cleanReq);
-            double targetNum = Double.parseDouble(cleanTarget);
-            return Double.compare(reqNum, targetNum) == 0;
-        } catch (NumberFormatException ignored) {
+            return compareVersion(cleanReq, cleanTarget) == 0;
+        } catch (Exception ignored) {
             return false;
         }
     }

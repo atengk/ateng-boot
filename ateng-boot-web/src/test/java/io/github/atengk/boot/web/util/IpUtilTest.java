@@ -172,6 +172,13 @@ class IpUtilTest {
         assertThat(IpUtil.isInRange("0:0:0:0:0:0:0:1", "::1")).isTrue();
         assertThat(IpUtil.isInRange("::1", "0:0:0:0:0:0:0:1")).isTrue();
 
+        // IPv4 与 IPv6 本地环回等价判定兼容
+        assertThat(IpUtil.isInRange("127.0.0.1", "::1")).isTrue();
+        assertThat(IpUtil.isInRange("127.0.0.1", "::1/128")).isTrue();
+        assertThat(IpUtil.isInRange("::1", "127.0.0.1")).isTrue();
+        assertThat(IpUtil.isInRange("::1", "127.0.0.1/32")).isTrue();
+        assertThat(IpUtil.isInRange("127.0.0.1", "0:0:0:0:0:0:0:1")).isTrue();
+
         // /32 子网
         assertThat(IpUtil.isInRange("2001:db8:85a3::8a2e:370:7334", "2001:db8::/32")).isTrue();
         assertThat(IpUtil.isInRange("2001:db9::1", "2001:db8::/32")).isFalse();

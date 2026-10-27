@@ -14,8 +14,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
-import org.springframework.util.AntPathMatcher;
-import org.springframework.util.PathMatcher;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -41,7 +39,6 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
     public static final int ORDER = TraceFilter.ORDER + 1;
 
     private final IpAccessControlProperties properties;
-    private final PathMatcher pathMatcher = new AntPathMatcher();
 
     public IpAccessControlFilter(IpAccessControlProperties properties) {
         this.properties = properties != null ? properties : new IpAccessControlProperties();
@@ -105,43 +102,14 @@ public class IpAccessControlFilter extends OncePerRequestFilter implements Order
     }
 
     private boolean isExcluded(HttpServletRequest request, List<String> excludeUrls) {
-        if (excludeUrls == null || excludeUrls.isEmpty()) {
-            return false;
-        }
-        String uri = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        String path = (StringUtils.hasText(contextPath) && uri.startsWith(contextPath))
-                ? uri.substring(contextPath.length())
-                : uri;
-        for (String pattern : excludeUrls) {
-            if (StringUtils.hasText(pattern)) {
-                String trimmed = pattern.trim();
-                if (pathMatcher.match(trimmed, uri) || pathMatcher.match(trimmed, path)) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return ServletUtil.matchesAnyPath(request, excludeUrls);
     }
 
     private boolean isMatchedUrl(HttpServletRequest request, List<String> urlPatterns) {
         if (urlPatterns == null || urlPatterns.isEmpty()) {
             return true;
         }
-        String uri = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        String path = (StringUtils.hasText(contextPath) && uri.startsWith(contextPath))
-                ? uri.substring(contextPath.length())
-                : uri;
-        for (String pattern : urlPatterns) {
-            if (StringUtils.hasText(pattern)) {
-                String trimmed = pattern.trim();
-                if (pathMatcher.match(trimmed, uri) || pathMatcher.match(trimmed, path)) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return ServletUtil.matchesAnyPath(request, urlPatterns);
     }
 
     @Override

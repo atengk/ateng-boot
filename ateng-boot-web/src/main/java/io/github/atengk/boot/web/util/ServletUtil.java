@@ -4,6 +4,9 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
+import org.springframework.util.AntPathMatcher;
+import org.springframework.util.PathMatcher;
+import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -13,6 +16,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 
 /**
  * Servlet 上下文与请求响应静态操作工具门面
@@ -28,6 +32,8 @@ public final class ServletUtil {
     public static final String HEADER_CONTENT_DISPOSITION = "Content-Disposition";
     public static final String HEADER_X_REQUESTED_WITH = "X-Requested-With";
     public static final String XML_HTTP_REQUEST = "XMLHttpRequest";
+
+    private static final PathMatcher PATH_MATCHER = new AntPathMatcher();
 
     private ServletUtil() {
     }
@@ -252,6 +258,33 @@ public final class ServletUtil {
             in.transferTo(out);
             out.flush();
         }
+    }
+
+    /**
+     * 判断当前 HTTP 请求的 URI 或 contextPath 相对路径是否匹配给定的 AntPath 规则集合中的任一规则
+     *
+     * @param request  HTTP 请求对象
+     * @param patterns AntPath 规则集合（如 /api/**）
+     * @return true 表示至少匹配其中一条规则；若请求或规则集为空则返回 false
+     */
+    public static boolean matchesAnyPath(HttpServletRequest request, Collection<String> patterns) {
+        if (request == null || patterns == null || patterns.isEmpty()) {
+            return false;
+        }
+        String uri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        String path = (StringUtils.hasText(contextPath) && uri.startsWith(contextPath))
+                ? uri.substring(contextPath.length())
+                : uri;
+        for (String pattern : patterns) {
+            if (StringUtils.hasText(pattern)) {
+                String trimmed = pattern.trim();
+                if (PATH_MATCHER.match(trimmed, uri) || PATH_MATCHER.match(trimmed, path)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }
 

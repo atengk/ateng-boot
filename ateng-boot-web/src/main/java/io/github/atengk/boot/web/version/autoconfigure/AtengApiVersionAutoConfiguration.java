@@ -3,10 +3,12 @@ package io.github.atengk.boot.web.version.autoconfigure;
 import io.github.atengk.boot.web.version.mapping.ApiVersionRequestMappingHandlerMapping;
 import io.github.atengk.boot.web.version.properties.ApiVersionProperties;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.autoconfigure.web.servlet.WebMvcAutoConfiguration;
 import org.springframework.boot.autoconfigure.web.servlet.WebMvcRegistrations;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -20,6 +22,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * @since 2026-10-27
  */
 @AutoConfiguration
+@AutoConfigureBefore(WebMvcAutoConfiguration.class)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnClass(WebMvcRegistrations.class)
 @EnableConfigurationProperties(ApiVersionProperties.class)
@@ -33,7 +36,7 @@ public class AtengApiVersionAutoConfiguration {
      * @return WebMvcRegistrations 实例
      */
     @Bean
-    @ConditionalOnMissingBean(name = "apiVersionWebMvcRegistrations")
+    @ConditionalOnMissingBean(WebMvcRegistrations.class)
     public WebMvcRegistrations apiVersionWebMvcRegistrations(ApiVersionProperties properties) {
         return new WebMvcRegistrations() {
             @Override

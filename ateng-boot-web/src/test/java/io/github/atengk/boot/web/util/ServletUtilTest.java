@@ -185,5 +185,23 @@ class ServletUtilTest {
         ServletUtil.writeDownload(response, null, java.io.InputStream.nullInputStream());
         ServletUtil.writeDownload(response, "test.txt", (java.io.InputStream) null);
     }
+
+    @Test
+    @DisplayName("matchesAnyPath 路径匹配与边界防御测试")
+    void shouldMatchAnyPath() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setContextPath("/app");
+        request.setRequestURI("/app/api/v1/users/1001");
+
+        // 匹配 contextPath 剥离后的路径与原始 URI
+        assertThat(ServletUtil.matchesAnyPath(request, java.util.List.of("/api/**"))).isTrue();
+        assertThat(ServletUtil.matchesAnyPath(request, java.util.List.of("/app/api/**"))).isTrue();
+        assertThat(ServletUtil.matchesAnyPath(request, java.util.List.of("/other/**"))).isFalse();
+
+        // 空值与边界防御
+        assertThat(ServletUtil.matchesAnyPath(null, java.util.List.of("/api/**"))).isFalse();
+        assertThat(ServletUtil.matchesAnyPath(request, (java.util.Collection<String>) null)).isFalse();
+        assertThat(ServletUtil.matchesAnyPath(request, java.util.Collections.emptyList())).isFalse();
+    }
 }
 

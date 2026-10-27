@@ -96,4 +96,31 @@ class ApiVersionRequestMappingHandlerMappingTest {
             return "user_v2";
         }
     }
+
+    @Test
+    @DisplayName("通过 number 属性声明整型版本（如 @ApiVersion(number = 3)）支持")
+    void shouldSupportNumberVersionAttribute() throws Exception {
+        ApiVersionProperties properties = new ApiVersionProperties();
+        ApiVersionRequestMappingHandlerMapping mapping = new ApiVersionRequestMappingHandlerMapping(properties);
+
+        Method method = SampleNumberController.class.getMethod("getNumberUser");
+        RequestMappingInfo info = mapping.getMappingForMethod(method, SampleNumberController.class);
+
+        assertThat(info).isNotNull();
+        Set<String> patterns = info.getPatternValues();
+        assertThat(patterns).containsExactlyInAnyOrder("/api/sample/number", "/v3/api/sample/number");
+
+        ApiVersionCondition condition = (ApiVersionCondition) info.getCustomCondition();
+        assertThat(condition.getVersion()).isEqualTo("3");
+    }
+
+    @RestController
+    @RequestMapping("/api/sample")
+    @ApiVersion(number = 3)
+    static class SampleNumberController {
+        @GetMapping("/number")
+        public String getNumberUser() {
+            return "user_v3";
+        }
+    }
 }

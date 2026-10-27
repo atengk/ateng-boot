@@ -196,7 +196,19 @@ _Avoid_: VersionHandlerMapping, ApiVersionMapping
 API 多版本控制运行时配置属性，以 ateng.boot.web.api-version 为前缀，提供缺省默认版本、标头名称与路径前缀启闭控制。
 _Avoid_: VersionProperties, ApiProperties
 
+**ShallowEtagHeaderFilter**:
+基于 Spring 官方浅层 ETag 生成机制的条件协商缓存过滤器，对出站响应体计算哈希并在客户端 If-None-Match 命中时返回 HTTP 304 Not Modified 以节省网络带宽。
+_Avoid_: EtagFilter, CacheFilter, HashFilter
 
+**EtagProperties**:
+ETag 协商缓存运行时配置属性，以 ateng.boot.web.etag 为前缀，提供开关与弱 ETag（write-weak-etag）控制。
+_Avoid_: EtagConfig, CacheProperties
 
+**XssMode**:
+XSS 跨站脚本安全清洗模式枚举，定义实体转义（ESCAPE，默认将敏感字符转为 HTML 实体）与标签剔除（STRIP，直接剥离恶意脚本与 HTML 标签）两种防御模式。
+_Avoid_: XssType, CleanMode, SanitizerMode
 
+**XssCleaner**:
+XSS 无害化安全清洗引擎，依托纯 JDK 原生字符串替换与正则算法实现高效实体转义与脚本标签剥离，零引入三方重型解析库。
+_Avoid_: HtmlSanitizer, AntiXssUtil, XssUtil
 

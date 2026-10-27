@@ -255,6 +255,10 @@ public class GlobalExceptionHandler {
         log.warn("不接受的媒体类型: {}", e.getMessage());
         if (response != null && !response.isCommitted()) {
             try {
+                String traceId = MDC.get(TraceFilter.MDC_TRACE_ID_KEY);
+                if (org.springframework.util.StringUtils.hasText(traceId) && !response.containsHeader(TraceFilter.DEFAULT_HEADER)) {
+                    response.setHeader(TraceFilter.DEFAULT_HEADER, traceId);
+                }
                 response.setStatus(HttpServletResponse.SC_OK);
                 ServletUtil.writeJson(response, JsonUtil.toJsonString(result));
                 return null;

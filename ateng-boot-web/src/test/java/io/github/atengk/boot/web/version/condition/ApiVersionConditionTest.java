@@ -101,4 +101,29 @@ class ApiVersionConditionTest {
         ApiVersionCondition fallback = classCondition.combine(null);
         assertThat(fallback.getVersion()).isEqualTo("1");
     }
+
+    @Test
+    @DisplayName("7. 路径中段防御：/api/items/v2/details 不应误识别为 V2 版本，应回退至默认版本 1")
+    void shouldNotMatchVersionInMiddleOfUri() {
+        ApiVersionProperties properties = new ApiVersionProperties();
+        properties.setDefaultVersion("1");
+
+        ApiVersionCondition conditionV1 = new ApiVersionCondition("1", properties);
+        ApiVersionCondition conditionV2 = new ApiVersionCondition("2", properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/items/v2/details");
+
+        assertThat(conditionV1.getMatchingCondition(request)).isNotNull();
+        assertThat(conditionV2.getMatchingCondition(request)).isNull();
+    }
+
+    @Test
+    @DisplayName("8. SemVer 语义化版本隔离：2.10 与 2.1 区分隔离，避免浮点数误判")
+    void shouldDistinguishSubVersions() {
+        assertThat(ApiVersionCondition.isVersionMatch("2.10", "2.1")).isFalse();
+        assertThat(ApiVersionCondition.isVersionMatch("1", "1.0")).isTrue();
+        assertThat(ApiVersionCondition.isVersionMatch("1.0", "1")).isTrue();
+        assertThat(ApiVersionCondition.isVersionMatch("1.0.1", "1.0.1")).isTrue();
+        assertThat(ApiVersionCondition.isVersionMatch("1.0.1", "1.0.2")).isFalse();
+    }
 }

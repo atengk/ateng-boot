@@ -218,6 +218,7 @@ public class AtengWebAutoConfiguration {
     @Bean
     @ConditionalOnClass(Jackson2ObjectMapperBuilderCustomizer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.web.xss", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "xssJacksonCustomizer")
     public Jackson2ObjectMapperBuilderCustomizer xssJacksonCustomizer(XssCleaner xssCleaner) {
         return builder -> builder.deserializerByType(String.class, new XssStringDeserializer(xssCleaner));
     }

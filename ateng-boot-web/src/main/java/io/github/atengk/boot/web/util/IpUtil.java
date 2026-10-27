@@ -165,6 +165,11 @@ public final class IpUtil {
             byte[] baseBytes = baseAddr.getAddress();
 
             if (targetBytes.length != baseBytes.length) {
+                // 兼容本地环回主机地址在 IPv4 与 IPv6 之间的等价映射（如 127.0.0.1 与 ::1）
+                if (targetAddr.isLoopbackAddress() && baseAddr.isLoopbackAddress()
+                        && (prefixLength == -1 || prefixLength == baseBytes.length * 8)) {
+                    return true;
+                }
                 return false;
             }
 

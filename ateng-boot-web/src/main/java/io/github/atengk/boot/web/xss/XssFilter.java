@@ -2,14 +2,12 @@ package io.github.atengk.boot.web.xss;
 
 import io.github.atengk.boot.web.filter.SecurityHeadersFilter;
 import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.util.ServletUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.core.Ordered;
-import org.springframework.util.AntPathMatcher;
-import org.springframework.util.PathMatcher;
-import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -36,7 +34,6 @@ public class XssFilter extends OncePerRequestFilter implements Ordered {
 
     private final WebProperties.XssProperties properties;
     private final XssCleaner cleaner;
-    private final PathMatcher pathMatcher = new AntPathMatcher();
 
     public XssFilter(WebProperties.XssProperties properties, XssCleaner cleaner) {
         this.properties = properties != null ? properties : new WebProperties.XssProperties();
@@ -59,24 +56,7 @@ public class XssFilter extends OncePerRequestFilter implements Ordered {
     }
 
     private boolean isExcluded(HttpServletRequest request) {
-        List<String> excludeUrls = properties.getExcludeUrls();
-        if (excludeUrls == null || excludeUrls.isEmpty()) {
-            return false;
-        }
-        String uri = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        String path = (StringUtils.hasText(contextPath) && uri.startsWith(contextPath))
-                ? uri.substring(contextPath.length())
-                : uri;
-        for (String pattern : excludeUrls) {
-            if (StringUtils.hasText(pattern)) {
-                String trimmed = pattern.trim();
-                if (pathMatcher.match(trimmed, uri) || pathMatcher.match(trimmed, path)) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return ServletUtil.matchesAnyPath(request, properties.getExcludeUrls());
     }
 
     @Override

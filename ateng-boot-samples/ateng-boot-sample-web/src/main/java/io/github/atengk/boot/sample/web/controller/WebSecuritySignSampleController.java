@@ -66,7 +66,7 @@ public class WebSecuritySignSampleController {
      */
     @PostMapping("/inbound")
     @ApiSign(verifyRequest = true, signResponse = false, expireSeconds = 10)
-    public Result<String> inboundOnly(@RequestBody OrderSignDTO dto) {
+    public Result<String> inboundOnly(@Valid @RequestBody OrderSignDTO dto) {
         return Result.success("NOTIFIED_" + dto.getOrderNo());
     }
 
