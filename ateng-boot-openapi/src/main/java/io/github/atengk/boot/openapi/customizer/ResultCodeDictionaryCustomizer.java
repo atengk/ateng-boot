@@ -98,9 +98,14 @@ public class ResultCodeDictionaryCustomizer implements OpenApiCustomizer {
             case FORBIDDEN -> "当前登录主体缺少对应权限或角色，访问受限";
             case NOT_FOUND -> "请求路径错误或目标数据未命中";
             case METHOD_NOT_ALLOWED -> "HTTP 请求方法不支持 (如 GET/POST 错用)";
+            case NOT_ACCEPTABLE -> "服务端无法生成客户端 Accept 头所要求的响应媒体格式";
+            case PAYLOAD_TOO_LARGE -> "上传文件或请求载荷体积超出系统限制阈值";
+            case UNSUPPORTED_MEDIA_TYPE -> "服务端不支持客户端请求提交的 Content-Type 媒体类型";
             case TOO_MANY_REQUESTS -> "访问过于频繁，触发接口限流熔断防护";
             case INTERNAL_SERVER_ERROR -> "系统内部发生未捕获异常或服务繁忙";
+            case SERVICE_UNAVAILABLE -> "服务端过载或异步任务超时，暂时无法处理请求";
             case REPEAT_SUBMIT -> "短时间内重复提交请求，被防重幂等切面拦截";
+            default -> rc.getMsg();
         };
     }
 }
