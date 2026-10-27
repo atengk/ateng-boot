@@ -10,6 +10,9 @@ import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
 import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
 import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil;
+import io.github.atengk.boot.redis.idempotent.aspect.RedisIdempotentAspect;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
@@ -150,6 +153,36 @@ public class AtengRedisAutoConfiguration {
         RedisSemaphoreTemplate template = new RedisSemaphoreTemplate(redissonClient, redisProperties);
         RedisSemaphoreUtil.init(template);
         return template;
+    }
+
+    /**
+     * 装配分布式业务级防重幂等模板 RedisIdempotentTemplate 并初始化 RedisIdempotentUtil 门面
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式防重幂等模板
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisIdempotentTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.idempotent", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisIdempotentTemplate redisIdempotentTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
+        RedisIdempotentTemplate template = new RedisIdempotentTemplate(redissonClient, redisProperties);
+        RedisIdempotentUtil.init(template);
+        return template;
+    }
+
+    /**
+     * 装配声明式分布式防重幂等切面 RedisIdempotentAspect
+     *
+     * @param redisIdempotentTemplate 分布式防重幂等模板
+     * @param redisProperties 属性配置
+     * @return 分布式防重幂等切面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisIdempotentAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.idempotent", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisIdempotentAspect redisIdempotentAspect(RedisIdempotentTemplate redisIdempotentTemplate, RedisProperties redisProperties) {
+        return new RedisIdempotentAspect(redisIdempotentTemplate, redisProperties);
     }
 
     /**

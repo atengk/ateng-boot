@@ -71,6 +71,12 @@ public class RedisProperties {
     private TwoLevelCacheProperties twoLevel = new TwoLevelCacheProperties();
 
     /**
+     * 分布式防重幂等配置属性
+     */
+    @NestedConfigurationProperty
+    private IdempotentProperties idempotent = new IdempotentProperties();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -442,6 +448,49 @@ public class RedisProperties {
              * 针对特定 cacheName 的 L2 独立过期时间映射
              */
             private Map<String, Duration> ttls = new HashMap<>();
+        }
+    }
+
+    /**
+     * 分布式防重幂等配置详情
+     */
+    @Data
+    public static class IdempotentProperties {
+
+        /**
+         * 是否启用分布式防重幂等切面与模板
+         */
+        private boolean enabled = true;
+
+        /**
+         * 防重幂等键统一前缀（默认 "idempotent:"）
+         */
+        private String prefix = "idempotent:";
+
+        /**
+         * 默认幂等凭证保留/防重时长（默认 10 分钟）
+         */
+        private Duration defaultExpire = Duration.ofMinutes(10);
+
+        /**
+         * 业务异常时是否默认自动删除防重 Key 以便上游重试（默认 true）
+         */
+        private boolean deleteOnFailure = true;
+
+        public Duration getDefaultExpire() {
+            return defaultExpire;
+        }
+
+        public void setDefaultExpire(Duration defaultExpire) {
+            this.defaultExpire = defaultExpire;
+        }
+
+        public void setDefaultExpireSeconds(long seconds) {
+            this.defaultExpire = Duration.ofSeconds(seconds);
+        }
+
+        public long getDefaultExpireSeconds() {
+            return defaultExpire != null ? defaultExpire.toSeconds() : 600L;
         }
     }
 }

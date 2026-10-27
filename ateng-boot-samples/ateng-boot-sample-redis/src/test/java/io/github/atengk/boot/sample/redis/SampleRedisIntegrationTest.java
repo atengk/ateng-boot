@@ -189,7 +189,9 @@ class SampleRedisIntegrationTest {
             // 幂等防重 Bucket 模拟
             RBucket<Object> bucket = mock(RBucket.class);
             when(bucket.setIfAbsent(any(), any())).thenReturn(true);
+            when(bucket.delete()).thenReturn(true);
             when(client.getBucket(anyString())).thenReturn(bucket);
+            when(client.getBucket(anyString(), any())).thenReturn(bucket);
 
             // 延时队列与阻塞队列模拟（按队列名独立路由隔离）
             when(client.getBlockingQueue(anyString())).thenAnswer(inv -> {
@@ -489,6 +491,9 @@ class SampleRedisIntegrationTest {
 
     @Autowired(required = false)
     private io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager twoLevelCacheManager;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate redisIdempotentTemplate;
 
     @Test
     @DisplayName("端到端验证：@DistributedLock 声明式分布式锁切面拦截、SpEL 动态解析与加解锁协同")
@@ -983,5 +988,16 @@ class SampleRedisIntegrationTest {
         customProps.setKeyPrefix("dev:");
         assertThat(customProps.buildKey("order:1001")).isEqualTo("dev:order:1001");
         assertThat(customProps.buildKey("dev:order:1001")).isEqualTo("dev:order:1001");
+    }
+
+    @Test
+    @DisplayName("端到端验证：RedisIdempotentTemplate 与 RedisIdempotentUtil 业务级防重幂等模板装配与执行")
+    void shouldAutoConfigureAndExecuteIdempotentTemplate() throws Exception {
+        assertThat(redisIdempotentTemplate).isNotNull();
+        String result = redisIdempotentTemplate.execute("sample:idemp:test", java.time.Duration.ofMinutes(1), () -> "idemp_done");
+        assertThat(result).isEqualTo("idemp_done");
+
+        String staticResult = io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil.execute("sample:idemp:util", () -> "util_done");
+        assertThat(staticResult).isEqualTo("util_done");
     }
 }

@@ -76,6 +76,8 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("twoLevelCacheManager");
                     assertThat(context).doesNotHaveBean("redisScriptExecutor");
                     assertThat(context).doesNotHaveBean("redisSemaphoreTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentAspect");
                 });
     }
 
@@ -105,6 +107,19 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("当配置 ateng.boot.redis.idempotent.enabled=false 时，不装配防重幂等模板与切面")
+    void shouldNotLoadIdempotentWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.idempotent.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("redisIdempotentTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentAspect");
+                });
+    }
+
+    @Test
     @DisplayName("默认启用时装配 Redis 全家桶组件且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
@@ -128,6 +143,8 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisCacheTemplate");
                     assertThat(context).hasBean("redisScriptExecutor");
                     assertThat(context).hasBean("redisSemaphoreTemplate");
+                    assertThat(context).hasBean("redisIdempotentTemplate");
+                    assertThat(context).hasBean("redisIdempotentAspect");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
