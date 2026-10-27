@@ -1,6 +1,8 @@
 package io.github.atengk.boot.core.util;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -13,6 +15,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -53,6 +56,24 @@ class JsonUtilDeepCloneTest {
     static class OrderItem {
         private String skuCode;
         private Integer quantity;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    static class SensitiveUser {
+        private Long id;
+        @FieldSensitive(SensitiveType.MOBILE_PHONE)
+        private String mobile;
+        @FieldSensitive(SensitiveType.ID_CARD)
+        private String idCard;
+    }
+
+    @Data
+    static class CyclicNode {
+        private String name;
+        private CyclicNode next;
     }
 
     @Test
@@ -119,5 +140,71 @@ class JsonUtilDeepCloneTest {
     void shouldReturnNullWhenSourceIsNull() {
         assertNull(JsonUtil.deepClone(null));
         assertNull(JsonUtil.deepClone(null, new TypeReference<Map<String, Object>>() {}));
+    }
+
+    @Test
+    @DisplayName("ADR-0012 内存真明文守护测试：深度克隆必须抑制 @FieldSensitive 脱敏注解，保持原始真实明文")
+    void shouldSuppressFieldSensitiveAndPreservePlaintext() {
+        SensitiveUser original = SensitiveUser.builder()
+                .id(1L)
+                .mobile("13812345678")
+                .idCard("110101199003072345")
+                .build();
+
+        // 正常序列化为 JSON 时应触发脱敏
+        String json = JsonUtil.toJsonString(original);
+        assertTrue(json.contains("138****5678"));
+
+        // deepClone 必须压制脱敏，保持 100% 原始真实明文
+        SensitiveUser cloned = JsonUtil.deepClone(original);
+        assertNotNull(cloned);
+        assertNotSame(original, cloned);
+        assertEquals("13812345678", cloned.getMobile());
+        assertEquals("110101199003072345", cloned.getIdCard());
+    }
+
+    @Test
+    @DisplayName("应该支持直接克隆集合容器、不可变集合并保持泛型元素具体类型防类型擦除")
+    void shouldDeepCloneCollectionsAndImmutableTypesWithoutTypeErasure() {
+        // 1. 不可变 List 与元素类型保持
+        List<UserInfo> originalList = List.of(
+                UserInfo.builder().userId(1L).username("User-1").build(),
+                UserInfo.builder().userId(2L).username("User-2").build()
+        );
+        List<UserInfo> clonedList = JsonUtil.deepClone(originalList);
+        assertNotNull(clonedList);
+        assertEquals(2, clonedList.size());
+        assertInstanceOf(UserInfo.class, clonedList.get(0));
+        assertEquals("User-1", clonedList.get(0).getUsername());
+        assertNotSame(originalList.get(0), clonedList.get(0));
+
+        // 2. Set 集合克隆
+        Set<String> originalSet = Set.of("apple", "banana");
+        Set<String> clonedSet = JsonUtil.deepClone(originalSet);
+        assertNotNull(clonedSet);
+        assertEquals(2, clonedSet.size());
+        assertTrue(clonedSet.contains("apple"));
+
+        // 3. Map 集合克隆
+        Map<String, UserInfo> originalMap = Map.of(
+                "admin", UserInfo.builder().userId(99L).username("Admin").build()
+        );
+        Map<String, UserInfo> clonedMap = JsonUtil.deepClone(originalMap);
+        assertNotNull(clonedMap);
+        assertInstanceOf(UserInfo.class, clonedMap.get("admin"));
+        assertEquals("Admin", clonedMap.get("admin").getUsername());
+        assertNotSame(originalMap.get("admin"), clonedMap.get("admin"));
+    }
+
+    @Test
+    @DisplayName("对抗性用例：自引用循环对象克隆失败时应该转译抛出受管 IllegalArgumentException")
+    void shouldPropagateIllegalArgumentExceptionOnCycleOrSerializationFailure() {
+        CyclicNode node = new CyclicNode();
+        node.setName("node-1");
+        node.setNext(node); // 自引用循环导致序列化异常
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> JsonUtil.deepClone(node));
+        assertTrue(ex.getMessage().startsWith("对象深度克隆失败"));
+        assertNotNull(ex.getCause());
     }
 }

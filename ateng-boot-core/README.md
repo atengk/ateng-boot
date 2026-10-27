@@ -56,7 +56,7 @@
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **标准错误码号段规约** | 业务状态码号段规约与唯一性防重校验 | `ResultCodeSegment`, `ResultCodeUtil` | - | `ResultCodeSegment.SYSTEM_CORE/AUTH_SECURITY/...`, `ResultCodeUtil.getSegment(code)`, `isInSegment(code, segment)`, `assertInSegment(code, segment)`, `assertUnique(IResultCode...)` | `ResultCodeUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.of(name, context)`, `addStage(...)`, `onInterrupt(...)`, `onError(...)`, `execute()`, `result.isSuccess()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java` |
+| **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.builder().addStage(...).build()`, `pipeline.execute(ctx)`, `result.isSuccess()`, `result.isTerminated()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java` |
 | **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java` |
@@ -1452,29 +1452,52 @@ import io.github.atengk.boot.core.pipeline.PipelineResult;
 import io.github.atengk.boot.core.pipeline.PipelineStage;
 
 // 1. 定义业务上下文对象（实现 PipelineInterruptible 接口支持受控提前中断）
-public class OrderContext implements PipelineInterruptible {
-    private final String orderId;
+public class OrderCheckoutContext implements PipelineInterruptible {
+    private String orderNo;
+    private Long userId;
+    private BigDecimal orderAmount;
     private boolean interrupted;
-    // ...
+    private String interruptReason;
+
     @Override public boolean isInterrupted() { return interrupted; }
-    @Override public void markInterrupted() { this.interrupted = true; }
+    @Override public String getInterruptReason() { return interruptReason; }
+    @Override public void interrupt(String reason) {
+        this.interrupted = true;
+        this.interruptReason = reason;
+    }
 }
 
 // 2. 组装并执行业务管道
-OrderContext context = new OrderContext("ORD-2026-8888");
-PipelineResult<OrderContext> result = Pipeline.of("order-creation-pipeline", context)
-        .addStage(new ValidationStage())  // 步骤 1：格式与库存预检
-        .addStage(new PromotionStage())   // 步骤 2：优惠券与营销计算
-        .addStage(new InventoryStage())   // 步骤 3：库存锁定（若库存不足可调用 ctx.markInterrupted() 中断）
-        .onInterrupt((ctx, stage) -> log.warn("订单创建流程于阶段 [{}] 受控中断", stage.getName()))
-        .onError((ctx, stage, ex) -> log.error("阶段 [{}] 执行异常: {}", stage.getName(), ex.getMessage(), ex))
-        .execute();
+Pipeline<OrderCheckoutContext> pipeline = Pipeline.<OrderCheckoutContext>builder()
+        .addStage("基础参数检查", ctx -> {
+            if (ctx.getOrderAmount() == null || ctx.getOrderAmount().compareTo(BigDecimal.ZERO) <= 0) {
+                ctx.interrupt("订单金额非法");
+                return false; // 短路阻断
+            }
+            return true;
+        })
+        .addStage(PipelineStage.ofConsumer("风控合规校验", ctx -> {
+            if (Long.valueOf(9999L).equals(ctx.getUserId())) {
+                ctx.interrupt("用户命中欺诈风险黑名单，禁止下单");
+            }
+        }))
+        .addStage("库存充足性检查", ctx -> {
+            if (inventoryStock < orderQuantity) {
+                ctx.interrupt("商品库存不足");
+                return false;
+            }
+            return true;
+        })
+        .build();
 
-// 3. 提取执行结果与优雅断言
+// 3. 执行管道并提取执行结果与优雅断言
+OrderCheckoutContext context = new OrderCheckoutContext(...);
+PipelineResult result = pipeline.execute(context);
+
 if (result.isSuccess()) {
-    log.info("订单管道执行成功，最终上下文: {}", result.getContext());
-} else if (result.isInterrupted()) {
-    log.warn("订单流程已被提前拦截中止");
+    log.info("订单前置流水线全部通过，继续提交订单");
+} else if (result.isTerminated()) {
+    log.warn("订单流水线于阶段 [{}] 受控中断，原因: {}", result.getTerminatedStageName(), result.getInterruptReason());
 } else {
     result.orThrow(); // 重新抛出阶段异常（若为受管 BusinessException 则无缝透传）
 }

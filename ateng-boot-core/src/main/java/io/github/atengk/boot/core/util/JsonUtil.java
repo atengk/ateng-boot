@@ -26,10 +26,14 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TimeZone;
 
 /**
@@ -496,6 +500,7 @@ public final class JsonUtil {
     /**
      * 基于 Jackson 内存树机制对源对象执行类型安全的纯内存深度克隆
      * 避免了生成 JSON 字符串的中转开销，自动继承东八区与 JSR-310 时间格式支持，实现绝对内存隔离防并发脏写
+     * 支持泛型容器（List、Set、Map）及不可变集合，递归深拷贝每个元素防类型退化与构造崩溃
      *
      * @param source 待克隆源对象
      * @param <T>    对象类型泛型
@@ -507,9 +512,35 @@ public final class JsonUtil {
             return null;
         }
         try {
+            if (source instanceof List<?> list) {
+                List<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(deepClone(item));
+                }
+                return (T) copy;
+            }
+            if (source instanceof Set<?> set) {
+                Set<Object> copy = new LinkedHashSet<>(set.size());
+                for (Object item : set) {
+                    copy.add(deepClone(item));
+                }
+                return (T) copy;
+            }
+            if (source instanceof Map<?, ?> map) {
+                Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    copy.put(deepClone(entry.getKey()), deepClone(entry.getValue()));
+                }
+                return (T) copy;
+            }
             JsonNode node = cloneMapper.valueToTree(source);
             return (T) cloneMapper.treeToValue(node, source.getClass());
         } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("对象深度克隆失败: " + e.getMessage(), e);
+        } catch (Exception e) {
+            if (e instanceof IllegalArgumentException iae && iae.getMessage() != null && iae.getMessage().startsWith("对象深度克隆失败")) {
+                throw iae;
+            }
             throw new IllegalArgumentException("对象深度克隆失败: " + e.getMessage(), e);
         }
     }

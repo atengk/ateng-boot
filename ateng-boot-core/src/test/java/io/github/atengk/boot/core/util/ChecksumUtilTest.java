@@ -85,6 +85,47 @@ class ChecksumUtilTest {
     }
 
     @Test
+    @DisplayName("确定性流清理测试：计算流校验和后必须确保输入流被绝对可靠关闭")
+    void shouldCloseInputStreamDeterministically() throws IOException {
+        java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
+        InputStream trackingStream = new ByteArrayInputStream("TestStreamData".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                closed.set(true);
+                super.close();
+            }
+        };
+
+        long checksum = ChecksumUtil.crc32(trackingStream);
+        assertTrue(checksum > 0);
+        assertTrue(closed.get(), "calculateStream 必须确定性关闭 InputStream 资源");
+    }
+
+    @Test
+    @DisplayName("空流边界测试：空输入流校验和计算安全自洽")
+    void shouldHandleEmptyStreamSafely() throws IOException {
+        InputStream emptyStream = new ByteArrayInputStream(new byte[0]);
+        assertEquals(0L, ChecksumUtil.crc32(emptyStream));
+
+        InputStream emptyStreamCrc32c = new ByteArrayInputStream(new byte[0]);
+        assertEquals(0L, ChecksumUtil.crc32c(emptyStreamCrc32c));
+
+        InputStream emptyStreamAdler = new ByteArrayInputStream(new byte[0]);
+        assertEquals(1L, ChecksumUtil.adler32(emptyStreamAdler));
+    }
+
+    @Test
+    @DisplayName("对称门面测试：验证基于 String 的 verify* 重载")
+    void shouldVerifyChecksumWithStringOverload() {
+        assertTrue(ChecksumUtil.verifyCrc32(3421780262L, SAMPLE_TEXT));
+        assertTrue(ChecksumUtil.verifyCrc32c(3808858755L, SAMPLE_TEXT));
+        assertTrue(ChecksumUtil.verifyAdler32(152961502L, SAMPLE_TEXT));
+
+        assertFalse(ChecksumUtil.verifyCrc32(99999L, SAMPLE_TEXT));
+        assertFalse(ChecksumUtil.verifyCrc32(3421780262L, (String) null));
+    }
+
+    @Test
     @DisplayName("前置防卫：null 入参应该抛出 NullPointerException")
     void shouldThrowNpeOnNullInputs() {
         assertThrows(NullPointerException.class, () -> ChecksumUtil.crc32((byte[]) null));

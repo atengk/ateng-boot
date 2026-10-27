@@ -114,6 +114,37 @@ class TokenBucketLimiterTest {
     }
 
     @Test
+    @DisplayName("超容防死循环与快速失败：请求令牌数超过桶容量时立即失败或抛异常")
+    void shouldFailFastWhenPermitsExceedCapacity() {
+        TokenBucketLimiter limiter = new TokenBucketLimiter(10, 10.0);
+
+        // 非阻塞与超时获取超过 capacity 直接返回 false，不产生无效等待
+        assertFalse(limiter.tryAcquire(11));
+        assertFalse(limiter.tryAcquire(11, Duration.ofMillis(100)));
+
+        // 阻塞 acquire 超过 capacity 直接抛出 IllegalArgumentException，杜绝无界死循环
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> limiter.acquire(11));
+        assertTrue(ex.getMessage().contains("不能超过桶容量"));
+    }
+
+    @Test
+    @DisplayName("中断响应与防假死：线程处于中断状态时 acquire 必须快速响应退出而非死循环")
+    void shouldRespondToThreadInterruption() throws InterruptedException {
+        TokenBucketLimiter limiter = new TokenBucketLimiter(1, 0.1); // 极慢生成
+        assertTrue(limiter.tryAcquire(1)); // 令牌耗尽
+
+        Thread t = new Thread(() -> {
+            assertThrows(IllegalStateException.class, () -> limiter.acquire(1));
+        });
+
+        t.start();
+        Thread.sleep(50);
+        t.interrupt(); // 中断线程
+        t.join(1000);
+        assertFalse(t.isAlive(), "线程必须在收到中断后快速退出，严禁 100% CPU 死循环挂起");
+    }
+
+    @Test
     @DisplayName("边界与非法入参防卫测试")
     void shouldThrowOnInvalidParameters() {
         assertThrows(IllegalArgumentException.class, () -> new TokenBucketLimiter(0, 10.0));

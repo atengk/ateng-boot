@@ -165,9 +165,9 @@ flowchart TD
 - **受控可信逃生舱**：提供带显式安全警告说明的 `evaluateTrusted` 逃逸方法，支持管理台内部脚本的全反射能力。
 
 ### 19. 轻量函数式业务管道编排与中断异常隔离 (`Pipeline`)
-- **泛型上下文流转**：通过 `Pipeline.of("name", context)` 建立标准执行链，消除多步骤业务流程中臃肿的面条式代码与强耦合调用；
-- **受控可中断性 (`PipelineInterruptible`)**：支持业务上下文实现 `PipelineInterruptible` 标记，由前置步骤触发 `markInterrupted()` 后优雅终止后续阶段流转；
-- **结构化中断与异常双轨隔离**：显式提供 `onInterrupt((ctx, stage) -> ...)` 补偿钩子与 `onError((ctx, stage, ex) -> ...)` 隔离监听，返回不可变 `PipelineResult<C>`，支持 `orThrow()` 原样还原受管异常。
+- **强类型流水线编排**：通过 `Pipeline.<C>builder().addStage(...).build()` 建立标准阶段链，支持流式装配、阶段短路与纯 JDK 17 原生泛型上下文传递；
+- **受控可中断性 (`PipelineInterruptible`)**：支持业务上下文实现 `PipelineInterruptible` 标记，由前置步骤触发 `interrupt(reason)` 后优雅终止后续阶段流转并记录业务原因；
+- **结构化中断与异常双轨隔离**：显式提供 `PipelineErrorHandler` 错误隔离监听，返回不可变 `PipelineResult`，支持 `isSuccess()`、`isTerminated()` 与 `orThrow()` 链式调用。
 
 ### 20. 纯原生安全 HMAC 密钥散列加签与恒定时间防侧信道比对 (`HmacUtil`)
 - **纯 JDK 原生标准库实现**：基于 `javax.crypto.Mac` 封装 HMAC-SHA256、HMAC-SHA1 与 HMAC-MD5，支持小写十六进制 Hex 与 Base64 输出；

@@ -104,13 +104,15 @@ public final class PipelineResult {
     }
 
     /**
-     * 当管道未顺利完成时快速失败抛出标准业务异常
+     * 当管道未顺利完成时快速失败抛出标准业务异常，成功时返回当前结果支持链式调用
      * 1. 若因异常失败，抛出包含 cause 的 BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)；
      * 2. 若因短路中断，抛出包含中断说明或阶段名的 BusinessException(CommonResultCode.BAD_REQUEST)
+     *
+     * @return 当前成功的结果对象，支持链式调用
      */
-    public void orThrow() {
+    public PipelineResult orThrow() {
         if (success) {
-            return;
+            return this;
         }
         if (failureCause != null) {
             if (failureCause instanceof BusinessException be) {
@@ -125,18 +127,21 @@ public final class PipelineResult {
                     : "管道阶段 [" + terminatedStageName + "] 校验未通过中断";
             throw new BusinessException(CommonResultCode.BAD_REQUEST, msg);
         }
+        return this;
     }
 
     /**
-     * 当管道未顺利完成时，使用用户提供的自定义异常构造器快速失败抛出异常
+     * 当管道未顺利完成时，使用用户提供的自定义异常构造器快速失败抛出异常，成功时返回当前结果支持链式调用
      *
      * @param exceptionSupplier 异常构造函数
+     * @return 当前成功的结果对象，支持链式调用
      */
-    public void orThrow(Function<PipelineResult, ? extends RuntimeException> exceptionSupplier) {
+    public PipelineResult orThrow(Function<PipelineResult, ? extends RuntimeException> exceptionSupplier) {
         Objects.requireNonNull(exceptionSupplier, "异常构造函数 exceptionSupplier 不能为 null");
         if (!success) {
             throw exceptionSupplier.apply(this);
         }
+        return this;
     }
 
     @Override

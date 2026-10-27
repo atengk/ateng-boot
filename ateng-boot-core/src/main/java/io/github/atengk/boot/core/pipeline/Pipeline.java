@@ -111,8 +111,8 @@ public final class Pipeline<C> {
     private PipelineResult runStages(C context, PipelineErrorHandler<C> errorHandler) {
         for (PipelineStage<C> stage : stages) {
             // 1. 前置检查上下文是否已被显式触发中断
-            if (context instanceof PipelineInterruptible interruptible && interruptible.isInterrupted()) {
-                return PipelineResult.terminated(stage.getName(), interruptible.getInterruptReason());
+            if (isContextInterrupted(context)) {
+                return PipelineResult.terminated(stage.getName(), getContextInterruptReason(context));
             }
 
             // 2. 执行当前阶段业务逻辑
@@ -124,28 +124,30 @@ public final class Pipeline<C> {
                     try {
                         errorHandler.handleError(stage, context, cause);
                     } catch (Throwable handlerEx) {
-                        // 忽略错误处理器次生异常，优先保留业务原始异常
+                        cause.addSuppressed(handlerEx);
                     }
                 }
                 return PipelineResult.failure(stage.getName(), cause);
             }
 
-            // 3. 检查阶段返回值是否指示短路中断
-            if (!proceed) {
-                String reason = null;
-                if (context instanceof PipelineInterruptible interruptible && interruptible.isInterrupted()) {
-                    reason = interruptible.getInterruptReason();
-                }
-                return PipelineResult.terminated(stage.getName(), reason);
-            }
-
-            // 4. 后置检查阶段内是否触发了上下文中断
-            if (context instanceof PipelineInterruptible interruptible && interruptible.isInterrupted()) {
-                return PipelineResult.terminated(stage.getName(), interruptible.getInterruptReason());
+            // 3. 检查阶段返回值是否指示短路或上下文触发了中断
+            if (!proceed || isContextInterrupted(context)) {
+                return PipelineResult.terminated(stage.getName(), getContextInterruptReason(context));
             }
         }
 
         return PipelineResult.success();
+    }
+
+    private boolean isContextInterrupted(C context) {
+        return context instanceof PipelineInterruptible interruptible && interruptible.isInterrupted();
+    }
+
+    private String getContextInterruptReason(C context) {
+        if (context instanceof PipelineInterruptible interruptible && interruptible.isInterrupted()) {
+            return interruptible.getInterruptReason();
+        }
+        return null;
     }
 
     /**

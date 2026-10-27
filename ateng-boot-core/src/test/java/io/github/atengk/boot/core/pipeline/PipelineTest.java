@@ -226,4 +226,55 @@ class PipelineTest {
         assertThrows(NullPointerException.class, () -> emptyPipeline.execute(null));
         assertThrows(NullPointerException.class, () -> Pipeline.builder().addStage((PipelineStage<Object>) null));
     }
+
+    @Test
+    @DisplayName("验证 orThrow 支持流式链式调用并返回当前结果对象")
+    void shouldSupportFluentChainingWithOrThrow() {
+        Pipeline<String> pipeline = Pipeline.<String>builder()
+                .addStage("长度检查", str -> str.length() > 2)
+                .build();
+
+        PipelineResult result = pipeline.execute("Antigravity").orThrow();
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        PipelineResult customResult = pipeline.execute("Antigravity").orThrow(r -> new RuntimeException("Error"));
+        assertNotNull(customResult);
+        assertTrue(customResult.isSuccess());
+    }
+
+    @Test
+    @DisplayName("Lambda 阶段未显式指定名称时应该保底返回 AnonymousStage")
+    void shouldDefaultToAnonymousStageForLambda() {
+        Pipeline<String> pipeline = Pipeline.<String>builder()
+                .addStage(str -> false)
+                .build();
+
+        PipelineResult result = pipeline.execute("test");
+        assertFalse(result.isSuccess());
+        assertTrue(result.isTerminated());
+        assertEquals("AnonymousStage", result.getTerminatedStageName());
+    }
+
+    @Test
+    @DisplayName("当 errorHandler 抛出次生异常时应该将其挂载为 suppressed exception 而非吞咽")
+    void shouldAttachSuppressedExceptionWhenErrorHandlerThrows() {
+        Pipeline<String> pipeline = Pipeline.<String>builder()
+                .addStage("主阶段", str -> {
+                    throw new IllegalStateException("原始业务异常");
+                })
+                .setErrorHandler((stage, ctx, cause) -> {
+                    throw new RuntimeException("错误处理器内部次生异常");
+                })
+                .build();
+
+        PipelineResult result = pipeline.execute("test");
+        assertTrue(result.isFailed());
+        Throwable cause = result.getFailureCause();
+        assertInstanceOf(IllegalStateException.class, cause);
+        assertEquals("原始业务异常", cause.getMessage());
+        assertEquals(1, cause.getSuppressed().length);
+        assertInstanceOf(RuntimeException.class, cause.getSuppressed()[0]);
+        assertEquals("错误处理器内部次生异常", cause.getSuppressed()[0].getMessage());
+    }
 }

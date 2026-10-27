@@ -143,6 +143,17 @@ public final class HmacUtil {
     /**
      * 使用 HMAC-SHA1 算法生成 Base64 格式签名字符串
      *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return Base64 编码签名字符串
+     */
+    public static String hmacSha1Base64(byte[] data, byte[] key) {
+        return Base64.getEncoder().encodeToString(hmacSha1(data, key));
+    }
+
+    /**
+     * 使用 HMAC-SHA1 算法生成 Base64 格式签名字符串
+     *
      * @param data 待签名文本（UTF-8）
      * @param key  签名密钥文本（UTF-8）
      * @return Base64 编码签名字符串
@@ -150,8 +161,7 @@ public final class HmacUtil {
     public static String hmacSha1Base64(String data, String key) {
         Objects.requireNonNull(data, "待签名文本 data 不能为 null");
         Objects.requireNonNull(key, "签名密钥文本 key 不能为 null");
-        byte[] sign = hmacSha1(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(sign);
+        return hmacSha1Base64(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -192,6 +202,17 @@ public final class HmacUtil {
     /**
      * 使用 HMAC-MD5 算法生成 Base64 格式签名字符串
      *
+     * @param data 待签名源数据
+     * @param key  签名密钥字节数组
+     * @return Base64 编码签名字符串
+     */
+    public static String hmacMd5Base64(byte[] data, byte[] key) {
+        return Base64.getEncoder().encodeToString(hmacMd5(data, key));
+    }
+
+    /**
+     * 使用 HMAC-MD5 算法生成 Base64 格式签名字符串
+     *
      * @param data 待签名文本（UTF-8）
      * @param key  签名密钥文本（UTF-8）
      * @return Base64 编码签名字符串
@@ -199,8 +220,7 @@ public final class HmacUtil {
     public static String hmacMd5Base64(String data, String key) {
         Objects.requireNonNull(data, "待签名文本 data 不能为 null");
         Objects.requireNonNull(key, "签名密钥文本 key 不能为 null");
-        byte[] sign = hmacMd5(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(sign);
+        return hmacMd5Base64(data.getBytes(StandardCharsets.UTF_8), key.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

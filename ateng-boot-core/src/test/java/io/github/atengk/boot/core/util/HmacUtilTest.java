@@ -76,6 +76,45 @@ class HmacUtilTest {
     }
 
     @Test
+    @DisplayName("对称门面测试：验证 byte[] 重载的 HMAC-SHA1 与 HMAC-MD5 Base64 签名生成")
+    void shouldSupportByteArrayBase64SignaturesSymmetrically() {
+        byte[] payloadBytes = PAYLOAD.getBytes(StandardCharsets.UTF_8);
+        byte[] keyBytes = SECRET_KEY.getBytes(StandardCharsets.UTF_8);
+
+        String sha1Base64Bytes = HmacUtil.hmacSha1Base64(payloadBytes, keyBytes);
+        String sha1Base64Str = HmacUtil.hmacSha1Base64(PAYLOAD, SECRET_KEY);
+        assertEquals(sha1Base64Str, sha1Base64Bytes);
+
+        String md5Base64Bytes = HmacUtil.hmacMd5Base64(payloadBytes, keyBytes);
+        String md5Base64Str = HmacUtil.hmacMd5Base64(PAYLOAD, SECRET_KEY);
+        assertEquals(md5Base64Str, md5Base64Bytes);
+    }
+
+    @Test
+    @DisplayName("极端密钥长度对抗测试：支持空密钥、单字节密钥与超长 1024 字节密钥安全加签")
+    void shouldHandleKeyLengthBoundaries() {
+        byte[] payload = "BoundaryTestPayload".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 空密钥 (0 字节) 应该快速失败抛出 IllegalArgumentException
+        byte[] emptyKey = new byte[0];
+        assertThrows(IllegalArgumentException.class, () -> HmacUtil.hmacSha256Hex(payload, emptyKey));
+
+        // 2. 单字节极短密钥
+        byte[] singleByteKey = new byte[]{(byte) 0x7F};
+        assertNotNull(HmacUtil.hmacSha256Hex(payload, singleByteKey));
+
+        // 3. 超长 1024 字节密钥（HMAC 会按 RFC 2104 自动哈希收敛）
+        byte[] ultraLongKey = new byte[1024];
+        for (int i = 0; i < ultraLongKey.length; i++) {
+            ultraLongKey[i] = (byte) (i % 128);
+        }
+        String ultraLongSign = HmacUtil.hmacSha256Hex(payload, ultraLongKey);
+        assertNotNull(ultraLongSign);
+        assertEquals(64, ultraLongSign.length());
+        assertTrue(HmacUtil.verifyHex(ultraLongSign, HmacUtil.hmacSha256Hex(payload, ultraLongKey)));
+    }
+
+    @Test
     @DisplayName("边界与前置防卫：null 入参应该抛出 NullPointerException")
     void shouldThrowNpeOnNullInputs() {
         assertThrows(NullPointerException.class, () -> HmacUtil.hmacSha256(null, new byte[1]));

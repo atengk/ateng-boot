@@ -200,6 +200,17 @@ public final class ChecksumUtil {
     }
 
     /**
+     * 校验文本的 CRC-32 是否与预期一致（UTF-8）
+     *
+     * @param expected 预期校验和数值
+     * @param data     实际文本内容
+     * @return 匹配返回 true
+     */
+    public static boolean verifyCrc32(long expected, String data) {
+        return data != null && crc32(data) == expected;
+    }
+
+    /**
      * 校验数据的 CRC-32C 是否与预期一致
      *
      * @param expected 预期校验和数值
@@ -207,6 +218,17 @@ public final class ChecksumUtil {
      * @return 匹配返回 true
      */
     public static boolean verifyCrc32c(long expected, byte[] data) {
+        return data != null && crc32c(data) == expected;
+    }
+
+    /**
+     * 校验文本的 CRC-32C 是否与预期一致（UTF-8）
+     *
+     * @param expected 预期校验和数值
+     * @param data     实际文本内容
+     * @return 匹配返回 true
+     */
+    public static boolean verifyCrc32c(long expected, String data) {
         return data != null && crc32c(data) == expected;
     }
 
@@ -221,14 +243,27 @@ public final class ChecksumUtil {
         return data != null && adler32(data) == expected;
     }
 
+    /**
+     * 校验文本的 Adler-32 是否与预期一致（UTF-8）
+     *
+     * @param expected 预期校验和数值
+     * @param data     实际文本内容
+     * @return 匹配返回 true
+     */
+    public static boolean verifyAdler32(long expected, String data) {
+        return data != null && adler32(data) == expected;
+    }
+
     private static long calculateStream(InputStream in, Checksum checksum) throws IOException {
         Objects.requireNonNull(in, "输入流 inputStream 不能为 null");
-        byte[] buffer = new byte[BUFFER_SIZE];
-        int len;
-        while ((len = in.read(buffer)) != -1) {
-            checksum.update(buffer, 0, len);
+        try (in) {
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int len;
+            while ((len = in.read(buffer)) != -1) {
+                checksum.update(buffer, 0, len);
+            }
+            return checksum.getValue();
         }
-        return checksum.getValue();
     }
 
     private static String formatHex(long value) {

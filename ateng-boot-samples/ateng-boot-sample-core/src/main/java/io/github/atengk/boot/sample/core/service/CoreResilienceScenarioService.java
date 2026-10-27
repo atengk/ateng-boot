@@ -39,8 +39,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class CoreResilienceScenarioService {
 
-    @Autowired(required = false)
-    private Snowflake springManagedSnowflake;
+    private final Snowflake springManagedSnowflake;
+
+    public CoreResilienceScenarioService(@Autowired(required = false) Snowflake springManagedSnowflake) {
+        this.springManagedSnowflake = springManagedSnowflake;
+    }
 
     /**
      * 1. 验证 RetryUtil 指数退避重试与 Fallback 降级机制
@@ -339,12 +342,28 @@ public class CoreResilienceScenarioService {
         TokenBucketLimiter limiter = new TokenBucketLimiter(5, 2.0);
         int acquired = 0;
         for (int i = 0; i < burstCount; i++) {
-            if (limiter.tryAcquire()) {
+            if (executeWithRateLimit(limiter, "task-" + i)) {
                 acquired++;
             }
         }
         log.info("TokenBucketLimiter 突发限流测试: burstCount={}, acquired={}", burstCount, acquired);
         return acquired;
+    }
+
+    /**
+     * 14.1 模拟受令牌桶限流保护的业务方法执行
+     *
+     * @param limiter 业务限流器
+     * @param taskId  业务任务标识
+     * @return 若通过限流执行成功返回 true，被限流拒绝返回 false
+     */
+    public boolean executeWithRateLimit(TokenBucketLimiter limiter, String taskId) {
+        if (!limiter.tryAcquire()) {
+            log.warn("业务任务 [{}] 触发令牌桶限流保护，拒绝执行", taskId);
+            return false;
+        }
+        log.info("业务任务 [{}] 获取令牌成功，进入受控执行", taskId);
+        return true;
     }
 
     /**

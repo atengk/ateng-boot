@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.core;
 
 import io.github.atengk.boot.core.audit.OperateLogModel;
 import io.github.atengk.boot.core.audit.OperateTypeEnum;
+import io.github.atengk.boot.core.concurrent.TokenBucketLimiter;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.PageResult;
@@ -213,6 +214,16 @@ class CoreResilienceScenarioServiceTest {
         // 容量 5，突发 10 个请求，前 5 个应成功，后 5 个被限流拦截
         int acquired = resilienceScenarioService.demonstrateTokenBucketLimiter(10);
         assertThat(acquired).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("测试executeWithRateLimit受控方法在令牌桶耗尽时执行拒绝")
+    void testExecuteWithRateLimit() {
+        TokenBucketLimiter limiter = new TokenBucketLimiter(2, 0.1);
+        assertThat(resilienceScenarioService.executeWithRateLimit(limiter, "order-create-1")).isTrue();
+        assertThat(resilienceScenarioService.executeWithRateLimit(limiter, "order-create-2")).isTrue();
+        // 令牌耗尽，第 3 次调用被限流拦截
+        assertThat(resilienceScenarioService.executeWithRateLimit(limiter, "order-create-3")).isFalse();
     }
 
     @Test

@@ -159,11 +159,18 @@ public class CoreSecurityScenarioService {
     public Triple<String, String, Boolean> demonstrateHmacSigning(String payload, String secretKey) {
         String hexSign = HmacUtil.hmacSha256Hex(payload, secretKey);
         String base64Sign = HmacUtil.hmacSha256Base64(payload, secretKey);
-        boolean verified = HmacUtil.verifyHex(hexSign, hexSign);
 
-        log.info("HmacUtil 密钥加签: payload={}, hex={}, base64={}, verified={}",
-                payload, hexSign, base64Sign, verified);
-        return Triple.of(hexSign, base64Sign, verified);
+        // 重新依据载荷计算签名，并进行恒定时间防侧信道比对验签
+        String calculatedSign = HmacUtil.hmacSha256Hex(payload, secretKey);
+        boolean verified = HmacUtil.verifyHex(calculatedSign, hexSign);
+
+        // 防篡改校验：篡改数据后验签必定失败
+        boolean tamperedVerified = HmacUtil.verifyHex(HmacUtil.hmacSha256Hex(payload + "&tampered=1", secretKey), hexSign);
+        boolean overallVerified = verified && !tamperedVerified;
+
+        log.info("HmacUtil 密钥加签: payload={}, hex={}, base64={}, verified={}, tamperedBlocked={}",
+                payload, hexSign, base64Sign, verified, !tamperedVerified);
+        return Triple.of(hexSign, base64Sign, overallVerified);
     }
 
     /**

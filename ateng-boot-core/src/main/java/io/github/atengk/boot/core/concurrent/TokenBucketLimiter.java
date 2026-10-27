@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 纯 JDK 17 原生基于原子 CAS 与纳秒级时间推进的高性能无锁平滑令牌桶限流器
@@ -80,6 +81,9 @@ public final class TokenBucketLimiter {
         if (permits <= 0) {
             throw new IllegalArgumentException("请求令牌数 permits 必须大于 0: " + permits);
         }
+        if (permits > capacity) {
+            return false;
+        }
 
         while (true) {
             State current = stateRef.get();
@@ -124,6 +128,9 @@ public final class TokenBucketLimiter {
             throw new IllegalArgumentException("请求令牌数 permits 必须大于 0: " + permits);
         }
         Objects.requireNonNull(unit, "时间单位 TimeUnit 不能为 null");
+        if (permits > capacity) {
+            return false;
+        }
 
         if (tryAcquire(permits)) {
             return true;
@@ -161,33 +168,36 @@ public final class TokenBucketLimiter {
             }
 
             long sleepNanos = Math.min(waitNanos, remaining);
-            long sleepMillis = sleepNanos / 1_000_000L;
-            int sleepNanosPart = (int) (sleepNanos % 1_000_000L);
-
-            try {
-                Thread.sleep(Math.max(1L, sleepMillis), sleepNanosPart);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
+            if (sleepNanos > 0) {
+                LockSupport.parkNanos(sleepNanos);
+                if (Thread.interrupted()) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
             }
         }
     }
 
     /**
-     * 阻塞获取 1 个令牌（无超时限制，直到获取成功）
+     * 阻塞获取 1 个令牌（直到获取成功或线程被中断）
      */
     public void acquire() {
         acquire(1);
     }
 
     /**
-     * 阻塞获取指定数量令牌（无超时限制，直到获取成功）
+     * 阻塞获取指定数量令牌（直到获取成功或线程被中断）
      *
      * @param permits 请求获取的令牌数
      */
     public void acquire(int permits) {
+        if (permits > capacity) {
+            throw new IllegalArgumentException("请求令牌数 permits [" + permits + "] 不能超过桶容量 capacity [" + capacity + "]");
+        }
         while (!tryAcquire(permits, 1, TimeUnit.SECONDS)) {
-            // 循环等待直到获取成功
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("当前线程已被中断，终止 acquire 阻塞等待");
+            }
         }
     }
 

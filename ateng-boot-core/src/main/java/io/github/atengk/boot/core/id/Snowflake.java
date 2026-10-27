@@ -169,12 +169,10 @@ public class Snowflake {
                     }
                     timestamp = timeGen();
                     if (timestamp < lastTimestamp) {
-                        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                                String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", lastTimestamp - timestamp));
+                        throwClockBackoffException(lastTimestamp - timestamp);
                     }
                 } else {
-                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                            String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offset));
+                    throwClockBackoffException(offset);
                 }
             }
 
@@ -230,6 +228,11 @@ public class Snowflake {
      */
     private long timeGen() {
         return timeSupplier.getAsLong();
+    }
+
+    private void throwClockBackoffException(long offsetMs) {
+        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offsetMs));
     }
 
     /**
@@ -355,10 +358,16 @@ public class Snowflake {
         Long workerId = explicitWorkerId;
         Long datacenterId = explicitDatacenterId;
         if (workerId == null) {
-            workerId = parseIdProperty("ateng.boot.snowflake.worker-id", "ATENG_BOOT_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
+            workerId = parseIdProperty("ateng.boot.core.snowflake.worker-id", "ATENG_BOOT_CORE_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
+            if (workerId == null) {
+                workerId = parseIdProperty("ateng.boot.snowflake.worker-id", "ATENG_BOOT_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
+            }
         }
         if (datacenterId == null) {
-            datacenterId = parseIdProperty("ateng.boot.snowflake.datacenter-id", "ATENG_BOOT_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+            datacenterId = parseIdProperty("ateng.boot.core.snowflake.datacenter-id", "ATENG_BOOT_CORE_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+            if (datacenterId == null) {
+                datacenterId = parseIdProperty("ateng.boot.snowflake.datacenter-id", "ATENG_BOOT_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+            }
         }
         if (workerId != null && datacenterId != null) {
             return new NodeIds(workerId, datacenterId);

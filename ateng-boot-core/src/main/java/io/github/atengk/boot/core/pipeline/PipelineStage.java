@@ -30,7 +30,11 @@ public interface PipelineStage<C> {
      * @return 阶段名称
      */
     default String getName() {
-        return getClass().getSimpleName();
+        Class<?> clazz = getClass();
+        if (clazz.isAnonymousClass() || clazz.isSynthetic() || clazz.getSimpleName().isBlank() || clazz.getSimpleName().contains("$$Lambda")) {
+            return "AnonymousStage";
+        }
+        return clazz.getSimpleName();
     }
 
     /**
