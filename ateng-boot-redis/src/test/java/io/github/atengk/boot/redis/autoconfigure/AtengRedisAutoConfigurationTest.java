@@ -78,6 +78,9 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("redisSemaphoreTemplate");
                     assertThat(context).doesNotHaveBean("redisIdempotentTemplate");
                     assertThat(context).doesNotHaveBean("redisIdempotentAspect");
+                    assertThat(context).doesNotHaveBean("redisStreamTemplate");
+                    assertThat(context).doesNotHaveBean("streamFailureHandler");
+                    assertThat(context).doesNotHaveBean("streamBootstrap");
                 });
     }
 
@@ -120,6 +123,20 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("当配置 ateng.boot.redis.stream.enabled=false 时，不装配 Stream 模板、失败处理器与容器调度器")
+    void shouldNotLoadStreamWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.stream.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("redisStreamTemplate");
+                    assertThat(context).doesNotHaveBean("streamFailureHandler");
+                    assertThat(context).doesNotHaveBean("streamBootstrap");
+                });
+    }
+
+    @Test
     @DisplayName("默认启用时装配 Redis 全家桶组件且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
@@ -145,6 +162,9 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisSemaphoreTemplate");
                     assertThat(context).hasBean("redisIdempotentTemplate");
                     assertThat(context).hasBean("redisIdempotentAspect");
+                    assertThat(context).hasBean("redisStreamTemplate");
+                    assertThat(context).hasBean("streamFailureHandler");
+                    assertThat(context).hasBean("streamBootstrap");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);

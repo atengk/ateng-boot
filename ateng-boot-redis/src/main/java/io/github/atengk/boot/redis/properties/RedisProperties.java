@@ -77,6 +77,12 @@ public class RedisProperties {
     private IdempotentProperties idempotent = new IdempotentProperties();
 
     /**
+     * Redis Stream 流式消息队列配置属性
+     */
+    @NestedConfigurationProperty
+    private StreamProperties stream = new StreamProperties();
+
+    /**
      * 分布式锁配置详情
      */
     @Data
@@ -491,6 +497,59 @@ public class RedisProperties {
 
         public long getDefaultExpireSeconds() {
             return defaultExpire != null ? defaultExpire.toSeconds() : 600L;
+        }
+    }
+
+    /**
+     * Stream 消息队列配置详情
+     */
+    @Data
+    public static class StreamProperties {
+
+        /**
+         * 是否启用 Redis Stream 流式消息支持与监听调度器
+         */
+        private boolean enabled = true;
+
+        /**
+         * 消费失败最大重试次数（默认 3 次）
+         */
+        private int retryTimes = 3;
+
+        /**
+         * 消费拉取阻塞超时时长（默认 2 秒）
+         */
+        private Duration pollTimeout = Duration.ofSeconds(2);
+
+        /**
+         * 单次拉取最大消息条数（默认 10 条）
+         */
+        private int batchSize = 10;
+
+        /**
+         * 死信流统一后缀（默认 ":dlq"）
+         */
+        private String dlqSuffix = ":dlq";
+
+        /**
+         * 实例标识（用于隔离不同节点消费者命名，默认自动生成）
+         */
+        private String instanceId;
+
+        public Duration getPollTimeout() {
+            return pollTimeout;
+        }
+
+        public void setPollTimeout(Duration pollTimeout) {
+            this.pollTimeout = pollTimeout;
+        }
+
+        public void setPollTimeoutSeconds(long seconds) {
+            this.pollTimeout = Duration.ofSeconds(seconds);
+        }
+
+        public long getPollTimeoutSeconds() {
+            return pollTimeout != null ? pollTimeout.toSeconds() : 2L;
         }
     }
 }

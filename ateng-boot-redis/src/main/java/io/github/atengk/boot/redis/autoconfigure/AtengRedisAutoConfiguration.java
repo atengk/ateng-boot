@@ -24,6 +24,10 @@ import io.github.atengk.boot.redis.script.RedisScriptExecutor;
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
+import io.github.atengk.boot.redis.stream.bootstrap.StreamBootstrap;
+import io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler;
+import io.github.atengk.boot.redis.stream.spi.StreamFailureHandler;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
@@ -303,6 +307,51 @@ public class AtengRedisAutoConfiguration {
     public ChannelTopicBootstrap channelTopicBootstrap(ObjectProvider<RedisMessageListenerContainer> containerProvider,
                                                        RedisProperties redisProperties) {
         return new ChannelTopicBootstrap(containerProvider, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配生产级 Redis 5.0+ Stream 流式消息操作门面 RedisStreamTemplate
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
+     * @return RedisStreamTemplate 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisStreamTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisStreamTemplate redisStreamTemplate(RedisTemplate<String, Object> redisTemplate,
+                                                   RedisProperties redisProperties) {
+        return new RedisStreamTemplate(redisTemplate, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配 Redis Stream 默认消费失败终态处理器 LoggingStreamFailureHandler
+     *
+     * @return 默认失败处理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(StreamFailureHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StreamFailureHandler streamFailureHandler() {
+        return new LoggingStreamFailureHandler();
+    }
+
+    /**
+     * 装配声明式 Redis Stream 消费组容器调度器 StreamBootstrap
+     *
+     * @param redisStreamTemplate RedisStreamTemplate 实例
+     * @param redisProperties 属性配置
+     * @param failureHandlerProvider 失败处理器提供者（可选）
+     * @return Stream 容器生命周期调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(StreamBootstrap.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StreamBootstrap streamBootstrap(RedisStreamTemplate redisStreamTemplate,
+                                           RedisProperties redisProperties,
+                                           ObjectProvider<StreamFailureHandler> failureHandlerProvider) {
+        return new StreamBootstrap(redisStreamTemplate, RedisSerializerFactory.createSafeObjectMapper(),
+                redisProperties, failureHandlerProvider.getIfAvailable());
     }
 
     /**
