@@ -3,6 +3,9 @@ package io.github.atengk.boot.web.util;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import jakarta.servlet.http.HttpServletRequest;
 
+import java.net.InetAddress;
+import java.util.Collection;
+
 /**
  * 客户端 IP 地址提取与识别工具
  * 支持多级反向代理（X-Forwarded-For 等标准头）解析，提取首个有效真实 IP，并安全兼容本地环回与 IPv6
@@ -105,5 +108,184 @@ public final class IpUtil {
             return true;
         }
         return ValidatorUtil.isIp(trimmed);
+    }
+
+    /**
+     * 判定指定 IP 地址是否属于指定的目标 IP 或 CIDR 网段
+     * 支持纯 JDK 17 原生位运算解析，兼容 IPv4（如 192.168.1.0/24, 10.0.0.0/8）与 IPv6（如 ::1, 2001:db8::/32）
+     * 内部具备严格纯数值校验与异常拦截机制，杜绝触发网络 DNS 解析
+     *
+     * @param ip        待判定的客户端真实 IP
+     * @param cidrOrIp  单个目标 IP 地址或带子网掩码前缀的 CIDR 网段（如 "192.168.1.0/24", "127.0.0.1", "::1"）
+     * @return true 表示属于该网段或等于该 IP；若任一参数为空或格式非法则返回 false
+     */
+    public static boolean isInRange(String ip, String cidrOrIp) {
+        if (ip == null || ip.isBlank() || cidrOrIp == null || cidrOrIp.isBlank()) {
+            return false;
+        }
+        String targetIp = ip.trim();
+        String rule = cidrOrIp.trim();
+
+        String baseIp;
+        int prefixLength;
+
+        int slashIndex = rule.indexOf('/');
+        if (slashIndex >= 0) {
+            baseIp = rule.substring(0, slashIndex).trim();
+            String prefixStr = rule.substring(slashIndex + 1).trim();
+            try {
+                prefixLength = Integer.parseInt(prefixStr);
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        } else {
+            baseIp = rule;
+            prefixLength = -1;
+        }
+
+        // 剥离 IPv6 作用域标识（如 fe80::1%eth0）
+        int targetScope = targetIp.indexOf('%');
+        if (targetScope >= 0) {
+            targetIp = targetIp.substring(0, targetScope);
+        }
+        int baseScope = baseIp.indexOf('%');
+        if (baseScope >= 0) {
+            baseIp = baseIp.substring(0, baseScope);
+        }
+
+        if (!isNumericIp(targetIp) || !isNumericIp(baseIp)) {
+            return false;
+        }
+
+        try {
+            InetAddress targetAddr = InetAddress.getByName(targetIp);
+            InetAddress baseAddr = InetAddress.getByName(baseIp);
+
+            byte[] targetBytes = targetAddr.getAddress();
+            byte[] baseBytes = baseAddr.getAddress();
+
+            if (targetBytes.length != baseBytes.length) {
+                return false;
+            }
+
+            int maxPrefix = targetBytes.length * 8;
+            if (prefixLength == -1) {
+                prefixLength = maxPrefix;
+            } else if (prefixLength < 0 || prefixLength > maxPrefix) {
+                return false;
+            }
+
+            int fullBytes = prefixLength / 8;
+            int remainingBits = prefixLength % 8;
+
+            for (int i = 0; i < fullBytes; i++) {
+                if (targetBytes[i] != baseBytes[i]) {
+                    return false;
+                }
+            }
+
+            if (remainingBits > 0) {
+                int mask = (0xFF << (8 - remainingBits)) & 0xFF;
+                if ((targetBytes[fullBytes] & mask) != (baseBytes[fullBytes] & mask)) {
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 判定指定 IP 地址是否命中指定规则集合中的任意一项
+     *
+     * @param ip        待判定的客户端真实 IP
+     * @param cidrOrIps 单个 IP 或 CIDR 网段规则集合
+     * @return true 表示命中其中至少一条规则；若无匹配或参数为空则返回 false
+     */
+    public static boolean isInRange(String ip, Collection<String> cidrOrIps) {
+        if (ip == null || ip.isBlank() || cidrOrIps == null || cidrOrIps.isEmpty()) {
+            return false;
+        }
+        for (String rule : cidrOrIps) {
+            if (isInRange(ip, rule)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判定指定 IP 地址是否命中指定规则数组中的任意一项
+     *
+     * @param ip        待判定的客户端真实 IP
+     * @param cidrOrIps 单个 IP 或 CIDR 网段规则数组
+     * @return true 表示命中其中至少一条规则；若无匹配或参数为空则返回 false
+     */
+    public static boolean isInRange(String ip, String... cidrOrIps) {
+        if (ip == null || ip.isBlank() || cidrOrIps == null || cidrOrIps.length == 0) {
+            return false;
+        }
+        for (String rule : cidrOrIps) {
+            if (isInRange(ip, rule)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNumericIpv4(String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        int dotCount = 0;
+        int currentNum = 0;
+        boolean hasDigitInPart = false;
+        int partDigits = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '.') {
+                if (!hasDigitInPart || dotCount >= 3) {
+                    return false;
+                }
+                dotCount++;
+                currentNum = 0;
+                hasDigitInPart = false;
+                partDigits = 0;
+            } else if (c >= '0' && c <= '9') {
+                hasDigitInPart = true;
+                partDigits++;
+                if (partDigits > 3) {
+                    return false;
+                }
+                currentNum = currentNum * 10 + (c - '0');
+                if (currentNum > 255) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        return dotCount == 3 && hasDigitInPart;
+    }
+
+    private static boolean isNumericIpv6(String s) {
+        if (s == null || s.isEmpty() || !s.contains(":")) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':' || c == '.' || c == '%') {
+                // 合法 IPv6 字符集
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isNumericIp(String s) {
+        return isNumericIpv4(s) || isNumericIpv6(s);
     }
 }

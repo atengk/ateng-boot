@@ -130,4 +130,110 @@ class IpUtilTest {
         String clientIp = IpUtil.getClientIp(request);
         assertThat(clientIp).isEqualTo("203.0.113.195");
     }
+
+    @Test
+    @DisplayName("IPv4 单 IP 与 CIDR 子网判定测试")
+    void shouldMatchIpv4CidrAndSingleIp() {
+        // 单 IP 精确匹配
+        assertThat(IpUtil.isInRange("127.0.0.1", "127.0.0.1")).isTrue();
+        assertThat(IpUtil.isInRange("127.0.0.1", "127.0.0.1/32")).isTrue();
+        assertThat(IpUtil.isInRange("127.0.0.2", "127.0.0.1")).isFalse();
+
+        // /24 子网
+        assertThat(IpUtil.isInRange("192.168.1.1", "192.168.1.0/24")).isTrue();
+        assertThat(IpUtil.isInRange("192.168.1.254", "192.168.1.0/24")).isTrue();
+        assertThat(IpUtil.isInRange("192.168.2.1", "192.168.1.0/24")).isFalse();
+
+        // /8 子网
+        assertThat(IpUtil.isInRange("10.254.1.2", "10.0.0.0/8")).isTrue();
+        assertThat(IpUtil.isInRange("11.0.0.1", "10.0.0.0/8")).isFalse();
+
+        // /12 子网
+        assertThat(IpUtil.isInRange("172.16.50.1", "172.16.0.0/12")).isTrue();
+        assertThat(IpUtil.isInRange("172.31.255.254", "172.16.0.0/12")).isTrue();
+        assertThat(IpUtil.isInRange("172.32.0.1", "172.16.0.0/12")).isFalse();
+
+        // /25 跨字节边界子网 (192.168.1.128 ~ 192.168.1.255)
+        assertThat(IpUtil.isInRange("192.168.1.129", "192.168.1.128/25")).isTrue();
+        assertThat(IpUtil.isInRange("192.168.1.200", "192.168.1.128/25")).isTrue();
+        assertThat(IpUtil.isInRange("192.168.1.127", "192.168.1.128/25")).isFalse();
+
+        // /0 全通掩码
+        assertThat(IpUtil.isInRange("1.2.3.4", "0.0.0.0/0")).isTrue();
+        assertThat(IpUtil.isInRange("220.181.38.148", "0.0.0.0/0")).isTrue();
+    }
+
+    @Test
+    @DisplayName("IPv6 单 IP 与 CIDR 子网判定测试")
+    void shouldMatchIpv6CidrAndSingleIp() {
+        // 单 IP 与环回
+        assertThat(IpUtil.isInRange("::1", "::1")).isTrue();
+        assertThat(IpUtil.isInRange("::1", "::1/128")).isTrue();
+        assertThat(IpUtil.isInRange("0:0:0:0:0:0:0:1", "::1")).isTrue();
+        assertThat(IpUtil.isInRange("::1", "0:0:0:0:0:0:0:1")).isTrue();
+
+        // /32 子网
+        assertThat(IpUtil.isInRange("2001:db8:85a3::8a2e:370:7334", "2001:db8::/32")).isTrue();
+        assertThat(IpUtil.isInRange("2001:db9::1", "2001:db8::/32")).isFalse();
+
+        // /64 子网
+        assertThat(IpUtil.isInRange("fe80::1", "fe80::/64")).isTrue();
+        assertThat(IpUtil.isInRange("fe80::ffff:1", "fe80::/64")).isTrue();
+        assertThat(IpUtil.isInRange("fe81::1", "fe80::/64")).isFalse();
+
+        // IPv6 作用域标识安全处理
+        assertThat(IpUtil.isInRange("fe80::1%eth0", "fe80::/64")).isTrue();
+
+        // /0 全通掩码
+        assertThat(IpUtil.isInRange("2001:db8::1", "::/0")).isTrue();
+    }
+
+    @Test
+    @DisplayName("多规则集合与可变参数重载判定")
+    void shouldMatchMultipleRulesOverloads() {
+        java.util.List<String> rules = java.util.List.of("192.168.1.0/24", "10.0.0.0/8", "::1");
+
+        assertThat(IpUtil.isInRange("192.168.1.50", rules)).isTrue();
+        assertThat(IpUtil.isInRange("10.1.2.3", rules)).isTrue();
+        assertThat(IpUtil.isInRange("::1", rules)).isTrue();
+        assertThat(IpUtil.isInRange("172.16.1.1", rules)).isFalse();
+
+        assertThat(IpUtil.isInRange("192.168.1.50", "10.0.0.0/8", "192.168.1.0/24")).isTrue();
+        assertThat(IpUtil.isInRange("8.8.8.8", "10.0.0.0/8", "192.168.1.0/24")).isFalse();
+    }
+
+    @Test
+    @DisplayName("防御性边界对抗测试：非法输入、超限掩码、跨协议族与域名防解析")
+    void shouldHandleAdversarialEdgeCasesDefensively() {
+        // 空值或空白
+        assertThat(IpUtil.isInRange(null, "192.168.1.0/24")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", (String) null)).isFalse();
+        assertThat(IpUtil.isInRange("", "192.168.1.0/24")).isFalse();
+        assertThat(IpUtil.isInRange("   ", "192.168.1.0/24")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", "")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", (java.util.Collection<String>) null)).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", java.util.Collections.emptyList())).isFalse();
+
+        // 域名或非法字符：杜绝网络 DNS 解析
+        assertThat(IpUtil.isInRange("localhost", "127.0.0.1")).isFalse();
+        assertThat(IpUtil.isInRange("google.com", "10.0.0.0/8")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", "example.com/24")).isFalse();
+        assertThat(IpUtil.isInRange("<script>", "10.0.0.0/8")).isFalse();
+
+        // 非法掩码前缀
+        assertThat(IpUtil.isInRange("192.168.1.1", "192.168.1.0/33")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", "192.168.1.0/-1")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", "192.168.1.0/abc")).isFalse();
+        assertThat(IpUtil.isInRange("::1", "::1/129")).isFalse();
+
+        // 非法 IP 格式或段溢出
+        assertThat(IpUtil.isInRange("999.999.999.999", "10.0.0.0/8")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1.1", "192.168.1.0/24")).isFalse();
+
+        // IPv4 与 IPv6 跨协议族不匹配
+        assertThat(IpUtil.isInRange("192.168.1.1", "2001:db8::/32")).isFalse();
+        assertThat(IpUtil.isInRange("::1", "192.168.1.0/24")).isFalse();
+        assertThat(IpUtil.isInRange("192.168.1.1", "::/0")).isFalse();
+        assertThat(IpUtil.isInRange("::1", "0.0.0.0/0")).isFalse();
+    }
 }

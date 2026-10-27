@@ -172,6 +172,18 @@ _Avoid_: NoXss, SkipXss, RawHtml, IgnoreXss
 IP 访问控制校验模式枚举，定义白名单（WHITE_LIST，仅允许列表内 IP 访问）与黑名单（BLACK_LIST，拒绝列表内 IP 访问）策略。
 _Avoid_: IpRuleType, AccessPolicy, FirewallMode
 
+**IpAccessControlFilter**:
+URL 路径级 IP 访问控制过滤器，基于 Ant 风格路径匹配对未授权客户端真实 IP 实施快速无状态阻断。
+_Avoid_: FirewallFilter, SafeIpFilter, ClientFilter
+
+**IpAccessControlAspect**:
+基于 AOP 环绕拦截的声明式 `@IpAccessControl` 注解切面，解析方法与类级访问控制规则并执行精细化权限拦截。
+_Avoid_: IpAspect, FirewallAspect, IpGuardAspect
+
+**IpAccessControlProperties**:
+IP 访问控制运行时配置属性，以 ateng.boot.web.ip-access-control 为前缀，提供黑白名单模式、规则清单与物理 403 切换控制。
+_Avoid_: IpProperties, FirewallProperties
+
 
 
 

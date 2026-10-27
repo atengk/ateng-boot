@@ -36,7 +36,8 @@
 | **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **XSS 安全清洗与放行** | 双轨无害化清洗与字段级富文本放行 | `XssFilter`, `XssHttpServletRequestWrapper`, `XssCleaner`, `XssMode`, `XssStringDeserializer`, `@XssIgnore` | `ateng.boot.web.xss.enabled`, `mode`, `exclude-urls` | 支持 `XssMode.ESCAPE`（默认 HTML 转义）与 `STRIP`（标签剔除），拦截 Query/Form 表单参数与 JSON 请求体，通过 `@XssIgnore` 声明式在字段或类级别豁免富文本，支持 Ant 白名单路径排除 | `XssCleanerTest.java`, `XssFilterTest.java`, `XssHttpServletRequestWrapperTest.java`, `XssStringDeserializerTest.java`, `WebXssSampleControllerTest.java`, `WebXssStripModeSampleTest.java` |
-| **客户端 IP 提取** | 多级反向代理穿透与安全清洗 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`，穿透 X-Forwarded-For 等多级代理，过滤内网伪造，规整 IPv6 本地环回 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
+| **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.ip-access-control.enabled`, `http-status-403`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，方法级切面与 URL 路径级过滤器双重防线，默认遵循 ADR-0004 返回 HTTP 200 + Result 403 并注入 `X-Denied-Reason: IP_BLOCKED`，支持物理 403 切断 | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
+| **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 
 ---
@@ -680,7 +681,108 @@ ateng:
 
 ---
 
-## 19. 模块配置属性参考 (`application.yml`)
+## 19. IP 访问控制防火墙与 CIDR 子网判定 (`@IpAccessControl` & `IpAccessControlFilter`)
+
+### 场景痛点
+1. **敏感内部端点公网暴露风险**：运维管理端点（如 `/admin/**`、`/actuator/**`）或特定核心业务接口若暴露在外网，极易遭遇撞库、未授权越权扫描或恶意滥用；
+2. **传统单 IP 规则难以适配复杂网段**：内网 VPC、云原生微服务集群及企业专用通道通常基于 CIDR 子网分配（如 `10.0.0.0/8`、`192.168.1.0/24` 或 IPv6 `2001:db8::/32`），传统框架仅支持单 IP 穷举，维护繁琐且极易疏漏；
+3. **拦截体验与协议标准失衡**：部分防护组件直接断开连接或粗暴返回非标文本，缺乏兼顾交互统一契约（ADR-0004 统一 HTTP 200 + Result 403）与物理阻断（HTTP 403）的双模能力，且缺乏可审计的阻断标识。
+
+### 核心机制与不变量
+- **纯 JDK 原生零依赖位运算引擎 (`IpUtil.isInRange`)**：
+  - 基于 JDK 17 `InetAddress` 原生字节与掩码位运算，精确支持 IPv4（0~32 位前缀）与 IPv6（0~128 位前缀）单 IP 与 CIDR 网段判定；
+  - 内建纯数值 IP 格式预先校验机制，**绝对杜绝域名网络 DNS 递归解析**，保障离线自洽与亚微秒级判定性能；
+- **路径级与方法级双重防卫体系**：
+  - **路径级全局过滤器 (`IpAccessControlFilter`)**：执行优先级置于 `TraceFilter` 之后（`ORDER = TraceFilter.ORDER + 1`），在进入 Controller 前执行无状态快速判定，支持 Ant 风格通配符与 `exclude-urls` 白名单路径豁免；
+  - **方法级/类级别声明式切面 (`@IpAccessControl`)**：支持标注于 Controller 类或具体方法上，方法级配置强覆盖类级别，实现粒度精细化的接口访问权限治理；
+- **白名单与黑名单双模策略 (`IpAccessMode`)**：
+  - `IpAccessMode.WHITE_LIST`（默认）：仅允许规则清单内的客户端 IP 访问，未命中直接阻断；
+  - `IpAccessMode.BLACK_LIST`：阻断规则清单内的恶意 IP，未命中平滑放行；
+- **契约规范与物理切断双模响应**：
+  - **默认规范（ADR-0004 契约）**：阻断时统一返回 HTTP 200，响应体封装为 `Result.fail(403, ...)`，并在 HTTP 响应头注入 `X-Denied-Reason: IP_BLOCKED`；
+  - **物理切断模式 (`httpStatus403 = true`)**：直接返回 HTTP 403 Forbidden 物理状态码，适配防火墙或负载均衡层前置快速中断。
+
+### 场景端到端代码范式
+```java
+// 1. 方法级白名单控制：仅允许 127.0.0.1 及 192.168.1.0/24 访问
+@GetMapping("/whitelist")
+@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"127.0.0.1", "192.168.1.0/24"})
+public Result<String> whitelistEndpoint() {
+    return Result.success("白名单放行成功");
+}
+
+// 2. 方法级黑名单控制：拒绝 10.0.0.0/8 与 203.0.113.100 访问
+@GetMapping("/blacklist")
+@IpAccessControl(mode = IpAccessMode.BLACK_LIST, rules = {"10.0.0.0/8", "203.0.113.100"})
+public Result<String> blacklistEndpoint() {
+    return Result.success("黑名单未命中，放行成功");
+}
+
+// 3. CIDR 子网与 IPv6 网段白名单
+@GetMapping("/cidr-ipv6")
+@IpAccessControl(mode = IpAccessMode.WHITE_LIST, rules = {"172.16.0.0/12", "2001:db8::/32", "::1"})
+public Result<Map<String, String>> cidrIpv6Endpoint() {
+    return Result.success(Map.of("network", "CIDR-IPv6-Allowed"));
+}
+
+// 4. 自定义拒绝提示文案
+@GetMapping("/custom-message")
+@IpAccessControl(
+        mode = IpAccessMode.WHITE_LIST,
+        rules = {"192.168.1.200"},
+        message = "内部核心机房特许通道，当前 IP 无权访问"
+)
+public Result<String> customMessageEndpoint() {
+    return Result.success("特许通道放行成功");
+}
+
+// 5. 物理 403 切断模式：返回 HTTP 403 状态码
+@GetMapping("/http-403")
+@IpAccessControl(
+        mode = IpAccessMode.WHITE_LIST,
+        rules = {"192.168.1.200"},
+        httpStatus403 = true
+)
+public Result<String> http403Endpoint() {
+    return Result.success("特许通道放行成功");
+}
+```
+
+### 生产配置与扩展范式
+```yaml
+ateng:
+  boot:
+    web:
+      ip-access-control:
+        # 是否启用 IP 访问控制模块（默认 true）
+        enabled: true
+        # 是否启用 HTTP 403 物理切断模式（默认 false，遵循 ADR-0004 返回 HTTP 200 + Result.fail(403)）
+        http-status-403: false
+        # 全局默认拒绝提示文案
+        default-denied-message: "IP 访问受限，拒绝访问"
+        # 全局校验模式（默认 WHITE_LIST）
+        mode: WHITE_LIST
+        # 全局 IP / CIDR 规则清单
+        rules:
+          - "127.0.0.1"
+          - "192.168.1.0/24"
+        filter:
+          # 是否启用 URL 路径级全局过滤器（默认 false，按需开启）
+          enabled: true
+          # 过滤器拦截匹配的 URL 路径模式列表（Ant 风格匹配）
+          url-patterns:
+            - "/api/sample/ip-access/filter-admin/**"
+          # 过滤器排除放行的 URL 路径模式列表（Ant 风格匹配）
+          exclude-urls:
+            - "/api/sample/ip-access/filter-admin/public-ping"
+          # 过滤器专用规则清单（为空时自动回退继承全局 rules）
+          rules:
+            - "192.168.1.0/24"
+```
+
+---
+
+## 20. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -816,4 +918,30 @@ ateng:
         header-nonce: "X-Nonce"
         # 签名串请求头/响应头名称（默认 X-Signature，支持动态定制）
         header-signature: "X-Signature"
+      ip-access-control:
+        # 是否启用 IP 访问控制模块（默认 true）
+        enabled: true
+        # 是否启用 HTTP 403 物理切断模式（默认 false，遵循 ADR-0004 返回 HTTP 200 + Result.fail(403)）
+        http-status-403: false
+        # 全局默认拒绝提示文案
+        default-denied-message: "IP 访问受限，拒绝访问"
+        # 全局校验模式（默认 WHITE_LIST）
+        mode: WHITE_LIST
+        # 全局 IP / CIDR 规则清单
+        rules:
+          - "127.0.0.1"
+          - "192.168.1.0/24"
+        filter:
+          # 是否启用 URL 路径级全局过滤器（默认 false，按需开启）
+          enabled: false
+          # 过滤器校验模式（为空时回退继承全局 mode）
+          mode: WHITE_LIST
+          # 过滤器专属规则清单（为空时回退继承全局 rules）
+          rules: []
+          # 过滤器拦截匹配的 URL 路径模式列表（Ant 风格匹配）
+          url-patterns:
+            - "/admin/**"
+          # 过滤器排除放行的 URL 路径模式列表（Ant 风格匹配）
+          exclude-urls:
+            - "/admin/public/**"
 ```
