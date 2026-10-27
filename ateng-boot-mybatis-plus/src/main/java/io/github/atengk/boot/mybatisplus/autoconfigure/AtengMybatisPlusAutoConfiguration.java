@@ -115,6 +115,34 @@ public class AtengMybatisPlusAutoConfiguration {
     }
 
     /**
+     * 注册悲观排队锁方言自适应与生命周期探测初始化器
+     *
+     * @param dataSourceProvider 可选的数据源提供者
+     * @return 智能初始化单例回调
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "pessimisticLockDialectInitializer")
+    public SmartInitializingSingleton pessimisticLockDialectInitializer(
+            ObjectProvider<javax.sql.DataSource> dataSourceProvider) {
+        return () -> {
+            if (properties.getPagination() != null && properties.getPagination().getDbType() != null) {
+                io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setDbType(properties.getPagination().getDbType());
+                return;
+            }
+            javax.sql.DataSource dataSource = dataSourceProvider.getIfAvailable();
+            if (dataSource != null) {
+                try (java.sql.Connection conn = dataSource.getConnection()) {
+                    String jdbcUrl = conn.getMetaData().getURL();
+                    com.baomidou.mybatisplus.annotation.DbType dbType = com.baomidou.mybatisplus.extension.toolkit.JdbcUtils.getDbType(jdbcUrl);
+                    io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil.setDbType(dbType);
+                } catch (Exception ignored) {
+                    // 静默兼容，避免连接未准备就绪时崩溃
+                }
+            }
+        };
+    }
+
+    /**
      * 注册数据持久层自动审计填充器
      *
      * @param currentUserProvider 可选的当前登录用户提供者 SPI 实现

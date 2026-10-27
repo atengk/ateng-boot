@@ -38,6 +38,7 @@ ateng:
         ignore-tables:
           - sys_user
           - demo_json_user
+          - task_queue
       data-permission:
         enabled: true
       audit-change:

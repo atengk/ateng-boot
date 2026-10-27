@@ -1,13 +1,19 @@
 package io.github.atengk.boot.mybatisplus.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfo;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
+import io.github.atengk.boot.mybatisplus.enums.LockMode;
 import io.github.atengk.boot.mybatisplus.mapper.AtengBaseMapper;
 import io.github.atengk.boot.mybatisplus.properties.MybatisPlusProperties;
 import io.github.atengk.boot.mybatisplus.service.AtengBaseService;
 import io.github.atengk.boot.mybatisplus.util.BatchUtil;
 import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
+import io.github.atengk.boot.mybatisplus.util.PessimisticLockUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
@@ -197,5 +203,39 @@ public class AtengServiceImpl<M extends AtengBaseMapper<T>, T> extends ServiceIm
                 maxAttempts,
                 delay
         );
+    }
+
+    @Override
+    public T getByIdForUpdate(Serializable id, LockMode lockMode) {
+        if (id == null) {
+            return null;
+        }
+        Objects.requireNonNull(lockMode, "lockMode 不能为 null");
+        TableInfo tableInfo = TableInfoHelper.getTableInfo(getEntityClass());
+        String keyColumn = (tableInfo != null && tableInfo.getKeyColumn() != null)
+                ? tableInfo.getKeyColumn()
+                : "id";
+        QueryWrapper<T> wrapper = new QueryWrapper<>();
+        wrapper.eq(keyColumn, id);
+        PessimisticLockUtil.apply(wrapper, lockMode);
+        return getOne(wrapper, false);
+    }
+
+    @Override
+    public List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode) {
+        Objects.requireNonNull(lockMode, "lockMode 不能为 null");
+        final Wrapper<T> effectiveWrapper;
+        if (queryWrapper instanceof AbstractWrapper<?, ?, ?> abstractWrapper) {
+            PessimisticLockUtil.apply(abstractWrapper, lockMode);
+            effectiveWrapper = queryWrapper;
+        } else if (queryWrapper == null) {
+            QueryWrapper<T> wrapper = new QueryWrapper<>();
+            PessimisticLockUtil.apply(wrapper, lockMode);
+            effectiveWrapper = wrapper;
+        } else {
+            throw new IllegalArgumentException("queryWrapper 必须为 AbstractWrapper 的子类以支持悲观锁追加");
+        }
+        List<T> list = list(effectiveWrapper);
+        return list != null ? list : java.util.Collections.emptyList();
     }
 }

@@ -14,6 +14,7 @@ import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicMapperPageMethod;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryRequest;
 import io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryTemplate;
+import io.github.atengk.boot.mybatisplus.enums.LockMode;
 import io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate;
 import io.github.atengk.boot.mybatisplus.util.PageUtil;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
@@ -1277,4 +1278,48 @@ public interface AtengBaseService<T> extends IService<T> {
      * @throws io.github.atengk.boot.mybatisplus.util.OptimisticLockTemplate.OptimisticLockConflictException 当重试达到上限仍未成功时抛出
      */
     T updateWithOptimisticRetry(Serializable id, Consumer<T> updater, int maxAttempts, Duration delay);
+
+    // ==========================================
+    // 7. 悲观排队锁与安全检索门面 (Pessimistic Lock Facade)
+    // ==========================================
+
+    /**
+     * 根据主键 ID 加悲观排他锁（FOR UPDATE）查询实体记录
+     * 针对高并发独占更新场景，阻塞等待获取行锁
+     *
+     * @param id 实体主键 ID
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    default T getByIdForUpdate(Serializable id) {
+        return getByIdForUpdate(id, LockMode.FOR_UPDATE);
+    }
+
+    /**
+     * 根据主键 ID 与指定悲观锁模式加锁查询实体记录
+     *
+     * @param id       实体主键 ID
+     * @param lockMode 悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @return 实体对象，无匹配记录时返回 null
+     */
+    T getByIdForUpdate(Serializable id, LockMode lockMode);
+
+    /**
+     * 根据条件封装器加悲观排他锁（FOR UPDATE）查询实体列表
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @return 实体列表（保底空集合，严禁返回 null）
+     */
+    default List<T> listForUpdate(Wrapper<T> queryWrapper) {
+        return listForUpdate(queryWrapper, LockMode.FOR_UPDATE);
+    }
+
+    /**
+     * 根据条件封装器与指定悲观锁模式加锁查询实体列表
+     * 支持高并发任务队列排队消费（LockMode.SKIP_LOCKED 自动跳过被锁行）
+     *
+     * @param queryWrapper 查询条件封装器（可为 null）
+     * @param lockMode     悲观锁模式（FOR_UPDATE, NOWAIT, SKIP_LOCKED, FOR_SHARE）
+     * @return 实体列表（保底空集合，严禁返回 null）
+     */
+    List<T> listForUpdate(Wrapper<T> queryWrapper, LockMode lockMode);
 }

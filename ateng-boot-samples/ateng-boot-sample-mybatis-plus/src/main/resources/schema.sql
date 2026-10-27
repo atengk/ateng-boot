@@ -40,3 +40,14 @@ CREATE TABLE IF NOT EXISTS demo_json_user (
     create_by VARCHAR(64),
     update_by VARCHAR(64)
 );
+
+CREATE TABLE IF NOT EXISTS task_queue (
+    id BIGINT NOT NULL PRIMARY KEY,
+    task_name VARCHAR(64) NOT NULL,
+    status VARCHAR(32) DEFAULT 'PENDING',
+    version INT DEFAULT 0,
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64)
+);
