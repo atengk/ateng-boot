@@ -6,6 +6,13 @@ spring:
 
 ateng:
   boot:
+    core:
+      clock-backoff-tolerance: 10ms
+      cache-ttl: 30m
+      snowflake:
+        worker-id: 1
+        datacenter-id: 1
+        clock-backoff-tolerance: 10ms
     async:
       enabled: true
       core-pool-size: 4

@@ -32,7 +32,7 @@
 | **命名线程工厂** | 线程池命名与异常处理标准件 | `NamedThreadFactory` | - | `NamedThreadFactory(prefix)`, `newThread(runnable)`（支持自定义前缀、守护属性与 UncaughtExceptionHandler，消除匿名线程池） | `NamedThreadFactoryTest.java`, `CoreContextScenarioServiceTest.java` |
 | **上下文持有者** | 用户身份与多租户无状态隔离 | `UserContextHolder`, `TenantContextHolder` | - | `getUserId()`, `setUserId()`, `getTenantId()`, `setTenantId()`, `ignoreTenant(supplier)`, `clear()` | `UserContextHolderTest.java`, `TenantContextHolderTest.java`, `CoreContextScenarioServiceTest.java` |
 | **审计/租户 SPI** | 跨中间件解耦上下文扩展点 | `CurrentUserProvider`, `CurrentTenantProvider` | - | `getUserId()`, `getUserName()`, `getTenantId()`（供下游 Sa-Token / MyBatis-Plus 无缝对接） | `CoreContextScenarioServiceTest.java` |
-| **安全序列化** | 零 `@class` 污染高性能 Jackson 门面与树流读取 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)`, `isValidJson(json)`, `readTree(String/byte[]/InputStream)` | `JsonUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **安全序列化与内存深克隆** | 零 `@class` 污染高性能 Jackson 门面与脱敏安全深克隆 | `JsonUtil` | - | `toJsonString(obj)`, `toPrettyJsonString(obj)`, `parseObject(...)`, `parseList(...)`, `parseMap(...)`, `isValidJson(json)`, `readTree(String/byte[]/InputStream)`, `deepClone(obj)`（内存真明文深克隆，杜绝掩码星号污染） | `JsonUtilTest.java`, `JsonUtilDeepCloneTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **敏感数据脱敏** | 15 大类敏感信息动态掩码 | `@FieldSensitive`, `DesensitizeUtil`, `SensitiveJsonSerializer`, `SensitiveType` | - | `DesensitizeUtil.mobilePhone(str)`, `idCard(str)`, `unifiedCreditCode(str)`, `secretKey(str)`, `passport(str)` 等，保证“内存真明文”防脏写 | `DesensitizeUtilTest.java`, `SensitiveJsonSerializerTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **分层防卫校验** | 批量列表防漏检与分组校验 | `ValidList<E>`, `ValidationGroups`, `ValidatorUtil` | - | `ValidList<E>` 解决 Spring 集合漏检；`ValidationGroups.Create/Update`；`ValidatorUtil.validate(obj)` | `ValidListTest.java`, `ValidatorUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **退避指数重试** | 纯原生轻量无第三方重试工具 | `RetryUtil` | - | `execute(supplier, config, fallback)`, `executeAction(runnable, config, fallback)`，支持 Equal Jitter 平滑随机抖动、onRetry 监听器、指数退避与 Fallback 降级兜底 | `RetryUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
@@ -56,6 +56,11 @@
 | **纯原生有界 LRU 缓存** | 纯原生有界 LRU 缓存原语与底层防 OOM 加固 | `ConcurrentLruCache<K, V>` | - | `ConcurrentLruCache(maxCapacity, ttl)`, `get(key)`, `put(key, val)`, `computeIfAbsent(key, mappingFunc)`, `remove(key)`, `clear()`, `size()`, `containsKey(key)`, `cleanUp()` | `ConcurrentLruCacheTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **标准错误码号段规约** | 业务状态码号段规约与唯一性防重校验 | `ResultCodeSegment`, `ResultCodeUtil` | - | `ResultCodeSegment.SYSTEM_CORE/AUTH_SECURITY/...`, `ResultCodeUtil.getSegment(code)`, `isInSegment(code, segment)`, `assertInSegment(code, segment)`, `assertUnique(IResultCode...)` | `ResultCodeUtilTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **安全受限 SpEL 求值门面** | 安全受限 SpEL 表达式求值门面与 AST 缓存 | `SpelUtil` | - | `SpelUtil.evaluate(expr, root, vars, type)`, `SpelUtil.evaluateMethod(method, args, expr, type)`, `evaluateTrusted(...)`, `parseExpression(expr)`, `getCacheSize()`, `clearCache()` | `SpelUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **函数式业务管道** | 轻量函数式管道编排与中断异常隔离 | `Pipeline<C>`, `PipelineStage<C>`, `PipelineInterruptible`, `PipelineResult`, `PipelineErrorHandler` | - | `Pipeline.of(name, context)`, `addStage(...)`, `onInterrupt(...)`, `onError(...)`, `execute()`, `result.isSuccess()`, `result.orThrow()` | `PipelineTest.java`, `CorePipelineScenarioServiceTest.java` |
+| **原生安全 HMAC 加签** | 纯原生密钥散列加签与恒定时间防侧信道比对 | `HmacUtil` | - | `HmacUtil.hmacSha256Hex(data, key)`, `hmacSha256Base64(data, key)`, `hmacSha1Hex`, `hmacMd5Hex`, `verifyHex(expected, actual)`, `verifyBase64(expected, actual)`（恒定时间安全比对） | `HmacUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
+| **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
 
 ---
 
@@ -180,41 +185,62 @@ BusinessAssert.notEmpty(dto.getRoleIds(), "必须至少分配一个角色");
 
 ### 特性矩阵
 - **2026 自定义纪元**：`1767225600000L`，ID 紧凑优雅，提供长达 69 年生命周期；
-- **时钟回拨容错防护**：$\le 5\text{ms}$ 自旋容错等待追平，$> 5\text{ms}$ 快速熔断抛出异常，绝不发重复号；
-- **四级自适应节点推导**：按序探测 JVM 系统属性 -> 本地环境变量 -> 网卡 MAC / IP 哈希 -> 容器 Pod 命名序号，零配置开箱即用；
+- **时钟回拨容错与受管熔断**：$\le 5\text{ms}$（或可配置 `clock-backoff-tolerance`）自旋容错等待追平，超出阈值时严格快速熔断并抛出 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，绝不发重复号；
+- **四级自适应节点推导**：按序探测 `CoreProperties` 配置属性 -> JVM 系统属性 -> 本地环境变量 -> 网卡 MAC / IP 哈希 -> 安全随机数兜底，零配置开箱即用；
+- **Spring 容器自动装配**：`AtengCoreAutoConfiguration` 提供 `@Bean @ConditionalOnMissingBean Snowflake`，开箱即用且支持平滑接管；
 - **高性能无锁短 ID**：基于 `ThreadLocalRandom` 的无横线 32 位 UUID 与 21 位 URL 安全 NanoId。
 
 ### 核心代码范式
 ```java
+import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.util.IdUtil;
+import org.springframework.beans.factory.annotation.Autowired;
 
-// 1. 生成 64 位全局唯一递增雪花 Long ID
+// ==================== 1. Spring 容器受管 Snowflake Bean 注入 ====================
+@Autowired
+private Snowflake snowflake;
+
+long managedId = snowflake.nextId(); // 优先采用 application.yml 中配置的 workerId/datacenterId 与容忍阈值
+
+// ==================== 2. 静态门面 IdUtil 全局极速发号 ====================
+// 生成 64 位全局唯一递增雪花 Long ID
 long id = IdUtil.nextId(); // 如 104485532445560832L
 
-// 2. 生成雪花 ID 字符串（前端防精度截断）
+// 生成雪花 ID 字符串（前端防精度截断）
 String idStr = IdUtil.nextIdStr(); // "104485532445560832"
 
-// 3. 高性能 32 位无横线 UUID（比标准 UUID.randomUUID() 快 2~3 倍）
+// 高性能 32 位无横线 UUID（比标准 UUID.randomUUID() 快 2~3 倍）
 String simpleUuid = IdUtil.fastSimpleUUID(); // "4a6df7a0bc1249b8918231012ab987de"
 
-// 4. 高性能标准 36 位 UUID
+// 高性能标准 36 位 UUID
 String uuid = IdUtil.fastUUID(); // "4a6df7a0-bc12-49b8-9182-31012ab987de"
 
-// 5. 21 位 URL 安全 NanoId（随机无碰撞短链接/文件代号）
+// 21 位 URL 安全 NanoId（随机无碰撞短链接/文件代号）
 String nanoId = IdUtil.nanoId(); // "V1StGXR8_Z5jdHi6B-myT"
 
-// 6. 雪花 ID 逆向反解结构化不可变元数据 (SnowflakeIdInfo)
+// 雪花 ID 逆向反解结构化不可变元数据 (SnowflakeIdInfo)
 SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
 log.info("发号时间戳: {}, 时间: {}, 数据中心: {}, 工作节点: {}, 序列号: {}",
         info.timestamp(), info.dateTime(), info.datacenterId(), info.workerId(), info.sequence());
 
-// 7. 纯原生零依赖无锁 Base62 双向短码（将 18~19 位十进制雪花 ID 压缩为 10~11 位紧凑短码）
+// 纯原生零依赖无锁 Base62 双向短码（将 18~19 位十进制雪花 ID 压缩为 10~11 位紧凑短码）
 String base62 = IdUtil.toBase62(id); // 如 "7zWk0S0l8K"
 long restoredId = IdUtil.fromBase62(base62); // 100% 无损还原原始雪花长整型 ID
 ```
 
 ### 部署与节点自定义覆盖
-在集群部署中，可通过 JVM 参数或环境变量显式指定节点编号（0~31）：
+在集群部署中，可通过配置文件、JVM 参数或环境变量显式指定节点编号（0~31）与时钟回拨容忍时长：
+```yaml
+ateng:
+  boot:
+    core:
+      snowflake:
+        worker-id: 1
+        datacenter-id: 1
+        clock-backoff-tolerance: 10ms
+```
+或通过 JVM 参数 / 环境变量覆盖：
 ```bash
 java -Dateng.boot.snowflake.worker-id=2 -Dateng.boot.snowflake.datacenter-id=1 -jar app.jar
 ```
@@ -1339,11 +1365,140 @@ int cacheSize = SpelUtil.getCacheSize();
 SpelUtil.clearCache();
 ```
 
+### 26. 纯原生安全 HMAC 密钥散列加签与恒定时间比对 (`HmacUtil`)
+纯 JDK 原生标准库实现，基于 `javax.crypto.Mac`，零第三方工具包依赖。提供基于 `MessageDigest.isEqual` 的防侧信道时序攻击（Timing Attack Safe）恒定时间比对：
+```java
+import io.github.atengk.boot.core.util.HmacUtil;
+
+String payload = "orderId=10086&amount=88.88";
+String secretKey = "SecureSecretKey2026";
+
+// 1. HMAC-SHA256 签名（小写十六进制 Hex 与 Base64）
+String hexSign = HmacUtil.hmacSha256Hex(payload, secretKey);
+String base64Sign = HmacUtil.hmacSha256Base64(payload, secretKey);
+
+// 2. 恒定时间防侧信道比对（防范针对字符逐位比较耗时的时序攻击）
+boolean isValid = HmacUtil.verifyHex(hexSign, hexSign); // true
+boolean isBase64Valid = HmacUtil.verifyBase64(base64Sign, base64Sign); // true
+
+// 3. 兼容 HMAC-SHA1 与 HMAC-MD5
+String sha1Sign = HmacUtil.hmacSha1Hex(payload, secretKey);
+String md5Sign = HmacUtil.hmacMd5Hex(payload, secretKey);
+```
+
+### 27. 纯原生数据传输与硬件报文校验和计算 (`ChecksumUtil`)
+封装原生 `java.util.zip.CRC32`、`CRC32C`（Castagnoli 多项式，硬件指令集加速）与 `Adler32`，支持字节数组、文本及 `InputStream` 流式计算与确定性释放：
+```java
+import io.github.atengk.boot.core.util.ChecksumUtil;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+String data = "123456789";
+
+// 1. 标准 CRC-32 校验和计算与 8 位小写 Hex 格式化
+long crc32 = ChecksumUtil.crc32(data); // 3421780262L
+String crc32Hex = ChecksumUtil.crc32Hex(data); // "cbf43926"
+boolean crc32Matched = ChecksumUtil.verifyCrc32(3421780262L, data.getBytes(StandardCharsets.UTF_8)); // true
+
+// 2. 高性能 CRC-32C 校验和（iSCSI / 现代硬件报文首选）
+long crc32c = ChecksumUtil.crc32c(data); // 3808858755L
+String crc32cHex = ChecksumUtil.crc32cHex(data); // "e3069283"
+boolean crc32cMatched = ChecksumUtil.verifyCrc32c(3808858755L, data.getBytes(StandardCharsets.UTF_8)); // true
+
+// 3. 轻量快速 Adler-32 校验和（Zlib 常用）
+long adler32 = ChecksumUtil.adler32(data); // 152961502L
+String adler32Hex = ChecksumUtil.adler32Hex(data); // "091e01de"
+
+// 4. 输入流流式安全计算（单次缓冲读取，防止大文件 OOM）
+try (InputStream stream = new ByteArrayInputStream(data.getBytes(StandardCharsets.UTF_8))) {
+    long streamCrc = ChecksumUtil.crc32(stream);
+}
+```
+
+### 28. 纯无锁 CAS 纳秒级平滑令牌桶限流器 (`TokenBucketLimiter`)
+基于 `AtomicReference` CAS 与纳秒级惰性时间推进（Lazy Refill）打造的纯无锁单机限流器，支持突发流量缓冲、平滑限速整形与非阻塞/超时阻塞获取，零后台定时任务线程消耗：
+```java
+import io.github.atengk.boot.core.concurrent.TokenBucketLimiter;
+import java.time.Duration;
+
+// 1. 初始化令牌桶：桶容量 5，每秒恒定补充 2.0 个令牌
+TokenBucketLimiter limiter = new TokenBucketLimiter(5, 2.0);
+
+// 2. 非阻塞快速尝试获取 1 个令牌（满足突发并发时立即成功，超出容量时快速失败拦截）
+if (limiter.tryAcquire()) {
+    log.info("获得令牌，开始执行受限业务");
+} else {
+    log.warn("瞬时流量超限，触发限流保护");
+}
+
+// 3. 批量获取与带超时等待的阻塞尝试
+boolean acquiredBatch = limiter.tryAcquire(2); // 尝试扣减 2 个令牌
+boolean acquiredWait = limiter.tryAcquire(1, Duration.ofMillis(200)); // 最多等待 200ms
+
+// 4. 可中断的强行阻塞等待直至获取成功
+limiter.acquire(1);
+
+// 5. 实时观测可用令牌数
+double currentTokens = limiter.getAvailableTokens();
+```
+
+### 29. 结构化函数式通用业务管道编排 (`Pipeline`)
+面向复杂业务流程（如多级订单校验、风控规则链、审批流等）的标准函数式管道编排框架，支持强类型泛型上下文透传、显式中断标记（`PipelineInterruptible`）、中断补偿与异常隔离：
+```java
+import io.github.atengk.boot.core.pipeline.Pipeline;
+import io.github.atengk.boot.core.pipeline.PipelineInterruptible;
+import io.github.atengk.boot.core.pipeline.PipelineResult;
+import io.github.atengk.boot.core.pipeline.PipelineStage;
+
+// 1. 定义业务上下文对象（实现 PipelineInterruptible 接口支持受控提前中断）
+public class OrderContext implements PipelineInterruptible {
+    private final String orderId;
+    private boolean interrupted;
+    // ...
+    @Override public boolean isInterrupted() { return interrupted; }
+    @Override public void markInterrupted() { this.interrupted = true; }
+}
+
+// 2. 组装并执行业务管道
+OrderContext context = new OrderContext("ORD-2026-8888");
+PipelineResult<OrderContext> result = Pipeline.of("order-creation-pipeline", context)
+        .addStage(new ValidationStage())  // 步骤 1：格式与库存预检
+        .addStage(new PromotionStage())   // 步骤 2：优惠券与营销计算
+        .addStage(new InventoryStage())   // 步骤 3：库存锁定（若库存不足可调用 ctx.markInterrupted() 中断）
+        .onInterrupt((ctx, stage) -> log.warn("订单创建流程于阶段 [{}] 受控中断", stage.getName()))
+        .onError((ctx, stage, ex) -> log.error("阶段 [{}] 执行异常: {}", stage.getName(), ex.getMessage(), ex))
+        .execute();
+
+// 3. 提取执行结果与优雅断言
+if (result.isSuccess()) {
+    log.info("订单管道执行成功，最终上下文: {}", result.getContext());
+} else if (result.isInterrupted()) {
+    log.warn("订单流程已被提前拦截中止");
+} else {
+    result.orThrow(); // 重新抛出阶段异常（若为受管 BusinessException 则无缝透传）
+}
+```
+
+### 30. 安全序列化门面与脱敏安全深克隆 (`JsonUtil` & `deepClone`)
+基于东八区、JSR-310 日期模块与零 `@class` 漏洞的生产级 Jackson 门面。独家提供严格遵从 [ADR-0012](./docs/adr/0012-lifecycle-separated-data-security.md) “内存真明文”不变量的脱敏安全深克隆（`deepClone`），在内存中克隆对象时无条件抑制 `@FieldSensitive` 打码序列化器，彻底消除掩码星号污染业务层与持久层的隐患：
+```java
+import io.github.atengk.boot.core.util.JsonUtil;
+
+// 1. 标准强类型对象与 JSON 互转
+String json = JsonUtil.toJsonString(userDto);
+SampleUserDTO parsed = JsonUtil.parseObject(json, SampleUserDTO.class);
+
+// 2. 内存脱敏安全深克隆（内存真明文保障）
+SampleUserDTO clonedUser = JsonUtil.deepClone(originalUser);
+// clonedUser 获得完全独立的深拷贝对象，且手机号等敏感字段依然保持 100% 原始真实明文，绝不变成 "138****5678"
+```
+
 ---
 
 ## 13. 模块配置属性参考 (`application.yml`)
 
-`ateng-boot-core` 内置自适应双模受管异步任务执行器与四维上下文透传引擎（`AtengAsyncAutoConfiguration`），支持平台线程池与 JDK 21+ 虚拟线程无缝自适应，并原生支持多业务受管线程池（Multi-Pool）舱壁隔离，可在 `application.yml` 中按需定制配置：
+`ateng-boot-core` 提供核心底座全局配置属性（`CoreProperties`）与自适应双模受管异步任务执行器（`AtengAsyncAutoConfiguration`），支持开箱即用与按需定制：
 
 ```yaml
 # 开启 Spring Boot 官方虚拟线程（仅在 JDK 21+ 运行时生效，默认 false）
@@ -1354,6 +1509,32 @@ spring:
 
 ateng:
   boot:
+    # ==================== 0. Core 核心通用底座配置 (CoreProperties) ====================
+    core:
+      # 全局默认时钟回拨容忍阈值（强类型 Duration 格式，默认 5ms）
+      clock-backoff-tolerance: 10ms
+      # 进程内内存缓存默认存活时间（强类型 Duration 格式，默认 30m）
+      cache-ttl: 30m
+      # Snowflake 分布式雪花发号器配置
+      snowflake:
+        # 是否开启受管 Snowflake 发号器自动装配 Bean（默认 true）
+        enabled: true
+        # 工作节点 ID（0~31，缺省时自动从网卡 MAC / IP 优雅自适应推导）
+        worker-id: 1
+        # 数据中心 ID（0~31，缺省时自动从网卡 MAC / IP 优雅自适应推导）
+        datacenter-id: 1
+        # 基准时间戳纪元（毫秒，默认 1767225600000L - 2026-01-01 00:00:00 UTC）
+        epoch: 1767225600000
+        # 节点专属时钟回拨容忍阈值（强类型 Duration 格式，缺省时回退至顶层配置）
+        clock-backoff-tolerance: 10ms
+      # 内存缓存容器配置
+      cache:
+        # LRU 缓存默认最大条目容量（默认 1024）
+        default-max-capacity: 1024
+        # LRU 缓存默认条目存活时间 TTL（默认 30m）
+        default-ttl: 30m
+
+    # ==================== 1. 全局默认主线程池配置 (taskExecutor) ====================
     async:
       # ==================== 1. 全局默认主线程池配置 (taskExecutor) ====================
       # 是否启用受管异步执行器装配（默认 true）

@@ -8,6 +8,7 @@ import io.github.atengk.boot.core.code.ResultCodeUtil;
 import io.github.atengk.boot.core.concurrent.SlidingWindowCounter;
 import io.github.atengk.boot.core.concurrent.TokenBucketLimiter;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
@@ -19,6 +20,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.SpringUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -36,6 +38,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 @Service
 public class CoreResilienceScenarioService {
+
+    @Autowired(required = false)
+    private Snowflake springManagedSnowflake;
 
     /**
      * 1. 验证 RetryUtil 指数退避重试与 Fallback 降级机制
@@ -340,5 +345,19 @@ public class CoreResilienceScenarioService {
         }
         log.info("TokenBucketLimiter 突发限流测试: burstCount={}, acquired={}", burstCount, acquired);
         return acquired;
+    }
+
+    /**
+     * 15. 验证 Spring 容器受管 Snowflake 发号器与 CoreProperties 自动装配
+     *
+     * @return 包含生成的 ID、工作节点与数据中心 ID 的三元组
+     */
+    public Triple<Long, Long, Long> demonstrateSpringManagedSnowflake() {
+        Snowflake instance = springManagedSnowflake != null ? springManagedSnowflake : SpringUtil.getBean(Snowflake.class);
+        long id = instance.nextId();
+        long workerId = instance.getWorkerId();
+        long datacenterId = instance.getDatacenterId();
+        log.info("Spring 容器受管 Snowflake: id={}, workerId={}, datacenterId={}", id, workerId, datacenterId);
+        return Triple.of(id, workerId, datacenterId);
     }
 }

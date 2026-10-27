@@ -164,6 +164,33 @@ flowchart TD
 - **参数语义自适应绑定**：集成 Spring `DefaultParameterNameDiscoverer` 自动提取方法形参名，并同时支持 `#paramName` 与 `#p0`/`#a0` 别名绑定；
 - **受控可信逃生舱**：提供带显式安全警告说明的 `evaluateTrusted` 逃逸方法，支持管理台内部脚本的全反射能力。
 
+### 19. 轻量函数式业务管道编排与中断异常隔离 (`Pipeline`)
+- **泛型上下文流转**：通过 `Pipeline.of("name", context)` 建立标准执行链，消除多步骤业务流程中臃肿的面条式代码与强耦合调用；
+- **受控可中断性 (`PipelineInterruptible`)**：支持业务上下文实现 `PipelineInterruptible` 标记，由前置步骤触发 `markInterrupted()` 后优雅终止后续阶段流转；
+- **结构化中断与异常双轨隔离**：显式提供 `onInterrupt((ctx, stage) -> ...)` 补偿钩子与 `onError((ctx, stage, ex) -> ...)` 隔离监听，返回不可变 `PipelineResult<C>`，支持 `orThrow()` 原样还原受管异常。
+
+### 20. 纯原生安全 HMAC 密钥散列加签与恒定时间防侧信道比对 (`HmacUtil`)
+- **纯 JDK 原生标准库实现**：基于 `javax.crypto.Mac` 封装 HMAC-SHA256、HMAC-SHA1 与 HMAC-MD5，支持小写十六进制 Hex 与 Base64 输出；
+- **防侧信道时序攻击 (Timing Attack Safe)**：`verifyHex` 与 `verifyBase64` 底层依托 `MessageDigest.isEqual` 恒定时间比较，彻底杜绝针对字符串逐位比对耗时差异的侧信道密钥嗅探。
+
+### 21. 纯原生数据传输与硬件报文校验和计算 (`ChecksumUtil`)
+- **多维算法统一封装**：组合 JDK 原生 `CRC32`、`CRC32C`（Castagnoli 多项式，现代网络硬件报文指令集加速首选）与 `Adler32`（Zlib 协议压缩首选）；
+- **确定性流式读取与数值验证**：提供字节数组、UTF-8 文本及 `InputStream` 流式分块计算，确定性释放句柄；提供强类型数值比对与标准 8 位小写十六进制输出。
+
+### 22. 纯无锁 CAS 纳秒级平滑令牌桶限流器 (`TokenBucketLimiter`)
+- **纯无锁并发原子设计**：采用 `AtomicReference` 结合纯数学增量推演，在极高并发竞争下免受监视器锁竞争颠簸，杜绝虚拟线程 Carrier 锁定；
+- **纳秒级惰性时间推进 (Lazy Refill)**：请求到达时按真实流逝时间动态推导可补充令牌数，消除后台常驻定时任务线程开销；
+- **突发削峰与超时等待**：支持瞬时突发容量缓冲、平滑速率整形、非阻塞快速失败与超时阻塞等待（`tryAcquire(permits, timeout)`）。
+
+### 23. 脱敏隔离内存安全深克隆与不变量捍卫 (`JsonUtil.deepClone`)
+- **内存真明文原则捍卫 (ADR-0012 Invariant)**：在纯内存深拷贝对象时，定制专属 `cloneMapper` 与注解内省器，强制抑制 `@FieldSensitive` 的 Jackson 脱敏序列化器；
+- **杜绝二次掩码污染**：确保业务实体或 DTO 在内存克隆后保持 100% 原始真实明文，彻底根除“克隆后数据带星号导致写库脏写污染”的灾难性隐患。
+
+### 24. 核心配置属性外置化与雪花发号器全链路加固 (`CoreProperties` & `Snowflake`)
+- **强类型配置外置化与 IDE 友好元数据**：推出 `@ConfigurationProperties(prefix = "ateng.boot.core")` 统管 `SnowflakeProperties` 与 `CacheProperties`，凡涉及时间超时与容忍阈值一律推行强类型 `java.time.Duration`；
+- **Spring 容器自动装配与自适应优雅降级**：`AtengCoreAutoConfiguration` 自动装配 `@Bean @ConditionalOnMissingBean Snowflake`，未显式配置时平滑降级至网卡 MAC / IP 自适应推导；
+- **时钟回拨严格熔断与规范转译**：当系统 NTP 时钟发生大幅回拨超过 `clock-backoff-tolerance`（默认 5ms）时，严格快速失败并转译抛出框架受管业务异常 `BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR)`，杜绝无序死循环或发号碰撞。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)

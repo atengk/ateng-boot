@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.id;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,11 +45,15 @@ public class Snowflake {
     private static final long TIMESTAMP_LEFT_SHIFT = SEQUENCE_BITS + WORKER_ID_BITS + DATACENTER_ID_BITS; // 22
     private static final long SEQUENCE_MASK = -1L ^ (-1L << SEQUENCE_BITS); // 4095
 
-    private static final long MAX_BACKWARD_MS = 5L;
+    /**
+     * 默认最大允许时钟回拨容忍自旋时长（5 毫秒）
+     */
+    public static final long DEFAULT_MAX_BACKWARD_MS = 5L;
 
     private final long workerId;
     private final long datacenterId;
     private final long epoch;
+    private final long maxBackwardMs;
     private final LongSupplier timeSupplier;
 
     private final ReentrantLock lock = new ReentrantLock();
@@ -57,39 +63,51 @@ public class Snowflake {
     private record NodeIds(long workerId, long datacenterId) {}
 
     /**
-     * 默认构造函数：自适应推导 workerId 与 datacenterId，采用框架默认基准时间戳
+     * 默认构造函数：自适应推导 workerId 与 datacenterId，采用框架默认基准时间戳与默认时钟回拨容忍阈值（5ms）
      */
     public Snowflake() {
-        this(deriveNodeIds(), DEFAULT_EPOCH);
+        this(null, null, DEFAULT_EPOCH, DEFAULT_MAX_BACKWARD_MS);
     }
 
-    private Snowflake(NodeIds nodeIds, long epoch) {
-        this(nodeIds.workerId(), nodeIds.datacenterId(), epoch);
+    private Snowflake(NodeIds nodeIds, long epoch, long maxBackwardMs) {
+        this(nodeIds.workerId(), nodeIds.datacenterId(), epoch, maxBackwardMs, System::currentTimeMillis);
     }
 
     /**
-     * 指定节点 ID 构造函数，采用框架默认基准时间戳
+     * 指定节点 ID 构造函数，采用框架默认基准时间戳与默认时钟回拨容忍阈值（5ms）
      *
      * @param workerId     工作节点 ID (0~31)
      * @param datacenterId 数据中心 ID (0~31)
      */
     public Snowflake(long workerId, long datacenterId) {
-        this(workerId, datacenterId, DEFAULT_EPOCH);
+        this(workerId, datacenterId, DEFAULT_EPOCH, DEFAULT_MAX_BACKWARD_MS);
     }
 
     /**
-     * 全参构造函数
+     * 指定节点与基准时间戳构造函数，采用默认时钟回拨容忍阈值（5ms）
      *
      * @param workerId     工作节点 ID (0~31)
      * @param datacenterId 数据中心 ID (0~31)
      * @param epoch        基准时间戳（毫秒）
      */
     public Snowflake(long workerId, long datacenterId, long epoch) {
-        this(workerId, datacenterId, epoch, System::currentTimeMillis);
+        this(workerId, datacenterId, epoch, DEFAULT_MAX_BACKWARD_MS);
     }
 
     /**
-     * 包级测试构造函数（支持时间生成器依赖注入）
+     * 全参构造函数（支持自定义时钟回拨容忍阈值）
+     *
+     * @param workerId      工作节点 ID (0~31，为 null 时自动推导)
+     * @param datacenterId  数据中心 ID (0~31，为 null 时自动推导)
+     * @param epoch         基准时间戳（毫秒）
+     * @param maxBackwardMs 最大允许时钟回拨容忍自旋毫秒数
+     */
+    public Snowflake(Long workerId, Long datacenterId, long epoch, long maxBackwardMs) {
+        this(deriveNodeIds(workerId, datacenterId), epoch, maxBackwardMs);
+    }
+
+    /**
+     * 包级测试构造函数（支持时间生成器依赖注入，采用默认时钟回拨容忍阈值）
      *
      * @param workerId     工作节点 ID (0~31)
      * @param datacenterId 数据中心 ID (0~31)
@@ -97,6 +115,19 @@ public class Snowflake {
      * @param timeSupplier 毫秒时间生成器
      */
     Snowflake(long workerId, long datacenterId, long epoch, LongSupplier timeSupplier) {
+        this(workerId, datacenterId, epoch, DEFAULT_MAX_BACKWARD_MS, timeSupplier);
+    }
+
+    /**
+     * 包级全参测试构造函数（支持时间生成器与时钟回拨容忍阈值依赖注入）
+     *
+     * @param workerId      工作节点 ID (0~31)
+     * @param datacenterId  数据中心 ID (0~31)
+     * @param epoch         基准时间戳（毫秒）
+     * @param maxBackwardMs 最大允许时钟回拨容忍自旋毫秒数
+     * @param timeSupplier  毫秒时间生成器
+     */
+    Snowflake(long workerId, long datacenterId, long epoch, long maxBackwardMs, LongSupplier timeSupplier) {
         if (workerId > MAX_WORKER_ID || workerId < 0) {
             throw new IllegalArgumentException(String.format("Worker ID can't be greater than %d or less than 0, current: %d", MAX_WORKER_ID, workerId));
         }
@@ -106,9 +137,13 @@ public class Snowflake {
         if (epoch > timeSupplier.getAsLong()) {
             throw new IllegalArgumentException(String.format("Epoch can't be greater than current timestamp, epoch: %d", epoch));
         }
+        if (maxBackwardMs < 0) {
+            throw new IllegalArgumentException("maxBackwardMs 不能为负数");
+        }
         this.workerId = workerId;
         this.datacenterId = datacenterId;
         this.epoch = epoch;
+        this.maxBackwardMs = maxBackwardMs;
         this.timeSupplier = timeSupplier;
     }
 
@@ -126,7 +161,7 @@ public class Snowflake {
             // 1. 时钟回拨防御
             if (timestamp < lastTimestamp) {
                 long offset = lastTimestamp - timestamp;
-                if (offset <= MAX_BACKWARD_MS) {
+                if (offset <= maxBackwardMs) {
                     try {
                         Thread.sleep(offset);
                     } catch (InterruptedException e) {
@@ -134,10 +169,12 @@ public class Snowflake {
                     }
                     timestamp = timeGen();
                     if (timestamp < lastTimestamp) {
-                        throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", lastTimestamp - timestamp));
+                        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                                String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", lastTimestamp - timestamp));
                     }
                 } else {
-                    throw new IllegalStateException(String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offset));
+                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
+                            String.format("Clock moved backwards. Refusing to generate id for %d milliseconds", offset));
                 }
             }
 
@@ -223,6 +260,15 @@ public class Snowflake {
     }
 
     /**
+     * 获取当前最大允许时钟回拨容忍时长（毫秒）
+     *
+     * @return 时钟回拨容忍毫秒数
+     */
+    public long getMaxBackwardMs() {
+        return maxBackwardMs;
+    }
+
+    /**
      * 将雪花 ID 逆向反解为结构化不可变信息载体（采用当前实例的 epoch）
      *
      * @param id 待反解的雪花长整型 ID
@@ -302,8 +348,18 @@ public class Snowflake {
      * @return 推导得到的节点 ID 载体
      */
     private static NodeIds deriveNodeIds() {
-        Long workerId = parseIdProperty("ateng.boot.snowflake.worker-id", "ATENG_BOOT_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
-        Long datacenterId = parseIdProperty("ateng.boot.snowflake.datacenter-id", "ATENG_BOOT_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+        return deriveNodeIds(null, null);
+    }
+
+    private static NodeIds deriveNodeIds(Long explicitWorkerId, Long explicitDatacenterId) {
+        Long workerId = explicitWorkerId;
+        Long datacenterId = explicitDatacenterId;
+        if (workerId == null) {
+            workerId = parseIdProperty("ateng.boot.snowflake.worker-id", "ATENG_BOOT_SNOWFLAKE_WORKER_ID", MAX_WORKER_ID);
+        }
+        if (datacenterId == null) {
+            datacenterId = parseIdProperty("ateng.boot.snowflake.datacenter-id", "ATENG_BOOT_SNOWFLAKE_DATACENTER_ID", MAX_DATACENTER_ID);
+        }
         if (workerId != null && datacenterId != null) {
             return new NodeIds(workerId, datacenterId);
         }

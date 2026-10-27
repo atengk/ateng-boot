@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.id;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -134,7 +136,7 @@ class SnowflakeTest {
     }
 
     @Test
-    @DisplayName("时钟回拨熔断：大幅回拨（> 5ms）抛出明确语义化 IllegalStateException")
+    @DisplayName("时钟回拨熔断：大幅回拨（> 5ms）抛出明确语义化 BusinessException(INTERNAL_SERVER_ERROR)")
     void shouldFailFastWhenClockBackwardsExceedsThreshold() {
         AtomicLong mockClock = new AtomicLong(10_000L);
         Snowflake snowflake = new Snowflake(1, 1, 0L, mockClock::get);
@@ -144,8 +146,26 @@ class SnowflakeTest {
         // 模拟大幅时钟回拨 10ms (> 5ms)
         mockClock.set(9_990L);
 
-        IllegalStateException ex = assertThrows(IllegalStateException.class, snowflake::nextId);
+        BusinessException ex = assertThrows(BusinessException.class, snowflake::nextId);
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), ex.getCode());
         assertTrue(ex.getMessage().contains("Clock moved backwards"), "必须明确提示时钟回拨异常原因");
+    }
+
+    @Test
+    @DisplayName("自定义时钟回拨容忍阈值：支持配置更长容忍时间并在超限时熔断")
+    void shouldRespectCustomClockBackoffTolerance() {
+        AtomicLong mockClock = new AtomicLong(10_000L);
+        // 配置 20ms 容忍时间
+        Snowflake snowflake = new Snowflake(1, 1, 0L, 20L, mockClock::get);
+        assertEquals(20L, snowflake.getMaxBackwardMs());
+
+        snowflake.nextId();
+
+        // 模拟大幅回拨 25ms (> 20ms) 触发熔断
+        mockClock.set(9_975L);
+        BusinessException ex = assertThrows(BusinessException.class, snowflake::nextId);
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), ex.getCode());
+        assertTrue(ex.getMessage().contains("Clock moved backwards"));
     }
 
     @Test

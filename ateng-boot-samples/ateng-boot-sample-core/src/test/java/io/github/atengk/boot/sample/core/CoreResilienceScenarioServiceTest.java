@@ -214,4 +214,13 @@ class CoreResilienceScenarioServiceTest {
         int acquired = resilienceScenarioService.demonstrateTokenBucketLimiter(10);
         assertThat(acquired).isEqualTo(5);
     }
+
+    @Test
+    @DisplayName("测试Spring容器受管Snowflake发号器与CoreProperties自动装配")
+    void testDemonstrateSpringManagedSnowflake() {
+        Triple<Long, Long, Long> triple = resilienceScenarioService.demonstrateSpringManagedSnowflake();
+        assertThat(triple.left()).isPositive();
+        assertThat(triple.middle()).isEqualTo(1L);
+        assertThat(triple.right()).isEqualTo(1L);
+    }
 }
