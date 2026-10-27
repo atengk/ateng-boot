@@ -17,6 +17,7 @@ import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
 import io.github.atengk.boot.redis.pubsub.bootstrap.ChannelTopicBootstrap;
 import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
+import io.github.atengk.boot.redis.script.RedisScriptExecutor;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
@@ -120,6 +121,18 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnMissingBean(RedisUtil.class)
     public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
         return new RedisUtil(redisTemplate, redisProperties);
+    }
+
+    /**
+     * 装配受管原子 Lua 脚本执行器 RedisScriptExecutor
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @return RedisScriptExecutor 执行器门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisScriptExecutor.class)
+    public RedisScriptExecutor redisScriptExecutor(RedisTemplate<String, Object> redisTemplate) {
+        return new RedisScriptExecutor(redisTemplate);
     }
 
     /**
