@@ -71,6 +71,37 @@ public class RedisAtomicUtil {
             Long.class
     );
 
+    private static final RedisScript<Long> CAS_SCRIPT = new DefaultRedisScript<>(
+            """
+            local current = redis.call('GET', KEYS[1])
+            local expect = ARGV[1]
+            local update = ARGV[2]
+            local expireSec = tonumber(ARGV[3] or -1)
+
+            local matched = false
+            if not current then
+                if expect == 'null' then
+                    matched = true
+                end
+            else
+                if expect ~= 'null' and tonumber(current) == tonumber(expect) then
+                    matched = true
+                end
+            end
+
+            if matched then
+                redis.call('SET', KEYS[1], update)
+                if expireSec > 0 then
+                    redis.call('EXPIRE', KEYS[1], expireSec)
+                end
+                return 1
+            else
+                return 0
+            end
+            """,
+            Long.class
+    );
+
     private final RedisTemplate<String, Object> redisTemplate;
 
     public RedisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
@@ -185,6 +216,88 @@ public class RedisAtomicUtil {
         Assert.hasText(key, "key must not be blank");
         Assert.notNull(timeout, "timeout must not be null");
         redisTemplate.opsForValue().set(key, value, timeout);
+    }
+
+    /**
+     * 原子比较置换操作 (CAS - Compare-And-Set)
+     * 当且仅当 Redis 中的当前值等于 expect 时，原子更新为 update
+     * 支持 expect 为 null（即当 key 不存在时初始化设置）
+     *
+     * @param key 键
+     * @param expect 期望值（允许为 null，表示期望 key 不存在）
+     * @param update 新值
+     * @return 是否置换成功
+     */
+    public boolean compareAndSet(String key, Long expect, Long update) {
+        return compareAndSet(key, expect, update, null);
+    }
+
+    /**
+     * 原子比较置换操作 (CAS) 并设置/刷新过期时间
+     *
+     * @param key 键
+     * @param expect 期望值（允许为 null）
+     * @param update 新值
+     * @param timeout 过期时长
+     * @return 是否置换成功
+     */
+    public boolean compareAndSet(String key, Long expect, Long update, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
+        Assert.notNull(update, "update must not be null");
+        long expireSeconds = (timeout != null && !timeout.isZero() && !timeout.isNegative()) ? Math.max(1, timeout.toSeconds()) : -1L;
+        Long result = redisTemplate.execute(
+                CAS_SCRIPT,
+                STRING_SERIALIZER,
+                null,
+                Collections.singletonList(key),
+                expect != null ? String.valueOf(expect) : "null",
+                String.valueOf(update),
+                String.valueOf(expireSeconds)
+        );
+        return Long.valueOf(1L).equals(result);
+    }
+
+    /**
+     * 原子比较置换操作 (基本类型重载)
+     *
+     * @param key 键
+     * @param expect 期望值
+     * @param update 新值
+     * @return 是否置换成功
+     */
+    public boolean compareAndSet(String key, long expect, long update) {
+        return compareAndSet(key, Long.valueOf(expect), Long.valueOf(update), null);
+    }
+
+    /**
+     * 原子设置新值并返回旧值 (getAndSet)
+     *
+     * @param key 键
+     * @param update 新值
+     * @return 更新前的旧值，若不存在返回 null
+     */
+    public Long getAndSet(String key, long update) {
+        return getAndSet(key, Long.valueOf(update));
+    }
+
+    /**
+     * 原子设置新值并返回旧值 (getAndSet)
+     *
+     * @param key 键
+     * @param update 新值
+     * @return 更新前的旧值，若不存在返回 null
+     */
+    public Long getAndSet(String key, Long update) {
+        Assert.hasText(key, "key must not be blank");
+        Assert.notNull(update, "update must not be null");
+        Object oldVal = redisTemplate.opsForValue().getAndSet(key, update);
+        if (oldVal == null) {
+            return null;
+        }
+        if (oldVal instanceof Number num) {
+            return num.longValue();
+        }
+        return Long.parseLong(String.valueOf(oldVal));
     }
 
     /**

@@ -169,6 +169,34 @@ public class RedisRateLimiterClient {
     }
 
     /**
+     * 重置/清除限流器状态与令牌桶配置
+     *
+     * @param key 限流键
+     * @return 是否成功重置
+     */
+    public boolean reset(String key) {
+        return delete(key);
+    }
+
+    /**
+     * 重置限流器状态并以新速率与时间窗口重新初始化
+     *
+     * @param key 限流键
+     * @param rate 窗口速率（令牌数）
+     * @param rateInterval 窗口时长
+     * @return 是否成功设置新速率
+     */
+    public boolean reset(String key, long rate, Duration rateInterval) {
+        Assert.hasText(key, "key must not be blank");
+        Assert.isTrue(rate > 0, "rate must be greater than 0");
+        Assert.notNull(rateInterval, "rateInterval must not be null");
+        Assert.isTrue(!rateInterval.isZero() && !rateInterval.isNegative(), "rateInterval must be positive");
+
+        delete(key);
+        return redissonClient.getRateLimiter(key).trySetRate(RateType.OVERALL, rate, rateInterval);
+    }
+
+    /**
      * 获取或初始化底层 RRateLimiter 实例（基于 Duration）
      *
      * @param key 限流键

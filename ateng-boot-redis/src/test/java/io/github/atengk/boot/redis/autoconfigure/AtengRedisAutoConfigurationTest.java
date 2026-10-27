@@ -294,4 +294,30 @@ class AtengRedisAutoConfigurationTest {
         assertThat(config.isClusterConfig()).isFalse();
         assertThat(config.isSentinelConfig()).isFalse();
     }
+
+    @Test
+    @DisplayName("Redisson 生产连接保活、连接池与重试参数映射验证")
+    void shouldMapRedissonProductionHardeningProperties() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties springProps = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        springProps.setHost("127.0.0.1");
+        springProps.setPort(6379);
+
+        io.github.atengk.boot.redis.properties.RedisProperties atengProps = new io.github.atengk.boot.redis.properties.RedisProperties();
+        atengProps.getRedisson().setPingConnectionInterval(Duration.ofSeconds(45));
+        atengProps.getRedisson().setConnectionPoolSize(32);
+        atengProps.getRedisson().setConnectionMinimumIdleSize(8);
+        atengProps.getRedisson().setRetryAttempts(5);
+        atengProps.getRedisson().setRetryInterval(Duration.ofSeconds(2));
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(springProps, atengProps);
+
+        assertThat(config.isClusterConfig()).isFalse();
+        assertThat(config.isSentinelConfig()).isFalse();
+        assertThat(config.useSingleServer().getPingConnectionInterval()).isEqualTo(45000);
+        assertThat(config.useSingleServer().getConnectionPoolSize()).isEqualTo(32);
+        assertThat(config.useSingleServer().getConnectionMinimumIdleSize()).isEqualTo(8);
+        assertThat(config.useSingleServer().getRetryAttempts()).isEqualTo(5);
+        assertThat(config.useSingleServer().getRetryInterval()).isEqualTo(2000);
+    }
 }

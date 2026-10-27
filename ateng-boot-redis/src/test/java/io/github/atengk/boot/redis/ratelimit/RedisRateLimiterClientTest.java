@@ -91,6 +91,18 @@ class RedisRateLimiterClientTest {
     }
 
     @Test
+    @DisplayName("测试重置限流器状态配置 (reset)")
+    void testReset() {
+        when(redissonClient.getRateLimiter("sms:reset")).thenReturn(rateLimiter);
+        when(rateLimiter.delete()).thenReturn(true);
+        when(rateLimiter.trySetRate(RateType.OVERALL, 50L, Duration.ofSeconds(1))).thenReturn(true);
+
+        assertThat(rateLimiterClient.reset("sms:reset")).isTrue();
+        assertThat(rateLimiterClient.reset("sms:reset", 50L, Duration.ofSeconds(1))).isTrue();
+        verify(rateLimiter).trySetRate(RateType.OVERALL, 50L, Duration.ofSeconds(1));
+    }
+
+    @Test
     @DisplayName("测试入参防御性校验")
     void testValidation() {
         assertThatThrownBy(() -> rateLimiterClient.tryAcquire("", 10, Duration.ofSeconds(1)))

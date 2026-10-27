@@ -292,6 +292,31 @@ public class RedisProperties {
          * Redisson Netty 线程池大小（0 表示采用 Redisson 默认值 2 * CPU 核心数）
          */
         private int nettyThreads = 0;
+
+        /**
+         * TCP 连接心跳保活检测间隔（默认 30s），定期发送 PING 命令防御云原生 NAT 网关或负载均衡静默切断连接
+         */
+        private Duration pingConnectionInterval = Duration.ofSeconds(30);
+
+        /**
+         * 主连接池最大连接数（单机 connectionPoolSize / 集群 masterConnectionPoolSize，默认 64）
+         */
+        private int connectionPoolSize = 64;
+
+        /**
+         * 主连接池最小空闲连接数（单机 connectionMinimumIdleSize / 集群 masterConnectionMinimumIdleSize，默认 16）
+         */
+        private int connectionMinimumIdleSize = 16;
+
+        /**
+         * 命令重试次数（默认 3 次）
+         */
+        private int retryAttempts = 3;
+
+        /**
+         * 命令重试间隔时间（默认 1500ms）
+         */
+        private Duration retryInterval = Duration.ofMillis(1500);
     }
 
     /**

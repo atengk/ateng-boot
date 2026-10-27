@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -379,5 +380,25 @@ class RedisUtilTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get("inst:k")).thenReturn("inst_val");
         assertThat(redisUtil.get("inst:k")).isEqualTo("inst_val");
+    }
+
+    @Test
+    @DisplayName("RedisUtil 入口前置卫语句显式防卫校验")
+    void testEntranceValidation() {
+        assertThatThrownBy(() -> RedisUtil.hasKey(""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("key must not be blank");
+
+        assertThatThrownBy(() -> RedisUtil.get(null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.set("", "val"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.delete(""))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.expire("", java.time.Duration.ofSeconds(10)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import io.github.atengk.boot.redis.properties.RedisProperties;
+import org.springframework.util.Assert;
 
 /**
  * 全能 Redis 统一操作门面与生产级防呆工具类
@@ -135,6 +136,7 @@ public class RedisUtil {
      * @return 是否存在
      */
     public static boolean hasKey(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean exists = getTemplate().hasKey(key);
         return Boolean.TRUE.equals(exists);
     }
@@ -148,6 +150,7 @@ public class RedisUtil {
      * @return 是否设置成功
      */
     public static boolean expire(String key, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().expire(key, timeout, unit);
         return Boolean.TRUE.equals(success);
     }
@@ -160,6 +163,7 @@ public class RedisUtil {
      * @return 是否设置成功
      */
     public static boolean expire(String key, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout == null) {
             return false;
         }
@@ -185,6 +189,7 @@ public class RedisUtil {
      * @return 剩余时间
      */
     public static long getExpire(String key, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Long expire = getTemplate().getExpire(key, unit);
         return expire != null ? expire : -1L;
     }
@@ -196,6 +201,7 @@ public class RedisUtil {
      * @return 是否移除成功
      */
     public static boolean persist(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().persist(key);
         return Boolean.TRUE.equals(success);
     }
@@ -207,6 +213,7 @@ public class RedisUtil {
      * @return 是否删除成功
      */
     public static boolean delete(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().delete(key);
         return Boolean.TRUE.equals(success);
     }
@@ -281,6 +288,7 @@ public class RedisUtil {
      * @param value 缓存值
      */
     public static void set(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         getTemplate().opsForValue().set(key, value);
     }
 
@@ -293,6 +301,7 @@ public class RedisUtil {
      * @param unit 时间单位
      */
     public static void set(String key, Object value, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         getTemplate().opsForValue().set(key, value, timeout, unit);
     }
 
@@ -304,6 +313,7 @@ public class RedisUtil {
      * @param timeout 过期时长
      */
     public static void set(String key, Object value, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout != null) {
             set(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
         } else {
@@ -319,6 +329,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().opsForValue().setIfAbsent(key, value);
         return Boolean.TRUE.equals(success);
     }
@@ -333,6 +344,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().opsForValue().setIfAbsent(key, value, timeout, unit);
         return Boolean.TRUE.equals(success);
     }
@@ -346,6 +358,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout != null) {
             return setIfAbsent(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
         }
@@ -359,6 +372,7 @@ public class RedisUtil {
      * @return 缓存对象
      */
     public static Object get(String key) {
+        Assert.hasText(key, "key must not be blank");
         return getTemplate().opsForValue().get(key);
     }
 
@@ -371,6 +385,7 @@ public class RedisUtil {
      * @return 强类型对象
      */
     public static <T> T get(String key, Class<T> clazz) {
+        Assert.hasText(key, "key must not be blank");
         Object val = get(key);
         if (val == null) {
             return null;
@@ -390,6 +405,7 @@ public class RedisUtil {
      * @return 强类型对象
      */
     public static <T> T get(String key, TypeReference<T> typeReference) {
+        Assert.hasText(key, "key must not be blank");
         Object val = get(key);
         if (val == null) {
             return null;
@@ -405,6 +421,7 @@ public class RedisUtil {
      * @return 旧值
      */
     public static Object getAndSet(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         return getTemplate().opsForValue().getAndSet(key, value);
     }
 
@@ -418,6 +435,7 @@ public class RedisUtil {
      * @return 转换后的旧值
      */
     public static <T> T getAndSet(String key, Object value, Class<T> clazz) {
+        Assert.hasText(key, "key must not be blank");
         Object oldVal = getAndSet(key, value);
         if (oldVal == null) {
             return null;

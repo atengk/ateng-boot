@@ -406,7 +406,7 @@ public class AtengRedisAutoConfiguration {
             }
         } else {
             // 2. 否则自动解析 Spring 官方数据源配置进行映射
-            config = createRedissonConfigFromSpringProperties(springRedisProperties);
+            config = createRedissonConfigFromSpringProperties(springRedisProperties, atengProperties);
         }
 
         // 3. 配置线程模型
@@ -424,12 +424,23 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
-     * 根据 Spring 官方 RedisProperties 映射构建 Redisson Config
+     * 根据 Spring 官方 RedisProperties 映射构建 Redisson Config（兼容旧签名）
      */
     Config createRedissonConfigFromSpringProperties(org.springframework.boot.autoconfigure.data.redis.RedisProperties properties) {
+        return createRedissonConfigFromSpringProperties(properties, new RedisProperties());
+    }
+
+    /**
+     * 根据 Spring 官方 RedisProperties 与 ateng 扩展配置映射构建 Redisson Config
+     */
+    Config createRedissonConfigFromSpringProperties(org.springframework.boot.autoconfigure.data.redis.RedisProperties properties,
+                                                    RedisProperties atengProperties) {
         Config config = new Config();
         boolean isSsl = properties.getSsl() != null && properties.getSsl().isEnabled();
         String prefix = isSsl ? SCHEMA_SSL_PREFIX : SCHEMA_PREFIX;
+        RedisProperties.RedissonProperties rp = (atengProperties != null && atengProperties.getRedisson() != null)
+                ? atengProperties.getRedisson()
+                : new RedisProperties.RedissonProperties();
 
         // 集群模式 (Cluster)
         if (properties.getCluster() != null && !CollectionUtils.isEmpty(properties.getCluster().getNodes())) {
@@ -450,6 +461,21 @@ public class AtengRedisAutoConfiguration {
             }
             if (properties.getConnectTimeout() != null) {
                 clusterServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+            }
+            if (rp.getPingConnectionInterval() != null) {
+                clusterServersConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
+            }
+            if (rp.getConnectionPoolSize() > 0) {
+                clusterServersConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
+            }
+            if (rp.getConnectionMinimumIdleSize() > 0) {
+                clusterServersConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
+            }
+            if (rp.getRetryAttempts() > 0) {
+                clusterServersConfig.setRetryAttempts(rp.getRetryAttempts());
+            }
+            if (rp.getRetryInterval() != null) {
+                clusterServersConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
             }
             return config;
         }
@@ -473,6 +499,21 @@ public class AtengRedisAutoConfiguration {
             }
             if (properties.getConnectTimeout() != null) {
                 sentinelServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+            }
+            if (rp.getPingConnectionInterval() != null) {
+                sentinelServersConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
+            }
+            if (rp.getConnectionPoolSize() > 0) {
+                sentinelServersConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
+            }
+            if (rp.getConnectionMinimumIdleSize() > 0) {
+                sentinelServersConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
+            }
+            if (rp.getRetryAttempts() > 0) {
+                sentinelServersConfig.setRetryAttempts(rp.getRetryAttempts());
+            }
+            if (rp.getRetryInterval() != null) {
+                sentinelServersConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
             }
             return config;
         }
@@ -502,6 +543,21 @@ public class AtengRedisAutoConfiguration {
         }
         if (properties.getConnectTimeout() != null) {
             singleServerConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+        }
+        if (rp.getPingConnectionInterval() != null) {
+            singleServerConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
+        }
+        if (rp.getConnectionPoolSize() > 0) {
+            singleServerConfig.setConnectionPoolSize(rp.getConnectionPoolSize());
+        }
+        if (rp.getConnectionMinimumIdleSize() > 0) {
+            singleServerConfig.setConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
+        }
+        if (rp.getRetryAttempts() > 0) {
+            singleServerConfig.setRetryAttempts(rp.getRetryAttempts());
+        }
+        if (rp.getRetryInterval() != null) {
+            singleServerConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
         }
 
         return config;
