@@ -18,6 +18,8 @@ import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
 import io.github.atengk.boot.redis.pubsub.bootstrap.ChannelTopicBootstrap;
 import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
 import io.github.atengk.boot.redis.script.RedisScriptExecutor;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
@@ -133,6 +135,21 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnMissingBean(RedisScriptExecutor.class)
     public RedisScriptExecutor redisScriptExecutor(RedisTemplate<String, Object> redisTemplate) {
         return new RedisScriptExecutor(redisTemplate);
+    }
+
+    /**
+     * 装配受管分布式信号量执行模板 RedisSemaphoreTemplate 并初始化 RedisSemaphoreUtil 静态门面
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式信号量模板
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisSemaphoreTemplate.class)
+    public RedisSemaphoreTemplate redisSemaphoreTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
+        RedisSemaphoreTemplate template = new RedisSemaphoreTemplate(redissonClient, redisProperties);
+        RedisSemaphoreUtil.init(template);
+        return template;
     }
 
     /**
