@@ -46,6 +46,10 @@ ateng:
         enabled: true
         publish-event: true
         async: false
+      dynamic-sql:
+        enabled: true
+        locations:
+          - classpath*:dynamic-sql/**/*.xml
       dynamic-query:
         enabled: true
       pagination:

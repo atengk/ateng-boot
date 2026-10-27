@@ -300,7 +300,7 @@ public class AtengMybatisPlusAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(ExternalSqlLoader.class)
     @ConditionalOnProperty(prefix = "ateng.boot.mybatis-plus.dynamic-sql", name = "enabled", havingValue = "true")
-    public ExternalSqlLoader externalSqlLoader(ResourcePatternResolver resourceResolver) {
+    public ResourceExternalSqlLoader externalSqlLoader(ResourcePatternResolver resourceResolver) {
         return new ResourceExternalSqlLoader(properties.getDynamicSql(), resourceResolver);
     }
 
