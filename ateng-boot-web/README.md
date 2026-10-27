@@ -33,6 +33,8 @@
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java` |
 | **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
+| **安全响应头防御** | 等保三级基线安全响应头注入与容器指纹剥离 | `SecurityHeadersFilter`, `SecurityHeadersProperties` | `ateng.boot.web.security-headers.enabled`, `content-type-options`, `frame-options`, `xss-protection`, `referrer-policy`, `content-security-policy`, `permissions-policy`, `remove-server-header` | 注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: strict-origin-when-cross-origin` 等基准头，剥离容器 `Server` 头，`containsHeader` 守卫防覆盖 | `SecurityHeadersFilterTest.java`, `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
+| **ETag 协商缓存** | 基于浅层哈希的内容协商缓存与 304 节省带宽 | `ShallowEtagHeaderFilter`, `EtagProperties` | `ateng.boot.web.etag.enabled`, `write-weak-etag` | 条件自动装配 Spring 原生 `ShallowEtagHeaderFilter`，自动计算内容摘要并生成 `ETag` 响应头，配合 `If-None-Match` 返回 `304 Not Modified` 节省网络带宽 | `AtengWebAutoConfigurationTest.java`, `WebSecurityHeadersAndEtagSampleTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与安全清洗 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`，穿透 X-Forwarded-For 等多级代理，过滤内网伪造，规整 IPv6 本地环回 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 
@@ -526,7 +528,79 @@ public PayloadLoggingFilter customPayloadLoggingFilter() {
 
 ---
 
-## 17. 模块配置属性参考 (`application.yml`)
+## 17. HTTP 安全响应头防御与 ETag 协商缓存 (`SecurityHeadersFilter` & `ShallowEtagHeaderFilter`)
+
+### 场景痛点
+1. **容器指纹泄露**：Web 容器默认向外暴露 `Server: Apache-Coyote/1.1` 等响应头，极易被自动化探测扫描识别出确切底层中间件版本进而遭受定向漏洞攻击；
+2. **等保三级基线防御缺失**：缺失 `X-Content-Type-Options: nosniff`（MIME 类型嗅探）、`X-Frame-Options`（点击劫持）、`X-XSS-Protection` 与 `Referrer-Policy` 响应头，难以通过企业安全合规基线与第三方渗透审计；
+3. **低频静态/字典接口带宽浪费**：客户端频繁轮询或读取相对固定的业务字典与元数据，缺乏标准 ETag / 304 协商缓存机制，造成不必要的网络带宽与服务器吞吐消耗。
+
+### 核心机制与不变量
+- **安全响应头防御 (`SecurityHeadersFilter`)**：
+  - 默认开启（`ateng.boot.web.security-headers.enabled=true`），优先级仅次于慢请求过滤器（`ORDER = Ordered.HIGHEST_PRECEDENCE + 4`）；
+  - 自动向 HTTP 响应注入标准基线响应头：
+    - `X-Content-Type-Options: nosniff`
+    - `X-Frame-Options: SAMEORIGIN`
+    - `X-XSS-Protection: 1; mode=block`
+    - `Referrer-Policy: strict-origin-when-cross-origin`
+    - 可选配置 `Content-Security-Policy` 与 `Permissions-Policy`
+  - **`containsHeader` 守卫不变量**：仅在响应中不存在同名响应头时注入，严格保障反向代理网关或下游业务 Controller 自定义设置的特定安全头不被覆盖；
+  - **`Server` 容器特征彻底压制**：通过 `SecurityHeadersResponseWrapper` 拦截并过滤下游所有写向 `Server` 响应头的操作，彻底消除应用服务器特征。
+- **ETag 协商缓存 (`ShallowEtagHeaderFilter`)**：
+  - 按需启用（`ateng.boot.web.etag.enabled=true`，默认 `false`）；
+  - 条件装配 Spring 官方 `ShallowEtagHeaderFilter`（`ORDER = SecurityHeadersFilter.ORDER + 1`），自动对响应体字节计算哈希并输出 `ETag` 响应头；
+  - 当客户端在后续请求头携带 `If-None-Match` 时，服务端自动校验摘要，命中未变更时立即返回 `304 Not Modified` 并清空响应体，节省网络带宽。
+
+### 场景端到端代码范式
+```java
+// 1. 固定或低频变动字典数据接口（配合 ETag 实现 304 协商缓存）
+@GetMapping("/cached-dict")
+public Result<Map<String, String>> getCachedDict() {
+    Result<Map<String, String>> result = Result.success(Map.of("status", "ACTIVE", "locale", "zh_CN"));
+    result.setTimestamp(1700000000000L); // 生产场景中亦可返回静态资源或固定业务快照
+    return result;
+}
+
+// 2. 控制器显式设置特定安全头（验证 containsHeader 防覆盖机制）
+@GetMapping("/custom-security-headers")
+public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
+    response.setHeader("X-Frame-Options", "DENY"); // 保持 DENY，绝不被默认 SAMEORIGIN 覆盖
+    return Result.success("custom-headers-ok");
+}
+```
+
+### 生产配置与扩展范式
+```yaml
+ateng:
+  boot:
+    web:
+      security-headers:
+        # 是否启用安全响应头防御过滤器（默认 true）
+        enabled: true
+        # 是否注入 X-Content-Type-Options: nosniff（默认 true）
+        content-type-options: true
+        # X-Frame-Options 配置（默认 SAMEORIGIN；为 null 或空字符串则不注入）
+        frame-options: "SAMEORIGIN"
+        # X-XSS-Protection 配置（默认 1; mode=block；为 null 或空字符串则不注入）
+        xss-protection: "1; mode=block"
+        # Referrer-Policy 配置（默认 strict-origin-when-cross-origin；为 null 或空字符串则不注入）
+        referrer-policy: "strict-origin-when-cross-origin"
+        # Content-Security-Policy 配置（默认 null，按需配置 CSP 策略字符串）
+        content-security-policy: null
+        # Permissions-Policy 配置（默认 null，按需配置特性权限策略）
+        permissions-policy: null
+        # 是否压制并剥离容器 Server 响应头（默认 true，消除 Tomcat/Undertow 容器指纹）
+        remove-server-header: true
+      etag:
+        # 是否启用基于 ShallowEtagHeaderFilter 的 ETag 协商缓存（默认 false，按需开启）
+        enabled: true
+        # 是否生成弱 ETag（形如 W/"..."，默认 false 为强 ETag）
+        write-weak-etag: false
+```
+
+---
+
+## 18. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -541,6 +615,28 @@ ateng:
         enabled: true
         # 链路追踪头名称（默认 X-Trace-Id；属性别名亦兼容 header）
         header-name: "X-Trace-Id"
+      security-headers:
+        # 是否启用安全响应头防御（默认 true）
+        enabled: true
+        # 是否注入 X-Content-Type-Options: nosniff（默认 true）
+        content-type-options: true
+        # X-Frame-Options 配置（默认 SAMEORIGIN）
+        frame-options: "SAMEORIGIN"
+        # X-XSS-Protection 配置（默认 1; mode=block）
+        xss-protection: "1; mode=block"
+        # Referrer-Policy 配置（默认 strict-origin-when-cross-origin）
+        referrer-policy: "strict-origin-when-cross-origin"
+        # Content-Security-Policy 策略（默认 null）
+        content-security-policy: null
+        # Permissions-Policy 权限策略（默认 null）
+        permissions-policy: null
+        # 是否剥离容器 Server 响应头（默认 true）
+        remove-server-header: true
+      etag:
+        # 是否启用基于 ShallowEtagHeaderFilter 的 ETag 协商缓存（默认 false）
+        enabled: false
+        # 是否生成弱 ETag（默认 false 为强 ETag）
+        write-weak-etag: false
       slow-request:
         # 是否启用慢请求性能告警过滤器（默认 true）
         enabled: true

@@ -157,4 +157,28 @@ public class WebRuntimePipelineSampleController {
         byte[] data = "ateng-boot 工业级运行时下载测试内容".getBytes(StandardCharsets.UTF_8);
         ServletUtil.writeDownload(response, "测试样例文件.txt", data);
     }
+
+    /**
+     * 静态字典数据演示端点，用于配合 ETag 协商缓存与安全响应头校验
+     *
+     * @return 静态字典配置
+     */
+    @GetMapping("/cached-dict")
+    public Result<Map<String, String>> getCachedDict() {
+        Result<Map<String, String>> result = Result.success(Map.of("status", "ACTIVE", "locale", "zh_CN", "app", "ateng-boot-sample-web"));
+        result.setTimestamp(1700000000000L);
+        return result;
+    }
+
+    /**
+     * 业务自定义响应头演示端点，验证 SecurityHeadersFilter 的 containsHeader 防覆盖保护机制
+     *
+     * @param response HTTP 响应
+     * @return 业务响应载荷
+     */
+    @GetMapping("/custom-security-headers")
+    public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
+        response.setHeader("X-Frame-Options", "DENY");
+        return Result.success("custom-headers-ok");
+    }
 }

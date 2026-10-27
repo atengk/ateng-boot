@@ -150,5 +150,42 @@ class AtengWebAutoConfigurationTest {
                     assertThat(registration.getFilter()).isSameAs(customFilter);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下自动装配 SecurityHeadersFilter 注册器")
+    void shouldAutoConfigureSecurityHeadersFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasBean("securityHeadersFilterRegistration");
+            org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                    context.getBean("securityHeadersFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.filter.SecurityHeadersFilter.ORDER);
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.security-headers.enabled=false 时不装配 SecurityHeadersFilter")
+    void shouldDisableSecurityHeadersFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.security-headers.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("securityHeadersFilterRegistration");
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下不装配 ShallowEtagHeaderFilter")
+    void shouldNotAutoConfigureEtagFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean("shallowEtagHeaderFilterRegistration");
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.etag.enabled=true 时自动装配 ShallowEtagHeaderFilter")
+    void shouldEnableEtagFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.etag.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("shallowEtagHeaderFilterRegistration");
+                });
+    }
 }
 

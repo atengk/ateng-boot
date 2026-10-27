@@ -459,6 +459,84 @@ public class WebProperties {
             this.threshold = Duration.ofMillis(thresholdMillis);
         }
     }
+
+    /**
+     * HTTP 安全响应头防御配置（OWASP / 等保三级基线）
+     */
+    @NestedConfigurationProperty
+    private SecurityHeadersProperties securityHeaders = new SecurityHeadersProperties();
+
+    /**
+     * ETag 条件协商缓存配置
+     */
+    @NestedConfigurationProperty
+    private EtagProperties etag = new EtagProperties();
+
+    /**
+     * HTTP 安全响应头属性配置
+     */
+    @Getter
+    @Setter
+    public static class SecurityHeadersProperties {
+
+        /**
+         * 是否启用 HTTP 安全响应头过滤器（默认 true，开箱即用注入 OWASP 推荐标头）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 是否注入 X-Content-Type-Options: nosniff（默认 true，防御 MIME 类型混淆嗅探攻击）
+         */
+        private boolean contentTypeOptions = true;
+
+        /**
+         * X-Frame-Options 响应头（默认 SAMEORIGIN，防御点击劫持；为 null 或空时不注入）
+         */
+        private String frameOptions = "SAMEORIGIN";
+
+        /**
+         * X-XSS-Protection 响应头（默认 1; mode=block，防御旧版浏览器反射型 XSS；为 null 或空时不注入）
+         */
+        private String xssProtection = "1; mode=block";
+
+        /**
+         * Referrer-Policy 响应头（默认 strict-origin-when-cross-origin，防御敏感 URL 泄露；为 null 或空时不注入）
+         */
+        private String referrerPolicy = "strict-origin-when-cross-origin";
+
+        /**
+         * Content-Security-Policy (CSP) 策略头（默认 null 不注入；显式配置时生效）
+         */
+        private String contentSecurityPolicy;
+
+        /**
+         * Permissions-Policy 权限策略头（默认 null 不注入；显式配置时生效）
+         */
+        private String permissionsPolicy;
+
+        /**
+         * 是否擦除或隐藏 Server 响应头版本指纹（默认 true）
+         */
+        private boolean removeServerHeader = true;
+    }
+
+    /**
+     * ETag 条件协商缓存属性配置
+     */
+    @Getter
+    @Setter
+    public static class EtagProperties {
+
+        /**
+         * 是否启用 ShallowEtagHeaderFilter 协商缓存（默认 false，按需开启）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 是否生成弱 ETag (W/"...")，默认 false 生成强 ETag
+         */
+        private boolean writeWeakETag = false;
+    }
 }
 
 

@@ -26,7 +26,7 @@
 | `WebSecuritySignSampleController` | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignCanonicalUtil`, `CachedBodyHttpServletRequest` | `WebSecuritySignSampleControllerTest`, `WebSecuritySignRsaSampleTest`, `WebSecuritySignSm2SampleTest` |
 | `WebTrafficSampleController` | `@RateLimiter`, `LimitType`, `InMemoryRateLimiterStore`, `@Idempotent`, `InMemoryIdempotentStore` | `WebTrafficSampleControllerTest` |
 | `WebAuditSampleController` | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `@WebLog`, `@FieldSensitive` | `WebAuditSampleControllerTest` |
-| `WebRuntimePipelineSampleController` | `TraceFilter`, `TraceUtil`, `ContentCachingFilter`, `SlowRequestFilter`, `IpUtil`, `ServletUtil`, `/pre-stop` | `WebRuntimePipelineSampleControllerTest` |
+| `WebRuntimePipelineSampleController` | `TraceFilter`, `TraceUtil`, `ContentCachingFilter`, `SlowRequestFilter`, `SecurityHeadersFilter`, `ShallowEtagHeaderFilter`, `IpUtil`, `ServletUtil`, `/pre-stop` | `WebRuntimePipelineSampleControllerTest`, `WebSecurityHeadersAndEtagSampleTest` |
 | `MemoryOperateLogStorageProvider` | `OperateLogStorageProvider` SPI 内存解耦实现 | 注入自验上下文 |
 
 ---
@@ -102,6 +102,27 @@ public Result<UserRegisterVO> createUser(@RequestBody AuditUserDTO dto) {
 - **出参安全动态掩码**：`jsonResult` 记录为 `{"id":"1846182948192841920","name":"ateng","age":25,"email":"user@example.com","phone":"138****5678"}`；
 - **内存真明文守护**：Controller 与内存实体中手机号 100% 保持原始明文 `13812345678`。
 
+### 4. HTTP 安全响应头防御与 ETag 协商缓存 (`SecurityHeadersFilter` & `ShallowEtagHeaderFilter`)
+```java
+// 1. 字典/静态配置数据端点（支持 ETag 304 协商缓存）
+@GetMapping("/cached-dict")
+public Result<Map<String, String>> getCachedDict() {
+    Result<Map<String, String>> result = Result.success(Map.of("status", "ACTIVE", "locale", "zh_CN", "app", "ateng-boot-sample-web"));
+    result.setTimestamp(1700000000000L);
+    return result;
+}
+
+// 2. 业务自定义响应头（验证 containsHeader 守卫防覆盖机制）
+@GetMapping("/custom-security-headers")
+public Result<String> getCustomSecurityHeaders(HttpServletResponse response) {
+    response.setHeader("X-Frame-Options", "DENY"); // 保持 DENY，不被 SAMEORIGIN 覆盖
+    return Result.success("custom-headers-ok");
+}
+```
+- **等保三级基线防御**：默认自动注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`X-XSS-Protection: 1; mode=block` 与 `Referrer-Policy: strict-origin-when-cross-origin`；
+- **容器指纹剥离**：彻底过滤与消除 `Server` 响应头（如 Tomcat 特征）；
+- **ETag 协商缓存**：开启 `ateng.boot.web.etag.enabled=true` 时，二次携带 `If-None-Match` 返回 `304 Not Modified` 且响应体为空，显著节省带宽。
+
 ---
 
 ## 4. 定向集成测试准出
@@ -114,7 +135,7 @@ mvn test -pl ateng-boot-samples/ateng-boot-sample-web -am -T 1C -nsu -B
 ```
 [INFO] Results:
 [INFO] 
-[INFO] Tests run: 39, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 47, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS

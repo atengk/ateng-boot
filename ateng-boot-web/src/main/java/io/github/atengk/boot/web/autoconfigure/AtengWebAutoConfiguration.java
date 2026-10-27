@@ -7,7 +7,9 @@ import io.github.atengk.boot.web.audit.DefaultOperateLogStorageProvider;
 import io.github.atengk.boot.web.audit.OperateLogStorageProvider;
 import io.github.atengk.boot.web.filter.ContentCachingFilter;
 import io.github.atengk.boot.web.filter.PayloadLoggingFilter;
+import io.github.atengk.boot.web.filter.SecurityHeadersFilter;
 import io.github.atengk.boot.web.filter.SlowRequestFilter;
+import org.springframework.web.filter.ShallowEtagHeaderFilter;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
@@ -126,6 +128,45 @@ public class AtengWebAutoConfiguration {
                 new SlowRequestFilter(webProperties.getSlowRequest()));
         FilterRegistrationBean<SlowRequestFilter> registration = new FilterRegistrationBean<>(filter);
         registration.setOrder(SlowRequestFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 注册 HTTP 安全响应头防御与容器指纹清洗过滤器
+     * 位于慢请求监控过滤器之后，开箱即用注入 OWASP 与等保三级推荐标准基线安全响应头
+     *
+     * @param webProperties Web 配置属性
+     * @param securityHeadersFilterProvider 自定义 SecurityHeadersFilter 提供者
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.security-headers", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(name = "securityHeadersFilterRegistration")
+    public FilterRegistrationBean<SecurityHeadersFilter> securityHeadersFilterRegistration(
+            WebProperties webProperties,
+            ObjectProvider<SecurityHeadersFilter> securityHeadersFilterProvider) {
+        SecurityHeadersFilter filter = securityHeadersFilterProvider.getIfAvailable(() ->
+                new SecurityHeadersFilter(webProperties.getSecurityHeaders()));
+        FilterRegistrationBean<SecurityHeadersFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(SecurityHeadersFilter.ORDER);
+        return registration;
+    }
+
+    /**
+     * 条件装配 Spring 官方 ShallowEtagHeaderFilter 协商缓存过滤器
+     * 对出站响应体计算 ETag 并支持 304 Not Modified 条件协商以降低重复网络开销
+     *
+     * @param webProperties Web 配置属性
+     * @return FilterRegistrationBean 实例
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "ateng.boot.web.etag", name = "enabled", havingValue = "true")
+    @ConditionalOnMissingBean(name = "shallowEtagHeaderFilterRegistration")
+    public FilterRegistrationBean<ShallowEtagHeaderFilter> shallowEtagHeaderFilterRegistration(WebProperties webProperties) {
+        ShallowEtagHeaderFilter filter = new ShallowEtagHeaderFilter();
+        filter.setWriteWeakETag(webProperties.getEtag().isWriteWeakETag());
+        FilterRegistrationBean<ShallowEtagHeaderFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setOrder(SecurityHeadersFilter.ORDER + 1);
         return registration;
     }
 
