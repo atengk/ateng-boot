@@ -218,3 +218,27 @@ _Avoid_: SqlFormatter, ParamReplacer, RegexSqlPaster, P6SpyFormatter
 **MybatisInterceptorUtil**:
 持久层底层拦截器基础设施工具类，提供兼容 JDK 17 强封装模块化的递归代理拆包（Plugin 物理目标还原）与智能穿透切面/容器的真实业务调用栈位置解析能力。
 _Avoid_: InterceptorHelper, ProxyUnwrapper, StackTraceLocator
+
+**LockMode**:
+强类型持久层悲观加锁模式枚举，包含 `FOR_UPDATE`（独占排他锁）、`NOWAIT`（非阻塞加锁失败即报）、`SKIP_LOCKED`（排队消费跳过已锁行）与 `FOR_SHARE`（共享读锁）。
+_Avoid_: LockType, LockOption, PagingLock
+
+**PessimisticLockUtil**:
+悲观锁语法糖与转译工具类，提供将强类型 `LockMode` 安全无缝绑定至 MyBatis-Plus QueryWrapper 与 LambdaQueryWrapper 的编译期校验与方言防护门面。
+_Avoid_: LockHelper, PessimisticHelper, ForUpdateHelper
+
+**AtengJacksonTypeHandler**:
+继承 MyBatis-Plus `JacksonTypeHandler` 的生产加固型 JSON 字段类型处理器，在 Spring 启动期无感绑定受管 `ObjectMapper`（严格集成 `JavaTimeModule` 与全局脱敏契约），彻底杜绝原生默认 `new ObjectMapper()` 导致的时间序列化崩溃与空值 NPE。
+_Avoid_: FastjsonTypeHandler, JsonFieldHandler, GsonTypeHandler
+
+**LogicDeleteContextHolder**:
+逻辑删除穿透审计上下文持有者，提供受控编程式闭包（`runWithDeleted` 与 `callWithDeleted`），支持在数据审计、归档排查与回收站管理场景下临时绕过逻辑删除 SQL 自动注入改写。
+_Avoid_: SoftDeleteHolder, DeleteContext, LogicContext
+
+**GenericJsonTypeHandler**:
+泛型增强型 JSON 字段类型转换抽象基类，基于 Jackson JavaType 与 TypeReference 精确捕获复杂深层嵌套泛型，支持空值安全保底返回与 Spring 受管 ObjectMapper 绑定。
+_Avoid_: TypeReferenceJsonHandler, JacksonGenericHandler, ComplexJsonHandler
+
+**AtengLogicDeleteInnerInterceptor**:
+基于 JSqlParser AST 语法树动态解耦的逻辑删除穿透拦截器，集成于 MyBatis-Plus 拦截器插件链，当 `LogicDeleteContextHolder` 激活时自动定位并安全剥离 WHERE 子句中的逻辑删除过滤表达式，支持回收站查询与安全恢复。
+_Avoid_: LogicDeleteInterceptor, CustomLogicDeleteHandler, BypassDeletePlugin

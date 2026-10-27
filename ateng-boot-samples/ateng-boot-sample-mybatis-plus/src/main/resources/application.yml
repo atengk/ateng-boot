@@ -37,6 +37,7 @@ ateng:
         column: tenant_id
         ignore-tables:
           - sys_user
+          - demo_json_user
       data-permission:
         enabled: true
       audit-change:

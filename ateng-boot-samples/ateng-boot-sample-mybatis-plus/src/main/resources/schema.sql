@@ -27,3 +27,16 @@ CREATE TABLE IF NOT EXISTS tenant_order (
     update_by VARCHAR(64),
     version INT DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS demo_json_user (
+    id BIGINT NOT NULL PRIMARY KEY,
+    username VARCHAR(64) NOT NULL,
+    tags VARCHAR(512),
+    roles VARCHAR(512),
+    extra_info VARCHAR(1024),
+    profile VARCHAR(2048),
+    create_time TIMESTAMP,
+    update_time TIMESTAMP,
+    create_by VARCHAR(64),
+    update_by VARCHAR(64)
+);

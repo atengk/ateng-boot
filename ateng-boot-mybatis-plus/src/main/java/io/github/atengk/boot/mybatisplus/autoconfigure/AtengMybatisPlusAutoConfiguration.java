@@ -51,6 +51,9 @@ import io.github.atengk.boot.mybatisplus.slowsql.SlowSqlInterceptor;
 import io.github.atengk.boot.mybatisplus.sqllog.SqlLogInterceptor;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditInterceptor;
 import io.github.atengk.boot.mybatisplus.audit.DataChangeAuditProvider;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.util.JsonUtil;
 import java.util.concurrent.Executor;
 import java.util.List;
 
@@ -88,6 +91,27 @@ public class AtengMybatisPlusAutoConfiguration {
             io.github.atengk.boot.mybatisplus.dynamicquery.DynamicQueryHelper.setEnabled(
                     properties.getDynamicQuery().isEnabled());
         }
+        JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
+    }
+
+    /**
+     * 注册 JacksonTypeHandler 全局 ObjectMapper 绑定生命周期回调
+     * 在所有单例 Bean 实例化完成后无感注入 Spring 受管 ObjectMapper，严格集成 JavaTimeModule 与全局脱敏契约
+     *
+     * @param objectMapperProvider 可选的 Spring 受管 ObjectMapper 提供者
+     * @return 智能初始化单例回调
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "jacksonTypeHandlerCustomizer")
+    public SmartInitializingSingleton jacksonTypeHandlerCustomizer(ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return () -> {
+            ObjectMapper objectMapper = objectMapperProvider.getIfAvailable();
+            if (objectMapper != null) {
+                JacksonTypeHandler.setObjectMapper(objectMapper);
+            } else {
+                JacksonTypeHandler.setObjectMapper(JsonUtil.getObjectMapper());
+            }
+        };
     }
 
     /**
