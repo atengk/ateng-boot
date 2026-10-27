@@ -25,6 +25,7 @@ import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
 import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
+import io.github.atengk.boot.redis.stream.RedisStreamUtil;
 import io.github.atengk.boot.redis.stream.bootstrap.StreamBootstrap;
 import io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler;
 import io.github.atengk.boot.redis.stream.spi.StreamFailureHandler;
@@ -32,11 +33,14 @@ import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.config.BaseConfig;
+import org.redisson.config.BaseMasterSlaveServersConfig;
 import org.redisson.config.ClusterServersConfig;
 import org.redisson.config.Config;
 import org.redisson.config.SentinelServersConfig;
 import org.redisson.config.SingleServerConfig;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -220,6 +224,29 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
+     * 容器单例初始化完成后，统一将容器中最终生效的受管模板绑定至各全局静态操作门面
+     * 保障下游开发者自定义声明同类型 Bean 覆盖默认装配时，静态门面仍能正确无缝接管
+     *
+     * @param semaphoreTemplateProvider 分布式信号量模板提供者
+     * @param lockTemplateProvider 分布式锁模板提供者
+     * @param idempotentTemplateProvider 防重幂等模板提供者
+     * @return 静态门面生命周期初始化器
+     */
+    @Bean
+    public SmartInitializingSingleton redisStaticFacadesInitializer(
+            ObjectProvider<RedisSemaphoreTemplate> semaphoreTemplateProvider,
+            ObjectProvider<DistributedLockTemplate> lockTemplateProvider,
+            ObjectProvider<RedisIdempotentTemplate> idempotentTemplateProvider,
+            ObjectProvider<RedisStreamTemplate> streamTemplateProvider) {
+        return () -> {
+            semaphoreTemplateProvider.ifAvailable(RedisSemaphoreUtil::init);
+            lockTemplateProvider.ifAvailable(RedisLockUtil::init);
+            idempotentTemplateProvider.ifAvailable(RedisIdempotentUtil::init);
+            streamTemplateProvider.ifAvailable(RedisStreamUtil::init);
+        };
+    }
+
+    /**
      * 装配编程式延时队列门面 RedisDelayedQueue
      *
      * @param redissonClient Redisson 客户端
@@ -321,7 +348,9 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedisStreamTemplate redisStreamTemplate(RedisTemplate<String, Object> redisTemplate,
                                                    RedisProperties redisProperties) {
-        return new RedisStreamTemplate(redisTemplate, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+        RedisStreamTemplate template = new RedisStreamTemplate(redisTemplate, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+        RedisStreamUtil.init(template);
+        return template;
     }
 
     /**
@@ -562,33 +591,8 @@ public class AtengRedisAutoConfiguration {
                 nodeAddresses.add(formatAddress(prefix, node));
             }
             clusterServersConfig.setNodeAddresses(nodeAddresses);
-            if (StringUtils.hasText(properties.getPassword())) {
-                clusterServersConfig.setPassword(properties.getPassword());
-            }
-            if (StringUtils.hasText(properties.getUsername())) {
-                clusterServersConfig.setUsername(properties.getUsername());
-            }
-            if (properties.getTimeout() != null) {
-                clusterServersConfig.setTimeout((int) properties.getTimeout().toMillis());
-            }
-            if (properties.getConnectTimeout() != null) {
-                clusterServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-            }
-            if (rp.getPingConnectionInterval() != null) {
-                clusterServersConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
-            }
-            if (rp.getConnectionPoolSize() > 0) {
-                clusterServersConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
-            }
-            if (rp.getConnectionMinimumIdleSize() > 0) {
-                clusterServersConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
-            }
-            if (rp.getRetryAttempts() > 0) {
-                clusterServersConfig.setRetryAttempts(rp.getRetryAttempts());
-            }
-            if (rp.getRetryInterval() != null) {
-                clusterServersConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
-            }
+            applyBaseServerConfig(clusterServersConfig, properties, rp);
+            applyMasterSlaveConnectionPool(clusterServersConfig, rp);
             return config;
         }
 
@@ -600,33 +604,8 @@ public class AtengRedisAutoConfiguration {
             for (String node : properties.getSentinel().getNodes()) {
                 sentinelServersConfig.addSentinelAddress(formatAddress(prefix, node));
             }
-            if (StringUtils.hasText(properties.getPassword())) {
-                sentinelServersConfig.setPassword(properties.getPassword());
-            }
-            if (StringUtils.hasText(properties.getUsername())) {
-                sentinelServersConfig.setUsername(properties.getUsername());
-            }
-            if (properties.getTimeout() != null) {
-                sentinelServersConfig.setTimeout((int) properties.getTimeout().toMillis());
-            }
-            if (properties.getConnectTimeout() != null) {
-                sentinelServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-            }
-            if (rp.getPingConnectionInterval() != null) {
-                sentinelServersConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
-            }
-            if (rp.getConnectionPoolSize() > 0) {
-                sentinelServersConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
-            }
-            if (rp.getConnectionMinimumIdleSize() > 0) {
-                sentinelServersConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
-            }
-            if (rp.getRetryAttempts() > 0) {
-                sentinelServersConfig.setRetryAttempts(rp.getRetryAttempts());
-            }
-            if (rp.getRetryInterval() != null) {
-                sentinelServersConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
-            }
+            applyBaseServerConfig(sentinelServersConfig, properties, rp);
+            applyMasterSlaveConnectionPool(sentinelServersConfig, rp);
             return config;
         }
 
@@ -640,24 +619,9 @@ public class AtengRedisAutoConfiguration {
             singleServerConfig.setAddress(formatAddress(prefix, host + ":" + port));
         }
         singleServerConfig.setDatabase(properties.getDatabase());
-
-        if (StringUtils.hasText(properties.getPassword())) {
-            singleServerConfig.setPassword(properties.getPassword());
-        }
-        if (StringUtils.hasText(properties.getUsername())) {
-            singleServerConfig.setUsername(properties.getUsername());
-        }
+        applyBaseServerConfig(singleServerConfig, properties, rp);
         if (StringUtils.hasText(properties.getClientName())) {
             singleServerConfig.setClientName(properties.getClientName());
-        }
-        if (properties.getTimeout() != null) {
-            singleServerConfig.setTimeout((int) properties.getTimeout().toMillis());
-        }
-        if (properties.getConnectTimeout() != null) {
-            singleServerConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        }
-        if (rp.getPingConnectionInterval() != null) {
-            singleServerConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
         }
         if (rp.getConnectionPoolSize() > 0) {
             singleServerConfig.setConnectionPoolSize(rp.getConnectionPoolSize());
@@ -665,14 +629,44 @@ public class AtengRedisAutoConfiguration {
         if (rp.getConnectionMinimumIdleSize() > 0) {
             singleServerConfig.setConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
         }
-        if (rp.getRetryAttempts() > 0) {
-            singleServerConfig.setRetryAttempts(rp.getRetryAttempts());
-        }
-        if (rp.getRetryInterval() != null) {
-            singleServerConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
-        }
 
         return config;
+    }
+
+    private void applyBaseServerConfig(BaseConfig<?> serverConfig,
+                                       org.springframework.boot.autoconfigure.data.redis.RedisProperties properties,
+                                       RedisProperties.RedissonProperties rp) {
+        if (StringUtils.hasText(properties.getPassword())) {
+            serverConfig.setPassword(properties.getPassword());
+        }
+        if (StringUtils.hasText(properties.getUsername())) {
+            serverConfig.setUsername(properties.getUsername());
+        }
+        if (properties.getTimeout() != null) {
+            serverConfig.setTimeout((int) properties.getTimeout().toMillis());
+        }
+        if (properties.getConnectTimeout() != null) {
+            serverConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+        }
+        if (rp.getPingConnectionInterval() != null) {
+            serverConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
+        }
+        if (rp.getRetryAttempts() > 0) {
+            serverConfig.setRetryAttempts(rp.getRetryAttempts());
+        }
+        if (rp.getRetryInterval() != null) {
+            serverConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
+        }
+    }
+
+    private void applyMasterSlaveConnectionPool(BaseMasterSlaveServersConfig<?> serverConfig,
+                                               RedisProperties.RedissonProperties rp) {
+        if (rp.getConnectionPoolSize() > 0) {
+            serverConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
+        }
+        if (rp.getConnectionMinimumIdleSize() > 0) {
+            serverConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
+        }
     }
 
     private String formatAddress(String defaultPrefix, String address) {

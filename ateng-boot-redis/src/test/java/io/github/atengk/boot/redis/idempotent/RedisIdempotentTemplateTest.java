@@ -203,5 +203,33 @@ class RedisIdempotentTemplateTest {
                 .isInstanceOf(BusinessException.class)
                 .hasCause(rootCause)
                 .hasMessageContaining("Redis 幂等抢占底层异常");
+
+        assertThatThrownBy(() -> template.tryAcquire("error:key", Duration.ofMinutes(1)))
+                .isInstanceOf(BusinessException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("Redis 幂等抢占底层异常");
+
+        doThrow(rootCause).when(bucket).set(any(), any());
+        assertThatThrownBy(() -> template.setSuccess("error:key", Duration.ofMinutes(1)))
+                .isInstanceOf(BusinessException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("Redis 更新幂等状态为 SUCCESS 底层异常");
+
+        assertThatThrownBy(() -> template.setFailed("error:key", Duration.ofMinutes(1)))
+                .isInstanceOf(BusinessException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("Redis 更新幂等状态为 FAILED 底层异常");
+
+        doThrow(rootCause).when(bucket).delete();
+        assertThatThrownBy(() -> template.delete("error:key"))
+                .isInstanceOf(BusinessException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("Redis 删除幂等 Key 底层异常");
+
+        doThrow(rootCause).when(bucket).get();
+        assertThatThrownBy(() -> template.getStatus("error:key"))
+                .isInstanceOf(BusinessException.class)
+                .hasCause(rootCause)
+                .hasMessageContaining("Redis 获取幂等状态底层异常");
     }
 }

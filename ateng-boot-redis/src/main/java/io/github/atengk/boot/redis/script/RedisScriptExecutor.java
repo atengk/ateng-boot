@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * 受管原子 Lua 脚本执行器
@@ -73,7 +74,7 @@ public class RedisScriptExecutor {
         String cacheKey = "inline:" + resultType.getName() + ":" + sha1(scriptContent);
         RedisScript<T> script = getOrCreateScript(cacheKey, scriptContent, resultType);
         RedisSerializer<T> resultSerializer = resolveResultSerializer(resultType);
-        return execute(script, redisTemplate.getValueSerializer(), resultSerializer, keys, args);
+        return execute(script, null, resultSerializer, keys, args);
     }
 
     /**
@@ -98,19 +99,10 @@ public class RedisScriptExecutor {
 
         String cleanLocation = cleanClasspathLocation(classpathLocation);
         String cacheKey = "classpath:" + resultType.getName() + ":" + cleanLocation;
-
-        RedisScript<T> script = (RedisScript<T>) scriptCache.computeIfAbsent(cacheKey, k -> {
-            String scriptContent = resolveScriptContentFromClasspath(cleanLocation);
-            DefaultRedisScript<T> redisScript = new DefaultRedisScript<>();
-            redisScript.setScriptText(scriptContent);
-            if (!Void.class.equals(resultType)) {
-                redisScript.setResultType(resultType);
-            }
-            return redisScript;
-        });
+        RedisScript<T> script = getOrCreateScript(cacheKey, () -> resolveScriptContentFromClasspath(cleanLocation), resultType);
 
         RedisSerializer<T> resultSerializer = resolveResultSerializer(resultType);
-        return execute(script, redisTemplate.getValueSerializer(), resultSerializer, keys, args);
+        return execute(script, null, resultSerializer, keys, args);
     }
 
     /**
@@ -125,7 +117,7 @@ public class RedisScriptExecutor {
     public <T> T execute(RedisScript<T> script, List<String> keys, Object... args) {
         Assert.notNull(script, "script must not be null");
         RedisSerializer<T> resultSerializer = resolveResultSerializer(script.getResultType());
-        return execute(script, redisTemplate.getValueSerializer(), resultSerializer, keys, args);
+        return execute(script, null, resultSerializer, keys, args);
     }
 
     /**
@@ -147,11 +139,13 @@ public class RedisScriptExecutor {
         RedisSerializer<?> safeArgsSerializer = argsSerializer != null ? argsSerializer : redisTemplate.getValueSerializer();
 
         try {
-            if (resultSerializer != null) {
-                return redisTemplate.execute(script, safeArgsSerializer, resultSerializer, safeKeys, safeArgs);
-            } else {
+            if (argsSerializer == null && resultSerializer == null) {
                 return redisTemplate.execute(script, safeKeys, safeArgs);
             }
+            RedisSerializer<T> effectiveResultSerializer = resultSerializer != null
+                    ? resultSerializer
+                    : (RedisSerializer<T>) redisTemplate.getValueSerializer();
+            return redisTemplate.execute(script, safeArgsSerializer, effectiveResultSerializer, safeKeys, safeArgs);
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (BusinessException e) {
@@ -209,11 +203,15 @@ public class RedisScriptExecutor {
         return scriptCache.containsKey(cacheKey);
     }
 
-    @SuppressWarnings("unchecked")
     private <T> RedisScript<T> getOrCreateScript(String cacheKey, String scriptContent, Class<T> resultType) {
+        return getOrCreateScript(cacheKey, () -> scriptContent, resultType);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> RedisScript<T> getOrCreateScript(String cacheKey, Supplier<String> scriptContentSupplier, Class<T> resultType) {
         return (RedisScript<T>) scriptCache.computeIfAbsent(cacheKey, k -> {
             DefaultRedisScript<T> script = new DefaultRedisScript<>();
-            script.setScriptText(scriptContent);
+            script.setScriptText(scriptContentSupplier.get());
             if (!Void.class.equals(resultType)) {
                 script.setResultType(resultType);
             }

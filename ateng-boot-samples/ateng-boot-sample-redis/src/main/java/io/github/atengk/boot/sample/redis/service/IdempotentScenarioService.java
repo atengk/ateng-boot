@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -49,7 +50,37 @@ public class IdempotentScenarioService {
     }
 
     /**
-     * 编程式防重幂等模板执行
+     * 编程式防重核销支付交易场景
+     *
+     * @param paymentNo 支付业务流水号
+     * @param amount    交易金额
+     * @return 核销结果
+     */
+    public String executeProgrammaticPayment(String paymentNo, BigDecimal amount) {
+        return redisIdempotentTemplate.execute("idemp:pay:" + paymentNo, Duration.ofMinutes(1), () -> {
+            log.info("[IdempotentScenario] 编程式幂等核销支付单: paymentNo={}, amount={}", paymentNo, amount);
+            successProcessCount.incrementAndGet();
+            return "PAID_" + paymentNo;
+        });
+    }
+
+    /**
+     * 静态门面防重退款交易场景
+     *
+     * @param refundNo 退款流水号
+     * @param amount   退款金额
+     * @return 退款结果
+     */
+    public String executeStaticRefund(String refundNo, BigDecimal amount) {
+        return RedisIdempotentUtil.execute("idemp:refund:" + refundNo, () -> {
+            log.info("[IdempotentScenario] 静态门面幂等处理退款: refundNo={}, amount={}", refundNo, amount);
+            successProcessCount.incrementAndGet();
+            return "REFUNDED_" + refundNo;
+        });
+    }
+
+    /**
+     * 编程式防重幂等模板执行（底层通用入口）
      *
      * @param key      业务键
      * @param timeout  防重超时窗口
@@ -64,7 +95,7 @@ public class IdempotentScenarioService {
     }
 
     /**
-     * 静态门面防重幂等执行
+     * 静态门面防重幂等执行（底层通用入口）
      *
      * @param key      业务键
      * @param supplier 业务执行体

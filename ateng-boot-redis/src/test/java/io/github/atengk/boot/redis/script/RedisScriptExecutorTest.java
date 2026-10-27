@@ -181,6 +181,20 @@ class RedisScriptExecutorTest {
     }
 
     @Test
+    @DisplayName("测试显式传入参数序列化器且返回值序列化器为 null 时正确透传 argsSerializer")
+    void testExecuteWithCustomArgsSerializerAndNullResultSerializer() {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>("return 1", Long.class);
+        RedisSerializer<String> customArgsSerializer = StringRedisSerializer.UTF_8;
+        when(redisTemplate.execute(eq(script), eq(customArgsSerializer), any(), eq(Collections.emptyList()), any(Object[].class)))
+                .thenReturn(1L);
+
+        Long result = scriptExecutor.execute(script, customArgsSerializer, null, Collections.emptyList(), "arg1");
+
+        assertThat(result).isEqualTo(1L);
+        verify(redisTemplate).execute(eq(script), eq(customArgsSerializer), any(), eq(Collections.emptyList()), any(Object[].class));
+    }
+
+    @Test
     @DisplayName("测试清空缓存操作")
     void testClearCache() {
         scriptExecutor.execute("return 1", Long.class, Collections.emptyList());

@@ -129,11 +129,11 @@ public class RedisSemaphoreTemplate {
 
         String key = formatSemaphoreKey(name);
         RSemaphore semaphore = redissonClient.getSemaphore(key);
-        // 原子尝试初始化总配额（仅在 key 不存在时初始化，已存在则保留当前状态）
-        semaphore.trySetPermits(totalPermits);
 
         boolean acquired = false;
         try {
+            // 原子尝试初始化总配额（仅在 key 不存在时初始化，已存在则保留当前状态）
+            semaphore.trySetPermits(totalPermits);
             if (waitTimeout == null || waitTimeout.isZero() || waitTimeout.isNegative()) {
                 acquired = semaphore.tryAcquire(acquirePermits);
             } else {
@@ -269,7 +269,12 @@ public class RedisSemaphoreTemplate {
     public boolean trySetPermits(String name, int totalPermits) {
         Assert.hasText(name, "semaphore name must not be blank");
         Assert.isTrue(totalPermits > 0, "totalPermits must be greater than 0");
-        return getSemaphore(name).trySetPermits(totalPermits);
+        try {
+            return getSemaphore(name).trySetPermits(totalPermits);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "初始化分布式信号量配额底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -281,7 +286,12 @@ public class RedisSemaphoreTemplate {
     public void addPermits(String name, int permits) {
         Assert.hasText(name, "semaphore name must not be blank");
         Assert.isTrue(permits > 0, "permits must be greater than 0");
-        getSemaphore(name).addPermits(permits);
+        try {
+            getSemaphore(name).addPermits(permits);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "增补分布式信号量配额底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -294,9 +304,14 @@ public class RedisSemaphoreTemplate {
     public boolean resetPermits(String name, int totalPermits) {
         Assert.hasText(name, "semaphore name must not be blank");
         Assert.isTrue(totalPermits > 0, "totalPermits must be greater than 0");
-        RSemaphore semaphore = getSemaphore(name);
-        semaphore.delete();
-        return semaphore.trySetPermits(totalPermits);
+        try {
+            RSemaphore semaphore = getSemaphore(name);
+            semaphore.delete();
+            return semaphore.trySetPermits(totalPermits);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "重置分布式信号量配额底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -307,7 +322,12 @@ public class RedisSemaphoreTemplate {
      */
     public int availablePermits(String name) {
         Assert.hasText(name, "semaphore name must not be blank");
-        return getSemaphore(name).availablePermits();
+        try {
+            return getSemaphore(name).availablePermits();
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "查询分布式信号量可用配额底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -318,7 +338,12 @@ public class RedisSemaphoreTemplate {
      */
     public boolean delete(String name) {
         Assert.hasText(name, "semaphore name must not be blank");
-        return getSemaphore(name).delete();
+        try {
+            return getSemaphore(name).delete();
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "删除分布式信号量底层异常: name=" + name + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**

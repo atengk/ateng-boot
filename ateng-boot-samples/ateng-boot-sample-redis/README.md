@@ -67,6 +67,8 @@ mvn test -pl ateng-boot-redis,ateng-boot-samples/ateng-boot-sample-redis -am -T 
 spring:
   application:
     name: ateng-boot-sample-redis
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:

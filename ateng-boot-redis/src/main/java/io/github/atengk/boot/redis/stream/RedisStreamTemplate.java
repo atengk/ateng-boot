@@ -8,8 +8,11 @@ import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.PendingMessages;
+import org.springframework.data.redis.connection.stream.PendingMessagesSummary;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.Record;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -22,6 +25,7 @@ import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -149,18 +153,18 @@ public class RedisStreamTemplate {
         String fullStreamKey = formatStreamKey(stream);
         try {
             redisTemplate.execute((RedisCallback<Void>) connection -> {
+                Assert.state(connection != null, "Redis connection must not be null");
+                Assert.state(connection.streamCommands() != null, "Redis streamCommands must not be null");
                 RedisSerializer<String> stringSerializer = redisTemplate.getStringSerializer();
                 byte[] rawKey = stringSerializer != null
                         ? stringSerializer.serialize(fullStreamKey)
                         : fullStreamKey.getBytes(StandardCharsets.UTF_8);
-                if (connection != null && connection.streamCommands() != null) {
-                    connection.streamCommands().xGroupCreate(
-                            rawKey,
-                            group,
-                            readOffset != null ? readOffset : ReadOffset.from("0"),
-                            mkStream
-                    );
-                }
+                connection.streamCommands().xGroupCreate(
+                        rawKey,
+                        group,
+                        readOffset != null ? readOffset : ReadOffset.from("0"),
+                        mkStream
+                );
                 return null;
             });
             log.info("[RedisStream] 成功创建消费组: stream={}, group={}, mkStream={}", fullStreamKey, group, mkStream);
@@ -189,7 +193,10 @@ public class RedisStreamTemplate {
         String fullStreamKey = formatStreamKey(stream);
         try {
             return redisTemplate.execute((RedisCallback<Boolean>) connection -> {
-                byte[] rawKey = redisTemplate.getStringSerializer().serialize(fullStreamKey);
+                RedisSerializer<String> stringSerializer = redisTemplate.getStringSerializer();
+                byte[] rawKey = stringSerializer != null
+                        ? stringSerializer.serialize(fullStreamKey)
+                        : fullStreamKey.getBytes(StandardCharsets.UTF_8);
                 return connection.streamCommands().xGroupDestroy(rawKey, group);
             });
         } catch (Exception ex) {
@@ -234,6 +241,75 @@ public class RedisStreamTemplate {
         Assert.notEmpty(recordIds, "recordIds must not be empty");
         RecordId[] ids = Arrays.stream(recordIds).map(RecordId::of).toArray(RecordId[]::new);
         return acknowledge(stream, group, ids);
+    }
+
+    /**
+     * 查询指定消费组的 Pending 积压消息概要统计 (XPENDING key group)
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @return Pending 消息摘要统计对象
+     */
+    public PendingMessagesSummary pendingSummary(String stream, String group) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(group, "group must not be blank");
+        String fullStreamKey = formatStreamKey(stream);
+        try {
+            return redisTemplate.opsForStream().pending(fullStreamKey, group);
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "查询 Redis Stream Pending 积压概要失败: stream=" + fullStreamKey + ", group=" + group, ex);
+        }
+    }
+
+    /**
+     * 分页范围查询指定消费组的 Pending 积压消息详细清单 (XPENDING key group [ID-start ID-end count])
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param range 范围区间 (例如 Range.unbounded())
+     * @param count 期望拉取数量上限
+     * @return 详细 PendingMessages 消息集
+     */
+    public PendingMessages pending(String stream, String group, Range<?> range, long count) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(group, "group must not be blank");
+        Assert.isTrue(count > 0, "count must be greater than 0");
+        String fullStreamKey = formatStreamKey(stream);
+        try {
+            Range<?> safeRange = range != null ? range : Range.unbounded();
+            return redisTemplate.opsForStream().pending(fullStreamKey, group, safeRange, count);
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "查询 Redis Stream Pending 积压明细失败: stream=" + fullStreamKey + ", group=" + group, ex);
+        }
+    }
+
+    /**
+     * 孤儿消息认领转移 (XCLAIM)
+     * 将其他消费者因宕机等原因闲置超时未确认的孤儿消息，强制转移给新的消费者处理
+     *
+     * @param stream Stream 键名
+     * @param group 消费组名称
+     * @param newConsumer 新接管消费者名称
+     * @param minIdleTime 最小闲置超时时长
+     * @param recordIds 待认领的消息 ID 列表
+     * @return 成功认领的消息列表
+     */
+    public List<MapRecord<String, Object, Object>> claim(String stream, String group, String newConsumer,
+                                                         Duration minIdleTime, RecordId... recordIds) {
+        Assert.hasText(stream, "stream must not be blank");
+        Assert.hasText(group, "group must not be blank");
+        Assert.hasText(newConsumer, "newConsumer must not be blank");
+        Assert.notNull(minIdleTime, "minIdleTime must not be null");
+        Assert.notEmpty(recordIds, "recordIds must not be empty");
+        String fullStreamKey = formatStreamKey(stream);
+        try {
+            return redisTemplate.opsForStream().claim(fullStreamKey, group, newConsumer, minIdleTime, recordIds);
+        } catch (Exception ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "认领 Redis Stream 孤儿消息失败: stream=" + fullStreamKey + ", group=" + group + ", newConsumer=" + newConsumer, ex);
+        }
     }
 
     /**

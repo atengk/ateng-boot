@@ -154,6 +154,23 @@ class RedisSemaphoreTemplateTest {
     }
 
     @Test
+    @DisplayName("测试 trySetPermits 底层网络异常时受控转译为 BusinessException")
+    void testTrySetPermitsExceptionTranslation() {
+        org.redisson.client.RedisException redisException = new org.redisson.client.RedisException("Redis node disconnected");
+        when(semaphore.trySetPermits(5)).thenThrow(redisException);
+
+        assertThatThrownBy(() -> template.execute("net:error", 5, () -> "never"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("获取分布式信号量底层异常")
+                .hasCause(redisException);
+
+        assertThatThrownBy(() -> template.trySetPermits("net:error", 5))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("初始化分布式信号量配额底层异常")
+                .hasCause(redisException);
+    }
+
+    @Test
     @DisplayName("测试前置参数防御性校验")
     void testValidation() {
         assertThatThrownBy(() -> template.execute("", 5, () -> "fail"))

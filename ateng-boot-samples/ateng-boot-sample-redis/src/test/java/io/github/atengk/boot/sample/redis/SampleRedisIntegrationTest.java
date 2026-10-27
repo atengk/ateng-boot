@@ -32,6 +32,7 @@ import io.github.atengk.boot.sample.redis.service.ScriptExecutionScenarioService
 import io.github.atengk.boot.sample.redis.service.SemaphoreThrottlingScenarioService;
 import io.github.atengk.boot.sample.redis.service.StockDeductScenarioService;
 import io.github.atengk.boot.sample.redis.service.StreamEventScenarioService;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +49,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.connection.DefaultMessage;
@@ -81,14 +84,17 @@ import org.springframework.data.redis.serializer.RedisSerializer;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -126,6 +132,7 @@ import static org.mockito.Mockito.when;
         "ateng.boot.redis.stream.enabled=true"
 })
 @Import({SampleRedisIntegrationTest.TestRedisConfig.class})
+@Slf4j
 @DisplayName("样例工程 Redis 基础设施与分布式协同全场景端到端实测")
 class SampleRedisIntegrationTest {
 
@@ -135,6 +142,7 @@ class SampleRedisIntegrationTest {
 
         private final ReentrantLock jvmLock = new ReentrantLock();
         private static final Map<String, BlockingQueue<Object>> internalQueues = new ConcurrentHashMap<>();
+        private static final Map<String, BlockingQueue<MapRecord<String, Object, Object>>> internalStreams = new ConcurrentHashMap<>();
         private static final Map<String, Object> cacheStore = new ConcurrentHashMap<>();
         private final Map<MessageListener, Collection<? extends Topic>> internalListeners = new ConcurrentHashMap<>();
 
@@ -144,6 +152,7 @@ class SampleRedisIntegrationTest {
 
         public static void clearAll() {
             internalQueues.values().forEach(Collection::clear);
+            internalStreams.values().forEach(Collection::clear);
             cacheStore.clear();
         }
 
@@ -170,7 +179,8 @@ class SampleRedisIntegrationTest {
                     }
                     return null;
                 }).when(lock).unlock();
-            } catch (InterruptedException ignored) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
             return lock;
         }
@@ -277,7 +287,8 @@ class SampleRedisIntegrationTest {
                         TimeUnit unit = pollInv.getArgument(1);
                         return queue.poll(timeout, unit);
                     });
-                } catch (InterruptedException ignored) {
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 when(mockQueue.poll()).thenAnswer(pollInv -> queue.poll());
                 when(mockQueue.peek()).thenAnswer(peekInv -> queue.peek());
@@ -366,9 +377,31 @@ class SampleRedisIntegrationTest {
             when(streamOps.trim(anyString(), anyLong())).thenReturn(0L);
             when(streamOps.trim(anyString(), anyLong(), any(Boolean.class))).thenReturn(0L);
             when(streamOps.size(anyString())).thenReturn(5L);
-            when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("1000-0"));
-            when(streamOps.add(anyString(), any(Map.class))).thenReturn(RecordId.of("1000-0"));
-            when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Collections.emptyList());
+            when(streamOps.add(any(MapRecord.class))).thenAnswer(inv -> {
+                MapRecord record = inv.getArgument(0);
+                internalStreams.computeIfAbsent(String.valueOf(record.getStream()), k -> new LinkedBlockingQueue<>()).offer(record);
+                return RecordId.of(System.currentTimeMillis() + "-0");
+            });
+            when(streamOps.add(anyString(), any(Map.class))).thenAnswer(inv -> {
+                String streamKey = inv.getArgument(0);
+                Map<Object, Object> body = inv.getArgument(1);
+                RecordId recordId = RecordId.of(System.currentTimeMillis() + "-0");
+                MapRecord<String, Object, Object> record = MapRecord.create(streamKey, body).withId(recordId);
+                internalStreams.computeIfAbsent(streamKey, k -> new LinkedBlockingQueue<>()).offer(record);
+                return recordId;
+            });
+            when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenAnswer(inv -> {
+                StreamOffset<String> offset = inv.getArgument(2);
+                String streamKey = offset.getKey();
+                BlockingQueue<MapRecord<String, Object, Object>> streamQueue = internalStreams.get(streamKey);
+                if (streamQueue != null) {
+                    MapRecord<String, Object, Object> polled = streamQueue.poll(200, TimeUnit.MILLISECONDS);
+                    if (polled != null) {
+                        return List.of(polled);
+                    }
+                }
+                return Collections.emptyList();
+            });
 
             // 缓存存取与防穿透
             when(valOps.get(anyString())).thenAnswer(inv -> cacheStore.get(inv.getArgument(0)));
@@ -636,6 +669,16 @@ class SampleRedisIntegrationTest {
     @Autowired(required = false)
     private RedissonClient redissonClient;
 
+    @Autowired
+    private Environment environment;
+
+    @Autowired(required = false)
+    private ThreadPoolTaskExecutor defaultTaskExecutor;
+
+    private boolean isLocalProfileActive() {
+        return Arrays.asList(environment.getActiveProfiles()).contains("local");
+    }
+
     @BeforeEach
     void setUp() {
         TestRedisConfig.clearAll();
@@ -646,6 +689,7 @@ class SampleRedisIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        TestRedisConfig.clearAll();
         // 在本地真实 Redis 模式下，确定性清理测试残留数据，保证测试间零污染与幂等自洽
         if (redisTemplate != null && redisTemplate.getConnectionFactory() != null) {
             try {
@@ -661,7 +705,8 @@ class SampleRedisIntegrationTest {
                         redisTemplate.delete(keys);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
+                log.warn("[SampleRedisIntegrationTest] 测试数据清理异常: {}", ex.getMessage());
             }
         }
     }
@@ -698,43 +743,50 @@ class SampleRedisIntegrationTest {
     @Test
     @DisplayName("场景1：分布式锁争锁超时降级演示（执行 fallback 闭包防御并发风暴）")
     void testDistributedLockTimeoutFallback() {
-        RLock lock = null;
-        CountDownLatch lockAcquired = new CountDownLatch(1);
-        CountDownLatch testFinished = new CountDownLatch(1);
-        Thread holderThread = null;
-        if (redissonClient != null) {
-            try {
-                lock = redissonClient.getLock("lock:resource:fallback_res_1");
-                final RLock finalLock = lock;
-                holderThread = new Thread(() -> {
-                    try {
-                        if (finalLock.tryLock(100, 5000, TimeUnit.MILLISECONDS)) {
-                            lockAcquired.countDown();
-                            testFinished.await();
-                            if (finalLock.isHeldByCurrentThread()) {
-                                finalLock.unlock();
-                            }
-                        }
-                    } catch (Exception ignored) {
-                    }
-                });
-                holderThread.start();
-                lockAcquired.await(2, TimeUnit.SECONDS);
-            } catch (Exception ignored) {
-            }
-        }
-
-        try {
-            String result = stockDeductScenarioService.executeWithFallback("fallback_res_1");
-            assertThat(result).isEqualTo("FALLBACK_TRIGGERED_fallback_res_1");
-        } finally {
-            testFinished.countDown();
-            if (holderThread != null) {
+        if (isLocalProfileActive() && redissonClient != null) {
+            // 真实 Redis 环境下：启动受管异步任务预先持锁以触发超时竞争
+            CountDownLatch lockAcquired = new CountDownLatch(1);
+            CountDownLatch testFinished = new CountDownLatch(1);
+            RLock lock = redissonClient.getLock("lock:resource:fallback_res_1");
+            Runnable lockHolder = () -> {
                 try {
-                    holderThread.join(2000);
-                } catch (InterruptedException ignored) {
+                    if (lock.tryLock(100, 5000, TimeUnit.MILLISECONDS)) {
+                        lockAcquired.countDown();
+                        testFinished.await(5, TimeUnit.SECONDS);
+                        if (lock.isHeldByCurrentThread()) {
+                            lock.unlock();
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("[SampleRedisIntegrationTest] 真实争锁辅助任务执行异常: {}", ex.getMessage());
+                }
+            };
+
+            Future<?> taskFuture = defaultTaskExecutor != null
+                    ? defaultTaskExecutor.submit(lockHolder)
+                    : CompletableFuture.runAsync(lockHolder);
+
+            try {
+                boolean acquired = lockAcquired.await(2, TimeUnit.SECONDS);
+                assertThat(acquired).isTrue();
+
+                String result = stockDeductScenarioService.executeWithFallback("fallback_res_1");
+                assertThat(result).isEqualTo("FALLBACK_TRIGGERED_fallback_res_1");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("测试等待持锁中断", e);
+            } finally {
+                testFinished.countDown();
+                try {
+                    taskFuture.get(2, TimeUnit.SECONDS);
+                } catch (Exception ex) {
+                    log.debug("[SampleRedisIntegrationTest] 等待锁持有任务完成: {}", ex.getMessage());
                 }
             }
+        } else {
+            // 离线 Mock 模式：TestRedisConfig 自动针对 fallback 键模拟争锁失败，秒级极速断言降级分支
+            String result = stockDeductScenarioService.executeWithFallback("fallback_res_1");
+            assertThat(result).isEqualTo("FALLBACK_TRIGGERED_fallback_res_1");
         }
     }
 
@@ -796,8 +848,10 @@ class SampleRedisIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("场景3：Stream 消息发送、长度查询与队列裁剪")
-    void testStreamEventProduceAndMetrics() {
+    @DisplayName("场景3：Stream 消息发送、消费组监听消费、长度查询与队列裁剪")
+    void testStreamEventProduceAndMetrics() throws Exception {
+        streamEventScenarioService.reset(1);
+
         OrderStreamEvent event = OrderStreamEvent.builder()
                 .orderId("ORD_STREAM_101")
                 .amount(new BigDecimal("199.00"))
@@ -808,6 +862,12 @@ class SampleRedisIntegrationTest {
         RecordId recordId = streamEventScenarioService.sendOrderEvent(event);
         assertThat(recordId).isNotNull();
         assertThat(recordId.getValue()).isNotBlank();
+
+        // 验证 Stream 消费组监听容器正常接收到事件并执行消费
+        boolean consumed = streamEventScenarioService.getLatch().await(5, TimeUnit.SECONDS);
+        assertThat(consumed).isTrue();
+        assertThat(streamEventScenarioService.getReceivedEvents()).isNotEmpty();
+        assertThat(streamEventScenarioService.getReceivedEvents().get(0).getOrderId()).isEqualTo("ORD_STREAM_101");
 
         Long size = streamEventScenarioService.getStreamSize();
         assertThat(size).isNotNull().isGreaterThanOrEqualTo(1L);
@@ -844,15 +904,15 @@ class SampleRedisIntegrationTest {
     }
 
     @Test
-    @DisplayName("场景4：编程式与静态门面防重幂等执行")
-    void testProgrammaticAndStaticIdempotent() throws Throwable {
-        String progResult = idempotentScenarioService.executeProgrammatic(
-                "idemp:prog:1", Duration.ofMinutes(1), () -> "PROG_DONE");
-        assertThat(progResult).isEqualTo("PROG_DONE");
+    @DisplayName("场景4：编程式与静态门面防重幂等业务核销执行")
+    void testProgrammaticAndStaticIdempotent() {
+        String payResult = idempotentScenarioService.executeProgrammaticPayment(
+                "PAY_20261027_001", new BigDecimal("88.88"));
+        assertThat(payResult).isEqualTo("PAID_PAY_20261027_001");
 
-        String staticResult = idempotentScenarioService.executeStatic(
-                "idemp:static:1", () -> "STATIC_DONE");
-        assertThat(staticResult).isEqualTo("STATIC_DONE");
+        String refundResult = idempotentScenarioService.executeStaticRefund(
+                "REF_20261027_002", new BigDecimal("20.00"));
+        assertThat(refundResult).isEqualTo("REFUNDED_REF_20261027_002");
     }
 
     // =========================================================================
@@ -869,12 +929,13 @@ class SampleRedisIntegrationTest {
 
         // 模拟争锁超时触发降级：在真实 Redis 模式下预先耗尽 1 个配额
         RSemaphore sem = null;
-        if (redissonClient != null) {
+        if (isLocalProfileActive() && redissonClient != null) {
             try {
                 sem = redissonClient.getSemaphore("sem:heavy:timeout-gateway");
                 sem.trySetPermits(1);
                 sem.tryAcquire(1);
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
+                log.warn("[SampleRedisIntegrationTest] 信号量配额预占异常: {}", ex.getMessage());
             }
         }
 
@@ -886,7 +947,8 @@ class SampleRedisIntegrationTest {
             if (sem != null) {
                 try {
                     sem.release(1);
-                } catch (Exception ignored) {
+                } catch (Exception ex) {
+                    log.warn("[SampleRedisIntegrationTest] 信号量释放异常: {}", ex.getMessage());
                 }
             }
         }
@@ -940,7 +1002,8 @@ class SampleRedisIntegrationTest {
         if (redisTemplate != null && redisTemplate.opsForValue() != null) {
             try {
                 redisTemplate.opsForValue().set("sample:user:1001", "test1");
-            } catch (Exception ignored) {
+            } catch (Exception ex) {
+                log.warn("[SampleRedisIntegrationTest] 写入测试键异常: {}", ex.getMessage());
             }
         }
         Set<String> matchedKeys = scriptExecutionScenarioService.scanKeys("sample:user:*", 100);
@@ -955,7 +1018,7 @@ class SampleRedisIntegrationTest {
     @DisplayName("场景7：Pub/Sub 精确主题公告广播与通配模式主题事件监听")
     void testNoticeBroadcastAndPatternSubscription() throws Exception {
         noticeBroadcastScenarioService.reset(1, 1);
-        Thread.sleep(300);
+        TimeUnit.MILLISECONDS.sleep(50);
 
         // 1. 精确主题广播公告
         NoticeBroadcastPayload payload = new NoticeBroadcastPayload("NOT_001", "系统升级维护公告", "系统将于凌晨02:00维护升级", System.currentTimeMillis());

@@ -273,7 +273,12 @@ public class RedisIdempotentTemplate {
     public boolean tryAcquire(String prefix, String key, Duration ttl) {
         Assert.hasText(key, "idempotent key must not be blank");
         Duration effectiveTtl = resolveEffectiveTtl(ttl);
-        return getBucket(prefix, key).setIfAbsent(IdempotentStatus.TRYING.name(), effectiveTtl);
+        try {
+            return getBucket(prefix, key).setIfAbsent(IdempotentStatus.TRYING.name(), effectiveTtl);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis 幂等抢占底层异常: key=" + formatKey(prefix, key) + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -296,7 +301,12 @@ public class RedisIdempotentTemplate {
     public void setSuccess(String prefix, String key, Duration ttl) {
         Assert.hasText(key, "idempotent key must not be blank");
         Duration effectiveTtl = resolveEffectiveTtl(ttl);
-        getBucket(prefix, key).set(IdempotentStatus.SUCCESS.name(), effectiveTtl);
+        try {
+            getBucket(prefix, key).set(IdempotentStatus.SUCCESS.name(), effectiveTtl);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis 更新幂等状态为 SUCCESS 底层异常: key=" + formatKey(prefix, key) + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -319,7 +329,12 @@ public class RedisIdempotentTemplate {
     public void setFailed(String prefix, String key, Duration ttl) {
         Assert.hasText(key, "idempotent key must not be blank");
         Duration effectiveTtl = resolveEffectiveTtl(ttl);
-        getBucket(prefix, key).set(IdempotentStatus.FAILED.name(), effectiveTtl);
+        try {
+            getBucket(prefix, key).set(IdempotentStatus.FAILED.name(), effectiveTtl);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis 更新幂等状态为 FAILED 底层异常: key=" + formatKey(prefix, key) + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -341,7 +356,12 @@ public class RedisIdempotentTemplate {
      */
     public boolean delete(String prefix, String key) {
         Assert.hasText(key, "idempotent key must not be blank");
-        return getBucket(prefix, key).delete();
+        try {
+            return getBucket(prefix, key).delete();
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis 删除幂等 Key 底层异常: key=" + formatKey(prefix, key) + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**
@@ -363,8 +383,13 @@ public class RedisIdempotentTemplate {
      */
     public IdempotentStatus getStatus(String prefix, String key) {
         Assert.hasText(key, "idempotent key must not be blank");
-        String value = getBucket(prefix, key).get();
-        return IdempotentStatus.fromString(value);
+        try {
+            String value = getBucket(prefix, key).get();
+            return IdempotentStatus.fromString(value);
+        } catch (Exception e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "Redis 获取幂等状态底层异常: key=" + formatKey(prefix, key) + ", error=" + e.getMessage(), e);
+        }
     }
 
     /**

@@ -74,17 +74,18 @@ public class RedisAtomicUtil {
     private static final RedisScript<Long> CAS_SCRIPT = new DefaultRedisScript<>(
             """
             local current = redis.call('GET', KEYS[1])
-            local expect = ARGV[1]
-            local update = ARGV[2]
-            local expireSec = tonumber(ARGV[3] or -1)
+            local hasExpect = tonumber(ARGV[1])
+            local expectVal = ARGV[2]
+            local update = ARGV[3]
+            local expireSec = tonumber(ARGV[4] or -1)
 
             local matched = false
             if not current then
-                if expect == 'null' then
+                if hasExpect == 0 then
                     matched = true
                 end
             else
-                if expect ~= 'null' and tonumber(current) == tonumber(expect) then
+                if hasExpect == 1 and tonumber(current) == tonumber(expectVal) then
                     matched = true
                 end
             end
@@ -245,12 +246,15 @@ public class RedisAtomicUtil {
         Assert.hasText(key, "key must not be blank");
         Assert.notNull(update, "update must not be null");
         long expireSeconds = (timeout != null && !timeout.isZero() && !timeout.isNegative()) ? Math.max(1, timeout.toSeconds()) : -1L;
+        String hasExpect = expect != null ? "1" : "0";
+        String expectVal = expect != null ? String.valueOf(expect) : "0";
         Long result = redisTemplate.execute(
                 CAS_SCRIPT,
                 STRING_SERIALIZER,
                 null,
                 Collections.singletonList(key),
-                expect != null ? String.valueOf(expect) : "null",
+                hasExpect,
+                expectVal,
                 String.valueOf(update),
                 String.valueOf(expireSeconds)
         );

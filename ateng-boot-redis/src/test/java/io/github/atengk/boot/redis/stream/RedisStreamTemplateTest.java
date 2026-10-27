@@ -10,10 +10,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisStreamCommands;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.PendingMessages;
+import org.springframework.data.redis.connection.stream.PendingMessagesSummary;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.Record;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -24,6 +27,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -217,6 +221,66 @@ class RedisStreamTemplateTest {
 
         List<MapRecord<String, Object, Object>> records = template.read(consumer, options, offset);
         assertThat(records).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("测试查询 Pending 概要与明细 (XPENDING)")
+    void testPendingSummaryAndMessages() {
+        PendingMessagesSummary mockSummary = mock(PendingMessagesSummary.class);
+        when(streamOps.pending("sample:order-stream", "order-group")).thenReturn(mockSummary);
+
+        PendingMessagesSummary summary = template.pendingSummary("order-stream", "order-group");
+        assertThat(summary).isSameAs(mockSummary);
+
+        PendingMessages mockMessages = mock(PendingMessages.class);
+        when(streamOps.pending(eq("sample:order-stream"), eq("order-group"), any(Range.class), eq(10L)))
+                .thenReturn(mockMessages);
+
+        PendingMessages messages = template.pending("order-stream", "order-group", Range.unbounded(), 10L);
+        assertThat(messages).isSameAs(mockMessages);
+    }
+
+    @Test
+    @DisplayName("测试孤儿消息认领转移 (XCLAIM)")
+    void testClaim() {
+        RecordId recordId = RecordId.of("100-0");
+        Map<Object, Object> valueMap = new HashMap<>();
+        valueMap.put("orderId", "ORD_CLAIM");
+        MapRecord<String, Object, Object> record = MapRecord.create("sample:task-stream", valueMap).withId(recordId);
+
+        when(streamOps.claim(eq("sample:task-stream"), eq("task-group"), eq("consumer-2"),
+                eq(Duration.ofMinutes(1)), eq(new RecordId[]{recordId})))
+                .thenReturn(List.of(record));
+
+        List<MapRecord<String, Object, Object>> claimed = template.claim("task-stream", "task-group", "consumer-2",
+                Duration.ofMinutes(1), recordId);
+
+        assertThat(claimed).hasSize(1);
+        assertThat(claimed.get(0).getId()).isEqualTo(recordId);
+    }
+
+    @Test
+    @DisplayName("测试销毁消费组时序列化器为 null 时的平滑降级与底层异常转译")
+    void testDestroyGroupFallbackAndException() {
+        when(redisTemplate.getStringSerializer()).thenReturn(null);
+        doAnswer(inv -> {
+            RedisCallback<?> cb = inv.getArgument(0);
+            RedisConnection conn = mock(RedisConnection.class);
+            RedisStreamCommands commands = mock(RedisStreamCommands.class);
+            when(conn.streamCommands()).thenReturn(commands);
+            when(commands.xGroupDestroy(any(), eq("test-group"))).thenReturn(true);
+            return cb.doInRedis(conn);
+        }).when(redisTemplate).execute(any(RedisCallback.class));
+
+        Boolean destroyed = template.destroyGroup("order-stream", "test-group");
+        assertThat(destroyed).isTrue();
+
+        // 异常转译测试
+        when(redisTemplate.execute(any(RedisCallback.class))).thenThrow(new RuntimeException("Redis connection lost"));
+        assertThatThrownBy(() -> template.destroyGroup("order-stream", "test-group"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(ex -> ((BusinessException) ex).getCode())
+                .isEqualTo(CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
     }
 
     @Test

@@ -112,7 +112,12 @@ public class RedisIdempotentAspect {
                 throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
                         "幂等键 SpEL 表达式计算结果为空: " + spelExpression);
             }
-            return value.toString();
+            String strVal = value.toString().trim();
+            if (strVal.isEmpty()) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                        "幂等键 SpEL 表达式计算结果为空白字符: " + spelExpression);
+            }
+            return strVal;
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {

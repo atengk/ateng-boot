@@ -261,13 +261,12 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
                               String consumerName, MapRecord<String, Object, Object> record,
                               boolean autoAck, int maxRetries) {
         String recordTraceId = extractTraceId(record);
-        boolean traceGenerated = false;
+        String previousTraceId = MDC.get(MDC_TRACE_ID_KEY);
 
         if (StringUtils.hasText(recordTraceId)) {
             MDC.put(MDC_TRACE_ID_KEY, recordTraceId);
-        } else if (MDC.get(MDC_TRACE_ID_KEY) == null) {
+        } else if (previousTraceId == null) {
             MDC.put(MDC_TRACE_ID_KEY, IdUtil.fastSimpleUUID());
-            traceGenerated = true;
         }
 
         int attempt = 0;
@@ -301,7 +300,7 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
                     redisStreamTemplate.acknowledge(stream, group, record.getId());
                 }
             } else if (attempt > maxRetries) {
-                // 重试耗尽，转移至死信流并触发 SPI 回调
+                // 重试耗尽，转移至死信流并触发 SPI 回调；仅当死信成功入队后才安全 ACK 确认原消息
                 try {
                     RecordId dlqRecordId = redisStreamTemplate.transferToDeadLetter(
                             stream, group, consumerName, record, attempt, lastError);
@@ -322,12 +321,18 @@ public class StreamBootstrap implements SmartInitializingSingleton, DisposableBe
                                 .build();
                         failureHandler.onFailure(dlm);
                     }
+
+                    if (autoAck) {
+                        redisStreamTemplate.acknowledge(stream, group, record.getId());
+                    }
                 } catch (Exception ex) {
-                    log.error("[RedisStream] 转移死信队列异常: stream={}, id={}", stream, record.getId(), ex);
+                    log.error("[RedisStream] 转移死信队列异常，保留原消息在 PEL 中不执行 ACK: stream={}, id={}", stream, record.getId(), ex);
                 }
             }
         } finally {
-            if (traceGenerated) {
+            if (previousTraceId != null) {
+                MDC.put(MDC_TRACE_ID_KEY, previousTraceId);
+            } else {
                 MDC.remove(MDC_TRACE_ID_KEY);
             }
         }

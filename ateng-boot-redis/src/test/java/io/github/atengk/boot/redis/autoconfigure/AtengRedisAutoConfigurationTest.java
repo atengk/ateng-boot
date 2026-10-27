@@ -1,5 +1,8 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RedissonClient;
@@ -21,6 +24,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * AtengRedisAutoConfiguration 自动装配单元测试
@@ -360,5 +364,24 @@ class AtengRedisAutoConfigurationTest {
         assertThat(config.useSingleServer().getConnectionMinimumIdleSize()).isEqualTo(8);
         assertThat(config.useSingleServer().getRetryAttempts()).isEqualTo(5);
         assertThat(config.useSingleServer().getRetryInterval()).isEqualTo(2000);
+    }
+
+    @Test
+    @DisplayName("验证自定义 Template Bean 时，静态门面仍能被 SmartInitializingSingleton 正确初始化接管")
+    void shouldInitializeStaticFacadesWhenCustomTemplatesProvided() {
+        RedisSemaphoreTemplate customSemaphore = mock(RedisSemaphoreTemplate.class);
+        DistributedLockTemplate customLock = mock(DistributedLockTemplate.class);
+        RedisIdempotentTemplate customIdempotent = mock(RedisIdempotentTemplate.class);
+
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withBean("redisSemaphoreTemplate", RedisSemaphoreTemplate.class, () -> customSemaphore)
+                .withBean("distributedLockTemplate", DistributedLockTemplate.class, () -> customLock)
+                .withBean("redisIdempotentTemplate", RedisIdempotentTemplate.class, () -> customIdempotent)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RedisSemaphoreTemplate.class);
+                    assertThat(context.getBean(RedisSemaphoreTemplate.class)).isSameAs(customSemaphore);
+                    when(customSemaphore.availablePermits("test:quota")).thenReturn(88);
+                    assertThat(io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil.availablePermits("test:quota")).isEqualTo(88);
+                });
     }
 }
