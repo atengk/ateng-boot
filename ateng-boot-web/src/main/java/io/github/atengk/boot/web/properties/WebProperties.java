@@ -175,7 +175,7 @@ public class WebProperties {
         private boolean enabled = false;
 
         /**
-         * 默认签名算法（默认 HMAC_SHA256 对称哈希，可选 RSA 非对称算法）
+         * 默认签名算法（默认 HMAC_SHA256 对称哈希，可选 RSA 非对称算法、SM2 国密非对称算法）
          */
         private SignAlgorithm algorithm = SignAlgorithm.HMAC_SHA256;
 
@@ -190,12 +190,12 @@ public class WebProperties {
         private String secretKey;
 
         /**
-         * 非对称算法公钥（RSA X.509 Base64 格式，用于入站验签）
+         * 非对称算法公钥（RSA X.509 Base64 或 SM2 Hex/Base64 格式，用于入站验签）
          */
         private String publicKey;
 
         /**
-         * 非对称算法私钥（RSA PKCS#8 Base64 格式，用于出站加签）
+         * 非对称算法私钥（RSA PKCS#8 Base64 或 SM2 Hex/Base64 格式，用于出站加签）
          */
         private String privateKey;
 

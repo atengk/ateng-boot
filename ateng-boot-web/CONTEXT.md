@@ -140,4 +140,38 @@ _Avoid_: SlowFilter, LatencyFilter, RequestTimeoutFilter
 HTTP 请求与响应双向安全采样日志过滤器，内建 MIME 过滤、强类型截断、凭据正则脱敏与单行聚合输出。
 _Avoid_: HttpDumpFilter, RequestResponseLogFilter, BodyPrintFilter
 
+**SecurityHeadersFilter**:
+向 HTTP 响应安全注入 OWASP 与等保三级推荐标准防护头（nosniff、SAMEORIGIN、xss-protection、referrer-policy）并抹除容器版本指纹的过滤器。
+_Avoid_: SecurityFilter, HeaderFilter, SafeHeaderFilter
+
+**XssFilter**:
+XSS 跨站脚本安全清洗过滤器，协调请求包装器与 Jackson 反序列化器对 Query、Form 及 JSON 请求体实施双轨无害化清洗。
+_Avoid_: AntiXssFilter, CleanFilter, ScriptFilter
+
+**ApiVersion**:
+声明式 API 多版本控制注解，配合 Spring MVC 原生 RequestCondition 挂载 URI 路径版本（/v{version}/）与请求头版本（X-API-Version）精准分流。
+_Avoid_: VersionMapping, ApiV, VersionControl
+
+**IpAccessControl**:
+声明式 IP 访问控制注解，支持单 IP 与 IPv4/IPv6 CIDR 子网白名单/黑名单校验与快速拒绝。
+_Avoid_: IpFilter, IpGuard, Firewall, ClientIpAuth
+
+**Sm2Signer**:
+基于国密 SM2 椭圆曲线数字签名算法与 SM3 杂凑摘要实现的 API 双向加签验签器，满足信创高合规场景。
+_Avoid_: GmSigner, SmSigner, NationalCryptoSigner
+
+**GlobalExceptionCustomizer**:
+全局异常转译扩展点 SPI，允许业务方在标准 GlobalExceptionHandler 前置挂载特定领域异常的友好转译逻辑。
+_Avoid_: ExceptionHandlerCustomizer, ErrorCustomizer, ExceptionSPI
+
+**XssIgnore**:
+XSS 清洗豁免注解，声明于 Controller DTO 实体属性或类上，指示 Jackson 反序列化器对特定富文本或 Markdown 字段跳过清洗。
+_Avoid_: NoXss, SkipXss, RawHtml, IgnoreXss
+
+**IpAccessMode**:
+IP 访问控制校验模式枚举，定义白名单（WHITE_LIST，仅允许列表内 IP 访问）与黑名单（BLACK_LIST，拒绝列表内 IP 访问）策略。
+_Avoid_: IpRuleType, AccessPolicy, FirewallMode
+
+
+
 

@@ -265,12 +265,16 @@ public class ApiSignAspect {
 
     private String getVerifyKey(String appId) {
         SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return algorithm == SignAlgorithm.RSA ? signKeyProvider.getPublicKey(appId) : signKeyProvider.getSecretKey(appId);
+        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
+                ? signKeyProvider.getPublicKey(appId)
+                : signKeyProvider.getSecretKey(appId);
     }
 
     private String getSignKey(String appId) {
         SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return algorithm == SignAlgorithm.RSA ? signKeyProvider.getPrivateKey(appId) : signKeyProvider.getSecretKey(appId);
+        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
+                ? signKeyProvider.getPrivateKey(appId)
+                : signKeyProvider.getSecretKey(appId);
     }
 
     private String resolveAppId(HttpServletRequest request) {

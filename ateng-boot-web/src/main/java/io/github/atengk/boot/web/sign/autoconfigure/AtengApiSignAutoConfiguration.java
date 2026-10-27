@@ -11,6 +11,7 @@ import io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter;
 import io.github.atengk.boot.web.sign.provider.DefaultSignKeyProvider;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
+import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import io.github.atengk.boot.web.trace.TraceFilter;
@@ -51,7 +52,7 @@ public class AtengApiSignAutoConfiguration {
     }
 
     /**
-     * 注册 API 签名器实现（按配置算法自适应装配 HMAC-SHA256 或 RSA）
+     * 注册 API 签名器实现（按配置算法自适应装配 HMAC-SHA256、RSA 或 SM2）
      *
      * @param webProperties 配置属性
      * @return ApiSigner 实例
@@ -59,6 +60,9 @@ public class AtengApiSignAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(ApiSigner.class)
     public ApiSigner apiSigner(WebProperties webProperties) {
+        if (webProperties.getSign().getAlgorithm() == SignAlgorithm.SM2) {
+            return new Sm2Signer();
+        }
         if (webProperties.getSign().getAlgorithm() == SignAlgorithm.RSA) {
             return new RsaSigner();
         }

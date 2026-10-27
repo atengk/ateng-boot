@@ -5,6 +5,7 @@ import io.github.atengk.boot.web.sign.aspect.ApiSignAspect;
 import io.github.atengk.boot.web.sign.filter.RequestBodyCachingFilter;
 import io.github.atengk.boot.web.sign.signer.HmacSha256Signer;
 import io.github.atengk.boot.web.sign.signer.RsaSigner;
+import io.github.atengk.boot.web.sign.signer.Sm2Signer;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import org.junit.jupiter.api.DisplayName;
@@ -64,6 +65,18 @@ class AtengApiSignAutoConfigurationTest {
         ).run(context -> {
             assertThat(context).hasSingleBean(ApiSigner.class);
             assertThat(context.getBean(ApiSigner.class)).isInstanceOf(RsaSigner.class);
+        });
+    }
+
+    @Test
+    @DisplayName("配置 algorithm=SM2 时自动装配 Sm2Signer 实例")
+    void shouldLoadSm2SignerWhenConfigured() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.sign.enabled=true",
+                "ateng.boot.web.sign.algorithm=SM2"
+        ).run(context -> {
+            assertThat(context).hasSingleBean(ApiSigner.class);
+            assertThat(context.getBean(ApiSigner.class)).isInstanceOf(Sm2Signer.class);
         });
     }
 

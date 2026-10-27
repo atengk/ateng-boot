@@ -10,7 +10,7 @@
 - **纯内存零 DB 依赖（Zero Database Dependency）**：零关系型数据库，完全依托内存存储与 Mock 环境自洽运行；
 - **显式契约与第一道防线校验**：坚决杜绝 `@ResponseBodyAdvice` 隐式拦截包装，验证 `Result<T>`、`ValidList<T>` 批量校验、分组校验、Long 精度防失真与时间标准化；
 - **全链路追踪与运行时观测**：验证 `TraceFilter` & `TraceUtil` MDC 链路流转、`SlowRequestFilter` 慢请求性能主动告警与长连接放行、虚拟线程执行探查；
-- **双向数据安全与加验签防重放**：验证 `@ApiSign` HMAC-SHA256 对称加签与 RSA 非对称加签、Query/Body 报文防篡改与 Nonce 防重放；
+- **双向数据安全与加验签防重放**：验证 `@ApiSign` HMAC-SHA256 对称加签、RSA 非对称加签与国密 SM2/SM3 非对称加签、Query/Body 报文防篡改与 Nonce 防重放；
 - **高可用流量治理**：验证 `@RateLimiter` 接口/IP/用户/租户多维限流与 `@Idempotent` SpEL 防重幂等、按钮防抖与异常重试；
 - **结构化审计与环境安全**：验证 `@OperateLog` 操作审计出参动态脱敏与敏感参数排除、`OperateLogStorageProvider` SPI 内存收集、`IpUtil` 真实 IP 穿透与 RFC 6266 双重文件名流式下载。
 
@@ -23,7 +23,7 @@
 | 场景控制器 / 组件 | 覆盖核心门面与注解 | 对应端到端测试 |
 | :--- | :--- | :--- |
 | `WebContractSampleController` | `Result<T>`, `ValidList<T>`, `ValidationGroups`, `GlobalExceptionHandler`, `BusinessException`, `JacksonCustomizer` | `WebContractSampleControllerTest` |
-| `WebSecuritySignSampleController` | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `SignCanonicalUtil`, `CachedBodyHttpServletRequest` | `WebSecuritySignSampleControllerTest`, `WebSecuritySignRsaSampleTest` |
+| `WebSecuritySignSampleController` | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignCanonicalUtil`, `CachedBodyHttpServletRequest` | `WebSecuritySignSampleControllerTest`, `WebSecuritySignRsaSampleTest`, `WebSecuritySignSm2SampleTest` |
 | `WebTrafficSampleController` | `@RateLimiter`, `LimitType`, `InMemoryRateLimiterStore`, `@Idempotent`, `InMemoryIdempotentStore` | `WebTrafficSampleControllerTest` |
 | `WebAuditSampleController` | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `@WebLog`, `@FieldSensitive` | `WebAuditSampleControllerTest` |
 | `WebRuntimePipelineSampleController` | `TraceFilter`, `TraceUtil`, `ContentCachingFilter`, `SlowRequestFilter`, `IpUtil`, `ServletUtil`, `/pre-stop` | `WebRuntimePipelineSampleControllerTest` |
@@ -53,10 +53,18 @@ public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<UserRegist
 
 ### 2. 双向 API 加签验签与防重放 (`@ApiSign`)
 ```java
+// 1. 标准下单业务接口（支持 HMAC-SHA256、RSA）
 @PostMapping("/orders")
 @ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
 public Result<String> createOrder(@Valid @RequestBody OrderSignDTO dto) {
     return Result.success("ORD_SIGNED_" + dto.getOrderNo());
+}
+
+// 2. 国密 SM2/SM3 数字签名接口（政企信创高合规场景，纯 JDK 17 原生实现）
+@PostMapping("/sm2")
+@ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+public Result<String> createOrderSm2(@Valid @RequestBody OrderSignDTO dto) {
+    return Result.success("SM2_SIGNED_" + dto.getOrderNo());
 }
 ```
 客户端携带 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 发送请求；服务端验签通过后，在响应头回传 `X-Signature`。若重复提交同一 Nonce 或报文被篡改，立即拦截阻断：

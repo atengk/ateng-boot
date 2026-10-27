@@ -16,5 +16,10 @@ public enum SignAlgorithm {
     /**
      * RSA SHA256withRSA 非对称签名算法（公私钥分离，推荐开放平台对外生态）
      */
-    RSA
+    RSA,
+
+    /**
+     * 国密 SM2 (GB/T 32918.2-2016) / SM3 非对称数字签名算法（政企与信创金融合规要求）
+     */
+    SM2
 }

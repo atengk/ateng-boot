@@ -19,8 +19,20 @@ import org.springframework.web.bind.annotation.RestController;
  * @since 2026-10-19
  */
 @RestController
-@RequestMapping("/api/sample/sign")
+@RequestMapping({"/api/sample/sign", "/api/sample/security/sign"})
 public class WebSecuritySignSampleController {
+
+    /**
+     * 国密 SM2/SM3 双向加验签：接收 JSON Body，验签入站请求并对返回的 Result 加签回写响应头
+     *
+     * @param dto 订单载荷
+     * @return 签名确认标识
+     */
+    @PostMapping("/sm2")
+    @ApiSign(verifyRequest = true, signResponse = true, expireSeconds = 10)
+    public Result<String> createOrderSm2(@Valid @RequestBody OrderSignDTO dto) {
+        return Result.success("SM2_SIGNED_" + dto.getOrderNo());
+    }
 
     /**
      * 双向加验签：接收 JSON Body，验签入站请求并对返回的 Result 加签回写响应头

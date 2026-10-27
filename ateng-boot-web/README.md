@@ -32,7 +32,7 @@
 | **结构化操作审计** | 企业级操作审计切面与存储解耦 SPI | `@OperateLog`, `OperateLogAspect`, `OperateLogStorageProvider`, `DefaultOperateLogStorageProvider`, `OperateLogEvent` | `ateng.boot.web.operate-log.enabled` | `@OperateLog(module, type, description, saveParams, saveResult, excludeParams)`，自动关联线程上下文（操作人/租户），出参自动联动 `@FieldSensitive` 视图脱敏，保留原始异常因果链，支持异步存储 SPI 与开箱即用 JSON 保底 | `OperateLogAspectTest.java`, `OperateLogAutoConfigurationTest.java`, `WebAuditSampleControllerTest.java` |
 | **请求体可重读管道** | 通用请求体重复多次读取与载荷防爆管道 | `ContentCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.body-cache.max-body-size`, `sign.enabled`, `payload-log.enabled` | 自动包装 POST/PUT/PATCH 请求为可重复读包装器，支持多次重复消费输入流，单次超限（DataSize）快速失败截断防 OOM，自动跳过表单与文件上传，旧版 `RequestBodyCachingFilter` 保持向后兼容委托 | `ContentCachingFilterTest.java`, `ContentCachingAutoConfigurationTest.java`, `ContentCachingMockMvcTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **载荷采样日志** | HTTP 请求/响应双向安全采样与截断防 OOM | `PayloadLoggingFilter` | `ateng.boot.web.payload-log.enabled`, `max-payload-size`, `exclude-urls` | 请求出口处单行聚合输出包含 TraceId、Method、URI、Status、Cost、ReqBody 与 RespBody 的 `[HTTP_PAYLOAD]` 日志，内建 MIME 过滤、凭据正则掩码（`***`）、强类型截断（默认 4KB）、状态自适应提升（$\ge 400$ 提升为 WARN）并在 `finally` 确定性执行 `copyBodyToResponse()` | `PayloadLoggingFilterTest.java`, `PayloadLoggingMockMvcTest.java` |
-| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称与 RSA 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java` |
+| **双向加签验签** | API 报文防篡改防重放加签验签引擎 | `@ApiSign`, `ApiSigner`, `HmacSha256Signer`, `RsaSigner`, `Sm2Signer`, `SignKeyProvider`, `DefaultSignKeyProvider`, `SignCanonicalUtil`, `RequestBodyCachingFilter`, `CachedBodyHttpServletRequest` | `ateng.boot.web.sign.enabled`, `algorithm`, `app-id`, `secret-key`, `public-key`, `private-key`, `expire`, `max-body-size`, `header-app-id`, `header-timestamp`, `header-nonce`, `header-signature` | `@ApiSign(expireSeconds, signResponse)`，支持 HMAC-SHA256 对称、RSA 非对称与国密 SM2/SM3 非对称算法，请求体可重读包装，Nonce 防重放与响应加签 | `ApiSignerTest.java`, `Sm2SignerTest.java`, `SignCanonicalUtilTest.java`, `AtengApiSignAutoConfigurationTest.java`, `RequestBodyCachingFilterTest.java`, `WebSecuritySignSampleControllerTest.java`, `WebSecuritySignRsaSampleTest.java`, `WebSecuritySignSm2SampleTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与安全清洗 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`，穿透 X-Forwarded-For 等多级代理，过滤内网伪造，规整 IPv6 本地环回 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 
@@ -208,7 +208,7 @@ public class DatabaseCorsOriginProvider implements CorsOriginProvider {
 ## 10. 双向 API 数据加签验签与防重放 (`@ApiSign`)
 
 ### 场景痛点
-对外开放 OpenAPI、移动端通信防数据篡改与重放反爬攻击。
+对外开放 OpenAPI、移动端通信防数据篡改与重放反爬攻击；政企、金融信创场景强制合规要求中国商用密码（国密 SM2/SM3）数字签名，且严禁引入沉重外部加密包。
 
 ### 核心代码范式
 ```java
@@ -225,6 +225,22 @@ public class OpenApiController {
         return Result.success(dataService.handle(dto));
     }
 }
+```
+
+### 国密 SM2/SM3 签名算法引擎
+模块内建纯 JDK 17 原生国密 `Sm2Signer`（实现 `ApiSigner` 接口），零引入任何 Bouncy Castle 外部依赖：
+```java
+// 1. 生成全新 SM2 密钥对（包含 Hex 与 Base64 格式）
+Sm2Signer.Sm2KeyPair keyPair = Sm2Signer.generateKeyPair();
+String privateKeyHex = keyPair.privateKeyHex();
+String publicKeyHex = keyPair.publicKeyHex();
+
+// 2. 客户端使用私钥加签
+Sm2Signer signer = new Sm2Signer();
+String signature = signer.sign(canonicalString, privateKeyHex);
+
+// 3. 服务端或验签方使用公钥验签（自动支持 ASN.1 DER 与裸 64 字节 Base64 签名）
+boolean valid = signer.verify(canonicalString, signature, publicKeyHex);
 ```
 
 ---
@@ -596,10 +612,14 @@ ateng:
       sign:
         # 是否启用 API 接口双向加签验签与防重放引擎（默认 false，按需开启）
         enabled: false
-        # 签名算法（支持 HMAC_SHA256、RSA，默认 HMAC_SHA256）
+        # 签名算法（支持 HMAC_SHA256、RSA、SM2，默认 HMAC_SHA256）
         algorithm: HMAC_SHA256
         # 对称密钥（HMAC_SHA256 算法下使用）
         secret-key: "YourSecretKey"
+        # 非对称算法公钥（RSA X.509 Base64 或 SM2 Hex/Base64，用于入站验签）
+        public-key: "YourPublicKey"
+        # 非对称算法私钥（RSA PKCS#8 Base64 或 SM2 Hex/Base64，用于出站加签）
+        private-key: "YourPrivateKey"
         # 全局签名时效窗口（强类型 Duration，默认 60s；向后兼容 expire-seconds: 60）
         expire: 60s
         # 请求体缓存最大载荷大小（强类型 DataSize 防 OOM，支持 2MB, 10MB 等，默认 2MB）
