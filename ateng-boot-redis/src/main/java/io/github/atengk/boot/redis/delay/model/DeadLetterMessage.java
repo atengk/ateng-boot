@@ -1,5 +1,7 @@
 package io.github.atengk.boot.redis.delay.model;
 
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+
 import java.io.Serializable;
 import java.time.LocalDateTime;
 
@@ -17,6 +19,7 @@ import java.time.LocalDateTime;
  * @author Ateng
  * @since 2026-10-19
  */
+@JsonTypeInfo(use = JsonTypeInfo.Id.CLASS, include = JsonTypeInfo.As.PROPERTY, property = "@class")
 public record DeadLetterMessage<T>(
         String originalQueue,
         T payload,

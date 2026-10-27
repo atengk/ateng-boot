@@ -101,6 +101,7 @@
      ```bash
      mvn test -pl <changed-module>,ateng-boot-samples/ateng-boot-sample-<scenario> -am -T 1C -nsu -B
      ```
+     **远程服务真实联调（若具备环境）**：若变更涉及远程网络中间件（如 Redis、MQ、Storage、DB 等），且本地已配置 `application-local.yml` 真实服务，须在激活 `local` 环境下执行该 Sample 集成测试，验证真实连通、业务断言全绿与数据现场清理完毕后方可放行准出；若本地无环境，须在工单显式登记豁免。
   3. **阶梯三：全反应堆多 JDK 矩阵终极守护 (Post-Push CI Gate)**：全反应堆所有模块（100% 模块全集）在 Linux/Windows 及 JDK 17 & 21 矩阵下的全量回归，100% 交由 GitHub Actions CI 云端并行工作流异步守护；本地推送后通过 `gh run watch <run-id>` 闭环跟踪至全绿。
 - **纯文档修改测试豁免 (Doc-Only Exemption)**：若本次变更仅涉及文档（如 `*.md`、纯文本或注释说明）而未改动任何业务源码、配置文件与工程依赖，一律免除执行本地 Maven 单元测试与场景准出验证，直接受控提交。
 
@@ -108,6 +109,21 @@
   1. **临时资源隔离**：单测涉及文件与磁盘 IO 时，强制使用 JUnit 5 原生 `@TempDir` 注入临时目录，测试结束后由引擎自动物理销毁，严禁在工程或系统磁盘残留临时文件；
   2. **上下文零污染**：任何涉及修改上下文（如 `UserContextHolder`、`TenantContextHolder`、`SecurityContext`、MDC 等）的测试用例，必须在 `@AfterEach` 中无条件执行重置与清理，杜绝跨测试用例的线程脏读；
   3. **100% 离线自洽**：单测必须具备完全离线独立运行能力（纯内存库 H2、嵌入式模式或纯 Mock），绝对严禁依赖外部真实物理网络服务与云环境。
+
+- **远程服务模块本地联调与验证铁律 (Local Service Integration Invariant)**：
+  凡涉及需要连接外部网络与远程服务（如 Redis、RabbitMQ、Kafka、RocketMQ、MQTT、Search/Elasticsearch、Storage/MinIO、DataSource/MySQL/PG、Mail、FTP、SSH 等）的模块，必须严格遵循以下三项要求，兼顾本地真实联调与 CI 零干扰：
+  1. **单测试套件与双模自适应 (Dual-Mode Single-Suite Architecture)**：
+     - 坚决杜绝维护两套重复的测试代码！Sample 工程的集成测试必须直接复用同一套测试用例与业务断言；
+     - 测试类内部的离线 Mock/内存桩 `@TestConfiguration` 统一显式标注 `@Profile("!local")`；
+     - **默认/CI 模式**（未激活 `local` Profile）：自动装载 Mock 桩，保证 100% 离线自洽与极速构建；
+     - **Local 真实模式**（激活 `local` Profile）：Mock 桩自动失效，Spring Boot 原生自动装配生效并直连本地/远程真实服务，执行同一批业务测试；
+  2. **配置资产与 CI 零风险防线 (Zero-Risk CI & Secret Hygiene)**：
+     - **物理防护**：根目录 `.gitignore` 强制收敛忽略 `**/application-local*.yml` 与 `**/application-local*.properties`，绝对严禁公网真实 IP、端口与敏感凭据入库；
+     - **标准模板**：归属 Sample 工程的 `src/main/resources/` 统一提供 `application-local.example.yml`，所有连接串与凭据统一采用大写语义占位符（如 `YOUR_REDIS_HOST`、`YOUR_REDIS_PASSWORD`）作为基准模板提交 Git；
+     - **静默探测**：Sample 的 `application.yml` 统配 `spring.config.import: "optional:classpath:application-local.yml"` 弹性探测机制。在 GitHub Actions CI 上该物理文件不存在时，系统自动静默忽略并保持离线自洽，确保 GitHub Actions CI 100% 稳定全绿；
+  3. **全真断言与服务缺失豁免 (Real Assertion & Exemption Mechanics)**：
+     - **全真强断言**：只要本地配置了 `application-local.yml` 并激活 `local`，测试必须全真走通核心读写、加锁、投递等业务链路并强断言成功，并在 `@AfterEach` 中确定性清理测试残留数据；连接失败直接熔断报错，严禁静默吞掉异常；
+     - **环境缺失豁免**：若开发者本地确无条件提供对应远程服务（如商业专有云服务或本地未部署中间件），经由工单/对话明确声明后，允许在交付审查清单中标记 `[豁免：无可用环境]`，直接以离线自洽测试准出。
 
 - **五维生产就绪交付模型 (The 5D Production-Ready Invariant)**：
   子模块 `README.md` 面向真实生产接入者，严禁仅停留在简单 Demo 的自嗨罗列；任何新增或修改的功能特性，必须正交覆盖以下五个维度，缺一即阻断准出：
@@ -188,8 +204,9 @@
        - [ ] **代码-文档真理一致性**：文档中展示的代码与 YAML 是否直接截取自已跑通的单测/Sample？方法名与参数签名是否完全对齐？
        - [ ] **九道成熟度防线自检**：是否通过对称门面、边界 Fail-Fast、确定性清理、超时防悬挂、驱动异常转译等全部 9 项检查？
        - [ ] **单测环境隔离**：是否使用 `@TempDir`、在 `@AfterEach` 中清理上下文、100% 离线自洽？
+       - [ ] **远程服务本地真实验证 (Local Integration)**：若模块涉及远程外部服务（Redis、MQ、Storage、DB 等），是否已在对应 Sample 提供 `application-local.example.yml` 纯占位符模板？若本地具备服务环境，是否在 `local` 模式下跑通真实集成测试？（若本地无可用服务，是否已显式标记 `[豁免：无可用环境]`？）
        - [ ] **传输契约隔离**：Controller 传输边界是否 100% 杜绝持久层实体（Entity）泄露？
-     - **审查红牌阻断 (Red Card Gate)**：调用 `/code-review` 开展双轴审查；若审查发现模块公开功能在 Sample 中缺位、文档示例未经 Sample 真实跑通、文档漏写公开功能，或触碰成熟度红线，一律出具红牌阻断，强制返修直至双绿；
+     - **审查红牌阻断 (Red Card Gate)**：调用 `/code-review` 开展双轴审查；若审查发现模块公开功能在 Sample 中缺位、文档示例未经 Sample 真实跑通、文档漏写公开功能、涉及远程服务模块未提供 local 模板或具备环境却未真实测通、在可提交文件中泄漏真实网络凭据，或触碰成熟度红线，一律出具红牌阻断，强制返修直至双绿；
   4. **受控提交**：按第 5 节执行受控提交并推送（代码与文档同工单同提交原子交付）；
   5. **闭环**：守护 CI 监控至全绿，通过文件回写验收清单与提交哈希（`gh issue comment <n> -F <file>`），关闭工单（`gh issue close <n>`）。
 - **工单操作与 CLI 避坑 (Issue Tracker & CLI)**：操作 GitHub Issues / PR 或编写 PowerShell 交互命令时，遵循 [docs/agents/issue-tracker.md](./docs/agents/issue-tracker.md)（含特殊字符引号包裹、`-F` 文件回写防截断及 Wayfinding 映射）。

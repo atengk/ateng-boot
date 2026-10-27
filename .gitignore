@@ -36,3 +36,12 @@ Thumbs.db
 *.bak
 *.swp
 *~
+
+# Local Environment Configuration (Credentials & Secrets)
+**/application-local*.yml
+**/application-local*.yaml
+**/application-local*.properties
+!**/application-local.example.yml
+!**/application-local.example.yaml
+!**/application-local.example.properties
+
