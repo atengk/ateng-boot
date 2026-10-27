@@ -9,18 +9,19 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 
 /**
- * 广播发布订阅与声明式主题监听协同服务
+ * 广播发布订阅与声明式主题监听场景服务
  * 演示 Redis Pub/Sub：RedisMessagePublisher 广播发布与 @ChannelTopicListener 声明式消费
  *
  * @author Ateng
- * @since 2026-10-19
+ * @since 2026-10-27
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class NoticeBroadcastService {
+public class NoticeBroadcastScenarioService {
 
     public static final String TOPIC_NOTICE_BROADCAST = "sample:notice:broadcast";
     public static final String PATTERN_SYSTEM_EVENT = "sample:system:*";
@@ -29,6 +30,8 @@ public class NoticeBroadcastService {
 
     private final List<NoticeBroadcastPayload> receivedNotices = new CopyOnWriteArrayList<>();
     private final List<String> receivedSystemEvents = new CopyOnWriteArrayList<>();
+    private volatile CountDownLatch noticeLatch = new CountDownLatch(1);
+    private volatile CountDownLatch eventLatch = new CountDownLatch(1);
 
     /**
      * 向指定主题广播发布系统通知
@@ -37,7 +40,8 @@ public class NoticeBroadcastService {
      * @return 接收订阅客户端数
      */
     public Long publishNotice(NoticeBroadcastPayload notice) {
-        log.info("广播发布系统通知: topic={}, noticeId={}, title={}", TOPIC_NOTICE_BROADCAST, notice.getNoticeId(), notice.getTitle());
+        log.info("[NoticeBroadcast] 广播发布系统通知: topic={}, noticeId={}, title={}",
+                TOPIC_NOTICE_BROADCAST, notice.getNoticeId(), notice.getTitle());
         return redisMessagePublisher.publish(TOPIC_NOTICE_BROADCAST, notice);
     }
 
@@ -50,7 +54,7 @@ public class NoticeBroadcastService {
      */
     public Long publishSystemEvent(String eventType, String eventData) {
         String channel = "sample:system:" + eventType;
-        log.info("广播发布系统事件: channel={}, data={}", channel, eventData);
+        log.info("[NoticeBroadcast] 广播发布系统事件: channel={}, data={}", channel, eventData);
         return redisMessagePublisher.publish(channel, eventData);
     }
 
@@ -61,8 +65,9 @@ public class NoticeBroadcastService {
      */
     @ChannelTopicListener(topics = TOPIC_NOTICE_BROADCAST, concurrency = 1)
     public void onNoticeBroadcast(NoticeBroadcastPayload notice) {
-        log.info("声明式接收系统公告广播: noticeId={}, title={}", notice.getNoticeId(), notice.getTitle());
+        log.info("[NoticeBroadcast] 声明式接收系统公告广播: noticeId={}, title={}", notice.getNoticeId(), notice.getTitle());
         receivedNotices.add(notice);
+        noticeLatch.countDown();
     }
 
     /**
@@ -73,25 +78,31 @@ public class NoticeBroadcastService {
      */
     @ChannelTopicListener(patterns = PATTERN_SYSTEM_EVENT, concurrency = 1)
     public void onSystemEvent(String eventData, String channel) {
-        log.info("声明式通配监听到系统事件: channel={}, data={}", channel, eventData);
+        log.info("[NoticeBroadcast] 声明式通配监听到系统事件: channel={}, data={}", channel, eventData);
         receivedSystemEvents.add(channel + "=" + eventData);
+        eventLatch.countDown();
     }
 
-    /**
-     * 获取已接收的系统通知列表
-     *
-     * @return 通知列表
-     */
     public List<NoticeBroadcastPayload> getReceivedNotices() {
         return receivedNotices;
     }
 
-    /**
-     * 获取已接收的系统事件列表
-     *
-     * @return 事件列表
-     */
     public List<String> getReceivedSystemEvents() {
         return receivedSystemEvents;
+    }
+
+    public CountDownLatch getNoticeLatch() {
+        return noticeLatch;
+    }
+
+    public CountDownLatch getEventLatch() {
+        return eventLatch;
+    }
+
+    public void reset(int expectedNotices, int expectedEvents) {
+        receivedNotices.clear();
+        receivedSystemEvents.clear();
+        noticeLatch = new CountDownLatch(expectedNotices);
+        eventLatch = new CountDownLatch(expectedEvents);
     }
 }

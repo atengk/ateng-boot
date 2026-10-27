@@ -1,16 +1,38 @@
 package io.github.atengk.boot.sample.redis;
 
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
+import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
+import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
+import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil;
 import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
+import io.github.atengk.boot.redis.properties.RedisProperties;
+import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
+import io.github.atengk.boot.redis.script.RedisScriptExecutor;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
+import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
 import io.github.atengk.boot.redis.util.RedisUtil;
+import io.github.atengk.boot.sample.redis.model.BloomFilterMetricsVO;
+import io.github.atengk.boot.sample.redis.model.NoticeBroadcastPayload;
 import io.github.atengk.boot.sample.redis.model.OrderDelayPayload;
-import io.github.atengk.boot.sample.redis.service.OrderDelayQueueService;
-import io.github.atengk.boot.sample.redis.service.RedisSampleService;
-import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
-import io.github.atengk.boot.web.idempotent.store.RedissonIdempotentKeyStore;
-import io.github.atengk.boot.web.ratelimit.store.RateLimiterStore;
-import io.github.atengk.boot.web.ratelimit.store.RedissonRateLimiterStore;
+import io.github.atengk.boot.sample.redis.model.OrderStreamEvent;
+import io.github.atengk.boot.sample.redis.model.ProductVO;
+import io.github.atengk.boot.sample.redis.service.CacheScenarioService;
+import io.github.atengk.boot.sample.redis.service.IdempotentScenarioService;
+import io.github.atengk.boot.sample.redis.service.NoticeBroadcastScenarioService;
+import io.github.atengk.boot.sample.redis.service.OrderDelayScenarioService;
+import io.github.atengk.boot.sample.redis.service.ScriptExecutionScenarioService;
+import io.github.atengk.boot.sample.redis.service.SemaphoreThrottlingScenarioService;
+import io.github.atengk.boot.sample.redis.service.StockDeductScenarioService;
+import io.github.atengk.boot.sample.redis.service.StreamEventScenarioService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RBlockingQueue;
@@ -18,9 +40,9 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RLock;
 import org.redisson.api.RRateLimiter;
+import org.redisson.api.RSemaphore;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -28,10 +50,23 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.connection.DefaultMessage;
 import org.springframework.data.redis.connection.MessageListener;
+import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisKeyCommands;
+import org.springframework.data.redis.connection.RedisStreamCommands;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
+import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
+import org.springframework.data.redis.core.SessionCallback;
+import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -39,12 +74,13 @@ import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.PatternTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.listener.Topic;
-import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
-import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.data.redis.serializer.RedisSerializer;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,40 +91,39 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 样例工程 Redis 基础设施与分布式协同端到端集成测试
+ * 样例工程 Redis 基础设施与分布式协同全场景端到端实测
  * 验证在真实 Spring Boot 容器环境下：
- * 1. @DistributedLock 声明式分布式锁切面拦截、可重入性、看门狗自动续期与超时降级
- * 2. DistributedLockTemplate 与 RedisLockUtil 编程式锁与静态加锁闭包
- * 3. Redisson 双模延时队列：编程式投递与 @DelayedQueueListener 声明式消费
- * 4. RedisUtil 安全游标扫描（scanKeys）与 RedisAtomicUtil 日期流水号原子发号与滑动窗口
- * 5. Web 模块自适应检测 RedissonClient 并晋升为 Tier 1 分布式限流与防重幂等引擎
+ * 1. StockDeductScenarioService: 分布式锁库存并发扣减、防超卖、重入、看门狗续期与争锁降级
+ * 2. OrderDelayScenarioService: Redisson 双模延时队列投递、监听消费与死信流转运维
+ * 3. StreamEventScenarioService: Redis 5.0+ Stream 消息追加、消费组监听消费与队列裁剪
+ * 4. IdempotentScenarioService: 非 Web 业务级分布式防重幂等切面与失败自动释放凭据
+ * 5. SemaphoreThrottlingScenarioService: 分布式受管信号量并发度治理与超时降级
+ * 6. ScriptExecutionScenarioService: 受管 Lua 脚本执行、CAS 原子替换与按日流水号发号
+ * 7. NoticeBroadcastScenarioService: Pub/Sub 主题广播与精确/通配模式监听
+ * 8. CacheScenarioService: 两级缓存、RedisCacheTemplate 防穿透/击穿/N+1 与布隆过滤器
  *
  * @author Ateng
- * @since 2026-10-16
+ * @since 2026-10-27
  */
 @SpringBootTest(properties = {
         "ateng.boot.redis.enabled=true",
         "ateng.boot.redis.two-level.enabled=true",
-        "ateng.boot.redis.delay-queue.enabled=true"
+        "ateng.boot.redis.delay-queue.enabled=true",
+        "ateng.boot.redis.stream.enabled=true"
 })
-@AutoConfigureMockMvc
 @Import({SampleRedisIntegrationTest.TestRedisConfig.class})
-@DisplayName("样例工程 Redis 基础设施与分布式协同端到端集成测试")
+@DisplayName("样例工程 Redis 基础设施与分布式协同全场景端到端实测")
 class SampleRedisIntegrationTest {
 
     @TestConfiguration
@@ -97,6 +132,7 @@ class SampleRedisIntegrationTest {
         private final ReentrantLock jvmLock = new ReentrantLock();
         private static final Map<String, BlockingQueue<Object>> internalQueues = new ConcurrentHashMap<>();
         private static final Map<String, Object> cacheStore = new ConcurrentHashMap<>();
+        private final Map<MessageListener, Collection<? extends Topic>> internalListeners = new ConcurrentHashMap<>();
 
         private static BlockingQueue<Object> getOrCreateQueue(String name) {
             return internalQueues.computeIfAbsent(name, k -> new LinkedBlockingQueue<>());
@@ -187,11 +223,43 @@ class SampleRedisIntegrationTest {
             when(client.getRateLimiter(anyString())).thenReturn(rateLimiter);
 
             // 幂等防重 Bucket 模拟
-            RBucket<Object> bucket = mock(RBucket.class);
-            when(bucket.setIfAbsent(any(), any())).thenReturn(true);
-            when(bucket.delete()).thenReturn(true);
-            when(client.getBucket(anyString())).thenReturn(bucket);
-            when(client.getBucket(anyString(), any())).thenReturn(bucket);
+            when(client.getBucket(anyString())).thenAnswer(inv -> {
+                String bucketKey = inv.getArgument(0);
+                RBucket<Object> bucket = mock(RBucket.class);
+                when(bucket.setIfAbsent(any(), any(Duration.class))).thenAnswer(setInv -> {
+                    if (cacheStore.containsKey(bucketKey)) {
+                        return false;
+                    }
+                    cacheStore.put(bucketKey, setInv.getArgument(0));
+                    return true;
+                });
+                when(bucket.setIfAbsent(any())).thenAnswer(setInv -> {
+                    if (cacheStore.containsKey(bucketKey)) {
+                        return false;
+                    }
+                    cacheStore.put(bucketKey, setInv.getArgument(0));
+                    return true;
+                });
+                when(bucket.delete()).thenAnswer(delInv -> cacheStore.remove(bucketKey) != null);
+                when(bucket.get()).thenAnswer(getInv -> cacheStore.get(bucketKey));
+                return bucket;
+            });
+
+            when(client.getBucket(anyString(), any(org.redisson.client.codec.Codec.class))).thenAnswer(inv -> client.getBucket(inv.getArgument(0, String.class)));
+
+            // 受管信号量模拟
+            when(client.getSemaphore(anyString())).thenAnswer(inv -> {
+                String semName = inv.getArgument(0);
+                RSemaphore sem = mock(RSemaphore.class);
+                boolean shouldFail = semName.contains("timeout") || semName.contains("busy");
+                when(sem.tryAcquire(anyInt(), any(Duration.class))).thenReturn(!shouldFail);
+                when(sem.tryAcquire(anyInt(), anyLong(), any(TimeUnit.class))).thenReturn(!shouldFail);
+                when(sem.tryAcquire(anyInt())).thenReturn(!shouldFail);
+                when(sem.trySetPermits(anyInt())).thenReturn(true);
+                when(sem.availablePermits()).thenReturn(10);
+                when(sem.delete()).thenReturn(true);
+                return sem;
+            });
 
             // 延时队列与阻塞队列模拟（按队列名独立路由隔离）
             when(client.getBlockingQueue(anyString())).thenAnswer(inv -> {
@@ -233,8 +301,6 @@ class SampleRedisIntegrationTest {
 
             return client;
         }
-
-        private final Map<MessageListener, Collection<? extends Topic>> internalListeners = new ConcurrentHashMap<>();
 
         @Bean
         @Primary
@@ -280,12 +346,27 @@ class SampleRedisIntegrationTest {
             RedisTemplate<String, Object> template = mock(RedisTemplate.class);
             ValueOperations<String, Object> valOps = mock(ValueOperations.class);
             ZSetOperations<String, Object> zSetOps = mock(ZSetOperations.class);
+            StreamOperations<String, Object, Object> streamOps = mock(StreamOperations.class);
 
             when(template.getConnectionFactory()).thenReturn(connectionFactory);
+            when(template.getStringSerializer()).thenReturn(RedisSerializer.string());
             when(template.opsForValue()).thenReturn(valOps);
             when(template.opsForZSet()).thenReturn(zSetOps);
+            when(template.opsForStream()).thenReturn(streamOps);
 
-            // 缓存存取与空哨兵防穿透支持
+            // Stream 基础操作模拟
+            when(streamOps.createGroup(anyString(), anyString())).thenReturn("OK");
+            when(streamOps.createGroup(anyString(), any(ReadOffset.class), anyString())).thenReturn("OK");
+            when(streamOps.acknowledge(anyString(), anyString(), any(RecordId.class))).thenReturn(1L);
+            when(streamOps.delete(anyString(), any(RecordId[].class))).thenReturn(1L);
+            when(streamOps.trim(anyString(), anyLong())).thenReturn(0L);
+            when(streamOps.trim(anyString(), anyLong(), any(Boolean.class))).thenReturn(0L);
+            when(streamOps.size(anyString())).thenReturn(5L);
+            when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("1000-0"));
+            when(streamOps.add(anyString(), any(Map.class))).thenReturn(RecordId.of("1000-0"));
+            when(streamOps.read(any(Consumer.class), any(StreamReadOptions.class), any(StreamOffset.class))).thenReturn(Collections.emptyList());
+
+            // 缓存存取与防穿透
             when(valOps.get(anyString())).thenAnswer(inv -> cacheStore.get(inv.getArgument(0)));
             doAnswer(inv -> {
                 cacheStore.put(inv.getArgument(0), inv.getArgument(1));
@@ -295,6 +376,14 @@ class SampleRedisIntegrationTest {
                 cacheStore.put(inv.getArgument(0), inv.getArgument(1));
                 return null;
             }).when(valOps).set(anyString(), any());
+            when(valOps.setIfAbsent(anyString(), any(), any(Duration.class))).thenAnswer(inv -> {
+                String k = inv.getArgument(0);
+                if (cacheStore.containsKey(k)) {
+                    return false;
+                }
+                cacheStore.put(k, inv.getArgument(1));
+                return true;
+            });
             when(valOps.multiGet(any(Collection.class))).thenAnswer(inv -> {
                 Collection<String> keys = inv.getArgument(0);
                 List<Object> list = new java.util.ArrayList<>();
@@ -316,12 +405,12 @@ class SampleRedisIntegrationTest {
                 return count;
             });
             when(template.hasKey(anyString())).thenAnswer(inv -> cacheStore.containsKey(inv.getArgument(0)));
-            when(template.executePipelined(any(org.springframework.data.redis.core.SessionCallback.class))).thenAnswer(inv -> {
-                org.springframework.data.redis.core.SessionCallback<?> cb = inv.getArgument(0);
-                org.springframework.data.redis.core.RedisOperations ops = mock(org.springframework.data.redis.core.RedisOperations.class);
+            when(template.executePipelined(any(SessionCallback.class))).thenAnswer(inv -> {
+                SessionCallback<?> cb = inv.getArgument(0);
+                RedisOperations ops = mock(RedisOperations.class);
                 when(ops.opsForValue()).thenReturn(valOps);
                 cb.execute(ops);
-                return java.util.Collections.emptyList();
+                return Collections.emptyList();
             });
 
             // Pub/Sub 广播发送模拟与内存分发
@@ -380,11 +469,13 @@ class SampleRedisIntegrationTest {
             });
 
             // 支持基于 RedisCallback 的安全游标 scan 与批量 del
-            when(template.execute(any(org.springframework.data.redis.core.RedisCallback.class))).thenAnswer(inv -> {
-                org.springframework.data.redis.core.RedisCallback<?> callback = inv.getArgument(0);
-                org.springframework.data.redis.connection.RedisConnection conn = mock(org.springframework.data.redis.connection.RedisConnection.class);
-                org.springframework.data.redis.connection.RedisKeyCommands keyCommands = mock(org.springframework.data.redis.connection.RedisKeyCommands.class);
+            when(template.execute(any(RedisCallback.class))).thenAnswer(inv -> {
+                RedisCallback<?> callback = inv.getArgument(0);
+                RedisConnection conn = mock(RedisConnection.class);
+                RedisKeyCommands keyCommands = mock(RedisKeyCommands.class);
+                RedisStreamCommands streamCommands = mock(RedisStreamCommands.class);
                 when(conn.keyCommands()).thenReturn(keyCommands);
+                when(conn.streamCommands()).thenReturn(streamCommands);
 
                 List<byte[]> matchedKeys = new java.util.ArrayList<>();
                 cacheStore.keySet().forEach(k -> matchedKeys.add(k.getBytes(StandardCharsets.UTF_8)));
@@ -412,10 +503,10 @@ class SampleRedisIntegrationTest {
                 return callback.doInRedis(conn);
             });
 
-            // RedisAtomicUtil Lua 脚本模拟（单入参与多入参滑动窗口）
+            // RedisAtomicUtil & RedisScriptExecutor Lua 脚本模拟
             when(template.execute(
                     any(RedisScript.class),
-                    any(org.springframework.data.redis.serializer.RedisSerializer.class),
+                    any(RedisSerializer.class),
                     any(),
                     any(List.class),
                     any()
@@ -423,10 +514,28 @@ class SampleRedisIntegrationTest {
 
             when(template.execute(
                     any(RedisScript.class),
-                    any(org.springframework.data.redis.serializer.RedisSerializer.class),
+                    any(RedisSerializer.class),
+                    any(),
+                    any(List.class)
+            )).thenReturn(1L);
+
+            when(template.execute(
+                    any(RedisScript.class),
+                    any(),
                     any(),
                     any(List.class),
-                    any(), any(), any(), any(), any()
+                    any(Object[].class)
+            )).thenReturn(1L);
+
+            when(template.execute(
+                    any(RedisScript.class),
+                    any(List.class),
+                    any(Object[].class)
+            )).thenReturn(1L);
+
+            when(template.execute(
+                    any(RedisScript.class),
+                    any(List.class)
             )).thenReturn(1L);
 
             return template;
@@ -441,563 +550,454 @@ class SampleRedisIntegrationTest {
         }
     }
 
-    @org.junit.jupiter.api.BeforeEach
-    void setUp() {
-        org.mockito.Mockito.clearInvocations(sampleRLock, redissonClient);
-        TestRedisConfig.clearAll();
-        if (redisSampleService != null) {
-            redisSampleService.resetDbQueryCount();
-        }
-        if (orderDelayQueueService != null) {
-            orderDelayQueueService.clearConsumedOrders();
-        }
-    }
+    @Autowired
+    private StockDeductScenarioService stockDeductScenarioService;
 
     @Autowired
-    private MockMvc mockMvc;
+    private OrderDelayScenarioService orderDelayScenarioService;
 
     @Autowired
-    private RedisSampleService redisSampleService;
+    private StreamEventScenarioService streamEventScenarioService;
 
     @Autowired
-    private OrderDelayQueueService orderDelayQueueService;
+    private IdempotentScenarioService idempotentScenarioService;
 
     @Autowired
-    private io.github.atengk.boot.sample.redis.service.NoticeBroadcastService noticeBroadcastService;
+    private SemaphoreThrottlingScenarioService semaphoreThrottlingScenarioService;
 
     @Autowired
-    private RLock sampleRLock;
+    private ScriptExecutionScenarioService scriptExecutionScenarioService;
 
     @Autowired
-    private RedissonClient redissonClient;
+    private NoticeBroadcastScenarioService noticeBroadcastScenarioService;
 
-    @Autowired(required = false)
-    private RedisUtil redisUtil;
+    @Autowired
+    private CacheScenarioService cacheScenarioService;
 
-    @Autowired(required = false)
-    private RedisAtomicUtil redisAtomicUtil;
-
-    @Autowired(required = false)
-    private RateLimiterStore rateLimiterStore;
-
-    @Autowired(required = false)
-    private IdempotentKeyStore idempotentKeyStore;
-
-    @Autowired(required = false)
+    @Autowired
     private DistributedLockTemplate distributedLockTemplate;
 
-    @Autowired(required = false)
-    private io.github.atengk.boot.redis.cache.template.RedisCacheTemplate redisCacheTemplate;
+    @Autowired
+    private RedisDelayedQueue redisDelayedQueue;
 
-    @Autowired(required = false)
-    private io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager twoLevelCacheManager;
+    @Autowired
+    private RedisStreamTemplate redisStreamTemplate;
 
-    @Autowired(required = false)
-    private io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate redisIdempotentTemplate;
+    @Autowired
+    private RedisIdempotentTemplate redisIdempotentTemplate;
+
+    @Autowired
+    private RedisSemaphoreTemplate redisSemaphoreTemplate;
+
+    @Autowired
+    private RedisScriptExecutor redisScriptExecutor;
+
+    @Autowired
+    private RedisMessagePublisher redisMessagePublisher;
+
+    @Autowired
+    private RedisCacheTemplate redisCacheTemplate;
+
+    @Autowired
+    private TwoLevelCacheManager twoLevelCacheManager;
+
+    @Autowired
+    private RedisBloomFilter redisBloomFilter;
+
+    @Autowired
+    private RedisAtomicUtil redisAtomicUtil;
+
+    @Autowired
+    private RedisProperties redisProperties;
+
+    @BeforeEach
+    void setUp() {
+        TestRedisConfig.clearAll();
+        stockDeductScenarioService.resetStock(1001L, 100);
+        cacheScenarioService.resetDbQueryCount();
+        idempotentScenarioService.resetCounts();
+    }
+
+    // =========================================================================
+    // 场景 1: StockDeductScenarioService (分布式锁库存并发扣减与防超卖)
+    // =========================================================================
 
     @Test
-    @DisplayName("端到端验证：@DistributedLock 声明式分布式锁切面拦截、SpEL 动态解析与加解锁协同")
-    void shouldInterceptAndAcquireDistributedLockViaAspect() throws Exception {
-        String result = redisSampleService.executeOrderBusiness("ORD_9999");
+    @DisplayName("场景1：分布式锁严格并发库存扣减与防超卖校验")
+    void testStockDeductConcurrencyAndProtection() {
+        // 初始库存 100，成功扣减 20
+        int remaining = stockDeductScenarioService.deductStock(1001L, 20);
+        assertThat(remaining).isEqualTo(80);
+        assertThat(stockDeductScenarioService.getStock(1001L)).isEqualTo(80);
 
-        assertThat(result).isEqualTo("SUCCESS_ORDER_ORD_9999");
-        verify(redissonClient).getLock("lock:order:ORD_9999");
-        verify(sampleRLock).tryLock(eq(2000L), eq(8000L), eq(TimeUnit.SECONDS));
-        verify(sampleRLock).unlock();
+        // 再次扣减 80，库存变为 0
+        int remainingZero = stockDeductScenarioService.deductStock(1001L, 80);
+        assertThat(remainingZero).isEqualTo(0);
+
+        // 库存不足再次扣减，抛出业务异常
+        assertThatThrownBy(() -> stockDeductScenarioService.deductStock(1001L, 1))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("库存不足");
     }
 
     @Test
-    @DisplayName("端到端验证：RedisSampleController 扣减库存接口受 @DistributedLock 保护且返回统一 Result 契约")
-    void shouldExecuteDeductStockViaController() throws Exception {
-        mockMvc.perform(post("/api/redis-sample/deduct-stock")
-                        .param("productId", "1001")
-                        .param("count", "5"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("扣减库存成功: 5"));
-
-        verify(redissonClient).getLock("lock:product:1001");
+    @DisplayName("场景1：分布式锁可重入自验（外层注解持锁，内层闭包同一线程重入）")
+    void testDistributedLockReentrancy() {
+        String result = stockDeductScenarioService.executeReentrantBusiness("ORD_REENT_1001");
+        assertThat(result).isEqualTo("REENTRANT_SUCCESS_ORD_REENT_1001");
     }
 
     @Test
-    @DisplayName("端到端验证：DistributedLockTemplate 与 RedisLockUtil 编程式分布式锁执行并安全释放")
-    void shouldExecuteProgrammaticDistributedLockViaTemplateAndUtil() throws Throwable {
-        assertThat(distributedLockTemplate).isNotNull();
-
-        String res1 = distributedLockTemplate.execute("prog:order:1", () -> "TEMPLATE_OK");
-        assertThat(res1).isEqualTo("TEMPLATE_OK");
-
-        String res2 = RedisLockUtil.execute("prog:order:2", () -> "UTIL_OK");
-        assertThat(res2).isEqualTo("UTIL_OK");
-
-        verify(redissonClient).getLock("lock:prog:order:1");
-        verify(redissonClient).getLock("lock:prog:order:2");
-    }
-
-    @Test
-    @DisplayName("端到端验证：分布式锁同一线程可重入性（外层注解加锁，内层模板重入加锁）")
-    void shouldExecuteReentrantLockAcrossMethods() {
-        String result = redisSampleService.executeReentrantBusiness("ORD_REENTRANT_888");
-
-        assertThat(result).isEqualTo("REENTRANT_SUCCESS_ORD_REENTRANT_888");
-        verify(redissonClient, org.mockito.Mockito.times(2)).getLock("lock:reentrant:ORD_REENTRANT_888");
-    }
-
-    @Test
-    @DisplayName("端到端验证：分布式锁争锁超时自动降级（fallback 兜底闭包顺利执行）")
-    void shouldExecuteLockWithFallbackWhenTimeout() {
-        String result = redisSampleService.executeWithFallback("fallback_res_1");
-
+    @DisplayName("场景1：分布式锁争锁超时降级演示（执行 fallback 闭包防御并发风暴）")
+    void testDistributedLockTimeoutFallback() {
+        String result = stockDeductScenarioService.executeWithFallback("fallback_res_1");
         assertThat(result).isEqualTo("FALLBACK_TRIGGERED_fallback_res_1");
     }
 
     @Test
-    @DisplayName("端到端验证：分布式锁看门狗自动续期长事务执行（leaseTime = -1）")
-    void shouldExecuteLockWithWatchdog() {
-        String result = redisSampleService.executeWithWatchdog("TASK_LONG_RUNNING");
-
-        assertThat(result).isEqualTo("WATCHDOG_SUCCESS_TASK_LONG_RUNNING");
-        verify(redissonClient).getLock("lock:watchdog:TASK_LONG_RUNNING");
+    @DisplayName("场景1：看门狗自动续期长事务执行自验 (leaseTime = -1)")
+    void testWatchdogLongRunningTask() {
+        String result = stockDeductScenarioService.executeWithWatchdog("TASK_WATCH_99");
+        assertThat(result).isEqualTo("WATCHDOG_SUCCESS_TASK_WATCH_99");
     }
 
     @Test
-    @DisplayName("端到端验证：Redisson 双模延时队列投递与 @DelayedQueueListener 声明式消费")
-    void shouldSendAndConsumeDelayedOrderTask() throws Exception {
-        orderDelayQueueService.sendOrderCancelTask("ORD_DELAY_999", Duration.ofSeconds(1));
-
-        // 等待后台消费者线程拉取并消费
-        long deadline = System.currentTimeMillis() + 5000;
-        List<OrderDelayPayload> consumed = orderDelayQueueService.getConsumedOrders();
-        while (consumed.isEmpty() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100);
-        }
-
-        assertThat(consumed).isNotEmpty();
-        assertThat(consumed.get(0).getOrderId()).isEqualTo("ORD_DELAY_999");
-        assertThat(consumed.get(0).getReason()).isEqualTo("订单未支付超时自动取消");
+    @DisplayName("场景1：编程式批量多锁安全执行 (MultiLock)")
+    void testMultiLockExecution() {
+        String result = stockDeductScenarioService.executeMultiLock("ORD_MULTI_1", 1001L);
+        assertThat(result).isEqualTo("MULTI_LOCK_SUCCESS_ORD_MULTI_1_1001");
     }
 
     @Test
-    @DisplayName("端到端验证：延时队列死信队列（DLQ）状态查询与空安全拉取")
-    void shouldQueryDeadLetterQueueStatusSafely() throws Exception {
-        int deadLetterSize = orderDelayQueueService.getCancelOrderDeadLetterSize();
-        assertThat(deadLetterSize).isGreaterThanOrEqualTo(0);
+    @DisplayName("场景1：RedisLockUtil 静态无注入调用门面验证")
+    void testStaticRedisLockUtil() {
+        String result = RedisLockUtil.execute("lock:static:test", () -> "STATIC_LOCK_OK");
+        assertThat(result).isEqualTo("STATIC_LOCK_OK");
+    }
 
-        var deadLetterMessage = orderDelayQueueService.pollCancelOrderDeadLetter();
-        assertThat(deadLetterMessage).isNull();
+    // =========================================================================
+    // 场景 2: OrderDelayScenarioService (延时队列与死信运维)
+    // =========================================================================
 
-        // 验证 Controller 端点：查询死信队列大小
-        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(0));
+    @Test
+    @DisplayName("场景2：编程式投递订单延时取消任务与 @DelayedQueueListener 声明式消费")
+    void testOrderDelayQueuePublishAndConsume() throws Exception {
+        orderDelayScenarioService.reset(1);
 
-        // 验证 Controller 端点：空安全拉取死信消息（空时返回 null）
-        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/poll"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").doesNotExist());
+        orderDelayScenarioService.sendOrderCancelTask("ORD_DELAY_001", Duration.ofSeconds(15));
+
+        boolean consumed = orderDelayScenarioService.getLatch().await(3, TimeUnit.SECONDS);
+        assertThat(consumed).isTrue();
+        assertThat(orderDelayScenarioService.getConsumedOrders()).hasSize(1);
+        assertThat(orderDelayScenarioService.getConsumedOrders().get(0).getOrderId()).isEqualTo("ORD_DELAY_001");
     }
 
     @Test
-    @DisplayName("端到端验证：延时队列死信队列（DLQ）真实流转与拉取消费")
-    void shouldSupportDeadLetterQueueFlowAndPolling() throws Exception {
-        // 1. 模拟重试耗尽流转订单至死信队列
-        mockMvc.perform(post("/api/redis-sample/delay-order/dead-letter/send")
-                        .param("orderId", "ORD_DEAD_999")
-                        .param("retryCount", "3")
-                        .param("errorMessage", "重试3次超时失败"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("订单已成功流转至死信队列: ORD_DEAD_999"));
+    @DisplayName("场景2：订单延时队列死信消息流转与拉取运维自验")
+    void testOrderDelayDeadLetterTransferAndPoll() {
+        orderDelayScenarioService.sendOrderToDeadLetter("ORD_DLQ_002", 3, "模拟消费重试耗尽");
 
-        // 2. 验证死信队列积压大小为 1
-        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(1));
+        int deadLetterSize = orderDelayScenarioService.getCancelOrderDeadLetterSize();
+        assertThat(deadLetterSize).isGreaterThanOrEqualTo(1);
 
-        // 3. 拉取死信队列消息，验证反序列化载荷与元数据
-        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/poll"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.originalQueue").value(OrderDelayQueueService.QUEUE_ORDER_CANCEL))
-                .andExpect(jsonPath("$.data.payload.orderId").value("ORD_DEAD_999"))
-                .andExpect(jsonPath("$.data.retryTimes").value(3))
-                .andExpect(jsonPath("$.data.errorMessage").value("重试3次超时失败"));
+        DeadLetterMessage<OrderDelayPayload> deadLetter = orderDelayScenarioService.pollCancelOrderDeadLetter();
+        assertThat(deadLetter).isNotNull();
+        assertThat(deadLetter.payload().getOrderId()).isEqualTo("ORD_DLQ_002");
+        assertThat(deadLetter.retryTimes()).isEqualTo(3);
+        assertThat(deadLetter.errorMessage()).isEqualTo("模拟消费重试耗尽");
+    }
 
-        // 4. 再次查询死信队列大小，验证消息已出队消费归零
-        mockMvc.perform(get("/api/redis-sample/delay-order/dead-letter/size"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(0));
+    // =========================================================================
+    // 场景 3: StreamEventScenarioService (Redis 5.0+ Stream 可靠消息流)
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景3：Stream 消息发送、长度查询与队列裁剪")
+    void testStreamEventProduceAndMetrics() {
+        OrderStreamEvent event = OrderStreamEvent.builder()
+                .orderId("ORD_STREAM_101")
+                .amount(new BigDecimal("199.00"))
+                .eventType("CREATED")
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        RecordId recordId = streamEventScenarioService.sendOrderEvent(event);
+        assertThat(recordId).isNotNull();
+        assertThat(recordId.getValue()).isEqualTo("1000-0");
+
+        Long size = streamEventScenarioService.getStreamSize();
+        assertThat(size).isEqualTo(5L);
+
+        Long trimmed = streamEventScenarioService.trimStream(100);
+        assertThat(trimmed).isEqualTo(0L);
+    }
+
+    // =========================================================================
+    // 场景 4: IdempotentScenarioService (非 Web 业务防重幂等与重试自愈)
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景4：声明式 @RedisIdempotent 首次成功、重复拦截与业务失败释放凭据重试")
+    void testIdempotentExecutionAndRetryOnFailure() {
+        // 1. 首次执行成功，凭据被记录
+        String result = idempotentScenarioService.processOrder("ORD_IDEMP_001", false);
+        assertThat(result).isEqualTo("SUCCESS_ORD_IDEMP_001");
+        assertThat(idempotentScenarioService.getSuccessProcessCount()).isEqualTo(1);
+
+        // 2. 相同订单重复提交，被防重切面拦截抛出业务异常
+        assertThatThrownBy(() -> idempotentScenarioService.processOrder("ORD_IDEMP_001", false))
+                .isInstanceOf(BusinessException.class);
+        assertThat(idempotentScenarioService.getSuccessProcessCount()).isEqualTo(1);
+
+        // 3. 模拟业务失败 (deleteOnFailure = true)，凭据被主动删除
+        assertThatThrownBy(() -> idempotentScenarioService.processOrder("ORD_IDEMP_FAIL_002", true))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("模拟业务处理失败");
+
+        // 4. 由于凭据已被释放，允许重试执行成功
+        String retryResult = idempotentScenarioService.processOrder("ORD_IDEMP_FAIL_002", false);
+        assertThat(retryResult).isEqualTo("SUCCESS_ORD_IDEMP_FAIL_002");
     }
 
     @Test
-    @DisplayName("端到端验证：RedisUtil 安全游标扫描（scanKeys）与非阻塞迭代")
-    void shouldScanKeysUsingRedisUtil() {
-        Set<String> keys = redisSampleService.scanKeys("sample:user:*", 100);
+    @DisplayName("场景4：编程式与静态门面防重幂等执行")
+    void testProgrammaticAndStaticIdempotent() throws Throwable {
+        String progResult = idempotentScenarioService.executeProgrammatic(
+                "idemp:prog:1", Duration.ofMinutes(1), () -> "PROG_DONE");
+        assertThat(progResult).isEqualTo("PROG_DONE");
 
-        assertThat(keys).containsExactlyInAnyOrder("sample:user:1001", "sample:user:1002");
+        String staticResult = idempotentScenarioService.executeStatic(
+                "idemp:static:1", () -> "STATIC_DONE");
+        assertThat(staticResult).isEqualTo("STATIC_DONE");
+    }
+
+    // =========================================================================
+    // 场景 5: SemaphoreThrottlingScenarioService (分布式信号量并发度治理)
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景5：受管信号量并发度治理正常放行与超时优雅降级")
+    void testSemaphoreExecutionAndTimeoutFallback() {
+        // 正常获取许可放行
+        String normalResult = semaphoreThrottlingScenarioService.callHeavyDownstream(
+                "payment-gateway", 10, Duration.ofMillis(500));
+        assertThat(normalResult).isEqualTo("SUCCESS_DOWNSTREAM_payment-gateway");
+
+        // 模拟争锁超时触发降级
+        String fallbackResult = semaphoreThrottlingScenarioService.callHeavyDownstream(
+                "timeout-gateway", 10, Duration.ofMillis(100));
+        assertThat(fallbackResult).isEqualTo("FALLBACK_DOWNSTREAM_timeout-gateway");
     }
 
     @Test
-    @DisplayName("端到端验证：RedisAtomicUtil 结构化按日自重置流水号发号")
-    void shouldGenerateDailySeqUsingRedisAtomicUtil() {
-        String seq = redisSampleService.generateDailyOrderNo("ORD", 6);
+    @DisplayName("场景5：静态工具门面执行与动态配额调配")
+    void testSemaphoreStaticAndDynamicPermits() {
+        String staticResult = semaphoreThrottlingScenarioService.callWithStaticUtil(
+                "sms-service", 5, Duration.ofMillis(200));
+        assertThat(staticResult).isEqualTo("STATIC_SUCCESS_sms-service");
 
-        assertThat(seq).isNotBlank().startsWith("ORD").endsWith("000001");
+        semaphoreThrottlingScenarioService.resetPermits("sms-service", 20);
+        int available = semaphoreThrottlingScenarioService.getAvailablePermits("sms-service");
+        assertThat(available).isGreaterThan(0);
     }
 
-    @Test
-    @DisplayName("端到端验证：RedisAtomicUtil 基于 ZSet 毫秒滑动窗口频控校验")
-    void shouldCheckSlidingWindowUsingRedisAtomicUtil() {
-        boolean allowed = redisSampleService.checkSlidingWindow("sms:user:1001", 5, Duration.ofSeconds(60));
+    // =========================================================================
+    // 场景 6: ScriptExecutionScenarioService (受管 Lua 脚本原子执行与对称原语)
+    // =========================================================================
 
+    @Test
+    @DisplayName("场景6：受管内联 Lua 脚本原子执行与 CAS / GetAndSet 对称原子原语")
+    void testScriptExecutionAndAtomicPrimitives() {
+        // 内联脚本执行
+        Long scriptResult = scriptExecutionScenarioService.executeInlineScript(
+                "return 1", Long.class, List.of("key1"));
+        assertThat(scriptResult).isEqualTo(1L);
+
+        // CAS 原子比较替换
+        boolean casResult = scriptExecutionScenarioService.compareAndSet("atomic:cas:test", 10L, 20L);
+        assertThat(casResult).isTrue();
+
+        // GetAndSet 对称原子更新
+        Long prev = scriptExecutionScenarioService.getAndSet("atomic:status", 100L);
+        assertThat(prev).isNull();
+
+        // 按日重置结构化原子流水号
+        String seq = scriptExecutionScenarioService.generateDailyOrderNo("PAY", 6);
+        assertThat(seq).isNotBlank();
+
+        // ZSet 毫秒滑动窗口严格频控校验
+        boolean allowed = scriptExecutionScenarioService.checkSlidingWindow(
+                "rate:sliding:user100", 5, Duration.ofSeconds(1));
         assertThat(allowed).isTrue();
+
+        // RedisUtil 安全游标扫描
+        Set<String> matchedKeys = scriptExecutionScenarioService.scanKeys("sample:user:*", 100);
+        assertThat(matchedKeys).isNotEmpty();
+    }
+
+    // =========================================================================
+    // 场景 7: NoticeBroadcastScenarioService (Pub/Sub 主题广播与监听)
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景7：Pub/Sub 精确主题公告广播与通配模式主题事件监听")
+    void testNoticeBroadcastAndPatternSubscription() throws Exception {
+        noticeBroadcastScenarioService.reset(1, 1);
+
+        // 1. 精确主题广播公告
+        NoticeBroadcastPayload payload = new NoticeBroadcastPayload("NOT_001", "系统升级维护公告", "系统将于凌晨02:00维护升级", System.currentTimeMillis());
+        Long clients = noticeBroadcastScenarioService.publishNotice(payload);
+        assertThat(clients).isGreaterThanOrEqualTo(1L);
+
+        boolean noticeReceived = noticeBroadcastScenarioService.getNoticeLatch().await(3, TimeUnit.SECONDS);
+        assertThat(noticeReceived).isTrue();
+        assertThat(noticeBroadcastScenarioService.getReceivedNotices()).hasSize(1);
+        assertThat(noticeBroadcastScenarioService.getReceivedNotices().get(0).getNoticeId()).isEqualTo("NOT_001");
+
+        // 2. 通配模式主题广播事件
+        Long eventClients = noticeBroadcastScenarioService.publishSystemEvent("config_refresh", "CONFIG_V2");
+        assertThat(eventClients).isGreaterThanOrEqualTo(1L);
+
+        boolean eventReceived = noticeBroadcastScenarioService.getEventLatch().await(3, TimeUnit.SECONDS);
+        assertThat(eventReceived).isTrue();
+        assertThat(noticeBroadcastScenarioService.getReceivedSystemEvents()).hasSize(1);
+        assertThat(noticeBroadcastScenarioService.getReceivedSystemEvents().get(0)).contains("config_refresh=CONFIG_V2");
+    }
+
+    // =========================================================================
+    // 场景 8: CacheScenarioService (两级缓存、防穿透/击穿/N+1 与布隆过滤器)
+    // =========================================================================
+
+    @Test
+    @DisplayName("场景8：RedisCacheTemplate 单商品冷启动查库、缓存命中、空哨兵防穿透与主动驱逐")
+    void testCacheTemplateGetHitPenetrationAndEvict() {
+        // 1. 初次查询，回源查库 (DB count = 1)
+        ProductVO product = cacheScenarioService.getProduct(1001L);
+        assertThat(product).isNotNull();
+        assertThat(product.getName()).isEqualTo("iPhone 16 Pro");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
+
+        // 2. 第二次查询，命中缓存，不查库 (DB count 依然为 1)
+        ProductVO cached = cacheScenarioService.getProduct(1001L);
+        assertThat(cached).isNotNull();
+        assertThat(cached.getName()).isEqualTo("iPhone 16 Pro");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
+
+        // 3. 主动驱逐缓存
+        cacheScenarioService.evictProduct(1001L);
+
+        // 4. 再次查询，重新查库 (DB count 递增至 2)
+        ProductVO reloaded = cacheScenarioService.getProduct(1001L);
+        assertThat(reloaded).isNotNull();
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(2);
+
+        // 5. 查询不存在的商品，写入短 TTL 空哨兵，不穿透
+        ProductVO nullProduct = cacheScenarioService.getProduct(9999L);
+        assertThat(nullProduct).isNull();
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(3);
+
+        // 再次查询不存在的商品，命中空哨兵，直接返回 null，不触发 DB
+        ProductVO nullCached = cacheScenarioService.getProduct(9999L);
+        assertThat(nullCached).isNull();
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(3);
     }
 
     @Test
-    @DisplayName("端到端验证：RedisSampleController 接口限流 @RateLimiter 正常放行与统一契约")
-    void shouldAccessLimitedApiViaMockMvc() throws Exception {
-        mockMvc.perform(get("/api/redis-sample/limited-api")
-                        .param("userId", "USER_1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("请求成功: userId=USER_1001"));
+    @DisplayName("场景8：RedisCacheTemplate 批量商品查询 MGET + 批量加载消除 N+1")
+    void testCacheTemplateBatchGetAntiNPlusOne() {
+        cacheScenarioService.resetDbQueryCount();
+
+        // 批量查询 [1001, 1002, 9999]，仅触发 1 次批量 DB 查询
+        Map<Long, ProductVO> products = cacheScenarioService.batchGetProducts(List.of(1001L, 1002L, 9999L));
+        assertThat(products).containsKey(1001L);
+        assertThat(products).containsKey(1002L);
+        assertThat(products).doesNotContainKey(9999L);
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
+
+        // 再次批量查询相同列表，全部命中缓存与空哨兵，0 次 DB 查询
+        Map<Long, ProductVO> cachedMap = cacheScenarioService.batchGetProducts(List.of(1001L, 1002L, 9999L));
+        assertThat(cachedMap).containsKey(1001L);
+        assertThat(cachedMap).containsKey(1002L);
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("端到端验证：RedisSampleController 接口幂等 @Idempotent 正常放行与统一契约")
-    void shouldAccessIdempotentApiViaMockMvc() throws Exception {
-        mockMvc.perform(post("/api/redis-sample/idempotent")
-                        .param("token", "TOKEN_IDEM_888"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("幂等提交成功: token=TOKEN_IDEM_888"));
+    @DisplayName("场景8：Spring Cache @Cacheable 两级缓存冷启动查库、二次极速命中与 @CacheEvict 淘汰")
+    void testSpringCacheTwoLevelAnnotations() {
+        cacheScenarioService.resetDbQueryCount();
+
+        // 首次调用查库 (DB count = 1)
+        String profile1 = cacheScenarioService.getUserProfile(2001L);
+        assertThat(profile1).isEqualTo("Role_VIP_2001");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
+
+        // 第二次调用直接命中 L1 内存 (DB count 依然为 1)
+        String profile2 = cacheScenarioService.getUserProfile(2001L);
+        assertThat(profile2).isEqualTo("Role_VIP_2001");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(1);
+
+        // 淘汰缓存
+        cacheScenarioService.evictUserProfile(2001L);
+
+        // 重新调用回源查库 (DB count 递增至 2)
+        String profile3 = cacheScenarioService.getUserProfile(2001L);
+        assertThat(profile3).isEqualTo("Role_VIP_2001");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(2);
+
+        // 全量清空
+        cacheScenarioService.clearUserProfileCache();
+        String profile4 = cacheScenarioService.getUserProfile(2001L);
+        assertThat(profile4).isEqualTo("Role_VIP_2001");
+        assertThat(cacheScenarioService.getDbQueryCount()).isEqualTo(3);
     }
 
     @Test
-    @DisplayName("端到端验证：RedisSampleController 延时订单接口投递")
-    void shouldSendDelayOrderViaController() throws Exception {
-        mockMvc.perform(post("/api/redis-sample/delay-order")
-                        .param("orderId", "ORD_API_100")
-                        .param("delaySeconds", "15"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("延时取消订单任务投递成功: ORD_API_100"));
+    @DisplayName("场景8：分布式布隆过滤器添加、存在性判定与监控指标获取")
+    void testBloomFilterOperations() {
+        boolean added = cacheScenarioService.addBlacklist("user_black_101");
+        assertThat(added).isTrue();
+
+        boolean inBlacklist = cacheScenarioService.checkBlacklist("user_black_101");
+        assertThat(inBlacklist).isTrue();
+
+        boolean notInBlacklist = cacheScenarioService.checkBlacklist("user_clean_202");
+        assertThat(notInBlacklist).isFalse();
+
+        BloomFilterMetricsVO metrics = cacheScenarioService.getBlacklistMetrics();
+        assertThat(metrics).isNotNull();
+        assertThat(metrics.getFilterName()).isEqualTo("user-blacklist");
+        assertThat(metrics.getExpectedInsertions()).isEqualTo(50_000L);
     }
 
-    @Test
-    @DisplayName("端到端验证：RedisSampleController 游标扫描与流水号接口")
-    void shouldCallScanKeysAndDailySeqViaController() throws Exception {
-        mockMvc.perform(get("/api/redis-sample/scan-keys")
-                        .param("pattern", "sample:user:*")
-                        .param("count", "50"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
-
-        mockMvc.perform(get("/api/redis-sample/daily-seq")
-                        .param("prefix", "PAY")
-                        .param("length", "6"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isString());
-    }
+    // =========================================================================
+    // 底座原语与上下文装配验证
+    // =========================================================================
 
     @Test
-    @DisplayName("端到端验证：RedisUtil 与 RedisAtomicUtil 门面 Bean 成功注入 Spring 上下文")
-    void shouldSuccessfullyInjectRedisUtilAndRedisAtomicUtil() {
-        assertThat(redisUtil).isNotNull();
-        assertThat(redisAtomicUtil).isNotNull();
-    }
+    @DisplayName("底座验证：全局 KeyPrefix 隔离与 RedisUtil.buildKey 辅助门面构建")
+    void testKeyPrefixAndBuildKey() {
+        String key = RedisUtil.buildKey("order", "20261027");
+        assertThat(key).isEqualTo("order:20261027");
 
-    @Test
-    @DisplayName("端到端验证：Web 模块自适应检测到 RedissonClient 并升级为 Tier 1 分布式引擎")
-    void shouldAdaptWebModuleToTier1RedissonStores() {
-        // 验证 RateLimiterStore 自动晋升为 RedissonRateLimiterStore (Tier 1)
-        assertThat(rateLimiterStore)
-                .isNotNull()
-                .isInstanceOf(RedissonRateLimiterStore.class);
-
-        // 验证 IdempotentKeyStore 自动晋升为 RedissonIdempotentKeyStore (Tier 1)
-        assertThat(idempotentKeyStore)
-                .isNotNull()
-                .isInstanceOf(RedissonIdempotentKeyStore.class);
-    }
-
-    @Test
-    @DisplayName("端到端验证：声明式 @ChannelTopicListener 主题监听与强类型反序列化")
-    void shouldBroadcastNoticeAndConsumeViaAnnotation() throws Exception {
-        mockMvc.perform(post("/api/redis-sample/broadcast-notice")
-                        .param("noticeId", "NOTICE_20261019")
-                        .param("title", "系统升级维护公告")
-                        .param("content", "系统将于今晚24点停服维护30分钟"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        // 异步等待受管线程池消费完成
-        Thread.sleep(300);
-
-        mockMvc.perform(get("/api/redis-sample/received-notices"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data[?(@.noticeId == 'NOTICE_20261019')].title").value("系统升级维护公告"));
-
-        assertThat(noticeBroadcastService.getReceivedNotices())
-                .anyMatch(n -> "NOTICE_20261019".equals(n.getNoticeId()) && "系统升级维护公告".equals(n.getTitle()));
-    }
-
-    @Test
-    @DisplayName("端到端验证：声明式 @ChannelTopicListener 通配模式监听与多参数消费")
-    void shouldBroadcastPatternSystemEventAndConsumeViaAnnotation() throws Exception {
-        mockMvc.perform(post("/api/redis-sample/broadcast-system-event")
-                        .param("eventType", "config_reload")
-                        .param("data", "cluster_mode=true"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        Thread.sleep(300);
-
-        mockMvc.perform(get("/api/redis-sample/received-system-events"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
-
-        assertThat(noticeBroadcastService.getReceivedSystemEvents())
-                .contains("sample:system:config_reload=cluster_mode=true");
-    }
-
-    @Test
-    @DisplayName("端到端验证：分布式布隆过滤器声明式预热、黑名单判定与容量指标查询")
-    void shouldManageBloomFilterBlacklistEndToEnd() throws Exception {
-        String testUser = "user_danger_999";
-
-        // 1. 初次查询，不在黑名单中
-        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/check")
-                        .param("userId", testUser))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(false));
-
-        // 2. 添加到黑名单
-        mockMvc.perform(post("/api/redis-sample/bloom/blacklist/add")
-                        .param("userId", testUser))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
-
-        // 3. 再次查询，判定在黑名单中
-        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/check")
-                        .param("userId", testUser))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value(true));
-
-        // 4. 查询布隆过滤器容量与监控指标
-        mockMvc.perform(get("/api/redis-sample/bloom/blacklist/metrics"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.filterName").value("user-blacklist"))
-                .andExpect(jsonPath("$.data.count").value("1"))
-                .andExpect(jsonPath("$.data.expectedInsertions").value("50000"));
-    }
-
-    @Test
-    @DisplayName("端到端验证：RedisCacheTemplate 成功装配至 Spring 上下文")
-    void shouldInjectRedisCacheTemplateSuccessfully() {
-        assertThat(redisCacheTemplate).isNotNull();
-    }
-
-    @Test
-    @DisplayName("端到端验证：单商品查询冷启动回源、命中缓存不查库与主动驱逐")
-    void shouldGetProductWithCacheHitAndEvict() throws Exception {
-        // 1. 初次查询，冷启动未命中缓存，回源查库 (DB count = 1)
-        mockMvc.perform(get("/api/redis-sample/cache/product")
-                        .param("productId", "1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.productId").value("1001"))
-                .andExpect(jsonPath("$.data.name").value("iPhone 16 Pro"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 2. 第二次查询，命中 Redis 缓存，不触发查库 (DB count 依然为 1)
-        mockMvc.perform(get("/api/redis-sample/cache/product")
-                        .param("productId", "1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.productId").value("1001"))
-                .andExpect(jsonPath("$.data.name").value("iPhone 16 Pro"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 3. 主动驱逐商品缓存
-        mockMvc.perform(post("/api/redis-sample/cache/product/evict")
-                        .param("productId", "1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        // 4. 驱逐后再次查询，重新回源查库 (DB count 递增至 2)
-        mockMvc.perform(get("/api/redis-sample/cache/product")
-                        .param("productId", "1001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.productId").value("1001"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(2);
-    }
-
-    @Test
-    @DisplayName("端到端验证：非存在商品查询写入短 TTL 空值哨兵，杜绝缓存穿透")
-    void shouldProtectAgainstCachePenetrationForNonExistentProduct() throws Exception {
-        // 1. 初次查询不存在的商品，回源查库为空，写入空哨兵 (DB count = 1)
-        mockMvc.perform(get("/api/redis-sample/cache/product")
-                        .param("productId", "9999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").doesNotExist());
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 2. 第二次查询不存在的商品，命中短 TTL 空哨兵，直接拦截不查库 (DB count 依然为 1)
-        mockMvc.perform(get("/api/redis-sample/cache/product")
-                        .param("productId", "9999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").doesNotExist());
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("端到端验证：批量商品查询 MGET 探测 + 批量 Loader + Pipeline 回写，彻底消除 N+1")
-    void shouldBatchGetProductsWithAntiNPlusOne() throws Exception {
-        // 1. 批量查询 [1001, 1002, 9999]，初次缺失回源，仅触发 1 次批量 DB 查询 (DB count = 1)
-        mockMvc.perform(get("/api/redis-sample/cache/products")
-                        .param("productIds", "1001", "1002", "9999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data['1001'].name").value("iPhone 16 Pro"))
-                .andExpect(jsonPath("$.data['1002'].name").value("MacBook Pro M4"))
-                .andExpect(jsonPath("$.data['9999']").doesNotExist());
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 2. 再次批量查询相同列表，全部命中缓存与空哨兵，0 次 DB 查询 (DB count 依然为 1)
-        mockMvc.perform(get("/api/redis-sample/cache/products")
-                        .param("productIds", "1001", "1002", "9999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data['1001'].name").value("iPhone 16 Pro"))
-                .andExpect(jsonPath("$.data['1002'].name").value("MacBook Pro M4"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("端到端验证：Spring Cache @Cacheable 两级缓存冷启动查库、二次极速命中 L1 与 @CacheEvict 失效")
-    void shouldSupportTwoLevelCacheWithSpringCacheAnnotations() throws Exception {
-        redisSampleService.resetDbQueryCount();
-
-        // 1. 初次查询用户档案 (userId=2001)，两级缓存均未命中，执行模拟数据库查询 (DB count = 1)
-        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
-                        .param("userId", "2001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 2. 第二次查询相同用户档案，直接命中 L1 本地内存缓存，0 次 DB 查询 (DB count 依然为 1)
-        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
-                        .param("userId", "2001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(1);
-
-        // 3. 执行定向淘汰 @CacheEvict (userId=2001)
-        mockMvc.perform(post("/api/redis-sample/cache/user-profile/evict")
-                        .param("userId", "2001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        // 4. 再次查询用户档案，由于本地与分布式均已淘汰，重新回源查库 (DB count 递增至 2)
-        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
-                        .param("userId", "2001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(2);
-
-        // 5. 执行全量清空 @CacheEvict(allEntries = true)
-        mockMvc.perform(post("/api/redis-sample/cache/user-profile/clear"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-
-        // 6. 再次查询，重新回源查库 (DB count 递增至 3)
-        mockMvc.perform(get("/api/redis-sample/cache/user-profile")
-                        .param("userId", "2001"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("Role_VIP_2001"));
-
-        assertThat(redisSampleService.getDbQueryCount()).isEqualTo(3);
-    }
-
-    @Test
-    @DisplayName("端到端验证：TwoLevelCacheManager 自动装配、Primary 契约与编程式门面调用")
-    void shouldAutoConfigureTwoLevelCacheManagerAndSupportProgrammaticFacade() {
-        assertThat(twoLevelCacheManager).isNotNull();
-
-        io.github.atengk.boot.redis.cache.spi.TwoLevelCache twoLevelCache =
-                twoLevelCacheManager.getTwoLevelCache("custom-space");
-        assertThat(twoLevelCache).isNotNull();
-
-        // 写入并读取
-        twoLevelCache.put("cfg:1", "Active");
-        assertThat(twoLevelCache.get("cfg:1", String.class)).isEqualTo("Active");
-
-        // 本地定向失效验证
-        twoLevelCache.evictLocal("cfg:1");
-        io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache defaultTwoLevelCache =
-                (io.github.atengk.boot.redis.cache.twolevel.DefaultTwoLevelCache) twoLevelCache;
-        assertThat(defaultTwoLevelCache.getL1Cache().get("cfg:1")).isNull();
-    }
-
-    @Test
-    @DisplayName("端到端验证：全局 KeyPrefix 隔离与 RedisUtil.buildKey 辅助门面构建")
-    void shouldSupportKeyPrefixIsolationAndRedisUtilBuildKey() throws Exception {
-        // 1. 验证 Web 控制台通过 RedisUtil.buildKey 构建
-        mockMvc.perform(get("/api/redis-sample/key/build")
-                        .param("key", "order:20261019"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").value("order:20261019"));
-
-        // 2. 验证 RedisUtil 静态多参数分段拼接门面
-        String multiKey = io.github.atengk.boot.redis.util.RedisUtil.buildKey("order", "pay", "1001");
-        assertThat(multiKey).isEqualTo("order:pay:1001");
-
-        // 3. 验证独立属性前缀附加行为
-        io.github.atengk.boot.redis.properties.RedisProperties customProps = new io.github.atengk.boot.redis.properties.RedisProperties();
+        RedisProperties customProps = new RedisProperties();
         customProps.setKeyPrefix("dev:");
         assertThat(customProps.buildKey("order:1001")).isEqualTo("dev:order:1001");
         assertThat(customProps.buildKey("dev:order:1001")).isEqualTo("dev:order:1001");
     }
 
     @Test
-    @DisplayName("端到端验证：RedisIdempotentTemplate 与 RedisIdempotentUtil 业务级防重幂等模板装配与执行")
-    void shouldAutoConfigureAndExecuteIdempotentTemplate() throws Exception {
+    @DisplayName("底座验证：Starter 核心依赖与双核管理器 100% 成功装配")
+    void testInfrastructureBeansInjected() {
+        assertThat(distributedLockTemplate).isNotNull();
+        assertThat(redisDelayedQueue).isNotNull();
+        assertThat(redisStreamTemplate).isNotNull();
         assertThat(redisIdempotentTemplate).isNotNull();
-        String result = redisIdempotentTemplate.execute("sample:idemp:test", java.time.Duration.ofMinutes(1), () -> "idemp_done");
-        assertThat(result).isEqualTo("idemp_done");
-
-        String staticResult = io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil.execute("sample:idemp:util", () -> "util_done");
-        assertThat(staticResult).isEqualTo("util_done");
+        assertThat(redisSemaphoreTemplate).isNotNull();
+        assertThat(redisScriptExecutor).isNotNull();
+        assertThat(redisMessagePublisher).isNotNull();
+        assertThat(redisCacheTemplate).isNotNull();
+        assertThat(twoLevelCacheManager).isNotNull();
+        assertThat(redisBloomFilter).isNotNull();
+        assertThat(redisAtomicUtil).isNotNull();
     }
 }

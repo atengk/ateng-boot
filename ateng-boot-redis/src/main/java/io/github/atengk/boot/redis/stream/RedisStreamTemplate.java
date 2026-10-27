@@ -17,9 +17,11 @@ import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -147,13 +149,18 @@ public class RedisStreamTemplate {
         String fullStreamKey = formatStreamKey(stream);
         try {
             redisTemplate.execute((RedisCallback<Void>) connection -> {
-                byte[] rawKey = redisTemplate.getStringSerializer().serialize(fullStreamKey);
-                connection.streamCommands().xGroupCreate(
-                        rawKey,
-                        group,
-                        readOffset != null ? readOffset : ReadOffset.from("0"),
-                        mkStream
-                );
+                RedisSerializer<String> stringSerializer = redisTemplate.getStringSerializer();
+                byte[] rawKey = stringSerializer != null
+                        ? stringSerializer.serialize(fullStreamKey)
+                        : fullStreamKey.getBytes(StandardCharsets.UTF_8);
+                if (connection != null && connection.streamCommands() != null) {
+                    connection.streamCommands().xGroupCreate(
+                            rawKey,
+                            group,
+                            readOffset != null ? readOffset : ReadOffset.from("0"),
+                            mkStream
+                    );
+                }
                 return null;
             });
             log.info("[RedisStream] 成功创建消费组: stream={}, group={}, mkStream={}", fullStreamKey, group, mkStream);
@@ -260,6 +267,17 @@ public class RedisStreamTemplate {
         Assert.notEmpty(recordIds, "recordIds must not be empty");
         RecordId[] ids = Arrays.stream(recordIds).map(RecordId::of).toArray(RecordId[]::new);
         return delete(stream, ids);
+    }
+
+    /**
+     * 精确截断修剪 Stream 长度 (XTRIM)
+     *
+     * @param stream Stream 键名
+     * @param count 保留的最大消息条数
+     * @return 被修剪移出的消息条数
+     */
+    public Long trim(String stream, long count) {
+        return trim(stream, count, false);
     }
 
     /**
