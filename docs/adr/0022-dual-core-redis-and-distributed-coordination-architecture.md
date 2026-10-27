@@ -115,6 +115,28 @@ flowchart TD
 6. **全局 KeyPrefix 分层治理契约**：
    - 高级受管语义组件（锁、缓存模板、两级缓存、布隆、延时队列）统一自动前置拼接 `keyPrefix`；底层 `RedisUtil` 保持原生透传，提供 `buildKey()` 辅助，分层清晰透明。
 
+### 8. Phase 3 分布式协同底座加固与全场景演进决策 (Distributed Coordination Hardening & Full-Scenario Evolution)
+立足于 `ateng-boot-redis` 面向更复杂的微服务高并发、流量治理与异步编排场景，确立以下增量架构决策：
+1. **Redisson 生产连接保活与连接池深度治理 (#398)**：
+   - 针对云原生容器跨可用区与 NAT 网关长时间空闲被静默切断连接（Silent Drop）的生产痛点，统一引入 `pingConnectionInterval`（默认 30s）定期心跳检测机制；
+   - 显式纳管 `connectionPoolSize`、`connectionMinimumIdleSize`、`retryAttempts` 与 `retryInterval` 等连接池关键参数；
+   - 补齐 `RedisAtomicUtil.getAndSet` 等对称原子原语。
+2. **受管原子 Lua 脚本执行器与 SHA1 预编译缓存 (#399)**：
+   - 落地 `RedisScriptExecutor` 门面，支持 Classpath 资源脚本与内联动态脚本；
+   - 内置 SHA1 摘要计算与并发安全缓存，优先采用 `EVALSHA` 协议通信减少网络负载；统一转译底层驱动异常为框架业务异常。
+3. **分布式受管信号量与并发度治理模板 (#400)**：
+   - 落地 `RedisSemaphoreTemplate` 与 `RedisSemaphoreUtil` 静态门面，实现集群全局并发在途请求（In-Flight Concurrency）硬阈值控制；
+   - 支持自动原子初始化配额、`tryAcquire` 等待超时降级回调 `fallback`，并在 `finally` 阶段依据持有名额严格防御性安全释放。
+4. **通用业务级分布式防重幂等模板与声明式切面 (#401)**：
+   - 落地 `RedisIdempotentTemplate`、`RedisIdempotentUtil` 与 `@RedisIdempotent` 切面，专职解决非 Web 业务链路（MQ、定时任务、RPC）的并发防重难题；
+   - 引入 `deleteOnFailure` 故障自愈机制：业务异常时主动删除防重 Key，确保上游重试机制顺畅自愈。
+5. **Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (#402)**：
+   - 落地 `RedisStreamTemplate`，封装流追加、消费组自动创建、Pending 积压检查、XCLAIM 孤儿认领与 XTRIM 定长裁剪；
+   - 落地 `@RedisStreamListener` 声明式监听切面与 `StreamBootstrap` 调度器，受管线程池驱动，支持 At-Least-Once 可靠投递、MDC 上下文透传与死信流 (`:dlq`) + `StreamFailureHandler` SPI。
+6. **样例工程去 Web 污染重构与 1:1 全场景驱动实测 (#403)**：
+   - 彻底废除非 Web 模块样例工程违规引入的 Controller 与 MockMvc，打造 8 大独立场景业务组件（`StockDeductScenarioService`, `OrderDelayScenarioService`, `StreamEventScenarioService`, `IdempotentScenarioService`, `SemaphoreThrottlingScenarioService`, `ScriptExecutionScenarioService`, `NoticeBroadcastScenarioService`, `CacheScenarioService`）；
+   - 以纯粹 `@SpringBootTest` 驱动 21 个端到端集成测试，实现 100% 场景真实闭环与离线自洽。
+
 ---
 
 ## 权衡与收益考量 (Consequences)
@@ -122,7 +144,7 @@ flowchart TD
 ### 正向收益
 1. **兼收并蓄**：既享有 Spring Data Redis 原生生态红利，又坐拥 Redisson 强大的分布式协调能力；
 2. **生产安全等级最高**：彻底屏蔽 `keys *` 生产事故隐患、屏蔽 `@class` 反序列化 CVE 隐患、屏蔽非法持锁人释放异常导致的故障掩盖、杜绝延时任务失败静默丢数据；
-3. **极佳的开发体验**：开箱即用的两级缓存、批量防击穿模板、死信队列、注解驱动广播与声明式分布式锁，极大幅度削减业务胶水代码；
+3. **极佳的开发体验**：开箱即用的两级缓存、批量防击穿模板、死信队列、注解驱动广播、声明式分布式锁、防重幂等与 Stream 消息流，极大幅度削减业务胶水代码；
 4. **零臃肿与弹性伸缩**：Caffeine 可选依赖不绑架底座体积，缺依赖平滑降级，单集中频道节省连接句柄。
 
 ### 妥协与成本
@@ -131,16 +153,26 @@ flowchart TD
 
 ---
 
-## 8. 演进落地状态与交付审计 (Delivery & Verification Audit)
+## 9. 演进落地状态与交付审计 (Delivery & Verification Audit)
 
 - **当前状态**：`Accepted & Implemented (已全面落地交付)`
 - **工单切片闭环**：
-  - **#142**：延时队列死信保障 (DLQ)、受管线程池合规、`DeadLetterMessage<T>` 与 `DelayedQueueFailureHandler` SPI；
-  - **#143**：声明式 Pub/Sub 广播订阅注解 (`@ChannelTopicListener`)、动态占位符与通配模式支持、强类型多态反序列化；
-  - **#144**：分布式布隆过滤器 (`RedisBloomFilter`)、声明式预热配置 (`bloom-filters.*`)、80% 容量预警与 KeyPrefix 隔离；
-  - **#145**：`RedisCacheTemplate` 泛型防卫模板、单键与批量 MGET 防击穿、短 TTL 空哨兵防穿透、Jitter 随机抖动防雪崩与争锁超时平滑查库容灾；
-  - **#146**：内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)、L1 Caffeine 探测与内置 LRU 严格防 OOM 退化、`ateng:cache:evict:topic` 集中广播失效与 `instanceId` 防自重入死循环；
-  - **#147**：`ateng-boot-sample-redis` 全场景自验工程闭环、28 项端到端离线自洽集成测试 100% 绿灯准出、全景速查矩阵五维文档与 ADR 归档。
-- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标。
+  - **Phase 2 演进工单**：
+    - **#142**：延时队列死信保障 (DLQ)、受管线程池合规、`DeadLetterMessage<T>` 与 `DelayedQueueFailureHandler` SPI；
+    - **#143**：声明式 Pub/Sub 广播订阅注解 (`@ChannelTopicListener`)、动态占位符与通配模式支持、强类型多态反序列化；
+    - **#144**：分布式布隆过滤器 (`RedisBloomFilter`)、声明式预热配置 (`bloom-filters.*`)、80% 容量预警与 KeyPrefix 隔离；
+    - **#145**：`RedisCacheTemplate` 泛型防卫模板、单键与批量 MGET 防击穿、短 TTL 空哨兵防穿透、Jitter 随机抖动防雪崩与争锁超时平滑查库容灾；
+    - **#146**：内存+Redis 两级缓存体系 (`TwoLevelCache` & `TwoLevelCacheManager`)、L1 Caffeine 探测与内置 LRU 严格防 OOM 退化、`ateng:cache:evict:topic` 集中广播失效与 `instanceId` 防自重入死循环；
+    - **#147**：`ateng-boot-sample-redis` 全场景自验工程闭环、28 项端到端离线自洽集成测试 100% 绿灯准出、全景速查矩阵五维文档与 ADR 归档。
+  - **Phase 3 底座加固与全场景演进工单 (#397)**：
+    - **#398**：Redisson 生产连接保活、连接池治理与对称原子/限流原语补齐；
+    - **#399**：受管原子 Lua 脚本执行器与 SHA1 预编译缓存 (`RedisScriptExecutor`)；
+    - **#400**：分布式受管信号量与并发度治理模板 (`RedisSemaphoreTemplate` & `RedisSemaphoreUtil`)；
+    - **#401**：通用业务级分布式防重幂等模板与声明式切面 (`RedisIdempotentTemplate` & `@RedisIdempotent`)；
+    - **#402**：Redis 5.0+ Stream 可靠消息流引擎与声明式消费组切面 (`RedisStreamTemplate` & `@RedisStreamListener`)；
+    - **#403**：样例工程去 Web 污染重构与 1:1 全场景驱动实测（8 大场景 Service 与 21 项端到端测试）；
+    - **#404**：五维生产就绪文档体系、100% 全景速查矩阵与 ADR-0022 落地闭环。
+- **质量门禁基准**：依赖树联动编译与端到端集成测试通过，覆盖率与工业级健壮性红线全达标（218 个模块单测 + 21 个场景测试 100% 通过）。
+
 
 
