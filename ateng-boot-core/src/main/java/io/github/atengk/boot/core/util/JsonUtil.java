@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.introspect.Annotated;
+import com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
@@ -15,6 +17,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.constant.DatePattern;
+import io.github.atengk.boot.core.jackson.SensitiveJsonSerializer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,6 +43,7 @@ public final class JsonUtil {
 
     private static volatile ObjectMapper defaultMapper = createDefaultObjectMapper();
     private static volatile ObjectMapper longToStringMapper = createLongToStringObjectMapper();
+    private static volatile ObjectMapper cloneMapper = createCloneObjectMapper();
 
     private JsonUtil() {
     }
@@ -85,6 +89,29 @@ public final class JsonUtil {
         ObjectMapper mapper = new ObjectMapper();
         configureBaseFeatures(mapper);
         registerJavaTimeModule(mapper, true);
+        return mapper;
+    }
+
+    /**
+     * 构建一个专供纯内存深度克隆的 ObjectMapper 实例
+     * 自动过滤出界视图脱敏注解（@FieldSensitive），恪守 ADR-0012 内存真明文原则
+     *
+     * @return 内存深拷贝专用的 ObjectMapper 实例
+     */
+    public static ObjectMapper createCloneObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        configureBaseFeatures(mapper);
+        registerJavaTimeModule(mapper, false);
+        mapper.setAnnotationIntrospector(new JacksonAnnotationIntrospector() {
+            @Override
+            public Object findSerializer(Annotated a) {
+                Object serializer = super.findSerializer(a);
+                if (SensitiveJsonSerializer.class.equals(serializer)) {
+                    return null;
+                }
+                return serializer;
+            }
+        });
         return mapper;
     }
 
@@ -464,5 +491,42 @@ public final class JsonUtil {
         }
         Objects.requireNonNull(toValueTypeRef, "目标泛型类型引用 TypeReference 不能为 null");
         return defaultMapper.convertValue(fromValue, toValueTypeRef);
+    }
+
+    /**
+     * 基于 Jackson 内存树机制对源对象执行类型安全的纯内存深度克隆
+     * 避免了生成 JSON 字符串的中转开销，自动继承东八区与 JSR-310 时间格式支持，实现绝对内存隔离防并发脏写
+     *
+     * @param source 待克隆源对象
+     * @param <T>    对象类型泛型
+     * @return 深度克隆后的全新对象；入参为 null 时安全返回 null
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> T deepClone(T source) {
+        if (source == null) {
+            return null;
+        }
+        try {
+            JsonNode node = cloneMapper.valueToTree(source);
+            return (T) cloneMapper.treeToValue(node, source.getClass());
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("对象深度克隆失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 基于 TypeReference 对复杂泛型容器（如 List&lt;T&gt;、Map&lt;K, V&gt;）执行类型安全的纯内存深度克隆
+     *
+     * @param source         待克隆源对象
+     * @param toValueTypeRef 目标泛型类型引用
+     * @param <T>            对象类型泛型
+     * @return 深度克隆后的全新对象；入参为 null 时安全返回 null
+     */
+    public static <T> T deepClone(T source, TypeReference<T> toValueTypeRef) {
+        if (source == null) {
+            return null;
+        }
+        Objects.requireNonNull(toValueTypeRef, "目标泛型类型引用 TypeReference 不能为 null");
+        return cloneMapper.convertValue(source, toValueTypeRef);
     }
 }

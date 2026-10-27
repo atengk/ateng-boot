@@ -326,4 +326,26 @@ class CoreDataProcessingScenarioServiceTest {
         assertThat(results.get("positionalBinding")).isEqualTo("10086-ANDROID");
         assertThat(results.get("injectionBlocked")).isEqualTo(true);
     }
+
+    @Test
+    @DisplayName("测试JsonUtil.deepClone纯内存无损深拷贝与内存引用隔离")
+    void testDemonstrateDeepClone() {
+        SampleUserDTO original = SampleUserDTO.builder()
+                .id(10086L)
+                .name("张三")
+                .email("zhangsan@example.com")
+                .build();
+
+        SampleUserDTO cloned = dataProcessingService.demonstrateDeepClone(original);
+
+        assertThat(cloned).isNotNull();
+        assertThat(cloned).isNotSameAs(original);
+        assertThat(cloned.getId()).isEqualTo(original.getId());
+        assertThat(cloned.getName()).isEqualTo(original.getName());
+        assertThat(cloned.getEmail()).isEqualTo(original.getEmail());
+
+        // 验证内存状态变更绝对隔离
+        cloned.setName("李四");
+        assertThat(original.getName()).isEqualTo("张三");
+    }
 }

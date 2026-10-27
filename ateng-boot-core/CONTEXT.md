@@ -266,4 +266,24 @@ _Avoid_: ErrorCodeUtil, ResultCodeHelper, StatusCodeManager
 框架标准业务状态码号段枚举与划分规范，定义系统、鉴权、文件、通信与持久层的号段区间契约。
 _Avoid_: ErrorCodeRange, CodeSegment, StatusRange
 
+**Pipeline**:
+纯 JDK 17 原生无状态强类型管道与责任链编排原语，支持 Fluent 阶段式链式装配、优雅短路与强类型上下文安全流转。
+_Avoid_: ChainExecutor, ResponsibilityChain, HandlerChain
+
+**HmacUtil**:
+纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA1 密钥加签与恒定时间安全比对防侧信道攻击。
+_Avoid_: HmacHelper, SignUtil, HmacSignature
+
+**ChecksumUtil**:
+纯原生数据传输与硬件报文完整性校验和计算工具类，提供 CRC32、CRC32C 与 Adler32 算法门面。
+_Avoid_: CrcUtil, HashCheckUtil, ChecksumHelper
+
+**TokenBucketLimiter**:
+基于无锁 CAS 与纳秒级时间推进的高性能纯内存平滑令牌桶限流原语，支持突发流量缓冲与单机平滑限速整形。
+_Avoid_: RateLimiter, TokenLimiter, LeakyBucket
+
+**CoreProperties**:
+核心通用底座统一外置化配置属性类，统管雪花发号器、缓存等强类型配置与生产默认值。
+_Avoid_: AtengProperties, BaseProperties, FrameworkProperties
+
 

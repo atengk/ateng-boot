@@ -263,6 +263,19 @@ public class CoreDataProcessingScenarioService {
     }
 
     /**
+     * 14.1 验证 JsonUtil.deepClone 纯内存无损深拷贝（防并发脏写）
+     *
+     * @param source 待克隆源对象
+     * @param <T>    对象类型泛型
+     * @return 深度克隆后的全新对象
+     */
+    public <T> T demonstrateDeepClone(T source) {
+        T cloned = JsonUtil.deepClone(source);
+        log.info("JsonUtil.deepClone 纯内存深拷贝完成: source={}, cloned={}", source, cloned);
+        return cloned;
+    }
+
+    /**
      * 15. 验证 MoreCollectors.distinctByKey 函数式去重
      *
      * @param users 输入用户列表
