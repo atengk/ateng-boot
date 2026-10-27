@@ -21,5 +21,10 @@ public enum LimitType {
     /**
      * 登录用户维度限流（依托 UserContextHolder 提取当前用户 ID）
      */
-    USER
+    USER,
+
+    /**
+     * 多租户维度限流（依托 TenantContextHolder 提取当前租户 ID，未设置时默认回退为 default）
+     */
+    TENANT
 }

@@ -25,7 +25,7 @@
 | **全局异常防御** | 全局统一异常拦截与生产脱敏 | `GlobalExceptionHandler`, `GlobalExceptionCustomizer` | - | 挂载 `GlobalExceptionCustomizer` SPI 链式定制，拦截 `BusinessException`（双模因果堆栈）、`MethodArgumentNotValidException`、`HandlerMethodValidationException`、`BindException`、`ConstraintViolationException`、400/404/405/406/413/415/503/500 精细化转译与生产脱敏 | `GlobalExceptionHandlerTest.java`, `WebContractSampleControllerTest.java`, `WebExceptionSampleControllerTest.java` |
 | **精度与时间规范** | 53 位雪花精度防截断与时间序列化 | `JacksonCustomizer` | `ateng.boot.web.long-to-string` | Long/BigInteger 序列化为 String，标准 `yyyy-MM-dd HH:mm:ss` 格式化，不覆盖原生 `ObjectMapper` | `JacksonCustomizerTest.java`, `WebContractSampleControllerTest.java` |
 | **接口审计日志** | 声明式接口耗时审计与安全防 OOM | `@WebLog`, `WebLogAspect` | `ateng.boot.web.log.enabled` | `@WebLog(value, printParams, printResult, excludeParams)`，大文件 Multipart 自动占位防 OOM | `WebLogAspectTest.java`, `WebAuditSampleControllerTest.java` |
-| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户多维限流防刷 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java` |
+| **自适应限流防刷** | 三级自适应令牌桶与多维限流 | `@RateLimiter`, `LimitType`, `RateLimiterStore`, `InMemoryRateLimiterStore`, `RedisRateLimiterStore`, `RedissonRateLimiterStore` | `ateng.boot.web.ratelimit.enabled`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@RateLimiter(key, time, count, limitType)`，支持默认/IP/用户/租户（LimitType.TENANT）多维限流防刷与租户流量隔离 | `RateLimiterAspectTest.java`, `AtengRateLimiterAutoConfigurationTest.java`, `InMemoryRateLimiterStoreTest.java`, `WebTrafficSampleControllerTest.java`, `WebTenantRateLimiterSampleTest.java` |
 | **自适应防重幂等** | 三级自适应防重幂等引擎 | `@Idempotent`, `IdempotentStore`, `InMemoryIdempotentStore`, `RedisIdempotentStore`, `RedissonIdempotentStore` | `ateng.boot.web.idempotent.enabled`, `key-prefix`, `in-memory.max-capacity`, `in-memory.clean-interval` | `@Idempotent(key, timeout, message, delKeyOnException)`，支持 SpEL 动态提取业务键、自动防抖、业务异常释放 | `IdempotentAspectTest.java`, `AtengIdempotentAutoConfigurationTest.java`, `InMemoryIdempotentStoreTest.java`, `WebTrafficSampleControllerTest.java` |
 | **云原生优雅停机** | K8s 就绪探针排空与容器生命周期治理 | `AtengGracefulShutdownHandler`, `PreStopEndpoint`, `PreStopController` | `ateng.boot.web.shutdown.enabled`, `drain-timeout`, `smart-lifecycle-enabled`, `actuator-endpoint-enabled`, `mvc-endpoint-enabled`, `mvc-endpoint-path` | 翻转 `ReadinessState.REFUSING_TRAFFIC`，受管静默排空等待（`drain-timeout: 10s`），`AtomicBoolean` 状态机排空幂等，支持 Actuator `/actuator/pre-stop` 与 MVC `/pre-stop` 双模端点，`SmartLifecycle` 兜底 | `AtengGracefulShutdownHandlerTest.java`, `PreStopEndpointTest.java`, `PreStopControllerTest.java`, `AtengGracefulShutdownAutoConfigurationTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **慢请求主动告警** | 长耗时慢请求性能主动告警与长连接放行 | `SlowRequestFilter` | `ateng.boot.web.slow-request.enabled`, `threshold`, `exclude-urls` | 请求出口处计算总耗时，超过阈值（强类型 Duration）输出包含 TraceId、URI、Method、耗时与 ClientIp 的 `[SLOW_REQUEST]` 格式化 WARN 日志，自动放行 WebSocket、SSE、文件下载与异步挂起请求，支持 Ant 路径白名单 | `SlowRequestFilterTest.java`, `SlowRequestMockMvcTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
@@ -39,6 +39,7 @@
 | **IP 访问控制防火墙** | 声明式 IP 防火墙与 CIDR 子网判定 | `@IpAccessControl`, `IpAccessMode`, `IpAccessControlFilter`, `IpAccessControlAspect`, `IpAccessControlProperties` | `ateng.boot.web.ip-access-control.enabled`, `http-status-403`, `mode`, `rules`, `filter.enabled`, `filter.mode`, `filter.rules`, `filter.url-patterns`, `filter.exclude-urls` | `@IpAccessControl(mode, rules, message, httpStatus403)`，单 IP 与 IPv4/IPv6 CIDR 子网位运算判定，白名单/黑名单双模，方法级切面与 URL 路径级过滤器双重防线，默认遵循 ADR-0004 返回 HTTP 200 + Result 403 并注入 `X-Denied-Reason: IP_BLOCKED`，支持物理 403 切断 | `IpUtilTest.java`, `IpAccessControlFilterTest.java`, `IpAccessControlAspectTest.java`, `WebIpAccessSampleControllerTest.java`, `WebIpAccessFilterSampleTest.java` |
 | **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
+| **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 
 ---
 
@@ -196,6 +197,7 @@ public Result<String> payOrder(@RequestBody PayOrderDTO order) {
 
 ### 核心代码范式
 ```java
+// 1. 基于客户端 IP 联合防刷
 @GetMapping("/sendSms")
 @RateLimiter(
     key = "#phone",                    // 基于入参手机号限流
@@ -207,6 +209,18 @@ public Result<String> payOrder(@RequestBody PayOrderDTO order) {
 public Result<Void> sendSms(@RequestParam String phone) {
     smsService.send(phone);
     return Result.success();
+}
+
+// 2. 原生多租户流量隔离限流（自动读取 TenantContextHolder 租户标识，未指定时回退为 default）
+@GetMapping("/tenant/data")
+@RateLimiter(
+    limitType = LimitType.TENANT,      // 租户维度限流
+    count = 100,                       // 每 60 秒允许 100 次
+    time = 60,
+    message = "当前租户请求过于频繁，请稍后再试"
+)
+public Result<String> getTenantData() {
+    return Result.success("ok");
 }
 ```
 
@@ -809,6 +823,65 @@ ateng:
 
 ---
 
+## 19. 声明式 API 多版本控制与分流 (`@ApiVersion`)
+
+### 场景痛点
+1. 业务迭代演进时，老版本客户端需继续维护，新版本接口需快速上线；传统硬编码 URL 前缀繁琐且无法支持通过 Header 优雅平滑升级；
+2. 当客户端未传递任何版本时，缺乏统一优雅的缺省默认版本回退机制；
+3. 需要同时兼顾 URL 路径前缀（如 `/v1/user`, `/v2/user`）与请求头（`X-API-Version`）双向自动路由分流。
+
+### 核心机制
+- 依托 Spring MVC 原生扩展点 `RequestCondition` 实现 `ApiVersionCondition`，在保留原有路径的同时，自动扩展注册 `/v{version}` 路径前缀模式；
+- 双向智能识别：优先提取 URL 路径中的版本标识（`/v1/`、`/v2/`），若无则提取请求头（`X-API-Version`），若均未提供则安全回退至配置的 `default-version`（默认 `"1"`）；
+- 方法级优先覆盖：方法上声明的 `@ApiVersion` 优先级高于 Controller 类级别注解。
+
+### 核心代码范式
+```java
+// 1. V1 版本控制器
+@RestController
+@RequestMapping("/api/sample/version-user")
+@ApiVersion("1")
+public class WebVersionV1SampleController {
+
+    @GetMapping("/info")
+    public Result<Map<String, Object>> getUserInfo() {
+        return Result.success(Map.of("version", "1", "name", "张三", "contract", "legacy"));
+    }
+}
+
+// 2. V2 版本控制器（增强契约）与方法级覆盖
+@RestController
+@RequestMapping("/api/sample/version-user")
+@ApiVersion("2")
+public class WebVersionV2SampleController {
+
+    @GetMapping("/info")
+    public Result<Map<String, Object>> getUserInfo() {
+        return Result.success(Map.of("version", "2", "name", "张三", "level", "VIP", "contract", "enhanced"));
+    }
+
+    // 方法级显式指定 2.1 版本
+    @GetMapping("/feature")
+    @ApiVersion("2.1")
+    public Result<String> getV21Feature() {
+        return Result.success("feature_v2.1");
+    }
+}
+```
+
+### 多维调用方式
+- **URL 路径前缀访问**：
+  - `GET /v1/api/sample/version-user/info` -> 路由至 V1
+  - `GET /v2/api/sample/version-user/info` -> 路由至 V2
+  - `GET /v2.1/api/sample/version-user/feature` -> 路由至 2.1 特性端点
+- **请求头分流访问**：
+  - `GET /api/sample/version-user/info` + `X-API-Version: 2` -> 路由至 V2
+  - `GET /api/sample/version-user/info` + `X-API-Version: 1` -> 路由至 V1
+- **缺省回退访问**：
+  - `GET /api/sample/version-user/info`（不带版本标识） -> 自动回退至默认版本 V1
+
+---
+
 ## 20. 模块配置属性参考 (`application.yml`)
 
 ```yaml
@@ -971,4 +1044,13 @@ ateng:
           # 过滤器排除放行的 URL 路径模式列表（Ant 风格匹配）
           exclude-urls:
             - "/admin/public/**"
+      api-version:
+        # 是否启用 API 多版本控制与分流（默认 true）
+        enabled: true
+        # 缺省默认版本（当请求未携带版本时回退，默认 "1"）
+        default-version: "1"
+        # 提取版本的 HTTP 请求头名称（默认 X-API-Version）
+        header: "X-API-Version"
+        # 是否启用 URL 路径前缀版本匹配（如 /v1/...，默认 true）
+        path-prefix-enabled: true
 ```

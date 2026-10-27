@@ -4,3 +4,4 @@ io.github.atengk.boot.web.ratelimit.autoconfigure.AtengRateLimiterAutoConfigurat
 io.github.atengk.boot.web.sign.autoconfigure.AtengApiSignAutoConfiguration
 io.github.atengk.boot.web.shutdown.autoconfigure.AtengGracefulShutdownAutoConfiguration
 io.github.atengk.boot.web.ip.autoconfigure.AtengIpAccessControlAutoConfiguration
+io.github.atengk.boot.web.version.autoconfigure.AtengApiVersionAutoConfiguration

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.properties;
 
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
+import io.github.atengk.boot.web.version.properties.ApiVersionProperties;
 import io.github.atengk.boot.web.xss.XssMode;
 import lombok.Getter;
 import lombok.Setter;
@@ -45,6 +46,12 @@ public class WebProperties {
      */
     @NestedConfigurationProperty
     private CorsProperties cors = new CorsProperties();
+
+    /**
+     * API 多版本控制配置
+     */
+    @NestedConfigurationProperty
+    private ApiVersionProperties apiVersion = new ApiVersionProperties();
 
     /**
      * 链路追踪属性配置

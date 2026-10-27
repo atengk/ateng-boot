@@ -1,6 +1,7 @@
 package io.github.atengk.boot.web.ratelimit.aspect;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
@@ -104,6 +105,10 @@ public class RateLimiterAspect {
             case USER -> {
                 String userId = UserContextHolder.get();
                 sb.append(StringUtils.hasText(userId) ? userId : "anonymous_user");
+            }
+            case TENANT -> {
+                String tenantId = TenantContextHolder.getTenantId();
+                sb.append(StringUtils.hasText(tenantId) ? tenantId : "default");
             }
             case DEFAULT -> {
                 var request = ServletUtil.getRequest();

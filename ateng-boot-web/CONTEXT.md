@@ -184,6 +184,19 @@ _Avoid_: IpAspect, FirewallAspect, IpGuardAspect
 IP 访问控制运行时配置属性，以 ateng.boot.web.ip-access-control 为前缀，提供黑白名单模式、规则清单与物理 403 切换控制。
 _Avoid_: IpProperties, FirewallProperties
 
+**ApiVersionCondition**:
+实现 Spring MVC 原生 RequestCondition 的版本匹配条件，负责从 URL 路径前缀（/v{version}/）、请求头（X-API-Version）中提取版本并支持缺省默认版本回退。
+_Avoid_: VersionCondition, RequestVersionCondition
+
+**ApiVersionRequestMappingHandlerMapping**:
+API 版本感知型请求映射处理器，继承 RequestMappingHandlerMapping，自动挂载 ApiVersionCondition 并自动扩展 /v{version} 路径前缀模式。
+_Avoid_: VersionHandlerMapping, ApiVersionMapping
+
+**ApiVersionProperties**:
+API 多版本控制运行时配置属性，以 ateng.boot.web.api-version 为前缀，提供缺省默认版本、标头名称与路径前缀启闭控制。
+_Avoid_: VersionProperties, ApiProperties
+
+
 
 
 
