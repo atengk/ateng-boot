@@ -22,6 +22,7 @@ import org.springframework.util.Assert;
 
 import java.io.Closeable;
 import java.io.OutputStream;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -70,6 +71,8 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
     private String watermarkText;
     private String protectionPassword;
     private Locale locale;
+    private Collection<String> includeColumnFieldNames;
+    private Collection<String> excludeColumnFieldNames;
 
     // 运行态状态
     private ExcelWriter excelWriter;
@@ -232,6 +235,28 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
      */
     public StreamingPageExportTemplate<T> protect(String protectionPassword) {
         this.protectionPassword = protectionPassword;
+        return this;
+    }
+
+    /**
+     * 设置动态包含的属性字段名称集合（白名单投影）
+     *
+     * @param columnFieldNames 包含的字段名称集合（为空或 null 则不限制）
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> includeColumns(Collection<String> columnFieldNames) {
+        this.includeColumnFieldNames = columnFieldNames;
+        return this;
+    }
+
+    /**
+     * 设置动态排除的属性字段名称集合（黑名单过滤）
+     *
+     * @param columnFieldNames 排除的字段名称集合（为空或 null 则不限制）
+     * @return 当前模板实例
+     */
+    public StreamingPageExportTemplate<T> excludeColumns(Collection<String> columnFieldNames) {
+        this.excludeColumnFieldNames = columnFieldNames;
         return this;
     }
 
@@ -433,6 +458,11 @@ public class StreamingPageExportTemplate<T> implements AutoCloseable, Closeable 
         if (ImageRowHeightWriteHandler.hasExcelImage(headClass)) {
             writerBuilder.registerWriteHandler(new ImageRowHeightWriteHandler(headClass));
             writerBuilder.registerConverter(new SmartImageConverter());
+        }
+        List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, this.includeColumnFieldNames, this.excludeColumnFieldNames);
+        if (projectedColumns != null) {
+            writerBuilder.includeColumnFieldNames(projectedColumns);
+            writerBuilder.orderByIncludeColumn(true);
         }
         registerEnumConverters(writerBuilder, headClass);
 

@@ -61,6 +61,10 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     private String watermarkText;
     private String protectionPassword;
 
+    // 动态列投影状态
+    private Collection<String> includeColumnFieldNames;
+    private Collection<String> excludeColumnFieldNames;
+
     /**
      * 基于输出流构造 Fluent 构建器
      *
@@ -190,6 +194,28 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     }
 
     /**
+     * 流式指定后续 Sheet 仅包含指定的字段列（白名单投影）
+     *
+     * @param columnFieldNames 包含的字段名称集合（为空或 null 则不限制）
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder includeColumns(Collection<String> columnFieldNames) {
+        this.includeColumnFieldNames = columnFieldNames;
+        return this;
+    }
+
+    /**
+     * 流式指定后续 Sheet 排除指定的字段列（黑名单过滤）
+     *
+     * @param columnFieldNames 排除的字段名称集合（为空或 null 则不限制）
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder excludeColumns(Collection<String> columnFieldNames) {
+        this.excludeColumnFieldNames = columnFieldNames;
+        return this;
+    }
+
+    /**
      * 写入一个强类型实体模型 Sheet（自动递增 Sheet 编号）
      *
      * @param sheetName 工作表名称
@@ -199,7 +225,37 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
      * @return 当前构建器实例
      */
     public <T> ExcelBuilder sheet(String sheetName, Class<T> headClass, Collection<T> data) {
-        return sheet(currentSheetNo++, sheetName, headClass, data);
+        return sheet(currentSheetNo++, sheetName, headClass, data, null, null);
+    }
+
+    /**
+     * 写入一个强类型实体模型 Sheet（自动递增 Sheet 编号），并指定包含的列
+     *
+     * @param sheetName      工作表名称
+     * @param headClass      实体模型 Class
+     * @param data           待写入数据集合
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则回退使用构建器全局配置）
+     * @param <T>            实体泛型
+     * @return 当前构建器实例
+     */
+    public <T> ExcelBuilder sheet(String sheetName, Class<T> headClass, Collection<T> data, Collection<String> includeColumns) {
+        return sheet(currentSheetNo++, sheetName, headClass, data, includeColumns, null);
+    }
+
+    /**
+     * 写入一个强类型实体模型 Sheet（自动递增 Sheet 编号），并指定包含与排除的列
+     *
+     * @param sheetName      工作表名称
+     * @param headClass      实体模型 Class
+     * @param data           待写入数据集合
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则回退使用构建器全局配置）
+     * @param excludeColumns 排除的属性字段名称集合（为空或 null 则回退使用构建器全局配置）
+     * @param <T>            实体泛型
+     * @return 当前构建器实例
+     */
+    public <T> ExcelBuilder sheet(String sheetName, Class<T> headClass, Collection<T> data,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
+        return sheet(currentSheetNo++, sheetName, headClass, data, includeColumns, excludeColumns);
     }
 
     /**
@@ -213,8 +269,32 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
      * @return 当前构建器实例
      */
     public <T> ExcelBuilder sheet(Integer sheetNo, String sheetName, Class<T> headClass, Collection<T> data) {
+        return sheet(sheetNo, sheetName, headClass, data, null, null);
+    }
+
+    /**
+     * 写入一个指定编号的强类型实体模型 Sheet，并指定包含与排除的列
+     *
+     * @param sheetNo        Sheet 编号（0-based）
+     * @param sheetName      工作表名称
+     * @param headClass      实体模型 Class
+     * @param data           待写入数据集合（为 null 或空时依然输出表头空表）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则回退使用构建器全局配置）
+     * @param excludeColumns 排除的属性字段名称集合（为空或 null 则回退使用构建器全局配置）
+     * @param <T>            实体泛型
+     * @return 当前构建器实例
+     */
+    public <T> ExcelBuilder sheet(Integer sheetNo, String sheetName, Class<T> headClass, Collection<T> data,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
         Assert.notNull(headClass, "headClass 实体类型不可为空");
         ExcelWriterSheetBuilder sheetBuilder = FesodSheet.writerSheet(sheetNo, sheetName).head(headClass);
+        Collection<String> includes = (includeColumns != null) ? includeColumns : this.includeColumnFieldNames;
+        Collection<String> excludes = (excludeColumns != null) ? excludeColumns : this.excludeColumnFieldNames;
+        List<String> projectedColumns = ExcelUtil.resolveProjectedColumns(headClass, includes, excludes);
+        if (projectedColumns != null) {
+            sheetBuilder.includeColumnFieldNames(projectedColumns);
+            sheetBuilder.orderByIncludeColumn(true);
+        }
         if (sheetConfigurator != null) {
             sheetConfigurator.accept(sheetBuilder, headClass);
         }
@@ -281,6 +361,8 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         this.fontName = null;
         this.watermarkText = null;
         this.protectionPassword = null;
+        this.includeColumnFieldNames = null;
+        this.excludeColumnFieldNames = null;
     }
 
     private void applyStyle(ExcelWriterSheetBuilder sheetBuilder, Class<?> headClass) {

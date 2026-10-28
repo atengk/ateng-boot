@@ -100,3 +100,19 @@ _Avoid_: CellLockHandler, ColumnProtectWriter, EditableColumnStrategy, ColumnLoc
 国际化多语言表头动态转译拦截器，自动识别 `{i18n:key}` 格式的表头声明，联动 Spring `MessageSource` 与当前请求区域（Locale）动态完成表头本地化翻译。
 _Avoid_: LocaleHeaderWriter, MultiLangHeaderHandler, TranslationInterceptor
 
+**ExcelReaderBuilder**:
+Fluent 链式多 Sheet 流式读取构建器，允许在单次 I/O 流生命周期内为同一个工作簿编排多个不同工作表（Sheet）的读取契约，支持按索引/表名寻址、异构数据模型映射、分批回调与全量聚合双模消费，实现读写对称完备性。
+_Avoid_: MultiSheetReader, SheetReaderHelper, ExcelStreamReader, ExcelReadSession
+
+**ColumnProjection**:
+强类型 VO 动态列投影能力，支持通过 `includeColumns` / `excludeColumns` 动态裁切需要输出的属性列，未选中的列物理剔除且保留列自动紧凑左移排版，100% 继承实体注解（脱敏、主题、枚举转义与列宽补偿）。
+_Avoid_: ColumnFilter, FieldSelector, DynamicColumnFilter, ColumnPruner
+
+**WorkbookEncryption**:
+整工作簿工业级 AES-256 原生强加解密体系，基于 POI 原生 `EncryptionInfo` 与 Agile Encryption 算法实现，提供全文件密码加密封包与透明解密流还原，配合磁盘临时文件防 OOM 缓冲与确定性销毁。
+_Avoid_: ExcelCryptor, PoiEncryptor, FilePasswordProtector, SheetEncryption
+
+**ExcelWebUtil**:
+Web HTTP 文件导出专职门面工具，封装符合 RFC 5987 / RFC 6266 标准的 UTF-8 中文文件名响应头、标准 XLSX MIME 配置与现代 Spring `ResponseEntity<StreamingResponseBody>` 强类型响应对象封装，并提供自适应客户端中断（`ClientAbortException`）异常拦截与磁盘临时文件确定性安全清理。
+_Avoid_: ExcelHttpUtil, WebExportHelper, DownloadUtil, ServletExcelWriter
+

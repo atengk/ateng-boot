@@ -40,6 +40,9 @@ import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
+import org.apache.fesod.sheet.annotation.ExcelIgnore;
+import org.apache.fesod.sheet.annotation.ExcelIgnoreUnannotated;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.enums.CellDataTypeEnum;
 import org.apache.fesod.sheet.metadata.AbstractParameterBuilder;
@@ -55,15 +58,20 @@ import org.springframework.util.Assert;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -323,10 +331,21 @@ public final class ExcelUtil {
     }
 
     private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz) {
+        return createStandardWriterBuilder(outputStream, clazz, null, null);
+    }
+
+    private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz,
+                                                                      Collection<String> includeColumns,
+                                                                      Collection<String> excludeColumns) {
         var writerBuilder = FesodSheet.write(outputStream, clazz)
                 .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
                 .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
+        List<String> projectedColumns = resolveProjectedColumns(clazz, includeColumns, excludeColumns);
+        if (projectedColumns != null) {
+            writerBuilder.includeColumnFieldNames(projectedColumns);
+            writerBuilder.orderByIncludeColumn(true);
+        }
         if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
             writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
         }
@@ -352,13 +371,72 @@ public final class ExcelUtil {
      * @param <T>          实体数据泛型
      */
     public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz) {
+        export(outputStream, sheetName, data, clazz, null, null);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定动态包含的列
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, List<T> data, Class<T> clazz, Collection<String> includeColumns) {
+        export(outputStream, DEFAULT_SHEET_NAME, data, clazz, includeColumns, null);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定动态包含与排除的列
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 动态排除的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
+        export(outputStream, DEFAULT_SHEET_NAME, data, clazz, includeColumns, excludeColumns);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称与包含的列
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns) {
+        export(outputStream, sheetName, data, clazz, includeColumns, null);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称与动态包含/排除的列
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 动态排除的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
         Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
 
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
-        var writerBuilder = createStandardWriterBuilder(outputStream, clazz);
+        var writerBuilder = createStandardWriterBuilder(outputStream, clazz, includeColumns, excludeColumns);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(exportList);
     }
@@ -376,7 +454,7 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz);
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null);
     }
 
     /**
@@ -389,7 +467,38 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, Class<T> clazz, List<T> data) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz);
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null);
+    }
+
+    /**
+     * Web 环境下流式导出 Excel 并直接写入 HttpServletResponse，并指定包含的列
+     *
+     * @param response       响应对象（不可为空）
+     * @param fileName       导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param data           待导出的数据集合
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns) {
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, includeColumns, null);
+    }
+
+    /**
+     * Web 环境下流式导出 Excel 并直接写入 HttpServletResponse，并指定包含与排除的列
+     *
+     * @param response       响应对象（不可为空）
+     * @param fileName       导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param data           待导出的数据集合
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 排除的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, includeColumns, excludeColumns);
     }
 
     /**
@@ -403,11 +512,44 @@ public final class ExcelUtil {
      * @param <T>       实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz) {
+        export(response, fileName, sheetName, data, clazz, null, null);
+    }
+
+    /**
+     * Web 环境下流式导出 Excel 并直接写入 HttpServletResponse，并指定 Sheet 名称与包含的列
+     *
+     * @param response       响应对象（不可为空）
+     * @param fileName       导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns) {
+        export(response, fileName, sheetName, data, clazz, includeColumns, null);
+    }
+
+    /**
+     * Web 环境下流式导出 Excel 并直接写入 HttpServletResponse，并指定 Sheet 名称与包含/排除的列
+     *
+     * @param response       响应对象（不可为空）
+     * @param fileName       导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 排除的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns) {
         prepareWebResponse(response, fileName);
         Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
 
         try {
-            export(response.getOutputStream(), sheetName, data, clazz);
+            export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns);
         } catch (IOException e) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
         }
@@ -1691,6 +1833,123 @@ public final class ExcelUtil {
             sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass));
         }
         registerEnumConverters(sheetBuilder, headClass);
+    }
+
+    private static final Map<Class<?>, List<String>> DECLARED_FIELD_NAMES_CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 获取类及其父类中所有参与 Excel 导出的声明字段名称列表（按声明顺序与 @ExcelProperty 索引排序）
+     *
+     * @param clazz 目标 VO 类型
+     * @return 字段名称列表
+     */
+    public static List<String> getDeclaredFieldNames(Class<?> clazz) {
+        if (clazz == null || clazz == Object.class) {
+            return Collections.emptyList();
+        }
+        return DECLARED_FIELD_NAMES_CACHE.computeIfAbsent(clazz, ExcelUtil::scanDeclaredFieldNames);
+    }
+
+    private static List<String> scanDeclaredFieldNames(Class<?> clazz) {
+        List<Class<?>> hierarchy = new ArrayList<>();
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            hierarchy.add(0, current); // 父类在前
+            current = current.getSuperclass();
+        }
+        List<Field> allFields = new ArrayList<>();
+        for (Class<?> clz : hierarchy) {
+            for (Field field : clz.getDeclaredFields()) {
+                if (!Modifier.isStatic(field.getModifiers()) && !Modifier.isTransient(field.getModifiers())) {
+                    if (!field.isAnnotationPresent(ExcelIgnore.class)
+                            && !field.isAnnotationPresent(ExcelIgnoreUnannotated.class)) {
+                        allFields.add(field);
+                    }
+                }
+            }
+        }
+        // 按照 @ExcelProperty(index) 排序：显式指定 index 的按 index 排序，未指定或负数的排在后面并保持声明顺序
+        List<Field> sortedFields = new ArrayList<>(allFields);
+        sortedFields.sort((f1, f2) -> {
+            ExcelProperty p1 = f1.getAnnotation(ExcelProperty.class);
+            ExcelProperty p2 = f2.getAnnotation(ExcelProperty.class);
+            int idx1 = (p1 != null && p1.index() >= 0) ? p1.index() : Integer.MAX_VALUE;
+            int idx2 = (p2 != null && p2.index() >= 0) ? p2.index() : Integer.MAX_VALUE;
+            if (idx1 != idx2) {
+                return Integer.compare(idx1, idx2);
+            }
+            return Integer.compare(allFields.indexOf(f1), allFields.indexOf(f2));
+        });
+
+        List<String> fieldNames = new ArrayList<>(sortedFields.size());
+        for (Field f : sortedFields) {
+            fieldNames.add(f.getName());
+        }
+        return Collections.unmodifiableList(fieldNames);
+    }
+
+    /**
+     * 计算并解析最终生效的投影字段名称列表
+     * <p>
+     * 规则说明：
+     * 1. 当 includeColumns 与 excludeColumns 均为空或 null 时，返回 null，表示不执行自定义列裁剪；
+     * 2. 当 includeColumns 为有序集合（如 List 或 LinkedHashSet）时，优先保留调用方指定的列顺序；
+     * 3. 当 includeColumns 为无序集合（如 Set.of 或 HashSet）时，按实体类默认自然声明顺序排列；
+     * 4. 自动剔除实体中不存在的非法字段（防御性容错），并排除 excludeColumns 中的字段；
+     * 5. 若过滤后无任何有效保留列，返回 null，平滑回退默认行为。
+     * </p>
+     *
+     * @param clazz          目标实体 Class
+     * @param includeColumns 包含列白名单
+     * @param excludeColumns 排除列黑名单
+     * @return 最终生效的有序字段名称列表；若无需投影则返回 null
+     */
+    public static List<String> resolveProjectedColumns(Class<?> clazz,
+                                                       Collection<String> includeColumns,
+                                                       Collection<String> excludeColumns) {
+        if (clazz == null || clazz == Object.class) {
+            return null;
+        }
+        boolean hasIncludes = (includeColumns != null && !includeColumns.isEmpty());
+        boolean hasExcludes = (excludeColumns != null && !excludeColumns.isEmpty());
+        if (!hasIncludes && !hasExcludes) {
+            return null;
+        }
+
+        List<String> allDeclared = getDeclaredFieldNames(clazz);
+        if (allDeclared.isEmpty()) {
+            return null;
+        }
+
+        Set<String> declaredSet = new HashSet<>(allDeclared);
+        Set<String> excludeSet = hasExcludes ? new HashSet<>(excludeColumns) : Collections.emptySet();
+        List<String> projected = new ArrayList<>();
+
+        if (hasIncludes) {
+            boolean isExplicitlyOrdered = (includeColumns instanceof List || includeColumns instanceof LinkedHashSet);
+            if (isExplicitlyOrdered) {
+                for (String col : includeColumns) {
+                    if (col != null && declaredSet.contains(col) && !excludeSet.contains(col) && !projected.contains(col)) {
+                        projected.add(col);
+                    }
+                }
+            } else {
+                Set<String> includeSet = new HashSet<>(includeColumns);
+                for (String col : allDeclared) {
+                    if (includeSet.contains(col) && !excludeSet.contains(col)) {
+                        projected.add(col);
+                    }
+                }
+            }
+        } else {
+            for (String col : allDeclared) {
+                if (!excludeSet.contains(col)) {
+                    projected.add(col);
+                }
+            }
+        }
+
+        return projected.isEmpty() ? null : projected;
     }
 }
 
