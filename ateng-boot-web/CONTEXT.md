@@ -212,3 +212,23 @@ _Avoid_: XssType, CleanMode, SanitizerMode
 XSS 无害化安全清洗引擎，依托纯 JDK 原生字符串替换与正则算法实现高效实体转义与脚本标签剥离，零引入三方重型解析库。
 _Avoid_: HtmlSanitizer, AntiXssUtil, XssUtil
 
+**EnumDictionaryProperties**:
+枚举字典 HTTP 运行时配置属性，以 ateng.boot.web.enum 为前缀，管控端点开关、路由路径前缀、扫描包清单与命名转换策略。
+_Avoid_: EnumProperties, DictProperties, EnumEndpointProperties
+
+**EnumNamingStrategy**:
+枚举类短名转前端别名命名策略枚举，支持小驼峰（LOWER_CAMEL_CASE）、下划线（SNAKE_CASE）与原始类名（ORIGINAL）。
+_Avoid_: NamingType, EnumCaseStrategy
+
+**EnumDictionaryRegistry**:
+枚举字典启动期扫描注册中心，负责解析指定包路径内所有实现 IBaseEnum 的枚举，检测别名冲突并预编译为不可变选项缓存。
+_Avoid_: EnumManager, DictRegistry, EnumCache
+
+**EnumDictionaryController**:
+提供对外只读枚举字典查询的 HTTP 控制器，遵循统一 Result 响应契约，提供单个查询、批量合并及全量目录检索端点。
+_Avoid_: EnumController, DictController, EnumEndpoint
+
+**BaseEnumDeserializer**:
+Jackson 泛型反序列化定制器，拦截 IBaseEnum 实现类型，支持将前端传入的整数或字符串状态码自动解析为强类型枚举实例。
+_Avoid_: EnumJsonDeserializer, BaseEnumJsonCreator
+

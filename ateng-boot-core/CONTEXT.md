@@ -286,4 +286,24 @@ _Avoid_: RateLimiter, TokenLimiter, LeakyBucket
 核心通用底座统一外置化配置属性类，统管雪花发号器、缓存等强类型配置与生产默认值。
 _Avoid_: AtengProperties, BaseProperties, FrameworkProperties
 
+**IBaseEnum**:
+强类型通用枚举契约接口，统管状态码与展示标签，提供空安全判等、转 OptionItem 及三方组件签名兼容。
+_Avoid_: BaseEnum, IDictEnum, CommonEnum, EnumInterface
+
+**OptionItem**:
+面向前端组件库标准下拉选择器与过滤器的强类型选项键值对模型，封装编码、展示标签、禁用状态与扩展元数据。
+_Avoid_: DictOption, SelectOption, OptionVO, KeyValueVO
+
+**EnumAlias**:
+用于显式指定或重写枚举对外暴露字典标识的类级注解，防御跨模块同名枚举冲突并支持语义化别名定制。
+_Avoid_: DictKey, EnumKey, DictName, ExposeEnum
+
+**EnumUtil**:
+枚举反射解析与并发高速缓存门面，提供根据编码查找枚举、安全断言、编码有效性校验及全量选项转换。
+_Avoid_: EnumHelper, Enums, EnumTool
+
+**InEnum**:
+基于 JSR-303 规范的强类型枚举入参合法性校验注解，依托 EnumUtil 在传输层第一道防线实现非法状态快速失败。
+_Avoid_: EnumPattern, EnumValue, CheckEnum, ValidEnum
+
 

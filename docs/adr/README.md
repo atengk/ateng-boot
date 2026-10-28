@@ -67,6 +67,8 @@
 | **0057** | Excel 异构多表流式编排、动态列投影裁剪与整工作簿原生安全加密架构决策 | `Accepted` | ExcelReaderBuilder 链式异构多工作表对称流式解析（分批流式消费/全量结果容器），强类型 VO 动态列投影裁剪与无实体紧凑排版（100% 保持注解契约），基于 POI 原生 EncryptionInfo 的整工作簿 AES-256 强加密与透明密码解密，Servlet 容器客户端防中断清理与有界临时文件防打爆磁盘 | `ateng-boot-excel` / `core` / `web` / `samples` | [查看](./0057-excel-multi-sheet-streaming-and-native-workbook-encryption-architecture.md) |
 | **0058** | 样例反应堆物理隔离、发布配额防暴与发版流水线纯净化架构决策 | `Accepted` | 根 POM 顶层解耦并设立基于缺省属性激活拓扑（!skipSamples）的动态 samples profile，发版命令 -DskipSamples 100% 物理切断 29 个样例工程的 Reactor 构建，配合 Central 集中拦截与内嵌声明构成三重立体防发布防线，发版流水线纯净化过滤内部 Demo 附件，根除 Sonatype Central 免费配额封禁隐患 | `build` / `ci` / `samples` / `pom` | [查看](./0058-samples-reactor-isolation-and-publishing-quota-governance.md) |
 | **0059** | 企业级 Sa-Token 级联两级缓存、多账号体系与微服务零信任全闭环架构决策 | `Accepted` | 级联两级缓存自适应适配 ateng-boot-redis TwoLevelCacheManager（L1 本地 LRU/Caffeine + L2 Redis + 64条带锁 + Pub/Sub 广播驱逐），LoginHelper 多账号 loginType 重载与 StpLogic 动态懒加载路由，主账号优先级四维上下文映射，SameTokenClientHttpRequestInterceptor 自动装配微服务调用发起端闭环，登录防爆破客户端 IP 频率熔断双轨防卫 | `ateng-boot-satoken` / `core` / `redis` / `web` | [查看](./0059-satoken-hierarchical-cache-multi-account-and-zero-trust-closed-loop-architecture.md) |
+| **0060** | 强类型通用枚举契约、出入界双防闭环与 Web 只读字典架构决策 | `Accepted` | 契约下沉 Core（IBaseEnum 强类型显式契约、OptionItem 标准选项模型、EnumUtil 高性能带缓存门面、@EnumAlias 别名防冲突与 @InEnum JSR-303 第一道防线校验）；运行时收敛 Web（EnumDictionaryRegistry 启动期包扫描预热与冲突 Fail-Fast、EnumDictionaryController 三阶只读端点、BaseEnumDeserializer Jackson 强类型双向反序列化与 i18n 多语言透明适配） | `ateng-boot-core` / `ateng-boot-web` | [查看](./0060-distributed-enum-contract-and-web-dictionary-architecture.md) |
+
 
 ---
 
