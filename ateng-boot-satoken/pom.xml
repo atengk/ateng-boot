@@ -68,6 +68,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- ateng-boot-redis 两级缓存底座协同 (可选依赖) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Data Redis (分布式存储可选依赖) -->
         <dependency>
             <groupId>org.springframework.data</groupId>

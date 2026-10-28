@@ -1,5 +1,8 @@
 package io.github.atengk.boot.satoken.cache;
 
+import io.github.atengk.boot.redis.cache.spi.TwoLevelCache;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
+import io.github.atengk.boot.redis.cache.twolevel.l1.L1MemoryCache;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
 import lombok.extern.slf4j.Slf4j;
@@ -9,16 +12,23 @@ import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.time.Duration;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 两级权限与角色缓存即时热刷新治理服务
- * 支持在用户分配新角色、或系统管理员动态修改角色菜单权限时，秒级清理对应粒度的缓存；
- * 自适应支持 Redis 分布式集群模式与单机内存降级模式，全链路杜绝阻塞。
+ * 高性能两级级联权限与角色即时热刷新治理服务
+ * <p>
+ * 采用自适应适配器模式（Adaptive Adapter Pattern）：
+ * 1. 当容器中检测到 {@link TwoLevelCacheManager} 时，100% 委派给 {@link TwoLevelCache}，
+ *    全面复用其 64-条带并发锁（消除队头阻塞）、本地 LRU/Caffeine 微缓存、防雪崩 Jitter TTL、防穿透哨兵与 Redis Pub/Sub 广播驱逐；
+ * 2. 当容器未注入 {@link TwoLevelCacheManager} 但存在 {@link StringRedisTemplate} 时，降级为常规单层 Redis 缓存；
+ * 3. 当未引入 Redis 的纯单机/H2 单测环境下，平滑回退至内置有界 LRU 内存缓存，保障 100% 离线自洽。
+ * </p>
  *
  * @author Ateng
  * @since 2026-10-17
@@ -26,25 +36,49 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class PermissionCacheService {
 
+    public static final String CACHE_SPACE_NAME = "satoken:permissions";
     public static final String CACHE_PREFIX = "ateng:satoken:cache:";
     public static final String USER_ROLES_PREFIX = CACHE_PREFIX + "user-roles:";
     public static final String ROLE_PERMS_PREFIX = CACHE_PREFIX + "role-perms:";
     public static final String USER_PERMS_PREFIX = CACHE_PREFIX + "user-perms:";
 
+    private final ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider;
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
     private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
 
-    // 单机内存降级缓存（当 Redis 不可用时生效，带简易过期时间戳防内存无限增长）
-    private static final Map<String, LocalCacheItem> LOCAL_MEMORY_CACHE = new ConcurrentHashMap<>();
+    private volatile PermissionCacheAdapter adapter;
+
+    public PermissionCacheService() {
+        this(null, null, null);
+    }
 
     public PermissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        this(redisTemplateProvider, null);
+        this(null, redisTemplateProvider, null);
     }
 
     public PermissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider,
                                   ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+        this(null, redisTemplateProvider, broadcasterProvider);
+    }
+
+    public PermissionCacheService(ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider,
+                                  ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                                  ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+        this.twoLevelCacheManagerProvider = twoLevelCacheManagerProvider;
         this.redisTemplateProvider = redisTemplateProvider;
         this.broadcasterProvider = broadcasterProvider;
+    }
+
+    /**
+     * 适配器显式注入构造器（专供单元测试与定制化适配）
+     *
+     * @param adapter 权限缓存适配器
+     */
+    public PermissionCacheService(PermissionCacheAdapter adapter) {
+        this.twoLevelCacheManagerProvider = null;
+        this.redisTemplateProvider = null;
+        this.broadcasterProvider = null;
+        this.adapter = adapter;
     }
 
     /**
@@ -54,18 +88,10 @@ public class PermissionCacheService {
      * @return 缓存值，不存在或已过期返回 null
      */
     public String get(String key) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            return redisTemplate.opsForValue().get(key);
+        if (key == null) {
+            return null;
         }
-        LocalCacheItem item = LOCAL_MEMORY_CACHE.get(key);
-        if (item != null) {
-            if (!item.isExpired()) {
-                return item.getValue();
-            }
-            LOCAL_MEMORY_CACHE.remove(key);
-        }
-        return null;
+        return getAdapter().get(key);
     }
 
     /**
@@ -76,17 +102,10 @@ public class PermissionCacheService {
      * @param timeoutSeconds 过期秒数
      */
     public void set(String key, String value, long timeoutSeconds) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            if (timeoutSeconds > 0) {
-                redisTemplate.opsForValue().set(key, value, timeoutSeconds, TimeUnit.SECONDS);
-            } else {
-                redisTemplate.opsForValue().set(key, value);
-            }
-        } else {
-            long expireAt = timeoutSeconds > 0 ? System.currentTimeMillis() + (timeoutSeconds * 1000) : -1;
-            LOCAL_MEMORY_CACHE.put(key, new LocalCacheItem(value, expireAt));
+        if (key == null) {
+            return;
         }
+        getAdapter().set(key, value, timeoutSeconds);
     }
 
     /**
@@ -95,12 +114,10 @@ public class PermissionCacheService {
      * @param key 缓存键
      */
     public void delete(String key) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            redisTemplate.delete(key);
-        } else {
-            LOCAL_MEMORY_CACHE.remove(key);
+        if (key == null) {
+            return;
         }
+        getAdapter().delete(key);
     }
 
     /**
@@ -145,31 +162,10 @@ public class PermissionCacheService {
     }
 
     /**
-     * 清理全域两级权限与角色缓存（采用 SCAN 增量游标扫描，杜绝 KEYS * 阻塞）
+     * 清理全域两级权限与角色缓存
      */
     public void clearAll() {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            ScanOptions scanOptions = ScanOptions.scanOptions().match(CACHE_PREFIX + "*").count(1000).build();
-            Set<String> keys = new HashSet<>();
-            redisTemplate.execute((RedisCallback<Void>) connection -> {
-                try (Cursor<byte[]> cursor = connection.keyCommands().scan(scanOptions)) {
-                    while (cursor.hasNext()) {
-                        String key = redisTemplate.getStringSerializer().deserialize(cursor.next());
-                        if (key != null && !key.isBlank()) {
-                            keys.add(key);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.warn("清理权限缓存游标扫描异常: ", e);
-                }
-                return null;
-            });
-            if (!keys.isEmpty()) {
-                redisTemplate.delete(keys);
-            }
-        }
-        clearLocalAllCache();
+        getAdapter().clearAll();
         log.info("全域两级权限缓存已全部清空");
 
         if (broadcasterProvider != null) {
@@ -186,8 +182,8 @@ public class PermissionCacheService {
         if (userId == null || userId.isBlank()) {
             return;
         }
-        LOCAL_MEMORY_CACHE.remove(USER_ROLES_PREFIX + userId);
-        LOCAL_MEMORY_CACHE.remove(USER_PERMS_PREFIX + userId);
+        getAdapter().evictLocal(USER_ROLES_PREFIX + userId);
+        getAdapter().evictLocal(USER_PERMS_PREFIX + userId);
     }
 
     /**
@@ -199,14 +195,14 @@ public class PermissionCacheService {
         if (roleCode == null || roleCode.isBlank()) {
             return;
         }
-        LOCAL_MEMORY_CACHE.remove(ROLE_PERMS_PREFIX + roleCode);
+        getAdapter().evictLocal(ROLE_PERMS_PREFIX + roleCode);
     }
 
     /**
      * 清理本地所有内存权限缓存（异地节点协同）
      */
     public void clearLocalAllCache() {
-        LOCAL_MEMORY_CACHE.clear();
+        getAdapter().clearLocal();
     }
 
     /**
@@ -246,12 +242,258 @@ public class PermissionCacheService {
     }
 
     /**
-     * 获取底层本地内存缓存容器大小（单机模式辅助调试）
+     * 获取底层本地内存缓存容器大小（辅助调试与监控）
      *
      * @return 本地缓存项数量
      */
     public int getLocalCacheSize() {
-        return LOCAL_MEMORY_CACHE.size();
+        return getAdapter().getLocalCacheSize();
+    }
+
+    /**
+     * 获取当前生效的权限缓存适配器（双重检查加锁单例懒加载）
+     */
+    public PermissionCacheAdapter getAdapter() {
+        PermissionCacheAdapter current = this.adapter;
+        if (current == null) {
+            synchronized (this) {
+                current = this.adapter;
+                if (current == null) {
+                    this.adapter = current = resolveAdapter();
+                }
+            }
+        }
+        return current;
+    }
+
+    private PermissionCacheAdapter resolveAdapter() {
+        if (twoLevelCacheManagerProvider != null) {
+            try {
+                TwoLevelCacheManager manager = twoLevelCacheManagerProvider.getIfAvailable();
+                if (manager != null) {
+                    TwoLevelCache tlc = manager.getTwoLevelCache(CACHE_SPACE_NAME);
+                    if (tlc != null) {
+                        log.info("PermissionCacheService 成功启用 TwoLevelCacheManager 两级权限缓存空间 [{}]", CACHE_SPACE_NAME);
+                        return new TwoLevelPermissionCacheAdapter(tlc);
+                    }
+                }
+            } catch (Throwable t) {
+                log.warn("无法装载 TwoLevelCacheManager，降级检查其他缓存模式: {}", t.getMessage());
+            }
+        }
+
+        if (redisTemplateProvider != null) {
+            try {
+                StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+                if (redisTemplate != null) {
+                    log.info("PermissionCacheService 启用 StringRedisTemplate 单层分布式权限缓存");
+                    return new RedisPermissionCacheAdapter(redisTemplate);
+                }
+            } catch (Throwable t) {
+                log.warn("无法装载 StringRedisTemplate，降级为内存模式: {}", t.getMessage());
+            }
+        }
+
+        log.info("PermissionCacheService 启用原生 JVM 有界内存缓存降级模式");
+        return new InMemoryPermissionCacheAdapter();
+    }
+
+    /**
+     * 权限缓存底层存储适配契约
+     */
+    public interface PermissionCacheAdapter {
+        String get(String key);
+        void set(String key, String value, long timeoutSeconds);
+        void delete(String key);
+        void clearAll();
+        void evictLocal(String key);
+        void clearLocal();
+        int getLocalCacheSize();
+    }
+
+    /**
+     * ateng-boot-redis 两级缓存适配器（L1 本地内存 + L2 Redis + 64条带锁 + Pub/Sub 广播驱逐）
+     */
+    public static class TwoLevelPermissionCacheAdapter implements PermissionCacheAdapter {
+        private final TwoLevelCache twoLevelCache;
+
+        public TwoLevelPermissionCacheAdapter(TwoLevelCache twoLevelCache) {
+            this.twoLevelCache = twoLevelCache;
+        }
+
+        @Override
+        public String get(String key) {
+            return twoLevelCache.get(key, String.class);
+        }
+
+        @Override
+        public void set(String key, String value, long timeoutSeconds) {
+            if (timeoutSeconds > 0) {
+                twoLevelCache.put(key, value, Duration.ofSeconds(timeoutSeconds));
+            } else {
+                twoLevelCache.put(key, value);
+            }
+        }
+
+        @Override
+        public void delete(String key) {
+            twoLevelCache.evict(key);
+        }
+
+        @Override
+        public void clearAll() {
+            twoLevelCache.clear();
+        }
+
+        @Override
+        public void evictLocal(String key) {
+            twoLevelCache.evictLocal(key);
+        }
+
+        @Override
+        public void clearLocal() {
+            twoLevelCache.clearLocal();
+        }
+
+        @Override
+        public int getLocalCacheSize() {
+            if (twoLevelCache.getNativeCache() instanceof L1MemoryCache l1) {
+                return (int) l1.size();
+            }
+            return 0;
+        }
+
+        public TwoLevelCache getTwoLevelCache() {
+            return twoLevelCache;
+        }
+    }
+
+    /**
+     * 基于 StringRedisTemplate 的常规单层分布式缓存适配器
+     */
+    public static class RedisPermissionCacheAdapter implements PermissionCacheAdapter {
+        private final StringRedisTemplate redisTemplate;
+        private final InMemoryPermissionCacheAdapter localFallback = new InMemoryPermissionCacheAdapter();
+
+        public RedisPermissionCacheAdapter(StringRedisTemplate redisTemplate) {
+            this.redisTemplate = redisTemplate;
+        }
+
+        @Override
+        public String get(String key) {
+            return redisTemplate.opsForValue().get(key);
+        }
+
+        @Override
+        public void set(String key, String value, long timeoutSeconds) {
+            if (timeoutSeconds > 0) {
+                redisTemplate.opsForValue().set(key, value, timeoutSeconds, TimeUnit.SECONDS);
+            } else {
+                redisTemplate.opsForValue().set(key, value);
+            }
+        }
+
+        @Override
+        public void delete(String key) {
+            redisTemplate.delete(key);
+            localFallback.delete(key);
+        }
+
+        @Override
+        public void clearAll() {
+            ScanOptions scanOptions = ScanOptions.scanOptions().match(CACHE_PREFIX + "*").count(1000).build();
+            Set<String> keys = new HashSet<>();
+            redisTemplate.execute((RedisCallback<Void>) connection -> {
+                try (Cursor<byte[]> cursor = connection.keyCommands().scan(scanOptions)) {
+                    while (cursor.hasNext()) {
+                        String k = redisTemplate.getStringSerializer().deserialize(cursor.next());
+                        if (k != null && !k.isBlank()) {
+                            keys.add(k);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("清理权限缓存游标扫描异常: ", e);
+                }
+                return null;
+            });
+            if (!keys.isEmpty()) {
+                redisTemplate.delete(keys);
+            }
+            localFallback.clearAll();
+        }
+
+        @Override
+        public void evictLocal(String key) {
+            localFallback.evictLocal(key);
+        }
+
+        @Override
+        public void clearLocal() {
+            localFallback.clearLocal();
+        }
+
+        @Override
+        public int getLocalCacheSize() {
+            return localFallback.getLocalCacheSize();
+        }
+    }
+
+    /**
+     * 原生 JVM 有界 LRU 内存缓存适配器（无 Redis 单机/单测离线自洽模式）
+     */
+    public static class InMemoryPermissionCacheAdapter implements PermissionCacheAdapter {
+        private static final int MAX_LOCAL_CACHE_SIZE = 10000;
+        private final Map<String, LocalCacheItem> localMap = Collections.synchronizedMap(
+                new LinkedHashMap<>(128, 0.75f, true) {
+                    @Override
+                    protected boolean removeEldestEntry(Map.Entry<String, LocalCacheItem> eldest) {
+                        return size() > MAX_LOCAL_CACHE_SIZE;
+                    }
+                }
+        );
+
+        @Override
+        public String get(String key) {
+            LocalCacheItem item = localMap.get(key);
+            if (item != null) {
+                if (!item.isExpired()) {
+                    return item.getValue();
+                }
+                localMap.remove(key);
+            }
+            return null;
+        }
+
+        @Override
+        public void set(String key, String value, long timeoutSeconds) {
+            long expireAt = timeoutSeconds > 0 ? System.currentTimeMillis() + (timeoutSeconds * 1000) : -1;
+            localMap.put(key, new LocalCacheItem(value, expireAt));
+        }
+
+        @Override
+        public void delete(String key) {
+            localMap.remove(key);
+        }
+
+        @Override
+        public void clearAll() {
+            localMap.clear();
+        }
+
+        @Override
+        public void evictLocal(String key) {
+            localMap.remove(key);
+        }
+
+        @Override
+        public void clearLocal() {
+            localMap.clear();
+        }
+
+        @Override
+        public int getLocalCacheSize() {
+            return localMap.size();
+        }
     }
 
     /**

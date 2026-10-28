@@ -37,12 +37,16 @@ class AtengSaTokenInterceptorTest {
         response = mock(HttpServletResponse.class);
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        UserContextHolder.setUserProvider(null);
+        TenantContextHolder.setTenantProvider(null);
     }
 
     @AfterEach
     void tearDown() {
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        UserContextHolder.setUserProvider(null);
+        TenantContextHolder.setTenantProvider(null);
     }
 
     @Test

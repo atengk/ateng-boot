@@ -45,11 +45,13 @@ import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -168,18 +170,36 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
-     * 注册两级权限与角色缓存管理门面服务
-     *
-     * @param redisTemplateProvider RedisTemplate 可选提供者
-     * @param broadcasterProvider   集群同步广播器可选提供者
-     * @return 缓存管理服务实例
+     * 具备 ateng-boot-redis 类路径时的自适应两级权限缓存自动装配
      */
-    @Bean
-    @ConditionalOnMissingBean
-    public PermissionCacheService permissionCacheService(
-            ObjectProvider<StringRedisTemplate> redisTemplateProvider,
-            ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
-        return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(TwoLevelCacheManager.class)
+    static class TwoLevelCachePermissionConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public PermissionCacheService permissionCacheService(
+                ObjectProvider<TwoLevelCacheManager> twoLevelCacheManagerProvider,
+                ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            return new PermissionCacheService(twoLevelCacheManagerProvider, redisTemplateProvider, broadcasterProvider);
+        }
+    }
+
+    /**
+     * 未引入 ateng-boot-redis 时的兜底常规单层 / 内存权限缓存自动装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingClass("io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager")
+    static class FallbackPermissionConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public PermissionCacheService permissionCacheService(
+                ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+            return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+        }
     }
 
     /**

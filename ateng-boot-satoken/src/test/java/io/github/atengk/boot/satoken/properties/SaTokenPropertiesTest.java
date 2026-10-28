@@ -28,6 +28,10 @@ class SaTokenPropertiesTest {
     void tearDown() {
         // 重置 SaManager 中的配置，避免单测上下文跨用例污染
         SaManager.setConfig(new SaTokenConfig());
+        io.github.atengk.boot.core.context.UserContextHolder.setUserProvider(null);
+        io.github.atengk.boot.core.context.TenantContextHolder.setTenantProvider(null);
+        io.github.atengk.boot.core.context.UserContextHolder.clear();
+        io.github.atengk.boot.core.context.TenantContextHolder.clear();
     }
 
     @Test
