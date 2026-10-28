@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.s3.model.ListPartsRequest;
 import software.amazon.awssdk.services.s3.model.ListPartsResponse;
 import software.amazon.awssdk.services.s3.model.MultipartUpload;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -111,13 +112,23 @@ public class S3Driver implements StorageDriver {
     private final String secretKey;
 
     /**
+     * S3 访问服务端点（可选）
+     */
+    private final String endpoint;
+
+    /**
+     * 是否开启 Path-Style 路径寻址模式
+     */
+    private final boolean pathStyle;
+
+    /**
      * 基础构造函数（仅 S3Client）
      *
      * @param s3Client S3 客户端
      * @param bucket   存储桶名称
      */
     public S3Driver(S3Client s3Client, String bucket) {
-        this(s3Client, null, bucket, null, null);
+        this(s3Client, null, bucket, null, null, null, true);
     }
 
     /**
@@ -128,7 +139,7 @@ public class S3Driver implements StorageDriver {
      * @param bucket      存储桶名称
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket) {
-        this(s3Client, s3Presigner, bucket, null, null);
+        this(s3Client, s3Presigner, bucket, null, null, null, true);
     }
 
     /**
@@ -140,7 +151,7 @@ public class S3Driver implements StorageDriver {
      * @param domain      自定义访问域名或 CDN 加速域名
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain) {
-        this(s3Client, s3Presigner, bucket, domain, null);
+        this(s3Client, s3Presigner, bucket, domain, null, null, true);
     }
 
     /**
@@ -153,6 +164,21 @@ public class S3Driver implements StorageDriver {
      * @param secretKey   HMAC 签名密钥（为空时自动生成安全随机密钥保底）
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey) {
+        this(s3Client, s3Presigner, bucket, domain, secretKey, null, true);
+    }
+
+    /**
+     * 生产级全参构造函数（包含服务端点与寻址拓扑）
+     *
+     * @param s3Client    S3 客户端
+     * @param s3Presigner S3 预签名器
+     * @param bucket      存储桶名称
+     * @param domain      自定义访问域名或 CDN 加速域名
+     * @param secretKey   HMAC 签名密钥（为空时自动生成安全随机密钥保底）
+     * @param endpoint    S3 物理服务端点
+     * @param pathStyle   是否启用 Path-Style 寻址
+     */
+    public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey, String endpoint, boolean pathStyle) {
         if (s3Client == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "S3Client 不能为空");
         }
@@ -166,6 +192,8 @@ public class S3Driver implements StorageDriver {
         this.secretKey = (secretKey != null && !secretKey.isBlank())
                 ? secretKey.trim()
                 : StorageSecurityUtil.generateRandomSecretKey();
+        this.endpoint = endpoint;
+        this.pathStyle = pathStyle;
     }
 
     /**
@@ -252,11 +280,16 @@ public class S3Driver implements StorageDriver {
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size) {
-        return upload(path, in, contentType, size, null);
+        return upload(path, in, contentType, size, null, false);
     }
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        return upload(path, in, contentType, size, userMetadata, false);
+    }
+
+    @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
         if (in == null) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传对象输入流不能为空");
         }
@@ -280,6 +313,9 @@ public class S3Driver implements StorageDriver {
                     .bucket(this.bucket)
                     .key(cleanPath)
                     .contentType(finalContentType);
+            if (publicRead) {
+                putRequestBuilder.acl(ObjectCannedACL.PUBLIC_READ);
+            }
             if (userMetadata != null && !userMetadata.isEmpty()) {
                 putRequestBuilder.metadata(userMetadata);
             }
@@ -299,6 +335,36 @@ public class S3Driver implements StorageDriver {
         } catch (Exception e) {
             throw translateException(e, cleanPath, "上传对象到 S3 失败");
         }
+    }
+
+    @Override
+    public String getUrl(String path) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        if (cleanPath.startsWith("/")) {
+            cleanPath = cleanPath.substring(1);
+        }
+        if (domain != null && !domain.isBlank()) {
+            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
+            return cleanDomain + "/" + cleanPath;
+        }
+        if (endpoint != null && !endpoint.isBlank()) {
+            String cleanEndpoint = endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
+            if (pathStyle) {
+                return cleanEndpoint + "/" + bucket + "/" + cleanPath;
+            } else {
+                try {
+                    URI uri = URI.create(cleanEndpoint);
+                    String scheme = uri.getScheme() != null ? uri.getScheme() : "https";
+                    String host = uri.getHost() != null ? uri.getHost() : cleanEndpoint;
+                    int port = uri.getPort();
+                    String portPart = port > 0 ? ":" + port : "";
+                    return scheme + "://" + bucket + "." + host + portPart + "/" + cleanPath;
+                } catch (Exception e) {
+                    return cleanEndpoint + "/" + bucket + "/" + cleanPath;
+                }
+            }
+        }
+        return "https://" + bucket + ".s3.amazonaws.com/" + cleanPath;
     }
 
     @Override

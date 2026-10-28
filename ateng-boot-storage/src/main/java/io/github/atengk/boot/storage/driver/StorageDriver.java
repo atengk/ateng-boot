@@ -53,6 +53,66 @@ public interface StorageDriver extends AutoCloseable {
     }
 
     /**
+     * 上传存储对象（携带用户自定义元数据与公共读访问权限控制）
+     *
+     * @param path         存储对象相对路径
+     * @param in           对象输入流
+     * @param contentType  MIME 内容类型（若为 null 或空白由实现负责推导）
+     * @param size         对象字节长度（流未知长度时传 -1）
+     * @param userMetadata 用户自定义元数据键值对
+     * @param publicRead   是否赋予公共读取权限（S3 协议下注入 ObjectCannedACL.PUBLIC_READ）
+     * @return 存储对象元数据
+     */
+    default StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
+        return upload(path, in, contentType, size, userMetadata);
+    }
+
+    /**
+     * 上传公开可读存储对象（赋予公共读 Canned ACL 或对外直接访问权限）
+     *
+     * @param path 存储对象相对路径
+     * @param in   对象输入流
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in) {
+        return uploadPublic(path, in, null, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型上传公开可读存储对象
+     *
+     * @param path        存储对象相对路径
+     * @param in          对象输入流
+     * @param contentType MIME 内容类型
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType) {
+        return uploadPublic(path, in, contentType, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型与长度上传公开可读存储对象
+     *
+     * @param path        存储对象相对路径
+     * @param in          对象输入流
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储对象元数据
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null, true);
+    }
+
+    /**
+     * 获取公开存储桶或具有公开读取权限对象的永久直接访问链接 (Public URL)
+     * 优先使用 domain 自定义域名/CDN 域名；若未配置 domain，S3 根据寻址模式动态拼接 endpoint 与 bucket；本地驱动返回相对或带 domain 路径
+     *
+     * @param path 存储对象相对路径
+     * @return 永久直接访问 URL 字符串
+     */
+    String getUrl(String path);
+
+    /**
      * 探查底层物理存储介质的健康状态与连通性
      *
      * @throws Exception 当底层存储不可用（如本地目录不存在/不可写、S3 存储桶无法访问等）时抛出异常

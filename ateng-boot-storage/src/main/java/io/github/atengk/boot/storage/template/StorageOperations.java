@@ -114,6 +114,64 @@ public interface StorageOperations {
     StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata);
 
     /**
+     * 完整参数上传输入流（携带用户自定义元数据与公共读访问权限控制）
+     *
+     * @param path         目标相对路径
+     * @param in           输入流
+     * @param contentType  MIME 内容类型
+     * @param size         数据流字节大小（未知时传 -1）
+     * @param userMetadata 用户自定义元数据键值对
+     * @param publicRead   是否赋予公共读取权限（S3 协议下注入 ObjectCannedACL.PUBLIC_READ）
+     * @return 存储元数据对象
+     */
+    StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead);
+
+    /**
+     * 上传公开可读对象（自动推导 MIME 与计算大小，赋予公共读权限）
+     *
+     * @param path 目标相对路径
+     * @param in   输入流
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in) {
+        return uploadPublic(path, in, null, -1);
+    }
+
+    /**
+     * 携带明确 MIME 内容类型上传公开可读对象
+     *
+     * @param path        目标相对路径
+     * @param in          输入流
+     * @param contentType MIME 内容类型
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType) {
+        return uploadPublic(path, in, contentType, -1);
+    }
+
+    /**
+     * 完整参数上传公开可读对象
+     *
+     * @param path        目标相对路径
+     * @param in          输入流
+     * @param contentType MIME 内容类型
+     * @param size        数据流字节大小（未知时传 -1）
+     * @return 存储元数据对象
+     */
+    default StorageObject uploadPublic(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null, true);
+    }
+
+    /**
+     * 上传 Spring Web MultipartFile 表单文件为公开可读对象
+     *
+     * @param path 目标相对路径
+     * @param file 表单上传文件
+     * @return 存储元数据对象
+     */
+    StorageObject uploadPublic(String path, MultipartFile file);
+
+    /**
      * 下载目标对象内容输入流
      *
      * @param path 目标相对路径
@@ -327,6 +385,14 @@ public interface StorageOperations {
      * @return 标准分页结果对象
      */
     PageResult<StorageObject> listPage(String prefix, PageQuery pageQuery, boolean recursive);
+
+    /**
+     * 获取公开存储桶或具有公开读取权限对象的永久直接访问链接 (Public URL)
+     *
+     * @param path 目标相对路径
+     * @return 永久直接访问 URL
+     */
+    String getUrl(String path);
 
     /**
      * 获取预签名只读下载外链凭证

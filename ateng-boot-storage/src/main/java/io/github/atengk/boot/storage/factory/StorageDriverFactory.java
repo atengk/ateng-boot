@@ -194,7 +194,8 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
             software.amazon.awssdk.services.s3.presigner.S3Presigner s3Presigner =
                     io.github.atengk.boot.storage.driver.S3Driver.createS3Presigner(properties.getS3());
             return new io.github.atengk.boot.storage.driver.S3Driver(
-                    s3Client, s3Presigner, properties.getS3().getBucket(), properties.getS3().getDomain(), properties.getS3().getSecretKey());
+                    s3Client, s3Presigner, properties.getS3().getBucket(), properties.getS3().getDomain(), properties.getS3().getSecretKey(),
+                    properties.getS3().getEndpoint(), properties.getS3().isPathStyle());
         }
     }
 

@@ -94,6 +94,16 @@ public class LocalDriver implements StorageDriver {
     }
 
     /**
+     * 基础参数构造本地磁盘驱动（带访问域名）
+     *
+     * @param basePath 本地存储物理基准路径
+     * @param domain   访问域名或基础 URL
+     */
+    public LocalDriver(String basePath, String domain) {
+        this(basePath, domain, null, DEFAULT_DOWNLOAD_ENDPOINT, DEFAULT_UPLOAD_ENDPOINT, null);
+    }
+
+    /**
      * 常用参数构造本地磁盘驱动
      *
      * @param basePath  本地存储物理基准路径
@@ -487,6 +497,19 @@ public class LocalDriver implements StorageDriver {
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "列举本地存储目录失败: " + prefix, e);
         }
+    }
+
+    @Override
+    public String getUrl(String path) {
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        if (cleanPath.startsWith("/")) {
+            cleanPath = cleanPath.substring(1);
+        }
+        if (domain != null && !domain.isBlank()) {
+            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
+            return cleanDomain + "/" + cleanPath;
+        }
+        return "/" + cleanPath;
     }
 
     @Override

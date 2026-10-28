@@ -79,6 +79,16 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     }
 
     /**
+     * 基于存储工厂构造门面（以工厂 primary 驱动作为默认主驱动）
+     *
+     * @param factory 驱动工厂
+     */
+    public StorageTemplate(StorageDriverFactory factory) {
+        this(factory != null ? factory.getPrimaryDriver() : null, factory,
+                factory != null ? factory.getAllDrivers() : Collections.emptyMap(), false, null);
+    }
+
+    /**
      * 基于主驱动与存储工厂构造门面（推荐多源构造）
      *
      * @param defaultDriver 默认主存储驱动
@@ -192,6 +202,11 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata) {
+        return upload(path, in, contentType, size, userMetadata, false);
+    }
+
+    @Override
+    public StorageObject upload(String path, InputStream in, String contentType, long size, Map<String, String> userMetadata, boolean publicRead) {
         InputStream effectiveStream = in;
         String effectiveContentType = contentType;
         if (this.storageGuard != null && this.storageGuard.isEnabled()) {
@@ -202,11 +217,46 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
                 effectiveContentType = guardResult.getDetectedMimeType();
             }
         }
-        StorageObject metadata = getDriver().upload(path, effectiveStream, effectiveContentType, size, userMetadata);
+        StorageObject metadata = getDriver().upload(path, effectiveStream, effectiveContentType, size, userMetadata, publicRead);
         if (metadata != null) {
             publishEventSafely(new StorageUploadedEvent(this, getCurrentSourceKey(), metadata.getPath(), metadata.getSize(), metadata.getContentType()));
         }
         return metadata;
+    }
+
+    @Override
+    public StorageObject uploadPublic(String path, InputStream in) {
+        return uploadPublic(path, in, null, -1);
+    }
+
+    @Override
+    public StorageObject uploadPublic(String path, InputStream in, String contentType) {
+        return uploadPublic(path, in, contentType, -1);
+    }
+
+    @Override
+    public StorageObject uploadPublic(String path, InputStream in, String contentType, long size) {
+        return upload(path, in, contentType, size, null, true);
+    }
+
+    @Override
+    public StorageObject uploadPublic(String path, MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文件不能为空");
+        }
+        String targetPath = path;
+        String originalFilename = file.getOriginalFilename();
+        if (targetPath == null || targetPath.isBlank()) {
+            targetPath = originalFilename;
+        } else if (targetPath.endsWith("/") || targetPath.endsWith("\\")) {
+            targetPath = targetPath + FileUtil.cleanFilename(originalFilename);
+        }
+
+        try (InputStream in = file.getInputStream()) {
+            return upload(targetPath, in, file.getContentType(), file.getSize(), null, true);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取 MultipartFile 输入流失败: " + originalFilename, e);
+        }
     }
 
     @Override
@@ -401,6 +451,11 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
                 .toList();
 
         return PageResult.of(pageRecords, total, current, size);
+    }
+
+    @Override
+    public String getUrl(String path) {
+        return getDriver().getUrl(path);
     }
 
     @Override
