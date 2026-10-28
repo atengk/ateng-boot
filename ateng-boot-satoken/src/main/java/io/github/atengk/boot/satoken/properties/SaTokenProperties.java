@@ -283,6 +283,30 @@ public class SaTokenProperties {
          * 失败计数统计时间窗口，在该窗口内未输错将自然过期重置计数（默认: 15m）
          */
         private Duration windowTime = Duration.ofMinutes(15);
+
+        /**
+         * 客户端 IP 维度最大允许连续输错密码上限次数，达到后触发 IP 临时熔断锁定（默认: 30）
+         */
+        private int ipMaxRetryCount = 30;
+
+        /**
+         * 触发客户端 IP 连续失败阈值后的 IP 熔断锁定时间（默认: 30m）
+         */
+        private Duration ipLockTime = Duration.ofMinutes(30);
+
+        /**
+         * 客户端 IP 失败计数统计时间窗口，在该窗口内未输错将自然过期重置计数（默认: 15m）
+         */
+        private Duration ipWindowTime = Duration.ofMinutes(15);
+
+        /**
+         * 客户端 IP 防爆破白名单（白名单内的 IP 豁免 IP 维度熔断限制，默认包含本地回环地址）
+         */
+        private List<String> ipWhiteList = new ArrayList<>(Arrays.asList(
+                "127.0.0.1",
+                "0:0:0:0:0:0:0:1",
+                "::1"
+        ));
     }
 
     /**

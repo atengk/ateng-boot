@@ -50,6 +50,23 @@ class SaTokenPropertiesTest {
     }
 
     @Test
+    @DisplayName("验证 LoginDefenseProperties 默认配置包含客户端 IP 双轨熔断与白名单")
+    void testDefaultLoginDefenseProperties() {
+        SaTokenProperties properties = new SaTokenProperties();
+        SaTokenProperties.LoginDefenseProperties defense = properties.getLoginDefense();
+
+        assertThat(defense).isNotNull();
+        assertThat(defense.isEnabled()).isFalse();
+        assertThat(defense.getMaxRetryCount()).isEqualTo(5);
+        assertThat(defense.getLockTime()).isEqualTo(Duration.ofMinutes(15));
+        assertThat(defense.getWindowTime()).isEqualTo(Duration.ofMinutes(15));
+        assertThat(defense.getIpMaxRetryCount()).isEqualTo(30);
+        assertThat(defense.getIpLockTime()).isEqualTo(Duration.ofMinutes(30));
+        assertThat(defense.getIpWindowTime()).isEqualTo(Duration.ofMinutes(15));
+        assertThat(defense.getIpWhiteList()).containsExactly("127.0.0.1", "0:0:0:0:0:0:0:1", "::1");
+    }
+
+    @Test
     @DisplayName("验证自动装配时默认 Token 配置安全桥接至 SaManager.getConfig()")
     void testDefaultConfigBridging() {
         contextRunner.run(context -> {
