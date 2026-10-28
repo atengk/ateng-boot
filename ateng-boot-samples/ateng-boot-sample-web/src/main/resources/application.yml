@@ -40,3 +40,9 @@ ateng:
         enabled: true
       body-cache:
         max-body-size: 2MB
+      enum:
+        enabled: true
+        path-prefix: "/api/system/enums"
+        naming-strategy: "lower-camel-case"
+        scan-packages:
+          - "io.github.atengk.boot.sample.web.enums"

@@ -61,6 +61,7 @@
 | **数据传输与硬件校验和** | 纯原生数据传输与硬件报文校验和计算 | `ChecksumUtil` | - | `ChecksumUtil.crc32(data)`, `crc32Hex(data)`, `crc32c(data)`, `crc32cHex(data)`, `adler32(data)`, `adler32Hex(data)`, `verifyCrc32`, `verifyCrc32c`, `verifyAdler32`，支持 `InputStream` 流式计算 | `ChecksumUtilTest.java`, `CoreSecurityScenarioServiceTest.java` |
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
+| **强类型通用枚举** | 通用枚举契约、标准选项模型、别名注解、高速解析门面与 JSR-303 格式防卫 | `IBaseEnum<T>`, `OptionItem<T>`, `@EnumAlias`, `EnumUtil`, `@InEnum`, `InEnumValidator` | - | `IBaseEnum.getCode()`, `getLabel()`, `matches(code)`, `toOption()`, `getValue()`; `OptionItem.of(...)`; `EnumUtil.fromCode(...)`, `getByCodeOrThrow(...)`, `getLabelByCode(...)`, `isValidCode(...)`, `toOptions(...)`, `getAllCodes(...)`; `@InEnum(value = StatusEnum.class)` 第一道防线 JSR-303 校验拦截 | `EnumUtilTest.java`, `InEnumValidatorTest.java` |
 
 ---
 
@@ -1516,6 +1517,91 @@ SampleUserDTO parsed = JsonUtil.parseObject(json, SampleUserDTO.class);
 SampleUserDTO clonedUser = JsonUtil.deepClone(originalUser);
 // clonedUser 获得完全独立的深拷贝对象，且手机号等敏感字段依然保持 100% 原始真实明文，绝不变成 "138****5678"
 ```
+
+### 31. 强类型通用枚举契约与选项门面 (`IBaseEnum` / `OptionItem` / `@EnumAlias` / `EnumUtil` / `@InEnum`)
+
+#### 场景痛点
+1. **魔法值与类型脆弱**：业务系统状态码分散在代码各处，缺乏统管契约；数据库存整数，对外展示中文，DTO 与 Entity 转换时频繁编写循环遍历或手动 `if-else` 判断；
+2. **前端选项契约不统一**：不同模块下拉框字段五花八门（`id`/`name`、`value`/`label`、`code`/`text`），前端被迫适配；
+3. **入界校验缺失**：Spring 默认仅支持 `@NotNull`，无法校验整型或字符串参数是否属于枚举合法值，导致非法状态码击穿持久层或产生不可预期的运行时异常。
+
+#### 核心契约与枚举声明 (`IBaseEnum<T>`)
+所有业务枚举统一实现 `IBaseEnum<T>`，并可选通过 `@EnumAlias` 声明显式别名：
+```java
+import io.github.atengk.boot.core.annotation.EnumAlias;
+import io.github.atengk.boot.core.enums.IBaseEnum;
+
+import java.util.Map;
+
+@EnumAlias("userStatus")
+public enum UserStatusEnum implements IBaseEnum<Integer> {
+    ACTIVE(1, "启用"),
+    DISABLED(2, "禁用") {
+        @Override
+        public Boolean getDisabled() { return true; }
+
+        @Override
+        public Map<String, Object> getExtra() { return Map.of("color", "red"); }
+    },
+    LOCKED(3, "锁定");
+
+    private final Integer code;
+    private final String label;
+
+    UserStatusEnum(Integer code, String label) {
+        this.code = code;
+        this.label = label;
+    }
+
+    @Override
+    public Integer getCode() { return code; }
+
+    @Override
+    public String getLabel() { return label; }
+}
+```
+
+#### 高速门面与选项模型 (`EnumUtil` & `OptionItem<T>`)
+基于内存并发缓存实现 $O(1)$ 高性能状态码查找、格式防卫与选项转换：
+```java
+import io.github.atengk.boot.core.model.OptionItem;
+import io.github.atengk.boot.core.util.EnumUtil;
+
+import java.util.List;
+import java.util.Optional;
+
+// 1. 根据 code 高速安全查找枚举实例（O(1) 内存并发缓存，支持数字/字符串双向兼容）
+Optional<UserStatusEnum> statusOpt = EnumUtil.fromCode(UserStatusEnum.class, 1); // Optional.of(ACTIVE)
+
+// 2. 根据 code 获取枚举实例，未找到时抛出 BAD_REQUEST 业务异常
+UserStatusEnum status = EnumUtil.getByCodeOrThrow(UserStatusEnum.class, 1);
+
+// 3. 根据 code 提取展示标签（支持保底默认文案）
+String label = EnumUtil.getLabelByCode(UserStatusEnum.class, 1, "未知状态"); // "启用"
+
+// 4. 校验状态码合法性
+boolean valid = EnumUtil.isValidCode(UserStatusEnum.class, 999); // false
+
+// 5. 将枚举全量常量转换为前端标准 OptionItem 四字段选项列表
+List<OptionItem<Integer>> options = EnumUtil.toOptions(UserStatusEnum.class);
+// [{"code":1,"label":"启用","disabled":false,"extra":{}}, {"code":2,"label":"禁用","disabled":true,"extra":{"color":"red"}}, ...]
+```
+
+#### 第一道防线：JSR-303 参数校验 (`@InEnum`)
+在 Controller Request DTO 中直接声明 `@InEnum`，在边界快速失败，拦截非法入参并由 `GlobalExceptionHandler` 统一转译为 HTTP 200 + Result 400：
+```java
+import io.github.atengk.boot.core.annotation.InEnum;
+import jakarta.validation.constraints.NotNull;
+
+public class UserCreateRequest {
+    @NotNull(message = "状态编码不能为空")
+    @InEnum(value = UserStatusEnum.class, message = "用户状态编码不合法")
+    private Integer statusCode;
+    // ...
+}
+```
+
+---
 
 ---
 

@@ -41,6 +41,7 @@
 | **客户端 IP 提取** | 多级反向代理穿透与 CIDR 判定 | `IpUtil` | - | `IpUtil.getClientIp()`, `getClientIp(request)`, `isInRange(ip, cidrOrIp)`, `isInRange(ip, rules)`，穿透 X-Forwarded-For 等多级代理，纯 JDK 原生无 DNS 依赖 CIDR/单 IP 子网判定 | `IpUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
+| **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
 
 ---
 
@@ -892,7 +893,220 @@ public class WebVersionV2SampleController {
 
 ---
 
-## 21. 模块配置属性参考 (`application.yml`)
+## 21. Web 只读枚举字典与 Jackson 强类型双向反序列化
+
+### 场景痛点
+1. **下拉字典割裂**：前端表单下拉选项依赖硬编码或零散接口，重复开发且无法随后端枚举变动而即时同步；
+2. **反射穿透隐患**：传统字典方案往往通过“传类全路径”任意反射枚举，存在严重的安全代码执行漏洞（RCE）与 GC 压力；
+3. **入参反序列化断层**：Controller Request DTO 接收枚举参数时，Jackson 原生默认只认常量名，前端传入数字 code（如 `1`）或数值字符串（如 `"1"`）直接导致反序列化崩溃；
+4. **多语言割裂**：国际化应用中，枚举选项展示文案无法随请求头 `Accept-Language` 动态切换。
+
+### 核心机制与五维生产模型
+- **启动期白名单扫描与 Fail-Fast 阻断**：严格依据 `scan-packages` 白名单扫描，绝不运行时任意类反射；启动期发现同名或别名碰撞立即抛出 `IllegalStateException` 终止应用启动，杜绝线上静默覆盖事故；
+- **只读不可变预热与零 GC 分配**：预编译构建为不可变 Map，运行时提供 $O(1)$ 无锁纯内存检索，零锁争用与零瞬态垃圾对象；
+- **三阶只读 HTTP 端点矩阵**：
+  - 单枚举查询：`GET /api/system/enums/{name}` $\rightarrow$ `Result<List<OptionItem<Object>>>`
+  - 批量聚合查询：`POST /api/system/enums/batch` 或 `GET /api/system/enums/batch?names=userStatus,orderType` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，降低前端多请求风暴
+  - 全量目录检索：`GET /api/system/enums` $\rightarrow$ `Result<Map<String, List<OptionItem<Object>>>>`，供前端系统初始化时一次性拉取并持久化至 Pinia / Vuex 全局状态；
+- **Jackson 强类型双向反序列化**：自动装配 `BaseEnumDeserializer`，Controller DTO 可直接声明强类型枚举字段（如 `private UserStatusEnum status;`），前端无论传入数字 `1`、字符串 `"1"` 还是常量名 `"ACTIVE"`（大小写不敏感），均能精准自动映射为枚举实例；
+- **多语言 (i18n) 透明适配与平滑回退**：弱依赖接入 Spring `MessageSource` 与 `LocaleContextHolder`，自动按 `enum.{SimpleName}.{NAME}` 规则提取当前请求区域设置文案；未配置国际化时平滑回退为枚举自带的 `getLabel()`。
+
+### 1:1 端到端样例代码
+
+#### 1. 业务枚举定义 (`UserStatusEnum` & `OrderTypeEnum`)
+```java
+package io.github.atengk.boot.sample.web.enums;
+
+import io.github.atengk.boot.core.annotation.EnumAlias;
+import io.github.atengk.boot.core.enums.IBaseEnum;
+import java.util.Map;
+
+// 1. 实现 IBaseEnum<Integer>，重写 getDisabled 与 getExtra 携带扩展样式
+public enum UserStatusEnum implements IBaseEnum<Integer> {
+    ACTIVE(1, "启用"),
+    DISABLED(2, "禁用") {
+        @Override
+        public Boolean getDisabled() { return true; }
+        @Override
+        public Map<String, Object> getExtra() { return Map.of("color", "red", "reason", "违规停用"); }
+    },
+    LOCKED(3, "锁定");
+
+    private final Integer code;
+    private final String label;
+
+    UserStatusEnum(Integer code, String label) {
+        this.code = code;
+        this.label = label;
+    }
+
+    @Override public Integer getCode() { return code; }
+    @Override public String getLabel() { return label; }
+}
+
+// 2. 显式标注 @EnumAlias 别名覆盖
+@EnumAlias("orderType")
+public enum OrderTypeEnum implements IBaseEnum<String> {
+    NORMAL("normal", "普通订单"),
+    SECKILL("seckill", "秒杀订单"),
+    PROMOTION("promotion", "促销订单");
+
+    private final String code;
+    private final String label;
+
+    OrderTypeEnum(String code, String label) {
+        this.code = code;
+        this.label = label;
+    }
+
+    @Override public String getCode() { return code; }
+    @Override public String getLabel() { return label; }
+}
+```
+
+#### 2. DTO 入参绑定与 Controller 接口
+```java
+package io.github.atengk.boot.sample.web.dto;
+
+import io.github.atengk.boot.core.annotation.InEnum;
+import io.github.atengk.boot.sample.web.enums.OrderTypeEnum;
+import io.github.atengk.boot.sample.web.enums.UserStatusEnum;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.io.Serializable;
+
+public class WebEnumUserRequest implements Serializable {
+    @NotBlank(message = "用户名不能为空")
+    private String username;
+
+    // 第一道防线：校验原始编码合法性
+    @NotNull(message = "状态编码不能为空")
+    @InEnum(value = UserStatusEnum.class, message = "用户状态编码不合法")
+    private Integer statusCode;
+
+    // Jackson 强类型双向反序列化绑定：前端传 1, "1", "ACTIVE" 均可自动解析
+    private UserStatusEnum status;
+
+    private OrderTypeEnum orderType;
+
+    // getters and setters...
+}
+```
+
+```java
+package io.github.atengk.boot.sample.web.controller;
+
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.web.dto.WebEnumUserRequest;
+import io.github.atengk.boot.sample.web.dto.WebEnumUserResponse;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/sample/enum")
+public class WebEnumSampleController {
+
+    @PostMapping("/user")
+    public Result<WebEnumUserResponse> createUser(@Valid @RequestBody WebEnumUserRequest request) {
+        return Result.success(new WebEnumUserResponse(
+                request.getUsername(),
+                request.getStatusCode(),
+                request.getStatus(),
+                request.getOrderType()
+        ));
+    }
+}
+```
+
+#### 3. 真实 HTTP 响应报文验证
+
+##### (1) 查询单枚举字典 (`GET /api/system/enums/userStatus`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": [
+    {
+      "code": 1,
+      "label": "启用",
+      "disabled": false,
+      "extra": {}
+    },
+    {
+      "code": 2,
+      "label": "禁用",
+      "disabled": true,
+      "extra": {
+        "color": "red",
+        "reason": "违规停用"
+      }
+    },
+    {
+      "code": 3,
+      "label": "锁定",
+      "disabled": false,
+      "extra": {}
+    }
+  ],
+  "success": true,
+  "traceId": "9b1c2d3e4f5a6b7c"
+}
+```
+
+##### (2) 批量聚合字典 (`POST /api/system/enums/batch` 入参 `["userStatus", "orderType"]`)
+```json
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "userStatus": [
+      { "code": 1, "label": "启用", "disabled": false, "extra": {} },
+      { "code": 2, "label": "禁用", "disabled": true, "extra": { "color": "red", "reason": "违规停用" } },
+      { "code": 3, "label": "锁定", "disabled": false, "extra": {} }
+    ],
+    "orderType": [
+      { "code": "normal", "label": "普通订单", "disabled": false, "extra": {} },
+      { "code": "seckill", "label": "秒杀订单", "disabled": false, "extra": {} },
+      { "code": "promotion", "label": "促销订单", "disabled": false, "extra": {} }
+    ]
+  },
+  "success": true,
+  "traceId": "a1b2c3d4e5f60718"
+}
+```
+
+##### (3) Jackson 强类型枚举自动反序列化 (`POST /api/sample/enum/user`)
+入参无论传整型 `1` 还是字符串 `"1"` 亦或常量名 `"ACTIVE"`，后端均能精准映射为强类型枚举：
+```json
+// 请求体
+{
+  "username": "张三",
+  "statusCode": 1,
+  "status": "ACTIVE",
+  "orderType": "normal"
+}
+
+// 响应体 (HTTP 200)
+{
+  "code": 200,
+  "msg": "操作成功",
+  "data": {
+    "username": "张三",
+    "statusCode": 1,
+    "status": "ACTIVE",
+    "orderType": "NORMAL"
+  },
+  "success": true,
+  "traceId": "7ebf8152661ffdafc927a86c0646e1d9"
+}
+```
+
+---
+
+## 22. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -1063,4 +1277,14 @@ ateng:
         header: "X-API-Version"
         # 是否启用 URL 路径前缀版本匹配（如 /v1/...，默认 true）
         path-prefix-enabled: true
+      enum:
+        # 是否启用枚举字典只读 HTTP 控制器与自动装配（默认 false，按需开启）
+        enabled: true
+        # 枚举字典 HTTP 端点统一路径前缀（默认 /api/system/enums）
+        path-prefix: "/api/system/enums"
+        # 枚举别名自动推导命名策略（默认 LOWER_CAMEL_CASE；可选 SNAKE_CASE、ORIGINAL）
+        naming-strategy: "LOWER_CAMEL_CASE"
+        # 待扫描的枚举类基础包路径列表（启动期白名单扫描，为空时保持空注册表）
+        scan-packages:
+          - "io.github.atengk.boot.sample.web.enums"
 ```
