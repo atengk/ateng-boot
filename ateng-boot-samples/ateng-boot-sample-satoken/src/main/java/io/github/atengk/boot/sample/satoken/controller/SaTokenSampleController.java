@@ -535,11 +535,14 @@ public class SaTokenSampleController {
      * 查询账号防暴力破解安全状态
      *
      * @param username 账号名称
+     * @param clientIp 客户端 IP（可选）
      * @return 状态详情视图展示对象
      */
     @GetMapping("/defense/status")
-    public Result<DefenseStatusVO> getDefenseStatus(@NotBlank(message = "账号标识不能为空") @RequestParam("username") String username) {
-        DefenseStatusVO vo = sampleService.getDefenseStatus(username);
+    public Result<DefenseStatusVO> getDefenseStatus(
+            @NotBlank(message = "账号标识不能为空") @RequestParam("username") String username,
+            @RequestParam(value = "clientIp", required = false) String clientIp) {
+        DefenseStatusVO vo = sampleService.getDefenseStatus(username, clientIp);
         return Result.success(vo);
     }
 }

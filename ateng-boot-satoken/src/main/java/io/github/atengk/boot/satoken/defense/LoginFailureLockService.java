@@ -110,12 +110,53 @@ public class LoginFailureLockService {
             if (SaManager.getSaTokenContext() != null && SaManager.getSaTokenContext().isValid()) {
                 SaRequest request = SaHolder.getRequest();
                 if (request != null) {
-                    return extractClientIp(request);
+                    String ip = extractClientIp(request);
+                    if (isValidIp(ip)) {
+                        return ip;
+                    }
                 }
             }
         } catch (Throwable ex) {
             log.debug("未能从 SaTokenContext 嗅探客户端 IP: {}", ex.getMessage());
         }
+
+        // 弹性防御：当 SaTokenContext 不可用（如局部测试或未过 Filter）时，自适应回退至 Spring Web RequestContextHolder
+        try {
+            org.springframework.web.context.request.RequestAttributes attrs =
+                    org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+            if (attrs instanceof org.springframework.web.context.request.ServletRequestAttributes servletAttrs) {
+                jakarta.servlet.http.HttpServletRequest servletRequest = servletAttrs.getRequest();
+                if (servletRequest != null) {
+                    for (String header : IP_HEADER_CANDIDATES) {
+                        String value = servletRequest.getHeader(header);
+                        if (value == null || value.isBlank()) {
+                            continue;
+                        }
+                        if (value.contains(",")) {
+                            String[] parts = value.split(",");
+                            for (String part : parts) {
+                                String candidate = part.trim();
+                                if (isValidIp(candidate)) {
+                                    return normalizeIp(candidate);
+                                }
+                            }
+                        } else {
+                            String candidate = value.trim();
+                            if (isValidIp(candidate)) {
+                                return normalizeIp(candidate);
+                            }
+                        }
+                    }
+                    String remoteAddr = servletRequest.getRemoteAddr();
+                    if (isValidIp(remoteAddr)) {
+                        return normalizeIp(remoteAddr);
+                    }
+                }
+            }
+        } catch (Throwable ex) {
+            log.debug("未能从 RequestContextHolder 嗅探客户端 IP: {}", ex.getMessage());
+        }
+
         return "";
     }
 
@@ -619,6 +660,9 @@ public class LoginFailureLockService {
         if (account == null || account.isBlank()) {
             return 0;
         }
+        if (isLocked(account)) {
+            return getMaxRetryCount();
+        }
 
         StringRedisTemplate redisTemplate = getRedisTemplate();
         if (redisTemplate != null) {
@@ -653,6 +697,9 @@ public class LoginFailureLockService {
         String ip = resolveClientIp(clientIp);
         if (ip == null || ip.isBlank() || isIpWhiteListed(ip)) {
             return 0;
+        }
+        if (isIpLocked(ip)) {
+            return getIpMaxRetryCount();
         }
 
         StringRedisTemplate redisTemplate = getRedisTemplate();

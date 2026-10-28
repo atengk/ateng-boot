@@ -119,13 +119,30 @@ public class SaTokenSampleService {
      * @return 状态展示对象
      */
     public DefenseStatusVO getDefenseStatus(String username) {
+        return getDefenseStatus(username, null);
+    }
+
+    /**
+     * 查询账号与 IP 双轨防暴力破解安全状态
+     *
+     * @param username 账号名称
+     * @param clientIp 客户端 IP（可选，不传时自动嗅探）
+     * @return 状态展示对象
+     */
+    public DefenseStatusVO getDefenseStatus(String username, String clientIp) {
         LoginFailureLockService lockService = loginDefenseServiceProvider.getIfAvailable();
         if (lockService != null) {
+            String resolvedIp = lockService.resolveClientIp(clientIp);
+            boolean ipLocked = resolvedIp != null && lockService.isIpLocked(resolvedIp);
+            int ipFailCount = resolvedIp != null ? lockService.getIpFailureCount(resolvedIp) : 0;
+
             return DefenseStatusVO.builder()
                     .isLocked(lockService.isLocked(username))
                     .remainRetryCount(lockService.getRemainRetryCount(username))
                     .failureCount(lockService.getFailureCount(username))
                     .disableTime(lockService.getDisableTime(username))
+                    .isIpLocked(ipLocked)
+                    .ipFailureCount(ipFailCount)
                     .enabled(true)
                     .build();
         }
@@ -134,6 +151,8 @@ public class SaTokenSampleService {
                 .remainRetryCount(0)
                 .failureCount(0)
                 .disableTime(0L)
+                .isIpLocked(false)
+                .ipFailureCount(0)
                 .enabled(false)
                 .build();
     }

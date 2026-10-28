@@ -16,12 +16,17 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
 import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -65,6 +70,9 @@ class SampleSaTokenIntegrationTest {
 
     @Autowired(required = false)
     private io.github.atengk.boot.satoken.defense.LoginFailureLockService loginDefenseService;
+
+    @Autowired(required = false)
+    private org.springframework.boot.web.client.RestTemplateBuilder restTemplateBuilder;
 
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
@@ -1119,6 +1127,349 @@ class SampleSaTokenIntegrationTest {
             // 上下文零污染清理
             LoginHelper.untieDisable(testUsername);
             loginDefenseService.clearFailure(testUsername);
+        }
+    }
+
+    @Test
+    @DisplayName("29. 多账号体系 (Multi-Account / loginType) 独立登录、会话与注销隔离端到端")
+    void testMultiAccountIsolationLifecycle() throws Exception {
+        // 1. 管理端体系 (admin) 登录
+        LoginUser adminReq = LoginUser.builder()
+                .userId("admin_888")
+                .userAccount("sys_admin")
+                .userName("系统超管")
+                .roles(Set.of("super_admin"))
+                .build();
+        MvcResult adminLoginRes = mockMvc.perform(post("/api/multi-account/admin/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(adminReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString())
+                .andReturn();
+        String adminToken = objectMapper.readTree(adminLoginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(adminToken).isNotBlank();
+
+        // 2. 移动会员端体系 (member) 登录
+        LoginUser memberReq = LoginUser.builder()
+                .userId("member_999")
+                .userAccount("vip_member")
+                .userName("尊贵会员")
+                .roles(Set.of("vip"))
+                .build();
+        MvcResult memberLoginRes = mockMvc.perform(post("/api/multi-account/member/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(memberReq)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isString())
+                .andReturn();
+        String memberToken = objectMapper.readTree(memberLoginRes.getResponse().getContentAsString()).get("data").asText();
+        assertThat(memberToken).isNotBlank();
+
+        try {
+            // 3. 分别携带对应体系的请求头访问专属信息接口，验证数据独立隔离
+            mockMvc.perform(get("/api/multi-account/admin/me")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("admin_888"))
+                    .andExpect(jsonPath("$.data.userName").value("系统超管"));
+
+            mockMvc.perform(get("/api/multi-account/member/me")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("member_999"))
+                    .andExpect(jsonPath("$.data.userName").value("尊贵会员"));
+
+            // 4. 注销 admin 体系会话
+            mockMvc.perform(post("/api/multi-account/admin/logout")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 5. 验证 admin 已失效 (401)
+            mockMvc.perform(get("/api/multi-account/admin/me")
+                            .header("satoken-admin", adminToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 6. 验证 member 会话依然完全不受影响，独立活跃 (200)
+            mockMvc.perform(get("/api/multi-account/member/me")
+                            .header("satoken-member", memberToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.userId").value("member_999"));
+        } finally {
+            // 上下文零污染清理
+            mockMvc.perform(post("/api/multi-account/member/logout")
+                    .header("satoken-member", memberToken));
+        }
+    }
+
+    @Test
+    @DisplayName("30. 客户端 IP 自动嗅探与防爆破熔断端到端（多账号撞库触发 IP 锁定拦截 403）")
+    void testClientIpBruteForceDefense() throws Exception {
+        assertThat(loginDefenseService).isNotNull();
+
+        String attackerIp = "198.51.100.99";
+        try {
+            // 模拟恶意黑客从同一攻击 IP 针对 5 个不同账号发起爆破尝试
+            for (int i = 1; i <= 5; i++) {
+                String victimAccount = "victim_account_" + i;
+                io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest failReq =
+                        new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest(victimAccount, "wrong-pass");
+
+                mockMvc.perform(post("/api/auth/login-with-defense")
+                                .header("X-Forwarded-For", attackerIp)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(failReq)))
+                        .andExpect(status().isOk());
+            }
+
+            // 验证 IP 已达到熔断阈值 (5次)
+            assertThat(loginDefenseService.isIpLocked(attackerIp)).isTrue();
+            assertThat(loginDefenseService.getIpFailureCount(attackerIp)).isGreaterThanOrEqualTo(5);
+
+            // 第 6 次无论尝试哪个全新账号，该 IP 直接被前置快速失败阻断 (403)
+            io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest nextReq =
+                    new io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest("victim_account_new", "any-pass");
+            mockMvc.perform(post("/api/auth/login-with-defense")
+                            .header("X-Forwarded-For", attackerIp)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(nextReq)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403))
+                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("客户端 IP 连续登录失败次数超限")));
+
+            // 查询状态接口验证
+            mockMvc.perform(get("/api/auth/defense/status")
+                            .param("username", "victim_account_new")
+                            .param("clientIp", attackerIp))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.isIpLocked").value(true));
+        } finally {
+            // 清理 IP 失败与锁定记录
+            loginDefenseService.clearIpFailure(attackerIp);
+            for (int i = 1; i <= 5; i++) {
+                loginDefenseService.clearFailure("victim_account_" + i);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("31. 微服务内部 Same-Token 发起端客户端拦截器自动透传端到端")
+    void testSameTokenClientInterceptorAutoInjection() {
+        assertThat(restTemplateBuilder).isNotNull();
+
+        // 1. 构建受管 RestTemplate
+        RestTemplate restTemplate = restTemplateBuilder.build();
+
+        // 2. 验证已自动装配 SameTokenClientHttpRequestInterceptor 拦截器
+        assertThat(restTemplate.getInterceptors())
+                .anyMatch(i -> i instanceof io.github.atengk.boot.satoken.interceptor.SameTokenClientHttpRequestInterceptor);
+
+        // 3. 通过 MockRestServiceServer 模拟发起远程机密调用，断言请求头自动携带合法 SA-SAME-TOKEN
+        org.springframework.test.web.client.MockRestServiceServer server =
+                org.springframework.test.web.client.MockRestServiceServer.bindTo(restTemplate).build();
+
+        server.expect(requestTo("http://internal-service/api/auth/internal/data"))
+                .andExpect(header("SA-SAME-TOKEN", org.hamcrest.Matchers.notNullValue()))
+                .andRespond(withSuccess("{\"code\":200,\"success\":true,\"data\":\"ok\"}", MediaType.APPLICATION_JSON));
+
+        String response = restTemplate.getForObject("http://internal-service/api/auth/internal/data", String.class);
+        assertThat(response).contains("200");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("32. 在线会话实时监控与精准强退治理端到端（人数统计、游标分页与 Token/Device 踢出）")
+    void testOnlineUserGovernanceLifecycle() throws Exception {
+        // 1. 登录用户 1 (PC 端)
+        LoginUser user1 = LoginUser.builder()
+                .userId("online_user_01")
+                .userAccount("tester_pc")
+                .userName("在线用户甲")
+                .build();
+        MvcResult res1 = mockMvc.perform(post("/api/auth/login")
+                        .param("device", "PC")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user1)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token1 = objectMapper.readTree(res1.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 登录用户 2 (APP 端)
+        LoginUser user2 = LoginUser.builder()
+                .userId("online_user_02")
+                .userAccount("tester_app")
+                .userName("在线用户乙")
+                .build();
+        MvcResult res2 = mockMvc.perform(post("/api/auth/login")
+                        .param("device", "APP")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(user2)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String token2 = objectMapper.readTree(res2.getResponse().getContentAsString()).get("data").asText();
+
+        try {
+            // 3. 在线人数统计
+            MvcResult countRes = mockMvc.perform(get("/api/auth/online/count"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andReturn();
+            long onlineCount = Long.parseLong(objectMapper.readTree(countRes.getResponse().getContentAsString()).get("data").asText());
+            assertThat(onlineCount).isGreaterThanOrEqualTo(2);
+
+            // 4. 关键字搜索在线用户列表
+            mockMvc.perform(get("/api/auth/online/list")
+                            .param("keyword", "tester_pc"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data", org.hamcrest.Matchers.hasSize(1)))
+                    .andExpect(jsonPath("$.data[0].userAccount").value("tester_pc"))
+                    .andExpect(jsonPath("$.data[0].loginDevice").value("PC"));
+
+            // 5. 分页查询在线用户 PageResult
+            MvcResult pageRes = mockMvc.perform(get("/api/auth/online/page")
+                            .param("page", "1")
+                            .param("size", "10"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.records").isArray())
+                    .andReturn();
+            long total = Long.parseLong(objectMapper.readTree(pageRes.getResponse().getContentAsString()).get("data").get("total").asText());
+            assertThat(total).isGreaterThanOrEqualTo(2);
+
+            // 6. 按 Token 强退用户 1
+            mockMvc.perform(post("/api/auth/online/kickout-token")
+                            .param("tokenValue", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 用户 1 会话失效
+            mockMvc.perform(get("/api/auth/me")
+                            .header("satoken", token1))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+
+            // 用户 2 依然活跃
+            mockMvc.perform(get("/api/auth/me")
+                            .header("satoken", token2))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 7. 按设备类型强退用户 2
+            mockMvc.perform(post("/api/auth/online/kickout-device")
+                            .param("userId", "online_user_02")
+                            .param("device", "APP"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200));
+
+            // 用户 2 也失效
+            mockMvc.perform(get("/api/auth/me")
+                            .header("satoken", token2))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(401));
+        } finally {
+            LoginHelper.kickoutByToken(token1);
+            LoginHelper.kickoutByToken(token2);
+        }
+    }
+
+    @Test
+    @DisplayName("33. 数据库驱动的动态 URL 路径权限匹配端到端（AntPath + HTTP Method 鉴权与 403 阻断）")
+    void testDynamicPathPermissionPipeline() throws Exception {
+        // 1. 普通无权限用户登录
+        LoginUser normalUser = LoginUser.builder()
+                .userId("dyn_normal_user")
+                .userAccount("normal_user")
+                .userName("普通无权限用户")
+                .permissions(Set.of("user:query"))
+                .build();
+        MvcResult normalRes = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(normalUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String normalToken = objectMapper.readTree(normalRes.getResponse().getContentAsString()).get("data").asText();
+
+        // 2. 授权用户登录（拥有 dynamic:resource:view 与 dynamic:resource:create）
+        LoginUser authUser = LoginUser.builder()
+                .userId("dyn_auth_user")
+                .userAccount("auth_user")
+                .userName("授权用户")
+                .permissions(Set.of("dynamic:resource:view", "dynamic:resource:create"))
+                .build();
+        MvcResult authRes = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(authUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String authToken = objectMapper.readTree(authRes.getResponse().getContentAsString()).get("data").asText();
+
+        // 3. 超管用户登录
+        LoginUser superUser = LoginUser.builder()
+                .userId("dyn_super_user")
+                .userAccount("super_admin")
+                .userName("超管")
+                .roles(Set.of("super_admin"))
+                .build();
+        MvcResult superRes = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(superUser)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String superToken = objectMapper.readTree(superRes.getResponse().getContentAsString()).get("data").asText();
+
+        try {
+            // (1) 普通用户无权访问 GET /api/dynamic/resource/data -> 拦截返回 403
+            mockMvc.perform(get("/api/dynamic/resource/data")
+                            .header("satoken", normalToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403))
+                    .andExpect(jsonPath("$.msg").value(org.hamcrest.Matchers.containsString("dynamic:resource:view")));
+
+            // (2) 普通用户访问未受限端点 GET /api/dynamic/resource/unprotected -> 成功放行
+            mockMvc.perform(get("/api/dynamic/resource/unprotected")
+                            .header("satoken", normalToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("未受规则约束的公开资源"));
+
+            // (3) 授权用户具备 view 权限 -> 访问 GET /api/dynamic/resource/data 成功放行
+            mockMvc.perform(get("/api/dynamic/resource/data")
+                            .header("satoken", authToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("动态资源查询成功"));
+
+            // (4) 授权用户具备 create 权限 -> 访问 POST /api/dynamic/resource/data 成功放行
+            mockMvc.perform(post("/api/dynamic/resource/data")
+                            .header("satoken", authToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("动态资源创建成功"));
+
+            // (5) 授权用户缺少 delete 和 audit 权限 (SaMode.AND) -> 访问 DELETE 被 403 阻断
+            mockMvc.perform(delete("/api/dynamic/resource/data")
+                            .header("satoken", authToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+
+            // (6) 超管特权豁免 -> 访问 DELETE /api/dynamic/resource/data 直接放行
+            mockMvc.perform(delete("/api/dynamic/resource/data")
+                            .header("satoken", superToken))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data").value("动态资源删除成功"));
+        } finally {
+            LoginHelper.kickoutByToken(normalToken);
+            LoginHelper.kickoutByToken(authToken);
+            LoginHelper.kickoutByToken(superToken);
         }
     }
 }

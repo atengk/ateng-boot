@@ -32,3 +32,8 @@ ateng:
         enabled: true
         max-retry-count: 5
         lock-time: 15m
+        ip-max-retry-count: 5
+        ip-lock-time: 15m
+        ip-white-list:
+          - 127.0.0.1
+          - 0:0:0:0:0:0:0:1
