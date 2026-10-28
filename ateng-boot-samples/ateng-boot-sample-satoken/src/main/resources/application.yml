@@ -1,4 +1,6 @@
 spring:
+  config:
+    import: "optional:classpath:application-local.yml"
   application:
     name: ateng-boot-sample-satoken
   datasource:
@@ -17,6 +19,8 @@ mybatis-plus:
 
 ateng:
   boot:
+    redis:
+      enabled: false
     web:
       trace:
         enabled: true

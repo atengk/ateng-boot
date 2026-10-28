@@ -1,0 +1,29 @@
+# 本地真实中间件联调模板文件（复制为 application-local.yml 并在本地环境激活）
+# 真实 application-local.yml 已被 .gitignore 忽略，绝对严禁提交公网真实 IP 与凭据至 Git
+
+spring:
+  # 1. 真实数据库连接配置（覆盖默认 H2 内存库）
+  datasource:
+    # MySQL 示例：
+    url: jdbc:mysql://YOUR_MYSQL_HOST:3306/YOUR_DATABASE?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: YOUR_USERNAME
+    password: YOUR_PASSWORD
+    # PostgreSQL 示例：
+    # url: jdbc:postgresql://YOUR_PG_HOST:5432/YOUR_DATABASE?currentSchema=public
+    # username: YOUR_USERNAME
+    # password: YOUR_PASSWORD
+
+  # 2. 真实 Redis 连接配置
+  data:
+    redis:
+      host: YOUR_REDIS_HOST
+      port: 6379
+      password: YOUR_REDIS_PASSWORD
+      database: 0
+      timeout: 3000ms
+
+ateng:
+  boot:
+    # 激活真实 Redis 基础设施以开启 Sa-Token 分布式 Redis 存储与防爆破计数
+    redis:
+      enabled: true

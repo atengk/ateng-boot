@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.satoken;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -8,17 +9,22 @@ import io.github.atengk.boot.sample.satoken.entity.TenantOrderEntity;
 import io.github.atengk.boot.sample.satoken.mapper.TenantOrderMapper;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 
@@ -32,6 +38,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import org.springframework.context.annotation.Import;
+import io.github.atengk.boot.sample.satoken.config.SampleSaTokenTestRedisConfig;
+
 /**
  * Sa-Token 安全鉴权与单机内存会话端到端集成测试
  * 覆盖单机会话登录、双轨路由白名单拦截、Controller/Service 全域 AOP 注解鉴权、CurrentUserProvider SPI 审计自动填充与多租户上下文生命周期治理
@@ -41,6 +50,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(SampleSaTokenTestRedisConfig.class)
 @DisplayName("Sa-Token 全栈安全鉴权与多租户持久层协同端到端集成测试")
 class SampleSaTokenIntegrationTest {
 
@@ -73,6 +83,50 @@ class SampleSaTokenIntegrationTest {
 
     @Autowired(required = false)
     private org.springframework.boot.web.client.RestTemplateBuilder restTemplateBuilder;
+
+    @Autowired(required = false)
+    private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private Environment environment;
+
+    @AfterEach
+    void cleanUpDatabaseAndRedis() {
+        try {
+            orderMapper.delete(new LambdaQueryWrapper<TenantOrderEntity>()
+                    .isNotNull(TenantOrderEntity::getId));
+        } catch (Exception ignored) {
+        }
+        if (redisTemplate != null && isLocalProfileActive()) {
+            cleanTestRedisKeys();
+        }
+    }
+
+    private boolean isLocalProfileActive() {
+        return Arrays.asList(environment.getActiveProfiles()).contains("local")
+                || Boolean.TRUE.equals(environment.getProperty("ateng.boot.redis.enabled", Boolean.class));
+    }
+
+    private void cleanTestRedisKeys() {
+        try {
+            String[] testUserPatterns = {"*1001*", "*1002*", "*1003*", "*9999*", "*2001*", "*2002*", "*3001*", "*4001*", "*5001*", "*8888*", "*88001*", "*66001*", "*66002*", "*90001*", "*test-local-user*", "*admin-root*", "*merchant-shop1*"};
+            for (String pattern : testUserPatterns) {
+                Set<String> keys = redisTemplate.keys("satoken:" + pattern);
+                if (keys != null && !keys.isEmpty()) {
+                    redisTemplate.delete(keys);
+                }
+            }
+            Set<String> defenseKeys = redisTemplate.keys("satoken:defense:*");
+            if (defenseKeys != null && !defenseKeys.isEmpty()) {
+                redisTemplate.delete(defenseKeys);
+            }
+            Set<String> atengSatokenKeys = redisTemplate.keys("ateng:satoken:*");
+            if (atengSatokenKeys != null && !atengSatokenKeys.isEmpty()) {
+                redisTemplate.delete(atengSatokenKeys);
+            }
+        } catch (Exception ignored) {
+        }
+    }
 
     @Test
     @DisplayName("1. 未登录拦截防御：未提供凭据访问受保护接口，统一返回 HTTP 200 + 业务码 401 与细粒度提示")
@@ -1039,6 +1093,11 @@ class SampleSaTokenIntegrationTest {
         assertThat(permissionCacheService.get(userPermsKey)).isEqualTo("[\"user:sample\"]");
 
         // 3. 模拟异地节点广播消息（不同 instanceId），精准触发本地用户缓存失效
+        // 真实分布式集群下，远端节点更新权限时已先行清除分布式缓存，再广播通知所有节点驱逐本地微缓存
+        if (redisTemplate != null) {
+            redisTemplate.delete(userRolesKey);
+            redisTemplate.delete(userPermsKey);
+        }
         io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage remoteMsg =
                 io.github.atengk.boot.satoken.cluster.model.SaTokenClusterMessage.of(
                         "remote-node-xyz",
@@ -1470,6 +1529,52 @@ class SampleSaTokenIntegrationTest {
             LoginHelper.kickoutByToken(normalToken);
             LoginHelper.kickoutByToken(authToken);
             LoginHelper.kickoutByToken(superToken);
+        }
+    }
+
+    @Test
+    @DisplayName("36. 全真模式验证：Local 激活时真实 Redis 基础设施与分布式会话持久层正常生效")
+    void shouldVerifyRealRedisInfrastructureWhenLocalActive() throws Exception {
+        Assumptions.assumeTrue(isLocalProfileActive(), "当前非 local 真实联调环境，自动跳过真实 Redis 底层存储与 TTL 校验");
+        assertThat(redisTemplate).isNotNull();
+
+        // 1. 验证真实 Redis 连接连通性 (PONG)
+        String pingResult = redisTemplate.getConnectionFactory().getConnection().ping();
+        assertThat(pingResult).isEqualTo("PONG");
+
+        // 2. 模拟全真登录，验证真实 Redis 中写入了分布式会话与 Token 物理键
+        LoginUser localUser = LoginUser.builder()
+                .userId("999001")
+                .userName("test-local-user")
+                .tenantId("tenant-local")
+                .build();
+        MvcResult res = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(localUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn();
+        String token = objectMapper.readTree(res.getResponse().getContentAsString()).get("data").asText();
+        assertThat(token).isNotBlank();
+
+        try {
+            // 3. 强断言 Redis 存储层中存在对应 Token 记录，且剩余 TTL > 0
+            Set<String> tokenKeys = redisTemplate.keys("satoken:login:token:" + token);
+            assertThat(tokenKeys).isNotEmpty();
+            Long expire = redisTemplate.getExpire(tokenKeys.iterator().next());
+            assertThat(expire).isGreaterThan(0L);
+
+            // 4. 模拟防爆破失败重试，验证真实 Redis 计数器
+            if (loginDefenseService != null) {
+                for (int i = 0; i < 3; i++) {
+                    loginDefenseService.recordFailure("test-defense-account");
+                }
+                Set<String> defenseKeys = redisTemplate.keys(io.github.atengk.boot.satoken.defense.LoginFailureLockService.KEY_PREFIX + "test-defense-account*");
+                assertThat(defenseKeys).isNotEmpty();
+                loginDefenseService.clearFailure("test-defense-account");
+            }
+        } finally {
+            LoginHelper.kickoutByToken(token);
         }
     }
 }

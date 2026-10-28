@@ -48,6 +48,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
@@ -297,7 +298,8 @@ public class AtengRedisAutoConfiguration {
      * @return 监听容器
      */
     @Bean
-    @org.springframework.context.annotation.Lazy
+    @Primary
+    @Lazy
     @ConditionalOnMissingBean(RedisMessageListenerContainer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {

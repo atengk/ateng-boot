@@ -23,12 +23,11 @@
             <artifactId>ateng-boot-satoken</artifactId>
         </dependency>
 
-        <!-- Spring Data Redis (提供 StringRedisTemplate 类型定义，未连接 Redis 时由 Sa-Token 自动降级为单机内存缓存) -->
+        <!-- Redis 分布式基础设施 Starter (用于本地真实联调与分布式会话治理) -->
         <dependency>
-            <groupId>org.springframework.data</groupId>
-            <artifactId>spring-data-redis</artifactId>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
         </dependency>
-
 
         <!-- MyBatis-Plus 持久层增强 Starter (用于自验 CurrentUserProvider 审计流转) -->
         <dependency>
@@ -52,6 +51,20 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- MySQL 驱动 (用于本地真实联调) -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- PostgreSQL 驱动 (用于本地真实联调) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
     </dependencies>
