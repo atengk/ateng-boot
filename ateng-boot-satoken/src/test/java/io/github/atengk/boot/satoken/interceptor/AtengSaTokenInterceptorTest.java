@@ -1,8 +1,15 @@
 package io.github.atengk.boot.satoken.interceptor;
 
+import cn.dev33.satoken.annotation.SaMode;
+import cn.dev33.satoken.exception.NotPermissionException;
+import cn.dev33.satoken.stp.StpLogic;
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.model.PathPermissionRule;
+import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -11,8 +18,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
+import org.springframework.beans.factory.ObjectProvider;
+
+import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 /**
@@ -149,6 +161,198 @@ class AtengSaTokenInterceptorTest {
             interceptor.afterCompletion(request, response, new Object(), null);
             assertThat(TenantContextHolder.getTenantId()).isNull();
             assertThat(UserContextHolder.get()).isNull();
+        }
+    }
+
+    @Test
+    @DisplayName("测试未注册 DynamicPathPermissionProvider 时，非白名单请求直接短路跳过动态权限校验")
+    void testDynamicPathPermissionWithoutProviderPasses() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/orders/list");
+        when(request.getMethod()).thenReturn("GET");
+
+        // 未配置 provider 时顺利放行
+        boolean pass = interceptor.preHandle(request, response, new Object());
+        assertThat(pass).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试动态路径权限匹配：具备权限时成功放行")
+    void testDynamicPathPermissionWhenPermissionGranted() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/orders/list");
+        when(request.getMethod()).thenReturn("GET");
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/orders/**", "GET", "order:view")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin(any())).thenReturn(false);
+
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            verify(mockLogic).checkPermissionOr("order:view");
+        }
+    }
+
+    @Test
+    @DisplayName("测试动态路径权限匹配：缺少权限时抛出 NotPermissionException 阻断")
+    void testDynamicPathPermissionWhenPermissionDeniedThrows() {
+        when(request.getRequestURI()).thenReturn("/api/orders/create");
+        when(request.getMethod()).thenReturn("POST");
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/orders/**", "POST", "order:create")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin(any())).thenReturn(false);
+
+            doThrow(new NotPermissionException("order:create")).when(mockLogic).checkPermissionOr("order:create");
+
+            assertThatThrownBy(() -> interceptor.preHandle(request, response, new Object()))
+                    .isInstanceOf(NotPermissionException.class)
+                    .hasMessageContaining("order:create");
+        }
+    }
+
+    @Test
+    @DisplayName("测试动态路径权限匹配：HTTP Method 不匹配时规则跳过，不阻断请求")
+    void testDynamicPathPermissionHttpMethodMismatchPasses() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/orders/list");
+        when(request.getMethod()).thenReturn("GET");
+
+        // 仅限制 POST 方法
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/orders/**", "POST", "order:create")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            verify(mockLogic, never()).checkPermissionOr(any());
+        }
+    }
+
+    @Test
+    @DisplayName("测试动态路径权限匹配：超级管理员特权豁免直接放行")
+    void testDynamicPathPermissionSuperAdminPasses() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/admin/system/config");
+        when(request.getMethod()).thenReturn("POST");
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/admin/**", "POST", "system:config:edit")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin("login")).thenReturn(true);
+
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            verify(mockLogic, never()).checkPermissionOr(any());
+            verify(mockLogic, never()).checkPermissionAnd(any());
+        }
+    }
+
+    @Test
+    @DisplayName("测试动态路径权限匹配：SaMode.AND 组合校验")
+    void testDynamicPathPermissionSaModeAnd() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/orders/delete/100");
+        when(request.getMethod()).thenReturn("DELETE");
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/orders/delete/**", "DELETE", SaMode.AND, "order:delete", "order:audit")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin(any())).thenReturn(false);
+
+            // 1. 具备全部权限通过
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            verify(mockLogic).checkPermissionAnd("order:delete", "order:audit");
+
+            // 2. 缺少其中一个抛出异常
+            doThrow(new NotPermissionException("order:audit")).when(mockLogic).checkPermissionAnd("order:delete", "order:audit");
+            assertThatThrownBy(() -> interceptor.preHandle(request, response, new Object()))
+                    .isInstanceOf(NotPermissionException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("测试基于 ObjectProvider 依赖注入构造的拦截器与 refresh 回调")
+    void testObjectProviderInjectionAndRefresh() throws Exception {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<DynamicPathPermissionProvider> objectProvider = mock(ObjectProvider.class);
+
+        DynamicPathPermissionProvider provider = mock(DynamicPathPermissionProvider.class);
+        when(provider.getPathPermissionRules()).thenReturn(List.of(
+                PathPermissionRule.of("/api/test/**", "GET", "test:view")
+        ));
+        when(provider.matchRule(any(), eq("/api/test/demo"), eq("GET"))).thenCallRealMethod();
+
+        when(objectProvider.getIfAvailable()).thenReturn(provider);
+
+        AtengSaTokenInterceptor customInterceptor = new AtengSaTokenInterceptor(new SaTokenProperties(), objectProvider);
+        customInterceptor.isAnnotation(false);
+
+        when(request.getRequestURI()).thenReturn("/api/test/demo");
+        when(request.getMethod()).thenReturn("GET");
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            StpLogic mockLogic = mock(StpLogic.class);
+            loginHelperMock.when(() -> LoginHelper.getActiveLoginType(any())).thenReturn("login");
+            loginHelperMock.when(() -> LoginHelper.getStpLogic("login")).thenReturn(mockLogic);
+            loginHelperMock.when(() -> LoginHelper.isSuperAdmin(any())).thenReturn(false);
+
+            boolean pass = customInterceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            verify(mockLogic).checkPermissionOr("test:view");
+
+            // 测试 refresh 回调
+            provider.refresh();
+            verify(provider).refresh();
+        }
+    }
+
+    @Test
+    @DisplayName("测试静态白名单路由优先于动态路径权限规则直接放行")
+    void testWhitelistedUrlBypassesDynamicCheck() throws Exception {
+        interceptor.setWhitelist(List.of("/api/orders/public/**"));
+
+        DynamicPathPermissionProvider provider = DynamicPathPermissionProvider.of(
+                PathPermissionRule.of("/api/orders/**", "GET", "order:admin:only")
+        );
+        interceptor.setDynamicPathPermissionProvider(provider);
+
+        when(request.getRequestURI()).thenReturn("/api/orders/public/ping");
+        when(request.getMethod()).thenReturn("GET");
+
+        try (MockedStatic<LoginHelper> loginHelperMock = mockStatic(LoginHelper.class)) {
+            // 白名单命中，无需鉴权直接放行
+            boolean pass = interceptor.preHandle(request, response, new Object());
+            assertThat(pass).isTrue();
+            loginHelperMock.verify(() -> LoginHelper.getStpLogic(anyString()), never());
         }
     }
 }

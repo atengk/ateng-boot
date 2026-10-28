@@ -31,6 +31,7 @@ import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
+import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
 import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import io.github.atengk.boot.satoken.util.LoginHelper;
@@ -318,13 +319,15 @@ public class AtengSaTokenAutoConfiguration {
     /**
      * 注册 Sa-Token 增强路由拦截器实例
      *
+     * @param dynamicPathPermissionProvider 动态路径权限提供者 ObjectProvider
      * @return AtengSaTokenInterceptor 拦截器实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public AtengSaTokenInterceptor atengSaTokenInterceptor() {
-        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties);
+    public AtengSaTokenInterceptor atengSaTokenInterceptor(
+            ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider) {
+        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties, dynamicPathPermissionProvider);
         saInterceptor.isAnnotation(false);
         if (properties.getInterceptor().isCheckLogin()) {
             log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");

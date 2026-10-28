@@ -1,14 +1,20 @@
 package io.github.atengk.boot.satoken.interceptor;
 
+import cn.dev33.satoken.annotation.SaMode;
 import cn.dev33.satoken.fun.SaParamFunction;
 import cn.dev33.satoken.interceptor.SaInterceptor;
+import cn.dev33.satoken.stp.StpLogic;
+import cn.dev33.satoken.stp.StpUtil;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.satoken.model.PathPermissionRule;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
+import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.util.PathMatcher;
 import org.springframework.web.util.UrlPathHelper;
@@ -35,6 +41,8 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
     private final UrlPathHelper urlPathHelper = UrlPathHelper.defaultInstance;
     private volatile Set<String> whitelist = Collections.emptySet();
     private final SaTokenProperties properties;
+    private final ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider;
+    private DynamicPathPermissionProvider customProvider;
 
     public AtengSaTokenInterceptor() {
         this((SaTokenProperties) null);
@@ -45,13 +53,33 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
     }
 
     public AtengSaTokenInterceptor(SaTokenProperties properties) {
-        super();
-        this.properties = properties;
+        this(null, properties, null);
     }
 
     public AtengSaTokenInterceptor(SaParamFunction<Object> auth, SaTokenProperties properties) {
-        super(auth);
+        this(auth, properties, null);
+    }
+
+    public AtengSaTokenInterceptor(SaTokenProperties properties, ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider) {
+        this(null, properties, dynamicPathPermissionProvider);
+    }
+
+    public AtengSaTokenInterceptor(SaParamFunction<Object> auth, SaTokenProperties properties, ObjectProvider<DynamicPathPermissionProvider> dynamicPathPermissionProvider) {
+        super();
+        if (auth != null) {
+            this.auth = auth;
+        }
         this.properties = properties;
+        this.dynamicPathPermissionProvider = dynamicPathPermissionProvider;
+    }
+
+    /**
+     * 手动编程式设置动态路径权限提供者（便于单测与静态定制）
+     *
+     * @param customProvider 动态路径权限提供者
+     */
+    public void setDynamicPathPermissionProvider(DynamicPathPermissionProvider customProvider) {
+        this.customProvider = customProvider;
     }
 
     /**
@@ -122,11 +150,84 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
             return true;
         }
 
+        if (this.auth == null) {
+            this.auth = h -> {};
+        }
+
         boolean pass = super.preHandle(request, response, handler);
         if (pass) {
+            checkDynamicPathPermission(request, lookupPath);
             syncContextIfLoggedIn();
         }
         return pass;
+    }
+
+    /**
+     * 校验动态路径权限（基于 DynamicPathPermissionProvider SPI）
+     *
+     * @param request    HTTP 请求
+     * @param lookupPath 请求路径
+     */
+    protected void checkDynamicPathPermission(HttpServletRequest request, String lookupPath) {
+        if (this.customProvider != null) {
+            checkPermissionWithProvider(this.customProvider, request, lookupPath);
+            return;
+        }
+        if (this.dynamicPathPermissionProvider == null) {
+            return;
+        }
+
+        // 尝试单 Bean 快速获取（零额外对象分配）
+        DynamicPathPermissionProvider single = null;
+        try {
+            single = this.dynamicPathPermissionProvider.getIfAvailable();
+        } catch (Exception ignored) {
+        }
+        if (single != null) {
+            checkPermissionWithProvider(single, request, lookupPath);
+            return;
+        }
+
+        // 多 Provider 链式按序匹配
+        for (DynamicPathPermissionProvider provider : this.dynamicPathPermissionProvider.orderedStream().toList()) {
+            if (checkPermissionWithProvider(provider, request, lookupPath)) {
+                return;
+            }
+        }
+    }
+
+    private boolean checkPermissionWithProvider(DynamicPathPermissionProvider provider, HttpServletRequest request, String lookupPath) {
+        if (provider == null) {
+            return false;
+        }
+        String httpMethod = request != null ? request.getMethod() : null;
+        PathPermissionRule matchedRule = provider.matchRule(this.pathMatcher, lookupPath, httpMethod);
+        if (matchedRule == null) {
+            return false;
+        }
+
+        Set<String> requiredPermissions = matchedRule.getPermissions();
+        if (requiredPermissions == null || requiredPermissions.isEmpty()) {
+            return true;
+        }
+
+        // 探测当前活跃登录主体 StpLogic
+        String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
+        String activeType = LoginHelper.getActiveLoginType(preferredType);
+        StpLogic logic = LoginHelper.getStpLogic(activeType != null ? activeType : StpUtil.TYPE);
+
+        // 超级管理员豁免放行
+        if (LoginHelper.isSuperAdmin(activeType)) {
+            return true;
+        }
+
+        String[] perms = requiredPermissions.toArray(new String[0]);
+        if (matchedRule.getMode() == SaMode.AND) {
+            logic.checkPermissionAnd(perms);
+        } else {
+            logic.checkPermissionOr(perms);
+        }
+        return true;
     }
 
     @Override
