@@ -11,6 +11,7 @@ import io.github.atengk.boot.storage.event.StorageDeletedEvent;
 import io.github.atengk.boot.storage.event.StorageEvent;
 import io.github.atengk.boot.storage.event.StorageUploadedEvent;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -290,6 +291,17 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     }
 
     @Override
+    public InputStream download(String path, long startOffset, long length) {
+        if (startOffset < 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量不能为负数: " + startOffset);
+        }
+        if (length <= 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载读取长度必须大于 0: " + length);
+        }
+        return getDriver().download(path, startOffset, length);
+    }
+
+    @Override
     public StorageResource getResource(String path) {
         return new StorageResource(path, getDriver());
     }
@@ -461,6 +473,19 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     @Override
     public PresignedUrl getPresignedUrl(String path, Duration duration) {
         return getDriver().getPresignedUrl(path, duration);
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(String path, Duration duration, String downloadFilename) {
+        return getDriver().getPresignedUrl(path, duration, downloadFilename);
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
+        if (request == null) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "预签名下载请求不能为空");
+        }
+        return getDriver().getPresignedUrl(request);
     }
 
     @Override

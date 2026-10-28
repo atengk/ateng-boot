@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -587,6 +588,29 @@ public class S3Driver implements StorageDriver {
     }
 
     @Override
+    public InputStream download(String path, long startOffset, long length) {
+        if (startOffset < 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量不能为负数: " + startOffset);
+        }
+        if (length <= 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载读取长度必须大于 0: " + length);
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        long endOffset = startOffset + length - 1;
+        String rangeHeader = "bytes=" + startOffset + "-" + endOffset;
+        try {
+            GetObjectRequest getRequest = GetObjectRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .range(rangeHeader)
+                    .build();
+            return this.s3Client.getObject(getRequest);
+        } catch (Exception e) {
+            throw translateException(e, cleanPath, "从 S3 分段读取字节范围失败: " + rangeHeader);
+        }
+    }
+
+    @Override
     public StorageObject getMetadata(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
         try {
@@ -913,21 +937,44 @@ public class S3Driver implements StorageDriver {
 
     @Override
     public PresignedUrl getPresignedUrl(String path, Duration duration) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
         if (this.s3Presigner == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "未配置 S3Presigner，无法生成预签名下载外链");
         }
-        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        if (request == null || request.getPath() == null || request.getPath().isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "预签名下载路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
+        Duration duration = request.getDuration();
         Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
                 ? duration
                 : Duration.ofMinutes(15);
         try {
-            GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+            GetObjectRequest.Builder getRequestBuilder = GetObjectRequest.builder()
                     .bucket(this.bucket)
-                    .key(cleanPath)
-                    .build();
+                    .key(cleanPath);
+
+            if (request.getResponseContentType() != null && !request.getResponseContentType().isBlank()) {
+                getRequestBuilder.responseContentType(request.getResponseContentType().trim());
+            }
+
+            String disposition = request.getResponseContentDisposition();
+            if (disposition != null && !disposition.isBlank()) {
+                getRequestBuilder.responseContentDisposition(disposition.trim());
+            } else if (request.getDownloadFilename() != null && !request.getDownloadFilename().isBlank()) {
+                getRequestBuilder.responseContentDisposition(StorageSecurityUtil.formatContentDisposition(request.getDownloadFilename()));
+            }
+
             GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
                     .signatureDuration(effectiveDuration)
-                    .getObjectRequest(getObjectRequest)
+                    .getObjectRequest(getRequestBuilder.build())
                     .build();
             PresignedGetObjectRequest presigned = this.s3Presigner.presignGetObject(presignRequest);
             String finalUrl = applyDomain(presigned.url().toString(), this.domain);

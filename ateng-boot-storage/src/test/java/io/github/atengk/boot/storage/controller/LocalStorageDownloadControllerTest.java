@@ -1,6 +1,7 @@
 package io.github.atengk.boot.storage.controller;
 
 import io.github.atengk.boot.storage.driver.LocalDriver;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.properties.StorageProperties;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
@@ -152,5 +153,28 @@ class LocalStorageDownloadControllerTest {
                         .param("expires", String.valueOf(validTimestamp))
                         .param("signature", signature))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("携带自定义友好文件名与响应 Content-Type 预签名下载成功")
+    void testDownloadWithCustomFilenameAndContentType() throws Exception {
+        byte[] fileBytes = "Custom Filename Test Data".getBytes(StandardCharsets.UTF_8);
+        String path = "data/export-raw.bin";
+        driver.upload(path, new ByteArrayInputStream(fileBytes), "application/octet-stream", fileBytes.length);
+
+        PresignedDownloadRequest request = PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(Duration.ofMinutes(15))
+                .downloadFilename("2026年度总结.xlsx")
+                .responseContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                .build();
+        PresignedUrl presigned = driver.getPresignedUrl(request);
+        URI uri = URI.create(presigned.getUrl());
+
+        mockMvc.perform(get(uri.getPath() + "?" + uri.getQuery()))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, Matchers.containsString("filename*=UTF-8''")))
+                .andExpect(content().bytes(fileBytes));
     }
 }

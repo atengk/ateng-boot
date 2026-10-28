@@ -274,4 +274,36 @@ public final class StorageSecurityUtil {
         String normalized = String.join("/", stack);
         return endsWithSlash ? normalized + "/" : normalized;
     }
+
+    /**
+     * 构建符合 RFC 5987 与 RFC 6266 标准的 Content-Disposition 响应头值
+     * 自动处理 ASCII 回退文件名与 UTF-8 扩展文件名（支持中文与特殊字符），防御 CRLF 响应拆分注入
+     *
+     * @param filename 下载文件名
+     * @return 格式化的 Content-Disposition 字符串，例如：attachment; filename="report.pdf"; filename*=UTF-8''%E6%8A%A5%E8%A1%A8.pdf
+     */
+    public static String formatContentDisposition(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "attachment";
+        }
+        // 清洗 CRLF 防御 HTTP 响应拆分注入攻击
+        String clean = filename.replace("\r", "").replace("\n", "").trim();
+        String basename = FileUtil.cleanFilename(clean).replace("\"", "");
+        if (basename.isBlank()) {
+            return "attachment";
+        }
+        String encoded = java.net.URLEncoder.encode(basename, StandardCharsets.UTF_8).replace("+", "%20");
+
+        // 构建 ASCII 回退文件名，非 ASCII 字符替换为下划线
+        StringBuilder asciiFallback = new StringBuilder();
+        for (char c : basename.toCharArray()) {
+            if (c > 31 && c < 127 && c != '"' && c != '\\') {
+                asciiFallback.append(c);
+            } else {
+                asciiFallback.append('_');
+            }
+        }
+        String fallback = !asciiFallback.isEmpty() ? asciiFallback.toString() : "download";
+        return "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded;
+    }
 }

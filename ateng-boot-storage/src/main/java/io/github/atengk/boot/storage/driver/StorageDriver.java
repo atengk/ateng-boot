@@ -1,5 +1,6 @@
 package io.github.atengk.boot.storage.driver;
 
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -130,6 +131,18 @@ public interface StorageDriver extends AutoCloseable {
     InputStream download(String path);
 
     /**
+     * 分段下载存储对象指定字节范围内容输入流 (Byte-Range Read)
+     *
+     * @param path        存储对象相对路径
+     * @param startOffset 起始字节偏移量（0-based，必须 >= 0）
+     * @param length      需读取的字节长度（必须 > 0）
+     * @return 字节切片输入流（调用方负责关闭）
+     */
+    default InputStream download(String path, long startOffset, long length) {
+        throw new UnsupportedOperationException("Current storage driver does not support byte-range download");
+    }
+
+    /**
      * 获取存储对象元数据信息
      *
      * @param path 存储对象相对路径
@@ -217,6 +230,37 @@ public interface StorageDriver extends AutoCloseable {
      * @return 预签名外链模型
      */
     default PresignedUrl getPresignedUrl(String path, Duration duration) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    /**
+     * 获取预签名只读下载外链凭证（指定自定义友好下载文件名）
+     * 自动按照 RFC 5987 / RFC 6266 编码 Content-Disposition 响应头
+     *
+     * @param path             存储对象相对路径
+     * @param duration         链接有效持续时长
+     * @param downloadFilename 自定义下载文件名（如 "年度财务报表.xlsx"）
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(String path, Duration duration, String downloadFilename) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .downloadFilename(downloadFilename)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置构建预签名只读下载外链凭证
+     * 支持定制有效时长、友好下载文件名、响应 Content-Type 与 Content-Disposition
+     *
+     * @param request 下载配置请求
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
         throw new UnsupportedOperationException("Current storage driver does not support presigned download URL");
     }
 

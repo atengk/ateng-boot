@@ -58,7 +58,10 @@ public class LocalStorageDownloadController {
     public ResponseEntity<Resource> download(
             @RequestParam("path") String path,
             @RequestParam("expires") long expires,
-            @RequestParam("signature") String signature) {
+            @RequestParam("signature") String signature,
+            @RequestParam(value = "filename", required = false) String filename,
+            @RequestParam(value = "contentType", required = false) String contentType,
+            @RequestParam(value = "disposition", required = false) String disposition) {
 
         // 1. 基础入参非空与二次路径安全清洗
         if (path == null || path.isBlank()) {
@@ -94,12 +97,23 @@ public class LocalStorageDownloadController {
         // 5. 流式响应写出并设置标准响应头
         try {
             StorageResource resource = new StorageResource(cleanPath, storageDriver);
-            String filename = resource.getFilename();
-            String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
+            String effectiveDisposition;
+            if (disposition != null && !disposition.isBlank()) {
+                effectiveDisposition = disposition.replace("\r", "").replace("\n", "").trim();
+            } else if (filename != null && !filename.isBlank()) {
+                effectiveDisposition = StorageSecurityUtil.formatContentDisposition(filename);
+            } else {
+                String rawName = resource.getFilename();
+                effectiveDisposition = StorageSecurityUtil.formatContentDisposition(rawName);
+            }
+
+            String effectiveContentType = (contentType != null && !contentType.isBlank())
+                    ? contentType.replace("\r", "").replace("\n", "").trim()
+                    : resource.getContentType();
 
             return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename)
-                    .contentType(MediaType.parseMediaType(resource.getContentType()))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, effectiveDisposition)
+                    .contentType(MediaType.parseMediaType(effectiveContentType))
                     .contentLength(resource.contentLength())
                     .body(resource);
         } catch (IOException e) {

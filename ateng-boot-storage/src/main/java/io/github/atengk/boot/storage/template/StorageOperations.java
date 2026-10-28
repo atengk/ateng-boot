@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.template;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.storage.model.HashAlgorithm;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -178,6 +179,16 @@ public interface StorageOperations {
      * @return 输入流（调用方负责关闭）
      */
     InputStream download(String path);
+
+    /**
+     * 分段下载存储对象指定字节范围内容输入流 (Byte-Range Read)
+     *
+     * @param path        目标相对路径
+     * @param startOffset 起始字节偏移量（0-based，必须 >= 0）
+     * @param length      需读取的字节长度（必须 > 0）
+     * @return 字节切片输入流（调用方负责关闭）
+     */
+    InputStream download(String path, long startOffset, long length);
 
     /**
      * 获取 Spring 原生资源载荷
@@ -402,6 +413,32 @@ public interface StorageOperations {
      * @return 预签名外链模型
      */
     PresignedUrl getPresignedUrl(String path, Duration duration);
+
+    /**
+     * 获取预签名只读下载外链凭证（指定自定义友好下载文件名）
+     * 自动按照 RFC 5987 / RFC 6266 编码 Content-Disposition 响应头
+     *
+     * @param path             目标相对路径
+     * @param duration         有效时长
+     * @param downloadFilename 自定义下载文件名（如 "年度财务报表.xlsx"）
+     * @return 预签名外链模型
+     */
+    default PresignedUrl getPresignedUrl(String path, Duration duration, String downloadFilename) {
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .downloadFilename(downloadFilename)
+                .build());
+    }
+
+    /**
+     * 基于强类型配置请求构建预签名只读下载外链凭证
+     * 支持定制有效时长、友好下载文件名、响应 Content-Type 与 Content-Disposition
+     *
+     * @param request 下载配置请求
+     * @return 预签名外链模型
+     */
+    PresignedUrl getPresignedUrl(PresignedDownloadRequest request);
 
     /**
      * 获取预签名直传写入外链凭证（极简重载，默认向后兼容）

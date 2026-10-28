@@ -3,6 +3,7 @@ package io.github.atengk.boot.storage.driver;
 import io.github.atengk.boot.core.util.FileUtil;
 import io.github.atengk.boot.storage.exception.StorageException;
 import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUploadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -10,9 +11,11 @@ import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLEncoder;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -260,6 +263,33 @@ public class LocalDriver implements StorageDriver {
             return Files.newInputStream(targetFile);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "读取本地文件流失败: " + cleanPath, e);
+        }
+    }
+
+    @Override
+    public InputStream download(String path, long startOffset, long length) {
+        if (startOffset < 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量不能为负数: " + startOffset);
+        }
+        if (length <= 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载读取长度必须大于 0: " + length);
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        try {
+            long fileSize = Files.size(targetFile);
+            if (startOffset >= fileSize) {
+                throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量超出文件大小: offset=" + startOffset + ", fileSize=" + fileSize);
+            }
+            FileChannel channel = FileChannel.open(targetFile, StandardOpenOption.READ);
+            channel.position(startOffset);
+            InputStream rawStream = Channels.newInputStream(channel);
+            return new BoundedInputStream(rawStream, length);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "分段读取本地文件失败: " + cleanPath, e);
         }
     }
 
@@ -514,7 +544,19 @@ public class LocalDriver implements StorageDriver {
 
     @Override
     public PresignedUrl getPresignedUrl(String path, Duration duration) {
-        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        return getPresignedUrl(PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(duration)
+                .build());
+    }
+
+    @Override
+    public PresignedUrl getPresignedUrl(PresignedDownloadRequest request) {
+        if (request == null || request.getPath() == null || request.getPath().isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "预签名下载路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(request.getPath());
+        Duration duration = request.getDuration();
         Duration effectiveDuration = (duration != null && !duration.isNegative() && !duration.isZero())
                 ? duration
                 : Duration.ofMinutes(15);
@@ -522,11 +564,24 @@ public class LocalDriver implements StorageDriver {
         long expires = expiration.getEpochSecond();
 
         String signature = StorageSecurityUtil.hmacSha256(cleanPath + ":" + expires, this.secretKey);
-        String url = buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT)
-                + "?path=" + cleanPath + "&expires=" + expires + "&signature=" + signature;
+        StringBuilder urlBuilder = new StringBuilder();
+        urlBuilder.append(buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT))
+                .append("?path=").append(cleanPath)
+                .append("&expires=").append(expires)
+                .append("&signature=").append(signature);
+
+        if (request.getDownloadFilename() != null && !request.getDownloadFilename().isBlank()) {
+            urlBuilder.append("&filename=").append(URLEncoder.encode(request.getDownloadFilename().trim(), StandardCharsets.UTF_8));
+        }
+        if (request.getResponseContentType() != null && !request.getResponseContentType().isBlank()) {
+            urlBuilder.append("&contentType=").append(URLEncoder.encode(request.getResponseContentType().trim(), StandardCharsets.UTF_8));
+        }
+        if (request.getResponseContentDisposition() != null && !request.getResponseContentDisposition().isBlank()) {
+            urlBuilder.append("&disposition=").append(URLEncoder.encode(request.getResponseContentDisposition().trim(), StandardCharsets.UTF_8));
+        }
 
         return PresignedUrl.builder()
-                .url(url)
+                .url(urlBuilder.toString())
                 .expiration(expiration)
                 .httpMethod("GET")
                 .build();
@@ -880,6 +935,57 @@ public class LocalDriver implements StorageDriver {
         } catch (Exception e) {
             log.debug("获取会话目录最后修改时间失败: sessionDir={}, cause={}", sessionDir, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 具备严格长度上限的受限包装输入流
+     * 确保仅读取指定的字节长度后即返回 EOF，防止多读
+     */
+    private static class BoundedInputStream extends FilterInputStream {
+        private long remaining;
+
+        BoundedInputStream(InputStream in, long limit) {
+            super(in);
+            this.remaining = limit;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int result = in.read();
+            if (result != -1) {
+                remaining--;
+            }
+            return result;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int toRead = (int) Math.min(len, remaining);
+            int result = in.read(b, off, toRead);
+            if (result != -1) {
+                remaining -= result;
+            }
+            return result;
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            long toSkip = Math.min(n, remaining);
+            long skipped = in.skip(toSkip);
+            remaining -= skipped;
+            return skipped;
+        }
+
+        @Override
+        public int available() throws IOException {
+            return (int) Math.min(in.available(), remaining);
         }
     }
 }
