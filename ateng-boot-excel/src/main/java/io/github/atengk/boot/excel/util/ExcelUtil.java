@@ -46,7 +46,7 @@ import org.apache.fesod.sheet.annotation.ExcelProperty;
 import org.apache.fesod.sheet.context.AnalysisContext;
 import org.apache.fesod.sheet.enums.CellDataTypeEnum;
 import org.apache.fesod.sheet.metadata.AbstractParameterBuilder;
-import org.apache.fesod.sheet.read.builder.ExcelReaderBuilder;
+import io.github.atengk.boot.excel.builder.ExcelReaderBuilder;
 import org.apache.fesod.sheet.read.listener.ReadListener;
 import org.apache.fesod.sheet.write.builder.ExcelWriterBuilder;
 import org.apache.fesod.sheet.write.metadata.WriteSheet;
@@ -1685,6 +1685,27 @@ public final class ExcelUtil {
         }
     }
 
+    /**
+     * 创建基于 InputStream 的异构多工作表 Fluent 流式读取构建器
+     *
+     * @param inputStream 目标输入流（不可为空）
+     * @return 链式多工作表读取构建器实例
+     */
+    public static ExcelReaderBuilder reader(InputStream inputStream) {
+        return new ExcelReaderBuilder(inputStream, defaultBatchSize, maxSyncRows);
+    }
+
+    /**
+     * 创建基于 InputStream 与密码的异构多工作表 Fluent 流式读取构建器
+     *
+     * @param inputStream 目标输入流（不可为空）
+     * @param password    工作簿访问密码
+     * @return 链式多工作表读取构建器实例
+     */
+    public static ExcelReaderBuilder reader(InputStream inputStream, String password) {
+        return new ExcelReaderBuilder(inputStream, defaultBatchSize, maxSyncRows).password(password);
+    }
+
     // ==================== 动态数据规范化工具方法 ====================
 
     /**
@@ -1806,7 +1827,7 @@ public final class ExcelUtil {
      * @param builder ParameterBuilder (ExcelWriterBuilder 或 ExcelReaderBuilder)
      * @param clazz   实体 Class
      */
-    private static void registerEnumConverters(AbstractParameterBuilder<?, ?> builder, Class<?> clazz) {
+    public static void registerEnumConverters(AbstractParameterBuilder<?, ?> builder, Class<?> clazz) {
         if (builder == null) {
             return;
         }
