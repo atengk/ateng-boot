@@ -1,0 +1,41 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-rabbitmq
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        auto-startup: false # 离线开发与测试默认不主动连接，需要时按需启动或通过测试用例调度
+
+ateng:
+  boot:
+    rabbitmq:
+      enabled: true
+      producer:
+        max-payload-size: 2MB
+        compression-threshold: 2KB
+      reliable:
+        default-timeout: 3s
+        returns-callback-enabled: true
+      consumer:
+        prefetch: 20
+        concurrency: 1
+        max-concurrency: 4
+        shutdown-timeout: 10s
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 100ms
+          multiplier: 1.5
+          max-interval: 1s
+      topology:
+        auto-declare: true
+      logging:
+        enabled: true
+        log-payload-max-length: 1024

@@ -1,22 +1,23 @@
 package io.github.atengk.boot.core.util;
 
+import io.github.atengk.boot.core.concurrent.ConcurrentLruCache;
+
 import java.lang.invoke.SerializedLambda;
 import java.lang.reflect.Method;
-import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Lambda 表达式与属性方法引用解析工具
- * 纯 JDK 17 原生实现，基于 SerializedLambda 机制推导强类型实体字段名，支持本地并发缓存
+ * 纯 JDK 17 原生实现，基于 SerializedLambda 机制推导强类型实体字段名，支持本地有界并发缓存
  *
  * @author Ateng
  * @since 2026-10-17
  */
 public final class LambdaUtil {
 
-    private static final Map<Class<?>, SerializedLambda> LAMBDA_CACHE = new ConcurrentHashMap<>();
-    private static final Map<String, String> FIELD_NAME_CACHE = new ConcurrentHashMap<>();
+    private static final int DEFAULT_CACHE_CAPACITY = 1024;
+    private static final ConcurrentLruCache<Class<?>, SerializedLambda> LAMBDA_CACHE = new ConcurrentLruCache<>(DEFAULT_CACHE_CAPACITY);
+    private static final ConcurrentLruCache<String, String> FIELD_NAME_CACHE = new ConcurrentLruCache<>(DEFAULT_CACHE_CAPACITY);
 
     private LambdaUtil() {
     }
@@ -97,5 +98,22 @@ public final class LambdaUtil {
         char[] chars = name.toCharArray();
         chars[0] = Character.toLowerCase(chars[0]);
         return new String(chars);
+    }
+
+    /**
+     * 清空当前所有缓存的 Lambda 与字段名元数据
+     */
+    public static void clearCache() {
+        LAMBDA_CACHE.clear();
+        FIELD_NAME_CACHE.clear();
+    }
+
+    /**
+     * 获取当前字段名缓存条目数
+     *
+     * @return 当前缓存大小
+     */
+    public static int getCacheSize() {
+        return FIELD_NAME_CACHE.size();
     }
 }

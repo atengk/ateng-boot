@@ -23,10 +23,10 @@
             <artifactId>ateng-boot-redis</artifactId>
         </dependency>
 
-        <!-- Web 运行时增强 Starter (用于两级存储自适应验证) -->
+        <!-- 参数校验 Starter -->
         <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
     </dependencies>
 

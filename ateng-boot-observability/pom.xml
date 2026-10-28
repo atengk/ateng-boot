@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-observability</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>面向生产就绪的云原生可观测性、健康探针防假死与端点安全治理底座 Starter</description>
+
+    <dependencies>
+        <!-- 核心底座依赖 -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Actuator 生产级健康检查与度量基础设施 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Micrometer Prometheus 度量指标导出支持 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- 可选依赖：Spring MVC (用于端点安全过滤器与 HTTP 访问，纯后台 Worker 场景免配) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Storage 对象存储底座 (用于编译与装配 StorageHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-storage</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：RocketMQ 5.x 消息底座 (用于编译与装配 RocketmqHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-rocketmq</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Realtime 实时通信底座 (用于编译与装配 RealtimeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-realtime</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：MyBatis-Plus 持久层底座 (用于编译与装配 DynamicDatasourceHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Spring Boot Admin Client (用于 SBA 客户端透明增强与握手凭据注入) -->
+        <dependency>
+            <groupId>de.codecentric</groupId>
+            <artifactId>spring-boot-admin-starter-client</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Spring Boot 自动装配支持 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Lombok (编译期使用) -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 单元测试依赖 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>

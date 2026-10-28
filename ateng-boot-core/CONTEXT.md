@@ -117,7 +117,7 @@ _Avoid_: StreamUtil, CustomCollectors, SafeCollector
 _Avoid_: ObjectCopier, BeanMapper, ModelMapper
 
 **RetryUtil**:
-基于纯函数式接口与指数退避算法的轻量级重试与容错执行引擎，为网络通信与并发冲突提供无侵入高可用守护。
+基于纯函数式接口、指数退避与 Equal Jitter 平滑随机抖动算法的轻量级重试与容错执行引擎，支持 onRetry 度量监听与 Fallback 降级兜底，为网络通信与并发冲突提供无侵入高可用守护。
 _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 
 **FileUtil**:
@@ -125,12 +125,28 @@ _Avoid_: RetryHelper, RetryTemplate, BackoffUtil
 _Avoid_: FileHelper, IoHelper, PathUtil
 
 **AtengAsyncAutoConfiguration**:
-位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
+位于 core 核心底座的自适应双模受管异步线程执行器自动装配类，根据运行环境线程模型（`@ConditionalOnThreading`）自适应装配主虚拟线程执行器（`SimpleAsyncTaskExecutor`）或平台线程池（`ThreadPoolTaskExecutor`），并统一挂载四维上下文快照装饰器与未捕获异常处理器。
 _Avoid_: AsyncConfig, ThreadPoolAutoConfiguration, VirtualThreadAutoConfiguration
 
 **AsyncProperties**:
-受管异步执行器运行时增强配置属性类，以 `ateng.boot.async.*` 命名空间统管平台线程池容量、队列缓冲、并发限制阈值（concurrencyLimit）、平台/虚拟线程专属命名规范与优雅停机策略。
-_Avoid_: ThreadPoolProperties, AsyncConfigProperties
+受管异步执行器根级配置属性类，继承自 AsyncPoolProperties 并作为默认主线程池参数，同时通过 `pools` 字典统管下游多业务独立线程池配置。
+_Avoid_: ThreadPoolProperties, AsyncConfigProperties, MultiAsyncProperties
+
+**AsyncPoolProperties**:
+单线程池运行时增强配置属性实体，定义核心/最大线程数、队列缓冲、存活时间、优雅停机、并发阈值、执行模式与拒绝策略。
+_Avoid_: PoolConfig, ThreadPoolConfig, ExecutorProperties
+
+**DynamicAsyncPoolRegistrar**:
+基于 Spring 原生 ImportBeanDefinitionRegistrar 实现的多业务受管线程池动态注册器，解析 `ateng.boot.async.pools` 字典并向容器动态注入各命名的受管执行器与别名。
+_Avoid_: DynamicExecutorRegistrar, MultiThreadPoolRegistrar, AsyncBeanRegistrar
+
+**AsyncExecutionMode**:
+异步执行器线程运行模式枚举，包含跟随全局环境自适应（AUTO）、强制平台线程池（PLATFORM）与强制虚拟线程执行器（VIRTUAL）。
+_Avoid_: ThreadMode, ExecutorMode, ExecutionType
+
+**AsyncRejectedPolicy**:
+平台线程池任务饱和拒绝策略枚举，映射 JDK 标准拒绝策略（CALLER_RUNS、ABORT、DISCARD、DISCARD_OLDEST）。
+_Avoid_: RejectPolicy, RejectionHandlerType, RejectedStrategy
 
 **CarrierPinning**:
 在 JDK 21+ 虚拟线程运行中，因在同步代码块（`synchronized`）内部执行阻塞调用或休眠导致虚拟线程锁定底层操作系统载体线程引发调度饥饿的现象，框架内通过 `ReentrantLock` 彻底杜绝。
@@ -153,5 +169,121 @@ _Avoid_: Groups, ValidateGroup, CheckGroup
 支持 JSR-303 级联校验的轻量级泛型 List 包装容器，彻底解决 Spring MVC 中 Controller 接收 `@RequestBody @Valid List<DTO>` 时默认忽略列表元素内字段校验的缺陷。
 _Avoid_: ValidatedList, ValidationList, DTOList
 
+**TransactionUtil**:
+基于 Spring 事务同步器（TransactionSynchronization）实现的事务生命周期全局静态门面，支持在数据库物理事务提交后执行同步/异步任务或发布领域事件，在事务回滚后执行补偿清理逻辑；具备类探测与无事务判定机制，无活跃事务或缺依赖时平滑降级就地同步执行，异步调度自动透传四维上下文快照（MDC、User、TenantId、IgnoreTenant）并隔离次生异常。
+_Avoid_: TxUtil, TransactionHelper, TxHelper, TransactionalUtil
+
+**OperateTypeEnum**:
+通用操作审计动作类型枚举，集中收敛涵盖 11 种通用操作动作类型（OTHER、INSERT、UPDATE、DELETE、QUERY、EXPORT、IMPORT、LOGIN、LOGOUT、GRANT、CLEAN），为全反应堆跨层审计流转提供强类型契约与多源安全解析能力。
+_Avoid_: AuditActionEnum, LogTypeEnum, ActionType, OperationType, BusinessType
+
+**OperateLogModel**:
+结构化操作审计日志元数据模型 POJO，承载跨层（Web 切面、事件总线、持久层落库）流转的 18 项全要素审计元数据契约，包含全链路追踪、租户、操作人、模块端点、出入参、状态耗时、扩展字典与时间戳。
+_Avoid_: AuditLog, SysLog, OperationLogVO, AuditRecord, OperationAudit, AccessLog, SystemLog, AuditTrail
+
+
+**DateTimeUtil**:
+纯 JDK 17 原生日期时间互转与跨度计算静态门面，提供 LocalDateTime、LocalDate、Date 与毫秒时间戳多向无损互转，绑定系统时区，支持天首天尾起止与任意 ChronoUnit / Duration / Period 时间跨度计算。
+_Avoid_: DateUtil, TimeUtil, JodaTimeUtil
+
+**RandomUtil**:
+纯 JDK 17 原生高性能无锁安全随机工具类，基于 ThreadLocalRandom 提供定长纯数字验证码、数字字母混合随机串、闭区间随机数与列表安全抽样洗牌。
+_Avoid_: RandomHelper, SecureRandomUtil, MathRandom
+
+**MessageHeaderConstants**:
+收敛跨中间件（RabbitMQ、Kafka、RocketMQ、HTTP）的出入站消息头/用户属性标准键名常量件，统一定义全链路追踪标识（`X-Trace-Id`）、租户标识（`X-Tenant-Id`）、操作人标识（`X-User-Id`）与发送时间戳等核心元数据键名，杜绝各中间件子模块自立门户与命名漂移。
+_Avoid_: MqHeaders, MqConstants, HeaderConsts, MessageHeaders
+
+**MessageContextPropagator**:
+跨进程与异步消息边界的四维上下文传播纯原生工具类，提供出站四维上下文快照抓取与统一注入（Headers/UserProperties）、入站消息上下文自动提取还原以及消费完成后保证确定性安全清理的生命周期防卫。
+_Avoid_: MqContextHelper, MessageTraceUtil, MqTraceFilter, ContextExtractor
+
+**FatalExceptionClassifier**:
+面向全反应堆异步消息消费的不可自愈“毒丸”异常分类与判定器，集中收敛反序列化异常、JSR-303 参数校验异常及显式致命逻辑错误，统一供各消息队列消费端拦截器判定并快速失败转入死信队列或丢弃，杜绝无脑无限重试。
+_Avoid_: MqErrorClassifier, PoisonPillHandler, FatalExceptionChecker, ErrorJudge
+
+**MessageDeliveryException**:
+表征消息出站投递或发送阶段物理中断的受控业务异常，继承自 `BusinessException`，完整封装原始底层驱动异常（cause）与目标 Topic、业务主键及追踪上下文，实现上层调用与底层驱动解耦。
+_Avoid_: MqSendException, MqException, ProducerException, DeliveryException
+
+**ThreadPoolStatus**:
+受管线程池运行时核心度量指标快照不可变 Record，精确表征核心/最大线程数、当前存活数、活跃执行数、排队积压数、剩余队列容量、已完成任务数、是否饱和标记以及虚拟线程自适应参数。
+_Avoid_: PoolMetrics, ThreadPoolInfo, PoolStat
+
+**AsyncUtil**:
+受管异步执行器全景治理与函数式异步任务执行门面，提供多业务线程池动态参数调优（热调整）、运行监控指标提取、全链路上下文安全传播异步执行及任务批量并行协调（allMatches / allOf）。
+_Avoid_: AsyncHelper, ThreadPoolHelper, TaskExecutorUtil
+
+**SnowflakeIdInfo**:
+雪花算法 64 位长整型 ID 逆向反解结构化不可变信息载体 Record，提取包含发号毫秒时间戳、Instant、LocalDateTime、数据中心 ID、工作节点 ID、毫秒内自增序列号与所采用的基准纪元。
+_Avoid_: SnowflakeParsed, SnowflakeMeta, IdParsedInfo
+
+**Base62**:
+纯原生零依赖无锁 Base62 双向短码编解码门面，支持 64 位长整型数值与 10~11 位紧凑 URL 安全短字符串的双向无损互转，内置完整负数与边界值溢出防卫。
+_Avoid_: ShortIdUtil, Base62Codec, NumberCompressor
+
+**SlidingWindowCounter**:
+基于环形时间切片（Ring Slices）与原子累加器实现的进程内高性能单机内存滑动窗口计数器，无需外部中间件即可实现精准平滑限流、防刷与频次统计。
+_Avoid_: WindowLimiter, SlidingCounter, RateLimiterUtil
+
+**StopWatch**:
+纳秒级高精度多分段任务耗时秒表与函数剖析门面，支持分段任务阶梯耗时统计、格式化可视化报告输出与函数闭包执行耗时精准测算。
+_Avoid_: TimeWatcher, CostTimer, ProfilerUtil
+
+**NetUtil**:
+网络与内网通信地址识别通用工具类，提供多物理网卡内网非回环 IPv4 智能探测、本地空闲端口安全校验与远程服务端口连通性探针。
+_Avoid_: NetworkUtil, IpUtil, PortUtil
+
+**ConvertUtil**:
+纯原生强类型安全类型转换门面工具类，提供任意基础类型（Long、Integer、Boolean、BigDecimal、Double）与集合的安全强转，提供保底默认值防御，彻底杜绝 NPE 与 ClassCastException。
+_Avoid_: TypeConverter, ConvertHelper, CastUtil
+
+**ExceptionUtil**:
+异常分析与堆栈序列化通用工具类，提供多层嵌套异常链最深层根本原因（Root Cause）回溯、循环因果检测与带长度截断防御的安全堆栈字符串序列化。
+_Avoid_: ExceptionHelper, ThrowableUtil, StackTraceUtil
+
+**HexUtil**:
+基于 JDK 17 原生 HexFormat 的高性能纯原生十六进制编解码工具类，提供字节数组与 16 进制字符串双向转换，支持大小写指定与奇偶长度校验。
+_Avoid_: HexCodec, HexHelper, ByteHexUtil
+
+**StringUtil**:
+纯原生高性能字符串通用算法门面，提供下划线与驼峰命名互转、文本安全截断、敏感子串包含探测与首尾掩码。
+_Avoid_: StrUtil, StringHelper, StringUtils
+
+**SpelUtil**:
+基于 Spring 表达式引擎与 AST 语法树有界缓存构建的静态门面，提供线程安全、方法入参自适应绑定与防注入安全求值。
+_Avoid_: SpelHelper, ExpressionUtil, SpelParser
+
+**ConcurrentLruCache**:
+纯 JDK 17 原生零依赖的线程安全有界 LRU 缓存容器，杜绝无界内存泄露风险。
+_Avoid_: LruCache, CacheUtil, SimpleLruMap
+
+**ResultCodeUtil**:
+全局状态码号段分配校验与元数据注册门面，规范微服务与各 Starter 的错误码分段契约。
+_Avoid_: ErrorCodeUtil, ResultCodeHelper, StatusCodeManager
+
+**ResultCodeSegment**:
+框架标准业务状态码号段枚举与划分规范，定义系统、鉴权、文件、通信与持久层的号段区间契约。
+_Avoid_: ErrorCodeRange, CodeSegment, StatusRange
+
+**Pipeline**:
+纯 JDK 17 原生无状态强类型管道与责任链编排原语，支持 Fluent 阶段式链式装配、优雅短路与强类型上下文安全流转。
+_Avoid_: ChainExecutor, ResponsibilityChain, HandlerChain
+
+**HmacUtil**:
+纯 JDK 原生安全散列消息认证码（HMAC）工具类，提供 HMAC-SHA256、HMAC-SHA1 密钥加签与恒定时间安全比对防侧信道攻击。
+_Avoid_: HmacHelper, SignUtil, HmacSignature
+
+**ChecksumUtil**:
+纯原生数据传输与硬件报文完整性校验和计算工具类，提供 CRC32、CRC32C 与 Adler32 算法门面。
+_Avoid_: CrcUtil, HashCheckUtil, ChecksumHelper
+
+**TokenBucketLimiter**:
+基于无锁 CAS 与纳秒级时间推进的高性能纯内存平滑令牌桶限流原语，支持突发流量缓冲与单机平滑限速整形。
+_Avoid_: RateLimiter, TokenLimiter, LeakyBucket
+
+**CoreProperties**:
+核心通用底座统一外置化配置属性类，统管雪花发号器、缓存等强类型配置与生产默认值。
+_Avoid_: AtengProperties, BaseProperties, FrameworkProperties
 
 

@@ -1,5 +1,8 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RedissonClient;
@@ -21,6 +24,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * AtengRedisAutoConfiguration 自动装配单元测试
@@ -65,11 +69,22 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean("distributedLockTemplate");
                     assertThat(context).doesNotHaveBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).doesNotHaveBean("delayedQueueFailureHandler");
                     assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
                     assertThat(context).doesNotHaveBean("redisMessagePublisher");
+                    assertThat(context).doesNotHaveBean("channelTopicBootstrap");
                     assertThat(context).doesNotHaveBean("redisRateLimiterClient");
                     assertThat(context).doesNotHaveBean("redisAtomicUtil");
                     assertThat(context).doesNotHaveBean("redisCacheManager");
+                    assertThat(context).doesNotHaveBean("redisCacheTemplate");
+                    assertThat(context).doesNotHaveBean("twoLevelCacheManager");
+                    assertThat(context).doesNotHaveBean("redisScriptExecutor");
+                    assertThat(context).doesNotHaveBean("redisSemaphoreTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentAspect");
+                    assertThat(context).doesNotHaveBean("redisStreamTemplate");
+                    assertThat(context).doesNotHaveBean("streamFailureHandler");
+                    assertThat(context).doesNotHaveBean("streamBootstrap");
                 });
     }
 
@@ -99,6 +114,33 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("当配置 ateng.boot.redis.idempotent.enabled=false 时，不装配防重幂等模板与切面")
+    void shouldNotLoadIdempotentWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.idempotent.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("redisIdempotentTemplate");
+                    assertThat(context).doesNotHaveBean("redisIdempotentAspect");
+                });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.redis.stream.enabled=false 时，不装配 Stream 模板、失败处理器与容器调度器")
+    void shouldNotLoadStreamWhenDisabled() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withPropertyValues("ateng.boot.redis.stream.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasBean("redisTemplate");
+                    assertThat(context).hasBean("redisUtil");
+                    assertThat(context).doesNotHaveBean("redisStreamTemplate");
+                    assertThat(context).doesNotHaveBean("streamFailureHandler");
+                    assertThat(context).doesNotHaveBean("streamBootstrap");
+                });
+    }
+
+    @Test
     @DisplayName("默认启用时装配 Redis 全家桶组件且各序列化器契约正确")
     void shouldAutoConfigureRedisTemplateWithProperSerializers() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
@@ -110,11 +152,23 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("distributedLockTemplate");
                     assertThat(context).hasBean("redisDelayedQueue");
                     assertThat(context).hasBean("delayedQueueBootstrap");
+                    assertThat(context).hasBean("delayedQueueFailureHandler");
                     assertThat(context).hasBean("redisMessageListenerContainer");
                     assertThat(context).hasBean("redisMessagePublisher");
+                    assertThat(context).hasBean("channelTopicBootstrap");
                     assertThat(context).hasBean("redisRateLimiterClient");
                     assertThat(context).hasBean("redisAtomicUtil");
+                    assertThat(context).hasBean("redisBloomFilter");
+                    assertThat(context).hasBean("bloomFilterBootstrap");
                     assertThat(context).hasBean("redisCacheManager");
+                    assertThat(context).hasBean("redisCacheTemplate");
+                    assertThat(context).hasBean("redisScriptExecutor");
+                    assertThat(context).hasBean("redisSemaphoreTemplate");
+                    assertThat(context).hasBean("redisIdempotentTemplate");
+                    assertThat(context).hasBean("redisIdempotentAspect");
+                    assertThat(context).hasBean("redisStreamTemplate");
+                    assertThat(context).hasBean("streamFailureHandler");
+                    assertThat(context).hasBean("streamBootstrap");
 
                     RedisSerializer<?> valueSerializer = context.getBean("redisValueSerializer", RedisSerializer.class);
                     assertThat(valueSerializer).isInstanceOf(Jackson2JsonRedisSerializer.class);
@@ -129,6 +183,31 @@ class AtengRedisAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("支持自定义 DelayedQueueFailureHandler 覆盖默认处理器")
+    void shouldAllowCustomDelayedQueueFailureHandler() {
+        contextRunner.withUserConfiguration(TestMockConfiguration.class, CustomHandlerConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler.class);
+                    assertThat(context.getBean(io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler.class))
+                            .isInstanceOf(CustomHandler.class);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomHandlerConfiguration {
+        @Bean
+        public io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler customFailureHandler() {
+            return new CustomHandler();
+        }
+    }
+
+    static class CustomHandler implements io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler {
+        @Override
+        public void onFailed(io.github.atengk.boot.redis.delay.model.DeadLetterMessage<?> deadLetterMessage, Throwable cause) {
+        }
+    }
+
+    @Test
     @DisplayName("当配置 ateng.boot.redis.delay-queue.enabled=false 时，不装配延时队列门面与生命周期调度器")
     void shouldNotLoadDelayQueueWhenDisabled() {
         contextRunner.withUserConfiguration(TestMockConfiguration.class)
@@ -137,6 +216,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("delayedQueueBootstrap");
+                    assertThat(context).doesNotHaveBean("delayedQueueFailureHandler");
                     assertThat(context).hasBean("redisMessagePublisher");
                 });
     }
@@ -151,6 +231,7 @@ class AtengRedisAutoConfigurationTest {
                     assertThat(context).hasBean("redisDelayedQueue");
                     assertThat(context).doesNotHaveBean("redisMessageListenerContainer");
                     assertThat(context).doesNotHaveBean("redisMessagePublisher");
+                    assertThat(context).doesNotHaveBean("channelTopicBootstrap");
                 });
     }
 
@@ -162,6 +243,7 @@ class AtengRedisAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasBean("redisTemplate");
                     assertThat(context).doesNotHaveBean("redisCacheManager");
+                    assertThat(context).doesNotHaveBean("redisCacheTemplate");
                 });
     }
 
@@ -256,5 +338,50 @@ class AtengRedisAutoConfigurationTest {
 
         assertThat(config.isClusterConfig()).isFalse();
         assertThat(config.isSentinelConfig()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Redisson 生产连接保活、连接池与重试参数映射验证")
+    void shouldMapRedissonProductionHardeningProperties() {
+        AtengRedisAutoConfiguration autoConfiguration = new AtengRedisAutoConfiguration();
+        org.springframework.boot.autoconfigure.data.redis.RedisProperties springProps = new org.springframework.boot.autoconfigure.data.redis.RedisProperties();
+        springProps.setHost("127.0.0.1");
+        springProps.setPort(6379);
+
+        io.github.atengk.boot.redis.properties.RedisProperties atengProps = new io.github.atengk.boot.redis.properties.RedisProperties();
+        atengProps.getRedisson().setPingConnectionInterval(Duration.ofSeconds(45));
+        atengProps.getRedisson().setConnectionPoolSize(32);
+        atengProps.getRedisson().setConnectionMinimumIdleSize(8);
+        atengProps.getRedisson().setRetryAttempts(5);
+        atengProps.getRedisson().setRetryInterval(Duration.ofSeconds(2));
+
+        Config config = autoConfiguration.createRedissonConfigFromSpringProperties(springProps, atengProps);
+
+        assertThat(config.isClusterConfig()).isFalse();
+        assertThat(config.isSentinelConfig()).isFalse();
+        assertThat(config.useSingleServer().getPingConnectionInterval()).isEqualTo(45000);
+        assertThat(config.useSingleServer().getConnectionPoolSize()).isEqualTo(32);
+        assertThat(config.useSingleServer().getConnectionMinimumIdleSize()).isEqualTo(8);
+        assertThat(config.useSingleServer().getRetryAttempts()).isEqualTo(5);
+        assertThat(config.useSingleServer().getRetryInterval()).isEqualTo(2000);
+    }
+
+    @Test
+    @DisplayName("验证自定义 Template Bean 时，静态门面仍能被 SmartInitializingSingleton 正确初始化接管")
+    void shouldInitializeStaticFacadesWhenCustomTemplatesProvided() {
+        RedisSemaphoreTemplate customSemaphore = mock(RedisSemaphoreTemplate.class);
+        DistributedLockTemplate customLock = mock(DistributedLockTemplate.class);
+        RedisIdempotentTemplate customIdempotent = mock(RedisIdempotentTemplate.class);
+
+        contextRunner.withUserConfiguration(TestMockConfiguration.class)
+                .withBean("redisSemaphoreTemplate", RedisSemaphoreTemplate.class, () -> customSemaphore)
+                .withBean("distributedLockTemplate", DistributedLockTemplate.class, () -> customLock)
+                .withBean("redisIdempotentTemplate", RedisIdempotentTemplate.class, () -> customIdempotent)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RedisSemaphoreTemplate.class);
+                    assertThat(context.getBean(RedisSemaphoreTemplate.class)).isSameAs(customSemaphore);
+                    when(customSemaphore.availablePermits("test:quota")).thenReturn(88);
+                    assertThat(io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil.availablePermits("test:quota")).isEqualTo(88);
+                });
     }
 }

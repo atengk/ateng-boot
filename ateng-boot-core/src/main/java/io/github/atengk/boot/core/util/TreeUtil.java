@@ -186,4 +186,140 @@ public final class TreeUtil {
         }
         return null;
     }
+
+    /**
+     * 将树形/森林嵌套结构反向展平为扁平列表（深度优先先序遍历）
+     *
+     * @param roots          根节点集合
+     * @param childrenGetter 子节点提取函数
+     * @param <T>            节点实体类型
+     * @return 扁平化后的节点列表；入参为空时返回空列表（空安全）
+     */
+    public static <T> List<T> flatten(List<T> roots, Function<T, List<T>> childrenGetter) {
+        if (roots == null || roots.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Objects.requireNonNull(childrenGetter, "childrenGetter 提取函数不能为空");
+        List<T> result = new ArrayList<>();
+        for (T root : roots) {
+            flattenRecursive(root, childrenGetter, result);
+        }
+        return result;
+    }
+
+    /**
+     * 将树形/森林结构按先序遍历（Pre-order DFS）深度展平为一维扁平列表（契约别名方法，等同于 {@link #flatten(List, Function)}）
+     *
+     * @param roots          根节点列表
+     * @param childrenGetter 子节点集合提取函数
+     * @param <T>            节点实体类型
+     * @return 扁平化后的节点列表；入参为空时返回空列表（空安全）
+     */
+    public static <T> List<T> flattenTree(List<T> roots, Function<T, List<T>> childrenGetter) {
+        return flatten(roots, childrenGetter);
+    }
+
+    private static <T> void flattenRecursive(T node, Function<T, List<T>> childrenGetter, List<T> result) {
+        if (node == null) {
+            return;
+        }
+        result.add(node);
+        List<T> children = childrenGetter.apply(node);
+        if (children != null && !children.isEmpty()) {
+            for (T child : children) {
+                flattenRecursive(child, childrenGetter, result);
+            }
+        }
+    }
+
+    /**
+     * 在树形/森林结构中寻找满足断言的首个目标节点，并返回从根节点到该目标的完整链路路径（面包屑导航）
+     *
+     * @param roots          根节点集合
+     * @param predicate      目标节点匹配谓词
+     * @param childrenGetter 子节点提取函数
+     * @param <T>            节点实体类型
+     * @return 从根节点到目标节点的路径列表（包含根节点与目标节点自身）；未找到时返回空列表（空安全）
+     */
+    public static <T> List<T> findPath(
+            List<T> roots,
+            java.util.function.Predicate<T> predicate,
+            Function<T, List<T>> childrenGetter
+    ) {
+        if (roots == null || roots.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Objects.requireNonNull(predicate, "predicate 判定断言不能为空");
+        Objects.requireNonNull(childrenGetter, "childrenGetter 提取函数不能为空");
+        for (T root : roots) {
+            List<T> path = new ArrayList<>();
+            if (findPathRecursive(root, predicate, childrenGetter, path)) {
+                return path;
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    private static <T> boolean findPathRecursive(
+            T current,
+            java.util.function.Predicate<T> predicate,
+            Function<T, List<T>> childrenGetter,
+            List<T> path
+    ) {
+        if (current == null) {
+            return false;
+        }
+        path.add(current);
+        if (predicate.test(current)) {
+            return true;
+        }
+        List<T> children = childrenGetter.apply(current);
+        if (children != null && !children.isEmpty()) {
+            for (T child : children) {
+                if (findPathRecursive(child, predicate, childrenGetter, path)) {
+                    return true;
+                }
+            }
+        }
+        path.remove(path.size() - 1);
+        return false;
+    }
+
+    /**
+     * 提取树形/森林结构中的所有叶子节点（即无子节点或子节点列表为空的终端节点）
+     *
+     * @param roots          根节点集合
+     * @param childrenGetter 子节点提取函数
+     * @param <T>            节点实体类型
+     * @return 叶子节点集合；入参为空时返回空列表（空安全）
+     */
+    public static <T> List<T> getLeafNodes(List<T> roots, Function<T, List<T>> childrenGetter) {
+        if (roots == null || roots.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Objects.requireNonNull(childrenGetter, "childrenGetter 提取函数不能为空");
+        List<T> leaves = new ArrayList<>();
+        for (T root : roots) {
+            getLeafNodesRecursive(root, childrenGetter, leaves);
+        }
+        return leaves;
+    }
+
+    private static <T> void getLeafNodesRecursive(
+            T node,
+            Function<T, List<T>> childrenGetter,
+            List<T> leaves
+    ) {
+        if (node == null) {
+            return;
+        }
+        List<T> children = childrenGetter.apply(node);
+        if (children == null || children.isEmpty()) {
+            leaves.add(node);
+        } else {
+            for (T child : children) {
+                getLeafNodesRecursive(child, childrenGetter, leaves);
+            }
+        }
+    }
 }

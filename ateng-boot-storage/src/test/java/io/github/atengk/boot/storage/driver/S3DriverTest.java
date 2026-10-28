@@ -1,0 +1,871 @@
+package io.github.atengk.boot.storage.driver;
+
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
+import io.github.atengk.boot.storage.model.PresignedUrl;
+import io.github.atengk.boot.storage.model.StorageObject;
+import io.github.atengk.boot.storage.properties.S3StorageProperties;
+import io.github.atengk.boot.storage.util.S3ChunkTokenUtil;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.AbortableInputStream;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.AbortMultipartUploadResponse;
+import software.amazon.awssdk.services.s3.model.CommonPrefix;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
+import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest;
+import software.amazon.awssdk.services.s3.model.ListMultipartUploadsResponse;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.ListPartsRequest;
+import software.amazon.awssdk.services.s3.model.ListPartsResponse;
+import software.amazon.awssdk.services.s3.model.MultipartUpload;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.Part;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.model.UploadPartRequest;
+import software.amazon.awssdk.services.s3.model.UploadPartResponse;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedUploadPartRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * S3Driver 单元测试
+ * 基于 Mockito 对 S3Client 与 S3Presigner 进行方法级打桩，纯内存极速验证
+ *
+ * @author Ateng
+ * @since 2026-10-17
+ */
+@ExtendWith(MockitoExtension.class)
+@DisplayName("S3Driver 对象存储驱动测试")
+class S3DriverTest {
+
+    @Mock
+    private S3Client s3Client;
+
+    @Mock
+    private S3Presigner s3Presigner;
+
+    @Mock
+    private PresignedGetObjectRequest presignedGetObjectRequest;
+
+    @Mock
+    private PresignedPutObjectRequest presignedPutObjectRequest;
+
+    @Mock
+    private PresignedUploadPartRequest presignedUploadPartRequest;
+
+    private S3Driver s3Driver;
+    private static final String TEST_BUCKET = "test-bucket";
+    private static final String TEST_DOMAIN = "https://cdn.example.com";
+    private static final String TEST_SECRET_KEY = "test-s3-cluster-secret-key-123456";
+
+    @BeforeEach
+    void setUp() {
+        s3Driver = new S3Driver(s3Client, s3Presigner, TEST_BUCKET, TEST_DOMAIN, TEST_SECRET_KEY);
+    }
+
+    @Test
+    @DisplayName("上传对象并校验 S3 参数及 ETag 引号剥离")
+    void testUpload() {
+        byte[] content = "Hello S3 Storage".getBytes(StandardCharsets.UTF_8);
+        String path = "photos/2026/avatar.png";
+
+        PutObjectResponse putResponse = PutObjectResponse.builder()
+                .eTag("\"c8e8d2e8e2b8f8a1\"")
+                .build();
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenReturn(putResponse);
+
+        StorageObject result = s3Driver.upload(path, new ByteArrayInputStream(content), "image/png", content.length);
+
+        assertNotNull(result);
+        assertEquals("photos/2026/avatar.png", result.getPath());
+        assertEquals("avatar.png", result.getFilename());
+        assertEquals(content.length, result.getSize());
+        assertEquals("image/png", result.getContentType());
+        assertEquals("c8e8d2e8e2b8f8a1", result.getEtag());
+        assertNotNull(result.getLastModified());
+
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(RequestBody.class));
+        PutObjectRequest capturedRequest = captor.getValue();
+        assertEquals(TEST_BUCKET, capturedRequest.bucket());
+        assertEquals("photos/2026/avatar.png", capturedRequest.key());
+        assertEquals("image/png", capturedRequest.contentType());
+    }
+
+    @Test
+    @DisplayName("流式下载 S3 存储对象成功")
+    void testDownload() throws Exception {
+        byte[] content = "Downloaded content from S3".getBytes(StandardCharsets.UTF_8);
+        String path = "files/doc.txt";
+
+        GetObjectResponse getResponse = GetObjectResponse.builder()
+                .contentLength((long) content.length)
+                .contentType("text/plain")
+                .build();
+        ResponseInputStream<GetObjectResponse> responseStream = new ResponseInputStream<>(
+                getResponse,
+                AbortableInputStream.create(new ByteArrayInputStream(content))
+        );
+        when(s3Client.getObject(any(GetObjectRequest.class))).thenReturn(responseStream);
+
+        try (InputStream in = s3Driver.download(path)) {
+            byte[] downloaded = in.readAllBytes();
+            assertArrayEquals(content, downloaded);
+        }
+
+        ArgumentCaptor<GetObjectRequest> captor = ArgumentCaptor.forClass(GetObjectRequest.class);
+        verify(s3Client).getObject(captor.capture());
+        assertEquals(TEST_BUCKET, captor.getValue().bucket());
+        assertEquals("files/doc.txt", captor.getValue().key());
+    }
+
+    @Test
+    @DisplayName("获取 S3 存储对象元数据成功")
+    void testGetMetadata() {
+        String path = "files/report.pdf";
+        Instant now = Instant.now();
+
+        HeadObjectResponse headResponse = HeadObjectResponse.builder()
+                .contentLength(1024L)
+                .contentType("application/pdf")
+                .eTag("\"etag12345\"")
+                .lastModified(now)
+                .build();
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(headResponse);
+
+        StorageObject meta = s3Driver.getMetadata(path);
+
+        assertNotNull(meta);
+        assertEquals("files/report.pdf", meta.getPath());
+        assertEquals("report.pdf", meta.getFilename());
+        assertEquals(1024L, meta.getSize());
+        assertEquals("application/pdf", meta.getContentType());
+        assertEquals("etag12345", meta.getEtag());
+        assertEquals(now, meta.getLastModified());
+    }
+
+    @Test
+    @DisplayName("检查 S3 对象是否存在：存在返回 true，NoSuchKey 或 404 返回 false")
+    void testExists() {
+        when(s3Client.headObject(any(HeadObjectRequest.class)))
+                .thenReturn(HeadObjectResponse.builder().build())
+                .thenThrow(NoSuchKeyException.builder().message("Key not found").build())
+                .thenThrow(S3Exception.builder().statusCode(404).message("Not found").build());
+
+        // 第一次存在
+        assertTrue(s3Driver.exists("exist.txt"));
+        // 第二次 NoSuchKeyException
+        assertFalse(s3Driver.exists("not-exist.txt"));
+        // 第三次 404 S3Exception
+        assertFalse(s3Driver.exists("not-exist-404.txt"));
+    }
+
+    @Test
+    @DisplayName("S3 删除操作天然幂等：正常删除与 404 均返回 true")
+    void testDelete() {
+        // 第一次正常删除
+        assertTrue(s3Driver.delete("delete-1.txt"));
+
+        // 第二次模拟 S3 返回 404
+        when(s3Client.deleteObject(any(DeleteObjectRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(404).message("Not found").build());
+        assertTrue(s3Driver.delete("delete-404.txt"));
+
+        // 验证空路径返回 true
+        assertTrue(s3Driver.delete(""));
+        assertTrue(s3Driver.delete(null));
+    }
+
+    @Test
+    @DisplayName("批量删除 S3 对象天然幂等")
+    void testDeleteBatch() {
+        assertTrue(s3Driver.deleteBatch(List.of("batch/1.txt", "batch/2.txt")));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+
+        // 空列表直接返回 true
+        assertTrue(s3Driver.deleteBatch(List.of()));
+        assertTrue(s3Driver.deleteBatch(null));
+    }
+
+    @Test
+    @DisplayName("生成 S3 预签名下载外链并应用 CDN 自定义域名")
+    void testGetPresignedUrl() throws Exception {
+        String path = "media/video.mp4";
+        URL rawUrl = new URL("https://s3.us-east-1.amazonaws.com/test-bucket/media/video.mp4?X-Amz-Signature=sig123");
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(15));
+
+        when(presignedGetObjectRequest.url()).thenReturn(rawUrl);
+        when(presignedGetObjectRequest.expiration()).thenReturn(expiration);
+        when(s3Presigner.presignGetObject(any(GetObjectPresignRequest.class))).thenReturn(presignedGetObjectRequest);
+
+        PresignedUrl presigned = s3Driver.getPresignedUrl(path, Duration.ofMinutes(15));
+
+        assertNotNull(presigned);
+        assertEquals("GET", presigned.getHttpMethod());
+        assertEquals(expiration, presigned.getExpiration());
+        assertEquals("https://cdn.example.com/test-bucket/media/video.mp4?X-Amz-Signature=sig123", presigned.getUrl());
+    }
+
+    @Test
+    @DisplayName("生成 S3 预签名直传外链并指定 PUT 请求方法")
+    void testGetPresignedUploadUrl() throws Exception {
+        String path = "uploads/raw-data.bin";
+        URL rawUrl = new URL("https://s3.us-east-1.amazonaws.com/test-bucket/uploads/raw-data.bin?X-Amz-Signature=sig456");
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(30));
+
+        when(presignedPutObjectRequest.url()).thenReturn(rawUrl);
+        when(presignedPutObjectRequest.expiration()).thenReturn(expiration);
+        when(s3Presigner.presignPutObject(any(PutObjectPresignRequest.class))).thenReturn(presignedPutObjectRequest);
+
+        PresignedUrl presigned = s3Driver.getPresignedUploadUrl(path, Duration.ofMinutes(30));
+
+        assertNotNull(presigned);
+        assertEquals("PUT", presigned.getHttpMethod());
+        assertEquals(expiration, presigned.getExpiration());
+        assertEquals("https://cdn.example.com/test-bucket/uploads/raw-data.bin?X-Amz-Signature=sig456", presigned.getUrl());
+    }
+
+    @Test
+    @DisplayName("通过 PresignedUploadRequest 生成 S3 预签名直传外链，包含 Content-Type 与自定义报头")
+    void testGetPresignedUploadUrlWithRequest() throws Exception {
+        String path = "uploads/report.pdf";
+        URL rawUrl = new URL("https://s3.us-east-1.amazonaws.com/test-bucket/uploads/report.pdf?X-Amz-Signature=sig789");
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(20));
+
+        when(presignedPutObjectRequest.url()).thenReturn(rawUrl);
+        when(presignedPutObjectRequest.expiration()).thenReturn(expiration);
+        when(s3Presigner.presignPutObject(any(PutObjectPresignRequest.class))).thenReturn(presignedPutObjectRequest);
+
+        io.github.atengk.boot.storage.model.PresignedUploadRequest request = io.github.atengk.boot.storage.model.PresignedUploadRequest.builder()
+                .path(path)
+                .duration(Duration.ofMinutes(20))
+                .contentType("application/pdf")
+                .maxSizeBytes(10485760)
+                .headers(java.util.Map.of("x-custom-tag", "finance-2026"))
+                .build();
+
+        PresignedUrl presigned = s3Driver.getPresignedUploadUrl(request);
+
+        assertNotNull(presigned);
+        assertEquals("PUT", presigned.getHttpMethod());
+        assertEquals("application/pdf", presigned.getHeaders().get("Content-Type"));
+        assertEquals("finance-2026", presigned.getHeaders().get("x-custom-tag"));
+        assertEquals("https://cdn.example.com/test-bucket/uploads/report.pdf?X-Amz-Signature=sig789", presigned.getUrl());
+
+        ArgumentCaptor<PutObjectPresignRequest> presignCaptor = ArgumentCaptor.forClass(PutObjectPresignRequest.class);
+        verify(s3Presigner).presignPutObject(presignCaptor.capture());
+        assertNull(presignCaptor.getValue().putObjectRequest().contentLength(), "S3 PUT 预签名外链不得强行固化 Content-Length");
+    }
+
+    @Test
+    @DisplayName("S3 异常精准转译测试：404/NoSuchKey 转为 OBJECT_NOT_FOUND，403 与其他错误转为 OPERATION_FAILED")
+    void testExceptionTranslation() {
+        // NoSuchKeyException
+        when(s3Client.getObject(any(GetObjectRequest.class)))
+                .thenThrow(NoSuchKeyException.builder().message("The specified key does not exist.").build());
+        StorageException ex1 = assertThrows(StorageException.class, () -> s3Driver.download("missing.txt"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex1.getCode());
+
+        // 403 AccessDenied
+        AwsErrorDetails accessDeniedDetails = AwsErrorDetails.builder()
+                .errorCode("AccessDenied")
+                .errorMessage("Access Denied")
+                .build();
+        S3Exception accessDeniedEx = (S3Exception) S3Exception.builder()
+                .statusCode(403)
+                .awsErrorDetails(accessDeniedDetails)
+                .message("Access Denied")
+                .build();
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenThrow(accessDeniedEx);
+
+        StorageException ex2 = assertThrows(StorageException.class, () -> s3Driver.getMetadata("forbidden.txt"));
+        assertEquals(StorageResultCode.OPERATION_FAILED.getCode(), ex2.getCode());
+        assertTrue(ex2.getMessage().contains("403"));
+    }
+
+    @Test
+    @DisplayName("S3Driver 构建工具方法自验")
+    void testFactoryMethods() {
+        S3StorageProperties properties = new S3StorageProperties();
+        properties.setEndpoint("http://localhost:9000");
+        properties.setBucket("demo-bucket");
+        properties.setAccessKey("minioadmin");
+        properties.setSecretKey("minioadmin");
+        properties.setRegion("us-east-1");
+        properties.setPathStyle(true);
+
+        S3Client client = S3Driver.createS3Client(properties);
+        assertNotNull(client);
+
+        S3Presigner presigner = S3Driver.createS3Presigner(properties);
+        assertNotNull(presigner);
+    }
+
+    @Test
+    @DisplayName("S3 复制对象成功")
+    void testCopy() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class))).thenReturn(CopyObjectResponse.builder().build());
+
+        boolean result = s3Driver.copy("docs/2026/report.pdf", "archive/2026/report.pdf");
+        assertTrue(result);
+
+        ArgumentCaptor<CopyObjectRequest> captor = ArgumentCaptor.forClass(CopyObjectRequest.class);
+        verify(s3Client).copyObject(captor.capture());
+        CopyObjectRequest req = captor.getValue();
+        assertEquals(TEST_BUCKET, req.sourceBucket());
+        assertEquals("docs/2026/report.pdf", req.sourceKey());
+        assertEquals(TEST_BUCKET, req.destinationBucket());
+        assertEquals("archive/2026/report.pdf", req.destinationKey());
+    }
+
+    @Test
+    @DisplayName("S3 复制不存在的对象时转译为 OBJECT_NOT_FOUND 异常")
+    void testCopyNotFound() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class)))
+                .thenThrow(NoSuchKeyException.builder().message("NoSuchKey").build());
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.copy("missing.txt", "target.txt"));
+        assertEquals(StorageResultCode.OBJECT_NOT_FOUND.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("S3 移动对象成功（复制并删除源对象）")
+    void testMove() {
+        when(s3Client.copyObject(any(CopyObjectRequest.class))).thenReturn(CopyObjectResponse.builder().build());
+
+        boolean result = s3Driver.move("docs/2026/report.pdf", "archive/2026/report.pdf");
+        assertTrue(result);
+
+        verify(s3Client).copyObject(any(CopyObjectRequest.class));
+        verify(s3Client).deleteObject(any(DeleteObjectRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 平铺列举对象（含虚拟子目录与普通对象）")
+    void testListObjectsFlat() {
+        S3Object s3Obj = S3Object.builder()
+                .key("photos/avatar.png")
+                .size(1024L)
+                .eTag("\"etag123\"")
+                .lastModified(Instant.now())
+                .build();
+        CommonPrefix commonPrefix = CommonPrefix.builder()
+                .prefix("photos/vacation/")
+                .build();
+
+        ListObjectsV2Response response = ListObjectsV2Response.builder()
+                .contents(List.of(s3Obj))
+                .commonPrefixes(List.of(commonPrefix))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(response);
+
+        List<StorageObject> items = s3Driver.list("photos", false);
+        assertNotNull(items);
+        assertEquals(2, items.size());
+
+        StorageObject dirItem = items.stream().filter(StorageObject::isDirectory).findFirst().orElse(null);
+        assertNotNull(dirItem);
+        assertEquals("photos/vacation", dirItem.getPath());
+        assertEquals("vacation", dirItem.getFilename());
+
+        StorageObject fileItem = items.stream().filter(i -> !i.isDirectory()).findFirst().orElse(null);
+        assertNotNull(fileItem);
+        assertEquals("photos/avatar.png", fileItem.getPath());
+        assertEquals("avatar.png", fileItem.getFilename());
+        assertEquals(1024L, fileItem.getSize());
+        assertEquals("etag123", fileItem.getEtag());
+    }
+
+    @Test
+    @DisplayName("S3 递归列举对象（全量文件平铺返回并过滤隐藏目录与系统文件）")
+    void testListObjectsRecursive() {
+        S3Object obj1 = S3Object.builder().key("data/2026/1.txt").size(10L).eTag("\"e1\"").lastModified(Instant.now()).build();
+        S3Object obj2 = S3Object.builder().key("data/2026/sub/2.txt").size(20L).eTag("\"e2\"").lastModified(Instant.now()).build();
+        S3Object obj3 = S3Object.builder().key("data/2026/.chunks/part1").size(30L).eTag("\"e3\"").lastModified(Instant.now()).build();
+        S3Object obj4 = S3Object.builder().key("data/2026/desktop.ini").size(40L).eTag("\"e4\"").lastModified(Instant.now()).build();
+
+        ListObjectsV2Response response = ListObjectsV2Response.builder()
+                .contents(List.of(obj1, obj2, obj3, obj4))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(response);
+
+        List<StorageObject> items = s3Driver.list("data", true);
+        assertNotNull(items);
+        assertEquals(2, items.size());
+
+        List<String> paths = items.stream().map(StorageObject::getPath).toList();
+        assertTrue(paths.contains("data/2026/1.txt"));
+        assertTrue(paths.contains("data/2026/sub/2.txt"));
+        assertFalse(paths.contains("data/2026/.chunks/part1"));
+        assertFalse(paths.contains("data/2026/desktop.ini"));
+    }
+
+    @Test
+    @DisplayName("S3 分片上传初始化、分片写入与合并成功（无状态 Token 与动态 listParts 自洽组装）")
+    void testS3ChunkedUploadFlow() {
+        String rawUploadId = "s3-upload-xyz";
+        String targetPath = "large/archive.zip";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        when(s3Client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("\"etag1\"").build())
+                .thenReturn(UploadPartResponse.builder().eTag("\"etag2\"").build());
+
+        Part part1 = Part.builder().partNumber(1).eTag("\"etag1\"").build();
+        Part part2 = Part.builder().partNumber(2).eTag("\"etag2\"").build();
+        when(s3Client.listParts(any(ListPartsRequest.class)))
+                .thenReturn(ListPartsResponse.builder().parts(List.of(part1, part2)).isTruncated(false).build());
+
+        when(s3Client.completeMultipartUpload(any(CompleteMultipartUploadRequest.class)))
+                .thenReturn(CompleteMultipartUploadResponse.builder().key(targetPath).eTag("\"mergedEtag\"").build());
+
+        when(s3Client.headObject(any(HeadObjectRequest.class)))
+                .thenReturn(HeadObjectResponse.builder()
+                        .contentLength(2048L)
+                        .contentType("application/zip")
+                        .eTag("\"mergedEtag\"")
+                        .lastModified(Instant.now())
+                        .build());
+
+        // 1. 初始化生成无状态 Token
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+        assertNotNull(token);
+        assertTrue(!token.isBlank());
+        // 确保不是裸 rawUploadId
+        assertTrue(!rawUploadId.equals(token));
+
+        // 2. 上传 2 个分片
+        byte[] p1 = "Part 1 Data".getBytes(StandardCharsets.UTF_8);
+        byte[] p2 = "Part 2 Data".getBytes(StandardCharsets.UTF_8);
+        s3Driver.uploadChunk(token, 1, new ByteArrayInputStream(p1), p1.length);
+        s3Driver.uploadChunk(token, 2, new ByteArrayInputStream(p2), p2.length);
+
+        // 3. 完成合并
+        StorageObject result = s3Driver.completeChunkedUpload(token, targetPath, 2);
+        assertNotNull(result);
+        assertEquals(targetPath, result.getPath());
+        assertEquals(2048L, result.getSize());
+        assertEquals("mergedEtag", result.getEtag());
+    }
+
+    @Test
+    @DisplayName("S3 集群多节点无会话模拟测试：节点 A 签发 Token，全新节点 B 上传分片并合并")
+    void testS3StatelessClusterAcrossNodes() {
+        String rawUploadId = "s3-cluster-upload-456";
+        String targetPath = "cluster/dataset.parquet";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        when(s3Client.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("\"etagA\"").build());
+
+        Part part1 = Part.builder().partNumber(1).eTag("\"etagA\"").build();
+        when(s3Client.listParts(any(ListPartsRequest.class)))
+                .thenReturn(ListPartsResponse.builder().parts(List.of(part1)).isTruncated(false).build());
+
+        when(s3Client.completeMultipartUpload(any(CompleteMultipartUploadRequest.class)))
+                .thenReturn(CompleteMultipartUploadResponse.builder().key(targetPath).eTag("\"etagFinal\"").build());
+
+        when(s3Client.headObject(any(HeadObjectRequest.class)))
+                .thenReturn(HeadObjectResponse.builder()
+                        .contentLength(1024L)
+                        .contentType("application/octet-stream")
+                        .eTag("\"etagFinal\"")
+                        .lastModified(Instant.now())
+                        .build());
+
+        // 1. 节点 A 初始化会话获得 Token
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+
+        // 2. 模拟另一个独立节点 B（全新实例，零本地 Session 内存）
+        S3Driver nodeB = new S3Driver(s3Client, s3Presigner, TEST_BUCKET, TEST_DOMAIN, TEST_SECRET_KEY);
+
+        // 3. 节点 B 执行分片上传与合并，验证多 Pod 漂移免疫
+        byte[] p1 = "Dataset Chunk".getBytes(StandardCharsets.UTF_8);
+        nodeB.uploadChunk(token, 1, new ByteArrayInputStream(p1), p1.length);
+        StorageObject result = nodeB.completeChunkedUpload(token, targetPath, 1);
+
+        assertNotNull(result);
+        assertEquals(targetPath, result.getPath());
+        assertEquals(1024L, result.getSize());
+    }
+
+    @Test
+    @DisplayName("S3 篡改 Token 时上传与合并均抛出 PRESIGNED_URL_INVALID 异常")
+    void testS3ChunkedUploadTamperedToken() {
+        String rawUploadId = "s3-upload-secure";
+        String targetPath = "secure/document.pdf";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+        String tamperedToken = token + "corrupted";
+
+        assertThrows(StorageException.class, () ->
+                s3Driver.uploadChunk(tamperedToken, 1, new ByteArrayInputStream("data".getBytes()), 4));
+
+        assertThrows(StorageException.class, () ->
+                s3Driver.completeChunkedUpload(tamperedToken, targetPath, 1));
+    }
+
+    @Test
+    @DisplayName("S3 分片合并时检测到缺失分片抛出 STORAGE_CHUNK_MISSING")
+    void testS3ChunkedUploadMissingChunk() {
+        String rawUploadId = "s3-upload-missing";
+        String targetPath = "videos/clip.mp4";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        Part part1 = Part.builder().partNumber(1).eTag("\"etag1\"").build();
+        // 云端 listParts 只有分片 1，缺失分片 2
+        when(s3Client.listParts(any(ListPartsRequest.class)))
+                .thenReturn(ListPartsResponse.builder().parts(List.of(part1)).isTruncated(false).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+
+        // 预期总片数 2 片，云端只就绪了第 1 片
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.completeChunkedUpload(token, targetPath, 2));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_MISSING, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("缺失第 2 个分片"));
+    }
+
+    @Test
+    @DisplayName("S3 生成预签名分片直传外链成功")
+    void testS3GetPresignedUploadPartUrlSuccess() throws Exception {
+        String rawUploadId = "s3-raw-part-presign-id";
+        String targetPath = "media/podcast.mp3";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+
+        URL mockUrl = new URL("https://s3.amazonaws.com/" + TEST_BUCKET + "/" + targetPath + "?uploadId=" + rawUploadId + "&partNumber=1");
+        Instant expiration = Instant.now().plus(Duration.ofMinutes(15));
+        when(presignedUploadPartRequest.url()).thenReturn(mockUrl);
+        when(presignedUploadPartRequest.expiration()).thenReturn(expiration);
+        when(s3Presigner.presignUploadPart(any(UploadPartPresignRequest.class))).thenReturn(presignedUploadPartRequest);
+
+        PresignedUrl presignedUrl = s3Driver.getPresignedUploadPartUrl(targetPath, token, 1, Duration.ofMinutes(15));
+
+        assertNotNull(presignedUrl);
+        assertEquals("PUT", presignedUrl.getHttpMethod());
+        assertEquals(expiration, presignedUrl.getExpiration());
+        assertTrue(presignedUrl.getUrl().startsWith(TEST_DOMAIN));
+        assertTrue(presignedUrl.getUrl().contains("uploadId=" + rawUploadId));
+    }
+
+    @Test
+    @DisplayName("S3 生成分片直传外链时路径不匹配拦截抛出 INVALID_PATH")
+    void testS3GetPresignedUploadPartUrlPathMismatch() {
+        String rawUploadId = "s3-raw-mismatch-id";
+        String targetPath = "media/podcast.mp3";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.getPresignedUploadPartUrl("different/path.mp3", token, 1, Duration.ofMinutes(15)));
+        assertEquals(StorageResultCode.INVALID_PATH, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("分片直传路径与上传会话绑定的路径不一致"));
+    }
+
+    @Test
+    @DisplayName("S3 生成分片直传外链时分片索引非法拦截")
+    void testS3GetPresignedUploadPartUrlInvalidChunkIndex() {
+        String rawUploadId = "s3-raw-invalid-idx";
+        String targetPath = "media/podcast.mp3";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.getPresignedUploadPartUrl(targetPath, token, 0, Duration.ofMinutes(15)));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_INVALID, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传调用 abortMultipartUpload")
+    void testS3AbortChunkedUpload() {
+        String rawUploadId = "s3-upload-abort";
+        String targetPath = "temp/junk.dat";
+
+        when(s3Client.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId(rawUploadId).build());
+
+        String token = s3Driver.initiateChunkedUpload(targetPath);
+        s3Driver.abortChunkedUpload(token);
+
+        ArgumentCaptor<AbortMultipartUploadRequest> captor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        verify(s3Client).abortMultipartUpload(captor.capture());
+        assertEquals(TEST_BUCKET, captor.getValue().bucket());
+        assertEquals(targetPath, captor.getValue().key());
+        assertEquals(rawUploadId, captor.getValue().uploadId());
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传在缺失本地会话时通过 ListMultipartUploads 自动 fallback 清理")
+    void testS3AbortChunkedUploadWithoutLocalSession_Fallback() {
+        String uploadId = "remote-upload-fallback-123";
+        String remoteKey = "backups/database.dump";
+
+        MultipartUpload upload = MultipartUpload.builder()
+                .uploadId(uploadId)
+                .key(remoteKey)
+                .build();
+        ListMultipartUploadsResponse resp = ListMultipartUploadsResponse.builder()
+                .uploads(List.of(upload))
+                .build();
+
+        when(s3Client.listMultipartUploads(any(ListMultipartUploadsRequest.class))).thenReturn(resp);
+
+        // 直接中止无本地会话的 uploadId
+        s3Driver.abortChunkedUpload(uploadId);
+
+        ArgumentCaptor<AbortMultipartUploadRequest> captor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        verify(s3Client).abortMultipartUpload(captor.capture());
+        assertEquals(TEST_BUCKET, captor.getValue().bucket());
+        assertEquals(remoteKey, captor.getValue().key());
+        assertEquals(uploadId, captor.getValue().uploadId());
+    }
+
+    @Test
+    @DisplayName("S3 完成分片合并时 targetPath 与 Token 内绑定路径不匹配拦截抛出 STORAGE_CHUNK_INVALID")
+    void testS3CompleteChunkedUploadTargetPathMismatch() {
+        String rawUploadId = "s3-raw-mismatch-token";
+        String tokenKey = "media/podcast.mp3";
+        String token = S3ChunkTokenUtil.encode(tokenKey, rawUploadId, TEST_SECRET_KEY);
+
+        StorageException ex = assertThrows(StorageException.class, () ->
+                s3Driver.completeChunkedUpload(token, "different/target.mp3", 3));
+        assertEquals(StorageResultCode.STORAGE_CHUNK_INVALID, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("分片上传目标路径不匹配"));
+    }
+
+    @Test
+    @DisplayName("S3 中止分片上传在底层 SDK 抛出异常时精准转译为 StorageException 且保留原始因果链")
+    void testS3AbortChunkedUploadThrowsStorageExceptionOnFailure() {
+        String rawUploadId = "s3-raw-fail-abort";
+        String tokenKey = "temp/faulty.bin";
+        String token = S3ChunkTokenUtil.encode(tokenKey, rawUploadId, TEST_SECRET_KEY);
+
+        when(s3Client.abortMultipartUpload(any(AbortMultipartUploadRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(500).message("Internal S3 Error").build());
+
+        StorageException ex = assertThrows(StorageException.class, () -> s3Driver.abortChunkedUpload(token));
+        assertEquals(StorageResultCode.OPERATION_FAILED, ex.getResultCode());
+        assertNotNull(ex.getCause());
+        assertTrue(ex.getCause() instanceof S3Exception);
+    }
+
+    @Test
+    @DisplayName("S3 按前缀流式批量删除对象成功")
+    void testS3DeletePrefixSuccess() {
+        S3Object obj1 = S3Object.builder().key("temp/logs/app.log").build();
+        S3Object obj2 = S3Object.builder().key("temp/logs/error.log").build();
+
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj1, obj2))
+                .isTruncated(false)
+                .build();
+        software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable mockPaginator =
+                org.mockito.Mockito.mock(software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable.class);
+        when(mockPaginator.iterator()).thenReturn(List.of(listResp).iterator());
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(mockPaginator);
+
+        assertTrue(s3Driver.deletePrefix("temp/logs"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 删除目录及其子对象成功")
+    void testS3DeleteDirectorySuccess() {
+        S3Object obj = S3Object.builder().key("archive/2026/data.csv").build();
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj))
+                .isTruncated(false)
+                .build();
+        software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable mockPaginator =
+                org.mockito.Mockito.mock(software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable.class);
+        when(mockPaginator.iterator()).thenReturn(List.of(listResp).iterator());
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(mockPaginator);
+
+        assertTrue(s3Driver.deleteDirectory("archive/2026"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 批量删除在 Paginator 为空时平滑降级普通分页")
+    void testS3DeletePrefixFallbackSuccess() {
+        S3Object obj = S3Object.builder().key("temp/fallback/file.txt").build();
+        ListObjectsV2Response listResp = ListObjectsV2Response.builder()
+                .contents(List.of(obj))
+                .isTruncated(false)
+                .build();
+        when(s3Client.listObjectsV2Paginator(any(ListObjectsV2Request.class))).thenReturn(null);
+        when(s3Client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(listResp);
+
+        assertTrue(s3Driver.deletePrefix("temp/fallback"));
+        verify(s3Client).deleteObjects(any(DeleteObjectsRequest.class));
+    }
+
+    @Test
+    @DisplayName("S3 批量删除防误删熔断保护：根路径、通配符等立即阻断")
+    void testS3DeletePrefixMeltDownProtection() {
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix(null));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix(""));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("/"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("///"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("*"));
+        assertThrows(StorageException.class, () -> s3Driver.deletePrefix("logs/*"));
+        assertThrows(StorageException.class, () -> s3Driver.deleteDirectory("/"));
+    }
+
+    @Test
+    @DisplayName("S3 扫描并清理超时未完成的分片上传会话，保留活跃会话")
+    void testS3CleanExpiredChunkSessions() {
+        Instant twoDaysAgo = Instant.now().minus(Duration.ofHours(48));
+        Instant oneHourAgo = Instant.now().minus(Duration.ofHours(1));
+
+        MultipartUpload u1 = MultipartUpload.builder()
+                .uploadId("expired-upload-id-1")
+                .key("temp/big1.zip")
+                .initiated(twoDaysAgo)
+                .build();
+
+        MultipartUpload u2 = MultipartUpload.builder()
+                .uploadId("active-upload-id-2")
+                .key("temp/big2.zip")
+                .initiated(oneHourAgo)
+                .build();
+
+        ListMultipartUploadsResponse resp = ListMultipartUploadsResponse.builder()
+                .uploads(List.of(u1, u2))
+                .isTruncated(false)
+                .build();
+
+        when(s3Client.listMultipartUploads(any(ListMultipartUploadsRequest.class))).thenReturn(resp);
+
+        int cleaned = s3Driver.cleanExpiredChunkSessions(Duration.ofHours(24));
+        assertEquals(1, cleaned);
+
+        ArgumentCaptor<AbortMultipartUploadRequest> captor = ArgumentCaptor.forClass(AbortMultipartUploadRequest.class);
+        verify(s3Client).abortMultipartUpload(captor.capture());
+        assertEquals("expired-upload-id-1", captor.getValue().uploadId());
+        assertEquals("temp/big1.zip", captor.getValue().key());
+    }
+
+    @Test
+    @DisplayName("S3Driver 上传并携带自定义用户元数据")
+    void testUploadWithUserMetadata() {
+        PutObjectResponse putResp = PutObjectResponse.builder()
+                .eTag("\"etag123\"")
+                .build();
+        when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenReturn(putResp);
+
+        byte[] data = "S3 Meta Test".getBytes(StandardCharsets.UTF_8);
+        Map<String, String> meta = Map.of("author", "Ateng", "env", "test");
+        StorageObject obj = s3Driver.upload("meta/file.txt", new ByteArrayInputStream(data), "text/plain", data.length, meta);
+
+        assertNotNull(obj);
+        assertEquals("meta/file.txt", obj.getPath());
+        assertEquals("Ateng", obj.getUserMetadata().get("author"));
+        assertEquals("test", obj.getUserMetadata().get("env"));
+
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(RequestBody.class));
+        assertEquals("Ateng", captor.getValue().metadata().get("author"));
+    }
+
+    @Test
+    @DisplayName("S3Driver 获取元数据解析 userMetadata 键值对")
+    void testGetMetadataWithUserMetadata() {
+        HeadObjectResponse headResp = HeadObjectResponse.builder()
+                .contentLength(100L)
+                .contentType("text/plain")
+                .eTag("\"etag456\"")
+                .lastModified(Instant.now())
+                .metadata(Map.of("project", "ateng-boot"))
+                .build();
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(headResp);
+
+        StorageObject obj = s3Driver.getMetadata("meta/file.txt");
+        assertNotNull(obj);
+        assertEquals("ateng-boot", obj.getUserMetadata().get("project"));
+    }
+
+    @Test
+    @DisplayName("S3Driver ping 探查连通性执行 headBucket")
+    void testPing() throws Exception {
+        when(s3Client.headBucket(any(HeadBucketRequest.class))).thenReturn(HeadBucketResponse.builder().build());
+
+        s3Driver.ping();
+        verify(s3Client).headBucket(any(HeadBucketRequest.class));
+    }
+}

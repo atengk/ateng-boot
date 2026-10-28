@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-samples</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-sample-admin</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot Spring Boot Admin 生产级监控看板场景样例（原生表单登录 / Sa-Token 鉴权 / 双向安全穿透 / SSRF 阻断 / 告警状态机 / 动态日志级别）</description>
+
+    <dependencies>
+        <!-- Spring Boot Admin 运维监控中心 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-admin</artifactId>
+        </dependency>
+
+        <!-- 云原生可观测性 Starter（演示微服务 Actuator 端点加固与客户端透明增强） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-observability</artifactId>
+        </dependency>
+
+        <!-- Web 运行时增强 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-web</artifactId>
+        </dependency>
+
+        <!-- 协同通知 Starter（用于演示企业微信/钉钉/飞书多端卡片告警） -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-notification</artifactId>
+        </dependency>
+
+        <!-- Spring Data Redis (提供 StringRedisTemplate 类型定义，未连接 Redis 时由 Sa-Token 自动降级为单机内存缓存) -->
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-redis</artifactId>
+        </dependency>
+
+        <!-- 单元与集成测试依赖 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -51,3 +51,61 @@ _Avoid_: RedisLimiter, RateLimitService, TokenBucketClient
 **RedisAtomicUtil**:
 分布式原子自增与计数器操作工具，提供基于 Redis 计数器的步长递增、递减、滑动窗口频次防刷与日历重置号段发号支持。
 _Avoid_: CounterUtil, RedisCounter, AtomicSequence
+
+**TwoLevelCache**:
+两级缓存核心门面与 SPI 契约，统一抽象 L1 本地内存缓存（优先适配高性能 Caffeine，无依赖时优雅降级为原生 JVM 内存结构）与 L2 Redis 集中分布式缓存，集成跨节点 Pub/Sub 失效广播协议以确保分布式缓存最终一致性。
+_Avoid_: MultiLevelCache, HybridCache, DoubleCache
+
+**TwoLevelCacheManager**:
+Spring Cache 统一适配管理器，将 Spring 声明式缓存注解（`@Cacheable`、`@CachePut`、`@CacheEvict`）无缝桥接至底层 `TwoLevelCache` 引擎，实现零侵入享受两级缓存极速读取与自动广播淘汰。
+_Avoid_: HybridCacheManager, MultiCacheManager, DualCacheManager
+
+**RedisCacheTemplate**:
+工业级防击穿、防穿透、防雪崩缓存安全执行模板，内置分布式互斥锁防击穿、DCL 双重检查加锁、空值短 TTL 缓存防穿透以及基准 TTL 随机抖动防雪崩，并在极端争锁超时场景下提供平滑穿透查库的容灾兜底保障。
+_Avoid_: CacheHelper, SafeCacheTemplate, RedisCacheExecutor
+
+**RedisBloomFilter**:
+基于 Redisson `RBloomFilter` 封装的分布式布隆过滤器操作门面，支持配置化声明式预热、动态编程式初始化与容量逼近安全预警，用于在大规模黑名单、爬虫 IP 过滤与海量数据存在性判重场景中消除内存膨胀。
+_Avoid_: BloomFilterUtil, RedissonBloom, RedisFilter
+
+**DelayedQueueDeadLetter**:
+延时队列死信保障机制，在消费者重试次数耗尽后自动将异常消息转入专用死信队列（`{queueName}:dlq`）并触发失败处理 SPI 回调，彻底杜绝数据静默丢失。
+_Avoid_: PoisonQueue, ErrorQueue, DroppedQueue
+
+**ChannelTopicListener**:
+基于 Redis Pub/Sub 的声明式广播订阅注解，支持标注于 Spring Bean 方法上，由后台受管监听容器自动完成报文反序列化与方法反射分发。
+_Avoid_: RedisListener, TopicSubscriber, PubSubConsumer
+
+**DeadLetterMessage**:
+延时队列死信结构体契约，封装原始队列名称、消息载荷、重试次数、失败时间、异常类名与错误明细，用于死信回溯与异步重放。
+_Avoid_: BadMessage, PoisonMessage, FailedPayload
+
+**DelayedQueueFailureHandler**:
+延时队列终态消费失败处理扩展点（SPI），在重试次数耗尽后触发，供业务方接入外部告警通知（钉钉/飞书）或持久化补偿。
+_Avoid_: DelayErrorHandler, DeadLetterCallback, QueueFailureListener
+
+**CacheEvictMessage**:
+两级缓存跨节点广播失效载荷，封装目标 cacheName、缓存 key、发起方实例唯一 instanceId 与全量清空标记，杜绝自重入死循环。
+_Avoid_: InvalidationPayload, EvictionEvent, CacheInvalidateCommand
+
+**RedisStreamTemplate**:
+基于 Redis 5.0+ Stream 封装的流式消息生产与消费组运维门面，支持流追加、消费组管理、待决消息拉取与显式确认。
+_Avoid_: StreamUtil, StreamManager, RedisStreamProducer
+
+**RedisStreamListener**:
+基于 Redis Stream 消费组模型的声明式消费监听注解，由受管异步线程池驱动，支持多消费者并发、消息确认与异常隔离。
+_Avoid_: StreamConsumer, StreamMessageListener, RedisStreamHandler
+
+**RedisIdempotentTemplate**:
+面向非 Web 业务链路（MQ 消费、定时调度、异步 RPC）的受管分布式防重幂等模板，支持多态业务闭包与执行保护。
+_Avoid_: IdempotentExecutor, DeduplicateTemplate, AntiReplayManager
+
+**RedisSemaphoreTemplate**:
+基于 Redisson 信号量封装的受管分布式并发度治理模板，提供资源槽位申请、超时快速失败与确定性安全归还。
+_Avoid_: SemaphoreExecutor, ConcurrencyLimiter, PermitManager
+
+**RedisScriptExecutor**:
+受管原子 Lua 脚本执行器，提供脚本动态加载、SHA1 预编译缓存、参数序列化与强类型结果转换门面。
+_Avoid_: LuaUtil, ScriptRunner, RedisLuaTemplate
+
+

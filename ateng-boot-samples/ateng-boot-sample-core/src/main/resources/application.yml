@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: ateng-boot-sample-core
+  main:
+    web-application-type: none
+
+ateng:
+  boot:
+    core:
+      clock-backoff-tolerance: 10ms
+      cache-ttl: 30m
+      snowflake:
+        worker-id: 1
+        datacenter-id: 1
+        clock-backoff-tolerance: 10ms
+    async:
+      enabled: true
+      core-pool-size: 4
+      max-pool-size: 8
+      queue-capacity: 100
+      thread-name-prefix: sample-core-async-
+      pools:
+        export:
+          core-pool-size: 2
+          max-pool-size: 4
+          queue-capacity: 50
+          thread-name-prefix: sample-export-async-
+          rejected-policy: CALLER_RUNS

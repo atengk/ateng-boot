@@ -56,6 +56,20 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Boot Starter Data Redis (分布式异步任务中心可选依赖) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Redisson 分布式客户端 (可选依赖) -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -3,13 +3,17 @@ package io.github.atengk.boot.excel.builder;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
+import io.github.atengk.boot.excel.handler.ColumnLockSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
+import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
+import io.github.atengk.boot.excel.handler.I18nHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
 import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelWriter;
@@ -23,7 +27,10 @@ import java.io.OutputStream;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * Excel 链式 Fluent 构建器
@@ -39,6 +46,7 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
 
     private final ExcelWriter excelWriter;
     private final BiConsumer<ExcelWriterSheetBuilder, Class<?>> sheetConfigurator;
+    private final I18nHeadWriteHandler i18nHeadWriteHandler = new I18nHeadWriteHandler();
     private int currentSheetNo = 0;
     private boolean finished = false;
 
@@ -72,10 +80,23 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
         this.sheetConfigurator = sheetConfigurator;
         this.excelWriter = FesodSheet.write(outputStream)
+                .registerWriteHandler(this.i18nHeadWriteHandler)
                 .registerWriteHandler(new SensitiveCellWriteHandler())
                 .registerWriteHandler(new PromptHeadWriteHandler())
                 .registerWriteHandler(new MergeCellWriteHandler())
+                .registerWriteHandler(new FormulaProtectionCellWriteHandler())
                 .build();
+    }
+
+    /**
+     * 流式指定导出的国际化语言环境
+     *
+     * @param locale 国际化语言环境
+     * @return 当前构建器实例
+     */
+    public ExcelBuilder locale(Locale locale) {
+        this.i18nHeadWriteHandler.setLocale(locale);
+        return this;
     }
 
     /**
@@ -205,6 +226,9 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
             sheetBuilder.registerWriteHandler(new WatermarkSheetWriteHandler(this.watermarkText, this.protectionPassword));
         }
         applyStyle(sheetBuilder, headClass);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass, this.protectionPassword));
+        }
         WriteSheet writeSheet = sheetBuilder.build();
         Collection<T> writeData = (data != null) ? data : Collections.emptyList();
         excelWriter.write(writeData, writeSheet);
@@ -339,5 +363,41 @@ public class ExcelBuilder implements AutoCloseable, Closeable {
     @Override
     public void close() {
         finish();
+    }
+
+    /**
+     * 基于页码流式分页导出（代理 {@link ExcelUtil#exportStreaming}）
+     *
+     * @param <T>          数据实体类型
+     * @param outputStream 目标输出流
+     * @param clazz        实体类型 Class
+     * @param pageLoader   分页数据拉取函数
+     * @return 实际导出行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return ExcelUtil.exportStreaming(outputStream, clazz, pageLoader);
+    }
+
+    /**
+     * 基于游标流式分页导出（代理 {@link ExcelUtil#exportStreamingByCursor}）
+     *
+     * @param <T>             数据实体类型
+     * @param <K>             游标类型
+     * @param outputStream    目标输出流
+     * @param clazz           实体类型 Class
+     * @param initialCursor   初始游标值
+     * @param pageSize        每页批次步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @return 实际导出行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return ExcelUtil.exportStreamingByCursor(outputStream, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
     }
 }

@@ -1,0 +1,30 @@
+server:
+  port: 0
+
+spring:
+  application:
+    name: ateng-boot-sample-tcp-test
+
+ateng:
+  boot:
+    tcp:
+      enabled: true
+      server:
+        enabled: true
+        host: 127.0.0.1
+        port: 0
+        framing:
+          mode: DELIMITER
+          delimiter: "\n"
+        idle:
+          reader-idle: 30s
+        drain-timeout: 1s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, tcp
+  endpoint:
+    tcp:
+      enabled: true

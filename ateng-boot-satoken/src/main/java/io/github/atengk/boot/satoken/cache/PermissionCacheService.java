@@ -1,6 +1,7 @@
 package io.github.atengk.boot.satoken.cache;
 
-import lombok.RequiredArgsConstructor;
+import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
+import io.github.atengk.boot.satoken.cluster.enums.SaTokenClusterEventType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.Cursor;
@@ -23,7 +24,6 @@ import java.util.concurrent.TimeUnit;
  * @since 2026-10-17
  */
 @Slf4j
-@RequiredArgsConstructor
 public class PermissionCacheService {
 
     public static final String CACHE_PREFIX = "ateng:satoken:cache:";
@@ -32,9 +32,20 @@ public class PermissionCacheService {
     public static final String USER_PERMS_PREFIX = CACHE_PREFIX + "user-perms:";
 
     private final ObjectProvider<StringRedisTemplate> redisTemplateProvider;
+    private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
 
     // 单机内存降级缓存（当 Redis 不可用时生效，带简易过期时间戳防内存无限增长）
     private static final Map<String, LocalCacheItem> LOCAL_MEMORY_CACHE = new ConcurrentHashMap<>();
+
+    public PermissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        this(redisTemplateProvider, null);
+    }
+
+    public PermissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                                  ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+        this.redisTemplateProvider = redisTemplateProvider;
+        this.broadcasterProvider = broadcasterProvider;
+    }
 
     /**
      * 读取指定缓存 key 的字符串值
@@ -106,7 +117,12 @@ public class PermissionCacheService {
 
         delete(userRolesKey);
         delete(userPermsKey);
+        clearLocalUserCache(userId);
         log.info("即时清理用户权限缓存完成: userId={}", userId);
+
+        if (broadcasterProvider != null) {
+            broadcasterProvider.ifAvailable(b -> b.broadcast(SaTokenClusterEventType.USER_PERMISSION_REFRESH, userId));
+        }
     }
 
     /**
@@ -120,7 +136,12 @@ public class PermissionCacheService {
         }
         String rolePermsKey = ROLE_PERMS_PREFIX + roleCode;
         delete(rolePermsKey);
+        clearLocalRoleCache(roleCode);
         log.info("即时清理角色权限缓存完成: roleCode={}", roleCode);
+
+        if (broadcasterProvider != null) {
+            broadcasterProvider.ifAvailable(b -> b.broadcast(SaTokenClusterEventType.ROLE_PERMISSION_REFRESH, roleCode));
+        }
     }
 
     /**
@@ -147,10 +168,45 @@ public class PermissionCacheService {
             if (!keys.isEmpty()) {
                 redisTemplate.delete(keys);
             }
-        } else {
-            LOCAL_MEMORY_CACHE.clear();
         }
+        clearLocalAllCache();
         log.info("全域两级权限缓存已全部清空");
+
+        if (broadcasterProvider != null) {
+            broadcasterProvider.ifAvailable(b -> b.broadcast(SaTokenClusterEventType.ALL_CACHE_CLEAR, null));
+        }
+    }
+
+    /**
+     * 精准清理指定用户的本地内存权限缓存（异地节点协同）
+     *
+     * @param userId 用户唯一标识
+     */
+    public void clearLocalUserCache(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        LOCAL_MEMORY_CACHE.remove(USER_ROLES_PREFIX + userId);
+        LOCAL_MEMORY_CACHE.remove(USER_PERMS_PREFIX + userId);
+    }
+
+    /**
+     * 精准清理指定角色的本地内存权限缓存（异地节点协同）
+     *
+     * @param roleCode 角色编码
+     */
+    public void clearLocalRoleCache(String roleCode) {
+        if (roleCode == null || roleCode.isBlank()) {
+            return;
+        }
+        LOCAL_MEMORY_CACHE.remove(ROLE_PERMS_PREFIX + roleCode);
+    }
+
+    /**
+     * 清理本地所有内存权限缓存（异地节点协同）
+     */
+    public void clearLocalAllCache() {
+        LOCAL_MEMORY_CACHE.clear();
     }
 
     /**

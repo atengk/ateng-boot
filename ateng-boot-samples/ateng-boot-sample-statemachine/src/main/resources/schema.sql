@@ -1,0 +1,14 @@
+DROP TABLE IF EXISTS t_order;
+
+CREATE TABLE t_order (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_sn VARCHAR(64) NOT NULL UNIQUE,
+    status VARCHAR(32) NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    tracking_no VARCHAR(64),
+    tracking_remark VARCHAR(255),
+    risk_score INT DEFAULT 0,
+    version INT NOT NULL DEFAULT 0,
+    created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dynamic-sql>
+    <statement id="user.findByName" commandType="SELECT" resultType="java.util.Map" description="根据名称查询用户">
+        SELECT * FROM sys_user
+        <where>
+            <if test="name != null and name != ''">
+                AND name = #{name}
+            </if>
+        </where>
+    </statement>
+    <statement id="user.updateStatus" commandType="UPDATE" description="更新用户状态">
+        UPDATE sys_user SET status = #{status} WHERE id = #{id}
+    </statement>
+</dynamic-sql>

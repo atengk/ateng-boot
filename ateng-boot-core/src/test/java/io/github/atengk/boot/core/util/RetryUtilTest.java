@@ -5,12 +5,16 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * RetryUtil 单元测试
+ * 覆盖重试成功、耗尽异常抛出、异常谓词过滤、Equal Jitter 抖动打散、onRetry 监听器及 Fallback 降级兜底
  *
  * @author Ateng
  * @since 2026-10-17
@@ -109,6 +113,197 @@ class RetryUtilTest {
         }, config);
 
         assertEquals(2, count.get());
+    }
+
+    @Test
+    @DisplayName("Equal Jitter 抖动打散配置与执行")
+    void shouldSupportEqualJitter() {
+        AtomicInteger count = new AtomicInteger();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(20))
+                .multiplier(2.0)
+                .jitter(true)
+                .build();
+
+        assertTrue(config.jitter(), "jitter 开关应处于激活状态");
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 3) {
+                throw new IllegalStateException("抖动重试测试");
+            }
+            return "jitter-success";
+        }, config);
+
+        assertEquals("jitter-success", result);
+        assertEquals(3, count.get());
+    }
+
+    @Test
+    @DisplayName("onRetry 监听器回调：在休眠前触发并准确接收序号与异常")
+    void shouldTriggerOnRetryListenerBeforeSleep() {
+        AtomicInteger count = new AtomicInteger();
+        List<Integer> attemptHistory = new ArrayList<>();
+        List<String> exceptionHistory = new ArrayList<>();
+
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(10))
+                .onRetry((attempt, error) -> {
+                    attemptHistory.add(attempt);
+                    exceptionHistory.add(error.getMessage());
+                })
+                .build();
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 3) {
+                throw new RuntimeException("err-" + count.get());
+            }
+            return "success-with-listener";
+        }, config);
+
+        assertEquals("success-with-listener", result);
+        assertEquals(3, count.get());
+        assertEquals(List.of(1, 2), attemptHistory, "监听器应分别在第 1 次和第 2 次失败后休眠前触发");
+        assertEquals(List.of("err-1", "err-2"), exceptionHistory);
+    }
+
+    @Test
+    @DisplayName("onRetry 监听器异常受控隔离：监听器抛出异常不中断主重试循环")
+    void shouldIsolateExceptionThrownFromOnRetryListener() {
+        AtomicInteger count = new AtomicInteger();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(10))
+                .onRetry((attempt, error) -> {
+                    throw new RuntimeException("监听器内部度量上报偶发错误");
+                })
+                .build();
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 2) {
+                throw new IllegalStateException("业务超时");
+            }
+            return "ok-listener-err-isolated";
+        }, config);
+
+        assertEquals("ok-listener-err-isolated", result);
+        assertEquals(2, count.get());
+    }
+
+    @Test
+    @DisplayName("Fallback 降级：重试耗尽时返回指定兜底值")
+    void shouldReturnFallbackWhenAttemptsExhausted() {
+        AtomicInteger count = new AtomicInteger();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(10))
+                .build();
+
+        String result = RetryUtil.execute(
+                () -> {
+                    count.incrementAndGet();
+                    throw new RuntimeException("下游服务熔断");
+                },
+                config,
+                ex -> "fallback-" + ex.getMessage()
+        );
+
+        assertEquals("fallback-下游服务熔断", result, "重试耗尽后应执行 Fallback 回调并返回兜底结果");
+        assertEquals(3, count.get());
+    }
+
+    @Test
+    @DisplayName("Fallback 降级：默认配置下的快捷重载")
+    void shouldSupportFallbackWithDefaultConfig() {
+        AtomicInteger count = new AtomicInteger();
+        String result = RetryUtil.execute(
+                () -> {
+                    count.incrementAndGet();
+                    throw new RuntimeException("网络波动");
+                },
+                ex -> "default-fallback"
+        );
+
+        assertEquals("default-fallback", result);
+        assertEquals(3, count.get());
+    }
+
+    @Test
+    @DisplayName("Fallback 降级：不满足重试谓词时亦可触发降级返回")
+    void shouldReturnFallbackWhenExceptionNotMatchingPredicate() {
+        AtomicInteger count = new AtomicInteger();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(5)
+                .delay(Duration.ofMillis(10))
+                .retryPredicate(ex -> ex instanceof IOException)
+                .build();
+
+        String result = RetryUtil.execute(
+                () -> {
+                    count.incrementAndGet();
+                    throw new IllegalArgumentException("参数错误不可重试");
+                },
+                config,
+                ex -> "fallback-on-illegal-argument"
+        );
+
+        assertEquals("fallback-on-illegal-argument", result);
+        assertEquals(1, count.get(), "非重试异常直接触发降级，仅尝试 1 次");
+    }
+
+    @Test
+    @DisplayName("Runnable Fallback 降级：重试耗尽时触发兜底 Consumer")
+    void shouldTriggerRunnableFallbackWhenExhausted() {
+        AtomicInteger count = new AtomicInteger();
+        AtomicBoolean fallbackTriggered = new AtomicBoolean(false);
+
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(10))
+                .build();
+
+        RetryUtil.executeAction(
+                () -> {
+                    count.incrementAndGet();
+                    throw new RuntimeException("任务失败");
+                },
+                config,
+                ex -> fallbackTriggered.set(true)
+        );
+
+        assertEquals(3, count.get());
+        assertTrue(fallbackTriggered.get(), "Runnable 重试耗尽应触发 Fallback Consumer");
+
+        // 默认配置重载测试
+        AtomicBoolean defaultFallbackTriggered = new AtomicBoolean(false);
+        RetryUtil.executeAction(
+                () -> {
+                    throw new RuntimeException("默认配置任务失败");
+                },
+                ex -> defaultFallbackTriggered.set(true)
+        );
+        assertTrue(defaultFallbackTriggered.get());
+    }
+
+    @Test
+    @DisplayName("向后兼容：既有 5 参数构造器与向后兼容性验证")
+    void shouldPreserveBackwardCompatibility() {
+        // 验证既有 5 参数构造函数可正常初始化
+        RetryUtil.RetryConfig config = new RetryUtil.RetryConfig(
+                3,
+                Duration.ofMillis(100),
+                2.0,
+                Duration.ofMillis(1000),
+                ex -> true
+        );
+
+        assertEquals(3, config.maxAttempts());
+        assertEquals(Duration.ofMillis(100), config.delay());
+        assertEquals(2.0, config.multiplier());
+        assertEquals(Duration.ofMillis(1000), config.maxDelay());
+        assertFalse(config.jitter(), "默认 jitter 应为 false");
+        assertNull(config.onRetry(), "默认 onRetry 监听器应为 null");
     }
 
     @Test

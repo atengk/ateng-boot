@@ -1,5 +1,6 @@
 package io.github.atengk.boot.web.ratelimit.aspect;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.web.ratelimit.annotation.LimitType;
@@ -51,6 +52,7 @@ class RateLimiterAspectTest {
     void tearDown() {
         RequestContextHolder.resetRequestAttributes();
         UserContextHolder.remove();
+        TenantContextHolder.clear();
         store.destroy();
     }
 
@@ -107,6 +109,69 @@ class RateLimiterAspectTest {
         assertThat(result).isEqualTo("ok");
     }
 
+    @Test
+    @DisplayName("限流切面基于 TENANT 维度实现多租户流量隔离与超限熔断")
+    void shouldEvaluateTenantDimensionAndIsolate() throws Throwable {
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        Method method = SampleService.class.getMethod("tenantLimitedMethod", String.class);
+
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"DATA_A"});
+        when(joinPoint.proceed()).thenReturn("tenant_ok");
+        when(signature.getMethod()).thenReturn(method);
+        when(signature.getDeclaringTypeName()).thenReturn(SampleService.class.getName());
+        when(signature.getName()).thenReturn("tenantLimitedMethod");
+
+        RateLimiter rateLimiter = method.getAnnotation(RateLimiter.class);
+
+        // 1. 租户 1 执行 1 次放行
+        TenantContextHolder.setTenantId("tenant_001");
+        Object r1 = aspect.around(joinPoint, rateLimiter);
+        assertThat(r1).isEqualTo("tenant_ok");
+
+        // 租户 1 执行第 2 次触发超限 429
+        assertThatThrownBy(() -> aspect.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("多租户限流已触发");
+
+        // 2. 租户 2 应该不受租户 1 限流影响（流量隔离）
+        TenantContextHolder.setTenantId("tenant_002");
+        Object r2 = aspect.around(joinPoint, rateLimiter);
+        assertThat(r2).isEqualTo("tenant_ok");
+
+        // 租户 2 执行第 2 次也触发超限
+        assertThatThrownBy(() -> aspect.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("多租户限流已触发");
+    }
+
+    @Test
+    @DisplayName("限流切面在未设置租户时自动回退为 default 租户限流")
+    void shouldFallbackToDefaultTenantWhenEmpty() throws Throwable {
+        TenantContextHolder.clear();
+        ProceedingJoinPoint joinPoint = mock(ProceedingJoinPoint.class);
+        MethodSignature signature = mock(MethodSignature.class);
+        Method method = SampleService.class.getMethod("tenantLimitedMethod", String.class);
+
+        when(joinPoint.getSignature()).thenReturn(signature);
+        when(joinPoint.getArgs()).thenReturn(new Object[]{"DATA_A"});
+        when(joinPoint.proceed()).thenReturn("tenant_ok");
+        when(signature.getMethod()).thenReturn(method);
+        when(signature.getDeclaringTypeName()).thenReturn(SampleService.class.getName());
+        when(signature.getName()).thenReturn("tenantLimitedMethod");
+
+        RateLimiter rateLimiter = method.getAnnotation(RateLimiter.class);
+
+        // 第 1 次放行
+        Object r1 = aspect.around(joinPoint, rateLimiter);
+        assertThat(r1).isEqualTo("tenant_ok");
+
+        // 第 2 次超限
+        assertThatThrownBy(() -> aspect.around(joinPoint, rateLimiter))
+                .isInstanceOf(BusinessException.class);
+    }
+
     static class SampleService {
         @RateLimiter(count = 2, time = 60, timeUnit = TimeUnit.SECONDS, message = "访问过于频繁，请稍后再试")
         public String limitedMethod(String orderId) {
@@ -116,6 +181,11 @@ class RateLimiterAspectTest {
         @RateLimiter(limitType = LimitType.USER, key = "#bizId", count = 5, time = 10, timeUnit = TimeUnit.SECONDS)
         public String userSpelMethod(String bizId) {
             return "ok";
+        }
+
+        @RateLimiter(limitType = LimitType.TENANT, count = 1, time = 60, timeUnit = TimeUnit.SECONDS, message = "多租户限流已触发")
+        public String tenantLimitedMethod(String data) {
+            return "tenant_ok";
         }
     }
 }

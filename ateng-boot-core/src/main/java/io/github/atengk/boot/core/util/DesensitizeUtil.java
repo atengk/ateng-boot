@@ -338,6 +338,56 @@ public final class DesensitizeUtil {
     }
 
     /**
+     * 统一社会信用代码脱敏（{@link #socialCreditCode(String)} 规范命名别名）
+     * 规则：标准 18 位代码保留前 2 位登记管理部门与机构类别代码、后 4 位校验码，中间 12 位等长替换为 '*'
+     * 例如："91110000MA001ABC12" -> "91************BC12"
+     *
+     * @param code 统一社会信用代码
+     * @return 脱敏后的信用代码
+     */
+    public static String unifiedCreditCode(String code) {
+        return socialCreditCode(code);
+    }
+
+    /**
+     * 密钥 / AccessToken 脱敏
+     * 规则：保留前 4 位与后 4 位，中间全部等长替换为 '*'；长度不足或等于 8 位时做全掩码
+     * 例如："sk-proj-1234567890abcdef" -> "sk-p****************def"
+     *
+     * @param key 待脱敏的密钥明文
+     * @return 脱敏后的密钥字符串
+     */
+    public static String secretKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return key;
+        }
+        int len = key.length();
+        if (len <= 8) {
+            return mask(key, 0, len);
+        }
+        return mask(key, 4, len - 4);
+    }
+
+    /**
+     * 护照号码脱敏
+     * 规则：保留前 2 位与后 3 位，中间全部等长替换为 '*'；长度不足或等于 5 位时做防御性掩码
+     * 例如："E12345678" -> "E1****678"
+     *
+     * @param passport 护照号码
+     * @return 脱敏后的护照号码
+     */
+    public static String passport(String passport) {
+        if (passport == null || passport.isEmpty()) {
+            return passport;
+        }
+        int len = passport.length();
+        if (len <= 5) {
+            return mask(passport, 0, len);
+        }
+        return mask(passport, 2, len - 3);
+    }
+
+    /**
      * 字符串保留首尾指定位数，中间等长掩码
      * 契约：当保留字符数之和超过或等于原字符串长度（keepHead + keepTail >= length）时，原样防御返回
      *

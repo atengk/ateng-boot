@@ -1,0 +1,50 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-ssh
+
+ateng:
+  boot:
+    ssh:
+      enabled: true
+      # 缺省主节点配置
+      host: 127.0.0.1
+      port: 2222
+      username: testuser
+      password: testpassword
+      host-key-policy: lenient
+      connect-timeout: 10s
+      auth-timeout: 15s
+      command-timeout: 60s
+      pool:
+        max-sessions: 64
+        idle-timeout: 5m
+        heartbeat-interval: 15s
+      # SFTP 传输配置
+      sftp:
+        buffer-size: 32KB
+        transfer-timeout: 10m
+        atomic-upload-enabled: true
+        atomic-upload-suffix: .uploading.tmp
+      # 命名多主机节点字典
+      servers:
+        node1:
+          host: 127.0.0.1
+          port: 2223
+          username: worker1
+          password: worker1pass
+          command-timeout: 30s
+        node2:
+          host: 127.0.0.1
+          port: 2224
+          username: worker2
+          password: worker2pass
+          command-timeout: 30s
+        bastion:
+          host: 127.0.0.1
+          port: 2225
+          username: ops
+          password: opspassword
+          command-timeout: 60s

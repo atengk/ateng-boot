@@ -1,6 +1,7 @@
 package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -140,5 +141,69 @@ class IdUtilTest {
         constructor.setAccessible(true);
         InvocationTargetException ex = assertThrows(InvocationTargetException.class, constructor::newInstance);
         assertTrue(ex.getCause() instanceof UnsupportedOperationException);
+    }
+
+    @Test
+    @DisplayName("雪花 ID 逆向反解门面：parseSnowflake 完整性验证")
+    void shouldParseSnowflakeIdViaIdUtil() {
+        long id = IdUtil.nextId();
+        SnowflakeIdInfo info = IdUtil.parseSnowflake(id);
+        assertNotNull(info);
+        assertEquals(id, info.id());
+        assertTrue(info.timestamp() > 0);
+        assertNotNull(info.instant());
+        assertNotNull(info.dateTime());
+    }
+
+    @Test
+    @DisplayName("Base62 编解码验证：双向无损转换、极值边界与异常拦截")
+    void shouldEncodeAndDecodeBase62Losslessly() {
+        // 1. 基础值与单字符边界
+        assertEquals("0", IdUtil.toBase62(0L));
+        assertEquals(0L, IdUtil.fromBase62("0"));
+
+        assertEquals("1", IdUtil.toBase62(1L));
+        assertEquals(1L, IdUtil.fromBase62("1"));
+
+        assertEquals("z", IdUtil.toBase62(61L));
+        assertEquals(61L, IdUtil.fromBase62("z"));
+
+        assertEquals("10", IdUtil.toBase62(62L));
+        assertEquals(62L, IdUtil.fromBase62("10"));
+
+        // 2. 64 位极值边界 (Long.MAX_VALUE & Long.MIN_VALUE)
+        String maxB62 = IdUtil.toBase62(Long.MAX_VALUE);
+        assertNotNull(maxB62);
+        assertTrue(maxB62.length() <= 11);
+        assertEquals(Long.MAX_VALUE, IdUtil.fromBase62(maxB62));
+
+        String minB62 = IdUtil.toBase62(Long.MIN_VALUE);
+        assertNotNull(minB62);
+        assertTrue(minB62.startsWith("-"));
+        assertEquals(Long.MIN_VALUE, IdUtil.fromBase62(minB62));
+
+        // 3. 负数双向测试
+        assertEquals("-1", IdUtil.toBase62(-1L));
+        assertEquals(-1L, IdUtil.fromBase62("-1"));
+
+        assertEquals("-10", IdUtil.toBase62(-62L));
+        assertEquals(-62L, IdUtil.fromBase62("-10"));
+
+        // 4. 雪花 ID 真实高频场景压缩验证
+        for (int i = 0; i < 1000; i++) {
+            long snowflakeId = IdUtil.nextId();
+            String compressed = IdUtil.toBase62(snowflakeId);
+            assertTrue(compressed.length() >= 9 && compressed.length() <= 11, "雪花 ID 压缩后长度应为 9~11 字符");
+            assertEquals(snowflakeId, IdUtil.fromBase62(compressed), "Base62 解码后必须 100% 还原原始雪花 ID");
+        }
+
+        // 5. 非法格式与溢出防御
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62(null));
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62(""));
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("   "));
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("-"));
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("abc#123"));
+        assertThrows(IllegalArgumentException.class, () -> IdUtil.fromBase62("a b"));
+        assertThrows(ArithmeticException.class, () -> IdUtil.fromBase62("999999999999999999999999999"));
     }
 }

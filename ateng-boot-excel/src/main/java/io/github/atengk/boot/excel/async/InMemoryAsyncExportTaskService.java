@@ -4,6 +4,8 @@ import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
+import io.github.atengk.boot.excel.async.storage.LocalFileSystemStorage;
 import io.github.atengk.boot.excel.properties.ExcelAsyncExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import org.slf4j.Logger;
@@ -38,15 +40,21 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
     private final Map<String, ExportTask> taskMap = new ConcurrentHashMap<>(128);
     private final Map<String, Future<?>> futureMap = new ConcurrentHashMap<>(128);
 
+    private final ExportFileStorage fileStorage;
     private final Path tempDirPath;
     private final ThreadPoolExecutor executorService;
     private final ScheduledExecutorService cleanerExecutor;
 
     public InMemoryAsyncExportTaskService() {
-        this(new ExcelProperties());
+        this(new ExcelProperties(), null);
     }
 
     public InMemoryAsyncExportTaskService(ExcelProperties excelProperties) {
+        this(excelProperties, null);
+    }
+
+    public InMemoryAsyncExportTaskService(ExcelProperties excelProperties, ExportFileStorage fileStorage) {
+        this.fileStorage = (fileStorage != null) ? fileStorage : new LocalFileSystemStorage(excelProperties);
         ExcelAsyncExportProperties props = (excelProperties != null && excelProperties.getAsyncExport() != null)
                 ? excelProperties.getAsyncExport()
                 : new ExcelAsyncExportProperties();
@@ -78,12 +86,12 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                 new ThreadPoolExecutor.AbortPolicy()
         );
 
-        int retentionHours = Math.max(1, props.getRetentionHours());
+        Duration retention = props.getRetentionPeriod() != null ? props.getRetentionPeriod() : Duration.ofHours(Math.max(1, props.getRetentionHours()));
         this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
                 new NamedThreadFactory("ateng-excel-cleaner-")
         );
         this.cleanerExecutor.scheduleAtFixedRate(
-                () -> cleanExpiredTasks(Duration.ofHours(retentionHours)),
+                () -> cleanExpiredTasks(retention),
                 1, 1, TimeUnit.HOURS
         );
     }
@@ -117,16 +125,25 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
         Future<?> future;
         try {
             future = executorService.submit(AsyncContext.wrap(() -> {
+                // 防御性清除线程可能残留的中断标志，确保复用线程初始状态纯净
+                Thread.interrupted();
                 task.setStatus(ExportTaskStatus.PROCESSING);
                 task.setProgress(10);
                 log.info("开始执行异步导出任务 [{}]: {}", taskId, finalTaskName);
 
-                try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-                    executor.execute(fos);
+                try {
+                    try (FileOutputStream fos = new FileOutputStream(targetFile)) {
+                        executor.execute(fos);
+                    }
                     if (task.getStatus() == ExportTaskStatus.CANCELLED) {
                         return;
                     }
-                    task.setFileSize(targetFile.length());
+                    long fileSize = targetFile.length();
+                    String storageKey = fileStorage.store(taskId, targetFile, finalTaskName + ".xlsx");
+                    task.setStorageKey(storageKey);
+                    task.setFilePath(storageKey);
+                    task.setDownloadUrl(fileStorage.getDownloadUrl(taskId, storageKey));
+                    task.setFileSize(fileSize);
                     task.setStatus(ExportTaskStatus.SUCCESS);
                     task.setProgress(100);
                     task.setFinishTime(LocalDateTime.now());
@@ -141,6 +158,8 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                     log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
                 } finally {
                     futureMap.remove(taskId);
+                    // 任务执行结束后清理中断状态，避免对后续复用该线程的任务产生副作用
+                    Thread.interrupted();
                 }
             }));
         } catch (RejectedExecutionException rex) {
@@ -174,13 +193,17 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
             return false;
         }
 
+        task.setStatus(ExportTaskStatus.CANCELLED);
+        task.setFinishTime(LocalDateTime.now());
+
         Future<?> future = futureMap.remove(taskId);
         if (future != null) {
             future.cancel(true);
         }
 
-        task.setStatus(ExportTaskStatus.CANCELLED);
-        task.setFinishTime(LocalDateTime.now());
+        if (task.getStorageKey() != null) {
+            fileStorage.delete(taskId, task.getStorageKey());
+        }
 
         // 清理已生成的半成品临时文件
         if (task.getFilePath() != null) {

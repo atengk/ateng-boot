@@ -126,6 +126,45 @@ flowchart TD
 - 自动捕获 `NotLoginException`，根据其 7 种类型精准映射为 HTTP 200 + 业务码 `401`（详细告知“已被顶下线”、“已被管理员踢出”或“登录已过期”）；
 - 捕获 `NotPermissionException` / `NotRoleException` / `DisableServiceException` / `NotSafeException` 映射为 HTTP 200 + 业务码 `403`。
 
+### 14. 水平越权防御体系与数据所有权校验架构 (SpEL + DataOwnerProvider SPI)
+- **背景痛点**：传统 RBAC 权限模型通常仅对接口级别的“操作权限”实施鉴权（如当前操作人是否具备 `user:update` 权限），无法防范恶意用户通过篡改请求体、路径参数中的 `userId`、`orderId` 越权操作他人数据的水平越权（BOLA / IDOR）漏洞。若在业务层通过硬编码 `if (!userId.equals(currentUserId))` 进行校验，容易因开发疏漏产生漏检，且无法应对根据 `orderId` 反查创建人的复杂业务场景；
+- **架构决策**：
+  - **声明式 SpEL 动态求值**：引入 `@CheckDataOwner(expr, provider, message)` 注解与 `SaCheckDataOwnerAspect` AOP 切面。支持基于 Spring SpEL 表达式从方法形参或 DTO 属性中动态抽取目标归属人 ID（如 `#dto.userId`、`#id`）；
+  - **泛型 SPI 扩展机制**：提供 `DataOwnerProvider<T>` SPI 扩展接口与内置 `DefaultDataOwnerProvider`。当入参为实体主键（如 `orderId`）而非用户 ID 时，支持挂载自定义 Provider 执行反查校验；
+  - **超管豁免与编程式卫语句**：内置超级管理员（`LoginHelper.isSuperAdmin()`）自动豁免机制；并在 `LoginHelper` 暴露 `checkSelf`、`isSelf` 与 `checkBelongsToTenant` 极简防卫断言，满足后台批处理与服务内部的快速失败（Fail-Fast）需求；
+  - **统一契约闭环**：校验失败统一抛出 `BusinessException(CommonResultCode.FORBIDDEN, message)`，经由全局异常处理器转译为 HTTP 200 + code: 403 显式契约。
+
+### 15. 声明式公开访问与动态白名单汇聚架构 (@Anonymous & Whitelist SPI)
+- **背景痛点**：在传统架构中，免登录接口（如登录、公文展示、静态资源）通常在 `application.yml` 的 `white-list` 中静态配置 AntPath。当接口重构、路径微调或插件动态挂载端点时，静态配置极易失步导致 401 鉴权误报；且第三方扩展模块无法在运行时编程式注册白名单；
+- **架构决策**：
+  - **声明式 `@Anonymous` 标注**：提供方法与类级注解 `@Anonymous`，支持在 Controller 方法或类上声明免登录放行（类级支持方法局部排除）；
+  - **Spring MVC 端点转译引擎**：实现 `AnonymousUrlProcessor`（基于 `ApplicationListener<ApplicationReadyEvent>`），在 Spring 容器启动就绪后自动扫描所有挂载 `@Anonymous` 的 HandlerMethod，将 Spring MVC 路径变量占位符（如 `/article/{id}`）动态自适应转译为 AntPath 风格（如 `/article/*`）；
+  - **SPI 动态扩展与多源汇聚**：设计 `SaTokenWhitelistProvider` SPI 接口，允许外部插件或配置中心动态注入白名单集合；受管拦截器 `AtengSaTokenInterceptor` 统一将“YAML 静态配置 + SPI 动态集合 + `@Anonymous` 转译端点”三源汇聚去重，在请求入口统一执行高效放行。
+
+### 16. 身份模拟与双维运维审计体系 (RunAs / Impersonate)
+- **背景痛点**：在客服代客下单、技术运维排障等场景中，管理员需要临时以普通用户身份调用业务接口。传统做法直接修改当前 Session 的 `loginId` 会导致真实操作人丢失，产生重大合规与审计漏洞；若通过在各 Service 逐层透传 `impersonateUserId`，则代码侵入严重且无法透明复用 MyBatis-Plus 自动审计填充（`createBy`、`updateBy`）与 `@DataScope` 数据权限；
+- **架构决策**：
+  - **会话持久模拟 (`switchTo` / `endSwitch`)**：适用于客服跨请求会话模拟。在底层 Session 记录 `targetUserId` 并固化写入最初操作人 `originalUserId`。即便多次连续切换目标，`originalUserId` 严格保持不变，彻底杜绝审计责任链路漂移；
+  - **瞬态栈式模拟 (`runAs`)**：适用于在业务方法内部或后台任务中临时以目标身份执行。依托 ThreadLocal 栈式暂存上文，在 `finally` 块中严格执行确定性现场恢复与清理，杜绝在工作线程池中残留污染；
+  - **双维生态透传**：模拟态下 `LoginHelper.getUserId()` 自动返回被模拟人，保持业务逻辑与持久层审计天然对齐；同时底层 SPI 桥接 `UserContextHolder.setRunAsUser(...)`，向 `ateng-boot-web` 的 `@OperateLog` 切面透传真实操作人与被模拟人双维身份，全真记录于结构化操作日志。
+
+### 17. 分布式集群即时同步与自消费防卫不变量 (Redis Pub/Sub & Cluster Sync)
+- **背景痛点**：在多实例集群部署环境下，各节点在本地内存维护用户与角色权限两级缓存以提升吞吐量。当节点 A 执行权限热刷新、用户安全封禁或踢人下线时，若仅清理本地与 Redis 中心存储，异地节点（节点 B、C）因持有陈旧本地缓存仍将发生脏读，产生严重的权限收回延迟与安全漏洞；
+- **架构决策**：
+  - **Redis Pub/Sub 去中心化广播**：引入 `SaTokenClusterBroadcaster`，依托轻量 Redis Pub/Sub 向全网广播强类型 `SaTokenClusterMessage`，覆盖用户权限刷新、角色权限刷新、全域清空及账号封禁/解封等全生命周期事件；
+  - **全局唯一不可变实例标识**：每个节点启动时依托 `IdUtil.fastSimpleUUID()` 生成不可变 `instanceId` 并在消息载荷中打标；
+  - **自消费防卫守卫 (Self-Consumption Guard)**：节点接收广播时比对 `broadcaster.getInstanceId().equals(message.getInstanceId())`，若为本机广播则直接静默丢弃，从拓扑机制上 100% 杜绝二次淘汰、广播回环与自重入风暴；
+  - **平滑降级与隔离防卫**：当缺少 Redis 依赖或网络抖动时，广播器与监听器自动安全静默降级为本地日志告警，严禁非核心通信异常阻断业务主流程。
+
+### 18. 登录防暴力破解策略器与双模自适应存储 (LoginFailureLockService)
+- **背景痛点**：开放网络中撞库与暴力破解攻击频发。业务自建防爆破时往往存在三大缺陷：一是硬编码强依赖 Redis 导致单测与纯单机启动崩溃；二是内存降级模式缺乏过期机制引发内存泄露；三是与框架原生封禁体系脱节，重试惩罚单向，未形成登录成功即时清零的完整生命周期闭环；
+- **架构决策**：
+  - **核心操作完备性**：设计 `LoginFailureLockService` 核心门面，提供失败原子累计（`recordFailure`）、成功对称清零（`clearFailure`）、剩余次数与锁定状态查询及 `checkLocked` Fail-Fast 防卫断言；
+  - **存储双模自适应**：
+    - **Redis 分布式模式**：基于键 `ateng:satoken:login-fail:{account}` 执行原子递增并设置滑动时间窗口（`windowTime`），达到上限（`maxRetryCount`）后原子删除并触发锁定；
+    - **内存降级模式**：无 Redis 时自动平滑回退至带时间戳与原子计数器的 `ConcurrentHashMap`，在读取与累计时执行确定性惰性淘汰与容量超限防御，离线单测与本地开发零阻力且杜绝内存膨胀；
+  - **原生封禁底座联动**：达到输错阈值后，自动调用 `LoginHelper.disable(account, lockTime)` 接入框架原生封禁底座并广播 `SaDisableEvent`；在锁定期间调用 `checkLocked` 立即快速失败抛出 `DisableServiceException` 并转译为统一 HTTP 200 + code: 403 契约。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
@@ -133,7 +172,9 @@ flowchart TD
 ### 正向收益
 - **企业级极速开箱即用**：开发人员引入依赖后，无需手写复杂配置即可获得企业级安全防御、分布式会话与全链路上下文联动；
 - **零安全暗礁**：全面规避反序列化白名单崩溃、CORS 重复 Header 报错与防火墙裸文本违背契约等高危生产陷阱；
-- **生态正交性**：与 `ateng-boot-web`、`ateng-boot-redis`、`ateng-boot-mybatis-plus` 深度互补但保持松耦合。
+- **全方位主动防御体系**：集成水平越权防御（BOLA）、声明式动态白名单、双维身份模拟运维审计、集群去中心化广播同步与登录防暴力破解五道工业级防线；
+- **生态正交性与平滑降级**：与 `ateng-boot-web`、`ateng-boot-redis`、`ateng-boot-mybatis-plus` 深度互补但保持松耦合；在未引入 Redis 时所有高级功能（分布式会话、集群广播、防爆破计数）均具备 100% 内存安全平滑降级能力，离线单测开箱即跑。
 
 ### 妥协与成本
-- **依赖约束**：官方 `sa-token-jwt` 插件因强依赖 `hutool-jwt`，被设为可选依赖，推荐优先使用生产级有状态分布式会话。
+- **依赖约束**：官方 `sa-token-jwt` 插件因强依赖 `hutool-jwt`，被设为可选依赖，推荐优先使用生产级有状态分布式会话；
+- **集群广播开销**：基于 Redis Pub/Sub 的全网集群广播虽无消息积压包袱，但要求 Redis 具备基础连接可用性；网络断开时依靠节点本地降级保障可用性。

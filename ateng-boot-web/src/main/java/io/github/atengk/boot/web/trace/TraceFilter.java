@@ -27,6 +27,11 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
     public static final String MDC_TRACE_ID_KEY = "traceId";
 
     /**
+     * 默认链路追踪响应头键名
+     */
+    public static final String DEFAULT_HEADER = "X-Trace-Id";
+
+    /**
      * 默认过滤器执行优先级：最高优先级确保最先进入并在出口最后清理
      */
     public static final int ORDER = Ordered.HIGHEST_PRECEDENCE;
@@ -43,7 +48,7 @@ public class TraceFilter extends OncePerRequestFilter implements Ordered {
                                     FilterChain filterChain) throws ServletException, IOException {
         String headerName = webProperties.getTrace().getHeader();
         if (headerName == null || headerName.isBlank()) {
-            headerName = "X-Trace-Id";
+            headerName = DEFAULT_HEADER;
         }
 
         // 1. 优先提取请求头中的追踪标识，缺失则生成高性能 32 位无横杠 UUID (无锁并发)

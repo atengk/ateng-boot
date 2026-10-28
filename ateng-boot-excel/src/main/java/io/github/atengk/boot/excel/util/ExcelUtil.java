@@ -2,17 +2,24 @@ package io.github.atengk.boot.excel.util;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.excel.annotation.ExcelEnum;
 import io.github.atengk.boot.excel.annotation.ExcelTheme;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
+import io.github.atengk.boot.excel.enums.HeaderValidationStrategy;
 import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.converter.EnumMappingCache;
 import io.github.atengk.boot.excel.converter.ExcelEnumConverter;
 import io.github.atengk.boot.excel.converter.SmartImageConverter;
+import io.github.atengk.boot.excel.exception.ExcelHeaderValidationException;
 import io.github.atengk.boot.excel.exception.ExcelValidationException;
+import io.github.atengk.boot.excel.converter.FormulaProtectionStringConverter;
+import io.github.atengk.boot.excel.handler.ColumnLockSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.DropdownSheetWriteHandler;
 import io.github.atengk.boot.excel.handler.ExcelThemeWriteHandler;
 import io.github.atengk.boot.excel.handler.FailSplitRowWriteHandler;
+import io.github.atengk.boot.excel.handler.FormulaProtectionCellWriteHandler;
+import io.github.atengk.boot.excel.handler.I18nHeadWriteHandler;
 import io.github.atengk.boot.excel.handler.ImageRowHeightWriteHandler;
 import io.github.atengk.boot.excel.handler.MergeCellWriteHandler;
 import io.github.atengk.boot.excel.handler.PromptHeadWriteHandler;
@@ -20,10 +27,16 @@ import io.github.atengk.boot.excel.handler.SensitiveCellWriteHandler;
 import io.github.atengk.boot.excel.handler.SmartAutoColumnWidthWriteHandler;
 import io.github.atengk.boot.excel.handler.WatermarkSheetWriteHandler;
 import io.github.atengk.boot.excel.listener.BatchValidationListener;
+import io.github.atengk.boot.excel.listener.ExcelHeaderValidator;
 import io.github.atengk.boot.excel.model.ExcelErrorRow;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
+import io.github.atengk.boot.excel.properties.ExcelI18nProperties;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
+import io.github.atengk.boot.excel.properties.ExcelSecurityProperties;
+import io.github.atengk.boot.excel.properties.ExcelStreamingExportProperties;
 import io.github.atengk.boot.excel.properties.ExcelStyleProperties;
+import io.github.atengk.boot.excel.properties.ExcelValidationProperties;
+import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.fesod.sheet.ExcelWriter;
 import org.apache.fesod.sheet.FesodSheet;
@@ -51,7 +64,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Excel 核心门面操作工具类
@@ -80,14 +95,54 @@ public final class ExcelUtil {
     private static final PromptHeadWriteHandler DEFAULT_PROMPT_HEAD_WRITE_HANDLER = new PromptHeadWriteHandler();
 
     /**
+     * 默认多语言国际化表头动态转译写入拦截器（无状态线程安全单例）
+     */
+    private static final I18nHeadWriteHandler DEFAULT_I18N_HEAD_WRITE_HANDLER = I18nHeadWriteHandler.unmodifiable();
+
+    /**
+     * 默认公式注入安全防御写入拦截器（无状态线程安全单例）
+     */
+    private static final FormulaProtectionCellWriteHandler DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER = new FormulaProtectionCellWriteHandler();
+
+    /**
+     * 默认公式注入安全防御字符串反转译转换器（无状态线程安全单例）
+     */
+    private static final FormulaProtectionStringConverter DEFAULT_FORMULA_PROTECTION_STRING_CONVERTER = new FormulaProtectionStringConverter();
+
+    /**
      * 流式读取全局默认批次大小（可通过配置文件 ateng.boot.excel.default-batch-size 调整）
      */
     private static volatile int defaultBatchSize = 1000;
 
     /**
+     * 同步全量读取最大安全行数上限（默认 100,000，超过时快速失败以防御内存 OOM；可通过配置文件 ateng.boot.excel.max-sync-rows 调整）
+     */
+    private static volatile int maxSyncRows = 100_000;
+
+    /**
      * 全局样式与模版主题配置（可通过配置文件 ateng.boot.excel.style.* 调整）
      */
     private static volatile ExcelStyleProperties defaultStyleProperties = new ExcelStyleProperties();
+
+    /**
+     * 流式分页导出全局默认配置（可通过配置文件 ateng.boot.excel.streaming-export.* 调整）
+     */
+    private static volatile ExcelStreamingExportProperties defaultStreamingExportProperties = new ExcelStreamingExportProperties();
+
+    /**
+     * 导入数据校验与熔断全局配置（可通过配置文件 ateng.boot.excel.validation.* 调整）
+     */
+    private static volatile ExcelValidationProperties defaultValidationProperties = new ExcelValidationProperties();
+
+    /**
+     * 安全防护与公式注入防御全局配置（可通过配置文件 ateng.boot.excel.security.* 调整）
+     */
+    private static volatile ExcelSecurityProperties defaultSecurityProperties = new ExcelSecurityProperties();
+
+    /**
+     * 多语言国际化表头全局配置（可通过配置文件 ateng.boot.excel.i18n.* 调整）
+     */
+    private static volatile ExcelI18nProperties defaultI18nProperties = new ExcelI18nProperties();
 
     private ExcelUtil() {
         // 私有构造，工具类禁止实例化
@@ -103,10 +158,90 @@ public final class ExcelUtil {
             if (properties.getDefaultBatchSize() > 0) {
                 defaultBatchSize = properties.getDefaultBatchSize();
             }
+            if (properties.getMaxSyncRows() > 0) {
+                maxSyncRows = properties.getMaxSyncRows();
+            }
             if (properties.getStyle() != null) {
                 defaultStyleProperties = properties.getStyle();
             }
+            if (properties.getStreamingExport() != null) {
+                defaultStreamingExportProperties = properties.getStreamingExport();
+            }
+            if (properties.getValidation() != null) {
+                defaultValidationProperties = properties.getValidation();
+            }
+            if (properties.getSecurity() != null) {
+                defaultSecurityProperties = properties.getSecurity();
+            }
+            if (properties.getI18n() != null) {
+                defaultI18nProperties = properties.getI18n();
+            }
         }
+    }
+
+    /**
+     * 获取当前生效的多语言国际化表头配置属性对象
+     *
+     * @return 国际化配置属性对象
+     */
+    public static ExcelI18nProperties getI18nProperties() {
+        return defaultI18nProperties;
+    }
+
+    /**
+     * 手动更新多语言国际化配置属性（主要用于测试与动态覆盖）
+     *
+     * @param properties 国际化配置属性
+     */
+    public static void setI18nProperties(ExcelI18nProperties properties) {
+        if (properties != null) {
+            defaultI18nProperties = properties;
+        }
+    }
+
+    /**
+     * 获取当前生效的安全防护与公式注入防御配置属性对象
+     *
+     * @return 安全防护配置对象
+     */
+    public static ExcelSecurityProperties getSecurityProperties() {
+        return defaultSecurityProperties;
+    }
+
+    /**
+     * 获取当前生效的导入校验与错误熔断配置属性对象
+     *
+     * @return 导入校验配置对象
+     */
+    public static ExcelValidationProperties getValidationProperties() {
+        return defaultValidationProperties;
+    }
+
+    /**
+     * 获取当前生效的流式分页导出配置属性对象
+     *
+     * @return 流式分页配置对象
+     */
+    public static ExcelStreamingExportProperties getStreamingExportProperties() {
+        return defaultStreamingExportProperties;
+    }
+
+    /**
+     * 获取当前生效的同步全量读取最大安全行数上限
+     *
+     * @return 同步读取安全行数上限
+     */
+    public static int getMaxSyncRows() {
+        return maxSyncRows;
+    }
+
+    /**
+     * 设置同步全量读取最大安全行数上限（设为 0 或负数则关闭行数限制）
+     *
+     * @param rows 安全行数上限
+     */
+    public static void setMaxSyncRows(int rows) {
+        maxSyncRows = rows;
     }
 
     /**
@@ -189,7 +324,9 @@ public final class ExcelUtil {
 
     private static <T> ExcelWriterBuilder createStandardWriterBuilder(OutputStream outputStream, Class<T> clazz) {
         var writerBuilder = FesodSheet.write(outputStream, clazz)
-                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER);
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_SENSITIVE_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         if (MergeCellWriteHandler.hasMergeAnnotation(clazz)) {
             writerBuilder.registerWriteHandler(new MergeCellWriteHandler());
         }
@@ -198,6 +335,9 @@ public final class ExcelUtil {
             writerBuilder.registerConverter(new SmartImageConverter());
         }
         configureStyle(writerBuilder, clazz);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(clazz)) {
+            writerBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(clazz));
+        }
         registerEnumConverters(writerBuilder, clazz);
         return writerBuilder;
     }
@@ -274,6 +414,212 @@ public final class ExcelUtil {
     }
 
     /**
+     * 创建基于指定输出流的海量数据流式分页导出模板
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param <T>          实体泛型
+     * @return 流式分页导出模板实例
+     */
+    public static <T> StreamingPageExportTemplate<T> streaming(OutputStream outputStream, Class<T> clazz) {
+        StreamingPageExportTemplate<T> template = new StreamingPageExportTemplate<>(outputStream, clazz);
+        template.maxRowsPerSheet(defaultStreamingExportProperties.getMaxRowsPerSheet());
+        template.defaultPageSize(defaultStreamingExportProperties.getDefaultPageSize());
+        template.sheetConfigurator(ExcelUtil::configureSheet);
+        return template;
+    }
+
+    /**
+     * Web 环境下创建基于 HttpServletResponse 的海量数据流式分页导出模板
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz    导出的实体类型 Class（不可为空）
+     * @param <T>      实体泛型
+     * @return 流式分页导出模板实例
+     */
+    public static <T> StreamingPageExportTemplate<T> streaming(HttpServletResponse response, String fileName, Class<T> clazz) {
+        prepareWebResponse(response, fileName);
+        try {
+            return streaming(response.getOutputStream(), clazz);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建流式分页导出模板失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 流式分页导出数据至指定的 OutputStream（基于 PageResult 驱动）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param pageLoader   分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>          实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return exportStreaming(outputStream, DEFAULT_SHEET_NAME, clazz, pageLoader);
+    }
+
+    /**
+     * 流式分页导出数据至指定的 OutputStream，并指定基础 Sheet 名称（基于 PageResult 驱动）
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param sheetName    基础工作表名称
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param pageLoader   分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>          实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(OutputStream outputStream, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        try (StreamingPageExportTemplate<T> template = streaming(outputStream, clazz)) {
+            template.baseSheetName(sheetName);
+            return template.exportByPage(pageLoader);
+        }
+    }
+
+    /**
+     * Web 环境下流式分页导出至 HttpServletResponse（基于 PageResult 驱动）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>        实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(HttpServletResponse response, String fileName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        return exportStreaming(response, fileName, DEFAULT_SHEET_NAME, clazz, pageLoader);
+    }
+
+    /**
+     * Web 环境下流式分页导出至 HttpServletResponse，并指定基础 Sheet 名称（基于 PageResult 驱动）
+     *
+     * @param response   响应对象（不可为空）
+     * @param fileName   导出的文件名（自动补充 .xlsx 后缀）
+     * @param sheetName  基础工作表名称
+     * @param clazz      导出的实体类型 Class（不可为空）
+     * @param pageLoader 分页拉取函数（入参为页码，从 1 开始）
+     * @param <T>        实体泛型
+     * @return 实际导出的总行数
+     */
+    public static <T> long exportStreaming(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
+        prepareWebResponse(response, fileName);
+        try {
+            return exportStreaming(response.getOutputStream(), sheetName, clazz, pageLoader);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 流式分页导出 Excel 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 流式游标分页导出数据至指定的 OutputStream（基于主键/时间戳游标驱动，消除慢 SQL）
+     *
+     * @param outputStream    目标输出流
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return exportStreamingByCursor(outputStream, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+    }
+
+    /**
+     * 流式游标分页导出数据至指定的 OutputStream，并指定基础 Sheet 名称（基于主键/时间戳游标驱动）
+     *
+     * @param outputStream    目标输出流
+     * @param sheetName       基础工作表名称
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            OutputStream outputStream,
+            String sheetName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        try (StreamingPageExportTemplate<T> template = streaming(outputStream, clazz)) {
+            template.baseSheetName(sheetName);
+            return template.exportByCursor(initialCursor, pageSize, cursorLoader, cursorExtractor);
+        }
+    }
+
+    /**
+     * Web 环境下流式游标分页导出至 HttpServletResponse（基于主键/时间戳游标驱动）
+     *
+     * @param response        响应对象
+     * @param fileName        导出的文件名
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            HttpServletResponse response,
+            String fileName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        return exportStreamingByCursor(response, fileName, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+    }
+
+    /**
+     * Web 环境下流式游标分页导出至 HttpServletResponse，并指定基础 Sheet 名称
+     *
+     * @param response        响应对象
+     * @param fileName        导出的文件名
+     * @param sheetName       基础工作表名称
+     * @param clazz           导出的实体类型 Class
+     * @param initialCursor   初始游标
+     * @param pageSize        每次拉取步长
+     * @param cursorLoader    游标拉取函数
+     * @param cursorExtractor 游标提取器
+     * @param <T>             实体泛型
+     * @param <K>             游标泛型
+     * @return 实际导出的总行数
+     */
+    public static <T, K> long exportStreamingByCursor(
+            HttpServletResponse response,
+            String fileName,
+            String sheetName,
+            Class<T> clazz,
+            K initialCursor,
+            int pageSize,
+            BiFunction<K, Integer, List<T>> cursorLoader,
+            Function<T, K> cursorExtractor) {
+        prepareWebResponse(response, fileName);
+        try {
+            return exportStreamingByCursor(response.getOutputStream(), sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 游标流式分页导出 Excel 失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
      * 同步全量读取 InputStream 数据为强类型实体列表
      * <p>
      * 适用于小文件读取。若数据量极大（超过 1 万行），推荐使用 {@link #readBatch} 进行分批流式消费。
@@ -293,6 +639,10 @@ public final class ExcelUtil {
         registerEnumConverters(readerBuilder, clazz);
         List<T> list = readerBuilder.sheet()
                 .doReadSync();
+        if (maxSyncRows > 0 && list != null && list.size() > maxSyncRows) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + list.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+        }
         return (list != null) ? list : Collections.emptyList();
     }
 
@@ -378,7 +728,7 @@ public final class ExcelUtil {
     }
 
     /**
-     * 强类型读取 Excel 并执行 JSR-303 行级数据校验（默认错误聚合模式）
+     * 强类型读取 Excel 并执行 JSR-303 行级数据校验（默认错误聚合模式，采用全局配置的表头策略与熔断阈值）
      * <p>
      * 校验全部通过时返回数据列表；若存在至少一行校验失败，抛出包含结构化错误详情的 {@link ExcelValidationException}。
      * </p>
@@ -390,11 +740,11 @@ public final class ExcelUtil {
      * @throws ExcelValidationException 当存在行级校验错误时抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz) {
-        return readWithValidation(inputStream, clazz, false);
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), false);
     }
 
     /**
-     * 强类型读取 Excel 并执行 JSR-303 行级数据校验
+     * 强类型读取 Excel 并执行 JSR-303 行级数据校验（采用全局配置的表头策略与熔断阈值）
      *
      * @param inputStream 输入流（不可为空）
      * @param clazz       读取映射的目标实体 Class（不可为空）
@@ -404,24 +754,75 @@ public final class ExcelUtil {
      * @throws ExcelValidationException 当存在行级校验错误时抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, boolean failFast) {
-        Assert.notNull(inputStream, "InputStream 输入流不可为空");
-        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
-
-        BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, failFast);
-        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
-        registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet()
-                .doRead();
-
-        if (listener.hasErrors()) {
-            throw new ExcelValidationException(listener.getErrorList());
-        }
-
-        return listener.getValidDataList();
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), failFast);
     }
 
     /**
-     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常）
+     * 强类型读取 Excel 并执行前置表头契约与 JSR-303 行级数据校验
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略（STRICT: 严格匹配; LOOSE: 宽松全包含; DISABLED: 禁用）
+     * @param <T>            实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException       当存在行级数据校验错误时抛出
+     * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy) {
+        return readWithValidation(inputStream, clazz, headerStrategy, false);
+    }
+
+    /**
+     * 强类型读取 Excel 并执行前置表头契约与 JSR-303 行级数据校验
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略（STRICT: 严格匹配; LOOSE: 宽松全包含; DISABLED: 禁用）
+     * @param failFast       是否快速失败（true: 遇到第一个数据错误立即中断；false: 聚合错误行）
+     * @param <T>            实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException       当存在行级数据校验错误时抛出
+     * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, boolean failFast) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+
+        HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
+        BatchValidationListener<T> listener = new BatchValidationListener<>(
+                clazz,
+                defaultBatchSize,
+                failFast,
+                defaultValidationProperties.getMaxErrorRows(),
+                strategy,
+                null,
+                null,
+                null
+        );
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet().doRead();
+
+        if (listener.hasErrors()) {
+            if (listener.isCircuitBroken()) {
+                throw new ExcelValidationException(
+                        String.format("Excel 导入数据校验失败且达到熔断上限 [%d 行]，已终止后续解析", listener.getMaxErrorRows()),
+                        listener.getErrorList()
+                );
+            }
+            throw new ExcelValidationException(listener.getErrorList());
+        }
+
+        List<T> validDataList = listener.getValidDataList();
+        if (maxSyncRows > 0 && validDataList != null && validDataList.size() > maxSyncRows) {
+            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+        }
+        return validDataList;
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常，采用全局配置的表头策略与熔断阈值）
      *
      * @param inputStream 输入流（不可为空）
      * @param clazz       读取映射的目标实体 Class（不可为空）
@@ -429,23 +830,79 @@ public final class ExcelUtil {
      * @return 包含合法数据与错误行信息的 {@link ExcelReadResult}
      */
     public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz) {
-        Assert.notNull(inputStream, "InputStream 输入流不可为空");
-        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
-
-        BatchValidationListener<T> listener = new BatchValidationListener<>(clazz, false);
-        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
-        registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet()
-                .doRead();
-
-        return ExcelReadResult.<T>builder()
-                .data(new ArrayList<>(listener.getValidDataList()))
-                .errors(new ArrayList<>(listener.getErrorList()))
-                .build();
+        return readWithResult(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows());
     }
 
     /**
-     * 流式分批读取 Excel 并逐行执行 JSR-303 数据校验
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常，指定表头校验策略）
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略
+     * @param <T>            实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy) {
+        return readWithResult(inputStream, clazz, headerStrategy, defaultValidationProperties.getMaxErrorRows());
+    }
+
+    /**
+     * 强类型读取 Excel 并返回包含合法数据与全部错误行的复合结果（不抛异常，指定表头校验策略与错误熔断阈值）
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略
+     * @param maxErrorRows   最大错误熔断行数（达到后立即停止解析）
+     * @param <T>            实体数据泛型
+     * @return 包含合法数据、错误行信息及熔断状态的 {@link ExcelReadResult}
+     */
+    public static <T> ExcelReadResult<T> readWithResult(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, int maxErrorRows) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
+
+        HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
+        int maxErrors = maxErrorRows > 0 ? maxErrorRows : defaultValidationProperties.getMaxErrorRows();
+
+        BatchValidationListener<T> listener = new BatchValidationListener<>(
+                clazz,
+                defaultBatchSize,
+                false,
+                maxErrors,
+                strategy,
+                null,
+                null,
+                null
+        );
+        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
+        registerEnumConverters(readerBuilder, clazz);
+        readerBuilder.sheet().doRead();
+
+        return listener.toResult();
+    }
+
+    /**
+     * 独立对输入流中的 Excel 执行前置表头契约校验（仅扫描表头行即刻关闭，不解析后续数据行）
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       目标模型 Class（不可为空）
+     * @param strategy    表头契约校验策略（不可为空）
+     * @throws ExcelHeaderValidationException 当表头不满足契约时抛出
+     */
+    public static void validateHeader(InputStream inputStream, Class<?> clazz, HeaderValidationStrategy strategy) {
+        Assert.notNull(inputStream, "InputStream 输入流不可为空");
+        Assert.notNull(clazz, "目标模型 Class 不可为空");
+        Assert.notNull(strategy, "HeaderValidationStrategy 校验策略不可为空");
+
+        if (strategy == HeaderValidationStrategy.DISABLED) {
+            return;
+        }
+        ExcelHeaderValidator<?> validator = new ExcelHeaderValidator<>(clazz, strategy);
+        var readerBuilder = FesodSheet.read(inputStream, validator);
+        readerBuilder.sheet().headRowNumber(validator.getExpectedHeadRowCount()).doRead();
+    }
+
+    /**
+     * 流式分批读取 Excel 并逐行执行 JSR-303 数据校验（采用全局配置的表头策略与熔断阈值）
      *
      * @param inputStream   输入流（不可为空）
      * @param clazz         读取映射的目标实体 Class（不可为空）
@@ -459,17 +916,48 @@ public final class ExcelUtil {
                                                    int batchSize,
                                                    Consumer<List<T>> dataConsumer,
                                                    Consumer<List<ExcelErrorRow>> errorConsumer) {
+        readBatchWithValidation(inputStream, clazz, batchSize, defaultValidationProperties.getHeaderStrategy(), defaultValidationProperties.getMaxErrorRows(), dataConsumer, errorConsumer);
+    }
+
+    /**
+     * 流式分批读取 Excel 并逐行执行 JSR-303 数据校验（指定表头校验策略与错误熔断阈值）
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param batchSize      合法数据分批消费大小（大于 0）
+     * @param headerStrategy 表头契约校验策略
+     * @param maxErrorRows   最大错误熔断行数
+     * @param dataConsumer   合法数据分批回调消费者（可为 null）
+     * @param errorConsumer  聚合错误回调消费者（可为 null）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void readBatchWithValidation(InputStream inputStream,
+                                                   Class<T> clazz,
+                                                   int batchSize,
+                                                   HeaderValidationStrategy headerStrategy,
+                                                   int maxErrorRows,
+                                                   Consumer<List<T>> dataConsumer,
+                                                   Consumer<List<ExcelErrorRow>> errorConsumer) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
+        HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
+        int maxErrors = maxErrorRows > 0 ? maxErrorRows : defaultValidationProperties.getMaxErrorRows();
+
         BatchValidationListener<T> listener = new BatchValidationListener<>(
-                clazz, batchSize, false, dataConsumer, errorConsumer, null
+                clazz,
+                batchSize,
+                false,
+                maxErrors,
+                strategy,
+                dataConsumer,
+                errorConsumer,
+                null
         );
 
         var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
         registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet()
-                .doRead();
+        readerBuilder.sheet().doRead();
     }
 
     /**
@@ -706,9 +1194,14 @@ public final class ExcelUtil {
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
 
         var writerBuilder = FesodSheet.write(outputStream, clazz)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
                 .registerWriteHandler(new DropdownSheetWriteHandler(clazz))
-                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER);
+                .registerWriteHandler(DEFAULT_PROMPT_HEAD_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, clazz);
+        if (ColumnLockSheetWriteHandler.hasColumnLock(clazz)) {
+            writerBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(clazz));
+        }
         writerBuilder.sheet(targetSheetName)
                 .doWrite(Collections.emptyList());
     }
@@ -928,7 +1421,9 @@ public final class ExcelUtil {
         List<?> normalizedData = normalizeData(dataList, headList);
 
         var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead);
+                .head(fesodHead)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(normalizedData);
@@ -963,7 +1458,9 @@ public final class ExcelUtil {
         }
 
         var writerBuilder = FesodSheet.write(out)
-                .head(fesodHead);
+                .head(fesodHead)
+                .registerWriteHandler(DEFAULT_I18N_HEAD_WRITE_HANDLER)
+                .registerWriteHandler(DEFAULT_FORMULA_PROTECTION_WRITE_HANDLER);
         configureStyle(writerBuilder, null);
         writerBuilder.sheet(targetSheetName)
                 .doWrite(rows);
@@ -1168,7 +1665,11 @@ public final class ExcelUtil {
      * @param clazz   实体 Class
      */
     private static void registerEnumConverters(AbstractParameterBuilder<?, ?> builder, Class<?> clazz) {
-        if (builder == null || clazz == null) {
+        if (builder == null) {
+            return;
+        }
+        builder.registerConverter(DEFAULT_FORMULA_PROTECTION_STRING_CONVERTER);
+        if (clazz == null) {
             return;
         }
         Set<Class<?>> enumClasses = EnumMappingCache.getEntityEnumClasses(clazz);
@@ -1186,6 +1687,9 @@ public final class ExcelUtil {
             return;
         }
         sheetBuilder.registerWriteHandler(new DropdownSheetWriteHandler(headClass));
+        if (ColumnLockSheetWriteHandler.hasColumnLock(headClass)) {
+            sheetBuilder.registerWriteHandler(new ColumnLockSheetWriteHandler(headClass));
+        }
         registerEnumConverters(sheetBuilder, headClass);
     }
 }

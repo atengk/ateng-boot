@@ -56,7 +56,7 @@ public class DynamicCorsConfigurationSource implements CorsConfigurationSource {
             config.setAllowCredentials(properties.getAllowCredentials());
         }
         if (properties.getMaxAge() != null) {
-            config.setMaxAge(properties.getMaxAge());
+            config.setMaxAge(properties.getMaxAge().toSeconds());
         }
 
         return config;

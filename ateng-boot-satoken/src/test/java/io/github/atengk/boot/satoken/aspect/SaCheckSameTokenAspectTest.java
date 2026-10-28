@@ -100,4 +100,22 @@ class SaCheckSameTokenAspectTest {
         String result = proxy.callInternal();
         assertThat(result).isEqualTo("SUCCESS_INTERNAL");
     }
+
+    @Test
+    @DisplayName("测试 Same-Token 显式禁用 (enabled=false) 时即便无凭据也直接放行")
+    void testDisabledSameTokenPasses() {
+        io.github.atengk.boot.satoken.properties.SaTokenProperties properties = new io.github.atengk.boot.satoken.properties.SaTokenProperties();
+        properties.getSameToken().setEnabled(false);
+
+        // 未提供任何 Header
+        when(mockRequest.getHeader(SaSameUtil.SAME_TOKEN)).thenReturn(null);
+
+        TestServiceImpl target = new TestServiceImpl();
+        AspectJProxyFactory factory = new AspectJProxyFactory(target);
+        factory.addAspect(new SaCheckSameTokenAspect(properties));
+        TestService proxy = factory.getProxy();
+
+        String result = proxy.callInternal();
+        assertThat(result).isEqualTo("SUCCESS_INTERNAL");
+    }
 }

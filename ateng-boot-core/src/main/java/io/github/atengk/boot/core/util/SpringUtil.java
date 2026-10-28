@@ -51,6 +51,15 @@ public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProce
     }
 
     /**
+     * 检查 Spring 容器是否已初始化并注入 SpringUtil
+     *
+     * @return 若已初始化则返回 true，否则返回 false
+     */
+    public static boolean isInitialized() {
+        return applicationContext != null;
+    }
+
+    /**
      * 获取 ApplicationContext 上下文实例
      *
      * @return ApplicationContext
@@ -91,6 +100,17 @@ public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProce
     public static Object getBean(String name) {
         Objects.requireNonNull(name, "name 不能为空");
         return getApplicationContext().getBean(name);
+    }
+
+    /**
+     * 判断容器中是否包含指定名称的 Bean
+     *
+     * @param name Bean 名称
+     * @return 若包含则返回 true，否则返回 false
+     */
+    public static boolean containsBean(String name) {
+        Objects.requireNonNull(name, "name 不能为空");
+        return getApplicationContext().containsBean(name);
     }
 
     /**
@@ -211,6 +231,90 @@ public class SpringUtil implements ApplicationContextAware, BeanFactoryPostProce
      */
     public static String[] getActiveProfiles() {
         return getEnvironment().getActiveProfiles();
+    }
+
+    /**
+     * 判断当前运行环境是否处于开发环境（包含 dev 或以 dev 开头）
+     *
+     * @return 若处于开发环境返回 true，否则返回 false
+     */
+    public static boolean isDev() {
+        return matchesActiveProfile("dev");
+    }
+
+    /**
+     * 判断当前运行环境是否处于生产环境（包含 prod 或以 prod 开头）
+     *
+     * @return 若处于生产环境返回 true，否则返回 false
+     */
+    public static boolean isProd() {
+        return matchesActiveProfile("prod");
+    }
+
+    /**
+     * 判断当前运行环境是否处于测试环境（包含 test 或以 test 开头）
+     *
+     * @return 若处于测试环境返回 true，否则返回 false
+     */
+    public static boolean isTest() {
+        return matchesActiveProfile("test");
+    }
+
+    private static boolean matchesActiveProfile(String profilePrefix) {
+        String[] profiles = getActiveProfiles();
+        if (profiles != null) {
+            for (String profile : profiles) {
+                if (profile != null && (profile.equalsIgnoreCase(profilePrefix)
+                        || profile.toLowerCase().startsWith(profilePrefix + "-")
+                        || profile.toLowerCase().startsWith(profilePrefix + "_"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 获取当前应用程序名称（spring.application.name）
+     *
+     * @return 应用名称；若未配置则返回空字符串
+     */
+    public static String getApplicationName() {
+        String name = getProperty("spring.application.name");
+        return name != null ? name : "";
+    }
+
+    /**
+     * 获取当前应用服务端口（server.port）
+     *
+     * @return 配置的端口号，未配置或配置非法时保底返回 8080
+     */
+    public static int getServerPort() {
+        String portStr = getProperty("server.port");
+        if (portStr != null && !portStr.isBlank()) {
+            try {
+                return Integer.parseInt(portStr.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 8080;
+    }
+
+    /**
+     * 编程式向 Spring BeanFactory 动态注册单例 Bean 实例
+     *
+     * @param beanName Bean 名称
+     * @param bean     Bean 实例
+     * @param <T>      Bean 泛型
+     * @throws IllegalStateException 若 beanFactory 尚未注入
+     */
+    public static <T> void registerBean(String beanName, T bean) {
+        Objects.requireNonNull(beanName, "beanName 不能为空");
+        Objects.requireNonNull(bean, "bean 不能为空");
+        if (beanFactory == null) {
+            throw new IllegalStateException("ConfigurableListableBeanFactory 尚未注入，无法动态注册 Bean");
+        }
+        beanFactory.registerSingleton(beanName, bean);
     }
 
     private static void assertApplicationContext() {

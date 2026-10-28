@@ -2,7 +2,9 @@ package io.github.atengk.boot.satoken.properties;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -37,17 +39,38 @@ public class SaTokenProperties {
     /**
      * 路由拦截器与白名单放行配置
      */
+    @NestedConfigurationProperty
     private InterceptorProperties interceptor = new InterceptorProperties();
 
     /**
      * 微服务集群内部 Same-Token 零信任鉴权配置
      */
+    @NestedConfigurationProperty
     private SameTokenProperties sameToken = new SameTokenProperties();
 
     /**
      * 权限与角色多级缓存治理配置
      */
+    @NestedConfigurationProperty
     private PermissionCacheProperties permissionCache = new PermissionCacheProperties();
+
+    /**
+     * 分布式集群即时同步与广播作废配置
+     */
+    @NestedConfigurationProperty
+    private ClusterSyncProperties clusterSync = new ClusterSyncProperties();
+
+    /**
+     * 登录防暴力破解策略配置
+     */
+    @NestedConfigurationProperty
+    private LoginDefenseProperties loginDefense = new LoginDefenseProperties();
+
+    /**
+     * 数据所有权 (@CheckDataOwner) 越权防御切面配置
+     */
+    @NestedConfigurationProperty
+    private DataOwnerProperties dataOwner = new DataOwnerProperties();
 
     /**
      * 路由拦截器详细配置属性
@@ -121,19 +144,56 @@ public class SaTokenProperties {
         private boolean enabled = true;
 
         /**
-         * 权限与角色缓存有效期（秒），默认 300 秒（5 分钟）
+         * 权限与角色缓存有效期，生产标准默认 5 分钟 (300s)
          */
-        private long timeoutSeconds = 300;
+        private Duration timeout = Duration.ofSeconds(300);
 
         /**
-         * 空权限/空角色防穿透哨兵缓存有效期（秒），默认 60 秒
+         * 空权限/空角色防穿透哨兵缓存有效期，生产标准默认 60 秒
          */
-        private long emptyTtlSeconds = 60;
+        private Duration emptyTtl = Duration.ofSeconds(60);
+
+        /**
+         * 获取权限与角色缓存有效期秒数（向后兼容）
+         *
+         * @return 缓存秒数
+         */
+        public long getTimeoutSeconds() {
+            return timeout != null ? timeout.toSeconds() : 0L;
+        }
+
+        /**
+         * 设置权限与角色缓存有效期秒数（向后兼容）
+         *
+         * @param timeoutSeconds 缓存秒数
+         */
+        public void setTimeoutSeconds(long timeoutSeconds) {
+            this.timeout = Duration.ofSeconds(timeoutSeconds);
+        }
+
+        /**
+         * 获取空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
+         *
+         * @return 哨兵缓存秒数
+         */
+        public long getEmptyTtlSeconds() {
+            return emptyTtl != null ? emptyTtl.toSeconds() : 0L;
+        }
+
+        /**
+         * 设置空权限/空角色防穿透哨兵缓存有效期秒数（向后兼容）
+         *
+         * @param emptyTtlSeconds 哨兵缓存秒数
+         */
+        public void setEmptyTtlSeconds(long emptyTtlSeconds) {
+            this.emptyTtl = Duration.ofSeconds(emptyTtlSeconds);
+        }
     }
 
     /**
      * OpenAPI / Knife4j 自动鉴权弹窗配置
      */
+    @NestedConfigurationProperty
     private OpenApiProperties openapi = new OpenApiProperties();
 
     /**
@@ -151,5 +211,61 @@ public class SaTokenProperties {
          * 鉴权 Header 名称（默认回退使用 Sa-Token 全局配置中的 tokenName，兜底 satoken）
          */
         private String tokenName;
+    }
+
+    /**
+     * 集群同步配置属性
+     */
+    @Data
+    public static class ClusterSyncProperties {
+
+        /**
+         * 是否开启分布式集群即时同步与广播作废
+         */
+        private boolean enabled = true;
+
+        /**
+         * Redis Pub/Sub 广播频道名称
+         */
+        private String channel = "ateng:satoken:cluster-sync";
+    }
+
+    /**
+     * 登录防暴力破解与防撞库策略配置属性
+     */
+    @Data
+    public static class LoginDefenseProperties {
+
+        /**
+         * 是否启用登录防暴力破解策略（默认 false，生产按需开启）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 最大允许连续输错密码上限次数，达到后自动触发封禁（默认: 5）
+         */
+        private int maxRetryCount = 5;
+
+        /**
+         * 触发连续失败阈值后的账号锁定时间（默认: 15m）
+         */
+        private Duration lockTime = Duration.ofMinutes(15);
+
+        /**
+         * 失败计数统计时间窗口，在该窗口内未输错将自然过期重置计数（默认: 15m）
+         */
+        private Duration windowTime = Duration.ofMinutes(15);
+    }
+
+    /**
+     * 数据所有权越权防御属性
+     */
+    @Data
+    public static class DataOwnerProperties {
+
+        /**
+         * 是否启用数据所有权 (@CheckDataOwner) 切面防御
+         */
+        private boolean enabled = true;
     }
 }

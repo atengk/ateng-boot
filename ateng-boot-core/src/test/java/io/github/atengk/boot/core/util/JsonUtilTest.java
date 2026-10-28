@@ -9,6 +9,8 @@ import lombok.NoArgsConstructor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -149,6 +151,41 @@ class JsonUtilTest {
         assertNotNull(root);
         assertEquals(888, root.path("user").path("id").asLong());
         assertTrue(root.path("user").path("active").asBoolean());
+
+        // 测试 byte[] 重载
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        JsonNode byteRoot = JsonUtil.readTree(bytes);
+        assertNotNull(byteRoot);
+        assertEquals(888, byteRoot.path("user").path("id").asLong());
+        assertNull(JsonUtil.readTree((byte[]) null));
+        assertNull(JsonUtil.readTree(new byte[0]));
+
+        // 测试 InputStream 重载
+        ByteArrayInputStream is = new ByteArrayInputStream(bytes);
+        JsonNode streamRoot = JsonUtil.readTree(is);
+        assertNotNull(streamRoot);
+        assertEquals(888, streamRoot.path("user").path("id").asLong());
+        assertNull(JsonUtil.readTree((java.io.InputStream) null));
+
+        // 异常路径
+        assertThrows(IllegalArgumentException.class, () -> JsonUtil.readTree("{invalid".getBytes(StandardCharsets.UTF_8)));
+        assertThrows(IllegalArgumentException.class, () -> JsonUtil.readTree(new ByteArrayInputStream("{invalid".getBytes(StandardCharsets.UTF_8))));
+    }
+
+    @Test
+    @DisplayName("测试 isValidJson 格式有效性校验")
+    void testIsValidJson() {
+        assertFalse(JsonUtil.isValidJson(null));
+        assertFalse(JsonUtil.isValidJson(""));
+        assertFalse(JsonUtil.isValidJson("   "));
+        assertFalse(JsonUtil.isValidJson("invalid json"));
+        assertFalse(JsonUtil.isValidJson("{unclosed"));
+
+        assertTrue(JsonUtil.isValidJson("{\"name\":\"Ateng\"}"));
+        assertTrue(JsonUtil.isValidJson("[1, 2, 3]"));
+        assertTrue(JsonUtil.isValidJson("\"hello\""));
+        assertTrue(JsonUtil.isValidJson("123"));
+        assertTrue(JsonUtil.isValidJson("true"));
     }
 
     @Test
@@ -172,7 +209,9 @@ class JsonUtilTest {
         assertTrue(JsonUtil.parseList("", DemoUser.class).isEmpty());
         assertTrue(JsonUtil.parseMap(null).isEmpty());
         assertTrue(JsonUtil.parseMap("").isEmpty());
-        assertNull(JsonUtil.readTree(null));
+        assertNull(JsonUtil.readTree((String) null));
+        assertNull(JsonUtil.readTree((byte[]) null));
+        assertNull(JsonUtil.readTree((java.io.InputStream) null));
         assertNull(JsonUtil.readTree(""));
     }
 

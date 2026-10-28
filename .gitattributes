@@ -35,3 +35,11 @@ Dockerfile text eol=lf
 *.jar binary
 *.war binary
 *.exe binary
+*.ttf binary
+*.ttc binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.docx binary
+*.xlsx binary
+*.pdf binary

@@ -25,9 +25,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("RedisSerializerFactory 单元测试")
 class RedisSerializerFactoryTest {
 
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     static class UserDemo {
         private Long id;
         private BigInteger bigId;
@@ -35,6 +32,66 @@ class RedisSerializerFactoryTest {
         private LocalDateTime createTime;
         private LocalDate birthDate;
         private LocalTime checkinTime;
+
+        public UserDemo() {
+        }
+
+        public UserDemo(Long id, BigInteger bigId, String username, LocalDateTime createTime, LocalDate birthDate, LocalTime checkinTime) {
+            this.id = id;
+            this.bigId = bigId;
+            this.username = username;
+            this.createTime = createTime;
+            this.birthDate = birthDate;
+            this.checkinTime = checkinTime;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public BigInteger getBigId() {
+            return bigId;
+        }
+
+        public void setBigId(BigInteger bigId) {
+            this.bigId = bigId;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public void setUsername(String username) {
+            this.username = username;
+        }
+
+        public LocalDateTime getCreateTime() {
+            return createTime;
+        }
+
+        public void setCreateTime(LocalDateTime createTime) {
+            this.createTime = createTime;
+        }
+
+        public LocalDate getBirthDate() {
+            return birthDate;
+        }
+
+        public void setBirthDate(LocalDate birthDate) {
+            this.birthDate = birthDate;
+        }
+
+        public LocalTime getCheckinTime() {
+            return checkinTime;
+        }
+
+        public void setCheckinTime(LocalTime checkinTime) {
+            this.checkinTime = checkinTime;
+        }
     }
 
     @Test

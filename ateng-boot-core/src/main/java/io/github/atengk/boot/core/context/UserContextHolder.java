@@ -98,6 +98,38 @@ public final class UserContextHolder {
     }
 
     /**
+     * 判断当前是否处于身份模拟态 (RunAs)
+     *
+     * @return true 表示处于身份模拟态
+     */
+    public static boolean isRunAs() {
+        if (userProvider != null) {
+            try {
+                return userProvider.isRunAs();
+            } catch (Throwable ignored) {
+                // 防御性隔离外部 SPI 抛出的未知异常，保底返回 false
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 获取真实原始操作人唯一标识（仅在处于身份模拟 RunAs 时非空）
+     *
+     * @return 原始操作人标识，非模拟态返回 null
+     */
+    public static String getOriginalUserId() {
+        if (userProvider != null) {
+            try {
+                return userProvider.getOriginalUser();
+            } catch (Throwable ignored) {
+                // 防御性隔离外部 SPI 抛出的未知异常，保底返回 null
+            }
+        }
+        return null;
+    }
+
+    /**
      * 编程式在指定用户上下文中执行代码块（带返回值）
      * 执行完毕后无论成功与否，均严格恢复原先的上下文现场
      *

@@ -1,0 +1,55 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-mail
+  thymeleaf:
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    encoding: UTF-8
+    cache: false
+
+ateng:
+  boot:
+    mail:
+      enabled: true
+      default-account: default
+      accounts:
+        default:
+          host: 127.0.0.1
+          port: 3025
+          ssl: false
+          username: default@example.com
+          password: secret-password-placeholder
+          from: default@example.com
+          from-name: Ateng官方通知
+          properties:
+            mail.smtp.auth: "true"
+            mail.smtp.starttls.enable: "false"
+        ops:
+          host: 127.0.0.1
+          port: 3025
+          ssl: false
+          username: ops@example.com
+          password: secret-password-placeholder
+          from: ops@example.com
+          from-name: Ateng运维监控
+          properties:
+            mail.smtp.auth: "true"
+            mail.smtp.starttls.enable: "false"
+      retry:
+        enabled: true
+        max-attempts: 3
+        delay: 50ms
+        multiplier: 2.0
+      async:
+        core-pool-size: 2
+        max-pool-size: 8
+        queue-capacity: 100
+        thread-name-prefix: sample-mail-async-
+
+logging:
+  level:
+    io.github.atengk.boot.mail: DEBUG

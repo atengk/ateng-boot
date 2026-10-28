@@ -131,6 +131,19 @@ public final class TenantContextHolder {
     }
 
     /**
+     * 显式设置当前线程是否忽略租户过滤
+     *
+     * @param ignore true 表示忽略租户过滤；false 表示不忽略
+     */
+    public static void setIgnoreTenant(boolean ignore) {
+        if (ignore) {
+            IGNORE_DEPTH.set(Math.max(1, IGNORE_DEPTH.get() + 1));
+        } else {
+            IGNORE_DEPTH.remove();
+        }
+    }
+
+    /**
      * 编程式在指定租户上下文中执行代码块（带返回值）
      * 执行完毕后无论成功与否，均严格恢复原先的租户上下文
      *

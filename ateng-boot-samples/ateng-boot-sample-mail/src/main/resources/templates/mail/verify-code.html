@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>验证码通知</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 24px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 32px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+        .header {
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+        .header h2 {
+            margin: 0;
+            color: #1f2937;
+            font-size: 20px;
+        }
+        .content {
+            color: #4b5563;
+            line-height: 1.6;
+            font-size: 15px;
+        }
+        .code-box {
+            margin: 24px 0;
+            padding: 16px;
+            background: #f0fdf4;
+            border: 1px dashed #22c55e;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .code-box .code {
+            font-size: 28px;
+            font-weight: bold;
+            color: #16a34a;
+            letter-spacing: 4px;
+        }
+        .footer {
+            margin-top: 32px;
+            padding-top: 16px;
+            border-top: 1px solid #e5e7eb;
+            color: #9ca3af;
+            font-size: 12px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h2>安全验证码通知</h2>
+    </div>
+    <div class="content">
+        <p>尊敬的 <strong th:text="${username}">用户</strong>，您好：</p>
+        <p>您正在进行账户安全校验，本次操作的动态验证码如下：</p>
+        <div class="code-box">
+            <span class="code" th:text="${code}">123456</span>
+        </div>
+        <p>该验证码有效期为 5 分钟，请勿向任何人泄露。如非本人操作，请忽略此邮件。</p>
+    </div>
+    <div class="footer">
+        <p>本邮件由系统自动发出，请勿直接回复。</p>
+    </div>
+</div>
+</body>
+</html>

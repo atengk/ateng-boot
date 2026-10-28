@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.atengk</groupId>
+        <artifactId>ateng-boot-samples</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>ateng-boot-sample-rocketmq</artifactId>
+    <packaging>jar</packaging>
+
+    <name>${project.groupId}:${project.artifactId}</name>
+    <description>ateng-boot RocketMQ 5.x 生产增强与原生分布式事务自验集成样例（提供受管高阶门面 RocketmqTemplate、延时与 FIFO 保序消息、原生 2PC 分布式事务半消息与统一回查分发架构 RocketmqTransactionChecker、事务感知发信 sendAfterCommit、声明式 @RocketmqListener 事件驱动容器、微服务推断反序列化解耦、大报文防御、消费端毒丸丢弃与 @Idempotent 幂等静默确认、SmartLifecycle 确定性停机排空与 100% 离线自洽 TestDouble 测试沙箱）</description>
+
+    <dependencies>
+        <!-- Web 依赖 (提供场景 Controller 接口与 HTTP 体验) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JSR-303 参数校验组件 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- RocketMQ 生产级增强 Starter -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-rocketmq</artifactId>
+        </dependency>
+
+        <!-- Spring 事务支持 (支持本地事务与 sendAfterCommit 体验) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
+        <!-- 内存数据源 (支持集成测试) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

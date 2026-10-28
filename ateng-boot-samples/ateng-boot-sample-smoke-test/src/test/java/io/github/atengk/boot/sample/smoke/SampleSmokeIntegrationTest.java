@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.smoke;
 
+import cn.dev33.satoken.SaManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -7,17 +8,29 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.smoke.entity.SmokeRecordEntity;
 import io.github.atengk.boot.sample.smoke.mapper.SmokeRecordMapper;
+import io.github.atengk.boot.http.template.HttpTemplate;
+import io.github.atengk.boot.realtime.template.RealtimeTemplate;
+import io.github.atengk.boot.storage.template.StorageTemplate;
 import jakarta.validation.Validator;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * 全家桶自动装配冒烟与跨模块端到端协同集成测试
@@ -28,14 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Ateng
  * @since 2026-10-17
  */
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.test.web.servlet.MockMvc;
-
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
 @SpringBootTest
 @AutoConfigureMockMvc
 @DisplayName("ateng-boot-all 全家桶装配冒烟与跨模块集成门禁测试")
@@ -53,14 +58,39 @@ class SampleSmokeIntegrationTest {
     @Autowired
     private SmokeRecordMapper smokeRecordMapper;
 
+    @Autowired
+    private StorageTemplate storageTemplate;
+
+    @Autowired
+    private HttpTemplate httpTemplate;
+
+    @Autowired
+    private RealtimeTemplate realtimeTemplate;
+
+    @Autowired(required = false)
+    private io.github.atengk.boot.statemachine.autoconfigure.StateMachineInitializer stateMachineInitializer;
+
+    @BeforeEach
+    @AfterEach
+    void resetContexts() {
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+        MDC.clear();
+    }
+
     @Test
     @DisplayName("冒烟测试 1：验证 Spring 容器零冲突加载与核心基础设施 Bean 正确装配")
     void testContextLoadsAndStartersWiring() {
         assertThat(objectMapper).isNotNull();
         assertThat(validator).isNotNull();
         assertThat(smokeRecordMapper).isNotNull();
-        assertThat(cn.dev33.satoken.SaManager.getStpInterface()).isNotNull();
-        assertThat(cn.dev33.satoken.SaManager.getConfig()).isNotNull();
+        assertThat(storageTemplate).isNotNull();
+        assertThat(httpTemplate).isNotNull();
+        assertThat(realtimeTemplate).isNotNull();
+        assertThat(realtimeTemplate.getOnlineUserCount()).isEqualTo(0);
+        assertThat(SaManager.getStpInterface()).isNotNull();
+        assertThat(SaManager.getConfig()).isNotNull();
+        assertThat(stateMachineInitializer).isNotNull();
     }
 
     @Test

@@ -80,4 +80,136 @@ class AtengWebAutoConfigurationTest {
                     assertThat(context).hasSingleBean(io.github.atengk.boot.web.aspect.WebLogAspect.class);
                 });
     }
+
+    @Test
+    @DisplayName("默认配置下成功装配 SlowRequestFilter 注册器且优先级正确")
+    void shouldAutoConfigureSlowRequestFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasBean("slowRequestFilterRegistration");
+            org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                    context.getBean("slowRequestFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.filter.SlowRequestFilter.ORDER);
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.slow-request.enabled=false 时禁用 SlowRequestFilter 注册器")
+    void shouldDisableSlowRequestFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.slow-request.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("slowRequestFilterRegistration");
+                });
+    }
+
+    @Test
+    @DisplayName("当容器声明自定义 SlowRequestFilter Bean 时自动绑定至 FilterRegistrationBean")
+    void shouldRespectCustomSlowRequestFilter() {
+        io.github.atengk.boot.web.filter.SlowRequestFilter customFilter =
+                new io.github.atengk.boot.web.filter.SlowRequestFilter(java.time.Duration.ofSeconds(10));
+        contextRunner.withBean(io.github.atengk.boot.web.filter.SlowRequestFilter.class, () -> customFilter)
+                .run(context -> {
+                    assertThat(context).hasBean("slowRequestFilterRegistration");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("slowRequestFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getFilter()).isSameAs(customFilter);
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下不装配 PayloadLoggingFilter 注册器")
+    void shouldNotAutoConfigurePayloadLoggingFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean("payloadLoggingFilterRegistration");
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.payload-log.enabled=true 时自动装配 PayloadLoggingFilter 与 ContentCachingFilter")
+    void shouldEnablePayloadLoggingFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.payload-log.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("payloadLoggingFilterRegistration");
+                    assertThat(context).hasBean("contentCachingFilterRegistration");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("payloadLoggingFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.filter.PayloadLoggingFilter.ORDER);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器声明自定义 PayloadLoggingFilter Bean 时自动绑定至 FilterRegistrationBean")
+    void shouldRespectCustomPayloadLoggingFilter() {
+        io.github.atengk.boot.web.filter.PayloadLoggingFilter customFilter =
+                new io.github.atengk.boot.web.filter.PayloadLoggingFilter(org.springframework.util.unit.DataSize.ofKilobytes(16));
+        contextRunner.withPropertyValues("ateng.boot.web.payload-log.enabled=true")
+                .withBean(io.github.atengk.boot.web.filter.PayloadLoggingFilter.class, () -> customFilter)
+                .run(context -> {
+                    assertThat(context).hasBean("payloadLoggingFilterRegistration");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("payloadLoggingFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getFilter()).isSameAs(customFilter);
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下自动装配 SecurityHeadersFilter 注册器")
+    void shouldAutoConfigureSecurityHeadersFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).hasBean("securityHeadersFilterRegistration");
+            org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                    context.getBean("securityHeadersFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+            assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.filter.SecurityHeadersFilter.ORDER);
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.security-headers.enabled=false 时不装配 SecurityHeadersFilter")
+    void shouldDisableSecurityHeadersFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.security-headers.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean("securityHeadersFilterRegistration");
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下不装配 ShallowEtagHeaderFilter")
+    void shouldNotAutoConfigureEtagFilterByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean("shallowEtagHeaderFilterRegistration");
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.etag.enabled=true 时自动装配 ShallowEtagHeaderFilter")
+    void shouldEnableEtagFilterWhenConfigured() {
+        contextRunner.withPropertyValues("ateng.boot.web.etag.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("shallowEtagHeaderFilterRegistration");
+                });
+    }
+
+    @Test
+    @DisplayName("默认配置下不装配 XSS 清洗器与过滤器")
+    void shouldNotAutoConfigureXssByDefault() {
+        contextRunner.run(context -> {
+            assertThat(context).doesNotHaveBean("xssFilterRegistration");
+            assertThat(context).doesNotHaveBean("xssCleaner");
+            assertThat(context).doesNotHaveBean("xssJacksonCustomizer");
+        });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.xss.enabled=true 时自动装配 XssFilter、XssCleaner 与 xssJacksonCustomizer")
+    void shouldAutoConfigureXssWhenEnabled() {
+        contextRunner.withPropertyValues("ateng.boot.web.xss.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("xssFilterRegistration");
+                    assertThat(context).hasBean("xssCleaner");
+                    assertThat(context).hasBean("xssJacksonCustomizer");
+                    org.springframework.boot.web.servlet.FilterRegistrationBean<?> registration =
+                            context.getBean("xssFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
+                    assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.xss.XssFilter.ORDER);
+                });
+    }
 }
+

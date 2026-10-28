@@ -43,6 +43,28 @@
         <module>ateng-boot-excel</module>
         <module>ateng-boot-all</module>
         <module>ateng-boot-satoken</module>
+        <module>ateng-boot-storage</module>
+        <module>ateng-boot-http</module>
+        <module>ateng-boot-realtime</module>
+        <module>ateng-boot-rabbitmq</module>
+        <module>ateng-boot-kafka</module>
+        <module>ateng-boot-rocketmq</module>
+        <module>ateng-boot-observability</module>
+        <module>ateng-boot-openapi</module>
+        <module>ateng-boot-mail</module>
+        <module>ateng-boot-ftp</module>
+        <module>ateng-boot-ssh</module>
+        <module>ateng-boot-notification</module>
+        <module>ateng-boot-document</module>
+        <module>ateng-boot-mqtt</module>
+        <module>ateng-boot-pay</module>
+        <module>ateng-boot-datasource</module>
+        <module>ateng-boot-encrypt</module>
+        <module>ateng-boot-statemachine</module>
+        <module>ateng-boot-job-local</module>
+        <module>ateng-boot-tcp</module>
+        <module>ateng-boot-search</module>
+        <module>ateng-boot-admin</module>
         <module>ateng-boot-samples</module>
     </modules>
 
@@ -60,6 +82,19 @@
         <fesod.version>2.1.0-incubating</fesod.version>
         <sa-token.version>1.46.0</sa-token.version>
         <springdoc.version>2.6.0</springdoc.version>
+        <awssdk.version>2.25.70</awssdk.version>
+        <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
+        <greenmail.version>2.1.2</greenmail.version>
+        <commons-net.version>3.11.1</commons-net.version>
+        <mockftpserver.version>3.2.0</mockftpserver.version>
+        <sshd.version>2.14.0</sshd.version>
+        <poi-tl.version>1.12.2</poi-tl.version>
+        <pdfbox.version>3.0.4</pdfbox.version>
+        <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
+        <wechatpay-java.version>0.2.17</wechatpay-java.version>
+        <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
+        <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
+        <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -128,6 +163,43 @@
                 <version>${springdoc.version}</version>
             </dependency>
 
+            <!-- AWS SDK for Java 2.x 依赖版本统管 (Import 模式) -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${awssdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- AWS S3 兼容协议精简依赖（彻底排除庞大的 Netty NIO 传输层） -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>s3</artifactId>
+                <version>${awssdk.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>software.amazon.awssdk</groupId>
+                        <artifactId>netty-nio-client</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+
+            <!-- Apache Commons Net (FTP / FTPS 协议原生驱动) -->
+            <dependency>
+                <groupId>commons-net</groupId>
+                <artifactId>commons-net</artifactId>
+                <version>${commons-net.version}</version>
+            </dependency>
+
+            <!-- MockFtpServer (100% 离线自洽 FTP 测试服务器) -->
+            <dependency>
+                <groupId>org.mockftpserver</groupId>
+                <artifactId>MockFtpServer</artifactId>
+                <version>${mockftpserver.version}</version>
+                <scope>test</scope>
+            </dependency>
+
             <!-- ateng-boot 模块版本管控 -->
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -158,6 +230,177 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-satoken</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-storage</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-realtime</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-rabbitmq</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-kafka</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.rocketmq</groupId>
+                <artifactId>rocketmq-client-java</artifactId>
+                <version>${rocketmq-client-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-rocketmq</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-observability</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-openapi</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-mail</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.icegreen</groupId>
+                <artifactId>greenmail-junit5</artifactId>
+                <version>${greenmail.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-ftp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-ssh</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.sshd</groupId>
+                <artifactId>sshd-core</artifactId>
+                <version>${sshd.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.sshd</groupId>
+                <artifactId>sshd-sftp</artifactId>
+                <version>${sshd.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-notification</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.deepoove</groupId>
+                <artifactId>poi-tl</artifactId>
+                <version>${poi-tl.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-document</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.eclipse.paho</groupId>
+                <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+                <version>${paho-mqttv5.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-mqtt</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-pay</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-datasource</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-encrypt</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-statemachine</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-job-local</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-tcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-search</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-admin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>de.codecentric</groupId>
+                <artifactId>spring-boot-admin-starter-server</artifactId>
+                <version>${spring-boot-admin.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>de.codecentric</groupId>
+                <artifactId>spring-boot-admin-starter-client</artifactId>
+                <version>${spring-boot-admin.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>dynamic-datasource-spring-boot3-starter</artifactId>
+                <version>${dynamic-datasource.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.wechatpay-apiv3</groupId>
+                <artifactId>wechatpay-java</artifactId>
+                <version>${wechatpay-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.alipay.sdk</groupId>
+                <artifactId>alipay-sdk-java</artifactId>
+                <version>${alipay-sdk-java.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
@@ -206,7 +449,7 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
                     <configuration>
-                        <argLine>${argLine}</argLine>
+                        <argLine>${argLine} -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8</argLine>
                     </configuration>
                 </plugin>
             </plugins>
@@ -289,10 +532,14 @@
                             <waitUntil>validated</waitUntil>
                             <excludeArtifacts>
                                 <excludeArtifact>ateng-boot-samples</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-basic</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-core</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-web</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-mybatis-plus</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-redis</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-storage</excludeArtifact>
+                                <excludeArtifact>ateng-boot-sample-job-local</excludeArtifact>
                                 <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>

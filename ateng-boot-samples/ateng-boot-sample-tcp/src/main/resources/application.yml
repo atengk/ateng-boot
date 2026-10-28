@@ -1,0 +1,34 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-tcp
+
+ateng:
+  boot:
+    tcp:
+      enabled: true
+      server:
+        enabled: true
+        host: 0.0.0.0
+        port: 9099
+        framing:
+          mode: DELIMITER
+          delimiter: "\n"
+        idle:
+          reader-idle: 60s
+          writer-idle: 0s
+          all-idle: 0s
+        drain-timeout: 5s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, tcp
+  endpoint:
+    health:
+      show-details: always
+    tcp:
+      enabled: true

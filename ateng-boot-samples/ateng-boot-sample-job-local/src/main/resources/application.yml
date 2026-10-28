@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-job-local
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,localjobs
+  endpoint:
+    health:
+      show-details: always
+
+ateng:
+  boot:
+    web:
+      trace:
+        enabled: true
+    job:
+      local:
+        enabled: true
+        pool-size: 5
+        in-memory-log-capacity: 50
+        log-retention-days: 7
+        shutdown-await-termination-period: 30s
+        actuator:
+          enabled: true
+        alert:
+          enabled: true
+          channel: ops-robot
+
+logging:
+  level:
+    root: INFO
+    io.github.atengk.boot.job.local: DEBUG
+    io.github.atengk.boot.sample.job.local: DEBUG

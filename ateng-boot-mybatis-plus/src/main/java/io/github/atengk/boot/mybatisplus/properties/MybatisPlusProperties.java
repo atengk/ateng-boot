@@ -2,7 +2,9 @@ package io.github.atengk.boot.mybatisplus.properties;
 
 import com.baomidou.mybatisplus.annotation.DbType;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,50 +24,100 @@ public class MybatisPlusProperties {
     private boolean enabled = true;
 
     /**
+     * 慢 SQL 性能审计与告警拦截器配置
+     */
+    @NestedConfigurationProperty
+    private SlowSqlProperties slowSql = new SlowSqlProperties();
+
+    /**
      * 行级多租户插件配置
      */
+    @NestedConfigurationProperty
     private TenantProperties tenant = new TenantProperties();
 
     /**
      * 细粒度数据权限插件配置
      */
+    @NestedConfigurationProperty
     private DataPermissionProperties dataPermission = new DataPermissionProperties();
 
     /**
      * 原生批量操作属性配置
      */
+    @NestedConfigurationProperty
     private BatchProperties batch = new BatchProperties();
-
 
     /**
      * 自动审计填充配置
      */
+    @NestedConfigurationProperty
     private AuditProperties audit = new AuditProperties();
 
     /**
      * 分页插件配置
      */
+    @NestedConfigurationProperty
     private PaginationProperties pagination = new PaginationProperties();
 
     /**
      * 防全表更新/删除插件配置
      */
+    @NestedConfigurationProperty
     private BlockAttackProperties blockAttack = new BlockAttackProperties();
 
     /**
      * 乐观锁插件配置
      */
+    @NestedConfigurationProperty
     private OptimisticLockerProperties optimisticLocker = new OptimisticLockerProperties();
 
     /**
      * 雪花发号器配置
      */
+    @NestedConfigurationProperty
     private SnowflakeProperties snowflake = new SnowflakeProperties();
 
     /**
      * 数据加解密配置
      */
+    @NestedConfigurationProperty
     private CryptoProperties crypto = new CryptoProperties();
+
+    /**
+     * 外部动态 SQL 增强配置
+     */
+    @NestedConfigurationProperty
+    private DynamicSqlProperties dynamicSql = new DynamicSqlProperties();
+
+    /**
+     * 动态查询条件转译引擎配置
+     */
+    @NestedConfigurationProperty
+    private DynamicQueryProperties dynamicQuery = new DynamicQueryProperties();
+
+    /**
+     * 持久层守卫与诊断探针配置
+     */
+    @NestedConfigurationProperty
+    private GuardProperties guard = new GuardProperties();
+
+    /**
+     * 数据变更 Diff 审计拦截器配置
+     */
+    @NestedConfigurationProperty
+    private AuditChangeProperties auditChange = new AuditChangeProperties();
+
+    /**
+     * SQL 日志打印与耗时诊断拦截器配置
+     */
+    @NestedConfigurationProperty
+    private SqlLogProperties sqlLog = new SqlLogProperties();
+
+    /**
+     * 逻辑删除穿透与误删恢复配置
+     */
+    @NestedConfigurationProperty
+    private LogicDeleteProperties logicDelete = new LogicDeleteProperties();
 
     public boolean isEnabled() {
         return enabled;
@@ -73,6 +125,14 @@ public class MybatisPlusProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public SlowSqlProperties getSlowSql() {
+        return slowSql;
+    }
+
+    public void setSlowSql(SlowSqlProperties slowSql) {
+        this.slowSql = slowSql;
     }
 
     public AuditProperties getAudit() {
@@ -123,6 +183,14 @@ public class MybatisPlusProperties {
         this.crypto = crypto;
     }
 
+    public DynamicSqlProperties getDynamicSql() {
+        return dynamicSql;
+    }
+
+    public void setDynamicSql(DynamicSqlProperties dynamicSql) {
+        this.dynamicSql = dynamicSql;
+    }
+
     public TenantProperties getTenant() {
         return tenant;
     }
@@ -145,6 +213,46 @@ public class MybatisPlusProperties {
 
     public void setBatch(BatchProperties batch) {
         this.batch = batch;
+    }
+
+    public GuardProperties getGuard() {
+        return guard;
+    }
+
+    public void setGuard(GuardProperties guard) {
+        this.guard = guard;
+    }
+
+    public DynamicQueryProperties getDynamicQuery() {
+        return dynamicQuery;
+    }
+
+    public void setDynamicQuery(DynamicQueryProperties dynamicQuery) {
+        this.dynamicQuery = dynamicQuery;
+    }
+
+    public AuditChangeProperties getAuditChange() {
+        return auditChange;
+    }
+
+    public void setAuditChange(AuditChangeProperties auditChange) {
+        this.auditChange = auditChange;
+    }
+
+    public SqlLogProperties getSqlLog() {
+        return sqlLog;
+    }
+
+    public void setSqlLog(SqlLogProperties sqlLog) {
+        this.sqlLog = sqlLog;
+    }
+
+    public LogicDeleteProperties getLogicDelete() {
+        return logicDelete;
+    }
+
+    public void setLogicDelete(LogicDeleteProperties logicDelete) {
+        this.logicDelete = logicDelete;
     }
 
 
@@ -412,6 +520,112 @@ public class MybatisPlusProperties {
 
         public void setDefaultSize(int defaultSize) {
             this.defaultSize = defaultSize;
+        }
+    }
+
+    /**
+     * 慢 SQL 性能审计与告警拦截器属性配置
+     */
+    public static class SlowSqlProperties {
+        /**
+         * 是否启用慢 SQL 拦截器，默认 true
+         */
+        private boolean enabled = true;
+
+        /**
+         * 慢 SQL 判定执行耗时阈值，默认 1s
+         */
+        private Duration threshold = Duration.ofSeconds(1);
+
+        /**
+         * 是否对 SQL 进行多行缩进美化，默认 true
+         */
+        private boolean formatSql = true;
+
+        /**
+         * 是否对敏感数据（@FieldEncrypt 字段及密码密钥）进行脱敏掩码，默认 true
+         */
+        private boolean maskSensitive = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public Duration getThreshold() {
+            return threshold;
+        }
+
+        public void setThreshold(Duration threshold) {
+            this.threshold = threshold;
+        }
+
+        public boolean isFormatSql() {
+            return formatSql;
+        }
+
+        public void setFormatSql(boolean formatSql) {
+            this.formatSql = formatSql;
+        }
+
+        public boolean isMaskSensitive() {
+            return maskSensitive;
+        }
+
+        public void setMaskSensitive(boolean maskSensitive) {
+            this.maskSensitive = maskSensitive;
+        }
+    }
+
+    /**
+     * 持久层守卫与诊断探针属性配置
+     */
+    public static class GuardProperties {
+        /**
+         * 是否启用多数据源协同诊断探针，默认 true
+         */
+        private boolean dynamicDatasource = true;
+
+        public boolean isDynamicDatasource() {
+            return dynamicDatasource;
+        }
+
+        public void setDynamicDatasource(boolean dynamicDatasource) {
+            this.dynamicDatasource = dynamicDatasource;
+        }
+    }
+
+    /**
+     * 逻辑删除穿透与恢复拦截器配置
+     */
+    public static class LogicDeleteProperties {
+        /**
+         * 是否启用逻辑删除动态穿透与恢复拦截器插件，默认 true
+         */
+        private boolean enabled = true;
+
+        /**
+         * 逻辑删除标识列名集合（默认 deleted, is_deleted, del_flag）
+         */
+        private List<String> columns = new ArrayList<>(List.of("deleted", "is_deleted", "del_flag"));
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public List<String> getColumns() {
+            return columns;
+        }
+
+        public void setColumns(List<String> columns) {
+            this.columns = columns;
         }
     }
 }

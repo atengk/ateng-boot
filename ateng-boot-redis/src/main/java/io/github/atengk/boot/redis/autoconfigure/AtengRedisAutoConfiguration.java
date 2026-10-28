@@ -1,25 +1,46 @@
 package io.github.atengk.boot.redis.autoconfigure;
 
 import io.github.atengk.boot.redis.atomic.RedisAtomicUtil;
+import io.github.atengk.boot.redis.bloom.BloomFilterBootstrap;
+import io.github.atengk.boot.redis.bloom.RedisBloomFilter;
 import io.github.atengk.boot.redis.cache.JitterTtlFunction;
+import io.github.atengk.boot.redis.cache.template.RedisCacheTemplate;
+import io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager;
 import io.github.atengk.boot.redis.delay.RedisDelayedQueue;
 import io.github.atengk.boot.redis.delay.bootstrap.DelayedQueueBootstrap;
+import io.github.atengk.boot.redis.delay.spi.DelayedQueueFailureHandler;
+import io.github.atengk.boot.redis.delay.spi.LoggingDelayedQueueFailureHandler;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentTemplate;
+import io.github.atengk.boot.redis.idempotent.RedisIdempotentUtil;
+import io.github.atengk.boot.redis.idempotent.aspect.RedisIdempotentAspect;
 import io.github.atengk.boot.redis.lock.aspect.DistributedLockAspect;
 import io.github.atengk.boot.redis.lock.template.DistributedLockTemplate;
 import io.github.atengk.boot.redis.lock.util.RedisLockUtil;
 import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.pubsub.RedisMessagePublisher;
+import io.github.atengk.boot.redis.pubsub.bootstrap.ChannelTopicBootstrap;
 import io.github.atengk.boot.redis.ratelimit.RedisRateLimiterClient;
+import io.github.atengk.boot.redis.script.RedisScriptExecutor;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreTemplate;
+import io.github.atengk.boot.redis.semaphore.RedisSemaphoreUtil;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
+import io.github.atengk.boot.redis.stream.RedisStreamTemplate;
+import io.github.atengk.boot.redis.stream.RedisStreamUtil;
+import io.github.atengk.boot.redis.stream.bootstrap.StreamBootstrap;
+import io.github.atengk.boot.redis.stream.spi.LoggingStreamFailureHandler;
+import io.github.atengk.boot.redis.stream.spi.StreamFailureHandler;
 import io.github.atengk.boot.redis.util.RedisUtil;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.config.BaseConfig;
+import org.redisson.config.BaseMasterSlaveServersConfig;
 import org.redisson.config.ClusterServersConfig;
 import org.redisson.config.Config;
 import org.redisson.config.SentinelServersConfig;
 import org.redisson.config.SingleServerConfig;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -27,6 +48,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
@@ -105,12 +127,70 @@ public class AtengRedisAutoConfiguration {
      * 装配全能 Redis 操作门面工具 RedisUtil
      *
      * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties Redis 核心配置属性
      * @return RedisUtil 门面实例
      */
     @Bean
     @ConditionalOnMissingBean(RedisUtil.class)
-    public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate) {
-        return new RedisUtil(redisTemplate);
+    public RedisUtil redisUtil(RedisTemplate<String, Object> redisTemplate, RedisProperties redisProperties) {
+        return new RedisUtil(redisTemplate, redisProperties);
+    }
+
+    /**
+     * 装配受管原子 Lua 脚本执行器 RedisScriptExecutor
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @return RedisScriptExecutor 执行器门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisScriptExecutor.class)
+    public RedisScriptExecutor redisScriptExecutor(RedisTemplate<String, Object> redisTemplate) {
+        return new RedisScriptExecutor(redisTemplate);
+    }
+
+    /**
+     * 装配受管分布式信号量执行模板 RedisSemaphoreTemplate 并初始化 RedisSemaphoreUtil 静态门面
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式信号量模板
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisSemaphoreTemplate.class)
+    public RedisSemaphoreTemplate redisSemaphoreTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
+        RedisSemaphoreTemplate template = new RedisSemaphoreTemplate(redissonClient, redisProperties);
+        RedisSemaphoreUtil.init(template);
+        return template;
+    }
+
+    /**
+     * 装配分布式业务级防重幂等模板 RedisIdempotentTemplate 并初始化 RedisIdempotentUtil 门面
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return 分布式防重幂等模板
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisIdempotentTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.idempotent", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisIdempotentTemplate redisIdempotentTemplate(RedissonClient redissonClient, RedisProperties redisProperties) {
+        RedisIdempotentTemplate template = new RedisIdempotentTemplate(redissonClient, redisProperties);
+        RedisIdempotentUtil.init(template);
+        return template;
+    }
+
+    /**
+     * 装配声明式分布式防重幂等切面 RedisIdempotentAspect
+     *
+     * @param redisIdempotentTemplate 分布式防重幂等模板
+     * @param redisProperties 属性配置
+     * @return 分布式防重幂等切面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisIdempotentAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.idempotent", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisIdempotentAspect redisIdempotentAspect(RedisIdempotentTemplate redisIdempotentTemplate, RedisProperties redisProperties) {
+        return new RedisIdempotentAspect(redisIdempotentTemplate, redisProperties);
     }
 
     /**
@@ -144,16 +224,52 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
+     * 容器单例初始化完成后，统一将容器中最终生效的受管模板绑定至各全局静态操作门面
+     * 保障下游开发者自定义声明同类型 Bean 覆盖默认装配时，静态门面仍能正确无缝接管
+     *
+     * @param semaphoreTemplateProvider 分布式信号量模板提供者
+     * @param lockTemplateProvider 分布式锁模板提供者
+     * @param idempotentTemplateProvider 防重幂等模板提供者
+     * @return 静态门面生命周期初始化器
+     */
+    @Bean
+    public SmartInitializingSingleton redisStaticFacadesInitializer(
+            ObjectProvider<RedisSemaphoreTemplate> semaphoreTemplateProvider,
+            ObjectProvider<DistributedLockTemplate> lockTemplateProvider,
+            ObjectProvider<RedisIdempotentTemplate> idempotentTemplateProvider,
+            ObjectProvider<RedisStreamTemplate> streamTemplateProvider) {
+        return () -> {
+            semaphoreTemplateProvider.ifAvailable(RedisSemaphoreUtil::init);
+            lockTemplateProvider.ifAvailable(RedisLockUtil::init);
+            idempotentTemplateProvider.ifAvailable(RedisIdempotentUtil::init);
+            streamTemplateProvider.ifAvailable(RedisStreamUtil::init);
+        };
+    }
+
+    /**
      * 装配编程式延时队列门面 RedisDelayedQueue
      *
      * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
      * @return RedisDelayedQueue 门面
      */
     @Bean
     @ConditionalOnMissingBean(RedisDelayedQueue.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public RedisDelayedQueue redisDelayedQueue(RedissonClient redissonClient) {
-        return new RedisDelayedQueue(redissonClient, RedisSerializerFactory.createSafeObjectMapper());
+    public RedisDelayedQueue redisDelayedQueue(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisDelayedQueue(redissonClient, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配延时队列默认消费失败处理器 LoggingDelayedQueueFailureHandler
+     *
+     * @return 默认延时队列失败处理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(DelayedQueueFailureHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public DelayedQueueFailureHandler delayedQueueFailureHandler() {
+        return new LoggingDelayedQueueFailureHandler();
     }
 
     /**
@@ -161,14 +277,17 @@ public class AtengRedisAutoConfiguration {
      *
      * @param redisDelayedQueue 延时队列门面
      * @param redisProperties 属性配置
+     * @param failureHandlerProvider 失败处理器提供者（可选）
      * @return 延时队列生命周期调度器
      */
     @Bean
     @ConditionalOnMissingBean(DelayedQueueBootstrap.class)
     @ConditionalOnProperty(prefix = "ateng.boot.redis.delay-queue", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DelayedQueueBootstrap delayedQueueBootstrap(RedisDelayedQueue redisDelayedQueue,
-                                                       RedisProperties redisProperties) {
-        return new DelayedQueueBootstrap(redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+                                                       RedisProperties redisProperties,
+                                                       ObjectProvider<DelayedQueueFailureHandler> failureHandlerProvider) {
+        return new DelayedQueueBootstrap(redisDelayedQueue, RedisSerializerFactory.createSafeObjectMapper(),
+                redisProperties, failureHandlerProvider.getIfAvailable());
     }
 
     /**
@@ -203,6 +322,68 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
+     * 装配声明式 Redis Pub/Sub 广播主题生命周期调度器 ChannelTopicBootstrap
+     *
+     * @param containerProvider 监听容器提供者
+     * @param redisProperties 属性配置
+     * @return 广播主题调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChannelTopicBootstrap.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.pub-sub", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChannelTopicBootstrap channelTopicBootstrap(ObjectProvider<RedisMessageListenerContainer> containerProvider,
+                                                       RedisProperties redisProperties) {
+        return new ChannelTopicBootstrap(containerProvider, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配生产级 Redis 5.0+ Stream 流式消息操作门面 RedisStreamTemplate
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
+     * @return RedisStreamTemplate 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisStreamTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisStreamTemplate redisStreamTemplate(RedisTemplate<String, Object> redisTemplate,
+                                                   RedisProperties redisProperties) {
+        RedisStreamTemplate template = new RedisStreamTemplate(redisTemplate, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+        RedisStreamUtil.init(template);
+        return template;
+    }
+
+    /**
+     * 装配 Redis Stream 默认消费失败终态处理器 LoggingStreamFailureHandler
+     *
+     * @return 默认失败处理器
+     */
+    @Bean
+    @ConditionalOnMissingBean(StreamFailureHandler.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StreamFailureHandler streamFailureHandler() {
+        return new LoggingStreamFailureHandler();
+    }
+
+    /**
+     * 装配声明式 Redis Stream 消费组容器调度器 StreamBootstrap
+     *
+     * @param redisStreamTemplate RedisStreamTemplate 实例
+     * @param redisProperties 属性配置
+     * @param failureHandlerProvider 失败处理器提供者（可选）
+     * @return Stream 容器生命周期调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(StreamBootstrap.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.stream", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public StreamBootstrap streamBootstrap(RedisStreamTemplate redisStreamTemplate,
+                                           RedisProperties redisProperties,
+                                           ObjectProvider<StreamFailureHandler> failureHandlerProvider) {
+        return new StreamBootstrap(redisStreamTemplate, RedisSerializerFactory.createSafeObjectMapper(),
+                redisProperties, failureHandlerProvider.getIfAvailable());
+    }
+
+    /**
      * 装配分布式业务级并发限流客户端 RedisRateLimiterClient
      *
      * @param redissonClient Redisson 客户端
@@ -224,6 +405,32 @@ public class AtengRedisAutoConfiguration {
     @ConditionalOnMissingBean(RedisAtomicUtil.class)
     public RedisAtomicUtil redisAtomicUtil(RedisTemplate<String, Object> redisTemplate) {
         return new RedisAtomicUtil(redisTemplate);
+    }
+
+    /**
+     * 装配分布式布隆过滤器操作门面 RedisBloomFilter
+     *
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return RedisBloomFilter 门面
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisBloomFilter.class)
+    public RedisBloomFilter redisBloomFilter(RedissonClient redissonClient, RedisProperties redisProperties) {
+        return new RedisBloomFilter(redissonClient, redisProperties);
+    }
+
+    /**
+     * 装配分布式布隆过滤器声明式预热调度器 BloomFilterBootstrap
+     *
+     * @param redisBloomFilter 分布式布隆过滤器门面
+     * @param redisProperties 属性配置
+     * @return 布隆过滤器预热调度器
+     */
+    @Bean
+    @ConditionalOnMissingBean(BloomFilterBootstrap.class)
+    public BloomFilterBootstrap bloomFilterBootstrap(RedisBloomFilter redisBloomFilter, RedisProperties redisProperties) {
+        return new BloomFilterBootstrap(redisBloomFilter, redisProperties);
     }
 
     /**
@@ -280,6 +487,42 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
+     * 装配全景缓存防击穿、防穿透、防雪崩安全执行模板 RedisCacheTemplate
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redissonClient Redisson 客户端
+     * @param redisProperties 属性配置
+     * @return RedisCacheTemplate 模板实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RedisCacheTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public RedisCacheTemplate redisCacheTemplate(RedisTemplate<String, Object> redisTemplate,
+                                                 RedissonClient redissonClient,
+                                                 RedisProperties redisProperties) {
+        return new RedisCacheTemplate(redisTemplate, redissonClient, RedisSerializerFactory.createSafeObjectMapper(), redisProperties);
+    }
+
+    /**
+     * 装配内存+Redis 生产级两级缓存管理器 TwoLevelCacheManager
+     * 具备 L1 内存极速读取与 L2 Redis 跨节点共享能力，支持跨实例 Pub/Sub 广播淘汰协同
+     *
+     * @param redisTemplate RedisTemplate 实例
+     * @param redisProperties 属性配置
+     * @param containerProvider Redis 消息监听容器提供者
+     * @return TwoLevelCacheManager 实例
+     */
+    @Bean
+    @Primary
+    @ConditionalOnMissingBean(TwoLevelCacheManager.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis.two-level", name = "enabled", havingValue = "true")
+    public TwoLevelCacheManager twoLevelCacheManager(RedisTemplate<String, Object> redisTemplate,
+                                                     RedisProperties redisProperties,
+                                                     ObjectProvider<RedisMessageListenerContainer> containerProvider) {
+        return new TwoLevelCacheManager(redisTemplate, redisProperties, containerProvider.getIfAvailable());
+    }
+
+    /**
      * 自动装配原生 RedissonClient，零侵入无缝继承 Spring Boot 官方 spring.data.redis.* 配置
      *
      * @param springRedisProperties Spring 官方数据源配置
@@ -304,7 +547,7 @@ public class AtengRedisAutoConfiguration {
             }
         } else {
             // 2. 否则自动解析 Spring 官方数据源配置进行映射
-            config = createRedissonConfigFromSpringProperties(springRedisProperties);
+            config = createRedissonConfigFromSpringProperties(springRedisProperties, atengProperties);
         }
 
         // 3. 配置线程模型
@@ -322,12 +565,23 @@ public class AtengRedisAutoConfiguration {
     }
 
     /**
-     * 根据 Spring 官方 RedisProperties 映射构建 Redisson Config
+     * 根据 Spring 官方 RedisProperties 映射构建 Redisson Config（兼容旧签名）
      */
     Config createRedissonConfigFromSpringProperties(org.springframework.boot.autoconfigure.data.redis.RedisProperties properties) {
+        return createRedissonConfigFromSpringProperties(properties, new RedisProperties());
+    }
+
+    /**
+     * 根据 Spring 官方 RedisProperties 与 ateng 扩展配置映射构建 Redisson Config
+     */
+    Config createRedissonConfigFromSpringProperties(org.springframework.boot.autoconfigure.data.redis.RedisProperties properties,
+                                                    RedisProperties atengProperties) {
         Config config = new Config();
         boolean isSsl = properties.getSsl() != null && properties.getSsl().isEnabled();
         String prefix = isSsl ? SCHEMA_SSL_PREFIX : SCHEMA_PREFIX;
+        RedisProperties.RedissonProperties rp = (atengProperties != null && atengProperties.getRedisson() != null)
+                ? atengProperties.getRedisson()
+                : new RedisProperties.RedissonProperties();
 
         // 集群模式 (Cluster)
         if (properties.getCluster() != null && !CollectionUtils.isEmpty(properties.getCluster().getNodes())) {
@@ -337,18 +591,8 @@ public class AtengRedisAutoConfiguration {
                 nodeAddresses.add(formatAddress(prefix, node));
             }
             clusterServersConfig.setNodeAddresses(nodeAddresses);
-            if (StringUtils.hasText(properties.getPassword())) {
-                clusterServersConfig.setPassword(properties.getPassword());
-            }
-            if (StringUtils.hasText(properties.getUsername())) {
-                clusterServersConfig.setUsername(properties.getUsername());
-            }
-            if (properties.getTimeout() != null) {
-                clusterServersConfig.setTimeout((int) properties.getTimeout().toMillis());
-            }
-            if (properties.getConnectTimeout() != null) {
-                clusterServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-            }
+            applyBaseServerConfig(clusterServersConfig, properties, rp);
+            applyMasterSlaveConnectionPool(clusterServersConfig, rp);
             return config;
         }
 
@@ -360,18 +604,8 @@ public class AtengRedisAutoConfiguration {
             for (String node : properties.getSentinel().getNodes()) {
                 sentinelServersConfig.addSentinelAddress(formatAddress(prefix, node));
             }
-            if (StringUtils.hasText(properties.getPassword())) {
-                sentinelServersConfig.setPassword(properties.getPassword());
-            }
-            if (StringUtils.hasText(properties.getUsername())) {
-                sentinelServersConfig.setUsername(properties.getUsername());
-            }
-            if (properties.getTimeout() != null) {
-                sentinelServersConfig.setTimeout((int) properties.getTimeout().toMillis());
-            }
-            if (properties.getConnectTimeout() != null) {
-                sentinelServersConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-            }
+            applyBaseServerConfig(sentinelServersConfig, properties, rp);
+            applyMasterSlaveConnectionPool(sentinelServersConfig, rp);
             return config;
         }
 
@@ -385,24 +619,54 @@ public class AtengRedisAutoConfiguration {
             singleServerConfig.setAddress(formatAddress(prefix, host + ":" + port));
         }
         singleServerConfig.setDatabase(properties.getDatabase());
-
-        if (StringUtils.hasText(properties.getPassword())) {
-            singleServerConfig.setPassword(properties.getPassword());
-        }
-        if (StringUtils.hasText(properties.getUsername())) {
-            singleServerConfig.setUsername(properties.getUsername());
-        }
+        applyBaseServerConfig(singleServerConfig, properties, rp);
         if (StringUtils.hasText(properties.getClientName())) {
             singleServerConfig.setClientName(properties.getClientName());
         }
-        if (properties.getTimeout() != null) {
-            singleServerConfig.setTimeout((int) properties.getTimeout().toMillis());
+        if (rp.getConnectionPoolSize() > 0) {
+            singleServerConfig.setConnectionPoolSize(rp.getConnectionPoolSize());
         }
-        if (properties.getConnectTimeout() != null) {
-            singleServerConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+        if (rp.getConnectionMinimumIdleSize() > 0) {
+            singleServerConfig.setConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
         }
 
         return config;
+    }
+
+    private void applyBaseServerConfig(BaseConfig<?> serverConfig,
+                                       org.springframework.boot.autoconfigure.data.redis.RedisProperties properties,
+                                       RedisProperties.RedissonProperties rp) {
+        if (StringUtils.hasText(properties.getPassword())) {
+            serverConfig.setPassword(properties.getPassword());
+        }
+        if (StringUtils.hasText(properties.getUsername())) {
+            serverConfig.setUsername(properties.getUsername());
+        }
+        if (properties.getTimeout() != null) {
+            serverConfig.setTimeout((int) properties.getTimeout().toMillis());
+        }
+        if (properties.getConnectTimeout() != null) {
+            serverConfig.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
+        }
+        if (rp.getPingConnectionInterval() != null) {
+            serverConfig.setPingConnectionInterval((int) rp.getPingConnectionInterval().toMillis());
+        }
+        if (rp.getRetryAttempts() > 0) {
+            serverConfig.setRetryAttempts(rp.getRetryAttempts());
+        }
+        if (rp.getRetryInterval() != null) {
+            serverConfig.setRetryInterval((int) rp.getRetryInterval().toMillis());
+        }
+    }
+
+    private void applyMasterSlaveConnectionPool(BaseMasterSlaveServersConfig<?> serverConfig,
+                                               RedisProperties.RedissonProperties rp) {
+        if (rp.getConnectionPoolSize() > 0) {
+            serverConfig.setMasterConnectionPoolSize(rp.getConnectionPoolSize());
+        }
+        if (rp.getConnectionMinimumIdleSize() > 0) {
+            serverConfig.setMasterConnectionMinimumIdleSize(rp.getConnectionMinimumIdleSize());
+        }
     }
 
     private String formatAddress(String defaultPrefix, String address) {

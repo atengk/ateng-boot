@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -103,5 +104,84 @@ class BusinessAssertTest {
     void shouldAssertEquals() {
         assertDoesNotThrow(() -> BusinessAssert.equals("A", "A", "两者应当相等"));
         assertThrows(BusinessException.class, () -> BusinessAssert.equals("A", "B", "两者不相等"));
+    }
+
+    @Test
+    @DisplayName("测试 {} 占位符惰性格式化")
+    void shouldFormatMessageWithPlaceholdersLazily() {
+        BusinessException ex = assertThrows(BusinessException.class, () ->
+                BusinessAssert.isTrue(false, "用户 {} 状态非法: {}", 1001L, "LOCKED"));
+        assertEquals("用户 1001 状态非法: LOCKED", ex.getMsg());
+
+        // 测试不包含占位符时直接返回原串
+        BusinessException ex2 = assertThrows(BusinessException.class, () ->
+                BusinessAssert.notNull(null, "参数不可为空", "ignored1", "ignored2"));
+        assertEquals("参数不可为空", ex2.getMsg());
+
+        // 测试占位符多于参数时按需截断
+        BusinessException ex3 = assertThrows(BusinessException.class, () ->
+                BusinessAssert.hasText(null, "{} 与 {}", "A"));
+        assertEquals("A 与 {}", ex3.getMsg());
+    }
+
+    @Test
+    @DisplayName("测试 Supplier 延迟构建错误信息（仅在失败时触发计算）")
+    void shouldEvaluateMessageSupplierOnlyOnFailure() {
+        AtomicBoolean evaluated = new AtomicBoolean(false);
+
+        // 成功时 Supplier 绝不执行
+        BusinessAssert.isTrue(true, () -> {
+            evaluated.set(true);
+            return "不应执行";
+        });
+        assertFalse(evaluated.get(), "断言成立时 Supplier 不应被计算");
+
+        // 失败时 Supplier 触发求值
+        BusinessException ex = assertThrows(BusinessException.class, () ->
+                BusinessAssert.isTrue(false, () -> {
+                    evaluated.set(true);
+                    return "动态延迟计算的错误信息";
+                }));
+        assertTrue(evaluated.get());
+        assertEquals("动态延迟计算的错误信息", ex.getMsg());
+    }
+
+    @Test
+    @DisplayName("测试数值与区间断言 (gt, gte, lt, lte, between)")
+    void shouldAssertNumericalAndRangeConditions() {
+        // gt (严格大于)
+        assertDoesNotThrow(() -> BusinessAssert.gt(10, 5, "应当大于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.gt(5, 5, "应当大于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.gt(3, 5, "应当大于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.gt(null, 5, "应当大于 5"));
+
+        // gte (大于等于)
+        assertDoesNotThrow(() -> BusinessAssert.gte(10, 5, "应当大于等于 5"));
+        assertDoesNotThrow(() -> BusinessAssert.gte(5, 5, "应当大于等于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.gte(4, 5, "应当大于等于 5"));
+
+        // lt (严格小于)
+        assertDoesNotThrow(() -> BusinessAssert.lt(3, 5, "应当小于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.lt(5, 5, "应当小于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.lt(6, 5, "应当小于 5"));
+
+        // lte (小于等于)
+        assertDoesNotThrow(() -> BusinessAssert.lte(3, 5, "应当小于等于 5"));
+        assertDoesNotThrow(() -> BusinessAssert.lte(5, 5, "应当小于等于 5"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.lte(6, 5, "应当小于等于 5"));
+
+        // between (闭区间)
+        assertDoesNotThrow(() -> BusinessAssert.between(5, 1, 10, "应当在 1~10 之间"));
+        assertDoesNotThrow(() -> BusinessAssert.between(1, 1, 10, "应当在 1~10 之间"));
+        assertDoesNotThrow(() -> BusinessAssert.between(10, 1, 10, "应当在 1~10 之间"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.between(0, 1, 10, "应当在 1~10 之间"));
+        assertThrows(BusinessException.class, () -> BusinessAssert.between(11, 1, 10, "应当在 1~10 之间"));
+        // 倒置区间直接拦截
+        assertThrows(BusinessException.class, () -> BusinessAssert.between(5, 10, 1, "非法区间应当失败"));
+
+        // 验证占位符格式化
+        BusinessException ex = assertThrows(BusinessException.class, () ->
+                BusinessAssert.between(15, 1, 10, "数值 {} 超出区间 [{}, {}]", 15, 1, 10));
+        assertEquals("数值 15 超出区间 [1, 10]", ex.getMsg());
     }
 }

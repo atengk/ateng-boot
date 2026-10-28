@@ -2,6 +2,9 @@ package io.github.atengk.boot.excel.autoconfigure;
 
 import io.github.atengk.boot.excel.async.AsyncExportTaskService;
 import io.github.atengk.boot.excel.async.InMemoryAsyncExportTaskService;
+import io.github.atengk.boot.excel.async.RedisAsyncExportTaskService;
+import io.github.atengk.boot.excel.async.storage.ExportFileStorage;
+import io.github.atengk.boot.excel.async.storage.LocalFileSystemStorage;
 import io.github.atengk.boot.excel.properties.ExcelProperties;
 import io.github.atengk.boot.excel.spi.DictProvider;
 import io.github.atengk.boot.excel.spi.DictProviderHolder;
@@ -9,11 +12,14 @@ import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.FesodSheet;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 /**
  * Excel 基础设施自动装配类
@@ -50,9 +56,34 @@ public class AtengExcelAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(ExportFileStorage.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ExportFileStorage exportFileStorage(ExcelProperties properties) {
+        return new LocalFileSystemStorage(properties);
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    public static class RedisAsyncExportConfiguration {
+
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(AsyncExportTaskService.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
+        public AsyncExportTaskService redisAsyncExportTaskService(
+                ExcelProperties properties,
+                StringRedisTemplate redisTemplate,
+                ExportFileStorage fileStorage) {
+            return new RedisAsyncExportTaskService(properties, redisTemplate, fileStorage);
+        }
+    }
+
+    @Bean
     @ConditionalOnMissingBean(AsyncExportTaskService.class)
     @ConditionalOnProperty(prefix = "ateng.boot.excel.async-export", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public AsyncExportTaskService asyncExportTaskService(ExcelProperties properties) {
-        return new InMemoryAsyncExportTaskService(properties);
+    public AsyncExportTaskService asyncExportTaskService(
+            ExcelProperties properties,
+            ExportFileStorage fileStorage) {
+        return new InMemoryAsyncExportTaskService(properties, fileStorage);
     }
 }

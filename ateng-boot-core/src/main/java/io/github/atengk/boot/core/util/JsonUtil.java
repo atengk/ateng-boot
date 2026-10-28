@@ -6,6 +6,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.introspect.Annotated;
+import com.fasterxml.jackson.databind.introspect.JacksonAnnotationIntrospector;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
@@ -15,17 +17,23 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.constant.DatePattern;
+import io.github.atengk.boot.core.jackson.SensitiveJsonSerializer;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TimeZone;
 
 /**
@@ -39,6 +47,7 @@ public final class JsonUtil {
 
     private static volatile ObjectMapper defaultMapper = createDefaultObjectMapper();
     private static volatile ObjectMapper longToStringMapper = createLongToStringObjectMapper();
+    private static volatile ObjectMapper cloneMapper = createCloneObjectMapper();
 
     private JsonUtil() {
     }
@@ -84,6 +93,29 @@ public final class JsonUtil {
         ObjectMapper mapper = new ObjectMapper();
         configureBaseFeatures(mapper);
         registerJavaTimeModule(mapper, true);
+        return mapper;
+    }
+
+    /**
+     * 构建一个专供纯内存深度克隆的 ObjectMapper 实例
+     * 自动过滤出界视图脱敏注解（@FieldSensitive），恪守 ADR-0012 内存真明文原则
+     *
+     * @return 内存深拷贝专用的 ObjectMapper 实例
+     */
+    public static ObjectMapper createCloneObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        configureBaseFeatures(mapper);
+        registerJavaTimeModule(mapper, false);
+        mapper.setAnnotationIntrospector(new JacksonAnnotationIntrospector() {
+            @Override
+            public Object findSerializer(Annotated a) {
+                Object serializer = super.findSerializer(a);
+                if (SensitiveJsonSerializer.class.equals(serializer)) {
+                    return null;
+                }
+                return serializer;
+            }
+        });
         return mapper;
     }
 
@@ -268,6 +300,48 @@ public final class JsonUtil {
     }
 
     /**
+     * 基于 Java Type 将 JSON 字符串反序列化为对象 (支持 ParameterizedType 等复杂泛型)
+     *
+     * @param json JSON 字符串
+     * @param type 目标类型 Type
+     * @param <T>  目标类型泛型
+     * @return 反序列化对象；入参为空或空串时安全返回 null
+     */
+    public static <T> T parseObject(String json, java.lang.reflect.Type type) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        Objects.requireNonNull(type, "目标类型 Type 不能为 null");
+        try {
+            JavaType javaType = defaultMapper.constructType(type);
+            return defaultMapper.readValue(json, javaType);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("JSON 反序列化失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 基于 Java Type 将 UTF-8 字节数组反序列化为对象 (支持 ParameterizedType 等复杂泛型)
+     *
+     * @param bytes JSON 字节数组
+     * @param type  目标类型 Type
+     * @param <T>   目标类型泛型
+     * @return 反序列化对象；入参为空或长度为 0 时安全返回 null
+     */
+    public static <T> T parseObject(byte[] bytes, java.lang.reflect.Type type) {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        Objects.requireNonNull(type, "目标类型 Type 不能为 null");
+        try {
+            JavaType javaType = defaultMapper.constructType(type);
+            return defaultMapper.readValue(bytes, javaType);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 字节数组反序列化失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 将 JSON 数组字符串反序列化为 List 集合
      *
      * @param json  JSON 数组字符串
@@ -340,6 +414,58 @@ public final class JsonUtil {
     }
 
     /**
+     * 将字节数组解析为树形结构的 JsonNode
+     *
+     * @param bytes JSON 字节数组
+     * @return JsonNode；入参为空或长度为 0 时安全返回 null
+     */
+    public static JsonNode readTree(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        try {
+            return defaultMapper.readTree(bytes);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 读取树节点失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 从输入流解析为树形结构的 JsonNode
+     *
+     * @param inputStream JSON 输入流
+     * @return JsonNode；入参为 null 时安全返回 null
+     */
+    public static JsonNode readTree(InputStream inputStream) {
+        if (inputStream == null) {
+            return null;
+        }
+        try {
+            return defaultMapper.readTree(inputStream);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("JSON 读取树节点失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 判断给定字符串是否为合法的 JSON 格式（支持 JSON Object、JSON Array 或基础标量）
+     *
+     * @param json 待校验字符串
+     * @return 若是合法 JSON 则返回 true；若为 null、空白串或非法 JSON 格式则返回 false
+     */
+    public static boolean isValidJson(String json) {
+        if (json == null || json.isBlank()) {
+            return false;
+        }
+        try {
+            defaultMapper.readTree(json);
+            return true;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /**
      * 将任意源对象转换为目标类型（类似反射式属性映射或动态结构重塑）
      *
      * @param fromValue   原始源对象
@@ -369,5 +495,69 @@ public final class JsonUtil {
         }
         Objects.requireNonNull(toValueTypeRef, "目标泛型类型引用 TypeReference 不能为 null");
         return defaultMapper.convertValue(fromValue, toValueTypeRef);
+    }
+
+    /**
+     * 基于 Jackson 内存树机制对源对象执行类型安全的纯内存深度克隆
+     * 避免了生成 JSON 字符串的中转开销，自动继承东八区与 JSR-310 时间格式支持，实现绝对内存隔离防并发脏写
+     * 支持泛型容器（List、Set、Map）及不可变集合，递归深拷贝每个元素防类型退化与构造崩溃
+     *
+     * @param source 待克隆源对象
+     * @param <T>    对象类型泛型
+     * @return 深度克隆后的全新对象；入参为 null 时安全返回 null
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> T deepClone(T source) {
+        if (source == null) {
+            return null;
+        }
+        try {
+            if (source instanceof List<?> list) {
+                List<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) {
+                    copy.add(deepClone(item));
+                }
+                return (T) copy;
+            }
+            if (source instanceof Set<?> set) {
+                Set<Object> copy = new LinkedHashSet<>(set.size());
+                for (Object item : set) {
+                    copy.add(deepClone(item));
+                }
+                return (T) copy;
+            }
+            if (source instanceof Map<?, ?> map) {
+                Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    copy.put(deepClone(entry.getKey()), deepClone(entry.getValue()));
+                }
+                return (T) copy;
+            }
+            JsonNode node = cloneMapper.valueToTree(source);
+            return (T) cloneMapper.treeToValue(node, source.getClass());
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("对象深度克隆失败: " + e.getMessage(), e);
+        } catch (Exception e) {
+            if (e instanceof IllegalArgumentException iae && iae.getMessage() != null && iae.getMessage().startsWith("对象深度克隆失败")) {
+                throw iae;
+            }
+            throw new IllegalArgumentException("对象深度克隆失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 基于 TypeReference 对复杂泛型容器（如 List&lt;T&gt;、Map&lt;K, V&gt;）执行类型安全的纯内存深度克隆
+     *
+     * @param source         待克隆源对象
+     * @param toValueTypeRef 目标泛型类型引用
+     * @param <T>            对象类型泛型
+     * @return 深度克隆后的全新对象；入参为 null 时安全返回 null
+     */
+    public static <T> T deepClone(T source, TypeReference<T> toValueTypeRef) {
+        if (source == null) {
+            return null;
+        }
+        Objects.requireNonNull(toValueTypeRef, "目标泛型类型引用 TypeReference 不能为 null");
+        return cloneMapper.convertValue(source, toValueTypeRef);
     }
 }

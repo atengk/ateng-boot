@@ -243,8 +243,11 @@ public class UserController {
 
 ### 本地样例一键运行 (Demo Samples)
 ```bash
-# 启动基础极简脚手架工程（内置 H2 内存库与完整自验用例）
-mvn -pl ateng-boot-samples/ateng-boot-sample-basic spring-boot:run
+# 启动 Web 契约层与全链路追踪场景样例
+mvn -pl ateng-boot-samples/ateng-boot-sample-web spring-boot:run
+
+# 启动持久层增强双领域模型场景样例（内置 H2 内存库）
+mvn -pl ateng-boot-samples/ateng-boot-sample-mybatis-plus spring-boot:run
 ```
 
 ---

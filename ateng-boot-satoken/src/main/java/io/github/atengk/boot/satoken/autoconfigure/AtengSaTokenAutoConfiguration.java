@@ -13,6 +13,7 @@ import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.core.spi.CurrentTenantProvider;
 import io.github.atengk.boot.core.spi.CurrentUserProvider;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.satoken.aspect.SaCheckDataOwnerAspect;
 import io.github.atengk.boot.satoken.aspect.SaCheckSameTokenAspect;
 import io.github.atengk.boot.satoken.cache.CachedStpInterface;
 import io.github.atengk.boot.satoken.cache.DefaultUserRolePermissionLoader;
@@ -20,21 +21,27 @@ import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.cache.UserRolePermissionLoader;
 import io.github.atengk.boot.satoken.config.SaTokenWebMvcConfigurer;
 import io.github.atengk.boot.satoken.dao.SaTokenRedisDao;
+import io.github.atengk.boot.satoken.defense.LoginFailureLockService;
 import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
+import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
 import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
+import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentTenantProvider;
 import io.github.atengk.boot.satoken.provider.SaTokenCurrentUserProvider;
+import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springdoc.core.customizers.GlobalOpenApiCustomizer;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -43,7 +50,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
+import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterSyncListener;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterRedisMessageSubscriber;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -54,6 +67,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "io.github.atengk.boot.redis.autoconfigure.AtengRedisAutoConfiguration",
+        "io.github.atengk.boot.web.autoconfigure.AtengWebAutoConfiguration"
+})
 @ConditionalOnClass(StpUtil.class)
 @EnableConfigurationProperties(SaTokenProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.satoken", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -68,7 +86,7 @@ public class AtengSaTokenAutoConfiguration {
     @PostConstruct
     public void initFirewallStrategy() {
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
-        UserContextHolder.setUserProvider(LoginHelper::getUserId);
+        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider());
         TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
 
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
@@ -110,6 +128,7 @@ public class AtengSaTokenAutoConfiguration {
      */
     @Bean
     @ConditionalOnClass(FilterRegistrationBean.class)
+    @ConditionalOnBean(SaTokenCorsFilterForJakartaServlet.class)
     public FilterRegistrationBean<SaTokenCorsFilterForJakartaServlet> disableSaTokenCorsFilter(SaTokenCorsFilterForJakartaServlet filter) {
         FilterRegistrationBean<SaTokenCorsFilterForJakartaServlet> registration = new FilterRegistrationBean<>(filter);
         registration.setEnabled(false);
@@ -120,12 +139,57 @@ public class AtengSaTokenAutoConfiguration {
      * 注册两级权限与角色缓存管理门面服务
      *
      * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @param broadcasterProvider   集群同步广播器可选提供者
      * @return 缓存管理服务实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public PermissionCacheService permissionCacheService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        return new PermissionCacheService(redisTemplateProvider);
+    public PermissionCacheService permissionCacheService(
+            ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+            ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider) {
+        return new PermissionCacheService(redisTemplateProvider, broadcasterProvider);
+    }
+
+    /**
+     * 注册 Sa-Token 分布式集群广播器门面
+     *
+     * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @return SaTokenClusterBroadcaster 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenClusterBroadcaster saTokenClusterBroadcaster(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new SaTokenClusterBroadcaster(redisTemplateProvider, properties);
+    }
+
+    /**
+     * 注册 Sa-Token 分布式集群同步监听器（监听 Spring 原生安全事件）
+     *
+     * @param broadcaster    集群广播器
+     * @param cacheService   缓存管理服务
+     * @return SaTokenClusterSyncListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaTokenClusterSyncListener saTokenClusterSyncListener(
+            SaTokenClusterBroadcaster broadcaster,
+            PermissionCacheService cacheService) {
+        return new SaTokenClusterSyncListener(broadcaster, cacheService);
+    }
+
+    /**
+     * 注册登录防暴力破解策略门面服务
+     *
+     * @param redisTemplateProvider RedisTemplate 可选提供者
+     * @return LoginFailureLockService 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.login-defense", name = "enabled", havingValue = "true", matchIfMissing = false)
+    public LoginFailureLockService loginFailureLockService(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+        return new LoginFailureLockService(redisTemplateProvider, properties);
     }
 
     /**
@@ -174,6 +238,7 @@ public class AtengSaTokenAutoConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
     public static class RedisDaoConfiguration {
 
         /**
@@ -192,15 +257,54 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
+     * 注册 Sa-Token 增强路由拦截器实例
+     *
+     * @return AtengSaTokenInterceptor 拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AtengSaTokenInterceptor atengSaTokenInterceptor() {
+        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor();
+        saInterceptor.isAnnotation(false);
+        if (properties.getInterceptor().isCheckLogin()) {
+            log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
+            saInterceptor.setAuth(handler -> StpUtil.checkLogin());
+        }
+        return saInterceptor;
+    }
+
+    /**
      * 注册 Sa-Token WebMVC 路由拦截器配置
      *
+     * @param saTokenInterceptor 增强路由拦截器
      * @return WebMvcConfigurer 拦截器配置实例
      */
     @Bean
     @ConditionalOnClass(WebMvcConfigurer.class)
+    @ConditionalOnMissingBean(SaTokenWebMvcConfigurer.class)
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer() {
-        return new SaTokenWebMvcConfigurer(properties);
+    public SaTokenWebMvcConfigurer saTokenWebMvcConfigurer(AtengSaTokenInterceptor saTokenInterceptor) {
+        return new SaTokenWebMvcConfigurer(properties, saTokenInterceptor);
+    }
+
+    /**
+     * 注册 Sa-Token 匿名公开访问与动态白名单自动汇聚处理器
+     *
+     * @param applicationContext  Spring 上下文容器
+     * @param saTokenInterceptor 增强路由拦截器
+     * @param whitelistProviders 白名单提供者 SPI 可选提供者
+     * @return AnonymousUrlProcessor 实例
+     */
+    @Bean
+    @ConditionalOnClass(WebMvcConfigurer.class)
+    @ConditionalOnMissingBean(AnonymousUrlProcessor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AnonymousUrlProcessor anonymousUrlProcessor(
+            ApplicationContext applicationContext,
+            AtengSaTokenInterceptor saTokenInterceptor,
+            ObjectProvider<SaTokenWhitelistProvider> whitelistProviders) {
+        return new AnonymousUrlProcessor(applicationContext, properties, saTokenInterceptor, whitelistProviders);
     }
 
     /**
@@ -253,6 +357,20 @@ public class AtengSaTokenAutoConfiguration {
     }
 
     /**
+     * 注册水平越权防御 (IDOR) 数据所有权校验切面
+     *
+     * @param applicationContext Spring 上下文容器
+     * @return SaCheckDataOwnerAspect 切面实例
+     */
+    @Bean
+    @ConditionalOnClass(org.aspectj.lang.annotation.Aspect.class)
+    @ConditionalOnMissingBean(SaCheckDataOwnerAspect.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.data-owner", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SaCheckDataOwnerAspect saCheckDataOwnerAspect(ApplicationContext applicationContext) {
+        return new SaCheckDataOwnerAspect(applicationContext);
+    }
+
+    /**
      * OpenAPI / Knife4j 鉴权组件嵌套配置（防 Missing Class 类加载异常）
      */
     @Configuration(proxyBeanMethods = false)
@@ -270,6 +388,65 @@ public class AtengSaTokenAutoConfiguration {
         @ConditionalOnProperty(prefix = "ateng.boot.satoken.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
         public SaTokenOpenApiCustomizer saTokenOpenApiCustomizer(SaTokenProperties properties) {
             return new SaTokenOpenApiCustomizer(properties);
+        }
+    }
+
+    /**
+     * Redis Pub/Sub 集群同步消息订阅嵌套配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass({StringRedisTemplate.class, RedisMessageListenerContainer.class})
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.cluster-sync", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class ClusterSyncRedisConfiguration {
+
+        /**
+         * 注册 Sa-Token 集群广播 Redis Pub/Sub 订阅适配器
+         *
+         * @param listener 集群同步监听器
+         * @return SaTokenClusterRedisMessageSubscriber 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public SaTokenClusterRedisMessageSubscriber saTokenClusterRedisMessageSubscriber(SaTokenClusterSyncListener listener) {
+            return new SaTokenClusterRedisMessageSubscriber(listener);
+        }
+
+        /**
+         * 注册 Sa-Token 集群消息订阅监听容器
+         *
+         * @param connectionFactory    Redis 连接工厂
+         * @param subscriber           集群广播订阅适配器
+         * @param properties           配置属性
+         * @param taskExecutorProvider Core 受管异步任务线程池可选提供者
+         * @return RedisMessageListenerContainer 实例
+         */
+        @Bean
+        @ConditionalOnBean(RedisConnectionFactory.class)
+        @ConditionalOnMissingBean(name = "saTokenClusterRedisMessageListenerContainer")
+        public RedisMessageListenerContainer saTokenClusterRedisMessageListenerContainer(
+                RedisConnectionFactory connectionFactory,
+                SaTokenClusterRedisMessageSubscriber subscriber,
+                SaTokenProperties properties,
+                ObjectProvider<org.springframework.core.task.TaskExecutor> taskExecutorProvider) {
+            RedisMessageListenerContainer container = new RedisMessageListenerContainer() {
+                @Override
+                public void start() {
+                    try {
+                        super.start();
+                    } catch (Throwable ex) {
+                        log.warn("Sa-Token 集群消息订阅监听容器启动失败，Redis 不可用或连接被拒绝，已静默安全降级: {}", ex.getMessage());
+                    }
+                }
+            };
+            container.setConnectionFactory(connectionFactory);
+            org.springframework.core.task.TaskExecutor taskExecutor = taskExecutorProvider.getIfAvailable();
+            if (taskExecutor != null) {
+                container.setTaskExecutor(taskExecutor);
+            }
+            String channel = properties.getClusterSync().getChannel();
+            container.addMessageListener(subscriber, new ChannelTopic(channel));
+            log.info("Sa-Token 检测到 Redis 连接工厂，已激活分布式集群即时同步 Pub/Sub 订阅: channel={}", channel);
+            return container;
         }
     }
 }

@@ -47,6 +47,13 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
+        <!-- Caffeine 高性能本地内存缓存（可选依赖，缺类时自动降级为原生 JVM LRU 缓存） -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

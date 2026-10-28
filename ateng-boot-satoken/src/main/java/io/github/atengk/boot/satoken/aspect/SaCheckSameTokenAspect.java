@@ -35,6 +35,10 @@ public class SaCheckSameTokenAspect {
 
     @Before("checkSameTokenPointcut()")
     public void beforeCheck() {
+        if (properties != null && properties.getSameToken() != null && !properties.getSameToken().isEnabled()) {
+            log.debug("微服务内部 Same-Token 校验已显式禁用，放行调用");
+            return;
+        }
         log.debug("执行微服务内部 Same-Token 零信任安全校验");
         if (properties != null && properties.getSameToken() != null) {
             String customHeader = properties.getSameToken().getHeaderName();

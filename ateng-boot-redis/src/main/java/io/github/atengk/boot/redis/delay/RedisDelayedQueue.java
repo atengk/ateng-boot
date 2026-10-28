@@ -1,12 +1,15 @@
 package io.github.atengk.boot.redis.delay;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.redis.delay.model.DeadLetterMessage;
+import io.github.atengk.boot.redis.properties.RedisProperties;
 import io.github.atengk.boot.redis.serializer.RedisSerializerFactory;
 import org.redisson.api.RBlockingQueue;
 import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.util.Map;
@@ -25,12 +28,19 @@ public class RedisDelayedQueue implements DisposableBean {
 
     private final RedissonClient redissonClient;
     private final ObjectMapper objectMapper;
+    private final RedisProperties redisProperties;
     private final Map<String, RDelayedQueue<Object>> delayedQueueMap = new ConcurrentHashMap<>();
 
     public RedisDelayedQueue(RedissonClient redissonClient, ObjectMapper objectMapper) {
+        this(redissonClient, objectMapper, null);
+    }
+
+    public RedisDelayedQueue(RedissonClient redissonClient, ObjectMapper objectMapper, RedisProperties redisProperties) {
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
         this.objectMapper = objectMapper != null ? objectMapper : RedisSerializerFactory.createSafeObjectMapper();
+        this.redisProperties = redisProperties;
     }
+
 
     /**
      * 将消息加入延时队列
@@ -261,6 +271,178 @@ public class RedisDelayedQueue implements DisposableBean {
     }
 
     /**
+     * 解析最终队列名称（自动附加全局 keyPrefix 隔离）
+     *
+     * @param queueName 原始队列名
+     * @return 最终受管队列名
+     */
+    public String resolveQueueName(String queueName) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        String globalPrefix = redisProperties != null ? redisProperties.getKeyPrefix() : null;
+        if (StringUtils.hasText(globalPrefix) && !queueName.startsWith(globalPrefix)) {
+            return globalPrefix + queueName;
+        }
+        return queueName;
+    }
+
+    /**
+     * 解析死信队列名称
+     *
+     * @param queueName 原始队列名
+     * @return 最终死信队列名
+     */
+    public String resolveDeadLetterQueueName(String queueName) {
+        String baseName = resolveQueueName(queueName);
+        String suffix = (redisProperties != null && redisProperties.getDelayQueue() != null
+                && StringUtils.hasText(redisProperties.getDelayQueue().getDeadLetterSuffix()))
+                ? redisProperties.getDelayQueue().getDeadLetterSuffix()
+                : ":dlq";
+        if (baseName.endsWith(suffix)) {
+            return baseName;
+        }
+        return baseName + suffix;
+    }
+
+    /**
+     * 将死信消息投递至死信队列
+     *
+     * @param queueName 原始队列名称
+     * @param deadLetterMessage 死信消息包装体
+     * @param <T> 载荷泛型
+     */
+    public <T> void sendToDeadLetterQueue(String queueName, DeadLetterMessage<T> deadLetterMessage) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        Assert.notNull(deadLetterMessage, "deadLetterMessage must not be null");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        RBlockingQueue<Object> dlq = redissonClient.getBlockingQueue(dlqName);
+        dlq.offer(deadLetterMessage);
+    }
+
+    /**
+     * 将死信消息投递至死信队列（sendToDeadLetterQueue 简写别名）
+     *
+     * @param queueName 原始队列名称
+     * @param deadLetterMessage 死信消息包装体
+     * @param <T> 载荷泛型
+     */
+    public <T> void sendToDeadLetter(String queueName, DeadLetterMessage<T> deadLetterMessage) {
+        sendToDeadLetterQueue(queueName, deadLetterMessage);
+    }
+
+    /**
+     * 查看死信队列队首消息但不移出队列
+     *
+     * @param queueName 原始队列名称
+     * @param <T> 消息泛型
+     * @return 死信消息，不存在返回 null
+     */
+    @SuppressWarnings("unchecked")
+    public <T> DeadLetterMessage<T> peekDeadLetter(String queueName) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        RBlockingQueue<Object> dlq = redissonClient.getBlockingQueue(dlqName);
+        Object raw = dlq.peek();
+        return convertValue(raw, DeadLetterMessage.class);
+    }
+
+    /**
+     * 查看死信队列队首消息并转换载荷为目标类型，不移出队列
+     *
+     * @param queueName 原始队列名称
+     * @param payloadClass 目标载荷类型 Class
+     * @param <T> 目标载荷泛型
+     * @return 类型安全的死信消息对象，不存在返回 null
+     */
+    public <T> DeadLetterMessage<T> peekDeadLetter(String queueName, Class<T> payloadClass) {
+        return convertDeadLetterPayload(peekDeadLetter(queueName), payloadClass);
+    }
+
+    /**
+     * 从死信队列拉取一条死信消息
+     *
+     * @param queueName 原始队列名称
+     * @param <T> 消息泛型
+     * @return 死信消息，不存在返回 null
+     */
+    @SuppressWarnings("unchecked")
+    public <T> DeadLetterMessage<T> pollDeadLetter(String queueName) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        RBlockingQueue<Object> dlq = redissonClient.getBlockingQueue(dlqName);
+        Object raw = dlq.poll();
+        return convertValue(raw, DeadLetterMessage.class);
+    }
+
+    /**
+     * 从死信队列拉取一条死信消息并转换载荷为目标类型
+     *
+     * @param queueName 原始队列名称
+     * @param payloadClass 目标载荷类型 Class
+     * @param <T> 目标载荷泛型
+     * @return 类型安全的死信消息对象，不存在返回 null
+     */
+    public <T> DeadLetterMessage<T> pollDeadLetter(String queueName, Class<T> payloadClass) {
+        return convertDeadLetterPayload(pollDeadLetter(queueName), payloadClass);
+    }
+
+    private <T> DeadLetterMessage<T> convertDeadLetterPayload(DeadLetterMessage<?> rawMessage, Class<T> payloadClass) {
+        if (rawMessage == null) {
+            return null;
+        }
+        T typedPayload = convertValue(rawMessage.payload(), payloadClass);
+        return new DeadLetterMessage<>(
+                rawMessage.originalQueue(),
+                typedPayload,
+                rawMessage.retryTimes(),
+                rawMessage.errorMessage(),
+                rawMessage.exceptionClass(),
+                rawMessage.failedTime()
+        );
+    }
+
+    /**
+     * 获取死信队列积压消息数量
+     *
+     * @param queueName 原始队列名称
+     * @return 死信数量
+     */
+    public int deadLetterSize(String queueName) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        return redissonClient.getBlockingQueue(dlqName).size();
+    }
+
+    /**
+     * 获取死信队列积压消息数量（deadLetterSize 兼容别名）
+     *
+     * @param queueName 原始队列名称
+     * @return 死信数量
+     */
+    public int getDeadLetterSize(String queueName) {
+        return deadLetterSize(queueName);
+    }
+
+    /**
+     * 清空死信队列
+     *
+     * @param queueName 原始队列名称
+     */
+    public void clearDeadLetterQueue(String queueName) {
+        Assert.hasText(queueName, "queueName must not be blank");
+        String dlqName = resolveDeadLetterQueueName(queueName);
+        redissonClient.getBlockingQueue(dlqName).clear();
+    }
+
+    /**
+     * 清空死信队列（clearDeadLetterQueue 简写别名）
+     *
+     * @param queueName 原始队列名称
+     */
+    public void clearDeadLetter(String queueName) {
+        clearDeadLetterQueue(queueName);
+    }
+
+    /**
      * 获取底层 RDelayedQueue 实例
      *
      * @param queueName 队列名称
@@ -270,7 +452,8 @@ public class RedisDelayedQueue implements DisposableBean {
     @SuppressWarnings("unchecked")
     public <T> RDelayedQueue<T> getDelayedQueue(String queueName) {
         Assert.hasText(queueName, "queueName must not be blank");
-        return (RDelayedQueue<T>) delayedQueueMap.computeIfAbsent(queueName, name -> {
+        String resolvedName = resolveQueueName(queueName);
+        return (RDelayedQueue<T>) delayedQueueMap.computeIfAbsent(resolvedName, name -> {
             RBlockingQueue<Object> blockingQueue = redissonClient.getBlockingQueue(name);
             return redissonClient.getDelayedQueue(blockingQueue);
         });
@@ -285,7 +468,7 @@ public class RedisDelayedQueue implements DisposableBean {
      */
     public <T> RBlockingQueue<T> getBlockingQueue(String queueName) {
         Assert.hasText(queueName, "queueName must not be blank");
-        return redissonClient.getBlockingQueue(queueName);
+        return redissonClient.getBlockingQueue(resolveQueueName(queueName));
     }
 
     /**

@@ -104,3 +104,111 @@ _Avoid_: Sign, DataSign, Signature, SecureApi
 数字签名生成与验证的通用 SPI 接口，定义明文摘要哈希计算与数字验签契约。
 _Avoid_: SignManager, SignatureEngine, CryptoSigner
 
+**Traffic Drain**:
+容器下线前将就绪探针置为拒绝流量并执行静默等待的流量排空阶段，防止在途请求与网关路由摘除延迟导致 502/504。
+_Avoid_: PreStop Sleep, Force Kill, Fast Shutdown
+
+**Slow Request Alert**:
+单次 HTTP 请求执行耗时超过预设阈值时触发的主动性能告警与全链路溯源现场记录机制。
+_Avoid_: Request Timeout, Slow Query, Latency Monitor
+
+**ContentCachingFilter**:
+通用请求体可重读过滤器与包装管道，解决 ServletInputStream 阅后即焚冲突并在超限时快速失败截断防 OOM。
+_Avoid_: BodyCacheFilter, ReReadFilter, RequestWrapperFilter
+
+**OperateLog**:
+声明式企业级操作审计注解，声明于 Controller 方法上，定义模块、操作类型、业务描述与敏感参数排除。
+_Avoid_: OperationLog, SysLog, UserLog, ActionLog
+
+**OperateLogAspect**:
+基于 AOP 环绕拦截的结构化操作审计切面，自动关联四维全链路上下文并在出参联动视图脱敏（守卫 ADR-0012 内存真明文）。
+_Avoid_: SysLogAspect, AuditAspect, ActionAspect
+
+**OperateLogStorageProvider**:
+操作审计存储解耦 SPI 接口，定义审计模型持久化与外部投递契约，支持自定义接入 ES/Kafka。
+_Avoid_: AuditStore, LogStorage, OperateLogDao, AuditStorageProvider
+
+**AtengGracefulShutdownHandler**:
+云原生优雅停机排空生命周期处理器，协调就绪探针反转、静默等待、SmartLifecycle 兜底与原子幂等防重入。
+_Avoid_: GracefulShutdownManager, PreStopHandler, DrainService
+
+**SlowRequestFilter**:
+长耗时慢请求性能主动告警过滤器，出口统计耗时、智能放行 WebSocket/SSE/下载长连接并输出单行全链路 WARN 告警。
+_Avoid_: SlowFilter, LatencyFilter, RequestTimeoutFilter
+
+**PayloadLoggingFilter**:
+HTTP 请求与响应双向安全采样日志过滤器，内建 MIME 过滤、强类型截断、凭据正则脱敏与单行聚合输出。
+_Avoid_: HttpDumpFilter, RequestResponseLogFilter, BodyPrintFilter
+
+**SecurityHeadersFilter**:
+向 HTTP 响应安全注入 OWASP 与等保三级推荐标准防护头（nosniff、SAMEORIGIN、xss-protection、referrer-policy）并抹除容器版本指纹的过滤器。
+_Avoid_: SecurityFilter, HeaderFilter, SafeHeaderFilter
+
+**XssFilter**:
+XSS 跨站脚本安全清洗过滤器，协调请求包装器与 Jackson 反序列化器对 Query、Form 及 JSON 请求体实施双轨无害化清洗。
+_Avoid_: AntiXssFilter, CleanFilter, ScriptFilter
+
+**ApiVersion**:
+声明式 API 多版本控制注解，配合 Spring MVC 原生 RequestCondition 挂载 URI 路径版本（/v{version}/）与请求头版本（X-API-Version）精准分流。
+_Avoid_: VersionMapping, ApiV, VersionControl
+
+**IpAccessControl**:
+声明式 IP 访问控制注解，支持单 IP 与 IPv4/IPv6 CIDR 子网白名单/黑名单校验与快速拒绝。
+_Avoid_: IpFilter, IpGuard, Firewall, ClientIpAuth
+
+**Sm2Signer**:
+基于国密 SM2 椭圆曲线数字签名算法与 SM3 杂凑摘要实现的 API 双向加签验签器，满足信创高合规场景。
+_Avoid_: GmSigner, SmSigner, NationalCryptoSigner
+
+**GlobalExceptionCustomizer**:
+全局异常转译扩展点 SPI，允许业务方在标准 GlobalExceptionHandler 前置挂载特定领域异常的友好转译逻辑。
+_Avoid_: ExceptionHandlerCustomizer, ErrorCustomizer, ExceptionSPI
+
+**XssIgnore**:
+XSS 清洗豁免注解，声明于 Controller DTO 实体属性或类上，指示 Jackson 反序列化器对特定富文本或 Markdown 字段跳过清洗。
+_Avoid_: NoXss, SkipXss, RawHtml, IgnoreXss
+
+**IpAccessMode**:
+IP 访问控制校验模式枚举，定义白名单（WHITE_LIST，仅允许列表内 IP 访问）与黑名单（BLACK_LIST，拒绝列表内 IP 访问）策略。
+_Avoid_: IpRuleType, AccessPolicy, FirewallMode
+
+**IpAccessControlFilter**:
+URL 路径级 IP 访问控制过滤器，基于 Ant 风格路径匹配对未授权客户端真实 IP 实施快速无状态阻断。
+_Avoid_: FirewallFilter, SafeIpFilter, ClientFilter
+
+**IpAccessControlAspect**:
+基于 AOP 环绕拦截的声明式 `@IpAccessControl` 注解切面，解析方法与类级访问控制规则并执行精细化权限拦截。
+_Avoid_: IpAspect, FirewallAspect, IpGuardAspect
+
+**IpAccessControlProperties**:
+IP 访问控制运行时配置属性，以 ateng.boot.web.ip-access-control 为前缀，提供黑白名单模式、规则清单与物理 403 切换控制。
+_Avoid_: IpProperties, FirewallProperties
+
+**ApiVersionCondition**:
+实现 Spring MVC 原生 RequestCondition 的版本匹配条件，负责从 URL 路径前缀（/v{version}/）、请求头（X-API-Version）中提取版本并支持缺省默认版本回退。
+_Avoid_: VersionCondition, RequestVersionCondition
+
+**ApiVersionRequestMappingHandlerMapping**:
+API 版本感知型请求映射处理器，继承 RequestMappingHandlerMapping，自动挂载 ApiVersionCondition 并自动扩展 /v{version} 路径前缀模式。
+_Avoid_: VersionHandlerMapping, ApiVersionMapping
+
+**ApiVersionProperties**:
+API 多版本控制运行时配置属性，以 ateng.boot.web.api-version 为前缀，提供缺省默认版本、标头名称与路径前缀启闭控制。
+_Avoid_: VersionProperties, ApiProperties
+
+**ShallowEtagHeaderFilter**:
+基于 Spring 官方浅层 ETag 生成机制的条件协商缓存过滤器，对出站响应体计算哈希并在客户端 If-None-Match 命中时返回 HTTP 304 Not Modified 以节省网络带宽。
+_Avoid_: EtagFilter, CacheFilter, HashFilter
+
+**EtagProperties**:
+ETag 协商缓存运行时配置属性，以 ateng.boot.web.etag 为前缀，提供开关与弱 ETag（write-weak-etag）控制。
+_Avoid_: EtagConfig, CacheProperties
+
+**XssMode**:
+XSS 跨站脚本安全清洗模式枚举，定义实体转义（ESCAPE，默认将敏感字符转为 HTML 实体）与标签剔除（STRIP，直接剥离恶意脚本与 HTML 标签）两种防御模式。
+_Avoid_: XssType, CleanMode, SanitizerMode
+
+**XssCleaner**:
+XSS 无害化安全清洗引擎，依托纯 JDK 原生字符串替换与正则算法实现高效实体转义与脚本标签剥离，零引入三方重型解析库。
+_Avoid_: HtmlSanitizer, AntiXssUtil, XssUtil
+

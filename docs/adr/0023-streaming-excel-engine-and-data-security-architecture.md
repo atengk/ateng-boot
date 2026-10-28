@@ -137,16 +137,39 @@ flowchart TD
 - **智能多媒体图片内嵌 (`@ExcelImage` & `SmartImageConverter`)**：零配置智能识别网络图片 URL、Base64、本地路径与字节流，联动行高处理器自动撑高所在行，抹平 Fesod 原生图片压扁与类型割裂硬伤；
 - **工作表透明防拍照暗水印与锁定 (`WatermarkSheetWriteHandler`)**：利用 Java 2D 动态生成半透明倾斜工号防伪切片注入为工作表底图，屏幕与打印全屏覆盖，不影响单元格操作，配合密码锁定强化合规。
 
+### 9. 工业级高阶扩展演进（流式游标分页与跨表轮转、分布式任务协同、前置表头契约与错误熔断、公式注入防御与多语言表头）
+- **海量数据流式分页与跨 Sheet 轮转分割 (`StreamingPageExportTemplate`)**：
+  - 支持标准页码驱动（`exportByPage`）与高性能主键/时间戳游标驱动（`exportByCursor`，消除大偏移量慢 SQL 与内存溢出）；
+  - 单工作表行数达到配置上限（默认 1,000,000 行，Excel 极限为 1,048,576 行）时，自动无缝跨 Sheet 轮转分割，新 Sheet 100% 自动重绘完整表头并无缝继承全部样式、脱敏与安全拦截器；实现海量报表恒定极低堆内存写出。
+- **分布式异步导出任务中心与文件存储 SPI (`RedisAsyncExportTaskService` & `ExportFileStorage`)**：
+  - 抽象文件存储 SPI `ExportFileStorage`，默认提供 `LocalFileSystemStorage` 本地存储实现，可平滑扩展至 MinIO / S3 / OSS 云对象存储；
+  - 基于 Redis 实现分布式异步导出任务状态协同与元数据纳管，支持断网重连、宕机恢复、TTL 自动失效回收与租约续期防死锁；
+  - 自动装配采用嵌套配置类防御性守卫，有条件探测 `StringRedisTemplate`，在未引入 Redis 时平滑降级至纯内存模式。
+- **导入前置表头契约校验与错误行数熔断器 (`ExcelHeaderValidator` & `BatchValidationListener`)**：
+  - 交付 `ExcelHeaderValidator`，在逐行解析大文件业务数据前，前置校验第一行/多行表头的契约完整性，支持 `STRICT`（列名与顺序严格一致）、`IGNORE_ORDER`（包含所有必要列，允许列序调换）、`LOOSE`（仅校验必要列）三级策略；
+  - 交付 500 行错误熔断机制（`maxErrorRows`，默认 500 行）：当错误行数达到或超出熔断阈值时，`BatchValidationListener` 立即终止后续解析（`hasNext = false`），防御畸形超大文件带来的解析资源耗尽与 DOS 攻击风险。
+- **Excel 公式注入安全防御 (CWE-1236) 与列级防呆只读保护 (`ExcelSecurityUtil`, `@ExcelFormulaAllowed`, `@ExcelColumnLock`)**：
+  - 防御公式注入 (CSV/Excel Formula Injection, CWE-1236)：在导出阶段自动识别以 `=`, `+`, `-`, `@`, `\t`, `\r` 开头的字符串，默认前置单引号 `'` 转译为普通静态文本；导入时自动识别前置单引号逆向反转译还原为内存真明文；
+  - 白名单豁免注解 `@ExcelFormulaAllowed`：针对确实需要计算公式的字段提供白名单豁免，保持合法公式正常计算；
+  - 列级防呆锁定注解 `@ExcelColumnLock`：在工作表受保护状态下锁定特定列（只读），防止业务人员误改系统工号、计算结果等关键数据。
+- **多语言国际化表头动态转译 (`I18nHeadWriteHandler`)**：
+  - 拦截表头渲染事件（声明 `order() = -80000`，绝对优先于自适应列宽与样式渲染）；
+  - 自动识别表头占位符 `{i18n:message.code}`，联动 Spring `MessageSource` 与 `LocaleContextHolder.getLocale()` 动态转译；
+  - 支持 `{i18n:code:default}` 缺省文本回退，并在无 Spring 容器、Key 失配或配置关闭时平滑原样保底输出。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
 
 ### 正向收益
-1. **彻底解决内存泄漏与 OOM 风险**：基于 Apache Fesod 流式管道，在处理百万级海量数据导入导出时堆内存保持低水位平稳运行；
-2. **严守数据安全红线**：端到端贯彻 [ADR-0012](./0012-lifecycle-separated-data-security.md)，保障业务内存明文一致性，彻底消除打星号导致的数据库脏回写灾难；
+1. **彻底解决内存泄漏与 OOM 风险**：基于 Apache Fesod 流式管道与 `StreamingPageExportTemplate` 游标拉取，在处理百万级海量数据导入导出时堆内存保持低水位平稳运行；
+2. **严守数据安全与合规红线**：
+   - 端到端贯彻 [ADR-0012](./0012-lifecycle-separated-data-security.md)，保障业务内存明文一致性，彻底消除打星号导致的数据库脏回写灾难；
+   - 内置 CWE-1236 公式注入前置单引号防卫与列级锁定保护，消除客户端代码执行与关键字段篡改隐患；
 3. **极佳的开发者与用户体验**：
    - 开发者仅需基于统一门面 `ExcelUtil` 或 `ExcelBuilder` 即可完成从简单单表导出到复杂报表填充的全部需求；
-   - 业务用户获得带下拉防呆约束的规范模板，并在导入出错时获得精准标红与悬浮批注的错题集 Excel，大幅降低沟通排查成本。
+   - 业务用户获得带下拉防呆约束的规范模板，并在导入出错时获得精准标红与悬浮批注的错题集 Excel，大幅降低沟通排查成本；
+   - 原生支持多语言表头自适应转译，助力跨国业务与出海系统无缝开箱。
 4. **企业级现代商务美感与防呆排版**：
    - 告别老旧宋体与生硬纯白底色，内置 5 套经典商务色系与优雅斑马纹；自适应列宽计算精准，杜绝文字挤压与数值 `###` 遮挡。
 

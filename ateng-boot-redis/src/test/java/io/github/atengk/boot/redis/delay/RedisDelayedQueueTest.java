@@ -48,12 +48,33 @@ class RedisDelayedQueueTest {
     private ObjectMapper objectMapper;
     private RedisDelayedQueue redisDelayedQueue;
 
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     static class OrderMessage {
         private String orderNo;
         private Double amount;
+
+        public OrderMessage() {
+        }
+
+        public OrderMessage(String orderNo, Double amount) {
+            this.orderNo = orderNo;
+            this.amount = amount;
+        }
+
+        public String getOrderNo() {
+            return orderNo;
+        }
+
+        public void setOrderNo(String orderNo) {
+            this.orderNo = orderNo;
+        }
+
+        public Double getAmount() {
+            return amount;
+        }
+
+        public void setAmount(Double amount) {
+            this.amount = amount;
+        }
     }
 
     @BeforeEach
@@ -172,4 +193,75 @@ class RedisDelayedQueueTest {
         redisDelayedQueue.destroyAll();
         verify(delayedQueue, org.mockito.Mockito.times(2)).destroy();
     }
+
+    @Test
+    @DisplayName("测试死信队列投递、拉取与长度清空操作")
+    void testDeadLetterQueueOperations() {
+        RBlockingQueue<Object> dlqBlockingQueue = org.mockito.Mockito.mock(RBlockingQueue.class);
+        when(redissonClient.getBlockingQueue("order-queue:dlq")).thenReturn(dlqBlockingQueue);
+
+        io.github.atengk.boot.redis.delay.model.DeadLetterMessage<OrderMessage> msg =
+                new io.github.atengk.boot.redis.delay.model.DeadLetterMessage<>(
+                        "order-queue",
+                        new OrderMessage("ORD-999", 199.0),
+                        3,
+                        "扣款失败",
+                        "java.lang.IllegalStateException",
+                        java.time.LocalDateTime.now()
+                );
+
+        // 1. 发送死信
+        redisDelayedQueue.sendToDeadLetterQueue("order-queue", msg);
+        verify(dlqBlockingQueue).offer(msg);
+
+        // 1.1 sendToDeadLetter 别名
+        redisDelayedQueue.sendToDeadLetter("order-queue", msg);
+        verify(dlqBlockingQueue, org.mockito.Mockito.times(2)).offer(msg);
+
+        // 2. 死信队列长度
+        when(dlqBlockingQueue.size()).thenReturn(1);
+        assertThat(redisDelayedQueue.deadLetterSize("order-queue")).isEqualTo(1);
+        assertThat(redisDelayedQueue.getDeadLetterSize("order-queue")).isEqualTo(1);
+
+        // 3. 查看死信 peek
+        when(dlqBlockingQueue.peek()).thenReturn(msg);
+        io.github.atengk.boot.redis.delay.model.DeadLetterMessage<OrderMessage> peeked =
+                redisDelayedQueue.peekDeadLetter("order-queue", OrderMessage.class);
+        assertThat(peeked).isNotNull();
+        assertThat(peeked.payload().getOrderNo()).isEqualTo("ORD-999");
+
+        // 4. 拉取死信 poll
+        when(dlqBlockingQueue.poll()).thenReturn(msg);
+        io.github.atengk.boot.redis.delay.model.DeadLetterMessage<OrderMessage> polled =
+                redisDelayedQueue.pollDeadLetter("order-queue", OrderMessage.class);
+        assertThat(polled).isNotNull();
+        assertThat(polled.originalQueue()).isEqualTo("order-queue");
+        assertThat(polled.retryTimes()).isEqualTo(3);
+        assertThat(polled.errorMessage()).isEqualTo("扣款失败");
+        assertThat(polled.payload().getOrderNo()).isEqualTo("ORD-999");
+
+        // 5. 清空死信
+        redisDelayedQueue.clearDeadLetterQueue("order-queue");
+        verify(dlqBlockingQueue).clear();
+
+        redisDelayedQueue.clearDeadLetter("order-queue");
+        verify(dlqBlockingQueue, org.mockito.Mockito.times(2)).clear();
+    }
+
+    @Test
+    @DisplayName("测试全局 keyPrefix 与死信队列名解析")
+    void testQueueNameResolutionWithKeyPrefix() {
+        io.github.atengk.boot.redis.properties.RedisProperties properties = new io.github.atengk.boot.redis.properties.RedisProperties();
+        properties.setKeyPrefix("myapp:");
+        properties.getDelayQueue().setDeadLetterSuffix(".dead");
+
+        RedisDelayedQueue prefixedQueue = new RedisDelayedQueue(redissonClient, objectMapper, properties);
+
+        assertThat(prefixedQueue.resolveQueueName("pay_task")).isEqualTo("myapp:pay_task");
+        // 已有前缀不重复追加
+        assertThat(prefixedQueue.resolveQueueName("myapp:pay_task")).isEqualTo("myapp:pay_task");
+
+        assertThat(prefixedQueue.resolveDeadLetterQueueName("pay_task")).isEqualTo("myapp:pay_task.dead");
+    }
 }
+

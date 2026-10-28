@@ -8,7 +8,7 @@ import io.github.atengk.boot.web.idempotent.store.IdempotentKeyStore;
 import io.github.atengk.boot.web.properties.WebProperties;
 import io.github.atengk.boot.web.sign.annotation.ApiSign;
 import io.github.atengk.boot.web.sign.enums.SignAlgorithm;
-import io.github.atengk.boot.web.sign.filter.CachedBodyHttpServletRequest;
+import io.github.atengk.boot.web.filter.CachedBodyHttpServletRequest;
 import io.github.atengk.boot.web.sign.spi.ApiSigner;
 import io.github.atengk.boot.web.sign.spi.SignKeyProvider;
 import io.github.atengk.boot.web.sign.util.SignCanonicalUtil;
@@ -265,12 +265,16 @@ public class ApiSignAspect {
 
     private String getVerifyKey(String appId) {
         SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return algorithm == SignAlgorithm.RSA ? signKeyProvider.getPublicKey(appId) : signKeyProvider.getSecretKey(appId);
+        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
+                ? signKeyProvider.getPublicKey(appId)
+                : signKeyProvider.getSecretKey(appId);
     }
 
     private String getSignKey(String appId) {
         SignAlgorithm algorithm = webProperties.getSign().getAlgorithm();
-        return algorithm == SignAlgorithm.RSA ? signKeyProvider.getPrivateKey(appId) : signKeyProvider.getSecretKey(appId);
+        return (algorithm == SignAlgorithm.RSA || algorithm == SignAlgorithm.SM2)
+                ? signKeyProvider.getPrivateKey(appId)
+                : signKeyProvider.getSecretKey(appId);
     }
 
     private String resolveAppId(HttpServletRequest request) {

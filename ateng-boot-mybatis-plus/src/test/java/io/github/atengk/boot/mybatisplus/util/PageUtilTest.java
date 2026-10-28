@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.github.atengk.boot.core.model.PageQuery;
 import io.github.atengk.boot.core.model.PageResult;
+import io.github.atengk.boot.core.model.SortItem;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -130,5 +131,109 @@ class PageUtilTest {
         // 自定义 maxLimit 测试
         Page<?> customPage = PageUtil.toPage(query, true, 200L);
         assertEquals(200L, customPage.getSize());
+    }
+
+    static class TestUserEntity extends io.github.atengk.boot.mybatisplus.entity.BaseIdEntity {
+        @com.baomidou.mybatisplus.annotation.TableField("nick_name")
+        private String nickName;
+
+        @com.baomidou.mybatisplus.annotation.TableField("user_age")
+        private Integer userAge;
+
+        public String getNickName() {
+            return nickName;
+        }
+
+        public void setNickName(String nickName) {
+            this.nickName = nickName;
+        }
+
+        public Integer getUserAge() {
+            return userAge;
+        }
+
+        public void setUserAge(Integer userAge) {
+            this.userAge = userAge;
+        }
+    }
+
+    interface TestUserMapper {
+    }
+
+    @Test
+    @DisplayName("toPage(query): 未指定实体类型时按驼峰下划线规则转译 sorts")
+    void shouldTranslateSortsWithoutEntityClass() {
+        PageQuery query = new PageQuery(1L, 10L)
+                .addAsc("createTime")
+                .addDesc("userName");
+
+        Page<Object> page = PageUtil.toPage(query);
+
+        assertNotNull(page.orders());
+        assertEquals(2, page.orders().size());
+
+        assertEquals("create_time", page.orders().get(0).getColumn());
+        assertTrue(page.orders().get(0).isAsc());
+
+        assertEquals("user_name", page.orders().get(1).getColumn());
+        assertFalse(page.orders().get(1).isAsc());
+    }
+
+    @Test
+    @DisplayName("toPage(query, entityClass): 严格依托实体类元数据白名单安全转译，非法字段平滑过滤")
+    void shouldTranslateSortsWithEntityClassWhitelist() {
+        org.apache.ibatis.session.Configuration configuration = new org.apache.ibatis.session.Configuration();
+        org.apache.ibatis.builder.MapperBuilderAssistant assistant =
+                new org.apache.ibatis.builder.MapperBuilderAssistant(configuration, "resource");
+        assistant.setCurrentNamespace(TestUserMapper.class.getName());
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, TestUserEntity.class);
+
+        PageQuery query = new PageQuery(1L, 10L)
+                .addAsc("id")           // 主键映射
+                .addDesc("nickName")     // 实体字段驼峰映射
+                .addAsc("userAge")      // 实体字段驼峰映射
+                .addAsc("notExistField") // 不存在的非法/未授权字段 -> 必须被平滑忽略
+                .addDesc("passwordHash") // 敏感列未声明探测 -> 必须被平滑忽略
+                .addDesc("password");    // 启发式敏感词 -> 必须被平滑忽略
+
+        Page<TestUserEntity> page = PageUtil.toPage(query, TestUserEntity.class);
+
+        assertNotNull(page.orders());
+        assertEquals(3, page.orders().size());
+
+        assertEquals("id", page.orders().get(0).getColumn());
+        assertTrue(page.orders().get(0).isAsc());
+
+        assertEquals("nick_name", page.orders().get(1).getColumn());
+        assertFalse(page.orders().get(1).isAsc());
+
+        assertEquals("user_age", page.orders().get(2).getColumn());
+        assertTrue(page.orders().get(2).isAsc());
+    }
+
+    @Test
+    @DisplayName("toPage(query): 遇到 null 排序项或非法字段时平滑过滤防护")
+    void shouldSilentlyIgnoreIllegalOrNullSorts() {
+        PageQuery query = new PageQuery(1L, 10L);
+        query.getSorts().add(null);
+
+        // 利用反射绕过 SortItem 自身 setter 注入非法字符，测试 PageUtil 的多重防线
+        SortItem dirtyItem = new SortItem();
+        try {
+            java.lang.reflect.Field propField = SortItem.class.getDeclaredField("property");
+            propField.setAccessible(true);
+            propField.set(dirtyItem, "id; DROP TABLE user;");
+        } catch (Exception e) {
+            fail("反射设置字段失败: " + e.getMessage());
+        }
+        query.getSorts().add(dirtyItem);
+        query.addAsc("validColumn");
+
+        Page<Object> page = PageUtil.toPage(query);
+
+        assertNotNull(page.orders());
+        assertEquals(1, page.orders().size());
+        assertEquals("valid_column", page.orders().get(0).getColumn());
+        assertTrue(page.orders().get(0).isAsc());
     }
 }

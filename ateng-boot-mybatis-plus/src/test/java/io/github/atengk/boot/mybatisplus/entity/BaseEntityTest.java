@@ -59,6 +59,12 @@ class BaseEntityTest {
         private String username;
     }
 
+    @Getter
+    @Setter
+    static class TestDeleteIdEntity extends BaseDeleteIdEntity {
+        private String skuCode;
+    }
+
     @Test
     @DisplayName("1. 顶层泛型抽象 BaseGenericEntity 支持非 Long 类型的自定义主键与多态访问")
     void shouldSupportGenericCustomPrimaryKey() {
@@ -201,5 +207,45 @@ class BaseEntityTest {
         assertEquals(1, entity.getVersion());
         assertEquals(0, entity.getDeleted());
         assertEquals("admin", entity.getUsername());
+    }
+
+    @Test
+    @DisplayName("6. 唯一索引防冲突基类 BaseDeleteIdEntity 继承 BaseEntity 并挂载 version 与 delval='id' 的 Long deleted")
+    void shouldDefineBaseDeleteIdEntityCorrectly() throws NoSuchFieldException {
+        assertTrue(BaseEntity.class.isAssignableFrom(BaseDeleteIdEntity.class));
+
+        // version 字段标配 @Version
+        Field versionField = BaseDeleteIdEntity.class.getDeclaredField("version");
+        assertNotNull(versionField.getAnnotation(Version.class));
+        assertEquals(Integer.class, versionField.getType());
+
+        // deleted 字段标配 @TableLogic(value = "0", delval = "id") 与 @JsonIgnore，且类型为 Long
+        Field deletedField = BaseDeleteIdEntity.class.getDeclaredField("deleted");
+        TableLogic tableLogic = deletedField.getAnnotation(TableLogic.class);
+        assertNotNull(tableLogic);
+        assertEquals("0", tableLogic.value());
+        assertEquals("id", tableLogic.delval());
+        assertNotNull(deletedField.getAnnotation(JsonIgnore.class));
+        assertEquals(Long.class, deletedField.getType());
+
+        TestDeleteIdEntity entity = new TestDeleteIdEntity();
+        entity.setId(5001L);
+        LocalDateTime now = LocalDateTime.now();
+        entity.setCreateTime(now);
+        entity.setUpdateTime(now);
+        entity.setCreateBy("delete-id-creator");
+        entity.setUpdateBy("delete-id-modifier");
+        entity.setVersion(1);
+        entity.setDeleted(0L);
+        entity.setSkuCode("SKU-1001");
+
+        assertEquals(5001L, entity.getId());
+        assertEquals(now, entity.getCreateTime());
+        assertEquals(now, entity.getUpdateTime());
+        assertEquals("delete-id-creator", entity.getCreateBy());
+        assertEquals("delete-id-modifier", entity.getUpdateBy());
+        assertEquals(1, entity.getVersion());
+        assertEquals(0L, entity.getDeleted());
+        assertEquals("SKU-1001", entity.getSkuCode());
     }
 }

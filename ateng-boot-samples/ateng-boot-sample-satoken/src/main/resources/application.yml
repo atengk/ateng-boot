@@ -27,3 +27,8 @@ ateng:
       audit:
         enabled: true
         default-operator: SYSTEM
+    satoken:
+      login-defense:
+        enabled: true
+        max-retry-count: 5
+        lock-time: 15m

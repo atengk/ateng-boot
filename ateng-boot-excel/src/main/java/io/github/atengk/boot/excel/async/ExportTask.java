@@ -58,6 +58,16 @@ public class ExportTask implements Serializable {
     private String downloadUrl;
 
     /**
+     * 底层存储标识键（如本地相对路径或 OSS ObjectKey）
+     */
+    private String storageKey;
+
+    /**
+     * 执行租约超时时间（用于节点宕机或死任务探测）
+     */
+    private LocalDateTime leaseExpireTime;
+
+    /**
      * 生成的文件大小（字节数）
      */
     private Long fileSize;

@@ -27,6 +27,27 @@ class FileUtilTest {
     }
 
     @Test
+    @DisplayName("cleanPath: 安全规范化清洗路径并拦截恶意穿越提权")
+    void shouldCleanPathAndBlockTraversal() {
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/log/app.log"));
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/log/./app.log"));
+        assertEquals("/var/log/app.log", FileUtil.cleanPath("/var/tmp/../log/app.log"));
+        assertEquals("/var/log/", FileUtil.cleanPath("/var/log/"));
+        assertEquals("/", FileUtil.cleanPath("/"));
+        assertEquals("/", FileUtil.cleanPath("///"));
+        assertEquals("a/b/c", FileUtil.cleanPath("a\\b\\c"));
+        assertEquals("/etc/passwd.png", FileUtil.cleanPath("/etc/passwd\0.png"));
+
+        // 恶意越界穿越测试
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath(null));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("   "));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath(".."));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("/.."));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("/sub/../../etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.cleanPath("../secret.key"));
+    }
+
+    @Test
     @DisplayName("getExtName: 提取扩展名并统一转小写")
     void shouldExtractExtensionNames() {
         assertEquals("png", FileUtil.getExtName("avatar.PNG"));
@@ -66,5 +87,57 @@ class FileUtilTest {
             assertEquals("1.50 KB", FileUtil.formatSize(1536));
             assertEquals("10.00 MB", FileUtil.formatSize(10L * 1024 * 1024));
         });
+    }
+
+    @Test
+    @DisplayName("readNBytesSafe: 安全有界流读取与溢出防卫")
+    void shouldReadNBytesSafely() throws java.io.IOException {
+        byte[] data = "Hello World Safe".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(data);
+
+        // 正常读取允许范围内
+        byte[] read = FileUtil.readNBytesSafe(in, 20);
+        assertArrayEquals(data, read);
+
+        // Integer.MAX_VALUE 边界防溢出测试
+        java.io.ByteArrayInputStream inMax = new java.io.ByteArrayInputStream(data);
+        byte[] readMax = FileUtil.readNBytesSafe(inMax, Integer.MAX_VALUE);
+        assertArrayEquals(data, readMax);
+
+        // 超出上限抛出异常
+        java.io.ByteArrayInputStream inOverflow = new java.io.ByteArrayInputStream(data);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> FileUtil.readNBytesSafe(inOverflow, 10));
+        assertTrue(ex.getMessage().contains("超出允许的最大安全限制"));
+
+        // 空输入流安全返回
+        assertArrayEquals(new byte[0], FileUtil.readNBytesSafe(null, 10));
+
+        // 负数限制防御
+        assertThrows(IllegalArgumentException.class, () -> FileUtil.readNBytesSafe(new java.io.ByteArrayInputStream(data), -1));
+    }
+
+    @Test
+    @DisplayName("createTempFile: 创建受管安全临时文件与隔离目录测试")
+    void shouldCreateManagedTempFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws java.io.IOException {
+        // 在受隔离的 TempDir 目录下创建受管临时文件
+        java.io.File tempFile = FileUtil.createTempFile(tempDir.toFile(), "test-run-", ".log");
+        assertNotNull(tempFile);
+        assertTrue(tempFile.exists());
+        assertTrue(tempFile.getName().endsWith(".log"));
+        assertEquals(tempDir.toFile().getCanonicalPath(), tempFile.getParentFile().getCanonicalPath());
+        tempFile.delete();
+
+        // 默认前后缀创建于隔离目录
+        java.io.File defaultTemp = FileUtil.createTempFile(tempDir.toFile(), null, null);
+        assertNotNull(defaultTemp);
+        assertTrue(defaultTemp.exists());
+        defaultTemp.delete();
+
+        // 无目录入参系统临时目录重载
+        java.io.File sysTemp = FileUtil.createTempFile("sys-temp-", ".tmp");
+        assertNotNull(sysTemp);
+        assertTrue(sysTemp.exists());
+        sysTemp.delete();
     }
 }

@@ -1,6 +1,6 @@
 # Samples Context
 
-`ateng-boot-samples` 是框架内部的真实自验工程与工程化最佳实践 Demo 矩阵，采用二级 Parent POM 聚合解耦架构，以最小外部依赖（H2 内存库 / Mock）完成端到端自动化测试验证与高内聚场景示范。
+`ateng-boot-samples` 是框架内部的真实自验工程与工程化最佳实践 Demo 矩阵，采用二级 Parent POM 聚合解耦架构，与各业务 Starter 严格 1:1 映射，以最小外部依赖（H2 内存库 / Mock / 纯内存模式）完成端到端自动化测试验证与高内聚场景示范。
 
 ## Language
 
@@ -9,8 +9,16 @@
 _Avoid_: FatSampleModule, MonolithicSample
 
 **SampleScenarioModule**:
-专一场景自验子模块（如 `ateng-boot-sample-basic`、`ateng-boot-sample-redis`、`ateng-boot-sample-excel`、`ateng-boot-sample-satoken`），100% 自包含并恪守零共享代码（Zero-Shared-Code）不变量。
-_Avoid_: SharedCommonSample, CrossSampleCoupling
+专一场景自验子模块（`ateng-boot-sample-core`、`ateng-boot-sample-web`、`ateng-boot-sample-mybatis-plus`、`ateng-boot-sample-redis`、`ateng-boot-sample-excel`、`ateng-boot-sample-satoken`、`ateng-boot-sample-storage`、`ateng-boot-sample-http`、`ateng-boot-sample-realtime`、`ateng-boot-sample-rabbitmq`、`ateng-boot-sample-kafka`、`ateng-boot-sample-rocketmq`、`ateng-boot-sample-observability`、`ateng-boot-sample-openapi`、`ateng-boot-sample-mail`、`ateng-boot-sample-ftp`、`ateng-boot-sample-ssh`、`ateng-boot-sample-notification`、`ateng-boot-sample-document`、`ateng-boot-sample-mqtt`、`ateng-boot-sample-pay`、`ateng-boot-sample-datasource`、`ateng-boot-sample-encrypt`、`ateng-boot-sample-statemachine`、`ateng-boot-sample-job-local`），与各 Starter 严格 1:1 映射，100% 自包含并恪守零共享代码（Zero-Shared-Code）不变量。
+_Avoid_: SharedCommonSample, CrossSampleCoupling, SampleBasicMixed
+
+**SampleCoverageInvariant**:
+样例场景 100% 覆盖不变量。业务模块实现的每一个对外公开功能（包括所有公开门面及方法、核心注解 `@*` 及属性、配置属性类 `@ConfigurationProperties` 的配置项、扩展 SPI），必须 100% 在归属的 `ateng-boot-sample-<scenario>` 中提供真实、自洽、端到端可运行的演示用例。
+_Avoid_: PartialSampleCoverage, MockOnlyCoverage, UntestedFeatureInSample
+
+**SampleFirstPipeline**:
+样例先行研发流水线不变量。在编写或更新子模块 `README.md` 前，必须先完成对应 Sample 场景用例的编写与实测验证全绿；文档中的 Java 代码、YAML 配置与输出结果必须 100% 逆向提取自跑通的 Sample 工程。
+_Avoid_: DocBeforeSample, HandcraftedCodeInDoc, UntestedDocSnippet
 
 **SampleSmokeTest**:
 CI 全家桶冒烟准出门禁子模块（`ateng-boot-sample-smoke-test`），聚合依赖 `ateng-boot-all`，秒级完成全 Starter 无冲突自动装配与核心端到端主链路自验。

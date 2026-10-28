@@ -1,0 +1,38 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-mqtt
+
+ateng:
+  boot:
+    mqtt:
+      enabled: true
+      default-client: primary
+      clients:
+        primary:
+          server-uri: tcp://127.0.0.1:1883
+          client-id: ateng-sample-primary
+          client-id-strategy: RANDOM_SUFFIX
+          clean-start: true
+          connection-timeout: 5s
+          keep-alive-interval: 30s
+          automatic-reconnect: true
+          max-buffered-messages: 1000
+          publish-timeout: 5s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  health:
+    mqtt:
+      enabled: true
+  metrics:
+    enable:
+      mqtt: true

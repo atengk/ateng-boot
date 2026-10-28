@@ -17,11 +17,35 @@
     <description>ateng-boot 自验集成样例与自动化测试聚合套件（禁止部署发布）</description>
 
     <modules>
-        <module>ateng-boot-sample-basic</module>
+        <module>ateng-boot-sample-core</module>
+        <module>ateng-boot-sample-web</module>
+        <module>ateng-boot-sample-mybatis-plus</module>
         <module>ateng-boot-sample-redis</module>
         <module>ateng-boot-sample-excel</module>
         <module>ateng-boot-sample-satoken</module>
         <module>ateng-boot-sample-smoke-test</module>
+        <module>ateng-boot-sample-storage</module>
+        <module>ateng-boot-sample-ftp</module>
+        <module>ateng-boot-sample-http</module>
+        <module>ateng-boot-sample-realtime</module>
+        <module>ateng-boot-sample-rabbitmq</module>
+        <module>ateng-boot-sample-kafka</module>
+        <module>ateng-boot-sample-rocketmq</module>
+        <module>ateng-boot-sample-observability</module>
+        <module>ateng-boot-sample-openapi</module>
+        <module>ateng-boot-sample-mail</module>
+        <module>ateng-boot-sample-ssh</module>
+        <module>ateng-boot-sample-notification</module>
+        <module>ateng-boot-sample-document</module>
+        <module>ateng-boot-sample-mqtt</module>
+        <module>ateng-boot-sample-pay</module>
+        <module>ateng-boot-sample-datasource</module>
+        <module>ateng-boot-sample-encrypt</module>
+        <module>ateng-boot-sample-statemachine</module>
+        <module>ateng-boot-sample-job-local</module>
+        <module>ateng-boot-sample-search</module>
+        <module>ateng-boot-sample-tcp</module>
+        <module>ateng-boot-sample-admin</module>
     </modules>
 
     <properties>

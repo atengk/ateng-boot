@@ -3,18 +3,34 @@ package io.github.atengk.boot.sample.satoken.controller;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.annotation.SaCheckSafe;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.sample.satoken.dto.LoginDefenseRequest;
+import io.github.atengk.boot.sample.satoken.dto.UserProfileDTO;
+import io.github.atengk.boot.sample.satoken.provider.SampleOrderDataOwnerProvider;
 import io.github.atengk.boot.sample.satoken.service.SaTokenSampleService;
+import io.github.atengk.boot.sample.satoken.vo.DefenseStatusVO;
+import io.github.atengk.boot.sample.satoken.vo.ImpersonateStatusVO;
+import io.github.atengk.boot.satoken.annotation.Anonymous;
+import io.github.atengk.boot.satoken.annotation.CheckDataOwner;
 import io.github.atengk.boot.satoken.cache.PermissionCacheService;
 import io.github.atengk.boot.satoken.model.LoginUser;
+import io.github.atengk.boot.satoken.cluster.broadcaster.SaTokenClusterBroadcaster;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
@@ -28,6 +44,7 @@ import java.util.Map;
  * @since 2026-10-17
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
@@ -35,6 +52,7 @@ public class SaTokenSampleController {
 
     private final SaTokenSampleService sampleService;
     private final PermissionCacheService permissionCacheService;
+    private final ObjectProvider<SaTokenClusterBroadcaster> broadcasterProvider;
 
     /**
      * 用户登录接口
@@ -237,9 +255,22 @@ public class SaTokenSampleController {
      *
      * @return 响应结果
      */
+    @Anonymous
     @GetMapping("/public/ping")
     public Result<String> publicPing() {
         return Result.success("pong");
+    }
+
+    /**
+     * 声明式匿名公开文章详情接口（验证路径参数通配符转译）
+     *
+     * @param articleId 文章标识
+     * @return 响应结果
+     */
+    @Anonymous
+    @GetMapping("/public/article/{articleId}")
+    public Result<String> publicArticle(@PathVariable("articleId") Long articleId) {
+        return Result.success("公开文章详情: " + articleId);
     }
 
     /**
@@ -332,4 +363,184 @@ public class SaTokenSampleController {
     public Result<String> getInternalData() {
         return Result.success("内部机密数据访问成功");
     }
+
+    /**
+     * 修改个人资料接口（直接通过 SpEL 校验 userId 数据所有权）
+     *
+     * @param dto 个人资料
+     * @return 响应结果
+     */
+    @PostMapping("/user/profile")
+    @CheckDataOwner(expr = "#dto.userId")
+    public Result<String> updateProfile(@RequestBody UserProfileDTO dto) {
+        return Result.success("个人资料更新成功: " + dto.getUserId());
+    }
+
+    /**
+     * 订单取消接口（间接通过 SPI 反查 orderId 数据所有权）
+     *
+     * @param orderId 订单标识
+     * @return 响应结果
+     */
+    @PostMapping("/order/{orderId}/cancel")
+    @CheckDataOwner(expr = "#orderId", provider = SampleOrderDataOwnerProvider.class, message = "无权取消该订单")
+    public Result<String> cancelOrder(@PathVariable("orderId") Long orderId) {
+        return Result.success("订单取消成功: " + orderId);
+    }
+
+    /**
+     * 编程式本人校验断言
+     *
+     * @param targetUserId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/assert/self")
+    public Result<String> assertSelf(@RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.checkSelf(targetUserId);
+        return Result.success("本人校验通过: " + targetUserId);
+    }
+
+    /**
+     * 编程式租户归属校验断言
+     *
+     * @param targetTenantId 目标租户标识
+     * @return 响应结果
+     */
+    @PostMapping("/assert/tenant")
+    public Result<String> assertTenant(@RequestParam("targetTenantId") String targetTenantId) {
+        LoginHelper.checkBelongsToTenant(targetTenantId);
+        return Result.success("租户归属校验通过: " + targetTenantId);
+    }
+
+    /**
+     * 切换身份模拟指定目标用户
+     *
+     * @param targetUserId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/impersonate/switch")
+    public Result<String> impersonateSwitch(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.checkLogin();
+        LoginHelper.switchTo(targetUserId);
+        return Result.success("成功切换身份至: " + targetUserId);
+    }
+
+    /**
+     * 结束身份模拟，恢复真实登录人
+     *
+     * @return 响应结果
+     */
+    @PostMapping("/impersonate/end")
+    public Result<String> impersonateEnd() {
+        LoginHelper.checkLogin();
+        LoginHelper.endSwitch();
+        return Result.success("身份模拟已结束，已恢复原始身份");
+    }
+
+    /**
+     * 获取当前身份模拟状态与双维审计快照
+     *
+     * @return 状态视图对象
+     */
+    @GetMapping("/impersonate/status")
+    public Result<ImpersonateStatusVO> impersonateStatus() {
+        LoginHelper.checkLogin();
+        ImpersonateStatusVO vo = ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())
+                .realUserId(LoginHelper.getRealUserId())
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build();
+        return Result.success(vo);
+    }
+
+    /**
+     * 瞬态代码块 RunAs 执行
+     *
+     * @param targetUserId 目标用户标识
+     * @return 闭包内执行快照
+     */
+    @PostMapping("/impersonate/run-as")
+    public Result<ImpersonateStatusVO> impersonateRunAs(@NotBlank(message = "目标用户标识不能为空") @RequestParam("targetUserId") String targetUserId) {
+        LoginHelper.checkLogin();
+        ImpersonateStatusVO innerResult = LoginHelper.runAs(targetUserId, () -> ImpersonateStatusVO.builder()
+                .isRunAs(LoginHelper.isRunAs())
+                .currentUserId(LoginHelper.getUserId())
+                .realUserId(LoginHelper.getRealUserId())
+                .originalUserId(LoginHelper.getOriginalUserId())
+                .build());
+        return Result.success(innerResult);
+    }
+
+    /**
+     * 获取当前节点集群广播实例标识
+     *
+     * @return 节点 instanceId
+     */
+    @GetMapping("/cluster/instance-id")
+    public Result<String> getClusterInstanceId() {
+        SaTokenClusterBroadcaster broadcaster = broadcasterProvider.getIfAvailable();
+        String instanceId = broadcaster != null ? broadcaster.getInstanceId() : "standalone";
+        return Result.success(instanceId);
+    }
+
+    /**
+     * 触发指定用户权限即时刷新与集群广播
+     *
+     * @param userId 目标用户标识
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/refresh-user")
+    public Result<String> refreshUser(@NotBlank(message = "用户标识不能为空") @RequestParam("userId") String userId) {
+        permissionCacheService.refreshUserPermissions(userId);
+        return Result.success("用户权限缓存已刷新并广播: userId=" + userId);
+    }
+
+    /**
+     * 触发指定角色权限即时刷新与集群广播
+     *
+     * @param roleCode 目标角色编码
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/refresh-role")
+    public Result<String> refreshRole(@NotBlank(message = "角色编码不能为空") @RequestParam("roleCode") String roleCode) {
+        permissionCacheService.refreshRolePermissions(roleCode);
+        return Result.success("角色权限缓存已刷新并广播: roleCode=" + roleCode);
+    }
+
+    /**
+     * 触发全量缓存清空与集群广播
+     *
+     * @return 响应结果
+     */
+    @PostMapping("/cluster/clear-all")
+    public Result<String> clusterClearAll() {
+        permissionCacheService.clearAll();
+        return Result.success("全量权限缓存已清空并广播");
+    }
+
+    /**
+     * 带防暴力破解防护的模拟登录接口
+     *
+     * @param request 登录传输对象（挂载 JSR-303 格式校验）
+     * @return 签发的访问凭据 Token
+     */
+    @PostMapping("/login-with-defense")
+    public Result<String> loginWithDefense(@Valid @RequestBody LoginDefenseRequest request) {
+        String token = sampleService.loginWithDefense(request);
+        return Result.success(token);
+    }
+
+    /**
+     * 查询账号防暴力破解安全状态
+     *
+     * @param username 账号名称
+     * @return 状态详情视图展示对象
+     */
+    @GetMapping("/defense/status")
+    public Result<DefenseStatusVO> getDefenseStatus(@NotBlank(message = "账号标识不能为空") @RequestParam("username") String username) {
+        DefenseStatusVO vo = sampleService.getDefenseStatus(username);
+        return Result.success(vo);
+    }
 }
+

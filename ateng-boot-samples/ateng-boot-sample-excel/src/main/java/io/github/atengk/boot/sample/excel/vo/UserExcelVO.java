@@ -8,6 +8,7 @@ import io.github.atengk.boot.excel.annotation.ExcelPrompt;
 import io.github.atengk.boot.excel.annotation.ExcelSensitive;
 import io.github.atengk.boot.excel.converter.ExcelDictConverter;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
+import io.github.atengk.boot.sample.excel.provider.SampleDepartmentDropdownProvider;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -68,7 +69,7 @@ public class UserExcelVO implements Serializable {
     /**
      * 所属部门
      */
-    @ExcelDropdown({"研发部", "市场部", "财务部"})
+    @ExcelDropdown(source = SampleDepartmentDropdownProvider.class)
     @ExcelPrompt("请从下拉列表中选择所属部门")
     @ExcelProperty(value = "所属部门", index = 5)
     private String department;

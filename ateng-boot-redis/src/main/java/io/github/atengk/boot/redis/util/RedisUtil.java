@@ -28,6 +28,9 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import io.github.atengk.boot.redis.properties.RedisProperties;
+import org.springframework.util.Assert;
+
 /**
  * 全能 Redis 统一操作门面与生产级防呆工具类
  * 支持 Spring Bean 依赖注入与全局静态门面双重调用范式，
@@ -39,6 +42,7 @@ import java.util.function.Consumer;
 public class RedisUtil {
 
     private static volatile RedisTemplate<String, Object> staticTemplate;
+    private static volatile RedisProperties staticProperties;
     private static final ObjectMapper OBJECT_MAPPER = RedisSerializerFactory.createSafeObjectMapper();
 
     /**
@@ -47,7 +51,59 @@ public class RedisUtil {
      * @param template RedisTemplate
      */
     public RedisUtil(RedisTemplate<String, Object> template) {
+        this(template, null);
+    }
+
+    /**
+     * 容器实例化构造器，同时注入配置属性以支持受管全局 KeyPrefix
+     *
+     * @param template RedisTemplate
+     * @param properties RedisProperties
+     */
+    public RedisUtil(RedisTemplate<String, Object> template, RedisProperties properties) {
         RedisUtil.staticTemplate = template;
+        RedisUtil.staticProperties = properties;
+    }
+
+    /**
+     * 基于全局配置前缀 (ateng.boot.redis.key-prefix) 构建受管完整键名
+     *
+     * @param rawKey 业务原始键名
+     * @return 附加前缀后的规范键名
+     */
+    public static String buildKey(String rawKey) {
+        if (rawKey == null) {
+            return null;
+        }
+        if (staticProperties != null) {
+            return staticProperties.buildKey(rawKey);
+        }
+        return rawKey;
+    }
+
+    /**
+     * 拼接模块前缀与子键并结合全局前缀构建完整键名
+     *
+     * @param modulePrefix 模块前缀
+     * @param keys 子键片段
+     * @return 拼接后的规范键名
+     */
+    public static String buildKey(String modulePrefix, String... keys) {
+        StringBuilder sb = new StringBuilder();
+        if (modulePrefix != null && !modulePrefix.isEmpty()) {
+            sb.append(modulePrefix);
+        }
+        if (keys != null) {
+            for (String k : keys) {
+                if (k != null) {
+                    if (sb.length() > 0 && !sb.toString().endsWith(":")) {
+                        sb.append(":");
+                    }
+                    sb.append(k);
+                }
+            }
+        }
+        return buildKey(sb.toString());
     }
 
     /**
@@ -80,6 +136,7 @@ public class RedisUtil {
      * @return 是否存在
      */
     public static boolean hasKey(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean exists = getTemplate().hasKey(key);
         return Boolean.TRUE.equals(exists);
     }
@@ -93,6 +150,7 @@ public class RedisUtil {
      * @return 是否设置成功
      */
     public static boolean expire(String key, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().expire(key, timeout, unit);
         return Boolean.TRUE.equals(success);
     }
@@ -105,6 +163,7 @@ public class RedisUtil {
      * @return 是否设置成功
      */
     public static boolean expire(String key, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout == null) {
             return false;
         }
@@ -130,6 +189,7 @@ public class RedisUtil {
      * @return 剩余时间
      */
     public static long getExpire(String key, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Long expire = getTemplate().getExpire(key, unit);
         return expire != null ? expire : -1L;
     }
@@ -141,6 +201,7 @@ public class RedisUtil {
      * @return 是否移除成功
      */
     public static boolean persist(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().persist(key);
         return Boolean.TRUE.equals(success);
     }
@@ -152,6 +213,7 @@ public class RedisUtil {
      * @return 是否删除成功
      */
     public static boolean delete(String key) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().delete(key);
         return Boolean.TRUE.equals(success);
     }
@@ -192,6 +254,17 @@ public class RedisUtil {
     }
 
     /**
+     * 生产级安全游标扫描（scanKeys 别名方法，严格替代 keys *，分批安全迭代）
+     *
+     * @param pattern 匹配模式串（如 order:*）
+     * @param count 每次游标拉取批次数量
+     * @return 匹配的键集合
+     */
+    public static Set<String> scanKeys(String pattern, long count) {
+        return scan(pattern, count);
+    }
+
+    /**
      * 流式游标扫描（调用方自行 try-with-resources 遍历）
      *
      * @param pattern 匹配模式串
@@ -215,6 +288,7 @@ public class RedisUtil {
      * @param value 缓存值
      */
     public static void set(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         getTemplate().opsForValue().set(key, value);
     }
 
@@ -227,6 +301,7 @@ public class RedisUtil {
      * @param unit 时间单位
      */
     public static void set(String key, Object value, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         getTemplate().opsForValue().set(key, value, timeout, unit);
     }
 
@@ -238,6 +313,7 @@ public class RedisUtil {
      * @param timeout 过期时长
      */
     public static void set(String key, Object value, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout != null) {
             set(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
         } else {
@@ -253,6 +329,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().opsForValue().setIfAbsent(key, value);
         return Boolean.TRUE.equals(success);
     }
@@ -267,6 +344,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value, long timeout, TimeUnit unit) {
+        Assert.hasText(key, "key must not be blank");
         Boolean success = getTemplate().opsForValue().setIfAbsent(key, value, timeout, unit);
         return Boolean.TRUE.equals(success);
     }
@@ -280,6 +358,7 @@ public class RedisUtil {
      * @return 是否写入成功
      */
     public static boolean setIfAbsent(String key, Object value, Duration timeout) {
+        Assert.hasText(key, "key must not be blank");
         if (timeout != null) {
             return setIfAbsent(key, value, timeout.toMillis(), TimeUnit.MILLISECONDS);
         }
@@ -293,6 +372,7 @@ public class RedisUtil {
      * @return 缓存对象
      */
     public static Object get(String key) {
+        Assert.hasText(key, "key must not be blank");
         return getTemplate().opsForValue().get(key);
     }
 
@@ -305,6 +385,7 @@ public class RedisUtil {
      * @return 强类型对象
      */
     public static <T> T get(String key, Class<T> clazz) {
+        Assert.hasText(key, "key must not be blank");
         Object val = get(key);
         if (val == null) {
             return null;
@@ -324,6 +405,7 @@ public class RedisUtil {
      * @return 强类型对象
      */
     public static <T> T get(String key, TypeReference<T> typeReference) {
+        Assert.hasText(key, "key must not be blank");
         Object val = get(key);
         if (val == null) {
             return null;
@@ -339,6 +421,7 @@ public class RedisUtil {
      * @return 旧值
      */
     public static Object getAndSet(String key, Object value) {
+        Assert.hasText(key, "key must not be blank");
         return getTemplate().opsForValue().getAndSet(key, value);
     }
 
@@ -352,6 +435,7 @@ public class RedisUtil {
      * @return 转换后的旧值
      */
     public static <T> T getAndSet(String key, Object value, Class<T> clazz) {
+        Assert.hasText(key, "key must not be blank");
         Object oldVal = getAndSet(key, value);
         if (oldVal == null) {
             return null;

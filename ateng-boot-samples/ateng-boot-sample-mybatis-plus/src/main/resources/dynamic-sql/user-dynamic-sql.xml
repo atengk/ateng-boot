@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dynamic-sql>
+    <!-- 1. 复杂动态条件查询用户列表 -->
+    <select id="user.findUsersDynamic" description="动态条件查询系统用户列表">
+        SELECT id, name, age, email, phone, dept_id, create_time, update_time
+        FROM sys_user
+        <where>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="minAge != null">
+                AND age &gt;= #{minAge}
+            </if>
+            <if test="deptId != null">
+                AND dept_id = #{deptId}
+            </if>
+        </where>
+        ORDER BY id ASC
+    </select>
+
+    <!-- 2. 动态条件统计用户数量 -->
+    <select id="user.countUsersDynamic" description="动态条件统计系统用户数量">
+        SELECT COUNT(1) AS total_count
+        FROM sys_user
+        <where>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="minAge != null">
+                AND age &gt;= #{minAge}
+            </if>
+            <if test="deptId != null">
+                AND dept_id = #{deptId}
+            </if>
+        </where>
+    </select>
+</dynamic-sql>

@@ -121,6 +121,25 @@ flowchart TD
   ```
 - 在 `ReentrantLock` 保护下发生时钟回拨 `Thread.sleep` 时，JDK 21 虚拟线程能正常被 JVM 调度器卸载（unmount），载体线程释放给其他任务，彻底杜绝 Carrier Thread Pinning。
 
+### 5. 声明式多业务受管异步线程池 (Multi-Pool) 与舱壁隔离演进
+为解决单线程池缺乏舱壁隔离（Bulkhead Isolation）、耗时大任务与在线轻量任务相互挤占，以及下游自建线程池易遗漏四维上下文挂载等生产痛点，对异步并发基础设施进行增量演进：
+
+1. **继承聚合与向后兼容配置模型**：
+   - 提取单池配置实体 [`AsyncPoolProperties`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/properties/AsyncPoolProperties.java)；
+   - 根级 [`AsyncProperties`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/properties/AsyncProperties.java) 直接继承 `AsyncPoolProperties` 并保留既有所有字段与兼容适配方法，存量单池配置零修改即可直接生效并作为默认主线程池参数；
+   - 新增 `pools: Map<String, AsyncPoolProperties>` 命名空间，支持以极简 YAML 声明多个独立命名的业务专属线程池。
+2. **Spring 容器标准契约与别名注入保障**：
+   - 主线程池固定注册为 `taskExecutor` 与 `applicationTaskExecutor` 并显式标记为 `@Primary`，保证无限定条件的 `@Async` 与 `@Autowired Executor` 稳定匹配主池，杜绝多候选 Bean 歧义；
+   - 额外业务池通过 [`DynamicAsyncPoolRegistrar`](../../ateng-boot-core/src/main/java/io/github/atengk/boot/core/autoconfigure/DynamicAsyncPoolRegistrar.java) 自动注册为 `${key}TaskExecutor` 并挂载别名 `${key}`，既符合 Spring 官方命名规范，又允许开发者通过 `@Async("export")` 或 `@Qualifier("exportTaskExecutor")` 极简调度；
+   - 每个额外线程池独立支持 `enabled` 开关，未显式指定的参数自动享受安全生产默认值。
+3. **独立线程模型（AUTO / PLATFORM / VIRTUAL）与智能前缀推导**：
+   - 引入强类型枚举 `AsyncExecutionMode (AUTO, PLATFORM, VIRTUAL)`，支持全局跟随或按池独立指定线程模型，兼顾计算密集型与 IO 密集型场景；
+   - 线程名前缀支持未配置时智能自动合成：平台线程为 `ateng-async-${poolName}-`，虚拟线程为 `ateng-vt-async-${poolName}-`，极大增强线上 Thread Dump 与监控可读性。
+4. **强类型饱和拒绝策略与生命周期统管**：
+   - 引入强类型枚举 `AsyncRejectedPolicy (CALLER_RUNS, ABORT, DISCARD, DISCARD_OLDEST)`，消除字符串拼写错误风险；
+   - 所有动态注册的线程池强制挂载 `ContextCopyingTaskDecorator`，保证四维上下文无损穿透与确定性清理；
+   - 注册 Spring 容器销毁钩子并在应用停机时统一遵循 `waitForTasksToCompleteOnShutdown` 优雅停机。
+
 ---
 
 ## 后果与权衡 (Consequences & Trade-offs)
@@ -130,7 +149,9 @@ flowchart TD
 2. **多 JDK 基线平滑兼容**：项目以 JDK 17 字节码编译，但在 JDK 21+ 运行时能自动触发虚拟线程分支；而在 JDK 17 运行时安全回退至平台线程池，零编译与启动异常；
 3. **可观测性显著增强**：专属命名 `ateng-vt-async-` 让运维人员在 JConsole、Arthas 与日志中一眼区分虚拟线程与普通工作线程；
 4. **下游安全有防护**：`concurrencyLimit` 为海量虚拟线程调用数据库提供了优雅的背压防击穿安全气囊；
-5. **底层原语高可靠**：`Snowflake` 消除 Carrier Pinning，确保并发极端场景下底层调度稳健。
+5. **底层原语高可靠**：`Snowflake` 消除 Carrier Pinning，确保并发极端场景下底层调度稳健；
+6. **业务级舱壁物理隔离**：声明式多线程池彻底解耦了长耗时大任务与在线轻量异步任务，杜绝了单一队列被打满导致的系统级服务雪崩；
+7. **全链路上下文确定性流转**：无论是主池还是任意子池，统一由底座透明注入四维上下文装饰器并严格清理现场，杜绝下游自建线程池导致的上下文丢失与跨租户越权。
 
 ### 权衡与向后兼容
 1. **注入契约向后兼容性**：

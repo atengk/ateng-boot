@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.id;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.exception.BusinessException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -134,7 +136,7 @@ class SnowflakeTest {
     }
 
     @Test
-    @DisplayName("时钟回拨熔断：大幅回拨（> 5ms）抛出明确语义化 IllegalStateException")
+    @DisplayName("时钟回拨熔断：大幅回拨（> 5ms）抛出明确语义化 BusinessException(INTERNAL_SERVER_ERROR)")
     void shouldFailFastWhenClockBackwardsExceedsThreshold() {
         AtomicLong mockClock = new AtomicLong(10_000L);
         Snowflake snowflake = new Snowflake(1, 1, 0L, mockClock::get);
@@ -144,8 +146,26 @@ class SnowflakeTest {
         // 模拟大幅时钟回拨 10ms (> 5ms)
         mockClock.set(9_990L);
 
-        IllegalStateException ex = assertThrows(IllegalStateException.class, snowflake::nextId);
+        BusinessException ex = assertThrows(BusinessException.class, snowflake::nextId);
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), ex.getCode());
         assertTrue(ex.getMessage().contains("Clock moved backwards"), "必须明确提示时钟回拨异常原因");
+    }
+
+    @Test
+    @DisplayName("自定义时钟回拨容忍阈值：支持配置更长容忍时间并在超限时熔断")
+    void shouldRespectCustomClockBackoffTolerance() {
+        AtomicLong mockClock = new AtomicLong(10_000L);
+        // 配置 20ms 容忍时间
+        Snowflake snowflake = new Snowflake(1, 1, 0L, 20L, mockClock::get);
+        assertEquals(20L, snowflake.getMaxBackwardMs());
+
+        snowflake.nextId();
+
+        // 模拟大幅回拨 25ms (> 20ms) 触发熔断
+        mockClock.set(9_975L);
+        BusinessException ex = assertThrows(BusinessException.class, snowflake::nextId);
+        assertEquals(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), ex.getCode());
+        assertTrue(ex.getMessage().contains("Clock moved backwards"));
     }
 
     @Test
@@ -195,5 +215,44 @@ class SnowflakeTest {
         long overflowId = snowflake.nextId();
         assertEquals(1001L, Snowflake.getTimestamp(overflowId, 0L));
         assertEquals(0L, Snowflake.getSequence(overflowId));
+    }
+
+    @Test
+    @DisplayName("逆向反解与 SnowflakeIdInfo 结构化信息完整性验证")
+    void shouldParseSnowflakeIdCorrectly() {
+        long fixedEpoch = 1767225600000L;
+        AtomicLong mockClock = new AtomicLong(fixedEpoch + 12345L);
+        Snowflake snowflake = new Snowflake(7, 15, fixedEpoch, mockClock::get);
+
+        long id = snowflake.nextId();
+        // 实例方法反解
+        SnowflakeIdInfo info = snowflake.parse(id);
+
+        assertEquals(id, info.id());
+        assertEquals(7, info.workerId());
+        assertEquals(15, info.datacenterId());
+        assertEquals(0, info.sequence());
+        assertEquals(fixedEpoch + 12345L, info.timestamp());
+        assertEquals(fixedEpoch, info.epoch());
+        assertNotNull(info.instant());
+        assertEquals(fixedEpoch + 12345L, info.instant().toEpochMilli());
+        assertNotNull(info.dateTime());
+
+        // 静态方法反解
+        SnowflakeIdInfo staticInfo = Snowflake.parse(id, fixedEpoch);
+        assertEquals(info, staticInfo);
+
+        // 默认基准时间戳反解（自适应发号）
+        Snowflake defaultSnowflake = new Snowflake(2, 3);
+        long defaultId = defaultSnowflake.nextId();
+        SnowflakeIdInfo defaultInfo = defaultSnowflake.parse(defaultId);
+        assertEquals(2, defaultInfo.workerId());
+        assertEquals(3, defaultInfo.datacenterId());
+        assertTrue(defaultInfo.timestamp() > 0);
+        assertEquals(Snowflake.DEFAULT_EPOCH, defaultInfo.epoch());
+
+        // 静态方法反解带默认 epoch
+        SnowflakeIdInfo staticDefaultInfo = Snowflake.parse(defaultId, Snowflake.DEFAULT_EPOCH);
+        assertEquals(defaultInfo, staticDefaultInfo);
     }
 }

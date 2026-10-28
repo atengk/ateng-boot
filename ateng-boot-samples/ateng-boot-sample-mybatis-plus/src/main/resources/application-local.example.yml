@@ -1,0 +1,12 @@
+# 本地真实中间件联调模板文件（复制为 application-local.yml 并在本地环境激活）
+# 严禁将真实凭据填入本 example 文件，真实配置文件 application-local.yml 已被 .gitignore 忽略
+spring:
+  datasource:
+    # MySQL 示例：
+    # url: jdbc:mysql://YOUR_MYSQL_HOST:YOUR_MYSQL_PORT/YOUR_DATABASE?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    # username: YOUR_USERNAME
+    # password: YOUR_PASSWORD
+    # PostgreSQL 示例：
+    # url: jdbc:postgresql://YOUR_PG_HOST:YOUR_PG_PORT/YOUR_DATABASE?currentSchema=public
+    # username: YOUR_USERNAME
+    # password: YOUR_PASSWORD

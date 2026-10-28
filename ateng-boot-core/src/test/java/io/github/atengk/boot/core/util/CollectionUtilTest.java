@@ -68,4 +68,38 @@ class CollectionUtilTest {
         assertEquals(1, parts.size());
         assertEquals(list, parts.get(0));
     }
+
+    @Test
+    @DisplayName("emptyIfNull 与 first/last 安全提取验证")
+    void shouldVerifyEmptyIfNullAndFirstLast() {
+        assertNotNull(CollectionUtil.emptyIfNull((List<String>) null));
+        assertTrue(CollectionUtil.emptyIfNull((List<String>) null).isEmpty());
+        assertNotNull(CollectionUtil.emptyIfNull((java.util.Set<String>) null));
+        assertNotNull(CollectionUtil.emptyIfNull((Map<String, String>) null));
+
+        List<String> list = List.of("A", "B", "C");
+        assertSame(list, CollectionUtil.emptyIfNull(list));
+        assertEquals("A", CollectionUtil.first(list));
+        assertEquals("C", CollectionUtil.last(list));
+
+        assertNull(CollectionUtil.first(null));
+        assertNull(CollectionUtil.first(Collections.emptyList()));
+        assertNull(CollectionUtil.last(null));
+        assertNull(CollectionUtil.last(Collections.emptyList()));
+    }
+
+    @Test
+    @DisplayName("distinctByKey: 支持通过 CollectionUtil 便捷提取去重断言")
+    void shouldSupportDistinctByKeyPredicate() {
+        record Item(String id, String name) {}
+        List<Item> items = List.of(
+                new Item("1", "A"),
+                new Item("1", "B"),
+                new Item("2", "C")
+        );
+        List<Item> result = items.stream().filter(CollectionUtil.distinctByKey(Item::id)).toList();
+        assertEquals(2, result.size());
+        assertEquals("A", result.get(0).name());
+        assertEquals("C", result.get(1).name());
+    }
 }

@@ -1,15 +1,20 @@
 spring:
   application:
     name: ateng-boot-sample-redis
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
     redis:
       enabled: true
+      two-level:
+        enabled: true
       delay-queue:
-        enabled: false
-    web:
-      trace:
         enabled: true
-      log:
+      stream:
         enabled: true
+      bloom-filters:
+        user-blacklist:
+          expected-insertions: 50000
+          false-probability: 0.01

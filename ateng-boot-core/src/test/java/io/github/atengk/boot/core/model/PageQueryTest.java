@@ -57,4 +57,61 @@ class PageQueryTest {
         );
         assertEquals("单页条数最大不能超过 1000", ex3.getMessage());
     }
+
+    @Test
+    @DisplayName("排序项初始化与保底非空防御：sorts 默认为空列表且 setSorts(null) 保底")
+    void shouldHandleSortsNullSafety() {
+        PageQuery query = new PageQuery();
+        assertNotNull(query.getSorts());
+        assertTrue(query.getSorts().isEmpty());
+
+        query.setSorts(null);
+        assertNotNull(query.getSorts());
+        assertTrue(query.getSorts().isEmpty());
+    }
+
+    @Test
+    @DisplayName("流畅链式添加排序方法：addSort, addAsc, addDesc, clearSorts")
+    void shouldSupportFluentSortMethods() {
+        PageQuery query = new PageQuery(1L, 20L)
+                .addAsc("createTime")
+                .addDesc("id")
+                .addSort("status", true)
+                .addSort("level", SortItem.Direction.DESC)
+                .addSort(SortItem.asc("score"));
+
+        assertEquals(5, query.getSorts().size());
+        assertEquals("createTime", query.getSorts().get(0).getProperty());
+        assertTrue(query.getSorts().get(0).isAsc());
+
+        assertEquals("id", query.getSorts().get(1).getProperty());
+        assertFalse(query.getSorts().get(1).isAsc());
+
+        assertEquals("status", query.getSorts().get(2).getProperty());
+        assertTrue(query.getSorts().get(2).isAsc());
+
+        assertEquals("level", query.getSorts().get(3).getProperty());
+        assertFalse(query.getSorts().get(3).isAsc());
+
+        assertEquals("score", query.getSorts().get(4).getProperty());
+        assertTrue(query.getSorts().get(4).isAsc());
+
+        // 清空测试
+        query.clearSorts();
+        assertTrue(query.getSorts().isEmpty());
+    }
+
+    @Test
+    @DisplayName("JSR-303 级联校验：PageQuery 中的 SortItem 非法字段阻断")
+    void shouldCascadeValidateSortItems() {
+        PageQuery query = new PageQuery();
+        SortItem invalidItem = new SortItem(); // property 为 null
+        query.getSorts().add(invalidItem);
+
+        io.github.atengk.boot.core.exception.BusinessException ex = assertThrows(
+                io.github.atengk.boot.core.exception.BusinessException.class,
+                () -> io.github.atengk.boot.core.util.ValidatorUtil.validate(query)
+        );
+        assertTrue(ex.getMessage().contains("排序属性名称不能为空"));
+    }
 }

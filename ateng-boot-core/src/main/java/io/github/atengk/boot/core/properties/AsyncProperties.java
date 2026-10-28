@@ -4,9 +4,12 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 异步线程池运行时增强配置属性
- * 提供基于 CPU 核心数自适应的受管线程池容量、队列缓冲与优雅停机策略控制
+ * 继承自 {@link AsyncPoolProperties} 作为默认主线程池参数，同时聚合下游多业务独立线程池配置
  *
  * @author Ateng
  * @since 2026-10-16
@@ -14,55 +17,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "ateng.boot.async")
-public class AsyncProperties {
+public class AsyncProperties extends AsyncPoolProperties {
 
     /**
-     * 是否启用上下文感知异步线程池自动装配
+     * 命名多业务受管线程池配置字典
      */
-    private boolean enabled = true;
+    private Map<String, AsyncPoolProperties> pools = new LinkedHashMap<>();
 
-    /**
-     * 核心线程数（默认可用 CPU 核心数）
-     */
-    private int corePoolSize = Math.max(1, Runtime.getRuntime().availableProcessors());
-
-    /**
-     * 最大线程数（默认可用 CPU 核心数的两倍）
-     */
-    private int maxPoolSize = Math.max(1, Runtime.getRuntime().availableProcessors()) * 2;
-
-    /**
-     * 阻塞队列容量（默认 1000）
-     */
-    private int queueCapacity = 1000;
-
-    /**
-     * 空闲线程存活时间（单位：秒，默认 60 秒）
-     */
-    private int keepAliveSeconds = 60;
-
-    /**
-     * 异步工作线程名前缀（默认 ateng-async-）
-     */
-    private String threadNamePrefix = "ateng-async-";
-
-    /**
-     * 虚拟线程工作线程名前缀（默认 ateng-vt-async-）
-     */
-    private String virtualThreadNamePrefix = "ateng-vt-async-";
-
-    /**
-     * 虚拟线程并发任务限制数（默认 -1，表示无界/不设限制）
-     */
-    private int concurrencyLimit = -1;
-
-    /**
-     * 容器关闭时是否等待所有已提交的异步任务执行完成（优雅停机，默认 true）
-     */
-    private boolean waitForTasksToCompleteOnShutdown = true;
-
-    /**
-     * 容器关闭时等待任务执行完成的最大超时时间（单位：秒，默认 60 秒）
-     */
-    private int awaitTerminationSeconds = 60;
+    public AsyncProperties() {
+        // 主线程池显式初始化专属默认前缀
+        setThreadNamePrefix("ateng-async-");
+        setVirtualThreadNamePrefix("ateng-vt-async-");
+    }
 }

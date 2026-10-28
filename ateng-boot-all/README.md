@@ -6,7 +6,7 @@
 
 ## 1. 模块定位与 Maven 坐标
 
-`ateng-boot-all` 是纯依赖聚合模块。只需引入这一个依赖，即可自动传递引入 `ateng-boot-core`、`ateng-boot-web`、`ateng-boot-mybatis-plus`、`ateng-boot-redis`、`ateng-boot-excel` 与 `ateng-boot-satoken` 全部六大核心 Starter 构件，无需手动分别声明各个模块。
+`ateng-boot-all` 是纯依赖聚合模块。只需引入这一个依赖，即可自动传递引入 `ateng-boot-core`、`ateng-boot-web`、`ateng-boot-mybatis-plus`、`ateng-boot-redis`、`ateng-boot-excel` 与 `ateng-boot-satoken` 六大核心通用 Starter 构件，无需手动分别声明各个模块。专有存储（Storage）、通信底座（HTTP、TCP、Realtime、MQTT）、专有消息中间件（RabbitMQ、Kafka、RocketMQ）及专业引擎（Document、StateMachine、Search 等）遵循按需独立引入原则。
 
 ```xml
 <dependency>

@@ -1,0 +1,94 @@
+package io.github.atengk.boot.tcp.codec;
+
+import io.github.atengk.boot.tcp.model.TcpPacket;
+import io.github.atengk.boot.tcp.model.TcpPayload;
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPromise;
+import io.netty.util.AttributeKey;
+import io.netty.util.ReferenceCountUtil;
+
+import java.nio.charset.StandardCharsets;
+
+/**
+ * TCP 载荷编解码处理器
+ * <p>
+ * 负责入站 {@link ByteBuf} 到安全堆内存 {@link TcpPayload} 的转译，并在 finally 块中绝对可靠释放底层引用计数；
+ * 同时负责出站载荷对象到网络 ByteBuf 的序列化。
+ * </p>
+ *
+ * @author Ateng
+ * @since 2026-10-26
+ */
+@ChannelHandler.Sharable
+public class TcpPayloadCodecHandler extends ChannelDuplexHandler {
+
+    public static final TcpPayloadCodecHandler INSTANCE = new TcpPayloadCodecHandler();
+    public static final AttributeKey<byte[]> DELIMITER_KEY = AttributeKey.valueOf("ateng.tcp.framing.delimiter");
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (msg instanceof ByteBuf) {
+            ByteBuf byteBuf = (ByteBuf) msg;
+            try {
+                byte[] bytes = new byte[byteBuf.readableBytes()];
+                byteBuf.readBytes(bytes);
+                TcpPayload payload = TcpPayload.of(bytes);
+                ctx.fireChannelRead(payload);
+            } finally {
+                ReferenceCountUtil.release(byteBuf);
+            }
+        } else {
+            ctx.fireChannelRead(msg);
+        }
+    }
+
+    @Override
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        byte[] rawBytes = null;
+        if (msg instanceof TcpPayload payload) {
+            rawBytes = payload.asBytes();
+        } else if (msg instanceof TcpPacket packet) {
+            TcpPayload payload = packet.getPayload();
+            rawBytes = (payload != null) ? payload.asBytes() : new byte[0];
+        } else if (msg instanceof byte[] bytes) {
+            rawBytes = bytes;
+        } else if (msg instanceof String str) {
+            rawBytes = str.getBytes(StandardCharsets.UTF_8);
+        }
+
+        if (rawBytes != null) {
+            byte[] delimiter = ctx.channel().attr(DELIMITER_KEY).get();
+            int delimiterLen = (delimiter != null) ? delimiter.length : 0;
+            ByteBuf buf = ctx.alloc().buffer(rawBytes.length + delimiterLen);
+            try {
+                buf.writeBytes(rawBytes);
+                // 对称性定界符守卫：若通道挂载了定界符分帧且出站末尾未包含定界符，自动补齐
+                if (delimiterLen > 0 && !endsWith(buf, delimiter)) {
+                    buf.writeBytes(delimiter);
+                }
+                ctx.write(buf, promise);
+            } catch (Throwable t) {
+                ReferenceCountUtil.safeRelease(buf);
+                throw t;
+            }
+        } else {
+            ctx.write(msg, promise);
+        }
+    }
+
+    private static boolean endsWith(ByteBuf buf, byte[] delimiter) {
+        if (buf.readableBytes() < delimiter.length) {
+            return false;
+        }
+        int writerIndex = buf.writerIndex();
+        for (int i = 0; i < delimiter.length; i++) {
+            if (buf.getByte(writerIndex - delimiter.length + i) != delimiter[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+}

@@ -17,6 +17,16 @@ public final class SaTokenConstant {
     public static final String LOGIN_USER_KEY = "login_user";
 
     /**
+     * 身份模拟 (RunAs) 原始真实操作人唯一标识 Session 属性 Key
+     */
+    public static final String ORIGINAL_USER_ID_KEY = "original_user_id";
+
+    /**
+     * 身份模拟 (RunAs) 目标被模拟人唯一标识 Session 属性 Key
+     */
+    public static final String SWITCH_TARGET_USER_ID_KEY = "switch_target_user_id";
+
+    /**
      * 多租户复合 LoginId 默认分隔符
      */
     public static final String TENANT_DELIMITER = "_";

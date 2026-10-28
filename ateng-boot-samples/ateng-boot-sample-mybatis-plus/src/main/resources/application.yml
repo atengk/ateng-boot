@@ -1,0 +1,75 @@
+server:
+  port: 8081
+
+spring:
+  config:
+    import: "optional:classpath:application-local.yml"
+  application:
+    name: ateng-boot-sample-mybatis-plus
+  datasource:
+    url: jdbc:h2:mem:sample_mp_db;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+ateng:
+  boot:
+    mybatis-plus:
+      sql-log:
+        enabled: true
+        level: INFO
+        format-sql: true
+        mask-sensitive: true
+        show-call-location: true
+        max-sql-length: 4096
+      crypto:
+        secret-key: "1234567890123456"
+      slow-sql:
+        enabled: true
+        threshold: 1s
+        format-sql: true
+        mask-sensitive: true
+      tenant:
+        enabled: true
+        column: tenant_id
+        ignore-tables:
+          - sys_user
+          - demo_json_user
+          - task_queue
+          - soft_delete_item
+          - sys_dept
+      data-permission:
+        enabled: true
+      audit-change:
+        enabled: true
+        publish-event: true
+        async: false
+      dynamic-sql:
+        enabled: true
+        locations:
+          - classpath*:dynamic-sql/**/*.xml
+      dynamic-query:
+        enabled: true
+      pagination:
+        enabled: true
+        max-limit: 500
+        overflow: false
+      block-attack:
+        enabled: true
+      optimistic-locker:
+        enabled: true
+      audit:
+        enabled: true
+        default-operator: SYSTEM
+      batch:
+        default-size: 1000

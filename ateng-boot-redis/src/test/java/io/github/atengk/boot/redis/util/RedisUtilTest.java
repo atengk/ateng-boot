@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -78,12 +79,33 @@ class RedisUtilTest {
 
     private RedisUtil redisUtil;
 
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     static class ItemVO {
         private Long id;
         private String name;
+
+        public ItemVO() {
+        }
+
+        public ItemVO(Long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public void setId(Long id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
     }
 
     @BeforeEach
@@ -112,9 +134,15 @@ class RedisUtilTest {
         when(redisTemplate.scan(any(ScanOptions.class))).thenReturn(cursor);
 
         Set<String> keys = RedisUtil.scan("order:*", 500L);
-
         assertThat(keys).containsExactlyInAnyOrder("order:1001", "order:1002");
-        verify(redisTemplate).scan(any(ScanOptions.class));
+
+        Cursor<String> cursor2 = mock(Cursor.class);
+        when(cursor2.hasNext()).thenReturn(true, false);
+        when(cursor2.next()).thenReturn("order:1003");
+        when(redisTemplate.scan(any(ScanOptions.class))).thenReturn(cursor2);
+
+        Set<String> aliasKeys = RedisUtil.scanKeys("order:*", 500L);
+        assertThat(aliasKeys).containsExactly("order:1003");
     }
 
     @Test
@@ -352,5 +380,25 @@ class RedisUtilTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get("inst:k")).thenReturn("inst_val");
         assertThat(redisUtil.get("inst:k")).isEqualTo("inst_val");
+    }
+
+    @Test
+    @DisplayName("RedisUtil 入口前置卫语句显式防卫校验")
+    void testEntranceValidation() {
+        assertThatThrownBy(() -> RedisUtil.hasKey(""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("key must not be blank");
+
+        assertThatThrownBy(() -> RedisUtil.get(null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.set("", "val"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.delete(""))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> RedisUtil.expire("", java.time.Duration.ofSeconds(10)))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

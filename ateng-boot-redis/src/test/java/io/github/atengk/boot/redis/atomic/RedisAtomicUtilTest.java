@@ -96,6 +96,40 @@ class RedisAtomicUtilTest {
     }
 
     @Test
+    @DisplayName("测试原子比较置换操作 (compareAndSet)")
+    void testCompareAndSetOperation() {
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("1"), eq("100"), eq("200"), eq("-1")))
+                .thenReturn(1L);
+
+        boolean casSuccess = atomicUtil.compareAndSet("cas:key", 100L, 200L);
+        assertThat(casSuccess).isTrue();
+
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("1"), eq("100"), eq("300"), eq("-1")))
+                .thenReturn(0L);
+
+        boolean casFailed = atomicUtil.compareAndSet("cas:key", 100L, 300L);
+        assertThat(casFailed).isFalse();
+
+        when(redisTemplate.execute(any(RedisScript.class), any(RedisSerializer.class), isNull(), anyList(), eq("0"), eq("0"), eq("50"), eq("60")))
+                .thenReturn(1L);
+
+        boolean initCas = atomicUtil.compareAndSet("cas:key", null, 50L, Duration.ofSeconds(60));
+        assertThat(initCas).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试原子设置新值并返回旧值 (getAndSet)")
+    void testGetAndSetMethod() {
+        when(valueOperations.getAndSet("num:gas", 200L)).thenReturn(100L);
+
+        Long oldVal = atomicUtil.getAndSet("num:gas", 200L);
+        assertThat(oldVal).isEqualTo(100L);
+
+        when(valueOperations.getAndSet("num:empty", 10L)).thenReturn(null);
+        assertThat(atomicUtil.getAndSet("num:empty", 10L)).isNull();
+    }
+
+    @Test
     @DisplayName("测试基于日期的业务递增流水号发号 (generateDailySeq)")
     void testGenerateDailySeq() {
         String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));

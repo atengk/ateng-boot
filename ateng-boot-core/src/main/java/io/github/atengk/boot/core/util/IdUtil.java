@@ -1,7 +1,9 @@
 package io.github.atengk.boot.core.util;
 
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.id.SnowflakeIdInfo;
 
+import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -101,6 +103,16 @@ public final class IdUtil {
      */
     public static String nextIdStr() {
         return DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 基于默认单例雪花发号器反解雪花 ID 结构化信息
+     *
+     * @param id 待反解的雪花长整型 ID
+     * @return 包含发号时间戳、Instant、LocalDateTime、数据中心、节点与序列号的结构化信息
+     */
+    public static SnowflakeIdInfo parseSnowflake(long id) {
+        return DEFAULT_SNOWFLAKE.parse(id);
     }
 
     // ==================== 高性能 UUID 门面 ====================
@@ -232,5 +244,104 @@ public final class IdUtil {
             chars[i] = alphabet[random.nextInt(alphabetLen)];
         }
         return new String(chars);
+    }
+
+    // ==================== 纯原生零依赖无锁 Base62 短码编解码门面 ====================
+
+    /**
+     * 标准 Base62 字符集（0-9, A-Z, a-z）
+     */
+    private static final char[] BASE62_CHARS =
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
+
+    /**
+     * Base62 ASCII 解码速查表（-1 表示非法字符）
+     */
+    private static final byte[] BASE62_DECODE_TABLE = new byte[128];
+
+    static {
+        Arrays.fill(BASE62_DECODE_TABLE, (byte) -1);
+        for (int i = 0; i < BASE62_CHARS.length; i++) {
+            BASE62_DECODE_TABLE[BASE62_CHARS[i]] = (byte) i;
+        }
+    }
+
+    /**
+     * 将 64 位长整型数值进行无损 Base62 短码编码（支持负数安全与边界值 0、Long.MAX_VALUE、Long.MIN_VALUE）
+     * 针对雪花 ID（约 18~19 位十进制）可压缩至 10~11 位紧凑短码，天然 URL 安全且无锁高吞吐
+     *
+     * @param id 64 位长整型数值
+     * @return 紧凑的 Base62 短码字符串
+     */
+    public static String toBase62(long id) {
+        if (id == 0) {
+            return "0";
+        }
+        boolean negative = id < 0;
+        char[] buf = new char[13]; // 64位数值在 62 进制下最多 11 位，加负号最多 12 位
+        int charPos = buf.length;
+        if (!negative) {
+            long temp = id;
+            while (temp > 0) {
+                buf[--charPos] = BASE62_CHARS[(int) (temp % 62)];
+                temp /= 62;
+            }
+        } else {
+            long temp = id;
+            while (temp < 0) {
+                buf[--charPos] = BASE62_CHARS[(int) -(temp % 62)];
+                temp /= 62;
+            }
+            buf[--charPos] = '-';
+        }
+        return new String(buf, charPos, buf.length - charPos);
+    }
+
+    /**
+     * 将 Base62 短码字符串解码还原为 64 位长整型数值
+     *
+     * @param base62 Base62 短码字符串（不可为空白）
+     * @return 还原后的 64 位长整型数值
+     * @throws IllegalArgumentException 当输入为 null、空白或包含非法字符时抛出
+     * @throws ArithmeticException      当数值超出 64 位长整型上下限溢出时抛出
+     */
+    public static long fromBase62(String base62) {
+        if (base62 == null || base62.isBlank()) {
+            throw new IllegalArgumentException("Base62 string must not be null or blank");
+        }
+        int len = base62.length();
+        int i = 0;
+        boolean negative = false;
+        char firstChar = base62.charAt(0);
+        if (firstChar == '-') {
+            negative = true;
+            i = 1;
+            if (len == 1) {
+                throw new IllegalArgumentException("Invalid Base62 string: " + base62);
+            }
+        }
+        long result = 0;
+        for (; i < len; i++) {
+            char c = base62.charAt(i);
+            if (c >= 128) {
+                throw new IllegalArgumentException("Invalid Base62 character: " + c);
+            }
+            int digit = BASE62_DECODE_TABLE[c];
+            if (digit < 0) {
+                throw new IllegalArgumentException("Invalid Base62 character: " + c);
+            }
+            // 溢出检查（负数计算）
+            if (result < (Long.MIN_VALUE + digit) / 62) {
+                throw new ArithmeticException("Base62 string causes 64-bit integer overflow: " + base62);
+            }
+            result = result * 62 - digit;
+        }
+        if (!negative) {
+            if (result == Long.MIN_VALUE) {
+                throw new ArithmeticException("Base62 string causes 64-bit integer overflow: " + base62);
+            }
+            return -result;
+        }
+        return result;
     }
 }
