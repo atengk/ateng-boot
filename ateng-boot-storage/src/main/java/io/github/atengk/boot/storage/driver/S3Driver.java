@@ -22,6 +22,7 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CommonPrefix;
 import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
@@ -63,6 +64,7 @@ import io.github.atengk.boot.storage.util.S3ChunkTokenUtil;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -85,6 +87,12 @@ import java.util.Map;
 @Slf4j
 @Getter
 public class S3Driver implements StorageDriver {
+
+    /**
+     * AWS S3 分片上传规范最小分片容量 (5MB = 5,242,880 字节)
+     * 除最后一个分片外，S3 协议严格限制每一片至少 5MB
+     */
+    public static final int MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024;
 
     /**
      * S3 客户端操作实例
@@ -297,18 +305,214 @@ public class S3Driver implements StorageDriver {
         String finalContentType = (contentType != null && !contentType.isBlank())
                 ? contentType
                 : StorageSecurityUtil.determineContentType(cleanPath);
+
+        if (size >= 0) {
+            // 已知字节长度：直接使用单请求 PutObject 流式写出，零内存堆积
+            try {
+                RequestBody requestBody = RequestBody.fromInputStream(in, size);
+                PutObjectRequest.Builder putRequestBuilder = PutObjectRequest.builder()
+                        .bucket(this.bucket)
+                        .key(cleanPath)
+                        .contentType(finalContentType);
+                if (publicRead) {
+                    putRequestBuilder.acl(ObjectCannedACL.PUBLIC_READ);
+                }
+                if (userMetadata != null && !userMetadata.isEmpty()) {
+                    putRequestBuilder.metadata(userMetadata);
+                }
+
+                PutObjectResponse response = this.s3Client.putObject(putRequestBuilder.build(), requestBody);
+                String etag = stripQuotes(response.eTag());
+
+                return StorageObject.builder()
+                        .path(cleanPath)
+                        .filename(FileUtil.cleanFilename(cleanPath))
+                        .size(size)
+                        .contentType(finalContentType)
+                        .etag(etag)
+                        .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
+                        .lastModified(Instant.now())
+                        .build();
+            } catch (Exception e) {
+                throw translateException(e, cleanPath, "上传对象到 S3 失败");
+            }
+        } else {
+            // 未知流长度 (size < 0)：启动双阶自适应流式分片缓冲，峰值内存严格限制在 5MB，彻底根治 OOM
+            return uploadAdaptiveStream(cleanPath, in, finalContentType, userMetadata, publicRead);
+        }
+    }
+
+    /**
+     * 未知长度流双阶自适应流式上传机制
+     * 1. 首阶：以 5MB 为界限尝试预读；若流数据未满 5MB 或恰好在 5MB 处结束，以单请求 PutObject 极速完成；
+     * 2. 次阶：若流数据超过 5MB，自动升级为标准 S3 Multipart Upload 会话，按 5MB 分批次上传碎片并在 EOF 完成合并；
+     * 3. 容灾：任何环节发生异常，立即触发 abortMultipartUpload 确定性释放物理会话，杜绝孤儿碎片膨胀。
+     */
+    private StorageObject uploadAdaptiveStream(String cleanPath, InputStream in, String finalContentType,
+                                              Map<String, String> userMetadata, boolean publicRead) {
+        byte[] firstBuffer = new byte[MIN_MULTIPART_PART_SIZE];
+        int firstRead;
         try {
-            RequestBody requestBody;
-            long actualSize;
-            if (size >= 0) {
-                actualSize = size;
-                requestBody = RequestBody.fromInputStream(in, size);
-            } else {
-                byte[] bytes = in.readAllBytes();
-                actualSize = bytes.length;
-                requestBody = RequestBody.fromBytes(bytes);
+            firstRead = in.readNBytes(firstBuffer, 0, MIN_MULTIPART_PART_SIZE);
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取待上传流失败: " + cleanPath, e);
+        }
+
+        // 阶段一：若流数据未满 5MB，判定为小文件，直接走单请求 PutObject
+        if (firstRead < MIN_MULTIPART_PART_SIZE) {
+            return putSingleObject(cleanPath, firstBuffer, firstRead, finalContentType, userMetadata, publicRead);
+        }
+
+        // 探查是否恰好在 5MB 处到达 EOF
+        int nextByte;
+        try {
+            nextByte = in.read();
+        } catch (IOException e) {
+            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "探查上传流结束标识失败: " + cleanPath, e);
+        }
+        if (nextByte == -1) {
+            return putSingleObject(cleanPath, firstBuffer, firstRead, finalContentType, userMetadata, publicRead);
+        }
+
+        // 阶段二：流数据超过 5MB，无缝升级为 S3 分片流式上传 (Multipart Upload)
+        String uploadId = null;
+        try {
+            CreateMultipartUploadRequest.Builder createBuilder = CreateMultipartUploadRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .contentType(finalContentType);
+            if (publicRead) {
+                createBuilder.acl(ObjectCannedACL.PUBLIC_READ);
+            }
+            if (userMetadata != null && !userMetadata.isEmpty()) {
+                createBuilder.metadata(userMetadata);
+            }
+            CreateMultipartUploadResponse createResponse = this.s3Client.createMultipartUpload(createBuilder.build());
+            uploadId = createResponse.uploadId();
+
+            List<CompletedPart> completedParts = new ArrayList<>();
+            long totalSize = 0;
+
+            // 上传第一分片 (5MB)
+            UploadPartRequest part1Request = UploadPartRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .uploadId(uploadId)
+                    .partNumber(1)
+                    .contentLength((long) MIN_MULTIPART_PART_SIZE)
+                    .build();
+            UploadPartResponse part1Resp = this.s3Client.uploadPart(
+                    part1Request,
+                    RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(firstBuffer, 0, MIN_MULTIPART_PART_SIZE))
+            );
+            completedParts.add(CompletedPart.builder().partNumber(1).eTag(part1Resp.eTag()).build());
+            totalSize += MIN_MULTIPART_PART_SIZE;
+
+            // 循环分批流式上传后续分片
+            int partNumber = 2;
+            byte[] partBuffer = new byte[MIN_MULTIPART_PART_SIZE];
+            while (nextByte != -1) {
+                partBuffer[0] = (byte) nextByte;
+                int additionalRead = in.readNBytes(partBuffer, 1, MIN_MULTIPART_PART_SIZE - 1);
+                int currentPartLength = 1 + additionalRead;
+
+                if (currentPartLength < MIN_MULTIPART_PART_SIZE) {
+                    // 到达 EOF，此为最后一个分片
+                    UploadPartRequest partRequest = UploadPartRequest.builder()
+                            .bucket(this.bucket)
+                            .key(cleanPath)
+                            .uploadId(uploadId)
+                            .partNumber(partNumber)
+                            .contentLength((long) currentPartLength)
+                            .build();
+                    UploadPartResponse partResp = this.s3Client.uploadPart(
+                            partRequest,
+                            RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, currentPartLength))
+                    );
+                    completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                    totalSize += currentPartLength;
+                    break;
+                }
+
+                // 当前分片满 5MB，探查下一个字节以确认是否到达 EOF
+                nextByte = in.read();
+                if (nextByte == -1) {
+                    // 恰好在 5MB 边界处到达 EOF，此为最后一个分片
+                    UploadPartRequest partRequest = UploadPartRequest.builder()
+                            .bucket(this.bucket)
+                            .key(cleanPath)
+                            .uploadId(uploadId)
+                            .partNumber(partNumber)
+                            .contentLength((long) MIN_MULTIPART_PART_SIZE)
+                            .build();
+                    UploadPartResponse partResp = this.s3Client.uploadPart(
+                            partRequest,
+                            RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, MIN_MULTIPART_PART_SIZE))
+                    );
+                    completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                    totalSize += MIN_MULTIPART_PART_SIZE;
+                    break;
+                }
+
+                // 仍有后续数据，上传当前 5MB 分片并进入下一轮
+                UploadPartRequest partRequest = UploadPartRequest.builder()
+                        .bucket(this.bucket)
+                        .key(cleanPath)
+                        .uploadId(uploadId)
+                        .partNumber(partNumber)
+                        .contentLength((long) MIN_MULTIPART_PART_SIZE)
+                        .build();
+                UploadPartResponse partResp = this.s3Client.uploadPart(
+                        partRequest,
+                        RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, MIN_MULTIPART_PART_SIZE))
+                );
+                completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                totalSize += MIN_MULTIPART_PART_SIZE;
+                partNumber++;
             }
 
+            // 完成分片合并
+            CompleteMultipartUploadRequest completeRequest = CompleteMultipartUploadRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .uploadId(uploadId)
+                    .multipartUpload(CompletedMultipartUpload.builder().parts(completedParts).build())
+                    .build();
+            CompleteMultipartUploadResponse completeResponse = this.s3Client.completeMultipartUpload(completeRequest);
+            String etag = stripQuotes(completeResponse.eTag());
+
+            return StorageObject.builder()
+                    .path(cleanPath)
+                    .filename(FileUtil.cleanFilename(cleanPath))
+                    .size(totalSize)
+                    .contentType(finalContentType)
+                    .etag(etag)
+                    .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
+                    .lastModified(Instant.now())
+                    .build();
+        } catch (Exception e) {
+            // 异常熔断与确定性清理现场：中止分片会话，防孤儿碎片堆积
+            if (uploadId != null) {
+                try {
+                    this.s3Client.abortMultipartUpload(AbortMultipartUploadRequest.builder()
+                            .bucket(this.bucket)
+                            .key(cleanPath)
+                            .uploadId(uploadId)
+                            .build());
+                } catch (Exception abortEx) {
+                    log.warn("自适应分片上传异常中止会话清理失败: bucket={}, key={}, uploadId={}", this.bucket, cleanPath, uploadId, abortEx);
+                }
+            }
+            throw translateException(e, cleanPath, "自适应分片流式上传到 S3 失败");
+        }
+    }
+
+    /**
+     * 单请求 PutObject 上传辅助方法
+     */
+    private StorageObject putSingleObject(String cleanPath, byte[] buffer, int length, String finalContentType,
+                                          Map<String, String> userMetadata, boolean publicRead) {
+        try {
             PutObjectRequest.Builder putRequestBuilder = PutObjectRequest.builder()
                     .bucket(this.bucket)
                     .key(cleanPath)
@@ -320,13 +524,14 @@ public class S3Driver implements StorageDriver {
                 putRequestBuilder.metadata(userMetadata);
             }
 
+            RequestBody requestBody = RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(buffer, 0, length));
             PutObjectResponse response = this.s3Client.putObject(putRequestBuilder.build(), requestBody);
             String etag = stripQuotes(response.eTag());
 
             return StorageObject.builder()
                     .path(cleanPath)
                     .filename(FileUtil.cleanFilename(cleanPath))
-                    .size(actualSize)
+                    .size((long) length)
                     .contentType(finalContentType)
                     .etag(etag)
                     .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
