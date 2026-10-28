@@ -65,7 +65,6 @@
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-admin</module>
-        <module>ateng-boot-samples</module>
     </modules>
 
     <properties>
@@ -532,20 +531,23 @@
                             <waitUntil>validated</waitUntil>
                             <excludeArtifacts>
                                 <excludeArtifact>ateng-boot-samples</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-core</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-web</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-mybatis-plus</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-redis</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-excel</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-satoken</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-storage</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-job-local</excludeArtifact>
-                                <excludeArtifact>ateng-boot-sample-smoke-test</excludeArtifact>
                             </excludeArtifacts>
                         </configuration>
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <!-- 默认激活：集成样例与端到端自验套件 (在日常开发与 CI 单元测试中始终激活；当传入 -DskipSamples 发版时自动从 Reactor 物理剔除) -->
+        <profile>
+            <id>samples</id>
+            <activation>
+                <property>
+                    <name>!skipSamples</name>
+                </property>
+            </activation>
+            <modules>
+                <module>ateng-boot-samples</module>
+            </modules>
         </profile>
         <!-- Java 21+ 单元测试动态 Agent 与挂载增强 (JEP 451 兼容) -->
         <profile>
