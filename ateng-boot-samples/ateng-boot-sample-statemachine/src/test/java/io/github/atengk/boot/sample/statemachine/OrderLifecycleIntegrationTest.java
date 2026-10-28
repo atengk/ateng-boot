@@ -15,6 +15,7 @@ import io.github.atengk.boot.sample.statemachine.vo.OrderVO;
 import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.core.StateMachineFactory;
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.junit.jupiter.api.DisplayName;
@@ -226,7 +227,7 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("CAS 乐观锁防重校验：并发重复触发同一跃迁时拒绝并抛出 CONCURRENT_CAS_CONFLICT")
+    @DisplayName("CAS 乐观锁防重校验：并发重复触发同一跃迁时拒绝并抛出 CONCURRENT_CAS_CONFLICT 或 TRANSITION_NOT_FOUND")
     void testCasConcurrencyConflict() throws InterruptedException {
         String sn = "ORD-CAS-" + UUID.randomUUID().toString().substring(0, 8);
         OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
@@ -240,7 +241,7 @@ class OrderLifecycleIntegrationTest {
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch endLatch = new CountDownLatch(threadCount);
         AtomicInteger successCount = new AtomicInteger(0);
-        AtomicInteger casConflictCount = new AtomicInteger(0);
+        AtomicInteger rejectedCount = new AtomicInteger(0);
 
         for (int i = 0; i < threadCount; i++) {
             new Thread(() -> {
@@ -249,8 +250,9 @@ class OrderLifecycleIntegrationTest {
                     orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
                     successCount.incrementAndGet();
                 } catch (StateMachineException e) {
-                    if (e.getResultCode().getCode() == 59005) {
-                        casConflictCount.incrementAndGet();
+                    if (e.getResultCode().getCode().equals(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode())
+                            || e.getResultCode().getCode().equals(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode())) {
+                        rejectedCount.incrementAndGet();
                     }
                 } catch (Exception ignored) {
                 } finally {
@@ -262,10 +264,53 @@ class OrderLifecycleIntegrationTest {
         startLatch.countDown();
         endLatch.await();
 
-        // 必有 1 次成功，1 次因版本号或状态已更新触发 CAS 冲突拒绝
+        // 必有 1 次成功，另 1 次因版本号冲突(59005)或状态已跃迁(59001)触发并发防重拒绝
         assertThat(successCount.get()).isEqualTo(1);
-        assertThat(casConflictCount.get()).isEqualTo(1);
+        assertThat(rejectedCount.get()).isEqualTo(1);
         assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
+    }
+
+    @Test
+    @DisplayName("CAS 乐观锁版本过期确定性校验：实体版本号滞后时执行跃迁抛出 CONCURRENT_CAS_CONFLICT")
+    void testCasConflictWithStaleVersion() {
+        String sn = "ORD-CAS-STALE-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
+                .orderSn(sn)
+                .amount(new BigDecimal("66.00"))
+                .build());
+        Long id = created.getId();
+
+        // 获取当前版本的订单快照（version=0）
+        OrderDO staleOrder = orderMapper.selectById(id);
+        assertThat(staleOrder.getVersion()).isEqualTo(0);
+
+        // 模拟并发更新导致数据库中版本号已递增为 1（或状态已变更）
+        int updated = orderMapper.updateStatusWithCas(id, OrderState.WAIT_PAY.name(), OrderState.PAID.name(), 0);
+        assertThat(updated).isEqualTo(1);
+
+        // 此时使用持有的过期快照（version=0）再次尝试触发 CAS 跃迁，受影响行数必为 0
+        OrderContext context = OrderContext.builder()
+                .orderId(id)
+                .orderSn(sn)
+                .amount(staleOrder.getAmount())
+                .operator("CONCURRENT_WORKER")
+                .build();
+
+        assertThatThrownBy(() -> orderStateMachine.fireEventWithCas(
+                staleOrder,
+                OrderDO::getStatus,
+                OrderDO::setStatus,
+                OrderEvent.PAY,
+                context,
+                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+        ))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
+                    assertThat(smEx.getSourceState()).isEqualTo(OrderState.WAIT_PAY);
+                    assertThat(smEx.getTargetState()).isEqualTo(OrderState.PAID);
+                });
     }
 
     @Test
