@@ -10,7 +10,10 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **基础运维** | 自动装配与主配置 | `ExcelProperties` / `AtengExcelAutoConfiguration` | `ateng.boot.excel.enabled`<br>`ateng.boot.excel.default-batch-size`<br>`ateng.boot.excel.max-sync-rows`<br>`ateng.boot.excel.temp-dir` | 统管 Starter 自动装配、流式批次阈值与同步读取防 OOM 最大行数上限 | `AtengExcelAutoConfigurationTest`<br>`ExcelUtilTest` |
 | **核心导出** | 强类型流式导出 | `ExcelUtil` | - | `export(out, list, clazz)` / `export(response, fileName, list, clazz)`：流式写出并自适应配置 RFC 5987 / RFC 6266 标准防乱码响应头 | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
+| **动态列裁剪** | 强类型 VO 动态列投影与紧凑裁剪 | `ExcelUtil.export` / `resolveProjectedColumns` | - | `export(out, list, clazz, includeColumns, excludeColumns)`：支持白名单包含与黑名单排除模式，动态过滤无关列并自适应紧凑无缝排列，避免空列与类型擦除 | `ExcelColumnProjectionTest`<br>`DynamicColumnProjectionScenarioService`<br>`SampleExcelIntegrationTest` |
+| **Web 门面** | Web 流式导出与客户端中断防卫 | `ExcelWebUtil` | - | `toResponseEntity(fileName, data, clazz)` / `createDownloadHeaders(fileName)` / `export(response, ...)`：一等公民支持 `ResponseEntity<StreamingResponseBody>`，自动识别并静默抑制 Tomcat/Jetty/Undertow 客户端连接提前中断异常，避免 500 告警风暴 | `ExcelWebUtilTest`<br>`ExcelWebContractController`<br>`SampleExcelIntegrationTest` |
 | **核心读取** | 同步全量与流式分批读取 | `ExcelUtil` | `ateng.boot.excel.default-batch-size`<br>`ateng.boot.excel.max-sync-rows` | `read(in, clazz)`（超限自动 fail-fast 阻断防 OOM）；`readBatch(in, clazz, batchSize, consumer)`（每次达到批次回调并即刻清空内存引用） | `ExcelUtilTest`<br>`SampleExcelIntegrationTest` |
+| **多表流式读取** | 异构多工作表读取构建器 | `ExcelReaderBuilder` / `ExcelMultiSheetResult` / `ExcelUtil.reader` | `ateng.boot.excel.default-batch-size`<br>`ateng.boot.excel.max-sync-rows` | `ExcelUtil.reader(in).sheet(0, ClassA).sheet(1, ClassB, consumer).read()`：支持按 Sheet 绑定独立模型，提供同步全量与流式分批读取，防御跨表内存堆积 OOM | `ExcelReaderBuilderTest`<br>`MultiSheetScenarioService`<br>`SampleExcelIntegrationTest` |
 | **数据校验** | JSR-303 行级校验导入 | `ExcelUtil` / `BatchValidationListener` | - | `readWithValidation(in, clazz, failFast)` / `readWithResult(in, clazz)` / `readBatchWithValidation(in, clazz, size, dataConsumer, errConsumer)`：精准捕获行号与列字段并聚合错误 | `ExcelValidationTest`<br>`SampleExcelIntegrationTest` |
 | **错题集隔离** | 差错数据隔离提取与标红回写 | `ExcelUtil` / `ExcelFeedbackUtil` / `FailSplitRowWriteHandler` | - | `exportFailedRows(out, clazz, errorRows)`（仅将失败数据提取生成纠错文件并高亮）；`exportErrorFeedback(in, out, errorRows)`（原表单元格粉色高亮并嵌入浮动批注） | `ExcelFailSplitTest`<br>`SampleExcelIntegrationTest` |
 | **数据安全** | 导出动态脱敏 | `@ExcelSensitive` / `SensitiveCellWriteHandler` | - | `@ExcelSensitive(type, keepHead, keepTail)`：写出时拦截掩码，源实体在 JVM 内存中 100% 保持原始明文不变量，杜绝掩码脏写 | `ExcelSensitiveTest`<br>`SampleExcelIntegrationTest` |
@@ -20,6 +23,7 @@
 | **字典翻译** | 动态数据字典 SPI | `@ExcelDict` / `DictProvider` / `DictProviderHolder` | - | `@ExcelDict(dictType = "user_status")`：解耦具体字典存储（数据库/Redis/枚举），导入导出时双向透明翻译 | `ExcelEnumAndDictTest`<br>`SampleExcelIntegrationTest` |
 | **防呆设计** | 表头指南与下拉选单约束 | `@ExcelPrompt` / `@ExcelDropdown` / `DropdownProvider` | - | `@ExcelPrompt(title, content)`（自动写入单元格浮动提示批注）；`@ExcelDropdown`（自动生成工作表级下拉列表限制，超过 255 字符自动外挂隐藏字典工作表） | `ExcelTemplateTest`<br>`SampleExcelIntegrationTest` |
 | **安全审计** | 防拍照暗水印与密码保护 | `ExcelUtil.exportWithWatermark` / `protectSheet` / `WatermarkSheetWriteHandler` | - | `exportWithWatermark(out, list, clazz, watermarkText, password)`：全屏 30° 倾斜半透明平铺暗水印，支持工作表只读密码锁定 | `ExcelWatermarkAndProtectTest`<br>`SampleExcelIntegrationTest` |
+| **整表强加密** | POI 原生 Agile AES-256 工作簿加密与解密 | `ExcelSecurityUtil` / `ExcelUtil.export(..., password)` | `ateng.boot.excel.temp-dir` | `export(..., password)` / `decryptWorkbook(in, out, password)` / `isEncrypted(in)`：基于 POI Agile Encryption (AES-256 + SHA-512) 强加密，受管临时磁盘中转流式输出，恒定常数级堆内存 | `ExcelWorkbookEncryptionTest`<br>`SecurityWorkbookScenarioService`<br>`SampleExcelIntegrationTest` |
 | **多媒体导出** | 图片流式导出与行高自适应 | `@ExcelImage` / `SmartImageConverter` / `ImageRowHeightWriteHandler` | - | `@ExcelImage(width, height)`：支持 `byte[]`、`InputStream`、`File` 与 URL 网络图片，自动根据最大图片像素推算行高并精准锚定单元格居中 | `ExcelImageTest` |
 | **结构排版** | 单元格纵向合并 | `@ExcelMerge` / `MergeCellWriteHandler` | - | `@ExcelMerge(value, dependParent)`：对连续相同的数据单元格自动纵向合并，支持依赖前序关联列联动合并 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
 | **复杂报表** | 模板数据填充 | `ExcelUtil.fill` | - | `fill(out, templateIn, data, fillConfig)`：基于预设 `.xlsx` 模板，支持单对象占位符 `{name}` 与列表集合循环 `{.list}` 复合填充 | `ExcelTemplateTest` |
@@ -73,28 +77,87 @@ try (FileOutputStream out = new FileOutputStream("用户列表.xlsx")) {
 
 ---
 
-## 3. Web HTTP 安全防乱码导出
+## 3. Web HTTP 流式导出与客户端中断防卫 (`ExcelWebUtil`)
 
 ### 场景痛点
-Controller 文件导出时，各浏览器对中文文件名的转码规范（如 Safari、Firefox 与 Chrome 的兼容差异）不一致，极易出现乱码或下划线；且响应头 Content-Type 设置繁琐。
+1. **浏览器乱码兼容问题**：各浏览器对中文文件名的转码规范（Safari、Firefox、Chrome 与 Edge）存在历史差异，传统硬编码设置容易导致中文变成下划线或乱码；
+2. **长连接内存占用**：Controller 同步写入 `HttpServletResponse` 会独占 Tomcat 工作线程；
+3. **客户端中断异常风暴 (Client Abort)**：海量报表导出过程中，若用户提前关闭浏览器标签页、取消下载或因弱网发生连接重置，底层会抛出 `ClientAbortException`、`Broken pipe` 或 `Connection reset by peer`，在控制台倾泻长篇错误堆栈，引发监控系统严重的 500 假报警。
 
 ### 核心代码范式
+
+#### 模式一：Spring 原生 `ResponseEntity<StreamingResponseBody>` 异步流式写出（强烈推荐）
+通过 `ExcelWebUtil` 提供的专职门面方法，一等公民融入 Spring Web 异步架构，非阻塞释放 Servlet 容器线程：
+
 ```java
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.excel.util.ExcelWebUtil;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/excel/web-contract")
+public class ExcelWebContractController {
+
+    private final UserService userService;
+
+    public ExcelWebContractController(UserService userService) {
+        this.userService = userService;
+    }
+
+    /**
+     * 异步流式导出用户清单，支持动态列投影裁剪
+     */
+    @GetMapping("/response-entity")
+    public ResponseEntity<StreamingResponseBody> exportByResponseEntity(
+            @RequestParam(value = "includeColumns", required = false) List<String> includeColumns) {
+        String fileName = "用户名单_异步流式.xlsx";
+        // 自动构建严格遵循 RFC 5987 / RFC 6266 标准的 UTF-8 编码响应头
+        HttpHeaders headers = ExcelWebUtil.createDownloadHeaders(fileName);
+
+        StreamingResponseBody responseBody = outputStream -> {
+            List<UserExcelVO> data = userService.getMockUserList();
+            ExcelUtil.export(outputStream, "用户清单", data, UserExcelVO.class, includeColumns, null);
+        };
+
+        return ResponseEntity.ok()
+                .headers(headers)
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(responseBody);
+    }
+}
+```
+
+#### 模式二：`HttpServletResponse` 原生同步流式写出（存量完全兼容）
+对于传统同步导出接口，直接调用 `ExcelWebUtil.export` 或 `ExcelUtil.export` 即可：
+
+```java
+import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@RestController
-@RequestMapping("/excel")
-public class ExcelExportController {
+import java.io.IOException;
+import java.util.List;
 
-    @GetMapping("/export")
-    public void exportUsers(HttpServletResponse response) {
-        List<UserVO> data = userService.listUsers();
-        // 自动完成 RFC 5987 / RFC 6266 UTF-8 编码与标准 XLSX MIME 设置
-        ExcelUtil.export(response, "系统用户清单", data, UserVO.class);
+@RestController
+@RequestMapping("/api/excel/web-contract")
+public class ExcelWebContractController {
+
+    @GetMapping("/servlet-response")
+    public void exportByServletResponse(HttpServletResponse response) throws IOException {
+        List<UserExcelVO> data = userService.getMockUserList();
+        // 自动完成防乱码响应头装配、脱敏/字典枚举转义并直接写入网络流
+        ExcelWebUtil.export(response, "用户名单_同步流式.xlsx", data, UserExcelVO.class);
     }
 }
 ```
@@ -102,13 +165,71 @@ public class ExcelExportController {
 ### 预期 HTTP 响应契约
 ```http
 HTTP/1.1 200 OK
-Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=utf-8
-Content-Disposition: attachment; filename="系统用户清单.xlsx"; filename*=UTF-8''%E7%B3%BB%E7%BB%9F%E7%94%A8%E6%88%B7%E6%B8%85%E5%8D%95.xlsx
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+Content-Disposition: attachment; filename="用户名单_异步流式.xlsx"; filename*=UTF-8''%E7%94%A8%E6%88%B7%E5%90%8D%E5%8D%95_%E5%BC%82%E6%AD%A5%E6%B5%81%E5%BC%8F.xlsx
+Cache-Control: no-cache, no-store, must-revalidate
+Pragma: no-cache
+Expires: 0
 ```
+
+### 客户端中断防卫机制 (Client Abort Defense)
+`ExcelWebUtil` 内置主动探测与智能抑制逻辑：
+1. **自动模式识别**：自动拦截 Tomcat `ClientAbortException`、Jetty `EofException` 以及携带 `Broken pipe`、`Connection reset by peer` 等特征的网络断开异常；
+2. **降级无感日志**：将异常堆栈抑制并降级为 `DEBUG`/`INFO` 日志（如 `[ExcelWebUtil] 客户端提前中止连接: ...`），坚决杜绝 500 告警风暴；
+3. **资源兜底清理**：即使网络流被客户端强制掐断，写出引擎仍会在 `finally` 块中无条件执行临时中转文件与物理句柄的回收，确保零内存和磁盘泄漏。
 
 ---
 
-## 4. 强类型同步读取与流式分批读取
+## 4. 强类型 VO 动态列投影裁剪 (自选列白名单与黑名单)
+
+### 场景痛点
+在多租户系统、用户角色权限控制或前端自定义导出列场景中，不同用户所需要导出的报表列各不相同。传统方式通常面临两难困境：
+- **方案 A（多 DTO 冗余）**：为各种列组合创建数十个近乎重复的 VO 类，导致代码严重膨胀且维护成本极高；
+- **方案 B（退化为 Map）**：使用 `Map<String, Object>` 导致完全丢失实体类的 JSR-303 校验、`@ExcelSensitive` 动态脱敏、`@ExcelEnum` 业务枚举转义及 `@ExcelDict` 字典翻译等强类型契约；
+- **方案 C（简单隐藏列）**：很多工具库所谓的“过滤列”仅仅是在生成 Excel 时将不需要的列宽设为 0，实际上客户端下载后只要用鼠标一拉即可看到未授权的机密数据，产生严重的数据越权泄漏风险。
+
+### 核心代码范式
+`ateng-boot-excel` 支持基于强类型 VO 的纯物理列投影裁剪：
+- **白名单模式 (`includeColumns`)**：仅导出指定的字段，其他列完全在物理层不生成；
+- **黑名单模式 (`excludeColumns`)**：导出除指定排除字段以外的所有列；
+- **紧凑无缝重排**：裁剪后未选列不会留白或空列，剩余列自动紧凑无缝排列并保留原有样式和列宽；
+- **顺序语义保障**：传入有序集合（如 `List<String>`）时，导出的列顺序严格按照集合声明的先后排列；传入无序集合（如 `Set<String>`）时，自动保底遵循实体类的自然字段顺序。
+
+```java
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+List<UserExcelVO> userList = userService.listUsers();
+
+// 1. 白名单模式：仅导出用户 ID 与电子邮箱（严格按传入的顺序重排）
+List<String> includeColumns = List.of("userId", "email");
+ExcelUtil.export(outputStream, "用户精简表", userList, UserExcelVO.class, includeColumns, null);
+
+// 2. 黑名单模式：排除敏感联系手机与性别字段
+Set<String> excludeColumns = Set.of("phone", "gender");
+ExcelUtil.export(outputStream, "脱敏用户表", userList, UserExcelVO.class, null, excludeColumns);
+
+// 3. 亦可通过 ExcelBuilder 流式编排指定 Sheet 的列投影
+try (ExcelBuilder builder = ExcelUtil.builder(outputStream)) {
+    builder.sheet("定制列报表", UserExcelVO.class, userList, includeColumns);
+}
+```
+
+### 预期导出的 Excel 效果对比
+假设原实体 `UserExcelVO` 包含 7 列：`[用户ID, 用户姓名, 联系手机, 电子邮箱, 用户性别, 所属部门, 账号状态]`。
+
+- **原始全量导出**：
+  | 用户ID | 用户姓名 | 联系手机 | 电子邮箱 | 用户性别 | 所属部门 | 账号状态 |
+  | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+  | 1 | 张三 | 138\*\*\*\*8000 | zhangsan@example.com | 男 | 研发部 | 正常 |
+
+- **白名单模式 (`List.of("userId", "email")`)**：
+  | 用户ID | 电子邮箱 |
+  | :--- | :--- |
+  | 1 | zhangsan@example.com |
+
+---
+
+## 5. 强类型同步读取与流式分批读取
 
 ### 场景痛点
 用户上传几十万行超大 Excel 文件时，若一次性将全量对象 load 进 JVM 内存，会直接引发长时间 FullGC 甚至崩溃；而小文件又需要极简的列表返回接口。
@@ -117,24 +238,67 @@ Content-Disposition: attachment; filename="系统用户清单.xlsx"; filename*=U
 ```java
 import io.github.atengk.boot.excel.util.ExcelUtil;
 
-// 1. 小文件极速全量读取
+// 1. 小文件极速全量读取（内置 maxSyncRows 阈值防爆）
 InputStream inputStream = file.getInputStream();
-List<UserVO> userList = ExcelUtil.read(inputStream, UserVO.class);
+List<UserExcelVO> userList = ExcelUtil.read(inputStream, UserExcelVO.class);
 
 // 2. 大数据量流式分批读取（每批 1000 条消费入库并立即清空内存引用）
-ExcelUtil.readBatch(file.getInputStream(), UserVO.class, 1000, batchList -> {
+ExcelUtil.readBatch(file.getInputStream(), UserExcelVO.class, 1000, batchList -> {
     userMapper.insertBatch(batchList);
 });
 
 // 3. 采用全局默认配置批次大小
-ExcelUtil.readBatch(file.getInputStream(), UserVO.class, batchList -> {
+ExcelUtil.readBatch(file.getInputStream(), UserExcelVO.class, batchList -> {
     userMapper.insertBatch(batchList);
 });
 ```
 
 ---
 
-## 5. 数据安全与导出动态脱敏 (`@ExcelSensitive`)
+## 6. 异构多工作表流式读取构建器 (`ExcelReaderBuilder`)
+
+### 场景痛点
+在复杂的企业级综合业务导入（如年度审计报表、HR 组织架构全景、电商多维账单）中，单个 Excel 工作簿往往包含多个结构各异的工作表（Sheet 0 为用户信息、Sheet 1 为部门关系、Sheet 2 为资金流水）。传统方式存在严重痛点：
+1. **监听器代码爆炸与交叉污染**：开发者不得不手写底层的 `AnalysisEventListener` 并在 `invoke` 方法中通过大量 `if (sheetNo == 0)` 嵌套分支硬编码，不同 Sheet 的状态和临时变量极易混杂污染；
+2. **重复遍历 IO 开销**：若为每个 Sheet 分别调用一次 `readSheet`，底层会对同一个文件流重复读取与解压多次，导致 IO 和 CPU 开销翻倍；
+3. **跨表内存膨胀**：缺乏多表流式协同机制，若各表全量载入内存，极易导致堆内存瞬间被打爆。
+
+### 核心代码范式
+`ExcelReaderBuilder` 提供了 Fluent 链式多工作表声明式读取架构，由 `ExcelUtil.reader(inputStream)` 作为统一门面入口：
+- **按 Sheet 隔离强类型绑定**：通过工作表索引（`sheet(0, ClassA)`）或表名（`sheet("部门架构", ClassB)`）为每个 Sheet 独立绑定数据实体；
+- **全量同步与分批流式自适应**：小表可通过 `read()` / `readSync()` 一键聚合至 `ExcelMultiSheetResult`；海量大表可直接配置 `batchSize` 与 `Consumer<List<T>>` 边读边入库；
+- **单次遍历与跨表防 OOM**：底层对 Excel 物理流仅执行一次单向顺序扫描，并统一由 `maxTotalRows` 全局守护，杜绝恶意多表 Zip Bomb 炸弹攻击。
+
+```java
+import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+try (InputStream in = file.getInputStream()) {
+    // 1. 异构多 Sheet 同步读取与强类型聚合提取
+    ExcelMultiSheetResult result = ExcelUtil.reader(in)
+            .sheet(0, UserExcelVO.class)
+            .sheet("部门架构", DepartmentUserMergeVO.class)
+            .read();
+
+    // 强类型安全提取指定 Sheet 数据（防御性返回空列表，绝不返回 null）
+    List<UserExcelVO> users = result.getSheetData(0);
+    List<DepartmentUserMergeVO> departments = result.getSheetData("部门架构");
+
+    // 2. 混合模式：大表流式消费 + 小表同步返回
+    ExcelUtil.reader(in)
+            // Sheet 0 海量流水：每 1000 条流式入库，即刻销毁内存引用
+            .sheet(0, TransactionVO.class, 1000, batchList -> {
+                transactionService.saveBatch(batchList);
+            })
+            // Sheet 1 汇总小表：同步全量载入
+            .sheet(1, SummaryVO.class)
+            .read();
+}
+```
+
+---
+
+## 7. 数据安全与导出动态脱敏 (`@ExcelSensitive`)
 
 ### 场景痛点
 根据数据安全合规要求，手机号、身份证、银行卡等隐私字段在导出 Excel 报表时必须掩码脱敏。传统做法是在 Service 业务层打星号（如 `138****0000`），这不仅污染业务实体，而且极易由于开发者疏忽将掩码脏数据回写数据库，严重破坏数据一致性与系统安全。
@@ -190,7 +354,7 @@ ExcelUtil.export(outputStream, userList, SensitiveUserVO.class);
 
 ---
 
-## 6. JSR-303 行级校验与失败标红批注回写
+## 8. JSR-303 行级校验与失败标红批注回写
 
 ### 场景痛点
 用户上传成百上千行 Excel 进行批量导入时，若遇到错误采用改一条重传一次的体验极差；更关键的是，后台返回的一串干瘪 JSON 报错文字（如“第 58 行手机号格式不合法”）让业务运营人员很难在庞大的表格中肉眼定位修改。
@@ -243,7 +407,7 @@ userService.saveBatch(result.getData());
 
 ---
 
-## 7. 防呆模板智能生成与下拉/提示约束 (`@ExcelDropdown` & `@ExcelPrompt`)
+## 9. 防呆模板智能生成与下拉/提示约束 (`@ExcelDropdown` & `@ExcelPrompt`)
 
 ### 场景痛点
 在传统的后台导入业务中，开发人员必须在代码库或对象存储维护大量静态 `.xlsx` 模板文件，一旦字段变更就必须重新制作并上传；且用户在手工录入性别、状态等枚举字段时极易敲错，导致导入时反复校验失败。
@@ -306,7 +470,7 @@ try (FileOutputStream out = new FileOutputStream("用户导入模板.xlsx")) {
 
 ---
 
-## 8. 业务数据双向转义 (`@ExcelEnum` 与 `@ExcelDict` SPI)
+## 10. 业务数据双向转义 (`@ExcelEnum` 与 `@ExcelDict` SPI)
 
 ### 场景痛点
 数据库与微服务传输通常使用数字编码（如 `gender=1`）或字典代号（如 `role="ADMIN"`、`status="ENABLE"`），而面向业务运营人员的 Excel 报表必须呈现为通俗易懂的中文描述（如“男”、“超级管理员”、“已启用”）。传统做法需要在 Service 层编写大量死板冗长的 `switch-case` 或批量查字典打补丁，导入时反向翻译更是一团乱麻。
@@ -406,7 +570,7 @@ List<UserBusinessVO> importedList = ExcelUtil.read(file.getInputStream(), UserBu
 
 ---
 
-## 9. 复杂报表填充、单元格合并与多 Sheet 链式构建器
+## 11. 复杂报表填充、单元格合并与多 Sheet 链式构建器
 
 ### 场景痛点
 在企业级经营分析与财务报表场景中，开发者往往面临五大棘手诉求：
@@ -544,7 +708,7 @@ try (ExcelBuilder builder = ExcelUtil.builder(response, "企业综合运营报�
 
 ---
 
-## 10. 企业级多模版主题与自适应列宽 (@ExcelTheme & SmartAutoColumnWidth)
+## 12. 企业级多模版主题与自适应列宽 (@ExcelTheme & SmartAutoColumnWidth)
 
 ### 场景痛点
 默认导出的 Excel 表格通常存在三大视觉与排版痛点：
@@ -641,7 +805,7 @@ public class FinancialOrderVO {
 
 ---
 
-## 11. 海量数据异步导出任务中心 (`AsyncExportTaskService`)
+## 13. 海量数据异步导出任务中心 (`AsyncExportTaskService`)
 
 ### 场景痛点
 数十万至百万级大数据量导出耗时长达数分钟，若采用普通 HTTP 同步接口，极易触发网络反向代理（Nginx/Gateway）`504 Gateway Timeout` 超时断连或浏览器标签页挂起；且缺乏后台生成进度可视化感知与物理文件生命周期管理。
@@ -723,7 +887,7 @@ public class AsyncExportController {
 
 ---
 
-## 12. 批量导入差错隔离与红标纠错导出 (`FailSplitFeedback`)
+## 14. 批量导入差错隔离与红标纠错导出 (`FailSplitFeedback`)
 
 ### 场景痛点
 业务人员批量导入几万条外部报表时，若包含几十处必填缺失或格式错误，传统系统要么“全量回滚”报个笼统的弹窗提示，要么仅给出难以对应位置的纯文本日志，业务人员必须在庞大原表中肉眼逐行排查，返工成本极高。
@@ -774,7 +938,7 @@ public class UserImportController {
 
 ---
 
-## 13. 多媒体图片智能自适应与行高联动 (`@ExcelImage`)
+## 15. 多媒体图片智能自适应与行高联动 (`@ExcelImage`)
 
 ### 场景痛点
 商品封面、人脸证件照等多媒体图片导出时，传统方式需要手动编写繁琐的字节转换器与 POI Drawing Anchor 坐标计算；由于普通数据行行高默认仅约 15pt，图片会被强行挤压成一条细线完全无法辨认，手工逐行拉高耗时费力。
@@ -820,7 +984,7 @@ ExcelUtil.export(response, "商品多媒体图册", productList, ProductCatalogV
 
 ---
 
-## 14. 防拍照半透明全屏暗水印与工作表只读保护
+## 16. 防拍照半透明全屏暗水印与工作表只读保护
 
 ### 场景痛点
 企业级财务薪酬、高管业绩等敏感 Excel 文件极易被翻拍泄露；普通绘图层水印会阻挡用户点击单元格或查看公式，且未锁定的工作表在流转过程中极易被篡改核心数字。
@@ -865,51 +1029,93 @@ try (ExcelBuilder builder = ExcelUtil.builder(response, "年度经营决算")) {
 
 ---
 
-## 15. 海量数据游标分页与跨 Sheet 自动轮转导出 (`StreamingPageExportTemplate`)
+## 17. 整工作簿 POI 原生 Agile AES-256 强加解密 (`ExcelSecurityUtil`)
+
+### 场景痛点
+1. **只读保护 (ProtectSheet) 极易被破解**：传统的工作表只读保护密码仅相当于客户端层面的显示锁，只要将 `.xlsx` 后缀改为 `.zip` 解压并删除 `sheet1.xml` 中的 `<sheetProtection>` 标签，即可轻易绕过限制；
+2. **商业机密与薪酬分发安全要求**：对于外发的高管薪酬明细、财务决算、医疗敏感数据等文件，必须在操作系统物理存储与网络传输层实施二进制级别的整工作簿强加密；
+3. **内存与临时文件防爆**：很多加密方案需要将完整工作簿全量读入 byte[] 内存数组，在海量数据下瞬间打爆 JVM 堆内存。
+
+### 核心代码范式
+`ateng-boot-excel` 基于 Apache POI 原生 `AgileEncryption` 算法（AES-256 + SHA-512，与 Microsoft Office / WPS 原生加密完全互通），配合受管临时磁盘中转，实现了恒定常数级堆内存开销的整文件强加解密：
+
+```java
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+// 1. 流式写出直接生成 AES-256 强加密工作簿
+String password = "StrongPassword@2026";
+List<UserExcelVO> users = userService.listUsers();
+
+try (FileOutputStream out = new FileOutputStream("机密清单_加密.xlsx")) {
+    ExcelUtil.export(out, "机密清单", users, UserExcelVO.class, null, null, password);
+}
+
+// 2. 对已生成的密文工作簿进行流式解密输出
+try (InputStream cipherIn = new FileInputStream("机密清单_加密.xlsx");
+     OutputStream plainOut = new FileOutputStream("机密清单_解密.xlsx")) {
+    ExcelSecurityUtil.decryptWorkbook(cipherIn, plainOut, password);
+}
+
+// 3. 探针探测：无须解密即可安全快速判断输入流是否为加密工作簿
+try (InputStream in = new FileInputStream("机密清单_加密.xlsx")) {
+    boolean encrypted = ExcelSecurityUtil.isEncrypted(in); // 返回 true
+}
+```
+
+### 预期呈现与兼容性
+- **打开体验**：使用 Microsoft Excel、WPS Office 或 LibreOffice 打开该文件时，将直接弹出操作系统级“请输入密码以打开此文件”系统对话框；
+- **防暴力破解**：密码错误或未提供密码时，任何第三方解析工具均无法读取其中任何一个 Sheet 或单元格数据（直接抛出 `EncryptedDocumentException`）；
+- **内存恒定**：加密过程自动通过 `ateng.boot.excel.temp-dir` 下的受管临时文件进行中转流式写出，写出完毕即刻删除临时文件，堆内存占用稳定低于 10MB。
+
+---
+
+## 18. 海量数据游标分页与跨 Sheet 自动轮转导出 (`StreamingPageExportTemplate`)
 
 ### 场景痛点
 单次查询数十万乃至百万行数据进行导出时，若一次性将全量数据查出载入 List 集合，会瞬间撑爆 JVM 堆内存导致服务 OOM；此外，单个 Excel 工作表（Sheet）存在 1,048,576 行物理极限，超出阈值时传统写入会直接报错崩溃。
 
 ### 核心代码范式
-`StreamingPageExportTemplate` 与 `ExcelUtil` 封装了基于游标/页码的分页拉取流水线，由开发者提供 `PageDataReader<T>` 分页数据回调；引擎每读取一页立即流式刷写到底层流并清空该页内存对象引用；当单表写入行数达到配置的上限（默认 1,000,000 行）时，自动新建下一个 Sheet（如 `用户数据_1`、`用户数据_2`）并 100% 自动继承表头与所有拦截器：
+`StreamingPageExportTemplate` 与 `ExcelUtil` 封装了基于游标/页码的分页拉取流水线，由开发者提供分页数据拉取逻辑；引擎每读取一页立即流式刷写到底层流并清空该页内存对象引用；当单表写入行数达到配置的上限（默认 1,000,000 行，可配置）时，自动新建下一个 Sheet（如 `销售流水_2`、`销售流水_3`）并 100% 自动继承表头与所有拦截器：
 
 ```java
-@RestController
-@RequestMapping("/api/excel")
-public class ExcelSampleController {
+import io.github.atengk.boot.excel.streaming.StreamingPageExportTemplate;
+import io.github.atengk.boot.excel.util.ExcelUtil;
+import org.springframework.stereotype.Service;
 
-    @Autowired
-    private ExcelSampleService excelSampleService;
+import java.io.OutputStream;
+import java.util.List;
 
-    @GetMapping("/export-streaming-page")
-    public void exportStreamingPage(HttpServletResponse response) {
-        excelSampleService.exportStreamingPage(response);
+@Service
+public class StreamingPageExportScenarioService {
+
+    /**
+     * 基于主键游标驱动流式导出海量数据（恒定低内存，自动分表轮转）
+     *
+     * @param out             目标输出流
+     * @param totalRows       预期导出的总数据量
+     * @param maxRowsPerSheet 单个工作表最大行数上限（达到时自动无缝开启新工作表）
+     * @return 实际导出的总记录数
+     */
+    public long exportBigDataByCursor(OutputStream out, int totalRows, int maxRowsPerSheet) {
+        try (StreamingPageExportTemplate<UserExcelVO> template = ExcelUtil.streaming(out, UserExcelVO.class)) {
+            template.baseSheetName("销售流水")
+                    .maxRowsPerSheet(maxRowsPerSheet);
+
+            return template.exportByCursor(
+                    0L,  // 初始游标 ID
+                    100, // 每批拉取大小
+                    (cursorId, limit) -> fetchUsersByCursor(cursorId, limit, totalRows),
+                    UserExcelVO::getUserId // 游标递增主键提取器
+            );
+        }
     }
-}
-```
-
-Service 业务层流式写出（直接提取自真实跑通的 `ExcelSampleService.java`）：
-
-```java
-public void exportStreamingPage(HttpServletResponse response) {
-    ExcelUtil.exportStreamingByCursor(
-            response,
-            "流式游标用户导出.xlsx",
-            UserExcelVO.class,
-            0L, // 初始游标 ID
-            100, // 每批拉取步长
-            (cursorId, size) -> {
-                // 模拟根据上一页最后主键 ID 游标拉取下一批，避免深度分页慢 SQL
-                return fetchUserBatchAfterId(cursorId, size);
-            },
-            UserExcelVO::getId // 提取下一轮游标 ID
-    );
 }
 ```
 
 ---
 
-## 16. 导入前置表头契约校验与行校验错误熔断 (`ExcelHeaderValidator` & Circuit Breaker)
+## 19. 导入前置表头契约校验与行校验错误熔断 (`ExcelHeaderValidator` & Circuit Breaker)
 
 ### 场景痛点
 - **错版模板全量穿透**：用户上传了格式错乱、列名不匹配或缺少核心列的错误模板，传统方式往往一行行解析并抛出大量无意义转换异常，严重浪费服务端 CPU 算力；
@@ -951,7 +1157,7 @@ ExcelUtil.readWithListener(file.getInputStream(), UserExcelVO.class, listener);
 
 ---
 
-## 17. CSV/Excel 公式注入主动防御与列级只读锁定 (`@ExcelFormulaAllowed` & `@ExcelColumnLock`)
+## 20. CSV/Excel 公式注入主动防御与列级只读锁定 (`@ExcelFormulaAllowed` & `@ExcelColumnLock`)
 
 ### 场景痛点
 - **DDE 公式注入漏洞 (CSV/Excel Formula Injection)**：用户在输入框恶意输入 `=cmd|'/C calc'!A0`、`@SUM(...)` 等公式前缀，被系统导出至 Excel 后，管理员打开该文件即可被触发远程命令执行或数据泄露；
@@ -1014,7 +1220,7 @@ public void downloadSecurityTemplate(HttpServletResponse response) {
 
 ---
 
-## 18. 国际化多语言动态表头 (`I18nHeadWriteHandler`)
+## 21. 国际化多语言动态表头 (`I18nHeadWriteHandler`)
 
 ### 场景痛点
 跨国或多语言企业应用中，同一份报表需要根据当前登录用户的前端语言偏好（中文、英文等）动态渲染表头文字，而 `@ExcelProperty` 默认只支持静态字符串硬编码。
@@ -1063,7 +1269,7 @@ public void exportI18nUsers(HttpServletResponse response) {
 
 ---
 
-## 19. 配置属性参考
+## 22. 配置属性参考
 
 在 `application.yml` 中按需定制全局行为、样式、异步任务中心、流式分页与安全策略：
 
@@ -1151,11 +1357,11 @@ ateng:
 
 ---
 
-## 20. 生产扩展与高阶定制 (Customization & Extensibility)
+## 23. 生产扩展与高阶定制 (Customization & Extensibility)
 
 `ateng-boot-excel` 遵循模块解耦与 SPI 扩展原则，支持企业级核心能力的平滑自定义接管：
 
-### 20.1 自定义动态数据字典提供者 (`DictProvider` SPI)
+### 23.1 自定义动态数据字典提供者 (`DictProvider` SPI)
 当系统使用自定义数据库表、Redis 或远程 RPC 服务维护数据字典时，只需向 Spring 容器注册 `DictProvider` Bean 即可无缝接管 `@ExcelDict` 翻译：
 
 ```java
@@ -1177,7 +1383,7 @@ public class RemoteDictProvider implements DictProvider {
 }
 ```
 
-### 20.2 自定义异步导出文件存储适配器 (`ExportFileStorage` SPI)
+### 23.2 自定义异步导出文件存储适配器 (`ExportFileStorage` SPI)
 当企业集群需要将导出的 Excel 文件持久化上传至云端对象存储（如 MinIO、阿里云 OSS、腾讯云 COS）时，仅需实现 `ExportFileStorage` 并注册为 Spring Bean，即可平滑无缝替换本地磁盘存储：
 
 ```java
@@ -1215,39 +1421,68 @@ public class OssExportFileStorage implements ExportFileStorage {
 }
 ```
 
-### 20.3 分布式集群异步导出任务中心 (`RedisAsyncExportTaskService`)
+### 23.3 分布式集群异步导出任务中心 (`RedisAsyncExportTaskService`)
 当应用部署为多实例多节点微服务集群时，只需引入 `spring-boot-starter-data-redis`，框架将自动通过 `RedisAsyncExportConfiguration` 激活 `RedisAsyncExportTaskService`：
 - **状态机集群可见**：任务状态保存在 Redis 哈希结构中，任意节点提交的任务，均可在任意节点查询进度；
 - **宕机租约防御**：配合 `lease-timeout`（默认 30m），若某个工作节点在执行任务期间宕机，超时后查询状态将自动原子标记为 `FAILED`，避免任务永久处于 `RUNNING` 假死状态。
 
+### 23.4 自定义多表读取监听器与切面扩展 (`ExcelReaderBuilder` 扩展)
+当需要对异构多工作表进行全局行级审计、进度推送（WebSocket 广播）或动态权限校验时，可通过 `ExcelReaderBuilder` 的 `sheet(sheetIndex, clazz, customListener)` 注入自定义的 `ReadListener<T>`：
+
+```java
+import io.github.atengk.boot.excel.util.ExcelUtil;
+
+ExcelUtil.reader(file.getInputStream())
+        .sheet(0, OrderVO.class, new CustomAuditReadListener<>())
+        .sheet(1, CustomerVO.class)
+        .read();
+```
+
+### 23.5 自定义 Web 导出异常拦截与静默规则扩展 (`ExcelWebUtil`)
+`ExcelWebUtil` 提供了对主流容器（Tomcat、Jetty、Undertow）网络断开异常的静态探测拦截门面。如果应用层网关或反向代理（如 Nginx、Envoy）定义了特定的 RST 状态码或客户端心跳特征，调用方可通过捕获业务异常并借助 `ExcelWebUtil.isClientAbortException(ex)` 进行前置断言判断，从而实现针对特定链路的无感日志降级。
+
 ---
 
-## 21. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
+## 24. 核心生产边界与非功能语义 (Production Boundary & Failure Modes)
 
-### 21.1 流式事件驱动与内存防爆 (OOM 防御)
+### 24.1 流式事件驱动与内存防爆 (OOM 防御)
 - **逐行事件流读取**：底层基于 Apache Fesod 事件模型，逐行解析 XML 标记并不在堆中滞留全表模型；调用 `readBatch` 时每累积至 `batchSize`（默认 1000 行）即回调消费并清空内部缓冲区，千万级行数导入亦可维持平稳的常数级堆内存开销。
 - **同步全量读取安全阈值**：对于一次性返回 List 的同步接口 `ExcelUtil.read` 与 `readWithValidation`，内置 `maxSyncRows`（默认 100,000 行）快速失败防线；超过阈值立即抛出 `BusinessException` 阻断，杜绝恶意或误传超大文件导致 JVM FullGC 与 OOM。
 
-### 21.2 单 Sheet 百万行物理极限与自动分表轮转
+### 24.2 单 Sheet 百万行物理极限与自动分表轮转
 - **Excel 物理极限**：Microsoft Excel 单个 Sheet 规范物理上限为 1,048,576 行；
 - **自适应分表**：`StreamingPageExportTemplate` 内部维护了行数累加游标，当写入行数逼近 `maxRowsPerSheet`（默认 1,000,000 行）时，自动触发跨 Sheet 轮转并生成新工作表，有效防御由于超出 Excel 物理容量限制导致的写出崩溃。
 
-### 21.3 CSV/Excel 公式注入 (DDE) 原理与防御边界
+### 24.3 CSV/Excel 公式注入 (DDE) 原理与防御边界
 - **漏洞成因**：Microsoft Excel 与 WPS 等电子表格软件在打开含有 `=`, `+`, `-`, `@`, `\t`, `\r` 前缀的单元格时，会将其默认解释为公式或 DDE 外部命令（例如 `=cmd|' /C calc'!A0`）；
 - **沙箱隔离**：框架在写出文本单元格时，主动探测特殊前缀并在文本前补齐单引号 `'`（如 `'=cmd...`）。这使电子表格软件强制将该单元格渲染为纯文本展示，彻底阻断公式解析与命令执行；
 - **白名单机制**：对需要合法生成公式计算的单元格，开发者可使用 `@ExcelFormulaAllowed` 显式开辟白名单通道。
 
-### 21.4 导入契约防卫与错误熔断非功能边界
+### 24.4 导入契约防卫与错误熔断非功能边界
 - **预读表头防穿透**：通过 `ExcelHeaderValidator` 在零数据反序列化成本下轻量扫描第一行，一旦列缺失或列名不匹配立即 Fail-Fast，拦截不合规的错版模板；
 - **熔断防耗尽**：`BatchValidationListener` 的 `maxErrorRows`（默认 500 行）机制保证了即使客户端上传了数万行完全非法的错误数据，系统也会在达到阈值后立即熔断终止读取并抛出异常，杜绝无休止的校验计算与错题集对象膨胀。
 
-### 21.5 内存真明文与脱敏拦截原理
+### 24.5 内存真明文与脱敏拦截原理
 - **切面拦截写出**：脱敏统一收敛在 `SensitiveCellWriteHandler` 的 `afterCellDataConverted` 阶段，仅修改输出至 Excel 单元格的字面量文本（`cellData.setStringValue(maskedValue)`）；
 - **内存真明文不变量**：内存中的实体 Bean、Service 业务逻辑与上下文保持 100% 原始真实明文，彻底根除因在业务层打星号导致掩码脏数据写回持久层的致命隐患。
 
-### 21.6 确定性资源释放与临时文件物理清理
+### 24.6 确定性资源释放与临时文件物理清理
 - **流与连接绝对清理**：所有导出、填充与反馈工具方法严格在 `try-with-resources` 或 `finally` 块中关闭 `Workbook` 与流对象；
 - **异步半成品补偿清理**：异步导出任务在发生异常中断或调用 `cancel(taskId)` 时，自动物理删除磁盘上已生成的半成品临时文件；同时由守护线程定期根据 `retentionPeriod` 物理回收历史过期文件，防止磁盘物理空间耗尽。
+
+### 24.7 POI Agile AES-256 原生加密磁盘中转与内存恒定机制
+- **密码学标准**：遵循 ECMA-376 与 ISO/IEC 29500 标准定义的 Agile Encryption 原生实现（AES-256 对称块加密与 SHA-512 安全哈希），与 Microsoft Excel 密码保护体系 100% 互通；
+- **磁盘溢出中转防爆**：POI 对 ZipPackage 执行加密包装时需要随机写入并多次计算检验块，若将中间态完整缓存在堆中，几万行报表会瞬间消耗上百兆堆内存；`ExcelSecurityUtil` 强制采用磁盘临时中转文件（落于受管 `ateng.boot.excel.temp-dir`），使 JVM 堆内仅驻留极小缓冲块，实现恒定常数级内存占用；
+- **确定性双重回收防泄漏**：中转临时文件统一在 `finally` 块中立即触发物理删除；同时在创建时调用 `deleteOnExit()` 注册 JVM 退出物理销毁钩子，确保即使突发 `kill -9` 亦有容器级兜底回收保障。
+
+### 24.8 Web HTTP 客户端连接提前中断 (Client Abort) 防卫边界
+- **非故障语义降级**：在大报表 HTTP 流式写出过程中，客户端主动关闭标签页、点击取消下载或发生弱网连接重置属于正常的客户端行为，绝不代表服务端系统故障；
+- **无感静默抑制**：`ExcelWebUtil` 自动识别底层网络中断异常并优雅降级为 `DEBUG`/`INFO` 日志，坚决杜绝异常外抛穿透引发全局异常拦截器捕获导致的 500 报警风暴；
+- **资源安全闭环**：当网络管道破裂中止时，写出逻辑依然能安全进入 `finally` 块，确保底层 `FesodSheet` / `SXSSFWorkbook` / `InputStream` 被无条件释放，杜绝由于网络中断引发的句柄悬挂。
+
+### 24.9 异构多表流式读取的内存有界限制与单次遍历单向流机制
+- **单向解压流设计**：`ExcelReaderBuilder` 在读取多个 Sheet 时，底层共享同一条物理输入流，通过 Apache Fesod 事件监听调度器按 Sheet 顺序单向遍历 XML 节点，完全避免多次解压 ZIP 容器造成的重复磁盘与 CPU 开销；
+- **防爆上限协同**：通过 `maxRows`（单表上限）与 `maxTotalRows`（多表全局总行数上限）构成双重安全边界，一旦总扫描行数超过系统红线（默认 500,000 行），立即主动 Fail-Fast 熔断，彻底免疫多表恶性 Zip Bomb 攻击。
 
 
 
