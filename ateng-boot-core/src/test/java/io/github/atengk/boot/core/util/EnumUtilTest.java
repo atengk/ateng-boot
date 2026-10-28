@@ -97,12 +97,14 @@ class EnumUtilTest {
         // 2. 默认异常抛出
         assertThatThrownBy(() -> EnumUtil.getByCodeOrThrow(StatusEnum.class, 999))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("未找到编码为 [999] 的枚举常量 [StatusEnum]");
+                .hasMessageContaining("未找到编码为 [999] 的枚举常量 [StatusEnum]")
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(CommonResultCode.BAD_REQUEST));
 
         // 3. 自定义错误提示
         assertThatThrownBy(() -> EnumUtil.getByCodeOrThrow(StatusEnum.class, 999, "状态码无效"))
                 .isInstanceOf(BusinessException.class)
-                .hasMessage("状态码无效");
+                .hasMessage("状态码无效")
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(CommonResultCode.BAD_REQUEST));
 
         // 4. 自定义错误码契约
         assertThatThrownBy(() -> EnumUtil.getByCodeOrThrow(StatusEnum.class, 999, CommonResultCode.BAD_REQUEST))

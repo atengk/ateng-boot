@@ -163,4 +163,14 @@ class EnumDictionaryI18nTest {
         assertThat(options.get(0).getLabel()).isEqualTo("启用");
         assertThat(options.get(1).getLabel()).isEqualTo("已停用");
     }
+
+    @Test
+    @DisplayName("测试当并发请求产生海量未知 Locale 时缓存受控防无界膨胀")
+    void shouldBoundLocalizedCacheCapacityWhenExceedingLimit() {
+        for (int i = 0; i < 80; i++) {
+            Locale customLocale = Locale.forLanguageTag("fr-FR-v" + i);
+            List<OptionItem<Object>> options = registry.getOptions("sampleStatus", customLocale);
+            assertThat(options).isNotNull().hasSize(2);
+        }
+    }
 }

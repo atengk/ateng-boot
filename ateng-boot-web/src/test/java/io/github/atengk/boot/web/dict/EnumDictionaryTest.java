@@ -1,7 +1,9 @@
 package io.github.atengk.boot.web.dict;
 
 import io.github.atengk.boot.core.annotation.EnumAlias;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.enums.IBaseEnum;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.model.OptionItem;
 import io.github.atengk.boot.web.dict.autoconfigure.AtengEnumDictionaryAutoConfiguration;
 import io.github.atengk.boot.web.enums.EnumNamingStrategy;
@@ -170,6 +172,10 @@ class EnumDictionaryTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(404))
                 .andExpect(jsonPath("$.msg").value("未找到名称为 [unknown] 的枚举字典"));
+
+        assertThatThrownBy(() -> controller.getByName("unknown"))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(e -> assertThat(((BusinessException) e).getResultCode()).isEqualTo(CommonResultCode.NOT_FOUND));
 
         // 4. 批量查询 POST /api/system/enums/batch
         mockMvc.perform(post("/api/system/enums/batch")

@@ -42,14 +42,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoaderAware, ResourceLoaderAware, MessageSourceAware {
 
     private static final Logger log = LoggerFactory.getLogger(EnumDictionaryRegistry.class);
+    private static final int MAX_LOCALIZED_CACHE_SIZE = 64;
 
     private final EnumDictionaryProperties properties;
     private ClassLoader classLoader;
     private ResourceLoader resourceLoader;
     private MessageSource messageSource;
 
-    private Map<String, List<OptionItem<Object>>> dictMap = Collections.emptyMap();
-    private Map<String, Class<?>> aliasToClassMap = Collections.emptyMap();
+    private volatile Map<String, List<OptionItem<Object>>> dictMap = Collections.emptyMap();
+    private volatile Map<String, Class<?>> aliasToClassMap = Collections.emptyMap();
 
     // 多语言选项模型本地化缓存，按 Locale 隔离
     private final Map<Locale, Map<String, List<OptionItem<Object>>>> localizedDictCache = new ConcurrentHashMap<>(8);
@@ -198,13 +199,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
      * @return 选项列表，未找到返回 null
      */
     public List<OptionItem<Object>> getOptions(String name) {
-        if (name == null) {
-            return null;
-        }
-        if (this.messageSource == null) {
-            return dictMap.get(name);
-        }
-        return getOptions(name, resolveCurrentLocale());
+        return getOptions(name, null);
     }
 
     /**
@@ -218,12 +213,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         if (name == null) {
             return null;
         }
-        if (this.messageSource == null) {
-            return dictMap.get(name);
-        }
-        Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
-        Map<String, List<OptionItem<Object>>> localizedMap = localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
-        return localizedMap.get(name);
+        return getOrComputeLocalizedDict(locale).get(name);
     }
 
     /**
@@ -233,13 +223,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
      * @return 匹配的字典映射（过滤未找到的名称）
      */
     public Map<String, List<OptionItem<Object>>> getBatchOptions(Collection<String> names) {
-        if (names == null || names.isEmpty()) {
-            return Collections.emptyMap();
-        }
-        if (this.messageSource == null) {
-            return filterBatch(dictMap, names);
-        }
-        return getBatchOptions(names, resolveCurrentLocale());
+        return getBatchOptions(names, null);
     }
 
     /**
@@ -253,12 +237,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         if (names == null || names.isEmpty()) {
             return Collections.emptyMap();
         }
-        if (this.messageSource == null) {
-            return filterBatch(dictMap, names);
-        }
-        Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
-        Map<String, List<OptionItem<Object>>> localizedMap = localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
-        return filterBatch(localizedMap, names);
+        return filterBatch(getOrComputeLocalizedDict(locale), names);
     }
 
     /**
@@ -267,10 +246,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
      * @return 全量不可变字典映射
      */
     public Map<String, List<OptionItem<Object>>> getAllOptions() {
-        if (this.messageSource == null) {
-            return dictMap;
-        }
-        return getAllOptions(resolveCurrentLocale());
+        return getAllOptions(null);
     }
 
     /**
@@ -280,10 +256,21 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
      * @return 全量不可变字典映射
      */
     public Map<String, List<OptionItem<Object>>> getAllOptions(Locale locale) {
-        if (this.messageSource == null) {
-            return dictMap;
+        return getOrComputeLocalizedDict(locale);
+    }
+
+    private Map<String, List<OptionItem<Object>>> getOrComputeLocalizedDict(Locale locale) {
+        if (this.messageSource == null || this.dictMap.isEmpty()) {
+            return this.dictMap;
         }
         Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
+        Map<String, List<OptionItem<Object>>> cached = localizedDictCache.get(targetLocale);
+        if (cached != null) {
+            return cached;
+        }
+        if (localizedDictCache.size() >= MAX_LOCALIZED_CACHE_SIZE) {
+            return buildLocalizedDict(targetLocale);
+        }
         return localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
     }
 

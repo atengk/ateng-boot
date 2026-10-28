@@ -62,7 +62,7 @@ public final class EnumUtil {
      * @throws BusinessException 未匹配时抛出
      */
     public static <E extends Enum<E> & IBaseEnum<T>, T extends Serializable> E getByCodeOrThrow(Class<E> clazz, T code) {
-        return fromCode(clazz, code).orElseThrow(() -> new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+        return fromCode(clazz, code).orElseThrow(() -> new BusinessException(CommonResultCode.BAD_REQUEST,
                 String.format("未找到编码为 [%s] 的枚举常量 [%s]", code, clazz != null ? clazz.getSimpleName() : "null")));
     }
 
@@ -78,7 +78,7 @@ public final class EnumUtil {
      * @throws BusinessException 未匹配时抛出
      */
     public static <E extends Enum<E> & IBaseEnum<T>, T extends Serializable> E getByCodeOrThrow(Class<E> clazz, T code, String message) {
-        return fromCode(clazz, code).orElseThrow(() -> new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), message));
+        return fromCode(clazz, code).orElseThrow(() -> new BusinessException(CommonResultCode.BAD_REQUEST, message));
     }
 
     /**
@@ -133,7 +133,7 @@ public final class EnumUtil {
      * @return 是否合法
      */
     public static boolean isValidCode(Class<?> clazz, Object code) {
-        if (clazz == null || code == null || !clazz.isEnum() || !IBaseEnum.class.isAssignableFrom(clazz)) {
+        if (code == null || !isBaseEnumClass(clazz)) {
             return false;
         }
         EnumMetadata<?, ?> metadata = getMetadata(clazz);
@@ -163,14 +163,7 @@ public final class EnumUtil {
      */
     @SuppressWarnings("unchecked")
     public static <E extends Enum<E> & IBaseEnum<T>, T extends Serializable> List<OptionItem<T>> toOptions(Class<E> clazz) {
-        if (clazz == null || !clazz.isEnum() || !IBaseEnum.class.isAssignableFrom(clazz)) {
-            return Collections.emptyList();
-        }
-        EnumMetadata<?, ?> metadata = getMetadata(clazz);
-        if (metadata == null) {
-            return Collections.emptyList();
-        }
-        return (List<OptionItem<T>>) (List<?>) metadata.options();
+        return (List<OptionItem<T>>) (List<?>) toOptionsUntyped(clazz);
     }
 
     /**
@@ -181,7 +174,7 @@ public final class EnumUtil {
      */
     @SuppressWarnings("unchecked")
     public static List<OptionItem<Object>> toOptionsUntyped(Class<?> clazz) {
-        if (clazz == null || !clazz.isEnum() || !IBaseEnum.class.isAssignableFrom(clazz)) {
+        if (!isBaseEnumClass(clazz)) {
             return Collections.emptyList();
         }
         EnumMetadata<?, ?> metadata = getMetadata(clazz);
@@ -201,7 +194,7 @@ public final class EnumUtil {
      */
     @SuppressWarnings("unchecked")
     public static <E extends Enum<E> & IBaseEnum<T>, T extends Serializable> List<T> getAllCodes(Class<E> clazz) {
-        if (clazz == null || !clazz.isEnum() || !IBaseEnum.class.isAssignableFrom(clazz)) {
+        if (!isBaseEnumClass(clazz)) {
             return Collections.emptyList();
         }
         EnumMetadata<?, ?> metadata = getMetadata(clazz);
@@ -218,12 +211,16 @@ public final class EnumUtil {
         METADATA_CACHE.clear();
     }
 
+    private static boolean isBaseEnumClass(Class<?> clazz) {
+        return clazz != null && clazz.isEnum() && IBaseEnum.class.isAssignableFrom(clazz);
+    }
+
     private static EnumMetadata<?, ?> getMetadata(Class<?> clazz) {
         return METADATA_CACHE.computeIfAbsent(clazz, EnumUtil::buildMetadata);
     }
 
     private static EnumMetadata<?, ?> buildMetadata(Class<?> clazz) {
-        if (!clazz.isEnum() || !IBaseEnum.class.isAssignableFrom(clazz)) {
+        if (!isBaseEnumClass(clazz)) {
             return null;
         }
         Object[] enumConstants = clazz.getEnumConstants();

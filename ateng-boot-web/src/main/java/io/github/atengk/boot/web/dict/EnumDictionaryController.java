@@ -64,7 +64,7 @@ public class EnumDictionaryController {
     public Result<List<OptionItem<Object>>> getByName(@PathVariable("name") String name) {
         List<OptionItem<Object>> options = registry.getOptions(name);
         if (options == null) {
-            throw new BusinessException(CommonResultCode.NOT_FOUND.getCode(), String.format("未找到名称为 [%s] 的枚举字典", name));
+            throw new BusinessException(CommonResultCode.NOT_FOUND, String.format("未找到名称为 [%s] 的枚举字典", name));
         }
         return Result.success(options);
     }
