@@ -51,8 +51,6 @@ import org.apache.fesod.sheet.read.listener.ReadListener;
 import org.apache.fesod.sheet.write.builder.ExcelWriterBuilder;
 import org.apache.fesod.sheet.write.metadata.WriteSheet;
 import org.apache.fesod.sheet.write.metadata.fill.FillConfig;
-import org.springframework.http.ContentDisposition;
-import org.springframework.http.HttpHeaders;
 import org.springframework.util.Assert;
 
 import java.io.IOException;
@@ -532,7 +530,7 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null);
+        ExcelWebUtil.export(response, fileName, data, clazz);
     }
 
     /**
@@ -545,7 +543,7 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, Class<T> clazz, List<T> data) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null);
+        ExcelWebUtil.export(response, fileName, clazz, data);
     }
 
     /**
@@ -560,7 +558,7 @@ public final class ExcelUtil {
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, includeColumns, null);
+        ExcelWebUtil.export(response, fileName, data, clazz, includeColumns);
     }
 
     /**
@@ -576,7 +574,7 @@ public final class ExcelUtil {
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns, Collection<String> excludeColumns) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, includeColumns, excludeColumns);
+        ExcelWebUtil.export(response, fileName, data, clazz, includeColumns, excludeColumns);
     }
 
     /**
@@ -590,7 +588,7 @@ public final class ExcelUtil {
      * @param <T>       实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz) {
-        export(response, fileName, sheetName, data, clazz, null, null);
+        ExcelWebUtil.export(response, fileName, sheetName, data, clazz);
     }
 
     /**
@@ -606,7 +604,7 @@ public final class ExcelUtil {
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns) {
-        export(response, fileName, sheetName, data, clazz, includeColumns, null);
+        ExcelWebUtil.export(response, fileName, sheetName, data, clazz, includeColumns);
     }
 
     /**
@@ -623,14 +621,7 @@ public final class ExcelUtil {
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns, Collection<String> excludeColumns) {
-        prepareWebResponse(response, fileName);
-        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
-
-        try {
-            export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns);
-        } catch (IOException e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
-        }
+        ExcelWebUtil.export(response, fileName, sheetName, data, clazz, includeColumns, excludeColumns);
     }
 
     /**
@@ -644,7 +635,7 @@ public final class ExcelUtil {
      * @param <T>      实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String password) {
-        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null, password);
+        ExcelWebUtil.export(response, fileName, data, clazz, password);
     }
 
     /**
@@ -659,7 +650,7 @@ public final class ExcelUtil {
      * @param <T>       实体数据泛型
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz, String password) {
-        export(response, fileName, sheetName, data, clazz, null, null, password);
+        ExcelWebUtil.export(response, fileName, sheetName, data, clazz, password);
     }
 
     /**
@@ -677,14 +668,7 @@ public final class ExcelUtil {
      */
     public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns, Collection<String> excludeColumns, String password) {
-        prepareWebResponse(response, fileName);
-        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
-
-        try {
-            export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns, password);
-        } catch (IOException e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
-        }
+        ExcelWebUtil.export(response, fileName, sheetName, data, clazz, includeColumns, excludeColumns, password);
     }
 
     /**
@@ -713,12 +697,7 @@ public final class ExcelUtil {
      * @return 流式分页导出模板实例
      */
     public static <T> StreamingPageExportTemplate<T> streaming(HttpServletResponse response, String fileName, Class<T> clazz) {
-        prepareWebResponse(response, fileName);
-        try {
-            return streaming(response.getOutputStream(), clazz);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建流式分页导出模板失败: " + ex.getMessage(), ex);
-        }
+        return ExcelWebUtil.streaming(response, fileName, clazz);
     }
 
     /**
@@ -762,7 +741,7 @@ public final class ExcelUtil {
      * @return 实际导出的总行数
      */
     public static <T> long exportStreaming(HttpServletResponse response, String fileName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
-        return exportStreaming(response, fileName, DEFAULT_SHEET_NAME, clazz, pageLoader);
+        return ExcelWebUtil.exportStreaming(response, fileName, clazz, pageLoader);
     }
 
     /**
@@ -777,12 +756,7 @@ public final class ExcelUtil {
      * @return 实际导出的总行数
      */
     public static <T> long exportStreaming(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz, Function<Integer, PageResult<T>> pageLoader) {
-        prepareWebResponse(response, fileName);
-        try {
-            return exportStreaming(response.getOutputStream(), sheetName, clazz, pageLoader);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 流式分页导出 Excel 失败: " + ex.getMessage(), ex);
-        }
+        return ExcelWebUtil.exportStreaming(response, fileName, sheetName, clazz, pageLoader);
     }
 
     /**
@@ -858,7 +832,7 @@ public final class ExcelUtil {
             int pageSize,
             BiFunction<K, Integer, List<T>> cursorLoader,
             Function<T, K> cursorExtractor) {
-        return exportStreamingByCursor(response, fileName, DEFAULT_SHEET_NAME, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+        return ExcelWebUtil.exportStreamingByCursor(response, fileName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
     }
 
     /**
@@ -885,12 +859,7 @@ public final class ExcelUtil {
             int pageSize,
             BiFunction<K, Integer, List<T>> cursorLoader,
             Function<T, K> cursorExtractor) {
-        prepareWebResponse(response, fileName);
-        try {
-            return exportStreamingByCursor(response.getOutputStream(), sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 游标流式分页导出 Excel 失败: " + ex.getMessage(), ex);
-        }
+        return ExcelWebUtil.exportStreamingByCursor(response, fileName, sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
     }
 
     /**
@@ -1426,13 +1395,7 @@ public final class ExcelUtil {
                                           String fileName,
                                           InputStream originalExcelStream,
                                           List<ExcelErrorRow> errorRows) {
-        prepareWebResponse(response, fileName);
-
-        try {
-            exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.exportErrorFeedback(response, fileName, originalExcelStream, errorRows);
     }
 
     /**
@@ -1492,12 +1455,7 @@ public final class ExcelUtil {
      * @param <T>       实体数据泛型
      */
     public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<ExcelErrorRow> errorRows) {
-        prepareWebResponse(response, fileName);
-        try {
-            exportFailedRows(response.getOutputStream(), clazz, errorRows);
-        } catch (IOException e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "导出 Excel 纠错清单失败: " + e.getMessage(), e);
-        }
+        ExcelWebUtil.exportFailedRows(response, fileName, clazz, errorRows);
     }
 
     /**
@@ -1511,12 +1469,7 @@ public final class ExcelUtil {
      * @param <T>        实体数据泛型
      */
     public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<T> failedList, List<ExcelErrorRow> errorRows) {
-        prepareWebResponse(response, fileName);
-        try {
-            exportFailedRows(response.getOutputStream(), clazz, failedList, errorRows);
-        } catch (IOException e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "导出 Excel 纠错清单失败: " + e.getMessage(), e);
-        }
+        ExcelWebUtil.exportFailedRows(response, fileName, clazz, failedList, errorRows);
     }
 
     /**
@@ -1571,7 +1524,7 @@ public final class ExcelUtil {
      * @param <T>           实体数据泛型
      */
     public static <T> void exportWithWatermark(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String watermarkText) {
-        exportWithWatermark(response, fileName, data, clazz, watermarkText, null);
+        ExcelWebUtil.exportWithWatermark(response, fileName, data, clazz, watermarkText);
     }
 
     /**
@@ -1586,12 +1539,7 @@ public final class ExcelUtil {
      * @param <T>                实体数据泛型
      */
     public static <T> void exportWithWatermark(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String watermarkText, String protectionPassword) {
-        prepareWebResponse(response, fileName);
-        try {
-            exportWithWatermark(response.getOutputStream(), DEFAULT_SHEET_NAME, data, clazz, watermarkText, protectionPassword);
-        } catch (IOException e) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出带水印 Excel 失败: " + e.getMessage(), e);
-        }
+        ExcelWebUtil.exportWithWatermark(response, fileName, data, clazz, watermarkText, protectionPassword);
     }
 
     /**
@@ -1652,7 +1600,7 @@ public final class ExcelUtil {
      * @param <T>      实体泛型
      */
     public static <T> void exportTemplate(HttpServletResponse response, String fileName, Class<T> clazz) {
-        exportTemplate(response, fileName, DEFAULT_SHEET_NAME, clazz);
+        ExcelWebUtil.exportTemplate(response, fileName, clazz);
     }
 
     /**
@@ -1665,14 +1613,7 @@ public final class ExcelUtil {
      * @param <T>       实体泛型
      */
     public static <T> void exportTemplate(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz) {
-        prepareWebResponse(response, fileName);
-        Assert.notNull(clazz, "实体 Class 类型不可为空");
-
-        try {
-            exportTemplate(response.getOutputStream(), sheetName, clazz);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 模板失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.exportTemplate(response, fileName, sheetName, clazz);
     }
 
     // ==================== 复杂报表模板填充 (fill) ====================
@@ -1773,7 +1714,7 @@ public final class ExcelUtil {
      * @param data       待填充数据
      */
     public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data) {
-        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, null);
+        ExcelWebUtil.fill(response, fileName, templateIn, data);
     }
 
     /**
@@ -1786,7 +1727,7 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置
      */
     public static void fill(HttpServletResponse response, String fileName, InputStream templateIn, Object data, FillConfig fillConfig) {
-        fill(response, fileName, DEFAULT_SHEET_NAME, templateIn, data, fillConfig);
+        ExcelWebUtil.fill(response, fileName, templateIn, data, fillConfig);
     }
 
     /**
@@ -1800,12 +1741,7 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig) {
-        prepareWebResponse(response, fileName);
-        try {
-            fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 模板填充导出失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.fill(response, fileName, sheetName, templateIn, data, fillConfig);
     }
 
     /**
@@ -1820,12 +1756,7 @@ public final class ExcelUtil {
      * @param fillConfig 填充配置
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig) {
-        prepareWebResponse(response, fileName);
-        try {
-            fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 复合模板填充导出失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.fill(response, fileName, sheetName, templateIn, objectData, listData, fillConfig);
     }
 
     // ==================== 无实体动态导出 (exportDynamic) ====================
@@ -1912,7 +1843,7 @@ public final class ExcelUtil {
      * @param dataList 动态行数据集合
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, List<?> headList, List<?> dataList) {
-        exportDynamic(response, fileName, DEFAULT_SHEET_NAME, headList, dataList);
+        ExcelWebUtil.exportDynamic(response, fileName, headList, dataList);
     }
 
     /**
@@ -1925,12 +1856,7 @@ public final class ExcelUtil {
      * @param dataList  动态行数据集合
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList) {
-        prepareWebResponse(response, fileName);
-        try {
-            exportDynamic(response.getOutputStream(), sheetName, headList, dataList);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.exportDynamic(response, fileName, sheetName, headList, dataList);
     }
 
     /**
@@ -1944,12 +1870,7 @@ public final class ExcelUtil {
      * @param dataList  Map 数据集合
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
-        prepareWebResponse(response, fileName);
-        try {
-            exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + ex.getMessage(), ex);
-        }
+        ExcelWebUtil.exportDynamic(response, fileName, sheetName, headList, dataKeys, dataList);
     }
 
     // ==================== 多 Sheet Fluent 构建器 (builder) ====================
@@ -1972,12 +1893,7 @@ public final class ExcelUtil {
      * @return 链式构建器实例
      */
     public static ExcelBuilder builder(HttpServletResponse response, String fileName) {
-        prepareWebResponse(response, fileName);
-        try {
-            return new ExcelBuilder(response.getOutputStream(), ExcelUtil::configureSheet);
-        } catch (IOException ex) {
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建 ExcelBuilder 失败: " + ex.getMessage(), ex);
-        }
+        return ExcelWebUtil.builder(response, fileName);
     }
 
     /**
@@ -2103,17 +2019,7 @@ public final class ExcelUtil {
      * @param fileName 下载文件名
      */
     private static void prepareWebResponse(HttpServletResponse response, String fileName) {
-        Assert.notNull(response, "HttpServletResponse 响应对象不可为空");
-        Assert.hasText(fileName, "导出文件名不可为空");
-
-        response.setContentType(XLSX_CONTENT_TYPE);
-        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-
-        String safeFileName = fileName.endsWith(XLSX_EXTENSION) ? fileName : fileName + XLSX_EXTENSION;
-        ContentDisposition disposition = ContentDisposition.attachment()
-                .filename(safeFileName, StandardCharsets.UTF_8)
-                .build();
-        response.setHeader(HttpHeaders.CONTENT_DISPOSITION, disposition.toString());
+        ExcelWebUtil.prepareWebResponse(response, fileName);
     }
 
     /**
