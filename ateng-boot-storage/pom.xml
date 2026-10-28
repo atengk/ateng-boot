@@ -64,6 +64,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- AWS SDK Apache HTTP Client 连接池传输实现（可选依赖，按需装配） -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 配置元数据处理器（编译期生成 IDE 提示，不传递） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

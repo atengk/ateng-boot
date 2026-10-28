@@ -14,6 +14,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.awscore.exception.AwsServiceException;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
@@ -194,6 +195,28 @@ public class S3Driver implements StorageDriver {
         builder.serviceConfiguration(S3Configuration.builder()
                 .pathStyleAccessEnabled(properties.isPathStyle())
                 .build());
+
+        // 装配生产级 ApacheHttpClient 传输层与连接池超时治理
+        ApacheHttpClient.Builder httpClientBuilder = ApacheHttpClient.builder();
+        if (properties.getConnectTimeout() != null) {
+            httpClientBuilder.connectionTimeout(properties.getConnectTimeout());
+        }
+        if (properties.getSocketTimeout() != null) {
+            httpClientBuilder.socketTimeout(properties.getSocketTimeout());
+        }
+        if (properties.getConnectionAcquisitionTimeout() != null) {
+            httpClientBuilder.connectionAcquisitionTimeout(properties.getConnectionAcquisitionTimeout());
+        }
+        if (properties.getMaxConnections() > 0) {
+            httpClientBuilder.maxConnections(properties.getMaxConnections());
+        }
+        builder.httpClientBuilder(httpClientBuilder);
+
+        if (properties.getApiCallTimeout() != null) {
+            builder.overrideConfiguration(conf -> conf.apiCallTimeout(properties.getApiCallTimeout())
+                    .apiCallAttemptTimeout(properties.getSocketTimeout()));
+        }
+
         return builder.build();
     }
 

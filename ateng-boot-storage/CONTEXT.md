@@ -76,3 +76,37 @@ _Avoid_: FileException, S3Exception
 基于 Spring Boot Actuator 的存储健康状态探测器，提供 Local 本地物理目录写权限探测与 S3 存储桶可达性探查。
 _Avoid_: StorageChecker, HealthProbe
 
+**StorageClass**:
+云端对象存储分层类别，标定对象在云存储中的访问频次与生命周期成本策略（如 STANDARD 标准、STANDARD_IA 低频、GLACIER 归档等）。
+_Avoid_: StorageTier, ObjectTier, FileClass
+
+**ServerSideEncryption**:
+对象持久化至云存储盘时的透明服务端加密策略，支持 SSE-S3 (AES256) 与 SSE-KMS 密钥托管。
+_Avoid_: DiskEncrypt, S3Crypto, EncryptionMode
+
+**ObjectTagging**:
+S3 对象业务标签键值对集合，用于云端生命周期自动归档流转规则匹配与多租户成本精准分摊。
+_Avoid_: FileTags, MetaTags, Labels
+
+**ByteRange**:
+对象范围读取字节区间模型，定义局部读取（Partial Download）的起始偏移量与字节长度，支撑音视频 Seek 拖拽与大文件切片拉取。
+_Avoid_: ContentRange, ReadOffset, SliceRange
+
+**BucketPolicy**:
+存储桶生命周期与初始化运维策略，定义应用启动与初次调用时存储桶的存在性探测校验与按需自愈建桶规则。
+_Avoid_: BucketInit, BucketLifecycle, BucketCreator
+
+**PresignedDownloadRequest**:
+构建预签名只读下载外链的强类型入参模型，封装目标路径、授权有效时长以及响应头重写配置（如强制触发附件下载的 Content-Disposition 与友好文件名）。
+_Avoid_: DownloadParam, PresignGetOption, UrlSignRequest
+
+**PublicUrl**:
+面向公开存储桶（Public Bucket）或已挂载 CDN 加速域名的静态对象永久直接访问链接，无签名时间戳与凭据附带，永久有效。
+_Avoid_: StaticUrl, DirectLink, ForeverUrl
+
+**CannedAcl**:
+对象存储预置访问控制策略（如 private 私有、public-read 公共读等），用于在对象上传入库时即时赋予公网直接访问授权。
+_Avoid_: FilePermission, S3Acl, BucketAcl
+
+
+
