@@ -12,19 +12,25 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanClassLoaderAware;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
+import org.springframework.context.MessageSource;
+import org.springframework.context.MessageSourceAware;
 import org.springframework.context.ResourceLoaderAware;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.type.AnnotationMetadata;
 import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.util.ClassUtils;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 枚举字典启动期扫描注册中心
@@ -33,19 +39,28 @@ import java.util.Set;
  * @author Ateng
  * @since 2026-10-28
  */
-public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoaderAware, ResourceLoaderAware {
+public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoaderAware, ResourceLoaderAware, MessageSourceAware {
 
     private static final Logger log = LoggerFactory.getLogger(EnumDictionaryRegistry.class);
 
     private final EnumDictionaryProperties properties;
     private ClassLoader classLoader;
     private ResourceLoader resourceLoader;
+    private MessageSource messageSource;
 
     private Map<String, List<OptionItem<Object>>> dictMap = Collections.emptyMap();
     private Map<String, Class<?>> aliasToClassMap = Collections.emptyMap();
 
+    // 多语言选项模型本地化缓存，按 Locale 隔离
+    private final Map<Locale, Map<String, List<OptionItem<Object>>>> localizedDictCache = new ConcurrentHashMap<>(8);
+
     public EnumDictionaryRegistry(EnumDictionaryProperties properties) {
+        this(properties, null);
+    }
+
+    public EnumDictionaryRegistry(EnumDictionaryProperties properties, MessageSource messageSource) {
         this.properties = properties != null ? properties : new EnumDictionaryProperties();
+        this.messageSource = messageSource;
     }
 
     @Override
@@ -56,6 +71,12 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
     @Override
     public void setResourceLoader(ResourceLoader resourceLoader) {
         this.resourceLoader = resourceLoader;
+    }
+
+    @Override
+    public void setMessageSource(MessageSource messageSource) {
+        this.messageSource = messageSource;
+        this.localizedDictCache.clear();
     }
 
     @Override
@@ -104,6 +125,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
 
         this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
         this.dictMap = Collections.unmodifiableMap(tempDictMap);
+        this.localizedDictCache.clear();
         log.info("ateng-boot: 成功完成枚举字典扫描与预编译，共注册 {} 个枚举字典: {}", dictMap.size(), dictMap.keySet());
     }
 
@@ -121,6 +143,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         registerEnum(clazz, strategy, tempAliasMap, tempDictMap);
         this.aliasToClassMap = Collections.unmodifiableMap(tempAliasMap);
         this.dictMap = Collections.unmodifiableMap(tempDictMap);
+        this.localizedDictCache.clear();
     }
 
     private void registerEnum(Class<?> clazz, EnumNamingStrategy strategy,
@@ -169,7 +192,7 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
     }
 
     /**
-     * 根据别名获取单个枚举字典选项列表
+     * 根据别名获取单个枚举字典选项列表（自动感知当前请求上下文多语言）
      *
      * @param name 枚举别名
      * @return 选项列表，未找到返回 null
@@ -178,11 +201,33 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         if (name == null) {
             return null;
         }
-        return dictMap.get(name);
+        if (this.messageSource == null) {
+            return dictMap.get(name);
+        }
+        return getOptions(name, resolveCurrentLocale());
     }
 
     /**
-     * 批量获取指定别名集合的枚举字典映射
+     * 根据别名与指定区域设置获取单个枚举字典选项列表
+     *
+     * @param name   枚举别名
+     * @param locale 区域设置
+     * @return 选项列表，未找到返回 null
+     */
+    public List<OptionItem<Object>> getOptions(String name, Locale locale) {
+        if (name == null) {
+            return null;
+        }
+        if (this.messageSource == null) {
+            return dictMap.get(name);
+        }
+        Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
+        Map<String, List<OptionItem<Object>>> localizedMap = localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
+        return localizedMap.get(name);
+    }
+
+    /**
+     * 批量获取指定别名集合的枚举字典映射（自动感知当前请求上下文多语言）
      *
      * @param names 枚举别名列表
      * @return 匹配的字典映射（过滤未找到的名称）
@@ -191,10 +236,62 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         if (names == null || names.isEmpty()) {
             return Collections.emptyMap();
         }
+        if (this.messageSource == null) {
+            return filterBatch(dictMap, names);
+        }
+        return getBatchOptions(names, resolveCurrentLocale());
+    }
+
+    /**
+     * 批量获取指定别名集合与区域设置的枚举字典映射
+     *
+     * @param names  枚举别名列表
+     * @param locale 区域设置
+     * @return 匹配的字典映射（过滤未找到的名称）
+     */
+    public Map<String, List<OptionItem<Object>>> getBatchOptions(Collection<String> names, Locale locale) {
+        if (names == null || names.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        if (this.messageSource == null) {
+            return filterBatch(dictMap, names);
+        }
+        Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
+        Map<String, List<OptionItem<Object>>> localizedMap = localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
+        return filterBatch(localizedMap, names);
+    }
+
+    /**
+     * 获取全量已开放的枚举字典映射（自动感知当前请求上下文多语言）
+     *
+     * @return 全量不可变字典映射
+     */
+    public Map<String, List<OptionItem<Object>>> getAllOptions() {
+        if (this.messageSource == null) {
+            return dictMap;
+        }
+        return getAllOptions(resolveCurrentLocale());
+    }
+
+    /**
+     * 获取全量已开放的指定区域设置枚举字典映射
+     *
+     * @param locale 区域设置
+     * @return 全量不可变字典映射
+     */
+    public Map<String, List<OptionItem<Object>>> getAllOptions(Locale locale) {
+        if (this.messageSource == null) {
+            return dictMap;
+        }
+        Locale targetLocale = locale != null ? locale : resolveCurrentLocale();
+        return localizedDictCache.computeIfAbsent(targetLocale, this::buildLocalizedDict);
+    }
+
+    private Map<String, List<OptionItem<Object>>> filterBatch(Map<String, List<OptionItem<Object>>> source, Collection<String> names) {
         Map<String, List<OptionItem<Object>>> result = new LinkedHashMap<>(names.size());
         for (String name : names) {
             if (name != null) {
-                List<OptionItem<Object>> options = dictMap.get(name);
+                List<OptionItem<Object>> options = source.get(name);
                 if (options != null) {
                     result.put(name, options);
                 }
@@ -203,13 +300,47 @@ public class EnumDictionaryRegistry implements InitializingBean, BeanClassLoader
         return Collections.unmodifiableMap(result);
     }
 
-    /**
-     * 获取全量已开放的枚举字典映射
-     *
-     * @return 全量不可变字典映射
-     */
-    public Map<String, List<OptionItem<Object>>> getAllOptions() {
-        return dictMap;
+    private Map<String, List<OptionItem<Object>>> buildLocalizedDict(Locale locale) {
+        if (this.dictMap.isEmpty() || this.messageSource == null) {
+            return this.dictMap;
+        }
+
+        Map<String, List<OptionItem<Object>>> result = new LinkedHashMap<>(this.aliasToClassMap.size());
+        for (Map.Entry<String, Class<?>> entry : this.aliasToClassMap.entrySet()) {
+            String alias = entry.getKey();
+            Class<?> clazz = entry.getValue();
+            Object[] constants = clazz.getEnumConstants();
+            if (constants == null || constants.length == 0) {
+                result.put(alias, Collections.emptyList());
+                continue;
+            }
+
+            List<OptionItem<Object>> options = new ArrayList<>(constants.length);
+            for (Object constant : constants) {
+                if (constant instanceof IBaseEnum<?> baseEnum) {
+                    String defaultLabel = baseEnum.getLabel();
+                    String codeKey = "enum." + clazz.getSimpleName() + "." + ((Enum<?>) constant).name();
+                    String label;
+                    try {
+                        label = messageSource.getMessage(codeKey, null, defaultLabel, locale);
+                    } catch (Exception ignored) {
+                        label = defaultLabel;
+                    }
+                    options.add(OptionItem.of(baseEnum.getCode(), label, baseEnum.getDisabled(), baseEnum.getExtra()));
+                }
+            }
+            result.put(alias, Collections.unmodifiableList(options));
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private Locale resolveCurrentLocale() {
+        try {
+            Locale locale = LocaleContextHolder.getLocale();
+            return locale != null ? locale : Locale.getDefault();
+        } catch (Throwable ignored) {
+            return Locale.getDefault();
+        }
     }
 
     /**

@@ -2,6 +2,7 @@ package io.github.atengk.boot.web.jackson;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.web.properties.WebProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -115,5 +116,44 @@ class JacksonCustomizerTest {
 
         assertTrue(node.get("snowflakeId").isNumber());
         assertEquals(123456789L, node.get("snowflakeId").asLong());
+    }
+
+    public enum SampleStatus implements IBaseEnum<Integer> {
+        ACTIVE(1, "启用"),
+        INACTIVE(2, "停用");
+
+        private final Integer code;
+        private final String label;
+
+        SampleStatus(Integer code, String label) {
+            this.code = code;
+            this.label = label;
+        }
+
+        @Override
+        public Integer getCode() { return code; }
+        @Override
+        public String getLabel() { return label; }
+    }
+
+    static class EnumContainerModel {
+        private SampleStatus status;
+        public SampleStatus getStatus() { return status; }
+        public void setStatus(SampleStatus status) { this.status = status; }
+    }
+
+    @Test
+    @DisplayName("JacksonCustomizer 自动集成 BaseEnumDeserializer 支持数字、字符串与常量名反序列化")
+    void shouldAutoDeserializeIBaseEnumViaJacksonCustomizer() throws Exception {
+        ObjectMapper mapper = createConfiguredMapper(true);
+
+        EnumContainerModel model1 = mapper.readValue("{\"status\": 1}", EnumContainerModel.class);
+        assertEquals(SampleStatus.ACTIVE, model1.getStatus());
+
+        EnumContainerModel model2 = mapper.readValue("{\"status\": \"1\"}", EnumContainerModel.class);
+        assertEquals(SampleStatus.ACTIVE, model2.getStatus());
+
+        EnumContainerModel model3 = mapper.readValue("{\"status\": \"INACTIVE\"}", EnumContainerModel.class);
+        assertEquals(SampleStatus.INACTIVE, model3.getStatus());
     }
 }

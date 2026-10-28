@@ -3,11 +3,13 @@ package io.github.atengk.boot.web.dict.autoconfigure;
 import io.github.atengk.boot.web.dict.EnumDictionaryController;
 import io.github.atengk.boot.web.dict.EnumDictionaryRegistry;
 import io.github.atengk.boot.web.properties.EnumDictionaryProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.MessageSource;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -24,8 +26,9 @@ public class AtengEnumDictionaryAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public EnumDictionaryRegistry enumDictionaryRegistry(EnumDictionaryProperties properties) {
-        return new EnumDictionaryRegistry(properties);
+    public EnumDictionaryRegistry enumDictionaryRegistry(EnumDictionaryProperties properties,
+                                                         ObjectProvider<MessageSource> messageSourceProvider) {
+        return new EnumDictionaryRegistry(properties, messageSourceProvider.getIfAvailable());
     }
 
     @Bean

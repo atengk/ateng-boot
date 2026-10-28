@@ -1,5 +1,12 @@
 package io.github.atengk.boot.web.jackson;
 
+import com.fasterxml.jackson.databind.BeanDescription;
+import com.fasterxml.jackson.databind.DeserializationConfig;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.module.SimpleDeserializers;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
@@ -8,6 +15,7 @@ import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalTimeSerializer;
 import io.github.atengk.boot.core.constant.DatePattern;
+import io.github.atengk.boot.core.enums.IBaseEnum;
 import io.github.atengk.boot.web.properties.WebProperties;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
@@ -64,5 +72,32 @@ public class JacksonCustomizer implements Jackson2ObjectMapperBuilderCustomizer 
 
         builder.serializerByType(LocalTime.class, new LocalTimeSerializer(timeFormatter));
         builder.deserializerByType(LocalTime.class, new LocalTimeDeserializer(timeFormatter));
+
+        // 4. 强类型通用枚举 BaseEnumDeserializer 自动发现与注册
+        SimpleModule baseEnumModule = new SimpleModule("AtengBaseEnumModule");
+        baseEnumModule.setDeserializers(new SimpleDeserializers() {
+            @Override
+            public JsonDeserializer<?> findEnumDeserializer(Class<?> type,
+                                                          DeserializationConfig config,
+                                                          BeanDescription beanDesc) throws JsonMappingException {
+                Class<?> targetClass = BaseEnumDeserializer.resolveTargetEnumClass(type);
+                if (targetClass != null && IBaseEnum.class.isAssignableFrom(targetClass)) {
+                    return new BaseEnumDeserializer(targetClass);
+                }
+                return super.findEnumDeserializer(type, config, beanDesc);
+            }
+
+            @Override
+            public JsonDeserializer<?> findBeanDeserializer(JavaType type,
+                                                          DeserializationConfig config,
+                                                          BeanDescription beanDesc) throws JsonMappingException {
+                Class<?> targetClass = BaseEnumDeserializer.resolveTargetEnumClass(type.getRawClass());
+                if (targetClass != null && IBaseEnum.class.isAssignableFrom(targetClass) && targetClass.isEnum()) {
+                    return new BaseEnumDeserializer(targetClass);
+                }
+                return super.findBeanDeserializer(type, config, beanDesc);
+            }
+        });
+        builder.modulesToInstall(modules -> modules.add(baseEnumModule));
     }
 }
