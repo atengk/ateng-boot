@@ -31,7 +31,16 @@
 | **上下文透传** | 存储多源异步上下文装饰器 | `StorageTaskDecorator` | - | 将当前线程活动存储源标识快照透传至受管线程池异步任务中，执行完毕后无条件清理现场 | `StorageRoutingTest` |
 | **本地受控端点** | 本地文件安全下载与直传端点 | `LocalStorageDownloadController`<br>`LocalStorageUploadController` | `ateng.boot.storage.local.download-endpoint`<br>`ateng.boot.storage.local.upload-endpoint` | 提供 `/storage/local/download`、`/storage/local/upload` 与 `/storage/local/upload-part` 端点，基于 HMAC-SHA256 防篡改与时效验证 | `LocalStorageDownloadControllerTest` / `LocalStorageUploadControllerTest` / `SampleStorageIntegrationTest` |
 | **本地驱动 SPI** | 本地文件系统存储驱动 | `LocalDriver` | `ateng.boot.storage.local.base-path`<br>`ateng.boot.storage.local.domain` | 本地存储驱动，封装文件读写、父目录创建、路径穿越清洗、分片零拷贝合并与基于 HMAC 签名的安全外链 | `LocalDriverTest` / `SampleStorageIntegrationTest` |
-| **S3 协议驱动 SPI**| 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain` | 统一抽象 MinIO、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与 CDN 域名无缝切换 | `S3DriverTest` |
+| **公共读与永久直链** | 公开桶直链与公共读授权 | `StorageTemplate`<br>`StorageOperations` | `ateng.boot.storage.s3.domain`<br>`ateng.boot.storage.s3.path-style` | `getUrl(String)` 返回永久访问 URL；`uploadPublic(String, InputStream, ...)` 自动挂载 `ObjectCannedACL.PUBLIC_READ`，三级拓扑自适应（自定义 CDN 域名 -> Path-Style -> Virtual-Host Style） | `S3DriverTest` / `SampleS3DualModeIntegrationTest` |
+| **自适应上传防 OOM** | 未知流长双阶分片缓冲 | `StorageTemplate`<br>`S3Driver` | `ateng.boot.storage.s3.*` | `upload(String, InputStream, String, -1L)`，彻底取缔 `readAllBytes()`，恒定 $\le 5\,\text{MB}$ 有界内存缓冲，首阶直传/次阶流式分片，异常自动熔断 abortMultipartUpload | `S3DriverAdaptiveUploadTest` / `SampleS3DualModeIntegrationTest` |
+| **字节范围读取** | 断点续传与音视频流 Seek | `StorageTemplate`<br>`StorageOperations` | - | `download(String, long, long)`，按需拉取指定偏移量与长度字节切片，S3 原生映射 Range 请求报头，Local 依托 FileChannel 零拷贝位置定位 | `StorageRangeAndPresignTest` / `SampleS3DualModeIntegrationTest` |
+| **预签名友好中文名** | 预签名外链响应头定制重写 | `StorageTemplate`<br>`PresignedDownloadRequest` | `ateng.boot.storage.s3.domain`<br>`ateng.boot.storage.local.secret-key` | `getPresignedUrl(String, Duration, String)` / `getPresignedUrl(PresignedDownloadRequest)`，RFC 5987 / RFC 6266 标准编码，强制浏览器下载弹出友好中文文件名 | `StorageRangeAndPresignTest` / `SampleS3DualModeIntegrationTest` |
+| **对象标签治理** | 对象业务标签完整生命周期 | `StorageTemplate`<br>`StorageOperations` | - | `setObjectTags(String, Map<String, String>)` / `getObjectTags(String)` / `deleteObjectTags(String)`，打通生命周期归档与费用审计，天然对称与幂等 | `S3DriverAdvancedTest` / `SampleS3DualModeIntegrationTest` |
+| **存储分层与加密** | 冷热分层与服务端加密支持 | `S3StorageProperties`<br>`StorageObject` | `ateng.boot.storage.s3.storage-class`<br>`ateng.boot.storage.s3.server-side-encryption` | 支持配置与元数据反查 `storageClass` (STANDARD/STANDARD_IA/GLACIER 等) 与 `serverSideEncryption` (AES256/aws:kms) | `S3DriverAdvancedTest` / `SampleS3DualModeIntegrationTest` |
+| **连接池与超时治理** | 生产级连接池与强类型超时 | `S3Driver`<br>`S3StorageProperties` | `ateng.boot.storage.s3.connect-timeout`<br>`ateng.boot.storage.s3.socket-timeout`<br>`ateng.boot.storage.s3.api-call-timeout`<br>`ateng.boot.storage.s3.max-connections`<br>`ateng.boot.storage.s3.connection-acquisition-timeout` | 强类型 `Duration` 超时控制，依托 `ApacheHttpClient` 连接池治理并发网络连接，彻底杜绝无超时网络假死与线程悬挂 | `S3DriverConnectionGovernanceTest` |
+| **存储桶探测自愈** | 存储桶自愈初始化与建桶 | `S3Driver`<br>`S3StorageProperties` | `ateng.boot.storage.s3.auto-create-bucket` | 探测 Bucket 存在性，检测到 404 NoSuchBucket 时自动执行建桶，附带生产中文诊断日志引导 | `S3DriverAdvancedTest` |
+| **活动源探针与诊断** | 存储源连通性探测与指标提取 | `StorageTemplate`<br>`StorageOperations` | `management.health.storage.enabled` | `storageTemplate.ping()` 快速探查当前活动源连通性，`storageTemplate.getDiagnostics()` 提取连接池与存储核心诊断字典 | `StorageTemplateTest` / `SampleS3DualModeIntegrationTest` |
+| **S3 协议驱动 SPI**| 云原生 S3 兼容协议驱动 | `S3Driver` | `ateng.boot.storage.s3.endpoint`<br>`ateng.boot.storage.s3.bucket`<br>`ateng.boot.storage.s3.access-key`<br>`ateng.boot.storage.s3.secret-key`<br>`ateng.boot.storage.s3.region`<br>`ateng.boot.storage.s3.path-style`<br>`ateng.boot.storage.s3.domain`<br>`ateng.boot.storage.s3.auto-create-bucket` | 统一抽象 MinIO、RustFS、AWS S3、阿里云 OSS、腾讯云 COS、华为云 OBS 等标准协议，支持 Path-Style 与 CDN 域名无缝切换 | `S3DriverTest` / `SampleS3DualModeIntegrationTest` |
 | **Spring 原生集成** | 原生 WritableResource 契约 | `StorageResource` | - | 实现 Spring `Resource` 与 `WritableResource`，支持 `storageTemplate.getResource(path)` 获得受管资源与 HTTP 206 响应 | `StorageResourceTest` / `SampleStorageIntegrationTest` |
 | **文件安全防卫** | 文件类型与魔数嗅探防卫器 | `StorageGuard` | `ateng.boot.storage.guard.enabled`<br>`ateng.boot.storage.guard.strict-magic-check`<br>`ateng.boot.storage.guard.allowed-extensions` | 识别 15+ 种标准魔数与高危 PE/ELF/Shell 脚本二进制特征，基于 mark/reset 零流截断损耗防御伪装上传 | `StorageGuardTest` / `SampleStorageIntegrationTest` |
 | **路径清洗** | 路径穿越防御清洗工具 | `StorageSecurityUtil` | - | 清洗清理 `../`、`./`、非法特殊字符与宿主系统特定隐藏文件，HMAC 常量时间比对防时序攻击 | `StorageSecurityUtilTest` |
@@ -92,7 +101,7 @@ management:
       show-details: always
 ```
 
-#### 方案 B：标准 S3 兼容协议（MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS / 华为云 OBS）
+#### 方案 B：标准 S3 兼容协议（RustFS / MinIO / AWS S3 / 阿里云 OSS / 腾讯云 COS / 华为云 OBS）
 ```yaml
 ateng:
   boot:
@@ -100,13 +109,21 @@ ateng:
       enabled: true
       type: s3
       s3:
-        endpoint: http://127.0.0.1:9000
-        bucket: my-bucket
-        access-key: YOUR_ACCESS_KEY
-        secret-key: YOUR_SECRET_KEY
-        region: us-east-1
-        path-style: true
-        domain: https://cdn.example.com
+        endpoint: http://127.0.0.1:9000     # 目标服务地址（如 RustFS, MinIO, OSS 等）
+        bucket: my-bucket                   # 目标默认存储桶名称
+        access-key: YOUR_ACCESS_KEY         # 访问密钥 AccessKey
+        secret-key: YOUR_SECRET_KEY         # 私有密钥 SecretKey
+        region: us-east-1                   # 区域标识（默认 us-east-1）
+        path-style: true                    # 是否开启 Path-Style 寻址模式（本地自建存储推荐 true）
+        domain: https://cdn.example.com     # 自定义对外直连域名 / CDN 加速域名（可选）
+        auto-create-bucket: false           # 启动/操作时若桶不存在是否自愈自动建桶（默认 false）
+        storage-class: STANDARD             # 默认存储类别（冷热分层：STANDARD, STANDARD_IA, GLACIER 等）
+        server-side-encryption: AES256      # 服务端加密算法（AES256 或 aws:kms，可选）
+        connect-timeout: 10s                # HTTP 连接建立硬超时（默认 10s）
+        socket-timeout: 30s                 # 数据流读取与网络 IO 挂起超时（默认 30s）
+        api-call-timeout: 60s               # 单次 S3 API 调用总体硬超时（默认 60s）
+        max-connections: 50                 # 底层 Apache HTTP Client 连接池最大并发连接数（默认 50）
+        connection-acquisition-timeout: 10s # 从连接池获取可用连接的租约最长等待时间（默认 10s）
 ```
 
 #### 方案 C：高阶多存储源双模配置（动态多源自动升阶）
@@ -829,7 +846,7 @@ public Result<StorageObject> fastUpload(
       "details": {
         "primary": "local",
         "driver": "LocalDriver",
-        "basePath": "C:\\Users\\admin\\AppData\\Local\\Temp\\ateng-boot-storage-test"
+        "basePath": "/tmp/ateng-boot-storage-test"
       }
     }
   }
@@ -1003,13 +1020,194 @@ ateng:
 
 ---
 
-## 24. 场景样例工程与集成测试索引
+## 24. 双阶自适应流式分片缓冲防 OOM (`upload` size < 0)
 
-`ateng-boot-sample-storage` 作为专职场景沙箱，**1:1 全真覆盖了当前模块的所有对外公开特性与边界防卫能力**。
+### 场景痛点
+在动态大报表流式导出、上游实时流转储等业务场景中，由于流是由计算过程边算边产生的，调用方根本无法预知数据流的精确字节大小（`size < 0`）。传统框架通常无脑调用 `in.readAllBytes()` 将数据全量读入 JVM 堆内存，面对并发导出几十兆或几百兆的大报表时，极易瞬间引发堆内存溢出（OOM），导致整个 Spring Boot 应用崩溃宕机。
+
+### 核心能力与架构设计
+- **恒定 $\le 5\,\text{MB}$ 有界内存缓冲**：底层维持固定 5MB 步长（AWS S3 规范最小分片阈值）的有界内存缓冲区，彻底取缔 `readAllBytes()`，杜绝堆内存击穿风险；
+- **首阶直发与次阶自适应分片**：
+  - **首阶判定**：先尝试读取首个 5MB 缓冲区；若流在 5MB 之内读尽（即总大小 $\le 5\,\text{MB}$），自动回退为单次 `PutObject` 一步上传，兼具极速传输与零多余网络开销；
+  - **次阶升阶**：若流读取超过 5MB，系统自动无缝激活 AWS S3 原生 Multipart Upload（`CreateMultipartUpload`），边从输入流拉取数据、边按 5MB 分片向云端上传（末片大小不受限制），并在流读取完毕后自动调用 `completeMultipartUpload` 完成合并；
+- **确定性异常熔断清理**：在流式上传过程中若发生任何网络异常或中断，系统会在 `catch` 块中立即触发 `abortMultipartUpload` 熔断清理已在云端生成的孤儿分片，彻底杜绝云存储空间悬挂与账单膨胀。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+/**
+ * 未知流长自适应流式分片上传（双阶内存缓冲 <= 5MB 防 OOM）
+ *
+ * @param path 目标对象路径
+ * @param in   输入流（未知长度，size 传 -1）
+ * @return 存储元数据对象
+ */
+public StorageObject uploadDynamicReport(String path, InputStream in) {
+    // 内部自适应判断：<=5MB 一步直传，>5MB 自动流式分片上传
+    return storageTemplate.use("s3").upload(path, in, "text/plain", -1L);
+}
+```
+
+---
+
+## 25. 公开桶永久直接访问链接与公共读授权 (`getUrl` / `uploadPublic`)
+
+### 场景痛点
+对于公共静态资源（如产品展示图、公开文档、公共头像等）或已挂载 CDN 加速域名的存储桶，业务层通常期望对外提供永久可用的直接访问 URL，以便于 CDN 长效缓存或前端静态渲染；而普通 `getPresignedUrl` 生成的链接强制携带签名参数（如 `X-Amz-Signature`）且具有时效限制，过期后页面即出现图片裂开。
+
+### 核心能力与架构设计
+- **永久直链三级拓扑自适应 (`getUrl`)**：
+  1. **自定义加速域名优先**：若配置了 `s3.domain`（如 `https://cdn.example.com`），直接生成标准 CDN 链接：`https://cdn.example.com/{path}`；
+  2. **Path-Style 模式**：若 `pathStyle = true`，自动拼接：`{endpoint}/{bucket}/{path}`；
+  3. **Virtual-Host Style 模式**：若 `pathStyle = false`，动态拼接：`https://{bucket}.{endpointHost}/{path}`；
+  4. 生成的 URL 干净纯正，不含任何临时认证与签名参数（如 `X-Amz-Signature`、`X-Amz-Expires` 等）。
+- **公共读权限授权直传 (`uploadPublic`)**：在向 S3 上传对象时，自动在请求中挂载 `ObjectCannedACL.PUBLIC_READ`，确保云端对象具备公共匿名读取权限。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+// 1. 赋予公共读权限直传
+public StorageObject uploadPublicAsset(String path, InputStream in, long size) {
+    return storageTemplate.use("s3").uploadPublic(path, in, "text/html", size);
+}
+
+// 2. 获取公开桶永久直连访问 URL（适于 CDN 缓存与静态分发）
+public String getDirectAssetUrl(String path) {
+    return storageTemplate.use("s3").getUrl(path);
+}
+```
+
+---
+
+## 26. 分段切片字节范围读取 (`download(path, offset, length)`)
+
+### 场景痛点
+在面对数十兆或数吉字节的大文件、日志包或音视频资源时，调用方经常需要进行局部内容探查、大文件断点续传（HTTP 206）或音视频流式 Seek 跳转播放；若每次均需全量拉取整个文件流，将造成极大的带宽浪费与响应延迟。
+
+### 核心能力与架构设计
+- **云原生 S3 驱动**：自动在 S3 `GetObjectRequest` 中注入 HTTP Range 报头：`bytes={startOffset}-{startOffset + length - 1}`，云端只返回指定字节范围切片数据；
+- **Local 本地文件驱动**：依托 Java NIO `FileChannel`，通过 `channel.position(startOffset)` 直接在磁盘文件物理位置处进行流式读取，零多余内存开销；
+- **严格前置卫语句防卫**：前置拦截校验 `startOffset >= 0` 且 `length > 0`，对非法切片区间快速失败，阻断脏请求穿透。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+/**
+ * 按字节范围拉取局部切片内容（用于大文件断点续传或视频 Seek）
+ *
+ * @param path        对象相对路径
+ * @param startOffset 起始字节偏移量 (>= 0)
+ * @param length      拉取字节长度 (> 0)
+ * @return 局部字节数组
+ */
+public byte[] readByteRange(String path, long startOffset, long length) {
+    try (InputStream stream = storageTemplate.use("s3").download(path, startOffset, length)) {
+        return stream.readAllBytes();
+    } catch (Exception e) {
+        throw new StorageException(StorageResultCode.OPERATION_FAILED, "读取范围切片失败", e);
+    }
+}
+```
+
+---
+
+## 27. 预签名外链友好中文文件名重写与响应头定制 (`PresignedDownloadRequest`)
+
+### 场景痛点
+在业务系统落地中，云端持久化存储的对象文件名多采用纯随机 UUID 或哈希串（如 `secure/4f2a9b1c.xlsx`）以避免命名冲突。当向用户提供预签名临时安全下载链接时，若直接使用原始路径，浏览器下载弹出的文件名往往就是晦涩的 UUID；若直接在 URL 中拼装中文参数，又常常在不同浏览器间发生乱码。
+
+### 核心能力与架构设计
+- **强类型请求模型与流式建造者**：通过 `PresignedDownloadRequest` 统一指定 `duration`、`downloadFilename`、`responseContentType` 等定制属性；
+- **RFC 5987 / RFC 6266 双标准国际化编码**：当指定 `downloadFilename` 时，框架自动将其转换为符合标准规范的 `response-content-disposition` 报头参数：
+  ```http
+  attachment; filename="2026年度业务审计报表.xlsx"; filename*=UTF-8''2026%E5%B9%B4%E5%BA%A6%E4%B8%9A%E5%8A%A1%E5%AE%A1%E8%AE%A1%E6%8A%A5%E8%A1%A8.xlsx
+  ```
+- 完美兼容 Chrome、Firefox、Edge、Safari 等主流浏览器，确保下载时弹出人类友好的中文或业务文件名。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+/**
+ * 生成带友好中文文件名的预签名安全下载链接
+ */
+public PresignedUrl generateFriendlyDownloadUrl(String path, String friendlyFilename) {
+    return storageTemplate.use("s3").getPresignedUrl(
+            PresignedDownloadRequest.builder()
+                    .path(path)
+                    .duration(Duration.ofMinutes(15))
+                    .downloadFilename(friendlyFilename)
+                    .build()
+    );
+}
+```
+
+---
+
+## 28. 对象业务标签生命周期治理 (`Tagging`)
+
+### 场景痛点
+在企业级多租户或合规云治理架构中，海量存储对象需要被打上多维度的业务标签（如 `department=finance`、`project=ateng-boot`、`env=uat`），用于联动云厂商底层生命周期规则（如“按标签在 30 天后自动下沉转冷归档至低频存储”）或精确的按部门财务分账审计。
+
+### 核心能力与架构设计
+- **对称完备门面设计**：提供 `setObjectTags`、`getObjectTags`、`deleteObjectTags` 对称门面方法；
+- **云端原生映射**：自动转换为 AWS S3 原生 Tagging 实体，打通云上生命周期治理策略；
+- **天然对称与幂等**：覆盖式全量设置标签；清空标签时天然幂等，目标对象无标签亦平滑返回。
+
+### 核心代码范式
+```java
+@Autowired
+private StorageTemplate storageTemplate;
+
+public void manageTagsDemo(String path) {
+    // 1. 设置对象标签
+    Map<String, String> tags = Map.of(
+            "environment", "uat",
+            "department", "technology",
+            "project", "ateng-boot"
+    );
+    storageTemplate.use("s3").setObjectTags(path, tags);
+
+    // 2. 读取标签
+    Map<String, String> currentTags = storageTemplate.use("s3").getObjectTags(path);
+    System.out.println("当前对象标签: " + currentTags);
+
+    // 3. 清空标签（天然幂等）
+    storageTemplate.use("s3").deleteObjectTags(path);
+}
+```
+
+---
+
+## 29. 云原生 S3 生产级连接池与超时治理基础设施
+
+### 场景痛点
+在微服务高并发访问存储时，默认 HTTP 传输客户端通常未限制底层连接池或缺乏细粒度的硬超时拦截。一旦遇到底层对象存储网络抖动或丢包假死，应用线程会被无界无限阻塞，最终导致 Tomcat / Undertow 工作线程池耗尽，产生全局服务雪崩。
+
+### 核心能力与架构设计
+- **Apache HTTP Client 生产连接池**：引入 `software.amazon.awssdk:apache-client`，通过生产级线程安全连接池纳管并发 HTTP 连接，支持配置 `maxConnections`（默认 50）与获取连接的租约超时 `connectionAcquisitionTimeout`（默认 10s）；
+- **三级强类型 `Duration` 超时拦截**：
+  - `connectTimeout`：HTTP 连接建立硬超时（默认 10s）；
+  - `socketTimeout`：数据流读取等待超时（默认 30s）；
+  - `apiCallTimeout`：单次 S3 API 调用总体硬超时（默认 60s）；
+- **存储桶探测自愈 (`autoCreateBucket`)**：配置为 `true` 时，驱动在启动初始化或操作遇 404 NoSuchBucket 时自动调用 `createBucket` 完成自愈建桶，并输出带有生产引导说明的中文诊断日志。
+
+---
+
+## 30. 场景样例工程与双模自适应实测索引
+
+`ateng-boot-sample-storage` 作为专职场景沙箱，**1:1 全真覆盖了当前模块的所有对外公开特性与边界防卫能力**，并建立了单测试套件双模自适应架构。
 
 👉 样例工程根目录：[ateng-boot-sample-storage](../ateng-boot-samples/ateng-boot-sample-storage/README.md)
 
-### 19 个端到端全真集成测试用例索引 (`SampleStorageIntegrationTest`)
+### 1. 本地 Local 端到端集成测试 (19 项用例，`SampleStorageIntegrationTest`)
 | 序号 | 测试方法名 | 对应验证特性与业务场景 |
 | :---: | :--- | :--- |
 | 1 | `testUploadAndDownload` | 基础文件上传与下载闭环 |
@@ -1032,8 +1230,29 @@ ateng:
 | 18 | `testUploadWithUserMetadata` | 上传携带用户扩展元数据（`userMetadata`）与反查 |
 | 19 | `testActuatorHealthIndicator` | Spring Boot Actuator `/actuator/health` 存储健康探针感知 |
 
-### 本地快速定向自验准出
+### 2. 云原生 S3 双模自适应集成测试 (7 大生产场景，`SampleS3DualModeIntegrationTest`)
+| 序号 | 测试方法名 | 对应验证特性与业务场景 |
+| :---: | :--- | :--- |
+| 1 | `testUploadAdaptiveStream_ShouldSucceed` | 未知流长自适应流式分片上传（双阶内存缓冲 $\le 5\,\text{MB}$ 防 OOM） |
+| 2 | `testPublicReadAndPermanentPublicUrl_ShouldSucceed` | 公共读权限直传与永久直接访问直链 (`getUrl`) 校验 |
+| 3 | `testByteRangePartialDownload_ShouldSucceed` | 分段切片字节范围读取 (Byte-Range Read) 与精确内容强断言 |
+| 4 | `testPresignedDownloadUrlWithFriendlyChineseFilename_ShouldSucceed` | 预签名临时安全下载链接与友好中文文件名定制响应头重写 |
+| 5 | `testObjectTaggingLifecycle_ShouldSucceed` | 对象标签 Tagging 完整生命周期治理（设置、获取、清空） |
+| 6 | `testStorageClassAndMetadataExtraction_ShouldSucceed` | 存储元数据提取与冷热分层/服务端加密元数据映射 |
+| 7 | `testS3HealthPingAndDiagnostics_ShouldSucceed` | S3 存储源健康探测 (`ping`) 与连接池/配置运维诊断 (`diagnostics`) |
+
+### 3. 单套件双模自适应验证指令
+
+#### 阶梯 A：默认/CI 离线自洽构建（秒级通过，零外网依赖）
 ```bash
 mvn test -pl ateng-boot-storage,ateng-boot-samples/ateng-boot-sample-storage -am -T 1C -nsu -B
 ```
-无需依赖任何外部物理网络或真实 S3 账号，纯内存与受管临时目录闭环，秒级全绿通过。
+- **机制**：自动激活 `@Profile("!local")` 内存桩，26 项集成测试全部通过，保证云端 CI 100% 极速稳定。
+
+#### 阶梯 B：本地真实中间件联调（直连物理 RustFS / MinIO 服务）
+1. 在 `ateng-boot-sample-storage/src/main/resources/` 将模板 `application-local.example.yml` 复制为 `application-local.yml` 并填入真实服务连接信息；
+2. 执行激活 `local` 环境的定向测试：
+```bash
+mvn test -pl ateng-boot-samples/ateng-boot-sample-storage -am "-Dtest=SampleS3DualModeIntegrationTest" "-Dspring.profiles.active=local" "-Dsurefire.failIfNoSpecifiedTests=false" -nsu -B
+```
+- **机制**：Mock 桩自动失效，直连物理中间件全真走通读写、分片、标签等链路，并在 `@AfterEach` 中自动清理测试残留数据。
