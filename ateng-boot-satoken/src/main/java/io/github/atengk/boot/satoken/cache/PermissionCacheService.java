@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 高性能两级级联权限与角色即时热刷新治理服务
@@ -106,6 +107,21 @@ public class PermissionCacheService {
             return;
         }
         getAdapter().set(key, value, timeoutSeconds);
+    }
+
+    /**
+     * 写入指定缓存 key 与过期时间（Duration 强类型重载）
+     *
+     * @param key     缓存键
+     * @param value   缓存值
+     * @param timeout 过期时间
+     */
+    public void set(String key, String value, Duration timeout) {
+        if (key == null) {
+            return;
+        }
+        long seconds = (timeout != null && !timeout.isZero() && !timeout.isNegative()) ? timeout.toSeconds() : -1;
+        set(key, value, seconds);
     }
 
     /**
@@ -369,7 +385,7 @@ public class PermissionCacheService {
     }
 
     /**
-     * 基于 StringRedisTemplate 的常规单层分布式缓存适配器
+     * 基于 StringRedisTemplate 的常规单层分布式缓存适配器（带本地 L1 LRU 微缓存防穿透）
      */
     public static class RedisPermissionCacheAdapter implements PermissionCacheAdapter {
         private final StringRedisTemplate redisTemplate;
@@ -381,20 +397,43 @@ public class PermissionCacheService {
 
         @Override
         public String get(String key) {
-            return redisTemplate.opsForValue().get(key);
+            if (key == null) {
+                return null;
+            }
+            // 1. 优先读取进程内 L1 微缓存
+            String localVal = localFallback.get(key);
+            if (localVal != null) {
+                return localVal;
+            }
+            // 2. 本地未命中，穿透读取 L2 Redis
+            String remoteVal = redisTemplate.opsForValue().get(key);
+            if (remoteVal != null) {
+                // 回填本地 L1 微缓存（5 秒短 TTL）
+                localFallback.set(key, remoteVal, 5);
+            }
+            return remoteVal;
         }
 
         @Override
         public void set(String key, String value, long timeoutSeconds) {
+            if (key == null) {
+                return;
+            }
             if (timeoutSeconds > 0) {
                 redisTemplate.opsForValue().set(key, value, timeoutSeconds, TimeUnit.SECONDS);
             } else {
                 redisTemplate.opsForValue().set(key, value);
             }
+            // 同步写入本地 L1 微缓存（最长 5 秒短 TTL 防脱靶）
+            long localTtl = timeoutSeconds > 0 ? Math.min(timeoutSeconds, 5) : 5;
+            localFallback.set(key, value, localTtl);
         }
 
         @Override
         public void delete(String key) {
+            if (key == null) {
+                return;
+            }
             redisTemplate.delete(key);
             localFallback.delete(key);
         }
@@ -443,56 +482,89 @@ public class PermissionCacheService {
      */
     public static class InMemoryPermissionCacheAdapter implements PermissionCacheAdapter {
         private static final int MAX_LOCAL_CACHE_SIZE = 10000;
-        private final Map<String, LocalCacheItem> localMap = Collections.synchronizedMap(
-                new LinkedHashMap<>(128, 0.75f, true) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<String, LocalCacheItem> eldest) {
-                        return size() > MAX_LOCAL_CACHE_SIZE;
-                    }
-                }
-        );
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Map<String, LocalCacheItem> localMap = new LinkedHashMap<>(128, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, LocalCacheItem> eldest) {
+                return size() > MAX_LOCAL_CACHE_SIZE;
+            }
+        };
 
         @Override
         public String get(String key) {
-            LocalCacheItem item = localMap.get(key);
-            if (item != null) {
-                if (!item.isExpired()) {
-                    return item.getValue();
-                }
-                localMap.remove(key);
+            if (key == null) {
+                return null;
             }
-            return null;
+            lock.lock();
+            try {
+                LocalCacheItem item = localMap.get(key);
+                if (item != null) {
+                    if (!item.isExpired()) {
+                        return item.getValue();
+                    }
+                    localMap.remove(key);
+                }
+                return null;
+            } finally {
+                lock.unlock();
+            }
         }
 
         @Override
         public void set(String key, String value, long timeoutSeconds) {
+            if (key == null) {
+                return;
+            }
             long expireAt = timeoutSeconds > 0 ? System.currentTimeMillis() + (timeoutSeconds * 1000) : -1;
-            localMap.put(key, new LocalCacheItem(value, expireAt));
+            lock.lock();
+            try {
+                localMap.put(key, new LocalCacheItem(value, expireAt));
+            } finally {
+                lock.unlock();
+            }
         }
 
         @Override
         public void delete(String key) {
-            localMap.remove(key);
+            if (key == null) {
+                return;
+            }
+            lock.lock();
+            try {
+                localMap.remove(key);
+            } finally {
+                lock.unlock();
+            }
         }
 
         @Override
         public void clearAll() {
-            localMap.clear();
+            lock.lock();
+            try {
+                localMap.clear();
+            } finally {
+                lock.unlock();
+            }
         }
 
         @Override
         public void evictLocal(String key) {
-            localMap.remove(key);
+            delete(key);
         }
 
         @Override
         public void clearLocal() {
-            localMap.clear();
+            clearAll();
         }
 
         @Override
         public int getLocalCacheSize() {
-            return localMap.size();
+            lock.lock();
+            try {
+                return localMap.size();
+            } finally {
+                lock.unlock();
+            }
         }
     }
 

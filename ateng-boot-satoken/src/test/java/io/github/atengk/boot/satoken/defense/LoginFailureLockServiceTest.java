@@ -405,4 +405,15 @@ class LoginFailureLockServiceTest {
         redisService.checkLocked(null, null);
         redisService.checkIpLocked(null);
     }
+
+    @Test
+    @DisplayName("对抗性测试：单机内存模式防恶意海量撞库攻击导致内存无限膨胀")
+    void testLocalMemoryCapacityDefense() {
+        for (int i = 0; i < 50; i++) {
+            memoryService.recordFailure("flood_user_" + i, "203.0.113." + (i % 250));
+        }
+        assertThat(memoryService.getLocalMemorySize()).isGreaterThan(0);
+        memoryService.clearLocalMemory();
+        assertThat(memoryService.getLocalMemorySize()).isEqualTo(0);
+    }
 }

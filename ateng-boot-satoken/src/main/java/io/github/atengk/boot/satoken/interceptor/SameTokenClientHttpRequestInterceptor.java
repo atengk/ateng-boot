@@ -60,7 +60,7 @@ public class SameTokenClientHttpRequestInterceptor implements ClientHttpRequestI
                     request.getHeaders().set(header, sameToken);
                     log.debug("微服务出站请求已成功注入 Same-Token 凭据 [header={}]", header);
                 }
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("提取微服务内部 Same-Token 凭据异常: {}", ex.getMessage());
             }
         }

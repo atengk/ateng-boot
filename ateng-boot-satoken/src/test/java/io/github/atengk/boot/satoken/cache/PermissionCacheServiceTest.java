@@ -245,7 +245,7 @@ class PermissionCacheServiceTest {
     }
 
     @Test
-    @DisplayName("4. 单层 Redis 降级：未配置 TwoLevelCacheManager 时自动降级为 StringRedisTemplate")
+    @DisplayName("4. 单层 Redis 降级：未配置 TwoLevelCacheManager 时自动降级为 StringRedisTemplate 并具备 L1 进程内微缓存防穿透")
     void testFallbackToStringRedisTemplate() {
         when(twoLevelCacheManagerProvider.getIfAvailable()).thenReturn(null);
         when(redisTemplateProvider.getIfAvailable()).thenReturn(stringRedisTemplate);
@@ -259,17 +259,25 @@ class PermissionCacheServiceTest {
 
         assertThat(service.getAdapter()).isInstanceOf(PermissionCacheService.RedisPermissionCacheAdapter.class);
 
-        // 读
+        // 读：首次穿透 Redis 并回填 L1
         when(stringValueOperations.get("k-redis")).thenReturn("val-redis");
         assertThat(service.get("k-redis")).isEqualTo("val-redis");
+        // 二次直读 L1 微缓存，verify 证明 opsForValue().get() 仅被调用 1 次
+        assertThat(service.get("k-redis")).isEqualTo("val-redis");
+        verify(stringValueOperations, times(1)).get("k-redis");
 
-        // 写
-        service.set("k-redis", "val-redis-new", 60);
+        // 写：使用 Duration 强类型重载
+        service.set("k-redis", "val-redis-new", Duration.ofSeconds(60));
         verify(stringValueOperations).set("k-redis", "val-redis-new", 60, java.util.concurrent.TimeUnit.SECONDS);
+
+        // 写后直读 L1 微缓存，依然零网络 IO
+        assertThat(service.get("k-redis")).isEqualTo("val-redis-new");
+        verify(stringValueOperations, times(1)).get("k-redis");
 
         // 删
         service.delete("k-redis");
         verify(stringRedisTemplate).delete("k-redis");
+        assertThat(service.getLocalCacheSize()).isEqualTo(0);
     }
 
     @Test

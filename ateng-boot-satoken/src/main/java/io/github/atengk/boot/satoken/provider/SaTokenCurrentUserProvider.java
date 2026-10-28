@@ -29,12 +29,7 @@ public class SaTokenCurrentUserProvider implements CurrentUserProvider {
         if (LoginHelper.isRunAs()) {
             return LoginHelper.getUserId();
         }
-        String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
-        String activeType = LoginHelper.getActiveLoginType(preferredType);
-        if (activeType != null) {
-            return LoginHelper.getUserId(activeType);
-        }
-        return LoginHelper.getUserId(preferredType != null ? preferredType : LoginHelper.getPrimaryLoginType());
+        return LoginHelper.getUserId(resolveEffectiveLoginType());
     }
 
     @Override
@@ -42,12 +37,7 @@ public class SaTokenCurrentUserProvider implements CurrentUserProvider {
         if (LoginHelper.isRunAs()) {
             return LoginHelper.getOriginalUserId();
         }
-        String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
-        String activeType = LoginHelper.getActiveLoginType(preferredType);
-        if (activeType != null) {
-            return LoginHelper.getOriginalUserId(activeType);
-        }
-        return LoginHelper.getOriginalUserId(preferredType != null ? preferredType : LoginHelper.getPrimaryLoginType());
+        return LoginHelper.getOriginalUserId(resolveEffectiveLoginType());
     }
 
     @Override
@@ -55,11 +45,18 @@ public class SaTokenCurrentUserProvider implements CurrentUserProvider {
         if (LoginHelper.isRunAs()) {
             return true;
         }
+        return LoginHelper.isRunAs(resolveEffectiveLoginType());
+    }
+
+    /**
+     * 解析当前生效的目标账号体系类型（优先活跃账号，未命中回退主配置）
+     */
+    private String resolveEffectiveLoginType() {
         String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
         String activeType = LoginHelper.getActiveLoginType(preferredType);
         if (activeType != null) {
-            return LoginHelper.isRunAs(activeType);
+            return activeType;
         }
-        return LoginHelper.isRunAs(preferredType != null ? preferredType : LoginHelper.getPrimaryLoginType());
+        return preferredType != null ? preferredType : LoginHelper.getPrimaryLoginType();
     }
 }

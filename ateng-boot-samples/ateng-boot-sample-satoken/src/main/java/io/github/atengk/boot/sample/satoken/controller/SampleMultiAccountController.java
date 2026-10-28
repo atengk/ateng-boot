@@ -1,9 +1,11 @@
 package io.github.atengk.boot.sample.satoken.controller;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.satoken.model.LoginUser;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @since 2026-10-28
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/api/multi-account")
 public class SampleMultiAccountController {
@@ -32,6 +35,9 @@ public class SampleMultiAccountController {
      */
     @PostMapping("/admin/login")
     public Result<String> adminLogin(@RequestBody LoginUser loginUser) {
+        if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
+            return Result.fail(CommonResultCode.BAD_REQUEST, "用户唯一标识 (userId) 不能为空");
+        }
         LoginHelper.login("admin", loginUser);
         return Result.success(LoginHelper.getTokenValue("admin"));
     }
@@ -68,6 +74,9 @@ public class SampleMultiAccountController {
      */
     @PostMapping("/member/login")
     public Result<String> memberLogin(@RequestBody LoginUser loginUser) {
+        if (loginUser == null || loginUser.getUserId() == null || loginUser.getUserId().isBlank()) {
+            return Result.fail(CommonResultCode.BAD_REQUEST, "用户唯一标识 (userId) 不能为空");
+        }
         LoginHelper.login("member", loginUser);
         return Result.success(LoginHelper.getTokenValue("member"));
     }

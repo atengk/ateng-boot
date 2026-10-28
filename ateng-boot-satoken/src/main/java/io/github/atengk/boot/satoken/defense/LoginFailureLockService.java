@@ -116,7 +116,7 @@ public class LoginFailureLockService {
                     }
                 }
             }
-        } catch (Throwable ex) {
+        } catch (Exception ex) {
             log.debug("未能从 SaTokenContext 嗅探客户端 IP: {}", ex.getMessage());
         }
 
@@ -153,7 +153,7 @@ public class LoginFailureLockService {
                     }
                 }
             }
-        } catch (Throwable ex) {
+        } catch (Exception ex) {
             log.debug("未能从 RequestContextHolder 嗅探客户端 IP: {}", ex.getMessage());
         }
 
@@ -199,7 +199,7 @@ public class LoginFailureLockService {
                     return normalizeIp(remoteAddr);
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Exception ignored) {
         }
 
         return "";
@@ -427,7 +427,7 @@ public class LoginFailureLockService {
                 }
                 int current = count != null ? count.intValue() : 0;
                 return Math.max(0, maxRetry - current);
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 记录登录失败次数异常，降级回退至本地内存模式: account={}, error={}", account, ex.toString());
             }
         }
@@ -441,6 +441,11 @@ public class LoginFailureLockService {
     private int recordFailureLocal(String account, int maxRetry, Duration lockDuration, Duration windowDuration) {
         if (localFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES) {
             cleanupExpiredLocalEntries();
+            if (localFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES && !localFailMap.containsKey(account)) {
+                log.warn("【防暴力破解/内存保护】单机内存失败计数容器已达到上限阈值 {}，拒绝录入新账号: account={}",
+                        MAX_LOCAL_FAIL_ENTRIES, account);
+                return maxRetry;
+            }
         }
 
         long expireAt = System.currentTimeMillis() + windowDuration.toMillis();
@@ -506,7 +511,7 @@ public class LoginFailureLockService {
                 }
                 int current = count != null ? count.intValue() : 0;
                 return Math.max(0, ipMaxRetry - current);
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 记录客户端 IP 登录失败次数异常，降级回退至本地内存模式: ip={}, error={}", ip, ex.toString());
             }
         }
@@ -520,6 +525,11 @@ public class LoginFailureLockService {
     private int recordIpFailureLocal(String ip, int ipMaxRetry, Duration ipLockDuration, Duration ipWindowDuration) {
         if (localIpFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES || localIpLockMap.size() >= MAX_LOCAL_FAIL_ENTRIES) {
             cleanupExpiredLocalIpEntries();
+            if (localIpFailMap.size() >= MAX_LOCAL_FAIL_ENTRIES && !localIpFailMap.containsKey(ip)) {
+                log.warn("【防暴力破解/内存保护】单机内存客户端 IP 失败计数容器已达到上限阈值 {}，拒绝录入新 IP: ip={}",
+                        MAX_LOCAL_FAIL_ENTRIES, ip);
+                return ipMaxRetry;
+            }
         }
 
         if (isIpLockedLocal(ip)) {
@@ -574,7 +584,7 @@ public class LoginFailureLockService {
         if (redisTemplate != null) {
             try {
                 redisTemplate.delete(KEY_PREFIX + account);
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 清除登录失败计数异常: account={}, error={}", account, ex.toString());
             }
         }
@@ -598,7 +608,7 @@ public class LoginFailureLockService {
             try {
                 redisTemplate.delete(KEY_IP_PREFIX + ip);
                 redisTemplate.delete(KEY_IP_LOCK_PREFIX + ip);
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 清除客户端 IP 失败计数与锁定状态异常: ip={}, error={}", ip, ex.toString());
             }
         }
@@ -672,7 +682,7 @@ public class LoginFailureLockService {
                     return Integer.parseInt(val);
                 }
                 return 0;
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 读取登录失败次数异常，降级读取内存: account={}, error={}", account, ex.toString());
             }
         }
@@ -710,7 +720,7 @@ public class LoginFailureLockService {
                     return Integer.parseInt(val);
                 }
                 return 0;
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 读取客户端 IP 失败次数异常: ip={}, error={}", ip, ex.toString());
             }
         }
@@ -791,7 +801,7 @@ public class LoginFailureLockService {
                 if (Boolean.TRUE.equals(hasKey)) {
                     return true;
                 }
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 读取客户端 IP 锁定状态异常，降级读取内存: ip={}, error={}", ip, ex.toString());
             }
         }
@@ -829,7 +839,7 @@ public class LoginFailureLockService {
                 if (expire != null && expire > 0) {
                     return expire;
                 }
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 log.warn("Redis 读取客户端 IP 锁定剩余时间异常: ip={}, error={}", ip, ex.toString());
             }
         }

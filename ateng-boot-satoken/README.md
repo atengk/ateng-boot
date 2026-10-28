@@ -10,7 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **会话登录** | 强类型用户登录 | `LoginHelper` | `ateng.boot.satoken.enabled` | `login(LoginUser)` / `login(LoginUser, String)` / `login(LoginUser, SaLoginParameter)` / `login(LoginUser, String, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **会话注销** | 会话安全注销 | `LoginHelper` | - | `logout()` / `logout(String)` / `logoutByTokenValue(String)` / `logoutByDevice(String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
-| **设备治理** | 账号踢人与顶替下线 | `LoginHelper` | - | `kickout(Object loginId)` / `kickout(Object, String)` / `kickoutByToken(String)` / `kickoutByDevice(Object, String)` / `replaced(Object)` / `replaced(Object, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **设备治理** | 账号踢人与顶替下线 | `LoginHelper` | - | `kickout(Object loginId)` / `kickout(Object, String)` / `kickoutByToken(String)` / `kickoutDevice(Object, String)` / `kickoutByDevice(Object, String)` / `replaced(Object)` / `replaced(Object, String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **账号封禁** | 账号/服务封禁与解封 | `LoginHelper` | - | `disable(Object, Duration)` / `disable(Object, String, Duration)` / `untieDisable(Object)` / `untieDisable(Object, String)` / `isDisable` / `checkDisable` / `getDisableTime` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **二级认证** | 编程式二级安全认证 | `LoginHelper` | - | `openSafe(Duration)` / `openSafe(int)` / `openSafe(String, Duration)` / `isSafe()` / `isSafe(String)` / `checkSafe()` / `checkSafe(String)` / `closeSafe()` / `closeSafe(String)` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **状态查询** | 登录状态与令牌查询 | `LoginHelper` | - | `isLogin()` / `isLogin(String)` / `checkLogin()` / `checkLogin(String)` / `getTokenValue()` / `getTokenValue(String)` / `getTokenValueByLoginId(Object)` / `getTokenValueByLoginId(Object, String)` / `getTokenTimeout()` / `getSessionTimeout()` | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
@@ -36,7 +36,7 @@
 | **分布式存储** | 纯净 JSON 会话存储驱动 | `SaTokenRedisDao` | - | 基于 `StringRedisTemplate` 存储，杜绝 `@class` 反序列化白名单漏洞，无 Redis 自动平滑降级 | `SaTokenRedisDaoTest` / `SampleSaTokenIntegrationTest` |
 | **集群同步** | 分布式集群即时同步与广播作废 | `SaTokenClusterBroadcaster`<br>`SaTokenClusterSyncListener` | `ateng.boot.satoken.cluster-sync.enabled`<br>`ateng.boot.satoken.cluster-sync.channel` | `broadcast(eventType, targetKey)` / `getInstanceId()` / `processRemoteMessage(msg)` / 自消费防卫丢弃与异地本地缓存精准失效 | `SaTokenClusterSyncTest` / `SampleSaTokenIntegrationTest` |
 | **防暴力破解** | 双轨防暴力破解与 IP 嗅探 | `LoginFailureLockService` | `ateng.boot.satoken.login-defense.*` | `recordFailure(account, clientIp)` / `recordIpFailure(clientIp)` / `sniffClientIp()` / `resolveClientIp(clientIp)` / `isIpLocked(clientIp)` / `checkIpLocked(clientIp)` / `isIpWhiteListed(clientIp)` / `clearAllFailure(account, clientIp)`，支持 IPv4/IPv6/CIDR 白名单与账号+IP 双轨熔断 | `LoginFailureLockServiceTest` / `SampleSaTokenIntegrationTest` |
-| **在线会话** | 在线会话监控与增量游标治理 | `LoginHelper`<br>`OnlineUser` | - | `getOnlineUsers(page, size, keyword, loginType)` / `getOnlineUserCount(loginType)`，采用增量游标 SCAN 检索与分页切片，防内存 OOM | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
+| **在线会话** | 在线会话监控与增量游标治理 | `LoginHelper`<br>`OnlineUser` | - | `searchOnlineUserPage(keyword, page, size)` / `searchOnlineUsers(keyword, page, size)` / `getOnlineUsers(page, size, keyword)` / `getOnlineUserCount(loginType)`，采用增量游标 SCAN 检索与分页切片，防内存 OOM | `LoginHelperTest` / `SampleSaTokenIntegrationTest` |
 | **动态权限** | 动态 URL 路径权限匹配 SPI | `DynamicPathPermissionProvider`<br>`PathPermissionRule` | `ateng.boot.satoken.interceptor.enabled` | `DynamicPathPermissionProvider.getPathPermissionRules()`，`AtengSaTokenInterceptor` 自动挂载管道，按 AntPath + HTTP Method 动态执行权限鉴权 | `AtengSaTokenInterceptorTest` / `SampleSaTokenIntegrationTest` |
 | **异常转译** | 统一显式 Result 响应 | `SaTokenExceptionHandler` | - | 将未登录 (401)、权限不足 (403)、服务封禁 (403)、Same-Token 无效 (403) 等转译为 HTTP 200 + `Result<Void>` 显式契约 | `SampleSaTokenIntegrationTest` |
 
@@ -323,7 +323,7 @@ public class RolePermissionManageService {
 
 ```java
 @RestController
-@RequestMapping("/api/multi")
+@RequestMapping("/api/multi-account")
 public class SampleMultiAccountController {
 
     /**
@@ -331,7 +331,7 @@ public class SampleMultiAccountController {
      */
     @PostMapping("/admin/login")
     public Result<String> adminLogin(@RequestBody LoginUser loginUser) {
-        LoginHelper.login(loginUser, "admin");
+        LoginHelper.login("admin", loginUser);
         return Result.success(LoginHelper.getTokenValue("admin"));
     }
 
@@ -340,15 +340,15 @@ public class SampleMultiAccountController {
      */
     @PostMapping("/member/login")
     public Result<String> memberLogin(@RequestBody LoginUser loginUser) {
-        LoginHelper.login(loginUser, "member");
+        LoginHelper.login("member", loginUser);
         return Result.success(LoginHelper.getTokenValue("member"));
     }
 
     /**
      * 获取管理员端信息（仅校验 admin 账号体系登录态）
      */
-    @GetMapping("/admin/info")
-    public Result<LoginUser> getAdminInfo() {
+    @GetMapping("/admin/me")
+    public Result<LoginUser> getAdminUser() {
         LoginHelper.checkLogin("admin");
         return Result.success(LoginHelper.getLoginUser("admin"));
     }
@@ -356,8 +356,8 @@ public class SampleMultiAccountController {
     /**
      * 获取会员端信息（仅校验 member 账号体系登录态）
      */
-    @GetMapping("/member/info")
-    public Result<LoginUser> getMemberInfo() {
+    @GetMapping("/member/me")
+    public Result<LoginUser> getMemberUser() {
         LoginHelper.checkLogin("member");
         return Result.success(LoginHelper.getLoginUser("member"));
     }
@@ -482,15 +482,14 @@ public class SampleOnlineUserController {
     }
 
     /**
-     * 分页查询在线用户列表（支持账号/姓名/凭据模糊搜索）
+     * 分页查询在线用户 PageResult
      */
     @GetMapping("/page")
-    public Result<PageResult<OnlineUser>> getOnlinePage(
+    public Result<PageResult<OnlineUser>> searchOnlineUserPage(
             @RequestParam(value = "keyword", required = false) String keyword,
-            @RequestParam(value = "page", defaultValue = "1") long page,
-            @RequestParam(value = "size", defaultValue = "10") long size) {
-        PageResult<OnlineUser> result = LoginHelper.getOnlineUsers(page, size, keyword);
-        return Result.success(result);
+            @RequestParam(value = "page", defaultValue = "1") int page,
+            @RequestParam(value = "size", defaultValue = "10") int size) {
+        return Result.success(LoginHelper.searchOnlineUserPage(keyword, page, size));
     }
 
     /**
@@ -506,9 +505,9 @@ public class SampleOnlineUserController {
      * 根据设备类型精准强退用户指定端会话（例如仅强退 APP 端，保留 PC 端活跃）
      */
     @PostMapping("/kickout-device")
-    public Result<Void> kickoutByDevice(@RequestParam("userId") String userId,
-                                        @RequestParam("device") String device) {
-        LoginHelper.kickoutByDevice(userId, device);
+    public Result<Void> kickoutDevice(@RequestParam("userId") String userId,
+                                      @RequestParam("device") String device) {
+        LoginHelper.kickoutDevice(userId, device);
         return Result.success();
     }
 }

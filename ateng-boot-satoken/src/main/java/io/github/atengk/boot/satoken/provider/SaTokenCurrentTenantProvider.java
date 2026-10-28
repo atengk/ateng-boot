@@ -31,6 +31,10 @@ public class SaTokenCurrentTenantProvider implements CurrentTenantProvider {
         if (activeType != null) {
             return LoginHelper.getTenantId(activeType);
         }
+        String fallbackType = preferredType != null ? preferredType : LoginHelper.getPrimaryLoginType();
+        if (fallbackType != null && LoginHelper.isLogin(fallbackType)) {
+            return LoginHelper.getTenantId(fallbackType);
+        }
         if (LoginHelper.isLogin()) {
             return LoginHelper.getTenantId();
         }

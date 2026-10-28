@@ -35,6 +35,8 @@ import io.github.atengk.boot.satoken.spi.DynamicPathPermissionProvider;
 import io.github.atengk.boot.satoken.spi.SaTokenWhitelistProvider;
 import io.github.atengk.boot.satoken.stp.DefaultStpInterface;
 import io.github.atengk.boot.satoken.util.LoginHelper;
+import java.time.Duration;
+import java.util.List;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -137,17 +139,23 @@ public class AtengSaTokenAutoConfiguration {
         }
         if (tokenProps.getTimeout() != null) {
             config.setTimeout(tokenProps.getTimeout().toSeconds());
+        } else if (config.getTimeout() > 0) {
+            tokenProps.setTimeout(Duration.ofSeconds(config.getTimeout()));
         }
         if (tokenProps.getActiveTimeout() != null) {
             config.setActiveTimeout(tokenProps.getActiveTimeout().toSeconds());
+        } else if (config.getActiveTimeout() > 0) {
+            tokenProps.setActiveTimeout(Duration.ofSeconds(config.getActiveTimeout()));
         }
         config.setIsConcurrent(tokenProps.isConcurrent());
         config.setIsShare(tokenProps.isShare());
         config.setMaxLoginCount(tokenProps.getMaxLoginCount());
         if (tokenProps.getTokenStyle() != null && !tokenProps.getTokenStyle().isBlank()) {
             config.setTokenStyle(tokenProps.getTokenStyle());
+        } else if (config.getTokenStyle() != null && !config.getTokenStyle().isBlank()) {
+            tokenProps.setTokenStyle(config.getTokenStyle());
         }
-        log.debug("Sa-Token 强类型配置已成功桥接至 SaManager.getConfig(): timeout={}s, activeTimeout={}s, maxLoginCount={}",
+        log.debug("Sa-Token 强类型配置已成功双向桥接至 SaManager.getConfig(): timeout={}s, activeTimeout={}s, maxLoginCount={}",
                 config.getTimeout(), config.getActiveTimeout(), config.getMaxLoginCount());
     }
 
@@ -181,7 +189,7 @@ public class AtengSaTokenAutoConfiguration {
      * 具备 ateng-boot-redis 类路径时的自适应两级权限缓存自动装配
      */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(TwoLevelCacheManager.class)
+    @ConditionalOnClass(name = "io.github.atengk.boot.redis.cache.twolevel.TwoLevelCacheManager")
     static class TwoLevelCachePermissionConfiguration {
 
         @Bean
@@ -458,8 +466,11 @@ public class AtengSaTokenAutoConfiguration {
         @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "auto-inject-client", havingValue = "true", matchIfMissing = true)
         public RestTemplateCustomizer sameTokenRestTemplateCustomizer(SameTokenClientHttpRequestInterceptor interceptor) {
             return restTemplate -> {
-                if (!restTemplate.getInterceptors().contains(interceptor)) {
-                    restTemplate.getInterceptors().add(interceptor);
+                List<ClientHttpRequestInterceptor> interceptors = restTemplate.getInterceptors();
+                if (!interceptors.contains(interceptor)) {
+                    List<ClientHttpRequestInterceptor> copy = new java.util.ArrayList<>(interceptors);
+                    copy.add(interceptor);
+                    restTemplate.setInterceptors(copy);
                 }
             };
         }

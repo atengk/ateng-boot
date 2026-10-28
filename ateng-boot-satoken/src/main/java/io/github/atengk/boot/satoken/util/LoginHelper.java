@@ -113,8 +113,9 @@ public final class LoginHelper {
      * 获取指定账号体系对应的 StpLogic 实例（动态路由核心机制）
      * 采用“预注册优先 + 动态懒加载保底”机制：
      * 1. 若为 null、空白或默认类型 "login"，直接返回 StpUtil.stpLogic；
-     * 2. 优先通过 SaManager.stpLogicMap 探测是否已有预注册实例；
-     * 3. 若未注册，通过线程安全双重检查锁定 (DCL) 动态实例化 new StpLogic(loginType) 并注册至 SaManager
+     * 2. 优先通过 SaManager.getStpLogic(loginType, false) 官方 API 静默探测是否已有预注册实例；
+     * 3. 若未注册，通过线程安全双重检查锁定 (DCL) 动态实例化 new StpLogic(loginType) 并注册至 SaManager；
+     *    动态懒加载默认拼接独立 TokenName 键前缀防不同账号体系 Cookie/存储踩踏
      *
      * @param loginType 账号体系类型标识（如 "admin", "member", "app"）
      * @return 对应的 StpLogic 门面实例
@@ -123,10 +124,10 @@ public final class LoginHelper {
         if (loginType == null || loginType.isBlank() || StpUtil.TYPE.equals(loginType)) {
             return StpUtil.stpLogic;
         }
-        StpLogic logic = SaManager.stpLogicMap != null ? SaManager.stpLogicMap.get(loginType) : null;
+        StpLogic logic = findStpLogicSafely(loginType);
         if (logic == null) {
             synchronized (LoginHelper.class) {
-                logic = SaManager.stpLogicMap != null ? SaManager.stpLogicMap.get(loginType) : null;
+                logic = findStpLogicSafely(loginType);
                 if (logic == null) {
                     logic = new StpLogic(loginType) {
                         @Override
@@ -145,6 +146,14 @@ public final class LoginHelper {
             }
         }
         return logic;
+    }
+
+    private static StpLogic findStpLogicSafely(String loginType) {
+        try {
+            return SaManager.getStpLogic(loginType, false);
+        } catch (Throwable ignored) {
+            return SaManager.stpLogicMap != null ? SaManager.stpLogicMap.get(loginType) : null;
+        }
     }
 
     // ==================== 登录操作 (Login) ====================
@@ -443,6 +452,29 @@ public final class LoginHelper {
             return;
         }
         getStpLogic(loginType).kickout(loginId, deviceType);
+    }
+
+    /**
+     * 将指定登录账号在指定设备端上的会话踢下线（语义对齐 kickoutByToken）
+     *
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     * @see #kickoutDevice(Object, String)
+     */
+    public static void kickoutByDevice(Object loginId, String deviceType) {
+        kickoutDevice(loginId, deviceType);
+    }
+
+    /**
+     * 将指定账号体系下的登录账号在指定设备端上的会话踢下线
+     *
+     * @param loginType  账号体系标识
+     * @param loginId    登录账号唯一标识
+     * @param deviceType 终端设备类型（如 PC, APP）
+     * @see #kickoutDevice(String, Object, String)
+     */
+    public static void kickoutByDevice(String loginType, Object loginId, String deviceType) {
+        kickoutDevice(loginType, loginId, deviceType);
     }
 
     /**
@@ -2435,20 +2467,11 @@ public final class LoginHelper {
      */
     public static long getOnlineUserCount(String loginType) {
         StpLogic logic = getStpLogic(loginType);
-        List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
+        List<String> rawTokens = logic.searchTokenValue("", 0, -1, false);
         if (rawTokens == null || rawTokens.isEmpty()) {
             return 0L;
         }
-        String tokenPrefix = logic.splicingKeyTokenValue("");
-        long count = 0;
-        for (String rawKey : rawTokens) {
-            String tokenValue = extractPureTokenValue(rawKey, tokenPrefix);
-            Object loginId = logic.getLoginIdByToken(tokenValue);
-            if (isValidOnlineLoginId(loginId)) {
-                count++;
-            }
-        }
-        return count;
+        return filterValidTokens(logic, rawTokens).size();
     }
 
     /**
@@ -2487,6 +2510,11 @@ public final class LoginHelper {
     }
 
     /**
+     * 关键字检索在线会话最大安全扫描上限（防御海量 Token 场景下的慢查询与拒绝服务风险）
+     */
+    private static final int MAX_KEYWORD_SCAN_LIMIT = 500;
+
+    /**
      * 分页查询指定账号体系的在线用户列表（支持按账号/用户名/用户标识/Token 关键字过滤）
      *
      * @param loginType 账号体系标识
@@ -2499,18 +2527,39 @@ public final class LoginHelper {
         if (page <= 0 || size <= 0) {
             return Collections.emptyList();
         }
-        List<OnlineUser> allMatched = collectOnlineUsers(loginType, keyword);
-        if (allMatched.isEmpty()) {
-            return Collections.emptyList();
-        }
-
         int actualSize = Math.min(size, 100);
         int start = (page - 1) * actualSize;
-        if (start >= allMatched.size()) {
+
+        StpLogic logic = getStpLogic(loginType);
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+
+        if (!hasKeyword) {
+            // 常规分页无关键字场景：按需延迟组装当前页，彻底杜绝 N+1 重型 Session 查询风暴
+            List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
+            List<String> validTokens = filterValidTokens(logic, rawTokens);
+            if (start >= validTokens.size()) {
+                return Collections.emptyList();
+            }
+            int end = Math.min(start + actualSize, validTokens.size());
+            List<OnlineUser> records = new ArrayList<>(end - start);
+            for (int i = start; i < end; i++) {
+                String tokenValue = validTokens.get(i);
+                Object loginId = logic.getLoginIdByToken(tokenValue);
+                OnlineUser user = buildOnlineUser(logic, loginId, tokenValue);
+                if (user != null) {
+                    records.add(user);
+                }
+            }
+            return records;
+        }
+
+        // 带关键字检索场景：带采样上限安全扫描与全真匹配
+        List<OnlineUser> matchedList = collectOnlineUsersWithKeyword(logic, keyword.trim().toLowerCase());
+        if (start >= matchedList.size()) {
             return Collections.emptyList();
         }
-        int end = Math.min(start + actualSize, allMatched.size());
-        return allMatched.subList(start, end);
+        int end = Math.min(start + actualSize, matchedList.size());
+        return matchedList.subList(start, end);
     }
 
     /**
@@ -2561,33 +2610,108 @@ public final class LoginHelper {
         if (page <= 0 || size <= 0) {
             return PageResult.empty(Math.max(page, 1), Math.max(size, 10));
         }
-        List<OnlineUser> allMatched = collectOnlineUsers(loginType, keyword);
-        int total = allMatched.size();
         int actualSize = Math.min(size, 100);
         int start = (page - 1) * actualSize;
 
+        StpLogic logic = getStpLogic(loginType);
+        boolean hasKeyword = keyword != null && !keyword.isBlank();
+
+        if (!hasKeyword) {
+            // 常规分页无关键字场景：先获取有效总数，仅对当前页做重型 Session 组装
+            List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
+            List<String> validTokens = filterValidTokens(logic, rawTokens);
+            int total = validTokens.size();
+            List<OnlineUser> records;
+            if (start >= total) {
+                records = Collections.emptyList();
+            } else {
+                int end = Math.min(start + actualSize, total);
+                records = new ArrayList<>(end - start);
+                for (int i = start; i < end; i++) {
+                    String tokenValue = validTokens.get(i);
+                    Object loginId = logic.getLoginIdByToken(tokenValue);
+                    OnlineUser user = buildOnlineUser(logic, loginId, tokenValue);
+                    if (user != null) {
+                        records.add(user);
+                    }
+                }
+            }
+            return PageResult.of(records, total, page, actualSize);
+        }
+
+        // 带关键字过滤检索
+        List<OnlineUser> matchedList = collectOnlineUsersWithKeyword(logic, keyword.trim().toLowerCase());
+        int total = matchedList.size();
         List<OnlineUser> records;
         if (start >= total) {
             records = Collections.emptyList();
         } else {
             int end = Math.min(start + actualSize, total);
-            records = allMatched.subList(start, end);
+            records = matchedList.subList(start, end);
         }
         return PageResult.of(records, total, page, actualSize);
     }
 
-    private static List<OnlineUser> collectOnlineUsers(String loginType, String keyword) {
-        StpLogic logic = getStpLogic(loginType);
+    /**
+     * 分页查询当前主账号体系的在线用户 PageResult（语义对齐 searchOnlineUserPage）
+     *
+     * @param page    当前页码
+     * @param size    每页显示条数
+     * @param keyword 检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(long page, long size, String keyword) {
+        return searchOnlineUserPage(keyword, (int) page, (int) size);
+    }
+
+    /**
+     * 分页查询指定账号体系的在线用户 PageResult
+     *
+     * @param loginType 账号体系标识
+     * @param page      当前页码
+     * @param size      每页显示条数
+     * @param keyword   检索关键字
+     * @return 强类型 PageResult 对象
+     * @see #searchOnlineUserPage(String, String, int, int)
+     */
+    public static PageResult<OnlineUser> getOnlineUsers(String loginType, long page, long size, String keyword) {
+        return searchOnlineUserPage(loginType, keyword, (int) page, (int) size);
+    }
+
+    private static List<String> filterValidTokens(StpLogic logic, List<String> rawTokens) {
+        if (rawTokens == null || rawTokens.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String tokenPrefix = logic.splicingKeyTokenValue("");
+        List<String> validTokens = new ArrayList<>(rawTokens.size());
+        for (String rawKey : rawTokens) {
+            String tokenValue = extractPureTokenValue(rawKey, tokenPrefix);
+            Object loginId = logic.getLoginIdByToken(tokenValue);
+            if (isValidOnlineLoginId(loginId)) {
+                validTokens.add(tokenValue);
+            }
+        }
+        return validTokens;
+    }
+
+    private static List<OnlineUser> collectOnlineUsersWithKeyword(StpLogic logic, String kw) {
         List<String> rawTokens = logic.searchTokenValue("", 0, -1, true);
         if (rawTokens == null || rawTokens.isEmpty()) {
             return Collections.emptyList();
         }
 
         String tokenPrefix = logic.splicingKeyTokenValue("");
-        String kw = (keyword != null && !keyword.isBlank()) ? keyword.trim().toLowerCase() : null;
         List<OnlineUser> matchedList = new ArrayList<>();
+        int scannedCount = 0;
 
         for (String rawKey : rawTokens) {
+            if (++scannedCount > MAX_KEYWORD_SCAN_LIMIT) {
+                log.warn("【在线用户监控】关键字检索已达到最大安全扫描采样上限 {}，终止后续扫描: keyword={}",
+                        MAX_KEYWORD_SCAN_LIMIT, kw);
+                break;
+            }
+
             String tokenValue = extractPureTokenValue(rawKey, tokenPrefix);
             Object loginId = logic.getLoginIdByToken(tokenValue);
             if (!isValidOnlineLoginId(loginId)) {
@@ -2599,17 +2723,13 @@ public final class LoginHelper {
                 continue;
             }
 
-            if (kw != null) {
-                boolean match = (onlineUser.getUserId() != null && onlineUser.getUserId().toLowerCase().contains(kw))
-                        || (onlineUser.getUserAccount() != null && onlineUser.getUserAccount().toLowerCase().contains(kw))
-                        || (onlineUser.getUserName() != null && onlineUser.getUserName().toLowerCase().contains(kw))
-                        || (onlineUser.getTokenValue() != null && onlineUser.getTokenValue().toLowerCase().contains(kw));
-                if (!match) {
-                    continue;
-                }
+            boolean match = (onlineUser.getUserId() != null && onlineUser.getUserId().toLowerCase().contains(kw))
+                    || (onlineUser.getUserAccount() != null && onlineUser.getUserAccount().toLowerCase().contains(kw))
+                    || (onlineUser.getUserName() != null && onlineUser.getUserName().toLowerCase().contains(kw))
+                    || (onlineUser.getTokenValue() != null && onlineUser.getTokenValue().toLowerCase().contains(kw));
+            if (match) {
+                matchedList.add(onlineUser);
             }
-
-            matchedList.add(onlineUser);
         }
         return matchedList;
     }

@@ -349,12 +349,20 @@ class LoginHelperOnlineUserTest {
     @Test
     @DisplayName("5. 防御性边界测试：null 与非法分页参数安全防卫")
     void testDefensiveArguments() {
-        // kickoutByToken 与 kickoutDevice 空参数不抛异常
+        // kickoutByToken 与 kickoutDevice/kickoutByDevice 空参数不抛异常
         LoginHelper.kickoutByToken(null);
         LoginHelper.kickoutByToken("   ");
         LoginHelper.kickoutByToken("admin", null);
         LoginHelper.kickoutDevice(null, "PC");
         LoginHelper.kickoutDevice("admin", null, "APP");
+        LoginHelper.kickoutByDevice(null, "PC");
+        LoginHelper.kickoutByDevice("admin", null, "APP");
+
+        // getOnlineUsers 别名方法自适应规整
+        PageResult<OnlineUser> aliasResult = LoginHelper.getOnlineUsers(1, 10, null);
+        assertThat(aliasResult).isNotNull();
+        PageResult<OnlineUser> aliasAdminResult = LoginHelper.getOnlineUsers("admin", 1, 10, null);
+        assertThat(aliasAdminResult).isNotNull();
 
         // 非法分页页码与容量自适应规整
         List<OnlineUser> list = LoginHelper.searchOnlineUsers(-1, -5);
@@ -364,5 +372,9 @@ class LoginHelperOnlineUserTest {
         assertThat(pageResult).isNotNull();
         assertThat(pageResult.getRecords()).isEmpty();
         assertThat(pageResult.getTotal()).isEqualTo(0);
+
+        // 超大 size 自适应截断至 100 边界防卫
+        List<OnlineUser> hugeList = LoginHelper.searchOnlineUsers("unknown_keyword_xxx", 1, 9999);
+        assertThat(hugeList).isNotNull().isEmpty();
     }
 }
