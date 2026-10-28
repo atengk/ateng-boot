@@ -638,4 +638,18 @@ public interface StorageOperations {
     default String calculateHash(String path) {
         return calculateHash(path, HashAlgorithm.SHA256);
     }
+
+    /**
+     * 探查当前活动存储源的健康状态与物理连通性
+     *
+     * @return true 连通且正常；false 异常或不可达
+     */
+    boolean ping();
+
+    /**
+     * 获取当前活动存储源的健康探测与诊断上下文参数字典
+     *
+     * @return 包含驱动类型与核心状态信息的只读字典
+     */
+    Map<String, Object> getDiagnostics();
 }

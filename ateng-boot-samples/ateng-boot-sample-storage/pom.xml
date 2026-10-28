@@ -29,6 +29,18 @@
             <artifactId>ateng-boot-storage</artifactId>
         </dependency>
 
+        <!-- AWS SDK S3 客户端（开启云原生 S3 驱动与企业级治理能力） -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
+        <!-- AWS SDK Apache HTTP Client 连接池传输实现 -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
+        </dependency>
+
         <!-- Spring Boot Actuator 健康检查与监控 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

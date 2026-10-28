@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-storage
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
@@ -33,6 +35,20 @@ ateng:
             secret-key: sample-test-secret-key-32-bytes-minimum!
             download-endpoint: /storage/local/download
             upload-endpoint: /storage/local/upload
+        s3:
+          type: s3
+          s3:
+            endpoint: ${S3_ENDPOINT:http://localhost:9000}
+            bucket: ${S3_BUCKET:ateng-test}
+            access-key: ${S3_ACCESS_KEY:mock-access-key}
+            secret-key: ${S3_SECRET_KEY:mock-secret-key}
+            region: ${S3_REGION:us-east-1}
+            path-style: true
+            connect-timeout: 10s
+            socket-timeout: 30s
+            api-call-timeout: 60s
+            max-connections: 50
+            auto-create-bucket: false
 
 management:
   endpoints:

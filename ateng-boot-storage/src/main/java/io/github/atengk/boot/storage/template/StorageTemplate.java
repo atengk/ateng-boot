@@ -746,4 +746,20 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     public int cleanExpiredChunkSessions(Duration maxAge) {
         return getDriver().cleanExpiredChunkSessions(maxAge);
     }
+
+    @Override
+    public boolean ping() {
+        try {
+            getDriver().ping();
+            return true;
+        } catch (Exception e) {
+            log.warn("存储驱动连通性探测失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
+    public Map<String, Object> getDiagnostics() {
+        return getDriver().getDiagnostics();
+    }
 }
