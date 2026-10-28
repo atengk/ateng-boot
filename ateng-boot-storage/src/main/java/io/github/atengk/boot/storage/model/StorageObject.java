@@ -61,6 +61,16 @@ public class StorageObject implements Serializable {
     private Map<String, String> userMetadata = Collections.emptyMap();
 
     /**
+     * S3 存储类别 / 存储分层（如 STANDARD, STANDARD_IA, GLACIER 等）
+     */
+    private String storageClass;
+
+    /**
+     * 服务端加密算法标识（如 AES256, aws:kms 等）
+     */
+    private String serverSideEncryption;
+
+    /**
      * 是否为目录 / 虚拟前缀
      */
     @Builder.Default

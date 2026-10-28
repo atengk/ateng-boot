@@ -151,6 +151,35 @@ public interface StorageDriver extends AutoCloseable {
     StorageObject getMetadata(String path);
 
     /**
+     * 获取指定存储对象的标签键值对映射 (Object Tagging)
+     *
+     * @param path 存储对象相对路径
+     * @return 标签只读映射字典（无标签时返回空 Map，不返回 null）
+     */
+    default Map<String, String> getObjectTags(String path) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
+
+    /**
+     * 设置指定存储对象的标签集合（覆盖式全量设置）
+     *
+     * @param path 存储对象相对路径
+     * @param tags 标签键值对映射
+     */
+    default void setObjectTags(String path, Map<String, String> tags) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
+
+    /**
+     * 删除指定存储对象的所有标签（天然幂等）
+     *
+     * @param path 存储对象相对路径
+     */
+    default void deleteObjectTags(String path) {
+        throw new UnsupportedOperationException("Current storage driver does not support object tagging");
+    }
+
+    /**
      * 判断存储对象是否存在
      *
      * @param path 存储对象相对路径

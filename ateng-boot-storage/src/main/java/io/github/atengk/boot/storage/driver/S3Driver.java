@@ -27,12 +27,16 @@ import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectTaggingRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectTaggingRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectTaggingResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
@@ -43,14 +47,18 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.ListPartsRequest;
 import software.amazon.awssdk.services.s3.model.ListPartsResponse;
 import software.amazon.awssdk.services.s3.model.MultipartUpload;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectTaggingRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
+import software.amazon.awssdk.services.s3.model.Tag;
+import software.amazon.awssdk.services.s3.model.Tagging;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -131,6 +139,21 @@ public class S3Driver implements StorageDriver {
     private final boolean pathStyle;
 
     /**
+     * 是否在存储桶不存在时自愈自动建桶
+     */
+    private final boolean autoCreateBucket;
+
+    /**
+     * 默认对象存储类别（如 STANDARD, STANDARD_IA, GLACIER）
+     */
+    private final String defaultStorageClass;
+
+    /**
+     * 默认服务端加密算法（如 AES256, aws:kms）
+     */
+    private final String defaultServerSideEncryption;
+
+    /**
      * 基础构造函数（仅 S3Client）
      *
      * @param s3Client S3 客户端
@@ -188,6 +211,26 @@ public class S3Driver implements StorageDriver {
      * @param pathStyle   是否启用 Path-Style 寻址
      */
     public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey, String endpoint, boolean pathStyle) {
+        this(s3Client, s3Presigner, bucket, domain, secretKey, endpoint, pathStyle, false, null, null);
+    }
+
+    /**
+     * 高级企业级全参构造函数（包含自愈建桶、默认存储分层与加密策略）
+     *
+     * @param s3Client                   S3 客户端
+     * @param s3Presigner                S3 预签名器
+     * @param bucket                     存储桶名称
+     * @param domain                     自定义访问域名或 CDN 加速域名
+     * @param secretKey                  HMAC 签名密钥（为空时自动生成安全随机密钥保底）
+     * @param endpoint                   S3 物理服务端点
+     * @param pathStyle                  是否启用 Path-Style 寻址
+     * @param autoCreateBucket           存储桶不存在时是否自愈建桶
+     * @param defaultStorageClass        默认存储类别
+     * @param defaultServerSideEncryption 默认服务端加密算法
+     */
+    public S3Driver(S3Client s3Client, S3Presigner s3Presigner, String bucket, String domain, String secretKey,
+                    String endpoint, boolean pathStyle, boolean autoCreateBucket,
+                    String defaultStorageClass, String defaultServerSideEncryption) {
         if (s3Client == null) {
             throw new StorageException(StorageResultCode.OPERATION_FAILED, "S3Client 不能为空");
         }
@@ -203,6 +246,9 @@ public class S3Driver implements StorageDriver {
                 : StorageSecurityUtil.generateRandomSecretKey();
         this.endpoint = endpoint;
         this.pathStyle = pathStyle;
+        this.autoCreateBucket = autoCreateBucket;
+        this.defaultStorageClass = defaultStorageClass;
+        this.defaultServerSideEncryption = defaultServerSideEncryption;
     }
 
     /**
@@ -321,6 +367,12 @@ public class S3Driver implements StorageDriver {
                 if (userMetadata != null && !userMetadata.isEmpty()) {
                     putRequestBuilder.metadata(userMetadata);
                 }
+                if (this.defaultStorageClass != null && !this.defaultStorageClass.isBlank()) {
+                    putRequestBuilder.storageClass(this.defaultStorageClass);
+                }
+                if (this.defaultServerSideEncryption != null && !this.defaultServerSideEncryption.isBlank()) {
+                    putRequestBuilder.serverSideEncryption(this.defaultServerSideEncryption);
+                }
 
                 PutObjectResponse response = this.s3Client.putObject(putRequestBuilder.build(), requestBody);
                 String etag = stripQuotes(response.eTag());
@@ -332,6 +384,8 @@ public class S3Driver implements StorageDriver {
                         .contentType(finalContentType)
                         .etag(etag)
                         .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
+                        .storageClass(this.defaultStorageClass)
+                        .serverSideEncryption(this.defaultServerSideEncryption)
                         .lastModified(Instant.now())
                         .build();
             } catch (Exception e) {
@@ -387,6 +441,12 @@ public class S3Driver implements StorageDriver {
             }
             if (userMetadata != null && !userMetadata.isEmpty()) {
                 createBuilder.metadata(userMetadata);
+            }
+            if (this.defaultStorageClass != null && !this.defaultStorageClass.isBlank()) {
+                createBuilder.storageClass(this.defaultStorageClass);
+            }
+            if (this.defaultServerSideEncryption != null && !this.defaultServerSideEncryption.isBlank()) {
+                createBuilder.serverSideEncryption(this.defaultServerSideEncryption);
             }
             CreateMultipartUploadResponse createResponse = this.s3Client.createMultipartUpload(createBuilder.build());
             uploadId = createResponse.uploadId();
@@ -489,6 +549,8 @@ public class S3Driver implements StorageDriver {
                     .contentType(finalContentType)
                     .etag(etag)
                     .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
+                    .storageClass(this.defaultStorageClass)
+                    .serverSideEncryption(this.defaultServerSideEncryption)
                     .lastModified(Instant.now())
                     .build();
         } catch (Exception e) {
@@ -524,6 +586,12 @@ public class S3Driver implements StorageDriver {
             if (userMetadata != null && !userMetadata.isEmpty()) {
                 putRequestBuilder.metadata(userMetadata);
             }
+            if (this.defaultStorageClass != null && !this.defaultStorageClass.isBlank()) {
+                putRequestBuilder.storageClass(this.defaultStorageClass);
+            }
+            if (this.defaultServerSideEncryption != null && !this.defaultServerSideEncryption.isBlank()) {
+                putRequestBuilder.serverSideEncryption(this.defaultServerSideEncryption);
+            }
 
             RequestBody requestBody = RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(buffer, 0, length));
             PutObjectResponse response = this.s3Client.putObject(putRequestBuilder.build(), requestBody);
@@ -536,6 +604,8 @@ public class S3Driver implements StorageDriver {
                     .contentType(finalContentType)
                     .etag(etag)
                     .userMetadata(userMetadata != null && !userMetadata.isEmpty() ? Map.copyOf(userMetadata) : Collections.emptyMap())
+                    .storageClass(this.defaultStorageClass)
+                    .serverSideEncryption(this.defaultServerSideEncryption)
                     .lastModified(Instant.now())
                     .build();
         } catch (Exception e) {
@@ -626,6 +696,8 @@ public class S3Driver implements StorageDriver {
             Map<String, String> userMeta = (response.metadata() != null && !response.metadata().isEmpty())
                     ? Map.copyOf(response.metadata())
                     : Collections.emptyMap();
+            String storageClass = response.storageClassAsString();
+            String serverSideEncryption = response.serverSideEncryptionAsString();
 
             return StorageObject.builder()
                     .path(cleanPath)
@@ -634,6 +706,8 @@ public class S3Driver implements StorageDriver {
                     .contentType(contentType)
                     .etag(etag)
                     .userMetadata(userMeta)
+                    .storageClass(storageClass)
+                    .serverSideEncryption(serverSideEncryption)
                     .lastModified(response.lastModified())
                     .build();
         } catch (Exception e) {
@@ -642,11 +716,130 @@ public class S3Driver implements StorageDriver {
     }
 
     @Override
+    public Map<String, String> getObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        try {
+            GetObjectTaggingRequest request = GetObjectTaggingRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .build();
+            GetObjectTaggingResponse response = this.s3Client.getObjectTagging(request);
+            if (response.hasTagSet() && response.tagSet() != null && !response.tagSet().isEmpty()) {
+                Map<String, String> map = new LinkedHashMap<>();
+                for (Tag tag : response.tagSet()) {
+                    map.put(tag.key(), tag.value());
+                }
+                return Collections.unmodifiableMap(map);
+            }
+            return Collections.emptyMap();
+        } catch (NoSuchKeyException e) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath, e);
+        } catch (Exception e) {
+            throw translateException(e, cleanPath, "获取 S3 对象标签失败");
+        }
+    }
+
+    @Override
+    public void setObjectTags(String path, Map<String, String> tags) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        if (tags == null || tags.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "设置对象标签不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        try {
+            List<Tag> tagList = tags.entrySet().stream()
+                    .map(entry -> Tag.builder().key(entry.getKey()).value(entry.getValue() != null ? entry.getValue() : "").build())
+                    .toList();
+            PutObjectTaggingRequest request = PutObjectTaggingRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .tagging(Tagging.builder().tagSet(tagList).build())
+                    .build();
+            this.s3Client.putObjectTagging(request);
+        } catch (NoSuchKeyException e) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath, e);
+        } catch (Exception e) {
+            throw translateException(e, cleanPath, "设置 S3 对象标签失败");
+        }
+    }
+
+    @Override
+    public void deleteObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        try {
+            DeleteObjectTaggingRequest request = DeleteObjectTaggingRequest.builder()
+                    .bucket(this.bucket)
+                    .key(cleanPath)
+                    .build();
+            this.s3Client.deleteObjectTagging(request);
+        } catch (NoSuchKeyException e) {
+            // 天然幂等：对象原本无标签或不存在静默通过
+        } catch (Exception e) {
+            throw translateException(e, cleanPath, "删除 S3 对象标签失败");
+        }
+    }
+
+    @Override
     public void ping() throws Exception {
-        HeadBucketRequest headRequest = HeadBucketRequest.builder()
-                .bucket(this.bucket)
-                .build();
-        this.s3Client.headBucket(headRequest);
+        try {
+            HeadBucketRequest headRequest = HeadBucketRequest.builder()
+                    .bucket(this.bucket)
+                    .build();
+            this.s3Client.headBucket(headRequest);
+        } catch (NoSuchBucketException e) {
+            if (this.autoCreateBucket) {
+                log.info("S3 存储桶不存在，触发自愈自动创建 Bucket: bucket={}", this.bucket);
+                createBucketSilently();
+                return;
+            }
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED,
+                    "S3 存储桶不存在: bucket=" + this.bucket + " (可通过 ateng.boot.storage.s3.auto-create-bucket=true 开启自动建桶)", e);
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404 && this.autoCreateBucket) {
+                log.info("S3 存储桶返回 404 不存在，触发自愈自动创建 Bucket: bucket={}", this.bucket);
+                createBucketSilently();
+                return;
+            }
+            String diag = buildS3ExceptionDiagnostics(e);
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED, diag, e);
+        } catch (Exception e) {
+            throw new StorageException(StorageResultCode.STORAGE_HEALTH_CHECK_FAILED,
+                    "S3 存储服务连通性探测失败: bucket=" + this.bucket + ", cause=" + e.getMessage(), e);
+        }
+    }
+
+    private void createBucketSilently() {
+        try {
+            CreateBucketRequest createRequest = CreateBucketRequest.builder()
+                    .bucket(this.bucket)
+                    .build();
+            this.s3Client.createBucket(createRequest);
+            log.info("S3 存储桶自愈创建成功: bucket={}", this.bucket);
+        } catch (Exception e) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED,
+                    "S3 存储桶自愈创建失败: bucket=" + this.bucket + ", cause=" + e.getMessage(), e);
+        }
+    }
+
+    private String buildS3ExceptionDiagnostics(S3Exception e) {
+        int statusCode = e.statusCode();
+        String awsMsg = e.awsErrorDetails() != null ? e.awsErrorDetails().errorMessage() : e.getMessage();
+        String errorCode = e.awsErrorDetails() != null ? e.awsErrorDetails().errorCode() : "UNKNOWN";
+        if (statusCode == 403 || "AccessDenied".equalsIgnoreCase(errorCode)) {
+            return "S3 访问被拒绝 (403 AccessDenied): 凭据可能无效或对 Bucket [" + this.bucket + "] 缺乏访问权限";
+        }
+        if (statusCode == 404 || "NoSuchBucket".equalsIgnoreCase(errorCode)) {
+            return "S3 存储桶不存在 (404 NoSuchBucket): bucket=" + this.bucket + " (可开启 auto-create-bucket=true 自愈建桶)";
+        }
+        return "S3 服务端返回异常 [HTTP " + statusCode + ", " + errorCode + "]: " + awsMsg;
     }
 
     @Override
@@ -654,6 +847,20 @@ public class S3Driver implements StorageDriver {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("type", "s3");
         map.put("bucket", this.bucket);
+        map.put("pathStyle", this.pathStyle);
+        map.put("autoCreateBucket", this.autoCreateBucket);
+        if (this.endpoint != null && !this.endpoint.isBlank()) {
+            map.put("endpoint", this.endpoint);
+        }
+        if (this.domain != null && !this.domain.isBlank()) {
+            map.put("domain", this.domain);
+        }
+        if (this.defaultStorageClass != null) {
+            map.put("defaultStorageClass", this.defaultStorageClass);
+        }
+        if (this.defaultServerSideEncryption != null) {
+            map.put("defaultServerSideEncryption", this.defaultServerSideEncryption);
+        }
         return map;
     }
 
@@ -914,6 +1121,7 @@ public class S3Driver implements StorageDriver {
                                 .size(s3Obj.size())
                                 .contentType(StorageSecurityUtil.determineContentType(key))
                                 .etag(stripQuotes(s3Obj.eTag()))
+                                .storageClass(s3Obj.storageClassAsString())
                                 .lastModified(s3Obj.lastModified())
                                 .directory(false)
                                 .build());

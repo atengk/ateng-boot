@@ -74,4 +74,19 @@ public class S3StorageProperties {
      * 从连接池租借获取空闲连接的最长等待超时（默认 10 秒）
      */
     private Duration connectionAcquisitionTimeout = Duration.ofSeconds(10);
+
+    /**
+     * 是否在存储桶不存在时自动探测并自愈建桶（默认 false）
+     */
+    private boolean autoCreateBucket = false;
+
+    /**
+     * 上传对象的默认存储类别（可选，如 STANDARD, STANDARD_IA, GLACIER）
+     */
+    private String defaultStorageClass;
+
+    /**
+     * 服务端加密默认算法（可选，如 AES256 或 aws:kms）
+     */
+    private String defaultServerSideEncryption;
 }

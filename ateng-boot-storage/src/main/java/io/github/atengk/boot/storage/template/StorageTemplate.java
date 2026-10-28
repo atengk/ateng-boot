@@ -312,6 +312,33 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
     }
 
     @Override
+    public Map<String, String> getObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        return getDriver().getObjectTags(path);
+    }
+
+    @Override
+    public void setObjectTags(String path, Map<String, String> tags) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        if (tags == null || tags.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "设置对象标签不能为空");
+        }
+        getDriver().setObjectTags(path, tags);
+    }
+
+    @Override
+    public void deleteObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        getDriver().deleteObjectTags(path);
+    }
+
+    @Override
     public boolean exists(String path) {
         return getDriver().exists(path);
     }

@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -86,6 +87,11 @@ public class LocalDriver implements StorageDriver {
      * 绑定的命名存储源标识（多源模式下用于生成带 source 参数的外链）
      */
     private final String sourceName;
+
+    /**
+     * 本地存储对象标签并发映射容器
+     */
+    private final Map<String, Map<String, String>> objectTagsMap = new ConcurrentHashMap<>();
 
     /**
      * 构造基础本地磁盘驱动（自动生成随机密钥）
@@ -320,6 +326,45 @@ public class LocalDriver implements StorageDriver {
     }
 
     @Override
+    public Map<String, String> getObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        Map<String, String> tags = objectTagsMap.get(cleanPath);
+        return tags != null ? Collections.unmodifiableMap(tags) : Collections.emptyMap();
+    }
+
+    @Override
+    public void setObjectTags(String path, Map<String, String> tags) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        if (tags == null || tags.isEmpty()) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "设置对象标签不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        Path targetFile = resolveAndVerify(cleanPath);
+        if (!Files.exists(targetFile) || Files.isDirectory(targetFile)) {
+            throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "存储对象不存在: " + cleanPath);
+        }
+        objectTagsMap.put(cleanPath, Map.copyOf(tags));
+    }
+
+    @Override
+    public void deleteObjectTags(String path) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String cleanPath = StorageSecurityUtil.normalizePath(path);
+        objectTagsMap.remove(cleanPath);
+    }
+
+    @Override
     public boolean exists(String path) {
         if (path == null || path.isBlank()) {
             return false;
@@ -346,6 +391,7 @@ public class LocalDriver implements StorageDriver {
                 return true;
             }
             Files.deleteIfExists(targetFile);
+            objectTagsMap.remove(cleanPath);
             return true;
         } catch (StorageException e) {
             throw e;
