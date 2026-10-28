@@ -165,4 +165,23 @@ class StorageSecurityUtilTest {
         assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("../root"));
         assertThrows(StorageException.class, () -> StorageSecurityUtil.validatePrefixForDeletion("temp/../../etc"));
     }
+
+    @Test
+    @DisplayName("测试 formatDomainUrl 域名与相对路径规范拼接")
+    void testFormatDomainUrl() {
+        assertEquals("https://cdn.example.com/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl("https://cdn.example.com", "images/banner.jpg"));
+        assertEquals("https://cdn.example.com/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl("https://cdn.example.com/", "images/banner.jpg"));
+        assertEquals("https://cdn.example.com/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl("https://cdn.example.com/", "/images/banner.jpg"));
+        assertEquals("/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl(null, "images/banner.jpg"));
+        assertEquals("/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl("", "images/banner.jpg"));
+        assertEquals("/images/banner.jpg",
+                StorageSecurityUtil.formatDomainUrl("   ", "images/banner.jpg"));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.formatDomainUrl("https://cdn.example.com", null));
+        assertThrows(StorageException.class, () -> StorageSecurityUtil.formatDomainUrl("https://cdn.example.com", ""));
+    }
 }

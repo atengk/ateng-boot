@@ -8,6 +8,7 @@ import io.github.atengk.boot.storage.properties.LocalStorageProperties;
 import io.github.atengk.boot.storage.properties.StorageSourceProperties;
 import io.github.atengk.boot.storage.util.StorageSecurityUtil;
 import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.DisposableBean;
 
 import java.util.Collections;
@@ -22,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Ateng
  * @since 2026-10-17
  */
+@Slf4j
 public class StorageDriverFactory implements DisposableBean, AutoCloseable {
 
     private final Map<String, StorageDriver> driverMap = new ConcurrentHashMap<>();
@@ -193,10 +195,18 @@ public class StorageDriverFactory implements DisposableBean, AutoCloseable {
                     io.github.atengk.boot.storage.driver.S3Driver.createS3Client(properties.getS3());
             software.amazon.awssdk.services.s3.presigner.S3Presigner s3Presigner =
                     io.github.atengk.boot.storage.driver.S3Driver.createS3Presigner(properties.getS3());
-            return new io.github.atengk.boot.storage.driver.S3Driver(
+            io.github.atengk.boot.storage.driver.S3Driver s3Driver = new io.github.atengk.boot.storage.driver.S3Driver(
                     s3Client, s3Presigner, properties.getS3().getBucket(), properties.getS3().getDomain(), properties.getS3().getSecretKey(),
                     properties.getS3().getEndpoint(), properties.getS3().isPathStyle(),
                     properties.getS3().isAutoCreateBucket(), properties.getS3().getDefaultStorageClass(), properties.getS3().getDefaultServerSideEncryption());
+            if (properties.getS3().isAutoCreateBucket()) {
+                try {
+                    s3Driver.ping();
+                } catch (Exception e) {
+                    log.warn("S3 驱动初始化存储桶自愈探测跳过: bucket={}, cause={}", properties.getS3().getBucket(), e.getMessage());
+                }
+            }
+            return s3Driver;
         }
     }
 

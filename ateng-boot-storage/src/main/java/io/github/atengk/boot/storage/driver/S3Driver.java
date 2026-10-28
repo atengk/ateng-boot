@@ -454,43 +454,21 @@ public class S3Driver implements StorageDriver {
             List<CompletedPart> completedParts = new ArrayList<>();
             long totalSize = 0;
 
-            // 上传第一分片 (5MB)
-            UploadPartRequest part1Request = UploadPartRequest.builder()
-                    .bucket(this.bucket)
-                    .key(cleanPath)
-                    .uploadId(uploadId)
-                    .partNumber(1)
-                    .contentLength((long) MIN_MULTIPART_PART_SIZE)
-                    .build();
-            UploadPartResponse part1Resp = this.s3Client.uploadPart(
-                    part1Request,
-                    RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(firstBuffer, 0, MIN_MULTIPART_PART_SIZE))
-            );
-            completedParts.add(CompletedPart.builder().partNumber(1).eTag(part1Resp.eTag()).build());
+            // 上传第一分片 (5MB)，随后复用该 5MB 缓冲，严格将堆缓冲峰值收敛至 <= 5MB
+            completedParts.add(uploadPartChunk(uploadId, cleanPath, 1, firstBuffer, MIN_MULTIPART_PART_SIZE));
             totalSize += MIN_MULTIPART_PART_SIZE;
 
-            // 循环分批流式上传后续分片
+            // 循环分批流式上传后续分片（复用 firstBuffer 空间，零额外内存分配）
             int partNumber = 2;
-            byte[] partBuffer = new byte[MIN_MULTIPART_PART_SIZE];
+            byte[] buffer = firstBuffer;
             while (nextByte != -1) {
-                partBuffer[0] = (byte) nextByte;
-                int additionalRead = in.readNBytes(partBuffer, 1, MIN_MULTIPART_PART_SIZE - 1);
+                buffer[0] = (byte) nextByte;
+                int additionalRead = in.readNBytes(buffer, 1, MIN_MULTIPART_PART_SIZE - 1);
                 int currentPartLength = 1 + additionalRead;
 
                 if (currentPartLength < MIN_MULTIPART_PART_SIZE) {
                     // 到达 EOF，此为最后一个分片
-                    UploadPartRequest partRequest = UploadPartRequest.builder()
-                            .bucket(this.bucket)
-                            .key(cleanPath)
-                            .uploadId(uploadId)
-                            .partNumber(partNumber)
-                            .contentLength((long) currentPartLength)
-                            .build();
-                    UploadPartResponse partResp = this.s3Client.uploadPart(
-                            partRequest,
-                            RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, currentPartLength))
-                    );
-                    completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                    completedParts.add(uploadPartChunk(uploadId, cleanPath, partNumber, buffer, currentPartLength));
                     totalSize += currentPartLength;
                     break;
                 }
@@ -499,35 +477,13 @@ public class S3Driver implements StorageDriver {
                 nextByte = in.read();
                 if (nextByte == -1) {
                     // 恰好在 5MB 边界处到达 EOF，此为最后一个分片
-                    UploadPartRequest partRequest = UploadPartRequest.builder()
-                            .bucket(this.bucket)
-                            .key(cleanPath)
-                            .uploadId(uploadId)
-                            .partNumber(partNumber)
-                            .contentLength((long) MIN_MULTIPART_PART_SIZE)
-                            .build();
-                    UploadPartResponse partResp = this.s3Client.uploadPart(
-                            partRequest,
-                            RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, MIN_MULTIPART_PART_SIZE))
-                    );
-                    completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                    completedParts.add(uploadPartChunk(uploadId, cleanPath, partNumber, buffer, MIN_MULTIPART_PART_SIZE));
                     totalSize += MIN_MULTIPART_PART_SIZE;
                     break;
                 }
 
                 // 仍有后续数据，上传当前 5MB 分片并进入下一轮
-                UploadPartRequest partRequest = UploadPartRequest.builder()
-                        .bucket(this.bucket)
-                        .key(cleanPath)
-                        .uploadId(uploadId)
-                        .partNumber(partNumber)
-                        .contentLength((long) MIN_MULTIPART_PART_SIZE)
-                        .build();
-                UploadPartResponse partResp = this.s3Client.uploadPart(
-                        partRequest,
-                        RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(partBuffer, 0, MIN_MULTIPART_PART_SIZE))
-                );
-                completedParts.add(CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build());
+                completedParts.add(uploadPartChunk(uploadId, cleanPath, partNumber, buffer, MIN_MULTIPART_PART_SIZE));
                 totalSize += MIN_MULTIPART_PART_SIZE;
                 partNumber++;
             }
@@ -613,15 +569,29 @@ public class S3Driver implements StorageDriver {
         }
     }
 
+    /**
+     * 上传单个 S3 Multipart 分片并记录 CompletedPart
+     */
+    private CompletedPart uploadPartChunk(String uploadId, String key, int partNumber, byte[] buffer, int length) {
+        UploadPartRequest partRequest = UploadPartRequest.builder()
+                .bucket(this.bucket)
+                .key(key)
+                .uploadId(uploadId)
+                .partNumber(partNumber)
+                .contentLength((long) length)
+                .build();
+        UploadPartResponse partResp = this.s3Client.uploadPart(
+                partRequest,
+                RequestBody.fromRemainingByteBuffer(ByteBuffer.wrap(buffer, 0, length))
+        );
+        return CompletedPart.builder().partNumber(partNumber).eTag(partResp.eTag()).build();
+    }
+
     @Override
     public String getUrl(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
-        if (cleanPath.startsWith("/")) {
-            cleanPath = cleanPath.substring(1);
-        }
         if (domain != null && !domain.isBlank()) {
-            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
-            return cleanDomain + "/" + cleanPath;
+            return StorageSecurityUtil.formatDomainUrl(this.domain, cleanPath);
         }
         if (endpoint != null && !endpoint.isBlank()) {
             String cleanEndpoint = endpoint.endsWith("/") ? endpoint.substring(0, endpoint.length() - 1) : endpoint;
@@ -782,6 +752,12 @@ public class S3Driver implements StorageDriver {
             this.s3Client.deleteObjectTagging(request);
         } catch (NoSuchKeyException e) {
             // 天然幂等：对象原本无标签或不存在静默通过
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404 || isNotFoundCode(e)) {
+                // 天然幂等：兼容部分 S3 存储服务返回 404/NoSuchKey 时静默通过
+                return;
+            }
+            throw translateException(e, cleanPath, "删除 S3 对象标签失败");
         } catch (Exception e) {
             throw translateException(e, cleanPath, "删除 S3 对象标签失败");
         }
@@ -1027,13 +1003,18 @@ public class S3Driver implements StorageDriver {
         String cleanSource = StorageSecurityUtil.normalizePath(sourcePath);
         String cleanTarget = StorageSecurityUtil.normalizePath(targetPath);
         try {
-            CopyObjectRequest copyRequest = CopyObjectRequest.builder()
+            CopyObjectRequest.Builder copyRequestBuilder = CopyObjectRequest.builder()
                     .sourceBucket(this.bucket)
                     .sourceKey(cleanSource)
                     .destinationBucket(this.bucket)
-                    .destinationKey(cleanTarget)
-                    .build();
-            this.s3Client.copyObject(copyRequest);
+                    .destinationKey(cleanTarget);
+            if (this.defaultStorageClass != null && !this.defaultStorageClass.isBlank()) {
+                copyRequestBuilder.storageClass(this.defaultStorageClass);
+            }
+            if (this.defaultServerSideEncryption != null && !this.defaultServerSideEncryption.isBlank()) {
+                copyRequestBuilder.serverSideEncryption(this.defaultServerSideEncryption);
+            }
+            this.s3Client.copyObject(copyRequestBuilder.build());
             return true;
         } catch (NoSuchKeyException e) {
             throw new StorageException(StorageResultCode.OBJECT_NOT_FOUND, "源存储对象不存在: " + sourcePath, e);
@@ -1141,14 +1122,6 @@ public class S3Driver implements StorageDriver {
         } catch (Exception e) {
             throw translateException(e, prefix, "列举 S3 对象列表失败");
         }
-    }
-
-    @Override
-    public PresignedUrl getPresignedUrl(String path, Duration duration) {
-        return getPresignedUrl(PresignedDownloadRequest.builder()
-                .path(path)
-                .duration(duration)
-                .build());
     }
 
     @Override

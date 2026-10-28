@@ -211,6 +211,12 @@ class SampleS3DualModeIntegrationTest {
         assertThat(details.getPath()).isEqualTo(path);
         assertThat(details.getSize()).isEqualTo((long) payload.length);
         assertThat(details.getContentType()).isEqualTo("text/plain");
+        if (details.getStorageClass() != null) {
+            assertThat(details.getStorageClass()).isNotBlank();
+        }
+        if (details.getServerSideEncryption() != null) {
+            assertThat(details.getServerSideEncryption()).isNotBlank();
+        }
     }
 
     @Test
@@ -277,6 +283,8 @@ class SampleS3DualModeIntegrationTest {
                             .filename(path.substring(path.lastIndexOf('/') + 1))
                             .size((long) bytes.length)
                             .contentType(contentType != null ? contentType : "application/octet-stream")
+                            .storageClass("STANDARD")
+                            .serverSideEncryption("AES256")
                             .lastModified(Instant.now())
                             .build();
                     metadata.put(path, obj);
@@ -293,7 +301,7 @@ class SampleS3DualModeIntegrationTest {
 
             @Override
             public String getUrl(String path) {
-                return "http://103.236.97.120:47875/ateng-test/" + path;
+                return "http://localhost:9000/ateng-test/" + path;
             }
 
             @Override
@@ -402,7 +410,7 @@ class SampleS3DualModeIntegrationTest {
                 String cd = (filename != null && !filename.isBlank())
                         ? "attachment; filename=\"" + filename + "\""
                         : "attachment";
-                String presigned = "http://103.236.97.120:47875/ateng-test/" + request.getPath() + "?response-content-disposition=" + cd;
+                String presigned = "http://localhost:9000/ateng-test/" + request.getPath() + "?response-content-disposition=" + cd;
                 return PresignedUrl.builder()
                         .url(presigned)
                         .expiration(Instant.now().plus(request.getDuration()))
@@ -416,7 +424,7 @@ class SampleS3DualModeIntegrationTest {
 
             @Override
             public Map<String, Object> getDiagnostics() {
-                return Map.of("type", "s3", "endpoint", "http://103.236.97.120:47875", "bucket", "ateng-test");
+                return Map.of("type", "s3", "endpoint", "http://localhost:9000", "bucket", "ateng-test");
             }
 
             @Override

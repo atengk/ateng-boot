@@ -18,3 +18,5 @@ ateng:
             api-call-timeout: 60s
             max-connections: 50
             auto-create-bucket: false
+            default-storage-class: STANDARD
+            # default-server-side-encryption: AES256 # 仅当 S3/RustFS/MinIO 服务端已配置 KMS 或主密钥时开启

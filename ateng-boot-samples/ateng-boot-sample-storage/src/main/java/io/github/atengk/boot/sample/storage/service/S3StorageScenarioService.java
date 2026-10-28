@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.storage.service;
 
+import io.github.atengk.boot.storage.exception.StorageException;
+import io.github.atengk.boot.storage.exception.StorageResultCode;
 import io.github.atengk.boot.storage.model.PresignedDownloadRequest;
 import io.github.atengk.boot.storage.model.PresignedUrl;
 import io.github.atengk.boot.storage.model.StorageObject;
@@ -80,10 +82,21 @@ public class S3StorageScenarioService {
      * @return 局部字节数组
      */
     public byte[] downloadByteRange(String path, long startOffset, long length) {
+        if (path == null || path.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "下载对象路径不能为空");
+        }
+        if (startOffset < 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量不能为负数: " + startOffset);
+        }
+        if (length <= 0) {
+            throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载读取长度必须大于 0: " + length);
+        }
         try (InputStream stream = storageTemplate.use(S3_SOURCE).download(path, startOffset, length)) {
             return stream.readAllBytes();
+        } catch (StorageException se) {
+            throw se;
         } catch (Exception e) {
-            throw new RuntimeException("读取字节范围失败: " + e.getMessage(), e);
+            throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "读取分段字节范围失败: " + path, e);
         }
     }
 

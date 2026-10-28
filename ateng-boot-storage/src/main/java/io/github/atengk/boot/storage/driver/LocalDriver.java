@@ -291,9 +291,18 @@ public class LocalDriver implements StorageDriver {
                 throw new StorageException(StorageResultCode.OPERATION_FAILED, "下载起始偏移量超出文件大小: offset=" + startOffset + ", fileSize=" + fileSize);
             }
             FileChannel channel = FileChannel.open(targetFile, StandardOpenOption.READ);
-            channel.position(startOffset);
-            InputStream rawStream = Channels.newInputStream(channel);
-            return new BoundedInputStream(rawStream, length);
+            try {
+                channel.position(startOffset);
+                InputStream rawStream = Channels.newInputStream(channel);
+                return new BoundedInputStream(rawStream, length);
+            } catch (Exception e) {
+                try {
+                    channel.close();
+                } catch (IOException closeEx) {
+                    log.warn("分段读取异常释放 FileChannel 失败: path={}", cleanPath, closeEx);
+                }
+                throw e;
+            }
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.DOWNLOAD_FAILED, "分段读取本地文件失败: " + cleanPath, e);
         }
@@ -578,22 +587,7 @@ public class LocalDriver implements StorageDriver {
     @Override
     public String getUrl(String path) {
         String cleanPath = StorageSecurityUtil.normalizePath(path);
-        if (cleanPath.startsWith("/")) {
-            cleanPath = cleanPath.substring(1);
-        }
-        if (domain != null && !domain.isBlank()) {
-            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
-            return cleanDomain + "/" + cleanPath;
-        }
-        return "/" + cleanPath;
-    }
-
-    @Override
-    public PresignedUrl getPresignedUrl(String path, Duration duration) {
-        return getPresignedUrl(PresignedDownloadRequest.builder()
-                .path(path)
-                .duration(duration)
-                .build());
+        return StorageSecurityUtil.formatDomainUrl(this.domain, cleanPath);
     }
 
     @Override
@@ -609,7 +603,9 @@ public class LocalDriver implements StorageDriver {
         Instant expiration = Instant.now().plus(effectiveDuration);
         long expires = expiration.getEpochSecond();
 
-        String signature = StorageSecurityUtil.hmacSha256(cleanPath + ":" + expires, this.secretKey);
+        String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
+                cleanPath, expires, request.getDownloadFilename(), request.getResponseContentType(), request.getResponseContentDisposition());
+        String signature = StorageSecurityUtil.hmacSha256(payload, this.secretKey);
         StringBuilder urlBuilder = new StringBuilder();
         urlBuilder.append(buildEndpointUrl(downloadEndpoint, DEFAULT_DOWNLOAD_ENDPOINT))
                 .append("?path=").append(cleanPath)

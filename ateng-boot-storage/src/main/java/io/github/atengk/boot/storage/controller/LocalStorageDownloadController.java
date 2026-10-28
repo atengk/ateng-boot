@@ -84,7 +84,9 @@ public class LocalStorageDownloadController {
 
         // 3. 签名合法性防篡改校验（签名无效返回 403）
         String secretKey = resolveSecretKey();
-        if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(cleanPath + ":" + expires, secretKey, signature)) {
+        String payload = StorageSecurityUtil.buildPresignedDownloadSignaturePayload(
+                cleanPath, expires, filename, contentType, disposition);
+        if (secretKey == null || secretKey.isBlank() || !StorageSecurityUtil.verifyHmacSha256(payload, secretKey, signature)) {
             log.warn("预签名下载外链签名校验失败或已被篡改: path={}, expires={}", cleanPath, expires);
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }

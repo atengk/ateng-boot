@@ -278,4 +278,40 @@ class StorageTaggingAndHardeningTest {
         assertEquals("STANDARD_IA", diag.get("defaultStorageClass"));
         assertEquals("AES256", diag.get("defaultServerSideEncryption"));
     }
+
+    @Test
+    @DisplayName("S3Driver deleteObjectTags 当服务端返回 404/NoSuchKey 时保证天然幂等静默通过")
+    void testS3DriverDeleteObjectTagsIdempotentOn404() {
+        software.amazon.awssdk.services.s3.model.S3Exception s3Ex = (software.amazon.awssdk.services.s3.model.S3Exception)
+                software.amazon.awssdk.services.s3.model.S3Exception.builder()
+                        .statusCode(404)
+                        .awsErrorDetails(software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder().errorCode("NoSuchKey").build())
+                        .build();
+        org.mockito.Mockito.doThrow(s3Ex).when(mockS3Client).deleteObjectTagging(any(DeleteObjectTaggingRequest.class));
+
+        // 验证执行无异常抛出
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> s3Driver.deleteObjectTags("already-deleted.txt"));
+    }
+
+    @Test
+    @DisplayName("S3Driver copy 操作自动挂载默认 StorageClass 与 ServerSideEncryption")
+    void testS3DriverCopySetsStorageClassAndServerSideEncryption() {
+        when(mockS3Client.copyObject(any(software.amazon.awssdk.services.s3.model.CopyObjectRequest.class)))
+                .thenReturn(software.amazon.awssdk.services.s3.model.CopyObjectResponse.builder().build());
+
+        boolean result = s3Driver.copy("source/data.txt", "target/data.txt");
+        assertTrue(result);
+
+        ArgumentCaptor<software.amazon.awssdk.services.s3.model.CopyObjectRequest> captor =
+                ArgumentCaptor.forClass(software.amazon.awssdk.services.s3.model.CopyObjectRequest.class);
+        verify(mockS3Client).copyObject(captor.capture());
+        software.amazon.awssdk.services.s3.model.CopyObjectRequest captured = captor.getValue();
+
+        assertEquals("test-bucket", captured.sourceBucket());
+        assertEquals("source/data.txt", captured.sourceKey());
+        assertEquals("test-bucket", captured.destinationBucket());
+        assertEquals("target/data.txt", captured.destinationKey());
+        assertEquals(StorageClass.STANDARD_IA.toString(), captured.storageClassAsString());
+        assertEquals(ServerSideEncryption.AES256.toString(), captured.serverSideEncryptionAsString());
+    }
 }

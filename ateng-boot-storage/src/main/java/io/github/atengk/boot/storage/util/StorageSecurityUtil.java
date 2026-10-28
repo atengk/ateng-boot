@@ -122,6 +122,53 @@ public final class StorageSecurityUtil {
     }
 
     /**
+     * 格式化并拼接包含自定义域名或相对路径前缀的完整访问 URL
+     *
+     * @param domain 自定义域名或前缀（例如 "https://cdn.example.com" 或 "http://localhost:8080"）
+     * @param cleanPath 已经过规范化的相对存储路径
+     * @return 拼接后的规范 URL（例如 "https://cdn.example.com/images/avatar.png" 或 "/images/avatar.png"）
+     */
+    public static String formatDomainUrl(String domain, String cleanPath) {
+        if (cleanPath == null || cleanPath.isBlank()) {
+            throw new StorageException(StorageResultCode.INVALID_PATH, "存储路径不能为空");
+        }
+        String relativePath = cleanPath.startsWith("/") ? cleanPath.substring(1) : cleanPath;
+        if (domain != null && !domain.isBlank()) {
+            String cleanDomain = domain.endsWith("/") ? domain.substring(0, domain.length() - 1) : domain;
+            return cleanDomain + "/" + relativePath;
+        }
+        return "/" + relativePath;
+    }
+
+    /**
+     * 构建预签名只读下载 HMAC 签名摘要数据源载荷
+     * 将存储相对路径、有效截止时间戳以及可选的响应头重写参数（下载文件名、Content-Type、Content-Disposition）
+     * 规范化拼接入防篡改校验载荷中，全面防御外部参数篡改攻击
+     *
+     * @param cleanPath   规范化相对存储路径
+     * @param expires     Unix 秒级过期时间戳
+     * @param filename    自定义友好下载文件名（可选）
+     * @param contentType 响应 Content-Type（可选）
+     * @param disposition 响应 Content-Disposition（可选）
+     * @return 规约签名源载荷字符串
+     */
+    public static String buildPresignedDownloadSignaturePayload(String cleanPath, long expires,
+                                                               String filename, String contentType, String disposition) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(cleanPath).append(":").append(expires);
+        if (filename != null && !filename.isBlank()) {
+            sb.append(":fn=").append(filename.trim());
+        }
+        if (contentType != null && !contentType.isBlank()) {
+            sb.append(":ct=").append(contentType.trim());
+        }
+        if (disposition != null && !disposition.isBlank()) {
+            sb.append(":cd=").append(disposition.trim());
+        }
+        return sb.toString();
+    }
+
+    /**
      * 根据文件名自动推导标准 MIME 内容类型 (Content-Type)
      *
      * @param filename 文件名或路径

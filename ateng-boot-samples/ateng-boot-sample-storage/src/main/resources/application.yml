@@ -49,6 +49,8 @@ ateng:
             api-call-timeout: 60s
             max-connections: 50
             auto-create-bucket: false
+            default-storage-class: STANDARD
+            # default-server-side-encryption: AES256
 
 management:
   endpoints:

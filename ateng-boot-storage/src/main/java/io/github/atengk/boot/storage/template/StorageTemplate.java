@@ -242,22 +242,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject uploadPublic(String path, MultipartFile file) {
-        if (file == null || file.isEmpty()) {
-            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文件不能为空");
-        }
-        String targetPath = path;
-        String originalFilename = file.getOriginalFilename();
-        if (targetPath == null || targetPath.isBlank()) {
-            targetPath = originalFilename;
-        } else if (targetPath.endsWith("/") || targetPath.endsWith("\\")) {
-            targetPath = targetPath + FileUtil.cleanFilename(originalFilename);
-        }
-
-        try (InputStream in = file.getInputStream()) {
-            return upload(targetPath, in, file.getContentType(), file.getSize(), null, true);
-        } catch (IOException e) {
-            throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取 MultipartFile 输入流失败: " + originalFilename, e);
-        }
+        return uploadMultipartFile(path, file, null, true);
     }
 
     @Override
@@ -267,6 +252,10 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
 
     @Override
     public StorageObject upload(String path, MultipartFile file, Map<String, String> userMetadata) {
+        return uploadMultipartFile(path, file, userMetadata, false);
+    }
+
+    private StorageObject uploadMultipartFile(String path, MultipartFile file, Map<String, String> userMetadata, boolean publicRead) {
         if (file == null || file.isEmpty()) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "上传文件不能为空");
         }
@@ -279,7 +268,7 @@ public class StorageTemplate implements StorageOperations, ApplicationEventPubli
         }
 
         try (InputStream in = file.getInputStream()) {
-            return upload(targetPath, in, file.getContentType(), file.getSize(), userMetadata);
+            return upload(targetPath, in, file.getContentType(), file.getSize(), userMetadata, publicRead);
         } catch (IOException e) {
             throw new StorageException(StorageResultCode.UPLOAD_FAILED, "读取 MultipartFile 输入流失败: " + originalFilename, e);
         }

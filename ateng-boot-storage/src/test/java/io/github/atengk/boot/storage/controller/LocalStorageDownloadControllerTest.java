@@ -177,4 +177,26 @@ class LocalStorageDownloadControllerTest {
                 .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, Matchers.containsString("filename*=UTF-8''")))
                 .andExpect(content().bytes(fileBytes));
     }
+
+    @Test
+    @DisplayName("篡改自定义文件名或响应头时签名校验失败并被 403 阻断")
+    void testTamperedFilenameOrHeaderReturnsForbidden() throws Exception {
+        byte[] fileBytes = "Sensitive Payload".getBytes(StandardCharsets.UTF_8);
+        String path = "data/sensitive.bin";
+        driver.upload(path, new ByteArrayInputStream(fileBytes), "application/octet-stream", fileBytes.length);
+
+        PresignedDownloadRequest request = PresignedDownloadRequest.builder()
+                .path(path)
+                .duration(Duration.ofMinutes(15))
+                .downloadFilename("report.pdf")
+                .responseContentType("application/pdf")
+                .build();
+        PresignedUrl presigned = driver.getPresignedUrl(request);
+        URI uri = URI.create(presigned.getUrl());
+
+        // 尝试篡改文件名参数
+        String tamperedQuery = uri.getQuery().replace("report.pdf", "malicious.exe");
+        mockMvc.perform(get(uri.getPath() + "?" + tamperedQuery))
+                .andExpect(status().isForbidden());
+    }
 }
