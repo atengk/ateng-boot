@@ -26,12 +26,12 @@ public class SaTokenWebMvcConfigurer implements WebMvcConfigurer {
     private final AtengSaTokenInterceptor saInterceptor;
 
     public SaTokenWebMvcConfigurer(SaTokenProperties properties) {
-        this(properties, new AtengSaTokenInterceptor());
+        this(properties, new AtengSaTokenInterceptor(properties));
     }
 
     public SaTokenWebMvcConfigurer(SaTokenProperties properties, AtengSaTokenInterceptor saInterceptor) {
         this.properties = properties;
-        this.saInterceptor = saInterceptor != null ? saInterceptor : new AtengSaTokenInterceptor();
+        this.saInterceptor = saInterceptor != null ? saInterceptor : new AtengSaTokenInterceptor(properties);
     }
 
     @Override

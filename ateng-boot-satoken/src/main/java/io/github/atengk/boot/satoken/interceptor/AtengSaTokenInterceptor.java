@@ -4,6 +4,7 @@ import cn.dev33.satoken.fun.SaParamFunction;
 import cn.dev33.satoken.interceptor.SaInterceptor;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.satoken.properties.SaTokenProperties;
 import io.github.atengk.boot.satoken.util.LoginHelper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -20,6 +21,7 @@ import java.util.Set;
 /**
  * ateng-boot Sa-Token 增强路由拦截器
  * 继承原生 SaInterceptor，支持动态白名单（YAML + SPI + @Anonymous 声明式放行）；
+ * 支持多账号体系动态路由与 primary-login-type 优先探测；
  * 在鉴权放行后自动将登录主体的租户 ID 与用户唯一标识注入 TenantContextHolder 与 UserContextHolder，
  * 并在 afterCompletion 强制清空四维上下文，杜绝容器线程池复用污染
  *
@@ -32,13 +34,24 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
     private final PathMatcher pathMatcher = new AntPathMatcher();
     private final UrlPathHelper urlPathHelper = UrlPathHelper.defaultInstance;
     private volatile Set<String> whitelist = Collections.emptySet();
+    private final SaTokenProperties properties;
 
     public AtengSaTokenInterceptor() {
-        super();
+        this((SaTokenProperties) null);
     }
 
     public AtengSaTokenInterceptor(SaParamFunction<Object> auth) {
+        this(auth, null);
+    }
+
+    public AtengSaTokenInterceptor(SaTokenProperties properties) {
+        super();
+        this.properties = properties;
+    }
+
+    public AtengSaTokenInterceptor(SaParamFunction<Object> auth, SaTokenProperties properties) {
         super(auth);
+        this.properties = properties;
     }
 
     /**
@@ -131,9 +144,23 @@ public class AtengSaTokenInterceptor extends SaInterceptor {
     }
 
     /**
-     * 若已登录，同步用户与多租户上下文
+     * 若已登录，同步用户与多租户上下文（支持多账号 primary-login-type 探测）
      */
     private void syncContextIfLoggedIn() {
+        String preferredType = properties != null ? properties.getPrimaryLoginType() : null;
+        String activeType = LoginHelper.getActiveLoginType(preferredType);
+        if (activeType != null) {
+            String tenantId = LoginHelper.getTenantId(activeType);
+            if (tenantId != null && !tenantId.isBlank()) {
+                TenantContextHolder.setTenantId(tenantId);
+            }
+            String userId = LoginHelper.getUserId(activeType);
+            if (userId != null && !userId.isBlank()) {
+                UserContextHolder.set(userId);
+            }
+            return;
+        }
+        // 保底兼容：当 activeType 探测未命中时使用无参 LoginHelper 登录态（兼容 Mock 静态打桩场景）
         if (LoginHelper.isLogin()) {
             String tenantId = LoginHelper.getTenantId();
             if (tenantId != null && !tenantId.isBlank()) {

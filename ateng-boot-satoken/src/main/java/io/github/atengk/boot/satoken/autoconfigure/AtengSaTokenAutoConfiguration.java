@@ -94,9 +94,12 @@ public class AtengSaTokenAutoConfiguration {
         // 自动桥接 TokenProperties 强类型配置至 SaManager.getConfig()
         applyTokenProperties(properties.getToken());
 
+        // 同步配置的主账号体系类型至 LoginHelper 门面
+        LoginHelper.setPrimaryLoginType(properties.getPrimaryLoginType());
+
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
-        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider());
-        TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
+        UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider(properties));
+        TenantContextHolder.setTenantProvider(new SaTokenCurrentTenantProvider(properties));
 
         SaFirewallStrategy.instance.checkFailHandle = (e, req, res, extArg) -> {
             log.warn("Sa-Token 安全防火墙拦截异常: message={}", e.getMessage());
@@ -321,7 +324,7 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.interceptor", name = "enabled", havingValue = "true", matchIfMissing = true)
     public AtengSaTokenInterceptor atengSaTokenInterceptor() {
-        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor();
+        AtengSaTokenInterceptor saInterceptor = new AtengSaTokenInterceptor(properties);
         saInterceptor.isAnnotation(false);
         if (properties.getInterceptor().isCheckLogin()) {
             log.info("Sa-Token 开启全域路由强制登录校验模式 (check-login=true)");
@@ -372,7 +375,7 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CurrentUserProvider.class)
     public CurrentUserProvider saTokenCurrentUserProvider() {
-        return new SaTokenCurrentUserProvider();
+        return new SaTokenCurrentUserProvider(properties);
     }
 
     /**
@@ -384,7 +387,7 @@ public class AtengSaTokenAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CurrentTenantProvider.class)
     public CurrentTenantProvider saTokenCurrentTenantProvider() {
-        return new SaTokenCurrentTenantProvider();
+        return new SaTokenCurrentTenantProvider(properties);
     }
 
     /**
