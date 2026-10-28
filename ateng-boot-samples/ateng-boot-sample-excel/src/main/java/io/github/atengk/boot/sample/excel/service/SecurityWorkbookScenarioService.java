@@ -66,4 +66,14 @@ public class SecurityWorkbookScenarioService {
     public void exportSecurityTemplate(OutputStream out) {
         ExcelUtil.exportTemplate(out, "安全防呆模板", SecurityUserExcelVO.class);
     }
+
+    /**
+     * 流式导出带有公式注入防护、白名单豁免与列级锁定保护的安全数据工作簿
+     *
+     * @param out  目标输出流
+     * @param data 安全数据列表（包含高危公式注入前缀与白名单计算公式）
+     */
+    public void exportSecurityData(OutputStream out, List<SecurityUserExcelVO> data) {
+        ExcelUtil.export(out, "安全防护数据", data, SecurityUserExcelVO.class);
+    }
 }

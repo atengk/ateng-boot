@@ -17,8 +17,10 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -499,16 +501,23 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
             Integer actualNo = (context.readSheetHolder() != null) ? context.readSheetHolder().getSheetNo() : definition.sheetNo;
             String actualName = (context.readSheetHolder() != null) ? context.readSheetHolder().getSheetName() : definition.sheetName;
 
-            Integer targetNo = (definition.sheetNo != null) ? definition.sheetNo : actualNo;
-            String targetName = (definition.sheetName != null) ? definition.sheetName : actualName;
+            Set<Integer> sheetNos = new LinkedHashSet<>();
+            if (actualNo != null) {
+                sheetNos.add(actualNo);
+            }
+            if (definition.sheetNo != null) {
+                sheetNos.add(definition.sheetNo);
+            }
 
-            result.addSheetData(targetNo, targetName, this.dataList);
-            if (actualNo != null && !Objects.equals(actualNo, targetNo)) {
-                result.addSheetData(actualNo, null, this.dataList);
+            Set<String> sheetNames = new LinkedHashSet<>();
+            if (actualName != null && !actualName.isBlank()) {
+                sheetNames.add(actualName);
             }
-            if (actualName != null && !Objects.equals(actualName, targetName)) {
-                result.addSheetData(null, actualName, this.dataList);
+            if (definition.sheetName != null && !definition.sheetName.isBlank()) {
+                sheetNames.add(definition.sheetName);
             }
+
+            result.recordSheetData(this.dataList, sheetNos, sheetNames);
         }
 
         private String getSheetDescription(AnalysisContext context) {
@@ -564,16 +573,23 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
             Integer actualNo = (context.readSheetHolder() != null) ? context.readSheetHolder().getSheetNo() : definition.sheetNo;
             String actualName = (context.readSheetHolder() != null) ? context.readSheetHolder().getSheetName() : definition.sheetName;
 
-            Integer targetNo = (definition.sheetNo != null) ? definition.sheetNo : actualNo;
-            String targetName = (definition.sheetName != null) ? definition.sheetName : actualName;
+            Set<Integer> sheetNos = new LinkedHashSet<>();
+            if (actualNo != null) {
+                sheetNos.add(actualNo);
+            }
+            if (definition.sheetNo != null) {
+                sheetNos.add(definition.sheetNo);
+            }
 
-            result.addStreamedRowCount(targetNo, targetName, this.rowCount);
-            if (actualNo != null && !Objects.equals(actualNo, targetNo)) {
-                result.addStreamedRowCount(actualNo, null, 0);
+            Set<String> sheetNames = new LinkedHashSet<>();
+            if (actualName != null && !actualName.isBlank()) {
+                sheetNames.add(actualName);
             }
-            if (actualName != null && !Objects.equals(actualName, targetName)) {
-                result.addStreamedRowCount(null, actualName, 0);
+            if (definition.sheetName != null && !definition.sheetName.isBlank()) {
+                sheetNames.add(definition.sheetName);
             }
+
+            result.recordStreamedRowCount(this.rowCount, sheetNos, sheetNames);
         }
     }
 }

@@ -361,4 +361,35 @@ class ExcelReaderBuilderTest {
         assertEquals(UserGenderEnum.MALE, data.get(1).getGender());
         assertEquals(UserStatusEnum.DISABLE, data.get(1).getStatus());
     }
+
+    @Test
+    @DisplayName("测试 多工作表行数统计精准性：别名与多维度查询不覆盖为0且总行数不虚增")
+    void testMultiSheetRowCountPrecisionAndNoAliasZeroOverwrite() {
+        byte[] excelBytes = createMultiSheetWorkbook();
+
+        // 1. 同步聚合读取：验证总行数严格等于 5 (2 + 3)，且跨索引与表名查询一致
+        ExcelMultiSheetResult aggResult = ExcelUtil.reader(new ByteArrayInputStream(excelBytes))
+                .sheet(0, DemoUser.class)
+                .sheet("导入人员表", ImportUserVO.class)
+                .read();
+
+        assertEquals(5, aggResult.getTotalRowCount(), "总行数必须严格等于 5，禁止多别名绑定导致重复虚增");
+        assertEquals(2, aggResult.getRowCount(0), "按索引 0 查询行数应为 2");
+        assertEquals(2, aggResult.getRowCount("用户表"), "按实际表名查询行数应为 2");
+        assertEquals(3, aggResult.getRowCount(1), "按索引 1 查询行数应为 3");
+        assertEquals(3, aggResult.getRowCount("导入人员表"), "按定义表名查询行数应为 3");
+
+        // 2. 流式分批读取：验证流式回调下行数不被别名置 0 且总行数准确
+        List<DemoUser> streamedUsers = new ArrayList<>();
+        ExcelMultiSheetResult streamResult = ExcelUtil.reader(new ByteArrayInputStream(excelBytes))
+                .sheet("用户表", DemoUser.class, 10, streamedUsers::addAll)
+                .sheet(1, ImportUserVO.class, 10, batch -> {})
+                .read();
+
+        assertEquals(5, streamResult.getTotalRowCount(), "流式分批读取总行数必须准确等于 5");
+        assertEquals(2, streamResult.getRowCount(0), "流式分批下按索引 0 查询绝对不能被覆盖为 0");
+        assertEquals(2, streamResult.getRowCount("用户表"), "流式分批下按表名查询必须为真实行数 2");
+        assertEquals(3, streamResult.getRowCount(1), "流式分批下按索引 1 查询必须为真实行数 3");
+        assertEquals(3, streamResult.getRowCount("导入人员表"), "流式分批下按实际表名查询必须为 3");
+    }
 }

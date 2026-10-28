@@ -5,6 +5,15 @@ import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.model.DemoUser;
 import io.github.atengk.boot.excel.model.SensitiveUser;
 import io.github.atengk.boot.excel.util.ExcelUtil;
+import io.github.atengk.boot.excel.annotation.ExcelTheme;
+import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.apache.fesod.sheet.annotation.ExcelIgnoreUnannotated;
+import org.apache.fesod.sheet.annotation.ExcelProperty;
+import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -257,5 +266,89 @@ class ExcelColumnProjectionTest {
             assertEquals(100.50, dataRow.getCell(0).getNumericCellValue(), 0.01);
             assertEquals("张三", dataRow.getCell(1).getStringCellValue());
         }
+    }
+
+    @Test
+    @DisplayName("测试 @ExcelTheme 主题配色与自适应列宽在列投影后的样式保真度")
+    void testThemeAndColumnWidthFidelityWithProjection() throws Exception {
+        List<ThemedUser> list = List.of(
+                ThemedUser.builder().id(1L).name("测试主题用户").description("这是一个很长很长用于测试自适应列宽保真度的描述文本").build()
+        );
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        // 仅导出 name 和 description 列
+        ExcelUtil.export(out, list, ThemedUser.class, List.of("name", "description"));
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(out.toByteArray()))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            assertNotNull(sheet);
+
+            Row headerRow = sheet.getRow(0);
+            assertEquals(2, headerRow.getLastCellNum(), "应紧凑裁剪为 2 列");
+            assertEquals("姓名", headerRow.getCell(0).getStringCellValue());
+            assertEquals("长文本描述字段", headerRow.getCell(1).getStringCellValue());
+
+            // 验证商务蓝主题配色保真度 (PALE_BLUE = 55)
+            short headColor = headerRow.getCell(0).getCellStyle().getFillForegroundColor();
+            assertEquals(IndexedColors.PALE_BLUE.getIndex(), headColor, "表头应保真继承 BUSINESS_BLUE 主题背景色");
+
+            // 验证自适应列宽生效（第二列文本长，其列宽应明显大于默认宽度）
+            int colWidth = sheet.getColumnWidth(1);
+            assertTrue(colWidth > 256 * 10, "长文本列自适应列宽应保真扩展");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 类级 @ExcelIgnoreUnannotated 注解下列投影正确过滤未标注字段")
+    void testIgnoreUnannotatedClassLevelAnnotationWithProjection() throws Exception {
+        // 1. 验证获取的声明字段不包含未标注的 secretField
+        List<String> fieldNames = ExcelUtil.getDeclaredFieldNames(IgnoreUnannotatedUser.class);
+        assertEquals(List.of("id", "name"), fieldNames, "类级 @ExcelIgnoreUnannotated 应使未标注字段不进入投影声明字段");
+
+        // 2. 导出时即使尝试传入 secretField，也仅会导出有效标注字段
+        List<IgnoreUnannotatedUser> list = List.of(
+                IgnoreUnannotatedUser.builder().id(100L).name("保密人员").secretField("绝密数据").build()
+        );
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ExcelUtil.export(out, list, IgnoreUnannotatedUser.class, Set.of("id", "name", "secretField"));
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(out.toByteArray()))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Row headerRow = sheet.getRow(0);
+            assertEquals(2, headerRow.getLastCellNum(), "未标注 @ExcelProperty 的字段绝不应导出");
+            assertEquals("编号", headerRow.getCell(0).getStringCellValue());
+            assertEquals("姓名", headerRow.getCell(1).getStringCellValue());
+        }
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @ExcelTheme(theme = ExcelThemeEnum.BUSINESS_BLUE, autoColumnWidth = true)
+    static class ThemedUser {
+        @ExcelProperty("编号")
+        private Long id;
+
+        @ExcelProperty("姓名")
+        private String name;
+
+        @ExcelProperty("长文本描述字段")
+        private String description;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @ExcelIgnoreUnannotated
+    static class IgnoreUnannotatedUser {
+        @ExcelProperty("编号")
+        private Long id;
+
+        @ExcelProperty("姓名")
+        private String name;
+
+        private String secretField;
     }
 }

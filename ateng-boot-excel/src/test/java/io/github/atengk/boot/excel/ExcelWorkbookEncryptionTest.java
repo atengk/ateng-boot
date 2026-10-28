@@ -100,13 +100,14 @@ class ExcelWorkbookEncryptionTest {
     }
 
     @Test
-    @DisplayName("测试提供错误密码读取加密工作簿：快速失败抛出语义化 ExcelValidationException")
+    @DisplayName("测试提供错误密码读取加密工作簿：快速失败抛出语义化 ExcelValidationException 并传递根因链")
     void testReadEncryptedWorkbookWithWrongPasswordThrowsException() {
         ExcelValidationException ex = assertThrows(ExcelValidationException.class, () ->
                 ExcelUtil.read(new ByteArrayInputStream(encryptedBytes), DemoUser.class, WRONG_PASSWORD));
 
         assertTrue(ex.getMessage().contains("密码错误") || ex.getMessage().contains("解密失败"),
                 "异常信息必须提示密码错误或解密失败");
+        assertNotNull(ex.getCause(), "错误密码抛出的 ExcelValidationException 必须传递底层 cause 根因链");
     }
 
     @Test
@@ -213,5 +214,34 @@ class ExcelWorkbookEncryptionTest {
         // 3. 校验解密明文解析有效性
         List<DemoUser> users = ExcelUtil.read(new ByteArrayInputStream(decBytes), DemoUser.class);
         assertEquals(testData.size(), users.size());
+    }
+
+    @Test
+    @DisplayName("测试 decryptIfEncrypted 缺少清理注册钩子时快速失败以防临时文件泄漏")
+    void testDecryptIfEncryptedNullRegistrarFailFast() {
+        assertThrows(IllegalArgumentException.class, () ->
+                ExcelSecurityUtil.decryptIfEncrypted(new ByteArrayInputStream(encryptedBytes), PASSWORD, null));
+    }
+
+    @Test
+    @DisplayName("测试 isEncryptedWorkbook 传入不支持 mark/reset 的流时快速失败防止消耗损坏原始流")
+    void testIsEncryptedWorkbookNonMarkableStreamFailFast() {
+        InputStream nonMarkable = new InputStream() {
+            private final ByteArrayInputStream delegate = new ByteArrayInputStream(encryptedBytes);
+
+            @Override
+            public int read() {
+                return delegate.read();
+            }
+
+            @Override
+            public boolean markSupported() {
+                return false;
+            }
+        };
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                ExcelSecurityUtil.isEncryptedWorkbook(nonMarkable));
+        assertTrue(ex.getMessage().contains("mark/reset"), "必须提示流必须支持 mark/reset");
     }
 }

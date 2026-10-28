@@ -4,14 +4,13 @@ import io.github.atengk.boot.excel.builder.ExcelBuilder;
 import io.github.atengk.boot.excel.enums.ExcelThemeEnum;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
 import io.github.atengk.boot.excel.util.ExcelUtil;
-import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
+import io.github.atengk.boot.sample.excel.fixture.SampleDataFixture;
 import io.github.atengk.boot.sample.excel.vo.DepartmentUserMergeVO;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -73,23 +72,10 @@ public class MultiSheetScenarioService {
     }
 
     public List<UserExcelVO> getMockUserList() {
-        List<UserExcelVO> list = new ArrayList<>();
-        list.add(new UserExcelVO(1001L, "张三", "13800138000", "zhangsan@example.com",
-                SampleGenderEnum.MALE, "研发部", "0"));
-        list.add(new UserExcelVO(1002L, "李四", "13900139000", "lisi@example.com",
-                SampleGenderEnum.FEMALE, "市场部", "1"));
-        list.add(new UserExcelVO(1003L, "王五", "13700137000", "wangwu@example.com",
-                SampleGenderEnum.UNKNOWN, "财务部", "0"));
-        return list;
+        return SampleDataFixture.createMultiSheetUserList();
     }
 
     public List<DepartmentUserMergeVO> getMockDepartmentMergeList() {
-        List<DepartmentUserMergeVO> list = new ArrayList<>();
-        list.add(new DepartmentUserMergeVO("研发部", "张三", "Java 架构师"));
-        list.add(new DepartmentUserMergeVO("研发部", "李雷", "前端工程师"));
-        list.add(new DepartmentUserMergeVO("市场部", "韩梅梅", "商务经理"));
-        list.add(new DepartmentUserMergeVO("市场部", "王五", "运营专员"));
-        list.add(new DepartmentUserMergeVO("财务部", "赵六", "总账会计"));
-        return list;
+        return SampleDataFixture.createMockDepartmentMergeList();
     }
 }

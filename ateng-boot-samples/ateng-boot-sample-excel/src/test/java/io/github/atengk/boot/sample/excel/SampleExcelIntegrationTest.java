@@ -13,6 +13,7 @@ import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.sample.excel.enums.SampleGenderEnum;
+import io.github.atengk.boot.sample.excel.fixture.SampleDataFixture;
 import io.github.atengk.boot.sample.excel.service.AsyncExportScenarioService;
 import io.github.atengk.boot.sample.excel.service.DynamicColumnProjectionScenarioService;
 import io.github.atengk.boot.sample.excel.service.MultiSheetScenarioService;
@@ -430,6 +431,38 @@ class SampleExcelIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("场景 3：差错数据隔离提取导出：仅将校验失败的数据生成专属纠错 Excel 文件")
+    void testScenario3_Validation_ExportFailedRows() throws Exception {
+        List<UserExcelVO> mixedList = List.of(
+                new UserExcelVO(1L, "合规用户", "13800000000", "ok@example.com", SampleGenderEnum.MALE, "研发部", "0"),
+                new UserExcelVO(2L, "", "110", "bad-email", SampleGenderEnum.FEMALE, "研发部", "0"),
+                new UserExcelVO(3L, "", "120", "bad-email", SampleGenderEnum.MALE, "市场部", "0")
+        );
+        byte[] rawExcelBytes = createRawExcel(mixedList);
+
+        ExcelReadResult<UserExcelVO> readResult;
+        try (InputStream in = new ByteArrayInputStream(rawExcelBytes)) {
+            readResult = validationService.readAndValidate(in);
+        }
+        assertThat(readResult.getFailedData()).hasSize(2);
+
+        ByteArrayOutputStream failedOut = new ByteArrayOutputStream();
+        validationService.exportFailedRows(failedOut, readResult.getFailedData(), readResult.getErrors());
+        byte[] failedBytes = failedOut.toByteArray();
+        assertThat(failedBytes).isNotEmpty();
+        saveTempExcel("scenario3-failed-rows.xlsx", failedBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(failedBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet).isNotNull();
+            // 包含 1 个表头行 + 2 个校验失败行
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(3);
+            Row head = sheet.getRow(0);
+            assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
+        }
+    }
+
     // ==========================================
     // 场景 4：AsyncExportScenarioService 实测
     // ==========================================
@@ -476,7 +509,7 @@ class SampleExcelIntegrationTest {
     @Test
     @DisplayName("场景 5：POI 原生 Agile AES-256 工作簿强加密与解密闭环")
     void testScenario5_SecurityWorkbook_Aes256Encryption() throws Exception {
-        List<UserExcelVO> users = dynamicProjectionService.getMockUserList();
+        List<UserExcelVO> users = SampleDataFixture.createMockUserList();
         String password = "StrongPassword@2026";
 
         ByteArrayOutputStream cipherOut = new ByteArrayOutputStream();
@@ -508,7 +541,7 @@ class SampleExcelIntegrationTest {
     @Test
     @DisplayName("场景 5：防拍照半透明全景文字水印与工作表只读保护密码")
     void testScenario5_SecurityWorkbook_WatermarkAndSheetLock() throws Exception {
-        List<UserExcelVO> users = dynamicProjectionService.getMockUserList();
+        List<UserExcelVO> users = SampleDataFixture.createMockUserList();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         securityWorkbookService.exportWithWatermarkAndProtection(
                 out, users, "机密 · 内部严禁外传", "protect123"
@@ -526,16 +559,47 @@ class SampleExcelIntegrationTest {
     @Test
     @DisplayName("场景 5：公式注入安全防御（CWE-1236）、白名单豁免与列级只读锁")
     void testScenario5_SecurityWorkbook_SecurityTemplate() throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        securityWorkbookService.exportSecurityTemplate(out);
-        byte[] bytes = out.toByteArray();
-        saveTempExcel("scenario5-security-template.xlsx", bytes);
+        // 1. 导出安全防呆空模板并验证表头与下拉约束
+        ByteArrayOutputStream templateOut = new ByteArrayOutputStream();
+        securityWorkbookService.exportSecurityTemplate(templateOut);
+        byte[] templateBytes = templateOut.toByteArray();
+        saveTempExcel("scenario5-security-template.xlsx", templateBytes);
 
-        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(templateBytes))) {
             Sheet sheet = wb.getSheetAt(0);
             Row headRow = sheet.getRow(0);
             assertThat(headRow).isNotNull();
-            // 列锁定与公式白名单在实体注解声明中生效
+            assertThat(headRow.getCell(0).getStringCellValue()).isEqualTo("系统工号");
+            assertThat(headRow.getCell(1).getStringCellValue()).isEqualTo("员工姓名");
+            assertThat(headRow.getCell(2).getStringCellValue()).isEqualTo("薪资计算公式");
+            assertThat(headRow.getCell(3).getStringCellValue()).isEqualTo("核定职级");
+        }
+
+        // 2. 导出包含高危公式注入前缀与白名单计算公式的真实数据，验证单引号转译与白名单豁免
+        List<SecurityUserExcelVO> securityData = SampleDataFixture.createMockSecurityUserList();
+        ByteArrayOutputStream dataOut = new ByteArrayOutputStream();
+        securityWorkbookService.exportSecurityData(dataOut, securityData);
+        byte[] dataBytes = dataOut.toByteArray();
+        saveTempExcel("scenario5-security-data.xlsx", dataBytes);
+
+        try (Workbook wb = WorkbookFactory.create(new ByteArrayInputStream(dataBytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertThat(sheet.getPhysicalNumberOfRows()).isEqualTo(4); // 1 表头 + 3 数据
+
+            // 第 1 行：=cmd|'/C calc'!A0 应被前置单引号转译；=SUM(A1:B1) 因 @ExcelFormulaAllowed 保留原样
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("'=cmd|'/C calc'!A0");
+            assertThat(row1.getCell(2).getStringCellValue()).isEqualTo("=SUM(A1:B1)");
+
+            // 第 2 行：+12345678 也应被前置单引号转译；=AVERAGE(C1:C10) 保留原样
+            Row row2 = sheet.getRow(2);
+            assertThat(row2.getCell(1).getStringCellValue()).isEqualTo("'+12345678");
+            assertThat(row2.getCell(2).getStringCellValue()).isEqualTo("=AVERAGE(C1:C10)");
+
+            // 第 3 行：普通文本保持不变
+            Row row3 = sheet.getRow(3);
+            assertThat(row3.getCell(1).getStringCellValue()).isEqualTo("普通员工");
+            assertThat(row3.getCell(2).getStringCellValue()).isEqualTo("普通文本");
         }
     }
 
@@ -557,6 +621,11 @@ class SampleExcelIntegrationTest {
             assertThat(head.getPhysicalNumberOfCells()).isEqualTo(2);
             assertThat(head.getCell(0).getStringCellValue()).isEqualTo("用户ID");
             assertThat(head.getCell(1).getStringCellValue()).isEqualTo("电子邮箱");
+
+            // 数据行与脱敏断言：白名单列投影紧凑左移且电子邮箱脱敏真实生效
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(row1.getCell(1).getStringCellValue()).contains("***").endsWith("@example.com");
         }
 
         // 2. 黑名单模式：排除 phone 与 gender
@@ -574,6 +643,12 @@ class SampleExcelIntegrationTest {
                 assertThat(colName).isNotEqualTo("联系手机");
                 assertThat(colName).isNotEqualTo("用户性别");
             }
+
+            // 数据行断言：黑名单排除后，其余字段（如电子邮箱）依然保真脱敏
+            Row row1 = sheet.getRow(1);
+            assertThat(row1.getCell(0).getNumericCellValue()).isEqualTo(1.0);
+            assertThat(row1.getCell(1).getStringCellValue()).isEqualTo("张三");
+            assertThat(row1.getCell(2).getStringCellValue()).contains("***").endsWith("@example.com");
         }
     }
 
@@ -664,7 +739,7 @@ class SampleExcelIntegrationTest {
     @Test
     @DisplayName("企业级内置主题：生成 5 套主题 Excel 样式输出至临时目录")
     void testThemes_AllSampleThemesOutput() throws Exception {
-        List<UserExcelVO> sampleUsers = dynamicProjectionService.getMockUserList();
+        List<UserExcelVO> sampleUsers = SampleDataFixture.createMockUserList();
 
         for (ExcelThemeEnum theme : ExcelThemeEnum.values()) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();

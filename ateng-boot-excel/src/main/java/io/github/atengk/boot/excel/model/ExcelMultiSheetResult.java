@@ -201,6 +201,62 @@ public class ExcelMultiSheetResult implements Serializable {
     }
 
     /**
+     * 写入聚合工作表数据并统一绑定多维度键（序号、名称、别名等），且确保总行数仅精确累加一次
+     *
+     * @param data       行数据列表
+     * @param sheetNos   需要绑定的所有工作表索引
+     * @param sheetNames 需要绑定的所有工作表名称
+     */
+    public void recordSheetData(List<?> data, Iterable<Integer> sheetNos, Iterable<String> sheetNames) {
+        List<?> safeData = (data != null && !data.isEmpty()) ? Collections.unmodifiableList(data) : Collections.emptyList();
+        int size = safeData.size();
+        if (sheetNos != null) {
+            for (Integer sheetNo : sheetNos) {
+                if (sheetNo != null) {
+                    indexDataMap.put(sheetNo, safeData);
+                    rowCountMap.put(String.valueOf(sheetNo), size);
+                }
+            }
+        }
+        if (sheetNames != null) {
+            for (String sheetName : sheetNames) {
+                if (sheetName != null && !sheetName.isBlank()) {
+                    nameDataMap.put(sheetName, safeData);
+                    rowCountMap.put(sheetName, size);
+                }
+            }
+        }
+        this.totalRowCount += size;
+    }
+
+    /**
+     * 记录流式分批读取的工作表行数并统一绑定多维度键，且确保总行数仅精确累加一次
+     *
+     * @param count      流式读取行数
+     * @param sheetNos   需要绑定的所有工作表索引
+     * @param sheetNames 需要绑定的所有工作表名称
+     */
+    public void recordStreamedRowCount(int count, Iterable<Integer> sheetNos, Iterable<String> sheetNames) {
+        if (sheetNos != null) {
+            for (Integer sheetNo : sheetNos) {
+                if (sheetNo != null) {
+                    rowCountMap.put(String.valueOf(sheetNo), count);
+                    indexDataMap.putIfAbsent(sheetNo, Collections.emptyList());
+                }
+            }
+        }
+        if (sheetNames != null) {
+            for (String sheetName : sheetNames) {
+                if (sheetName != null && !sheetName.isBlank()) {
+                    rowCountMap.put(sheetName, count);
+                    nameDataMap.putIfAbsent(sheetName, Collections.emptyList());
+                }
+            }
+        }
+        this.totalRowCount += count;
+    }
+
+    /**
      * 写入聚合工作表数据并更新行数统计（内部受管调用）
      *
      * @param sheetNo   工作表索引

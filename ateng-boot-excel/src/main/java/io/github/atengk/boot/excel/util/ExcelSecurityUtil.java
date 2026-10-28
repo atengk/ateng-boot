@@ -102,19 +102,24 @@ public final class ExcelSecurityUtil {
 
     /**
      * 判断输入流是否为加密的 Excel 工作簿（OLE2 Compound Document 格式）
+     * <p>
+     * 注意：入参流必须支持 {@code mark()/reset()}（例如 {@link BufferedInputStream} 或 {@link java.io.ByteArrayInputStream}），
+     * 以防止探测文件魔数时消耗流数据导致后续读取损坏。若传入不支持 mark 的流，将抛出 {@link IllegalArgumentException}。
+     * </p>
      *
-     * @param in 输入流
+     * @param in 支持 mark/reset 的输入流（为 null 时直接返回 false）
      * @return true 表示为已加密的工作簿
      */
     public static boolean isEncryptedWorkbook(InputStream in) {
         if (in == null) {
             return false;
         }
+        Assert.isTrue(in.markSupported(), "InputStream 必须支持 mark/reset (可通过 new BufferedInputStream(in) 包装)，以防止探测魔数消耗流数据损坏原始流");
         try {
-            InputStream markable = in.markSupported() ? in : new BufferedInputStream(in);
-            return FileMagic.valueOf(markable) == FileMagic.OLE2;
-        } catch (Exception ignored) {
-            return false;
+            return FileMagic.valueOf(in) == FileMagic.OLE2;
+        } catch (IOException ex) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "嗅探 Excel 文件格式失败: " + ex.getMessage(), ex);
         }
     }
 
@@ -204,7 +209,8 @@ public final class ExcelSecurityUtil {
             EncryptionInfo info = new EncryptionInfo(fs);
             Decryptor decryptor = Decryptor.getInstance(info);
             if (!decryptor.verifyPassword(password)) {
-                throw new ExcelValidationException("Excel 工作簿访问密码错误，解密失败");
+                throw new ExcelValidationException("Excel 工作簿访问密码错误，解密失败",
+                        new SecurityException("Workbook password verification failed"));
             }
             try (InputStream decryptedStream = decryptor.getDataStream(fs)) {
                 decryptedStream.transferTo(out);
@@ -259,6 +265,7 @@ public final class ExcelSecurityUtil {
      */
     public static InputStream decryptIfEncrypted(InputStream in, String password, Consumer<AutoCloseable> cleanupRegistrar) {
         Assert.notNull(in, "InputStream 输入流不可为空");
+        Assert.notNull(cleanupRegistrar, "cleanupRegistrar 受管清理资源注册回调不可为空");
         InputStream markable = in.markSupported() ? in : new BufferedInputStream(in);
         if (!isEncryptedWorkbook(markable)) {
             return markable;
@@ -269,15 +276,13 @@ public final class ExcelSecurityUtil {
         Path tempFile = decryptWorkbookToTempFile(markable, password);
         try {
             InputStream decIs = Files.newInputStream(tempFile);
-            if (cleanupRegistrar != null) {
-                cleanupRegistrar.accept(() -> {
-                    try {
-                        decIs.close();
-                    } finally {
-                        Files.deleteIfExists(tempFile);
-                    }
-                });
-            }
+            cleanupRegistrar.accept(() -> {
+                try {
+                    decIs.close();
+                } finally {
+                    Files.deleteIfExists(tempFile);
+                }
+            });
             return decIs;
         } catch (IOException ex) {
             try {

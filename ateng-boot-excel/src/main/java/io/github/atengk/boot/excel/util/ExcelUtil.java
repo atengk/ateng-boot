@@ -2079,15 +2079,26 @@ public final class ExcelUtil {
             hierarchy.add(0, current); // 父类在前
             current = current.getSuperclass();
         }
+        boolean ignoreUnannotated = false;
+        for (Class<?> clz : hierarchy) {
+            if (clz.isAnnotationPresent(ExcelIgnoreUnannotated.class)) {
+                ignoreUnannotated = true;
+                break;
+            }
+        }
         List<Field> allFields = new ArrayList<>();
         for (Class<?> clz : hierarchy) {
             for (Field field : clz.getDeclaredFields()) {
-                if (!Modifier.isStatic(field.getModifiers()) && !Modifier.isTransient(field.getModifiers())) {
-                    if (!field.isAnnotationPresent(ExcelIgnore.class)
-                            && !field.isAnnotationPresent(ExcelIgnoreUnannotated.class)) {
-                        allFields.add(field);
-                    }
+                if (Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
+                    continue;
                 }
+                if (field.isAnnotationPresent(ExcelIgnore.class)) {
+                    continue;
+                }
+                if (ignoreUnannotated && !field.isAnnotationPresent(ExcelProperty.class)) {
+                    continue;
+                }
+                allFields.add(field);
             }
         }
         // 按照 @ExcelProperty(index) 排序：显式指定 index 的按 index 排序，未指定或负数的排在后面并保持声明顺序

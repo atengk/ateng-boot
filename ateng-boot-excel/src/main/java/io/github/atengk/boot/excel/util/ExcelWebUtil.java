@@ -608,19 +608,8 @@ public final class ExcelWebUtil {
                                   Collection<String> includeColumns, Collection<String> excludeColumns, String password) {
         prepareWebResponse(response, fileName);
         Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
-
-        try {
-            ExcelUtil.export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns, password);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 下载网络连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 导出写入响应流失败",
+                () -> ExcelUtil.export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns, password));
     }
 
     /**
@@ -646,18 +635,8 @@ public final class ExcelWebUtil {
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<?> headList, List<?> dataList) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataList);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 动态导出下载连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Web 动态导出 Excel 失败",
+                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataList));
     }
 
     /**
@@ -672,18 +651,8 @@ public final class ExcelWebUtil {
      */
     public static void exportDynamic(HttpServletResponse response, String fileName, String sheetName, List<String> headList, List<String> dataKeys, List<Map<String, Object>> dataList) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 动态导出下载连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 动态导出 Excel 失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Web 动态导出 Excel 失败",
+                () -> ExcelUtil.exportDynamic(response.getOutputStream(), sheetName, headList, dataKeys, dataList));
     }
 
     /**
@@ -696,18 +665,8 @@ public final class ExcelWebUtil {
      */
     public static void exportErrorFeedback(HttpServletResponse response, String fileName, InputStream originalExcelStream, List<ExcelErrorRow> errorRows) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 错误反馈导出连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 导出 Excel 错误反馈文件失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Web 导出 Excel 错误反馈文件失败",
+                () -> ExcelUtil.exportErrorFeedback(originalExcelStream, response.getOutputStream(), errorRows));
     }
 
     /**
@@ -735,18 +694,8 @@ public final class ExcelWebUtil {
      */
     public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<ExcelErrorRow> errorRows) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportFailedRows(response.getOutputStream(), clazz, errorRows);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 差错导出连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 差错导出写入响应流失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 差错导出写入响应流失败",
+                () -> ExcelUtil.exportFailedRows(response.getOutputStream(), clazz, errorRows));
     }
 
     /**
@@ -761,18 +710,8 @@ public final class ExcelWebUtil {
      */
     public static <T> void exportFailedRows(HttpServletResponse response, String fileName, Class<T> clazz, List<T> failedList, List<ExcelErrorRow> errorRows) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportFailedRows(response.getOutputStream(), clazz, failedList, errorRows);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 差错导出连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 差错导出写入响应流失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 差错导出写入响应流失败",
+                () -> ExcelUtil.exportFailedRows(response.getOutputStream(), clazz, failedList, errorRows));
     }
 
     /**
@@ -802,18 +741,8 @@ public final class ExcelWebUtil {
      */
     public static <T> void exportWithWatermark(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String watermarkText, String protectionPassword) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportWithWatermark(response.getOutputStream(), DEFAULT_SHEET_NAME, data, clazz, watermarkText, protectionPassword);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 水印导出连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 水印导出写入响应流失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 水印导出写入响应流失败",
+                () -> ExcelUtil.exportWithWatermark(response.getOutputStream(), DEFAULT_SHEET_NAME, data, clazz, watermarkText, protectionPassword));
     }
 
     /**
@@ -871,18 +800,8 @@ public final class ExcelWebUtil {
      */
     public static <T> void exportTemplate(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.exportTemplate(response.getOutputStream(), sheetName, clazz);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 模板导出连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板导出写入响应流失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 模板导出写入响应流失败",
+                () -> ExcelUtil.exportTemplate(response.getOutputStream(), sheetName, clazz));
     }
 
     /**
@@ -922,18 +841,8 @@ public final class ExcelWebUtil {
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object data, FillConfig fillConfig) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 模板填充连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板填充写出失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 模板填充写出失败",
+                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, data, fillConfig));
     }
 
     /**
@@ -949,18 +858,8 @@ public final class ExcelWebUtil {
      */
     public static void fill(HttpServletResponse response, String fileName, String sheetName, InputStream templateIn, Object objectData, Collection<?> listData, FillConfig fillConfig) {
         prepareWebResponse(response, fileName);
-        try {
-            ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 复合模板填充连接: {}", t.getMessage());
-                return;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 模板填充写出失败: " + t.getMessage(), t);
-        }
+        executeWithClientAbortDefense("Excel 模板填充写出失败",
+                () -> ExcelUtil.fill(response.getOutputStream(), templateIn, sheetName, objectData, listData, fillConfig));
     }
 
     /**
@@ -972,18 +871,8 @@ public final class ExcelWebUtil {
      */
     public static ExcelBuilder builder(HttpServletResponse response, String fileName) {
         prepareWebResponse(response, fileName);
-        try {
-            return ExcelUtil.builder(response.getOutputStream());
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 构建器连接: {}", t.getMessage());
-                return null;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建 ExcelBuilder 失败: " + t.getMessage(), t);
-        }
+        return executeWithClientAbortDefense("创建 ExcelBuilder 失败", null,
+                () -> ExcelUtil.builder(response.getOutputStream()));
     }
 
     /**
@@ -997,18 +886,8 @@ public final class ExcelWebUtil {
      */
     public static <T> StreamingPageExportTemplate<T> streaming(HttpServletResponse response, String fileName, Class<T> clazz) {
         prepareWebResponse(response, fileName);
-        try {
-            return ExcelUtil.streaming(response.getOutputStream(), clazz);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 流式分页连接: {}", t.getMessage());
-                return null;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "创建流式分页导出模板失败: " + t.getMessage(), t);
-        }
+        return executeWithClientAbortDefense("创建流式分页导出模板失败", null,
+                () -> ExcelUtil.streaming(response.getOutputStream(), clazz));
     }
 
     /**
@@ -1040,18 +919,8 @@ public final class ExcelWebUtil {
     public static <T> long exportStreaming(HttpServletResponse response, String fileName, String sheetName, Class<T> clazz,
                                           Function<Integer, PageResult<T>> pageLoader) {
         prepareWebResponse(response, fileName);
-        try {
-            return ExcelUtil.exportStreaming(response.getOutputStream(), sheetName, clazz, pageLoader);
-        } catch (Throwable t) {
-            if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 流式分页导出连接: {}", t.getMessage());
-                return 0L;
-            }
-            if (t instanceof BusinessException be) {
-                throw be;
-            }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 流式分页导出执行失败: " + t.getMessage(), t);
-        }
+        return executeWithClientAbortDefense("Web 流式分页导出执行失败", 0L,
+                () -> ExcelUtil.exportStreaming(response.getOutputStream(), sheetName, clazz, pageLoader));
     }
 
     /**
@@ -1104,17 +973,47 @@ public final class ExcelWebUtil {
             BiFunction<K, Integer, List<T>> cursorLoader,
             Function<T, K> cursorExtractor) {
         prepareWebResponse(response, fileName);
+        return executeWithClientAbortDefense("Web 游标流式分页导出执行失败", 0L,
+                () -> ExcelUtil.exportStreamingByCursor(response.getOutputStream(), sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor));
+    }
+
+    @FunctionalInterface
+    private interface WebExportAction {
+        void execute() throws Throwable;
+    }
+
+    @FunctionalInterface
+    private interface WebExportFunction<R> {
+        R execute() throws Throwable;
+    }
+
+    private static void executeWithClientAbortDefense(String defaultErrorMessage, WebExportAction action) {
         try {
-            return ExcelUtil.exportStreamingByCursor(response.getOutputStream(), sheetName, clazz, initialCursor, pageSize, cursorLoader, cursorExtractor);
+            action.execute();
         } catch (Throwable t) {
             if (isClientAbortException(t)) {
-                log.debug("客户端提前中止/重置 Excel 游标流式分页导出连接: {}", t.getMessage());
-                return 0L;
+                log.debug("客户端提前中止/重置 Excel 下载网络连接: {}", t.getMessage());
+                return;
             }
             if (t instanceof BusinessException be) {
                 throw be;
             }
-            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Web 游标流式分页导出执行失败: " + t.getMessage(), t);
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), defaultErrorMessage + ": " + t.getMessage(), t);
+        }
+    }
+
+    private static <R> R executeWithClientAbortDefense(String defaultErrorMessage, R defaultFallback, WebExportFunction<R> action) {
+        try {
+            return action.execute();
+        } catch (Throwable t) {
+            if (isClientAbortException(t)) {
+                log.debug("客户端提前中止/重置 Excel 下载网络连接: {}", t.getMessage());
+                return defaultFallback;
+            }
+            if (t instanceof BusinessException be) {
+                throw be;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), defaultErrorMessage + ": " + t.getMessage(), t);
         }
     }
 }

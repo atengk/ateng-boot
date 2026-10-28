@@ -23,7 +23,7 @@
 | **字典翻译** | 动态数据字典 SPI | `@ExcelDict` / `DictProvider` / `DictProviderHolder` | - | `@ExcelDict(dictType = "user_status")`：解耦具体字典存储（数据库/Redis/枚举），导入导出时双向透明翻译 | `ExcelEnumAndDictTest`<br>`SampleExcelIntegrationTest` |
 | **防呆设计** | 表头指南与下拉选单约束 | `@ExcelPrompt` / `@ExcelDropdown` / `DropdownProvider` | - | `@ExcelPrompt(title, content)`（自动写入单元格浮动提示批注）；`@ExcelDropdown`（自动生成工作表级下拉列表限制，超过 255 字符自动外挂隐藏字典工作表） | `ExcelTemplateTest`<br>`SampleExcelIntegrationTest` |
 | **安全审计** | 防拍照暗水印与密码保护 | `ExcelUtil.exportWithWatermark` / `protectSheet` / `WatermarkSheetWriteHandler` | - | `exportWithWatermark(out, list, clazz, watermarkText, password)`：全屏 30° 倾斜半透明平铺暗水印，支持工作表只读密码锁定 | `ExcelWatermarkAndProtectTest`<br>`SampleExcelIntegrationTest` |
-| **整表强加密** | POI 原生 Agile AES-256 工作簿加密与解密 | `ExcelSecurityUtil` / `ExcelUtil.export(..., password)` | `ateng.boot.excel.temp-dir` | `export(..., password)` / `decryptWorkbook(in, out, password)` / `isEncrypted(in)`：基于 POI Agile Encryption (AES-256 + SHA-512) 强加密，受管临时磁盘中转流式输出，恒定常数级堆内存 | `ExcelWorkbookEncryptionTest`<br>`SecurityWorkbookScenarioService`<br>`SampleExcelIntegrationTest` |
+| **整表强加密** | POI 原生 Agile AES-256 工作簿加密与解密 | `ExcelSecurityUtil` / `ExcelUtil.export(..., password)` | `ateng.boot.excel.temp-dir` | `export(..., password)` / `decryptWorkbook(in, out, password)` / `isEncryptedWorkbook(in)`：基于 POI Agile Encryption (AES-256 + SHA-512) 强加密，受管临时磁盘中转流式输出，恒定常数级堆内存 | `ExcelWorkbookEncryptionTest`<br>`SecurityWorkbookScenarioService`<br>`SampleExcelIntegrationTest` |
 | **多媒体导出** | 图片流式导出与行高自适应 | `@ExcelImage` / `SmartImageConverter` / `ImageRowHeightWriteHandler` | - | `@ExcelImage(width, height)`：支持 `byte[]`、`InputStream`、`File` 与 URL 网络图片，自动根据最大图片像素推算行高并精准锚定单元格居中 | `ExcelImageTest` |
 | **结构排版** | 单元格纵向合并 | `@ExcelMerge` / `MergeCellWriteHandler` | - | `@ExcelMerge(value, dependParent)`：对连续相同的数据单元格自动纵向合并，支持依赖前序关联列联动合并 | `ExcelAdvancedFeaturesTest`<br>`SampleExcelIntegrationTest` |
 | **复杂报表** | 模板数据填充 | `ExcelUtil.fill` | - | `fill(out, templateIn, data, fillConfig)`：基于预设 `.xlsx` 模板，支持单对象占位符 `{name}` 与列表集合循环 `{.list}` 复合填充 | `ExcelTemplateTest` |
@@ -92,6 +92,8 @@ try (FileOutputStream out = new FileOutputStream("用户列表.xlsx")) {
 ```java
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
+import io.github.atengk.boot.sample.excel.service.DynamicColumnProjectionScenarioService;
+import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -107,10 +109,10 @@ import java.util.List;
 @RequestMapping("/api/excel/web-contract")
 public class ExcelWebContractController {
 
-    private final UserService userService;
+    private final DynamicColumnProjectionScenarioService scenarioService;
 
-    public ExcelWebContractController(UserService userService) {
-        this.userService = userService;
+    public ExcelWebContractController(DynamicColumnProjectionScenarioService scenarioService) {
+        this.scenarioService = scenarioService;
     }
 
     /**
@@ -124,7 +126,7 @@ public class ExcelWebContractController {
         HttpHeaders headers = ExcelWebUtil.createDownloadHeaders(fileName);
 
         StreamingResponseBody responseBody = outputStream -> {
-            List<UserExcelVO> data = userService.getMockUserList();
+            List<UserExcelVO> data = scenarioService.getMockUserList();
             ExcelUtil.export(outputStream, "用户清单", data, UserExcelVO.class, includeColumns, null);
         };
 
@@ -141,6 +143,8 @@ public class ExcelWebContractController {
 
 ```java
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
+import io.github.atengk.boot.sample.excel.service.DynamicColumnProjectionScenarioService;
+import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -153,9 +157,15 @@ import java.util.List;
 @RequestMapping("/api/excel/web-contract")
 public class ExcelWebContractController {
 
+    private final DynamicColumnProjectionScenarioService scenarioService;
+
+    public ExcelWebContractController(DynamicColumnProjectionScenarioService scenarioService) {
+        this.scenarioService = scenarioService;
+    }
+
     @GetMapping("/servlet-response")
     public void exportByServletResponse(HttpServletResponse response) throws IOException {
-        List<UserExcelVO> data = userService.getMockUserList();
+        List<UserExcelVO> data = scenarioService.getMockUserList();
         // 自动完成防乱码响应头装配、脱敏/字典枚举转义并直接写入网络流
         ExcelWebUtil.export(response, "用户名单_同步流式.xlsx", data, UserExcelVO.class);
     }
@@ -1057,9 +1067,9 @@ try (InputStream cipherIn = new FileInputStream("机密清单_加密.xlsx");
     ExcelSecurityUtil.decryptWorkbook(cipherIn, plainOut, password);
 }
 
-// 3. 探针探测：无须解密即可安全快速判断输入流是否为加密工作簿
-try (InputStream in = new FileInputStream("机密清单_加密.xlsx")) {
-    boolean encrypted = ExcelSecurityUtil.isEncrypted(in); // 返回 true
+// 3. 探针探测：无须解密即可安全快速判断输入流是否为加密工作簿（要求支持 mark/reset）
+try (InputStream in = new BufferedInputStream(new FileInputStream("机密清单_加密.xlsx"))) {
+    boolean encrypted = ExcelSecurityUtil.isEncryptedWorkbook(in); // 返回 true
 }
 ```
 

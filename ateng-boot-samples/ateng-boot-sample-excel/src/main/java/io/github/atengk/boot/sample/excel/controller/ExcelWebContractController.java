@@ -1,15 +1,14 @@
 package io.github.atengk.boot.sample.excel.controller;
 
 import io.github.atengk.boot.core.model.Result;
-import io.github.atengk.boot.excel.listener.BatchValidationListener;
 import io.github.atengk.boot.excel.model.ExcelReadResult;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import io.github.atengk.boot.excel.util.ExcelWebUtil;
 import io.github.atengk.boot.sample.excel.service.DynamicColumnProjectionScenarioService;
+import io.github.atengk.boot.sample.excel.service.ValidationAndFeedbackScenarioService;
 import io.github.atengk.boot.sample.excel.vo.UserExcelVO;
 import io.github.atengk.boot.web.annotation.WebLog;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.Validator;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -40,11 +39,12 @@ import java.util.List;
 public class ExcelWebContractController {
 
     private final DynamicColumnProjectionScenarioService scenarioService;
-    private final Validator validator;
+    private final ValidationAndFeedbackScenarioService validationService;
 
-    public ExcelWebContractController(DynamicColumnProjectionScenarioService scenarioService, Validator validator) {
+    public ExcelWebContractController(DynamicColumnProjectionScenarioService scenarioService,
+                                      ValidationAndFeedbackScenarioService validationService) {
         this.scenarioService = scenarioService;
-        this.validator = validator;
+        this.validationService = validationService;
     }
 
     /**
@@ -98,9 +98,7 @@ public class ExcelWebContractController {
     @WebLog(value = "Excel 文件上传与校验", printParams = false, printResult = true, printCostTime = true)
     public Result<ExcelReadResult<UserExcelVO>> uploadAndValidate(@RequestParam("file") MultipartFile file) throws IOException {
         try (InputStream inputStream = file.getInputStream()) {
-            BatchValidationListener<UserExcelVO> listener = new BatchValidationListener<>(UserExcelVO.class, validator, false);
-            ExcelUtil.read(inputStream, UserExcelVO.class, listener);
-            return Result.success(listener.toResult());
+            return Result.success(validationService.readAndValidate(inputStream));
         }
     }
 }
