@@ -85,6 +85,9 @@ public class AtengSaTokenAutoConfiguration {
      */
     @PostConstruct
     public void initFirewallStrategy() {
+        // 自动桥接 TokenProperties 强类型配置至 SaManager.getConfig()
+        applyTokenProperties(properties.getToken());
+
         // 自动挂载 Sa-Token 当前操作人与当前租户提取 SPI 至 Core 核心底座
         UserContextHolder.setUserProvider(new SaTokenCurrentUserProvider());
         TenantContextHolder.setTenantProvider(LoginHelper::getTenantId);
@@ -108,6 +111,35 @@ public class AtengSaTokenAutoConfiguration {
         };
     }
 
+    /**
+     * 将强类型 TokenProperties 配置桥接写入底层 SaManager.getConfig()
+     *
+     * @param tokenProps 强类型配置
+     */
+    private void applyTokenProperties(SaTokenProperties.TokenProperties tokenProps) {
+        if (tokenProps == null) {
+            return;
+        }
+        cn.dev33.satoken.config.SaTokenConfig config = cn.dev33.satoken.SaManager.getConfig();
+        if (config == null) {
+            config = new cn.dev33.satoken.config.SaTokenConfig();
+            cn.dev33.satoken.SaManager.setConfig(config);
+        }
+        if (tokenProps.getTimeout() != null) {
+            config.setTimeout(tokenProps.getTimeout().toSeconds());
+        }
+        if (tokenProps.getActiveTimeout() != null) {
+            config.setActiveTimeout(tokenProps.getActiveTimeout().toSeconds());
+        }
+        config.setIsConcurrent(tokenProps.isConcurrent());
+        config.setIsShare(tokenProps.isShare());
+        config.setMaxLoginCount(tokenProps.getMaxLoginCount());
+        if (tokenProps.getTokenStyle() != null && !tokenProps.getTokenStyle().isBlank()) {
+            config.setTokenStyle(tokenProps.getTokenStyle());
+        }
+        log.debug("Sa-Token 强类型配置已成功桥接至 SaManager.getConfig(): timeout={}s, activeTimeout={}s, maxLoginCount={}",
+                config.getTimeout(), config.getActiveTimeout(), config.getMaxLoginCount());
+    }
 
     /**
      * 注册 Sa-Token 全局统一异常处理器

@@ -25,6 +25,17 @@ public class SaTokenProperties {
     private boolean enabled = true;
 
     /**
+     * 主账号登录类型标识（多账号共存时，用于优先映射当前请求操作人至 UserContextHolder），默认 login
+     */
+    private String primaryLoginType = "login";
+
+    /**
+     * Token 与底层会话核心生命周期强类型配置
+     */
+    @NestedConfigurationProperty
+    private TokenProperties token = new TokenProperties();
+
+    /**
      * 路由拦截排除的全局白名单路径列表
      */
     private List<String> whiteList = new ArrayList<>(Arrays.asList(
@@ -267,5 +278,66 @@ public class SaTokenProperties {
          * 是否启用数据所有权 (@CheckDataOwner) 切面防御
          */
         private boolean enabled = true;
+    }
+
+    /**
+     * Token 与底层会话核心生命周期强类型配置属性
+     */
+    @Data
+    public static class TokenProperties {
+
+        /**
+         * Token 绝对有效期（默认: 24h）
+         */
+        private Duration timeout = Duration.ofDays(1);
+
+        /**
+         * 活跃超时时间（空闲活跃超时，在此时间内无操作将导致 Token 冻结过期，默认: 30m，小于等于 0 表示关闭）
+         */
+        private Duration activeTimeout = Duration.ofMinutes(30);
+
+        /**
+         * 同一账号是否允许并发登录（为 true 时允许同一账号多处登录共存；为 false 时新登录会顶掉旧登录，默认: true）
+         */
+        private boolean isConcurrent = true;
+
+        /**
+         * 在多人登录同一账号时，是否共用同一个 Token（为 true 时多次登录共享一个 Token；为 false 时每次登录签发新 Token，默认: true）
+         */
+        private boolean isShare = true;
+
+        public boolean isConcurrent() {
+            return isConcurrent;
+        }
+
+        public void setIsConcurrent(boolean isConcurrent) {
+            this.isConcurrent = isConcurrent;
+        }
+
+        public void setConcurrent(boolean concurrent) {
+            this.isConcurrent = concurrent;
+        }
+
+        public boolean isShare() {
+            return isShare;
+        }
+
+        public void setIsShare(boolean isShare) {
+            this.isShare = isShare;
+        }
+
+        public void setShare(boolean share) {
+            this.isShare = share;
+        }
+
+        /**
+         * 同一账号最大登录并发数（在 isConcurrent=true 且 isShare=false 时生效，超出上限自动顶替最旧会话，默认: 12）
+         */
+        private int maxLoginCount = 12;
+
+        /**
+         * Token 风格（支持: uuid, simple-uuid, random-32, random-64, random-128, tik 等，默认: uuid）
+         */
+        private String tokenStyle = "uuid";
     }
 }

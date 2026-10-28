@@ -9,7 +9,7 @@
 _Avoid_: SaRouteInterceptor, SecurityFilter, AuthInterceptor
 
 **LoginHelper**:
-基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
+基于 Sa-Token 强类型扩展的高级登录与上下文门面工具类，提供开箱即用的登录会话构建、多账号体系解耦（多 `loginType` 重载路由）、多终端会话隔离、强类型会话载荷读写（`LoginUser`）、二级安全认证治理（`openSafe`/`checkSafe`/`closeSafe`）、数据所有权校验断言（`checkSelf`/`checkBelongsToTenant`）、身份模拟（`switchTo`/`runAs`）与上下文清理。内置对多租户复合主键模式（`{tenantId}_{userId}`）的双向对称解析与剥离，确保 `getUserId()` 始终返回纯净的业务主键。彻底杜绝将未类型化的裸 Map 或易失性散落数据写入底层 Session。
 _Avoid_: AuthHelper, SessionManager, SecurityUtils, TokenHelper
 
 **LoginUser**:
@@ -25,7 +25,7 @@ _Avoid_: RedisDao, SaRedisTemplate, RedisSessionStore
 _Avoid_: StpInterfaceImpl, PermissionDataSource, SaPermissionProvider
 
 **PermissionCacheService**:
-两级权限与角色即时热刷新治理服务，提供面向用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions`）及全域游标增量清空（`clearAll`）的极简门面，自适应支持 Redis 分布式模式与 JVM 进程内静态内存降级模式，并在刷新时自动联动 `SaTokenClusterBroadcaster` 触发全网集群广播。
+高性能两级级联权限与角色即时热刷新治理服务，构建 L1（JVM 进程内微缓存，带防 OOM 边界与极短 TTL）+ L2（Redis 分布式缓存）级联架构。提供面向用户维度（`refreshUserPermissions`）、角色维度（`refreshRolePermissions`）及全域游标增量清空（`clearAll`）的极简门面；本地更新即时淘汰 L1+L2，并通过 `SaTokenClusterBroadcaster` 触发 Redis Pub/Sub 全集群广播以秒级驱逐所有异地节点的 L1 微缓存。
 _Avoid_: CacheCleaner, PermissionCacheManager, RefreshService
 
 **@CheckDataOwner**:
@@ -44,6 +44,14 @@ _Avoid_: @Public, @PermitAll, @IgnoreAuth, @NoLogin, @Uncheck
 动态白名单提供者 SPI 接口，支持业务模块、插件 Starter 或配置中心在运行时动态向安全拦截器注册免鉴权 URL 路径集合，实现松耦合的白名单扩展机制。
 _Avoid_: DynamicWhitelist, WhitelistService, WhitelistProvider, PathFilterSPI
 
+**DynamicPathPermissionProvider**:
+数据库驱动的动态 URL 路径权限匹配 SPI 接口，支持业务层从数据库或配置中心动态加载“HTTP Method + AntPath 路径 -> 权限码”映射规则，并在 `AtengSaTokenInterceptor` 中自动执行动态匹配校验，免去在 Controller 方法硬编码注解。
+_Avoid_: PathPermissionChecker, UrlAuthService, DynamicRbacSPI
+
+**OnlineUser**:
+企业级在线会话聚合模型，封装在线用户 `userId`、`userAccount`、`userName`、`tokenValue`、`loginDevice`、`loginIp`、`loginTime` 及当前 Token 剩余有效时间（`tokenTimeout`），专供管理后台在线用户列表监控与强退治理。
+_Avoid_: OnlineSessionVO, ActiveUser, SessionDetail
+
 **RunAs / Impersonate**:
 双维身份模拟机制，区分跨请求会话级持久模拟（`LoginHelper.switchTo` / `endSwitch`）与代码块瞬态安全模拟（`LoginHelper.runAs`）。内部自动固化记录最初源头 `originalUserId`，确保多次连续切换源头不漂移；瞬态模式采用 ThreadLocal 栈式保护并在 `finally` 块确定性恢复；业务层 `LoginHelper.getUserId()` 自动对齐被模拟人，同时向 Core/Web `@OperateLog` 切面提供双维身份（真实运维人与被模拟人）审计穿透。
 _Avoid_: SwitchUser, MockUser, FakeLogin, ImpersonationHelper
@@ -57,8 +65,12 @@ _Avoid_: ClusterSyncService, RedisBroadcaster, SecurityClusterSender, ClusterEve
 _Avoid_: ClusterReceiver, SecurityClusterConsumer, SyncHandler
 
 **LoginFailureLockService**:
-登录防暴力破解策略服务，提供失败原子累计（`recordFailure`）、成功对称清零（`clearFailure`）、剩余次数与锁定状态查询及 `checkLocked` Fail-Fast 防卫。采用 Redis（带滑动窗口 TTL）与进程内线程安全内存容器（带时间戳惰性淘汰与容量超限淘汰）双模自适应存储，连续输错达到上限自动联动 `LoginHelper.disable` 接入框架原生封禁底座。
+登录防暴力破解策略服务，支持“账号锁定 + IP 限流熔断”双轨防卫。提供失败原子累计（`recordFailure`）、成功对称清零（`clearFailure`）、剩余次数与锁定状态查询及 `checkLocked` Fail-Fast 防卫。采用 Redis（带滑动窗口 TTL）与进程内线程安全内存容器（带时间戳惰性淘汰与容量超限淘汰）双模自适应存储，连续输错达到上限自动联动 `LoginHelper.disable` 接入框架原生封禁底座。
 _Avoid_: LoginDefenseService, BruteForceLocker, LoginAttemptService, FailureCounter
+
+**SameTokenClientHttpRequestInterceptor**:
+微服务内部零信任调用客户端请求拦截器（基于 Spring 6 `ClientHttpRequestInterceptor`）。在服务发起跨服务 HTTP 调用时，自动从底层 `SaSameUtil.getToken()` 提取当前微服务内网防伪凭据并注入请求头，与服务端 `@CheckSameToken` 切面构成全闭环防伪壁垒。
+_Avoid_: SameTokenFilter, FeignSameTokenInterceptor, InternalTokenInjector
 
 **SaTokenEventPublisher**:
 Sa-Token 全生命周期底层监听器与 Spring 原生 `ApplicationEvent` 总线桥接发布器，将登录、注销、被踢、被顶、封禁、解封及二级认证开启/关闭等动作发布为标准 Spring 事件（`SaLoginEvent`、`SaKickoutEvent` 等），支持业务通过 `@EventListener` 零侵入异步解耦消费。
