@@ -25,6 +25,7 @@ import io.github.atengk.boot.satoken.defense.LoginFailureLockService;
 import io.github.atengk.boot.satoken.event.SaTokenEventPublisher;
 import io.github.atengk.boot.satoken.handler.SaTokenExceptionHandler;
 import io.github.atengk.boot.satoken.interceptor.AtengSaTokenInterceptor;
+import io.github.atengk.boot.satoken.interceptor.SameTokenClientHttpRequestInterceptor;
 import io.github.atengk.boot.satoken.openapi.SaTokenOpenApiCustomizer;
 import io.github.atengk.boot.satoken.processor.AnonymousUrlProcessor;
 import io.github.atengk.boot.satoken.properties.SaTokenProperties;
@@ -59,6 +60,9 @@ import io.github.atengk.boot.satoken.cluster.listener.SaTokenClusterRedisMessage
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.boot.web.client.RestClientCustomizer;
+import org.springframework.boot.web.client.RestTemplateCustomizer;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -406,6 +410,53 @@ public class AtengSaTokenAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SaCheckSameTokenAspect saCheckSameTokenAspect(SaTokenProperties properties) {
         return new SaCheckSameTokenAspect(properties);
+    }
+
+    /**
+     * 微服务内部 Same-Token 客户端出站拦截与自动注入配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(ClientHttpRequestInterceptor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class SameTokenClientConfiguration {
+
+        /**
+         * 注册微服务内部 Same-Token 客户端出站请求拦截器
+         *
+         * @param properties Sa-Token 配置属性
+         * @return SameTokenClientHttpRequestInterceptor 实例
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public SameTokenClientHttpRequestInterceptor sameTokenClientHttpRequestInterceptor(SaTokenProperties properties) {
+            return new SameTokenClientHttpRequestInterceptor(properties);
+        }
+
+        /**
+         * 为 Spring 受管的 RestClient.Builder 自动挂载 Same-Token 拦截器
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "sameTokenRestClientCustomizer")
+        @ConditionalOnClass(RestClientCustomizer.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "auto-inject-client", havingValue = "true", matchIfMissing = true)
+        public RestClientCustomizer sameTokenRestClientCustomizer(SameTokenClientHttpRequestInterceptor interceptor) {
+            return restClientBuilder -> restClientBuilder.requestInterceptor(interceptor);
+        }
+
+        /**
+         * 为 Spring 受管的 RestTemplate 自动挂载 Same-Token 拦截器
+         */
+        @Bean
+        @ConditionalOnMissingBean(name = "sameTokenRestTemplateCustomizer")
+        @ConditionalOnClass(RestTemplateCustomizer.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.satoken.same-token", name = "auto-inject-client", havingValue = "true", matchIfMissing = true)
+        public RestTemplateCustomizer sameTokenRestTemplateCustomizer(SameTokenClientHttpRequestInterceptor interceptor) {
+            return restTemplate -> {
+                if (!restTemplate.getInterceptors().contains(interceptor)) {
+                    restTemplate.getInterceptors().add(interceptor);
+                }
+            };
+        }
     }
 
     /**

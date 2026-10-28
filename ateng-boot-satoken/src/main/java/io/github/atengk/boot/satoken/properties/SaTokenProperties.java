@@ -141,6 +141,23 @@ public class SaTokenProperties {
          * 约定的 Same-Token 鉴权凭据密钥（可选，未配置时使用 Sa-Token 默认密钥生成机制）
          */
         private String tokenValue;
+
+        /**
+         * 是否自动为 Spring 受管客户端（RestClient / RestTemplate）注入 Same-Token 拦截器
+         */
+        private boolean autoInjectClient = true;
+
+        public boolean isAutoInjectClient() {
+            return autoInjectClient;
+        }
+
+        public void setAutoInjectClient(boolean autoInjectClient) {
+            this.autoInjectClient = autoInjectClient;
+        }
+
+        public boolean getAutoInjectClient() {
+            return autoInjectClient;
+        }
     }
 
     /**
