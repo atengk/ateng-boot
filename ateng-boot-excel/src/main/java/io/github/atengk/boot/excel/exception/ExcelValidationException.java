@@ -32,6 +32,26 @@ public class ExcelValidationException extends BusinessException {
     }
 
     /**
+     * 基于自定义异常描述信息构造校验异常
+     *
+     * @param message 自定义异常描述信息
+     */
+    public ExcelValidationException(String message) {
+        this(message, Collections.emptyList());
+    }
+
+    /**
+     * 基于自定义异常描述信息与根因异常构造校验异常
+     *
+     * @param message 自定义异常描述信息
+     * @param cause   原始根因异常
+     */
+    public ExcelValidationException(String message, Throwable cause) {
+        super(CommonResultCode.BAD_REQUEST.getCode(), message, cause);
+        this.errorRows = Collections.emptyList();
+    }
+
+    /**
      * 基于自定义异常信息与结构化错误行集合构造校验异常
      *
      * @param message   自定义异常描述信息

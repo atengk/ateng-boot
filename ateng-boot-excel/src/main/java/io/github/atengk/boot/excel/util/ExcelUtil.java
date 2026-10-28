@@ -58,6 +58,8 @@ import org.springframework.util.Assert;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
@@ -428,17 +430,93 @@ public final class ExcelUtil {
      * @param excludeColumns 动态排除的属性字段名称集合（为空或 null 则不限制）
      * @param <T>            实体数据泛型
      */
+    /**
+     * 流式导出数据至指定的 OutputStream，并采用 AES-256 算法加密保护工作簿
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param data         待导出的数据集合（为 null 时视为空集合）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param password     工作簿加密保护密码（为空时不加密）
+     * @param <T>          实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, List<T> data, Class<T> clazz, String password) {
+        export(outputStream, DEFAULT_SHEET_NAME, data, clazz, null, null, password);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称与加密密码
+     *
+     * @param outputStream 目标输出流（不可为空）
+     * @param sheetName    工作表名称（为空时默认 Sheet1）
+     * @param data         待导出的数据集合（为 null 时视为空集合）
+     * @param clazz        导出的实体类型 Class（不可为空）
+     * @param password     工作簿加密保护密码（为空时不加密）
+     * @param <T>          实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz, String password) {
+        export(outputStream, sheetName, data, clazz, null, null, password);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称与动态包含/排除的列
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 动态排除的属性字段名称集合（为空或 null 则不限制）
+     * @param <T>            实体数据泛型
+     */
     public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz,
                                   Collection<String> includeColumns, Collection<String> excludeColumns) {
+        export(outputStream, sheetName, data, clazz, includeColumns, excludeColumns, null);
+    }
+
+    /**
+     * 流式导出数据至指定的 OutputStream，并指定 Sheet 名称、动态列过滤与 AES-256 加密保护
+     *
+     * @param outputStream   目标输出流（不可为空）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合（为 null 时视为空集合）
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 动态包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 动态排除的属性字段名称集合（为空或 null 则不限制）
+     * @param password       工作簿加密保护密码（为空时不加密）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(OutputStream outputStream, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns, String password) {
         Assert.notNull(outputStream, "OutputStream 目标输出流不可为空");
         Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
 
         String targetSheetName = (sheetName != null && !sheetName.isBlank()) ? sheetName : DEFAULT_SHEET_NAME;
         List<T> exportList = (data != null) ? data : Collections.emptyList();
 
-        var writerBuilder = createStandardWriterBuilder(outputStream, clazz, includeColumns, excludeColumns);
-        writerBuilder.sheet(targetSheetName)
-                .doWrite(exportList);
+        if (password != null && !password.isBlank()) {
+            Path tempPlainFile = null;
+            try {
+                tempPlainFile = Files.createTempFile("ateng-excel-plain-", ".tmp");
+                try (OutputStream fos = Files.newOutputStream(tempPlainFile)) {
+                    var writerBuilder = createStandardWriterBuilder(fos, clazz, includeColumns, excludeColumns);
+                    writerBuilder.sheet(targetSheetName).doWrite(exportList);
+                }
+                ExcelSecurityUtil.encryptWorkbook(tempPlainFile, outputStream, password);
+            } catch (IOException ex) {
+                throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                        "创建导出临时文件失败: " + ex.getMessage(), ex);
+            } finally {
+                if (tempPlainFile != null) {
+                    try {
+                        Files.deleteIfExists(tempPlainFile);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        } else {
+            var writerBuilder = createStandardWriterBuilder(outputStream, clazz, includeColumns, excludeColumns);
+            writerBuilder.sheet(targetSheetName).doWrite(exportList);
+        }
     }
 
     /**
@@ -550,6 +628,60 @@ public final class ExcelUtil {
 
         try {
             export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns);
+        } catch (IOException e) {
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Web 环境下流式导出加密 Excel 并直接写入 HttpServletResponse
+     *
+     * @param response 响应对象（不可为空）
+     * @param fileName 导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param data     待导出的数据集合
+     * @param clazz    导出的实体类型 Class（不可为空）
+     * @param password 工作簿加密保护密码（为空时不加密）
+     * @param <T>      实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, List<T> data, Class<T> clazz, String password) {
+        export(response, fileName, DEFAULT_SHEET_NAME, data, clazz, null, null, password);
+    }
+
+    /**
+     * Web 环境下流式导出加密 Excel 并直接写入 HttpServletResponse，并指定 Sheet 名称
+     *
+     * @param response  响应对象（不可为空）
+     * @param fileName  导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param sheetName 工作表名称（为空时默认 Sheet1）
+     * @param data      待导出的数据集合
+     * @param clazz     导出的实体类型 Class（不可为空）
+     * @param password  工作簿加密保护密码（为空时不加密）
+     * @param <T>       实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz, String password) {
+        export(response, fileName, sheetName, data, clazz, null, null, password);
+    }
+
+    /**
+     * Web 环境下流式导出加密 Excel 并直接写入 HttpServletResponse，并指定 Sheet 名称与包含/排除的列
+     *
+     * @param response       响应对象（不可为空）
+     * @param fileName       导出的文件名（不可为空，自动补充 .xlsx 后缀）
+     * @param sheetName      工作表名称（为空时默认 Sheet1）
+     * @param data           待导出的数据集合
+     * @param clazz          导出的实体类型 Class（不可为空）
+     * @param includeColumns 包含的属性字段名称集合（为空或 null 则不限制）
+     * @param excludeColumns 排除的属性字段名称集合（为空或 null 则不限制）
+     * @param password       工作簿加密保护密码（为空时不加密）
+     * @param <T>            实体数据泛型
+     */
+    public static <T> void export(HttpServletResponse response, String fileName, String sheetName, List<T> data, Class<T> clazz,
+                                  Collection<String> includeColumns, Collection<String> excludeColumns, String password) {
+        prepareWebResponse(response, fileName);
+        Assert.notNull(clazz, "导出的实体 Class 类型不可为空");
+
+        try {
+            export(response.getOutputStream(), sheetName, data, clazz, includeColumns, excludeColumns, password);
         } catch (IOException e) {
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(), "Excel 导出写入响应流失败: " + e.getMessage(), e);
         }
@@ -772,20 +904,59 @@ public final class ExcelUtil {
      * @param <T>         实体数据泛型
      * @return 解析所得的数据列表（无数据时返回空集合，绝不返回 null）
      */
+    /**
+     * 同步全量读取 InputStream 数据为强类型实体列表
+     * <p>
+     * 适用于小文件读取。若数据量极大（超过 1 万行），推荐使用 {@link #readBatch} 进行分批流式消费。
+     * 若工作簿已加密，必须调用带有 password 参数的重载方法。
+     * </p>
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param <T>         实体数据泛型
+     * @return 解析所得的数据列表（无数据时返回空集合，绝不返回 null）
+     */
     public static <T> List<T> read(InputStream inputStream, Class<T> clazz) {
+        return read(inputStream, clazz, (String) null);
+    }
+
+    /**
+     * 同步全量读取受密码保护的 InputStream 数据为强类型实体列表
+     * <p>
+     * 自动嗅探 OLE2 加密工作簿格式，透明执行 AES-256 解密并完成流式解析。
+     * </p>
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param password    工作簿访问密码（为空时若文件加密则抛出异常）
+     * @param <T>         实体数据泛型
+     * @return 解析所得的数据列表（无数据时返回空集合，绝不返回 null）
+     */
+    public static <T> List<T> read(InputStream inputStream, Class<T> clazz, String password) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
-        var readerBuilder = FesodSheet.read(inputStream)
-                .head(clazz);
-        registerEnumConverters(readerBuilder, clazz);
-        List<T> list = readerBuilder.sheet()
-                .doReadSync();
-        if (maxSyncRows > 0 && list != null && list.size() > maxSyncRows) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
-                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + list.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+        List<AutoCloseable> cleanups = new ArrayList<>(2);
+        try {
+            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+            var readerBuilder = FesodSheet.read(effectiveStream)
+                    .head(clazz);
+            registerEnumConverters(readerBuilder, clazz);
+            List<T> list = readerBuilder.sheet()
+                    .doReadSync();
+            if (maxSyncRows > 0 && list != null && list.size() > maxSyncRows) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                        "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + list.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+            }
+            return (list != null) ? list : Collections.emptyList();
+        } finally {
+            for (AutoCloseable res : cleanups) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {
+                }
+            }
         }
-        return (list != null) ? list : Collections.emptyList();
     }
 
     /**
@@ -797,14 +968,38 @@ public final class ExcelUtil {
      * @param <T>         实体数据泛型
      */
     public static <T> void read(InputStream inputStream, Class<T> clazz, ReadListener<T> listener) {
+        read(inputStream, clazz, null, listener);
+    }
+
+    /**
+     * 流式读取受密码保护的 Excel 数据并交由指定的 ReadListener 自定义处理
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param password    工作簿访问密码（为空时若文件加密则抛出异常）
+     * @param listener    自定义读取监听器（不可为空）
+     * @param <T>         实体数据泛型
+     */
+    public static <T> void read(InputStream inputStream, Class<T> clazz, String password, ReadListener<T> listener) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
         Assert.notNull(listener, "ReadListener 监听器不可为空");
 
-        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
-        registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet()
-                .doRead();
+        List<AutoCloseable> cleanups = new ArrayList<>(2);
+        try {
+            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+            var readerBuilder = FesodSheet.read(effectiveStream, clazz, listener);
+            registerEnumConverters(readerBuilder, clazz);
+            readerBuilder.sheet()
+                    .doRead();
+        } finally {
+            for (AutoCloseable res : cleanups) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     /**
@@ -816,7 +1011,20 @@ public final class ExcelUtil {
      * @param <T>         实体数据泛型
      */
     public static <T> void readBatch(InputStream inputStream, Class<T> clazz, Consumer<List<T>> consumer) {
-        readBatch(inputStream, clazz, defaultBatchSize, consumer);
+        readBatch(inputStream, clazz, defaultBatchSize, null, consumer);
+    }
+
+    /**
+     * 流式分批读取受密码保护的 InputStream 数据并回调消费（采用全局默认批次大小）
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param password    工作簿访问密码
+     * @param consumer    分批数据消费回调（不可为空）
+     * @param <T>         实体数据泛型
+     */
+    public static <T> void readBatch(InputStream inputStream, Class<T> clazz, String password, Consumer<List<T>> consumer) {
+        readBatch(inputStream, clazz, defaultBatchSize, password, consumer);
     }
 
     /**
@@ -832,6 +1040,23 @@ public final class ExcelUtil {
      * @param <T>         实体数据泛型
      */
     public static <T> void readBatch(InputStream inputStream, Class<T> clazz, int batchSize, Consumer<List<T>> consumer) {
+        readBatch(inputStream, clazz, batchSize, null, consumer);
+    }
+
+    /**
+     * 流式分批读取受密码保护的 InputStream 数据并回调消费
+     * <p>
+     * 每次累计达到指定的 {@code batchSize} 时触发回调处理，并立即清理堆内存引用，有效防御大文件导入 OOM。
+     * </p>
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param batchSize   每次消费的分批阈值（必须大于 0）
+     * @param password    工作簿访问密码
+     * @param consumer    分批数据消费回调（不可为空）
+     * @param <T>         实体数据泛型
+     */
+    public static <T> void readBatch(InputStream inputStream, Class<T> clazz, int batchSize, String password, Consumer<List<T>> consumer) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
         Assert.isTrue(batchSize > 0, "分批大小 batchSize 必须大于 0");
@@ -863,10 +1088,7 @@ public final class ExcelUtil {
             }
         };
 
-        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
-        registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet()
-                .doRead();
+        read(inputStream, clazz, password, listener);
     }
 
     /**
@@ -882,7 +1104,21 @@ public final class ExcelUtil {
      * @throws ExcelValidationException 当存在行级校验错误时抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz) {
-        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), false);
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), false, null);
+    }
+
+    /**
+     * 强类型读取受密码保护的 Excel 并执行 JSR-303 行级数据校验
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param password    工作簿访问密码
+     * @param <T>         实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException 当存在行级校验错误时抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, String password) {
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), false, password);
     }
 
     /**
@@ -896,7 +1132,22 @@ public final class ExcelUtil {
      * @throws ExcelValidationException 当存在行级校验错误时抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, boolean failFast) {
-        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), failFast);
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), failFast, null);
+    }
+
+    /**
+     * 强类型读取受密码保护的 Excel 并执行 JSR-303 行级数据校验
+     *
+     * @param inputStream 输入流（不可为空）
+     * @param clazz       读取映射的目标实体 Class（不可为空）
+     * @param failFast    是否快速失败（true: 遇到第一个错误立即抛出异常中断；false: 聚合所有错误行）
+     * @param password    工作簿访问密码
+     * @param <T>         实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException 当存在行级校验错误时抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, boolean failFast, String password) {
+        return readWithValidation(inputStream, clazz, defaultValidationProperties.getHeaderStrategy(), failFast, password);
     }
 
     /**
@@ -911,7 +1162,23 @@ public final class ExcelUtil {
      * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy) {
-        return readWithValidation(inputStream, clazz, headerStrategy, false);
+        return readWithValidation(inputStream, clazz, headerStrategy, false, null);
+    }
+
+    /**
+     * 强类型读取受密码保护的 Excel 并执行前置表头契约与 JSR-303 行级数据校验
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略（STRICT: 严格匹配; LOOSE: 宽松全包含; DISABLED: 禁用）
+     * @param password       工作簿访问密码
+     * @param <T>            实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException       当存在行级数据校验错误时抛出
+     * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, String password) {
+        return readWithValidation(inputStream, clazz, headerStrategy, false, password);
     }
 
     /**
@@ -927,40 +1194,68 @@ public final class ExcelUtil {
      * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
      */
     public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, boolean failFast) {
+        return readWithValidation(inputStream, clazz, headerStrategy, failFast, null);
+    }
+
+    /**
+     * 强类型读取受密码保护的 Excel 并执行前置表头契约与 JSR-303 行级数据校验
+     *
+     * @param inputStream    输入流（不可为空）
+     * @param clazz          读取映射的目标实体 Class（不可为空）
+     * @param headerStrategy 表头契约校验策略（STRICT: 严格匹配; LOOSE: 宽松全包含; DISABLED: 禁用）
+     * @param failFast       是否快速失败（true: 遇到第一个数据错误立即中断；false: 聚合错误行）
+     * @param password       工作簿访问密码
+     * @param <T>            实体数据泛型
+     * @return 解析成功的合法实体数据集合
+     * @throws ExcelValidationException       当存在行级数据校验错误时抛出
+     * @throws ExcelHeaderValidationException 当表头契约失配时立即 Fail-Fast 抛出
+     */
+    public static <T> List<T> readWithValidation(InputStream inputStream, Class<T> clazz, HeaderValidationStrategy headerStrategy, boolean failFast, String password) {
         Assert.notNull(inputStream, "InputStream 输入流不可为空");
         Assert.notNull(clazz, "读取的目标实体 Class 类型不可为空");
 
-        HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
-        BatchValidationListener<T> listener = new BatchValidationListener<>(
-                clazz,
-                defaultBatchSize,
-                failFast,
-                defaultValidationProperties.getMaxErrorRows(),
-                strategy,
-                null,
-                null,
-                null
-        );
-        var readerBuilder = FesodSheet.read(inputStream, clazz, listener);
-        registerEnumConverters(readerBuilder, clazz);
-        readerBuilder.sheet().doRead();
+        List<AutoCloseable> cleanups = new ArrayList<>(2);
+        try {
+            InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(inputStream, password, cleanups::add);
+            HeaderValidationStrategy strategy = headerStrategy != null ? headerStrategy : defaultValidationProperties.getHeaderStrategy();
+            BatchValidationListener<T> listener = new BatchValidationListener<>(
+                    clazz,
+                    defaultBatchSize,
+                    failFast,
+                    defaultValidationProperties.getMaxErrorRows(),
+                    strategy,
+                    null,
+                    null,
+                    null
+            );
+            var readerBuilder = FesodSheet.read(effectiveStream, clazz, listener);
+            registerEnumConverters(readerBuilder, clazz);
+            readerBuilder.sheet().doRead();
 
-        if (listener.hasErrors()) {
-            if (listener.isCircuitBroken()) {
-                throw new ExcelValidationException(
-                        String.format("Excel 导入数据校验失败且达到熔断上限 [%d 行]，已终止后续解析", listener.getMaxErrorRows()),
-                        listener.getErrorList()
-                );
+            if (listener.hasErrors()) {
+                if (listener.isCircuitBroken()) {
+                    throw new ExcelValidationException(
+                            String.format("Excel 导入数据校验失败且达到熔断上限 [%d 行]，已终止后续解析", listener.getMaxErrorRows()),
+                            listener.getErrorList()
+                    );
+                }
+                throw new ExcelValidationException(listener.getErrorList());
             }
-            throw new ExcelValidationException(listener.getErrorList());
-        }
 
-        List<T> validDataList = listener.getValidDataList();
-        if (maxSyncRows > 0 && validDataList != null && validDataList.size() > maxSyncRows) {
-            throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
-                    "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+            List<T> validDataList = listener.getValidDataList();
+            if (maxSyncRows > 0 && validDataList != null && validDataList.size() > maxSyncRows) {
+                throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(),
+                        "Excel 数据行数超出同步读取安全上限（" + maxSyncRows + " 行），当前共 " + validDataList.size() + " 行，请改用 readBatch 进行分批流式消费以防内存溢出");
+            }
+            return validDataList;
+        } finally {
+            for (AutoCloseable res : cleanups) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {
+                }
+            }
         }
-        return validDataList;
     }
 
     /**

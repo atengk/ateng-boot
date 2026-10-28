@@ -3,6 +3,7 @@ package io.github.atengk.boot.excel.builder;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.excel.model.ExcelMultiSheetResult;
+import io.github.atengk.boot.excel.util.ExcelSecurityUtil;
 import io.github.atengk.boot.excel.util.ExcelUtil;
 import org.apache.fesod.sheet.ExcelReader;
 import org.apache.fesod.sheet.FesodSheet;
@@ -44,6 +45,7 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
     private boolean autoCloseStream = true;
     private String password;
     private boolean closed = false;
+    private final List<AutoCloseable> cleanupResources = new ArrayList<>();
 
     /**
      * 基于输入流构造读取构建器
@@ -367,7 +369,8 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
             readSheets.add(buildFesodReadSheet(def, result, totalRowsCounter));
         }
 
-        var fesodReaderBuilder = FesodSheet.read(this.inputStream);
+        InputStream effectiveStream = ExcelSecurityUtil.decryptIfEncrypted(this.inputStream, this.password, cleanupResources::add);
+        var fesodReaderBuilder = FesodSheet.read(effectiveStream);
         if (this.password != null && !this.password.isBlank()) {
             fesodReaderBuilder.password(this.password);
         }
@@ -424,6 +427,13 @@ public class ExcelReaderBuilder implements AutoCloseable, Closeable {
     public void close() {
         if (!closed) {
             closed = true;
+            for (AutoCloseable res : cleanupResources) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {
+                }
+            }
+            cleanupResources.clear();
             if (autoCloseStream && inputStream != null) {
                 try {
                     inputStream.close();
