@@ -145,7 +145,7 @@ jobs:
       - name: 更新 pom.xml 版本并构建打包
         run: |
           mvn versions:set -DnewVersion=${{ steps.meta.outputs.raw_version }} -DgenerateBackupPoms=false
-          mvn clean package -P release -DskipSamples -DskipTests -B -T 1C -nsu
+          mvn clean package -DskipSamples -DskipTests -B -T 1C -nsu
           mkdir -p dist
           find . -name "*.jar" -not -path "*/target/*-sources.jar" -not -path "*/target/*-javadoc.jar" -not -path "*/ateng-boot-samples/*" -exec cp {} dist/ \; 2>/dev/null || true
           cd dist
