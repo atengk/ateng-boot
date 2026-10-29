@@ -1,5 +1,7 @@
 package io.github.atengk.boot.rabbitmq.builder;
 
+import org.springframework.amqp.core.AbstractExchange;
+import org.springframework.amqp.core.AnonymousQueue;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.CustomExchange;
@@ -133,6 +135,22 @@ public final class RabbitTopologyBuilder {
         }
 
         /**
+         * 设置备用交换机 (alternate-exchange)
+         * 当主交换机无法将消息路由至任何绑定队列时，Broker 将自动把消息路由至此备用交换机进行兜底处理
+         *
+         * @param exchangeName 备用交换机名称
+         * @return 交换机拓扑构建器
+         */
+        public ExchangeTopologyBuilder alternateExchange(String exchangeName) {
+            Assert.hasText(exchangeName, "alternateExchange 备用交换机名称不能为空");
+            Assert.isTrue(!this.exchange.getName().equals(exchangeName), "备用交换机不能与当前主交换机同名");
+            if (this.exchange instanceof AbstractExchange abstractExchange) {
+                abstractExchange.addArgument("alternate-exchange", exchangeName.trim());
+            }
+            return this;
+        }
+
+        /**
          * 声明绑定业务队列
          *
          * @param queueName 队列名称
@@ -141,6 +159,37 @@ public final class RabbitTopologyBuilder {
         public QueueStep queue(String queueName) {
             Assert.hasText(queueName, "queueName 队列名称不能为空");
             return new QueueStep(this.exchange, queueName);
+        }
+
+        /**
+         * 声明基于 Spring AMQP 的动态匿名排他自动删除队列 (AnonymousQueue)
+         * 常用于 Fanout 广播或多实例临时订阅消费场景，连接断开后由 Broker 自动销毁
+         *
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep anonymousQueue() {
+            return new QueueStep(this.exchange, new AnonymousQueue());
+        }
+
+        /**
+         * 声明命名独占排他、非持久、自动删除临时队列
+         *
+         * @param queueName 队列名称
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep exclusiveAutoDeleteQueue(String queueName) {
+            Assert.hasText(queueName, "queueName 队列名称不能为空");
+            Queue queue = new Queue(queueName, false, true, true);
+            return new QueueStep(this.exchange, queue);
+        }
+
+        /**
+         * 声明匿名独占排他、非持久、自动删除临时队列
+         *
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep exclusiveAutoDeleteQueue() {
+            return anonymousQueue();
         }
     }
 
@@ -155,6 +204,12 @@ public final class RabbitTopologyBuilder {
         QueueStep(Exchange exchange, String queueName) {
             this.exchange = exchange;
             this.currentQueue = new QueueDefinition(queueName);
+            this.queueDefinitions.add(this.currentQueue);
+        }
+
+        QueueStep(Exchange exchange, Queue queue) {
+            this.exchange = exchange;
+            this.currentQueue = new QueueDefinition(queue);
             this.queueDefinitions.add(this.currentQueue);
         }
 
@@ -191,6 +246,57 @@ public final class RabbitTopologyBuilder {
         public QueueStep maxLength(long maxMessages) {
             Assert.isTrue(maxMessages > 0, "maxLength 必须大于 0");
             this.currentQueue.arguments.put("x-max-length", maxMessages);
+            return this;
+        }
+
+        /**
+         * 设置队列支持的最大消息优先级 (x-max-priority)
+         * 开启后 Broker 会在内存为该队列维护多级优先级子队列，支持 1 到 255 级 (生产推荐 1-10 级)
+         *
+         * @param maxPriority 最大优先级 (1-255)
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep maxPriority(int maxPriority) {
+            Assert.isTrue(maxPriority > 0 && maxPriority <= 255, "maxPriority 必须在 1 到 255 之间");
+            this.currentQueue.arguments.put("x-max-priority", maxPriority);
+            return this;
+        }
+
+        /**
+         * 设置队列满载时的溢出流控策略 (x-overflow)
+         *
+         * @param overflowStrategy 溢出策略 (drop-head, reject-publish, reject-publish-dlx)
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep overflow(OverflowStrategy overflowStrategy) {
+            Assert.notNull(overflowStrategy, "overflowStrategy 不能为空");
+            this.currentQueue.arguments.put("x-overflow", overflowStrategy.getValue());
+            return this;
+        }
+
+        /**
+         * 设置现代 Quorum 仲裁队列的投递毒丸次数上限 (x-delivery-limit)
+         * 当某条消息被连续 NACK/重回队列达到此阈值时，Broker 将自动阻断投递并流转至死信队列或丢弃，防御毒丸消息雪崩
+         *
+         * @param count 最大投递次数 (> 0)
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep deliveryLimit(int count) {
+            Assert.isTrue(count > 0, "deliveryLimit 投递上限必须大于 0");
+            this.currentQueue.arguments.put("x-delivery-limit", count);
+            return this;
+        }
+
+        /**
+         * 设置现代 Quorum 仲裁队列的死信流转策略 (x-dead-letter-strategy)
+         * 例如设置为 "at-least-once"，保障死信投递过程中的严格至少一次可靠性
+         *
+         * @param strategy 死信策略 (如 at-least-once)
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep deadLetterStrategy(String strategy) {
+            Assert.hasText(strategy, "deadLetterStrategy 死信策略不能为空");
+            this.currentQueue.arguments.put("x-dead-letter-strategy", strategy.trim());
             return this;
         }
 
@@ -313,6 +419,39 @@ public final class RabbitTopologyBuilder {
         }
 
         /**
+         * 在同一交换机下继续声明下一个动态匿名排他自动删除队列
+         *
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep andAnonymousQueue() {
+            this.currentQueue = new QueueDefinition(new AnonymousQueue());
+            this.queueDefinitions.add(this.currentQueue);
+            return this;
+        }
+
+        /**
+         * 在同一交换机下继续声明下一个命名独占排他自动删除队列
+         *
+         * @param nextQueueName 下一个队列名称
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep andExclusiveAutoDeleteQueue(String nextQueueName) {
+            Assert.hasText(nextQueueName, "nextQueueName 队列名称不能为空");
+            this.currentQueue = new QueueDefinition(new Queue(nextQueueName, false, true, true));
+            this.queueDefinitions.add(this.currentQueue);
+            return this;
+        }
+
+        /**
+         * 在同一交换机下继续声明下一个匿名独占排他自动删除队列
+         *
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep andExclusiveAutoDeleteQueue() {
+            return andAnonymousQueue();
+        }
+
+        /**
          * 结束链式声明并构建 Spring 原生 Declarables 集合，自动被 RabbitAdmin 识别注册
          *
          * @return Declarables 实例
@@ -324,7 +463,15 @@ public final class RabbitTopologyBuilder {
 
             for (QueueDefinition def : this.queueDefinitions) {
                 // 2. 注册主业务队列
-                Queue mainQueue = new Queue(def.queueName, def.durable, def.exclusive, def.autoDelete, def.arguments);
+                Queue mainQueue;
+                if (def.rawQueue != null) {
+                    mainQueue = def.rawQueue;
+                    if (!def.arguments.isEmpty()) {
+                        def.arguments.forEach(mainQueue::addArgument);
+                    }
+                } else {
+                    mainQueue = new Queue(def.queueName, def.durable, def.exclusive, def.autoDelete, def.arguments);
+                }
                 declarables.add(mainQueue);
 
                 // 3. 注册主队列与交换机的绑定关系 (未配置路由键时默认以队列名作为单一路由键)
@@ -378,6 +525,7 @@ public final class RabbitTopologyBuilder {
      * 单队列内部描述状态载体
      */
     private static class QueueDefinition {
+        Queue rawQueue;
         final String queueName;
         boolean durable = true;
         boolean exclusive = false;
@@ -394,6 +542,17 @@ public final class RabbitTopologyBuilder {
 
         QueueDefinition(String queueName) {
             this.queueName = queueName;
+        }
+
+        QueueDefinition(Queue queue) {
+            this.rawQueue = Objects.requireNonNull(queue, "queue 不能为空");
+            this.queueName = queue.getName();
+            this.durable = queue.isDurable();
+            this.exclusive = queue.isExclusive();
+            this.autoDelete = queue.isAutoDelete();
+            if (queue.getArguments() != null) {
+                this.arguments.putAll(queue.getArguments());
+            }
         }
     }
 }

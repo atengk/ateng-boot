@@ -380,4 +380,72 @@ class RabbitReliableTemplateTest {
                 captured.getMessageProperties().getHeaders(), io.github.atengk.boot.core.constant.MessageHeaderConstants.BIZ_KEY);
         assertThat(headerBizKey).isEqualTo("NEW-EXPLICIT-BIZ");
     }
+
+    @Test
+    @DisplayName("优先级发信：正确在 MessageProperties 中设置 priority，并保留业务键与上下文")
+    void testSendReliableWithPriority() {
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("priority.exchange"), eq("vip.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        // 1. 同步优先级发信
+        template.sendReliableWithPriority("priority.exchange", "vip.key", "VIP-Order-Payload", 9, "biz-vip-999");
+
+        Message captured = messageCaptor.getValue();
+        assertThat(captured.getMessageProperties().getPriority()).isEqualTo(9);
+        assertThat((String) captured.getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-vip-999");
+
+        // 2. 边界参数防御
+        assertThatThrownBy(() -> template.sendReliableWithPriority("priority.exchange", "vip.key", "data", -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> template.sendReliableWithPriority("priority.exchange", "vip.key", "data", 256))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("通用 MessagePostProcessor 定制器发信：成功定制消息属性与扩展头")
+    void testSendReliableWithMessagePostProcessorCustomizers() {
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("custom.exchange"), eq("custom.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        template.sendReliable("custom.exchange", "custom.key", "Custom-Payload", "biz-custom-888",
+                msg -> {
+                    msg.getMessageProperties().setHeader("X-Custom-Tenant", "Tenant-Omega");
+                    msg.getMessageProperties().setPriority(7);
+                    return msg;
+                }
+        );
+
+        Message captured = messageCaptor.getValue();
+        assertThat((String) captured.getMessageProperties().getHeader("X-Custom-Tenant")).isEqualTo("Tenant-Omega");
+        assertThat(captured.getMessageProperties().getPriority()).isEqualTo(7);
+        assertThat((String) captured.getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-custom-888");
+    }
+
+    @Test
+    @DisplayName("异步优先级发信：CompletableFuture 正常完成且设置 priority")
+    void testSendReliableAsyncWithPriority() {
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("async.priority.exchange"), eq("async.key"), messageCaptor.capture(), any(CorrelationData.class));
+
+        CompletableFuture<CorrelationData.Confirm> future =
+                template.sendReliableAsyncWithPriority("async.priority.exchange", "async.key", "Async-Payload", 5, "biz-async-vip");
+
+        CorrelationData.Confirm confirm = future.join();
+        assertThat(confirm.isAck()).isTrue();
+        Message captured = messageCaptor.getValue();
+        assertThat(captured.getMessageProperties().getPriority()).isEqualTo(5);
+        assertThat((String) captured.getMessageProperties().getHeader(MessageHeaderConstants.BIZ_KEY)).isEqualTo("biz-async-vip");
+    }
 }
