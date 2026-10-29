@@ -248,9 +248,10 @@ public class AtengRealtimeAutoConfiguration {
          */
         @Bean
         @ConditionalOnMissingBean(AtengWebSocketHandler.class)
-        public AtengWebSocketHandler atengWebSocketHandler(ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
+        public AtengWebSocketHandler atengWebSocketHandler(RealtimeProperties properties,
+                                                           ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
                                                            ObjectProvider<RealtimeMessageDispatcher> dispatcherProvider) {
-            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable());
+            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable(), properties);
         }
 
         /**

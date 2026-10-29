@@ -49,10 +49,10 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Redisson 分布式客户端 (可选依赖，用于自动装配 Redis Pub/Sub 跨节点广播) -->
+        <!-- ateng-boot-redis 基础设施协同 (可选依赖，提供 RedissonClient 与 Redis 算力支持) -->
         <dependency>
-            <groupId>org.redisson</groupId>
-            <artifactId>redisson</artifactId>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
             <optional>true</optional>
         </dependency>
 

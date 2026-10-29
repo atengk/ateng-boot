@@ -5,8 +5,10 @@ import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.enums.ChannelType;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.sse.SseStreamHelper;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.socket.CloseStatus;
@@ -42,6 +44,8 @@ public class RealtimeSession implements Serializable {
     private final transient Object rawSession;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile long lastActiveTime;
+    @Setter
+    private transient volatile SessionRateLimiter rateLimiter;
 
     /**
      * 受保护构造函数

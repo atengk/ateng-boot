@@ -76,7 +76,8 @@ flowchart TD
 
 ### 3. 微服务 Same-Token 零信任客户端拦截器全闭环 (Client Interceptor)
 - 提供 `SameTokenClientHttpRequestInterceptor`（实现 Spring 6 原生 `ClientHttpRequestInterceptor`）；
-- 条件装配 `RestClientCustomizer` 与 `RestTemplateCustomizer`，在 `ateng.boot.satoken.same-token.auto-inject-client = true` 时自动为受管 HTTP 客户端挂载请求头注入逻辑，与服务端 `@CheckSameToken` 切面构成完整的零信任内网防伪双向闭环。
+- 条件装配 `RestClientCustomizer` 与 `RestTemplateCustomizer`，在 `ateng.boot.satoken.same-token.auto-inject-client = true` 时自动为受管 HTTP 客户端挂载请求头注入逻辑，与服务端 `@CheckSameToken` 切面构成完整的零信任内网防伪双向闭环；
+- **与 `ateng-cloud` 体系的正交生态自洽**：微服务跨服务声明式 RPC（OpenFeign）由 `ateng-cloud-feign`（`FeignContextPropagationInterceptor` + `SaTokenSameTokenProvider`）负责四维上下文与 Same-Token 自动透传；高性能 RPC（Dubbo）由 `ateng-cloud-dubbo`（`DubboContextPropagationFilter` + `DubboSameTokenFilter`）负责透传与验签；WebFlux 响应式网关流量准入与集中签发由 `ateng-cloud-gateway` 承接。`ateng-boot-satoken` 恪守 ADR-0011 零臃肿底座原则，专注作为单体应用与业务微服务节点的安全底座，两者正交解耦、天然自洽。
 
 ### 4. 登录防暴力破解双轨防卫策略 (Dual-Track Login Defense)
 - 升级 `LoginFailureLockService` 与 `LoginDefenseProperties`，在既有账号维度封禁的基础上，增加客户端 IP 维度防撞库熔断：

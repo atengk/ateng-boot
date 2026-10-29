@@ -20,5 +20,6 @@ class RealtimeCloseStatusTest {
         assertThat(RealtimeCloseStatus.USER_KICKED_OUT.getCode()).isEqualTo(4002);
         assertThat(RealtimeCloseStatus.MAX_CONNECTIONS_EXCEEDED.getCode()).isEqualTo(4003);
         assertThat(RealtimeCloseStatus.IDLE_TIMEOUT.getCode()).isEqualTo(4004);
+        assertThat(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED.getCode()).isEqualTo(4005);
     }
 }

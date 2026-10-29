@@ -157,6 +157,34 @@ public class RealtimeProperties {
          * 并发安全装饰器单次写超时阈值（默认: 10s）
          */
         private Duration sendTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 上行消息会话级流量限制与防 DoS 配置
+         */
+        @NestedConfigurationProperty
+        private RateLimitProperties rateLimit = new RateLimitProperties();
+    }
+
+    /**
+     * WebSocket 上行流量治理与限流配置
+     */
+    @Data
+    public static class RateLimitProperties {
+
+        /**
+         * 是否开启会话级上行流量限制（默认: false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 单会话每秒最大允许上行请求数（默认: 50）
+         */
+        private int maxRequestsPerSecond = 50;
+
+        /**
+         * 连续超限触发强制断开长连接的违规次数阈值（默认: 3，设为 0 表示不强制断开仅丢弃警告）
+         */
+        private int consecutiveViolationsBeforeClose = 3;
     }
 
     /**

@@ -1,9 +1,13 @@
 package io.github.atengk.boot.realtime.websocket;
 
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
+import io.github.atengk.boot.realtime.properties.RealtimeProperties;
+import io.github.atengk.boot.realtime.ratelimit.RateLimitDecision;
+import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import lombok.extern.slf4j.Slf4j;
@@ -17,7 +21,8 @@ import java.util.Map;
  * <p>
  * 接收文本帧、二进制帧与心跳 Pong 帧，托管连接建立与断开的生命周期；
  * 自动与 RealtimeSessionManager 统一会话中心对接，
- * 接收到上行消息时自动识别应用层心跳 Ping 并即时回执 Pong，
+ * 接收到上行消息时自动执行会话级滑动窗口限流防刷与阶梯防御，
+ * 自动识别应用层心跳 Ping 并即时回执 Pong，
  * 业务消息通过 RealtimeMessageDispatcher 统一路由分发至 &#64;RealtimeAction 处理方法。
  * </p>
  *
@@ -39,18 +44,26 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
 
     private final RealtimeSessionManager sessionManager;
     private final RealtimeMessageDispatcher dispatcher;
+    private final RealtimeProperties properties;
 
     public AtengWebSocketHandler() {
-        this(null, null);
+        this(null, null, null);
     }
 
     public AtengWebSocketHandler(RealtimeSessionManager sessionManager) {
-        this(sessionManager, null);
+        this(sessionManager, null, null);
     }
 
     public AtengWebSocketHandler(RealtimeSessionManager sessionManager, RealtimeMessageDispatcher dispatcher) {
+        this(sessionManager, dispatcher, null);
+    }
+
+    public AtengWebSocketHandler(RealtimeSessionManager sessionManager,
+                                 RealtimeMessageDispatcher dispatcher,
+                                 RealtimeProperties properties) {
         this.sessionManager = sessionManager;
         this.dispatcher = dispatcher;
+        this.properties = properties;
     }
 
     @Override
@@ -79,6 +92,11 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             RealtimeSession realtimeSession = RealtimeSession.ofWebSocket(sessionKey, session, tenantId, attributes);
+            if (properties != null && properties.getWebsocket() != null
+                    && properties.getWebsocket().getRateLimit() != null
+                    && properties.getWebsocket().getRateLimit().isEnabled()) {
+                realtimeSession.setRateLimiter(new SessionRateLimiter(properties.getWebsocket().getRateLimit()));
+            }
             sessionManager.registerSession(realtimeSession);
         }
     }
@@ -94,13 +112,37 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
             realtimeSession.updateActiveTime();
         }
 
-        // 1. 快速判定字符串字面量心跳 "ping"
+        // 1. 会话级上行流量限制检查与阶梯防御
+        if (realtimeSession != null && realtimeSession.getRateLimiter() != null) {
+            RateLimitDecision decision = realtimeSession.getRateLimiter().tryAcquire();
+            if (decision == RateLimitDecision.CLOSE) {
+                log.warn("[Realtime] 会话持续超限触发熔断切断: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                try {
+                    RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
+                            Map.of("code", 429, "message", "Rate limit exceeded. Connection terminated."));
+                    session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
+                } catch (Throwable ignored) {
+                }
+                realtimeSession.close(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED);
+                return;
+            } else if (decision == RateLimitDecision.WARNING) {
+                log.warn("[Realtime] 会话上行流量超限丢弃请求帧: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
+                        Map.of("code", 429, "message", "Rate limit exceeded. Please slow down."));
+                session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
+                return;
+            }
+        }
+
+        // 2. 快速判定字符串字面量心跳 "ping"
         if ("ping".equalsIgnoreCase(payload.trim())) {
             session.sendMessage(new TextMessage("pong"));
             return;
         }
 
-        // 2. 判定标准 JSON RealtimeMessage 心跳
+        // 3. 判定标准 JSON RealtimeMessage 心跳
         RealtimeMessage<?> realtimeMessage = null;
         try {
             realtimeMessage = JsonUtil.parseObject(payload, RealtimeMessage.class);
@@ -113,7 +155,7 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
             // 非 JSON 格式或自定义消息
         }
 
-        // 3. 上行业务事件通过 RealtimeMessageDispatcher 统一路由调度
+        // 4. 上行业务事件通过 RealtimeMessageDispatcher 统一路由调度
         if (dispatcher != null && realtimeSession != null && realtimeMessage != null) {
             dispatcher.dispatch(realtimeSession, realtimeMessage);
         }

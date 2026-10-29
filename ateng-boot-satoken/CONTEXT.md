@@ -88,6 +88,10 @@ _Avoid_: @InternalOnly, @RequireSameToken, @VerifyServiceToken
 对接 `ateng-boot-core` 的 `CurrentUserProvider` 与 `CurrentTenantProvider` SPI 适配机制，在 `AtengSaTokenAutoConfiguration` 初始化时自动完成 `UserContextHolder.setUserProvider(LoginHelper::getUserId)` 与 `TenantContextHolder.setTenantProvider(LoginHelper::getTenantId)` 双向挂载，无缝透传至 MyBatis-Plus 审计自动填充引擎（自动写入 `createBy`、`updateBy`）与行级多租户隔离上下文（`TenantContextHolder`）。
 _Avoid_: UserAuditorProvider, SecurityContextAdapter
 
+**Zero-Trust Same-Token Defense**:
+微服务内网零信任防穿透壁垒。在服务端通过 `@CheckSameToken` 切面强制校验内部受信签名，阻断绕过网关直连内部微服务暴露端口的非法探测；原生客户端通过 `SameTokenClientHttpRequestInterceptor` 自动注入出站标头；微服务跨服务 RPC 治理（Feign / Dubbo）与响应式网关（WebFlux Gateway）统一由 `ateng-cloud` 套件正交承接。
+_Avoid_: 内部令牌, 网关白名单, 服务鉴权头
+
 ## Dependencies
 
 - **ateng-boot-core**: 核心基础异常体系、`CommonResultCode`、`Result<T>` 显式契约、`JsonUtil` 序列化门面、`UserContextHolder` 与 `TenantContextHolder` 双维上下文 SPI 及 `DesensitizeUtil` 基础工具
@@ -97,3 +101,9 @@ _Avoid_: UserAuditorProvider, SecurityContextAdapter
 - **org.springframework.data:spring-data-redis** (Optional): 驱动 `SaTokenRedisDao`、分布式权限缓存、`SaTokenClusterBroadcaster` 集群广播与 `LoginFailureLockService` 分布式防爆破计数
 - **io.github.atengk:ateng-boot-mybatis-plus** (Optional): 驱动自动审计填充与多租户上下文生命周期自动对齐
 - **org.springdoc:springdoc-openapi-starter-webmvc-ui** (Optional): 驱动 Knife4j / OpenAPI 自动鉴权弹窗
+
+## Ecosystem Collaboration (ateng-cloud)
+
+- **ateng-cloud-gateway**: 承载响应式 WebFlux API 网关公网流量准入、Header 清洗、统一鉴权与零信任 Same-Token 签发。
+- **ateng-cloud-feign**: 承载声明式 HTTP RPC 跨服务调用，通过 `FeignContextPropagationInterceptor` 自动透传四维上下文，并通过 `SaTokenSameTokenProvider` 桥接 Sa-Token 自动注入 `SA-SAME-TOKEN`。
+- **ateng-cloud-dubbo**: 承载高性能 RPC 跨服务调用，通过 `DubboContextPropagationFilter` 透传四维上下文，并通过 `DubboSameTokenFilter` 自动探测 Sa-Token 注入与校验 `SA-SAME-TOKEN`。

@@ -117,4 +117,52 @@ class AtengWebSocketHandlerTest {
         assertThat(sessionManager.getSession(key)).isNull();
         assertThat(sessionManager.getOnlineCount()).isEqualTo(0);
     }
+
+    @Test
+    @DisplayName("限流开启时单秒超限触发 429 丢弃警告，持续恶意刷量触发 4005 强制切断")
+    void testRateLimitEscalationAndClosure() throws Exception {
+        io.github.atengk.boot.realtime.properties.RealtimeProperties props = new io.github.atengk.boot.realtime.properties.RealtimeProperties();
+        props.getWebsocket().getRateLimit().setEnabled(true);
+        props.getWebsocket().getRateLimit().setMaxRequestsPerSecond(3);
+        props.getWebsocket().getRateLimit().setConsecutiveViolationsBeforeClose(2);
+
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(props);
+        RealtimeMessageDispatcher dispatcher = mock(RealtimeMessageDispatcher.class);
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(sessionManager, dispatcher, props);
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("rate-sess-001");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-rate", "pc", "client-rate");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        // 1. 建立连接，注入确定性时钟限流器验证阶梯行为
+        managedHandler.afterConnectionEstablished(session);
+        RealtimeSession realtimeSession = sessionManager.getSession(key);
+        assertThat(realtimeSession).isNotNull();
+        java.util.concurrent.atomic.AtomicLong testClock = new java.util.concurrent.atomic.AtomicLong(1000000L);
+        realtimeSession.setRateLimiter(new io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter(3, 2, testClock::get));
+        assertThat(realtimeSession.getRateLimiter()).isNotNull();
+
+        // 2. 前 3 次请求放行（分发器被调用 3 次）
+        TextMessage msg = new TextMessage("{\"event\":\"test:event\",\"data\":\"data\"}");
+        for (int i = 0; i < 3; i++) {
+            managedHandler.handleTextMessage(session, msg);
+        }
+        verify(dispatcher, times(3)).dispatch(eq(realtimeSession), any(RealtimeMessage.class));
+
+        // 3. 第 4 次请求超限 (第 1 次违规) -> 丢弃且不下发给 dispatcher，发送 429 警告帧
+        managedHandler.handleTextMessage(session, msg);
+        verify(dispatcher, times(3)).dispatch(eq(realtimeSession), any(RealtimeMessage.class)); // 依然是 3 次
+        ArgumentCaptor<TextMessage> captor = ArgumentCaptor.forClass(TextMessage.class);
+        verify(session, atLeastOnce()).sendMessage(captor.capture());
+        assertThat(captor.getValue().getPayload()).contains("429");
+        assertThat(realtimeSession.isOpen()).isTrue();
+
+        // 4. 第 5 次请求超限 (第 2 次违规，达到阈值 2) -> 触发 4005 RATE_LIMIT_EXCEEDED 强制断开连接
+        managedHandler.handleTextMessage(session, msg);
+        verify(session, atLeastOnce()).close(eq(io.github.atengk.boot.realtime.constant.RealtimeCloseStatus.RATE_LIMIT_EXCEEDED));
+    }
 }
