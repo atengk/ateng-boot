@@ -8,12 +8,16 @@ import io.github.atengk.boot.kafka.interceptor.KafkaBatchInterceptor;
 import io.github.atengk.boot.kafka.interceptor.KafkaRecordInterceptor;
 import io.github.atengk.boot.kafka.listener.AtengDeadLetterPublishingRecoverer;
 import io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler;
+import io.github.atengk.boot.kafka.manager.KafkaContainerManager;
 import io.github.atengk.boot.kafka.manager.KafkaOffsetManager;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
+import io.github.atengk.boot.kafka.spi.KafkaRebalanceListener;
 import io.github.atengk.boot.kafka.spi.KafkaTransactionFailureCallback;
 import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
@@ -31,11 +35,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.core.task.VirtualThreadTaskExecutor;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.CommonErrorHandler;
+import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.support.converter.BatchMessageConverter;
@@ -44,6 +50,8 @@ import org.springframework.kafka.support.converter.ByteArrayJsonMessageConverter
 import org.springframework.kafka.support.converter.RecordMessageConverter;
 
 import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * Kafka 生产级增强基础设施自动装配
@@ -127,6 +135,15 @@ public class AtengKafkaAutoConfiguration {
             ObjectProvider<ConsumerFactory<?, ?>> consumerFactoryProvider,
             AtengKafkaProperties properties) {
         return new KafkaOffsetManager(kafkaAdminProvider.getIfAvailable(), properties, consumerFactoryProvider.getIfAvailable());
+    }
+
+    /**
+     * Kafka 运行期消费监听容器动态流控与管控门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public KafkaContainerManager kafkaContainerManager(ObjectProvider<KafkaListenerEndpointRegistry> registryProvider) {
+        return new KafkaContainerManager(registryProvider.getIfAvailable());
     }
 
     /**
@@ -217,6 +234,7 @@ public class AtengKafkaAutoConfiguration {
             RecordMessageConverter kafkaMessageConverter,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider,
+            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
@@ -238,6 +256,7 @@ public class AtengKafkaAutoConfiguration {
         factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
         applyVirtualThreadIfEnabled(factory, environment);
         applyObservationIfPresent(factory, observationRegistryProvider);
+        applyRebalanceListenerIfPresent(factory, rebalanceListenerProvider);
         return factory;
     }
 
@@ -254,6 +273,7 @@ public class AtengKafkaAutoConfiguration {
             BatchMessageConverter kafkaBatchMessageConverter,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider,
+            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
             AtengKafkaProperties properties) {
         ConcurrentKafkaListenerContainerFactory<Object, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         ConcurrentKafkaListenerContainerFactoryConfigurer configurer = configurerProvider.getIfAvailable();
@@ -275,6 +295,7 @@ public class AtengKafkaAutoConfiguration {
         factory.getContainerProperties().setShutdownTimeout(properties.getConsumer().getShutdownTimeout().toMillis());
         applyVirtualThreadIfEnabled(factory, environment);
         applyObservationIfPresent(factory, observationRegistryProvider);
+        applyRebalanceListenerIfPresent(factory, rebalanceListenerProvider);
         return factory;
     }
 
@@ -289,6 +310,7 @@ public class AtengKafkaAutoConfiguration {
             ObjectProvider<RecordMessageConverter> converterProvider,
             ObjectProvider<CommonErrorHandler> errorHandlerProvider,
             ObjectProvider<ObservationRegistry> observationRegistryProvider,
+            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider,
             Environment environment) {
         return new BeanPostProcessor() {
             @Override
@@ -319,6 +341,7 @@ public class AtengKafkaAutoConfiguration {
                     rawFactory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
                     applyVirtualThreadIfEnabled(rawFactory, environment);
                     applyObservationIfPresent(rawFactory, observationRegistryProvider);
+                    applyRebalanceListenerIfPresent(rawFactory, rebalanceListenerProvider);
                 }
                 return bean;
             }
@@ -343,6 +366,53 @@ public class AtengKafkaAutoConfiguration {
                 return bean;
             }
         };
+    }
+
+    private static void applyRebalanceListenerIfPresent(
+            ConcurrentKafkaListenerContainerFactory<?, ?> factory,
+            ObjectProvider<KafkaRebalanceListener> rebalanceListenerProvider) {
+        if (factory == null || rebalanceListenerProvider == null) {
+            return;
+        }
+        List<KafkaRebalanceListener> listeners = rebalanceListenerProvider.orderedStream().toList();
+        if (listeners.isEmpty()) {
+            return;
+        }
+        factory.getContainerProperties().setConsumerRebalanceListener(new ConsumerAwareRebalanceListener() {
+            @Override
+            public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+                for (KafkaRebalanceListener listener : listeners) {
+                    try {
+                        listener.onPartitionsAssigned(consumer, partitions);
+                    } catch (Throwable t) {
+                        log.error("[MQ-REBALANCE] 执行 onPartitionsAssigned 监听钩子异常: {}", t.getMessage(), t);
+                    }
+                }
+            }
+
+            @Override
+            public void onPartitionsRevokedBeforeCommit(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+                for (KafkaRebalanceListener listener : listeners) {
+                    try {
+                        listener.onPartitionsRevoked(consumer, partitions);
+                    } catch (Throwable t) {
+                        log.error("[MQ-REBALANCE] 执行 onPartitionsRevoked 监听钩子异常: {}", t.getMessage(), t);
+                    }
+                }
+            }
+
+            @Override
+            public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+                for (KafkaRebalanceListener listener : listeners) {
+                    try {
+                        listener.onPartitionsLost(consumer, partitions);
+                    } catch (Throwable t) {
+                        log.error("[MQ-REBALANCE] 执行 onPartitionsLost 监听钩子异常: {}", t.getMessage(), t);
+                    }
+                }
+            }
+        });
+        log.info("[ateng-boot-kafka] Kafka 监听容器工厂已挂载 {} 个 KafkaRebalanceListener 扩展点", listeners.size());
     }
 
     private static void applyObservationIfPresent(
