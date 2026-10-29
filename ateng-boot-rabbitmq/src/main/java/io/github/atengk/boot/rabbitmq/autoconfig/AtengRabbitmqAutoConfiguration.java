@@ -291,6 +291,14 @@ public class AtengRabbitmqAutoConfiguration {
                     log.info("[RABBITMQ-TOPOLOGY] auto-declare=false，已禁用 RabbitAdmin 启动自动建队与声明拓扑");
                     admin.setAutoStartup(false);
                 }
+            } else if (bean instanceof org.springframework.amqp.rabbit.connection.CachingConnectionFactory connectionFactory) {
+                RabbitmqProperties properties = propertiesProvider.getIfAvailable();
+                if (properties != null && properties.getReliable() != null) {
+                    connectionFactory.setPublisherConfirmType(org.springframework.amqp.rabbit.connection.CachingConnectionFactory.ConfirmType.CORRELATED);
+                    if (properties.getReliable().isReturnsCallbackEnabled()) {
+                        connectionFactory.setPublisherReturns(true);
+                    }
+                }
             }
             return bean;
         }

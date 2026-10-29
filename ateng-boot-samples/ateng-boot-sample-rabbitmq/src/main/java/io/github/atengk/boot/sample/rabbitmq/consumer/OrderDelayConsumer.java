@@ -4,6 +4,7 @@ import io.github.atengk.boot.sample.rabbitmq.config.RabbitScenarioTopologyConfig
 import io.github.atengk.boot.sample.rabbitmq.model.OrderTimeoutMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "ateng.boot.rabbitmq.sample.delayed-plugin-enabled", havingValue = "true", matchIfMissing = true)
 public class OrderDelayConsumer {
 
     private final List<OrderTimeoutMessage> timeoutOrders = new CopyOnWriteArrayList<>();

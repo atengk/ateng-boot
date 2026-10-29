@@ -6,6 +6,7 @@ import io.github.atengk.boot.rabbitmq.builder.RabbitTopologyBuilder;
 import org.springframework.amqp.core.AnonymousQueue;
 import org.springframework.amqp.core.Declarables;
 import org.springframework.amqp.core.Queue;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -81,8 +82,10 @@ public class RabbitScenarioTopologyConfig {
 
     /**
      * 场景 C: 基于 rabbitmq_delayed_message_exchange 插件的延迟队列拓扑
+     * 若远程 Broker 未安装启用延迟插件，可通过 ateng.boot.rabbitmq.sample.delayed-plugin-enabled=false 关闭
      */
     @Bean
+    @ConditionalOnProperty(name = "ateng.boot.rabbitmq.sample.delayed-plugin-enabled", havingValue = "true", matchIfMissing = true)
     public Declarables orderDelayTopology() {
         return RabbitTopologyBuilder.delayed(EXCHANGE_ORDER_DELAY)
                 .queue(QUEUE_ORDER_DELAY)
@@ -127,14 +130,13 @@ public class RabbitScenarioTopologyConfig {
     }
 
     /**
-     * 场景 G: 现代 Quorum 队列、优先级、溢出策略与投递毒丸次数限制拓扑
+     * 场景 G: 现代 Quorum 队列、溢出策略与投递毒丸次数限制拓扑 (遵循 RabbitMQ 规范：Quorum 不支持 maxPriority)
      */
     @Bean
     public Declarables priorityQuorumTopology() {
         return RabbitTopologyBuilder.direct(EXCHANGE_PRIORITY_DIRECT)
                 .queue(QUEUE_PRIORITY_ORDER)
                 .quorum()
-                .maxPriority(10)
                 .overflow(OverflowStrategy.REJECT_PUBLISH_DLX)
                 .deliveryLimit(5)
                 .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
@@ -144,11 +146,11 @@ public class RabbitScenarioTopologyConfig {
     }
 
     /**
-     * 场景 H: Fanout 广播动态匿名排他自动删除队列 Bean
+     * 场景 H: Fanout 广播订阅队列 Bean (声明为标准持久队列，支持跨连接多消费者稳定监听)
      */
     @Bean
     public Queue broadcastAnonymousQueue() {
-        return new AnonymousQueue();
+        return new Queue("sample.broadcast.fanout.queue", true, false, false);
     }
 
     /**
