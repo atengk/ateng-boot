@@ -21,7 +21,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.Assert;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -198,7 +200,142 @@ public class RabbitReliableTemplate {
     }
 
     // =========================================================================
-    // 3. 延迟消息发送 (sendDelayed)
+    // 3. 批量可靠发送 (sendBatchReliable)
+    // =========================================================================
+
+    /**
+     * 批量同步可靠发送消息列表至指定交换机，使用默认确认超时时间
+     * 每条消息拥有独立四维上下文快照与独立 CorrelationData，并发异步发送并聚合等待所有 Broker Confirm ACK
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，且列表内元素不允许为 null)
+     * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
+     */
+    public void sendBatchReliable(String exchange, String routingKey, List<?> payloads) {
+        sendBatchReliable(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 批量同步可靠发送消息列表至指定交换机，显式指定确认超时时间
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，且列表内元素不允许为 null)
+     * @param timeout    等待全部消息 Broker ACK 的总超时时间
+     * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
+     */
+    public void sendBatchReliable(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        Assert.hasText(exchange, "exchange 交换机名称不能为空");
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Assert.notNull(payloads, "payloads 消息载荷列表不能为空");
+        Assert.notEmpty(payloads, "payloads 消息载荷列表不能为空列表");
+
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+        int size = payloads.size();
+
+        // 1. 前置分层防卫与 Fail-Fast：在发起任何网络请求前逐条序列化与体积校验，保证批次原子防御
+        List<PreparedBatchItem> preparedItems = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            Object payload = payloads.get(i);
+            Assert.notNull(payload, "payloads[" + i + "] 消息载荷不能为 null");
+            MessageProperties messageProperties = new MessageProperties();
+            Message message = prepareMessage(exchange, payload, messageProperties, null);
+            String bizKey = MessageContextPropagator.extractString(message.getMessageProperties().getHeaders(), MessageHeaderConstants.BIZ_KEY);
+            preparedItems.add(new PreparedBatchItem(i, message, bizKey));
+        }
+
+        // 2. 并发异步发射所有消息并收集 Future
+        List<BatchFutureItem> futureItems = new ArrayList<>(size);
+        List<CompletableFuture<?>> allFutures = new ArrayList<>(size);
+
+        for (PreparedBatchItem item : preparedItems) {
+            CompletableFuture<CorrelationData.Confirm> future = doSendInternal(exchange, effectiveRoutingKey, item.message(), item.bizKey());
+            futureItems.add(new BatchFutureItem(item.index(), item.bizKey(), future));
+            allFutures.add(future);
+        }
+
+        // 3. 聚合等待所有消息的确认结果
+        try {
+            CompletableFuture.allOf(allFutures.toArray(new CompletableFuture[0]))
+                    .get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            List<String> failedDetails = new ArrayList<>();
+            for (BatchFutureItem item : futureItems) {
+                if (!item.future().isDone()) {
+                    failedDetails.add(String.format("index=%d(bizKey=%s, status=TIMEOUT)", item.index(), item.bizKey()));
+                } else if (item.future().isCompletedExceptionally()) {
+                    Throwable itemErr = null;
+                    try {
+                        item.future().getNow(null);
+                    } catch (Throwable t) {
+                        itemErr = t.getCause() != null ? t.getCause() : t;
+                    }
+                    String errMsg = itemErr != null ? itemErr.getMessage() : "unknown";
+                    failedDetails.add(String.format("index=%d(bizKey=%s, status=FAILED, error=%s)", item.index(), item.bizKey(), errMsg));
+                } else {
+                    CorrelationData.Confirm confirm = item.future().getNow(null);
+                    if (confirm != null && !confirm.isAck()) {
+                        failedDetails.add(String.format("index=%d(bizKey=%s, status=NACK, reason=%s)", item.index(), item.bizKey(), confirm.getReason()));
+                    }
+                }
+            }
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + size + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 超时 (%dms), 失败明细: %s",
+                            effectiveTimeout.toMillis(), failedDetails),
+                    e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + size + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    e);
+        } catch (ExecutionException ignored) {
+            // allOf 完成但存在部分失败，交由下方统一精确检查收集
+        }
+
+        // 4. 精确检查每条消息的 Confirm 结果与异常
+        List<String> failedItems = new ArrayList<>();
+        Throwable firstCause = null;
+
+        for (BatchFutureItem item : futureItems) {
+            try {
+                CorrelationData.Confirm confirm = item.future().getNow(null);
+                if (confirm == null || !confirm.isAck()) {
+                    String reason = confirm != null ? confirm.getReason() : "Broker returned null confirm";
+                    failedItems.add(String.format("index=%d(bizKey=%s, reason=%s)", item.index(), item.bizKey(), reason));
+                }
+            } catch (Throwable ex) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                if (firstCause == null) {
+                    firstCause = cause;
+                }
+                String detail = cause.getCause() != null
+                        ? cause.getMessage() + " (" + cause.getCause().getMessage() + ")"
+                        : cause.getMessage();
+                failedItems.add(String.format("index=%d(bizKey=%s, error=%s)", item.index(), item.bizKey(), detail));
+            }
+        }
+
+        if (!failedItems.isEmpty()) {
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + size + "]",
+                    String.format("RabbitMQ 批量消息部分发送被 Broker 拒绝或异常: exchange=%s, routingKey=%s, 失败条数=%d/%d, 失败明细: %s",
+                            exchange, effectiveRoutingKey, failedItems.size(), size, failedItems),
+                    firstCause);
+        }
+    }
+
+    // =========================================================================
+    // 4. 延迟消息发送 (sendDelayed)
     // =========================================================================
 
     /**
@@ -609,5 +746,11 @@ public class RabbitReliableTemplate {
                 MDC.remove(MessageContextPropagator.MDC_TRACE_ID_KEY);
             }
         }
+    }
+
+    private record PreparedBatchItem(int index, Message message, String bizKey) {
+    }
+
+    private record BatchFutureItem(int index, String bizKey, CompletableFuture<CorrelationData.Confirm> future) {
     }
 }
