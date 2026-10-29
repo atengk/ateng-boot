@@ -2,6 +2,7 @@ package io.github.atengk.boot.realtime.websocket;
 
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
@@ -11,9 +12,11 @@ import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.nio.ByteBuffer;
 import java.util.Map;
 
 /**
@@ -45,25 +48,34 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
     private final RealtimeSessionManager sessionManager;
     private final RealtimeMessageDispatcher dispatcher;
     private final RealtimeProperties properties;
+    private final ObjectProvider<RealtimeBinaryMessageListener> binaryListeners;
 
     public AtengWebSocketHandler() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     public AtengWebSocketHandler(RealtimeSessionManager sessionManager) {
-        this(sessionManager, null, null);
+        this(sessionManager, null, null, null);
     }
 
     public AtengWebSocketHandler(RealtimeSessionManager sessionManager, RealtimeMessageDispatcher dispatcher) {
-        this(sessionManager, dispatcher, null);
+        this(sessionManager, dispatcher, null, null);
     }
 
     public AtengWebSocketHandler(RealtimeSessionManager sessionManager,
                                  RealtimeMessageDispatcher dispatcher,
                                  RealtimeProperties properties) {
+        this(sessionManager, dispatcher, properties, null);
+    }
+
+    public AtengWebSocketHandler(RealtimeSessionManager sessionManager,
+                                 RealtimeMessageDispatcher dispatcher,
+                                 RealtimeProperties properties,
+                                 ObjectProvider<RealtimeBinaryMessageListener> binaryListeners) {
         this.sessionManager = sessionManager;
         this.dispatcher = dispatcher;
         this.properties = properties;
+        this.binaryListeners = binaryListeners;
     }
 
     @Override
@@ -167,6 +179,51 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
         RealtimeSession realtimeSession = resolveSession(session);
         if (realtimeSession != null) {
             realtimeSession.updateActiveTime();
+        }
+
+        // 1. 会话级上行流量限制检查与阶梯防御
+        if (realtimeSession != null && realtimeSession.getRateLimiter() != null) {
+            RateLimitDecision decision = realtimeSession.getRateLimiter().tryAcquire();
+            if (decision == RateLimitDecision.CLOSE) {
+                log.warn("[Realtime] 会话持续超限触发熔断切断: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                realtimeSession.close(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED);
+                return;
+            } else if (decision == RateLimitDecision.WARNING) {
+                log.warn("[Realtime] 会话上行流量超限丢弃请求二进制帧: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                return;
+            }
+        }
+
+        // 2. 提取二进制字节数据
+        ByteBuffer byteBuffer = message.getPayload();
+        byte[] payloadBytes;
+        if (byteBuffer.hasArray()) {
+            byte[] array = byteBuffer.array();
+            int offset = byteBuffer.arrayOffset() + byteBuffer.position();
+            int length = byteBuffer.remaining();
+            if (offset == 0 && length == array.length) {
+                payloadBytes = array;
+            } else {
+                payloadBytes = new byte[length];
+                System.arraycopy(array, offset, payloadBytes, 0, length);
+            }
+        } else {
+            payloadBytes = new byte[byteBuffer.remaining()];
+            byteBuffer.duplicate().get(payloadBytes);
+        }
+
+        // 3. 正交派发给已注册的 RealtimeBinaryMessageListener SPI 监听器
+        if (binaryListeners != null && realtimeSession != null) {
+            binaryListeners.orderedStream().forEach(listener -> {
+                try {
+                    listener.onBinaryMessage(realtimeSession, payloadBytes);
+                } catch (Throwable t) {
+                    log.warn("[Realtime] RealtimeBinaryMessageListener 执行异常: listener={}, sessionKey={}, error={}",
+                            listener.getClass().getName(), realtimeSession.getSessionKey(), t.getMessage(), t);
+                }
+            });
         }
     }
 

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.realtime.websocket;
 
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
@@ -9,10 +10,13 @@ import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.web.socket.*;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -164,5 +168,119 @@ class AtengWebSocketHandlerTest {
         // 4. 第 5 次请求超限 (第 2 次违规，达到阈值 2) -> 触发 4005 RATE_LIMIT_EXCEEDED 强制断开连接
         managedHandler.handleTextMessage(session, msg);
         verify(session, atLeastOnce()).close(eq(io.github.atengk.boot.realtime.constant.RealtimeCloseStatus.RATE_LIMIT_EXCEEDED));
+    }
+
+    @Test
+    @DisplayName("正交二进制帧上行分发: 正确委托 RealtimeBinaryMessageListener 且刷新活跃时间")
+    void testBinaryMessageDelegatedToListenerAndRefreshesActiveTime() throws Exception {
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager();
+        RealtimeMessageDispatcher dispatcher = mock(RealtimeMessageDispatcher.class);
+
+        List<byte[]> receivedPayloads = new ArrayList<>();
+        List<RealtimeSession> receivedSessions = new ArrayList<>();
+        RealtimeBinaryMessageListener listener = (sess, payload) -> {
+            receivedSessions.add(sess);
+            receivedPayloads.add(payload);
+        };
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("binaryListener", listener);
+
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(
+                sessionManager,
+                dispatcher,
+                null,
+                beanFactory.getBeanProvider(RealtimeBinaryMessageListener.class)
+        );
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("ws-bin-001");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-audio", "app", "client-bin-01");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        // 1. 连接建立
+        managedHandler.afterConnectionEstablished(session);
+        RealtimeSession realtimeSession = sessionManager.getSession(key);
+        assertThat(realtimeSession).isNotNull();
+
+        // 2. 模拟发送二进制音频帧 (byte[]{1, 2, 3, 4, 5})
+        byte[] audioBytes = new byte[]{1, 2, 3, 4, 5};
+        BinaryMessage binaryMessage = new BinaryMessage(ByteBuffer.wrap(audioBytes));
+        managedHandler.handleBinaryMessage(session, binaryMessage);
+
+        // 3. 验证二进制监听器被精确调用，数据一致
+        assertThat(receivedSessions).containsExactly(realtimeSession);
+        assertThat(receivedPayloads).hasSize(1);
+        assertThat(receivedPayloads.get(0)).containsExactly(audioBytes);
+
+        // 4. 验证与 JSON 注解路由正交解耦（dispatcher 从未被调用）
+        verify(dispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
+    @DisplayName("未配置 RealtimeBinaryMessageListener 时安全忽略二进制消息且不抛异常")
+    void testBinaryMessageWithoutListenerDoesNotThrow() throws Exception {
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager();
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(sessionManager);
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("ws-bin-002");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-bin-2", "app", "client-bin-02");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        managedHandler.afterConnectionEstablished(session);
+        RealtimeSession realtimeSession = sessionManager.getSession(key);
+        assertThat(realtimeSession).isNotNull();
+
+        // 发送二进制消息
+        managedHandler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(new byte[]{99, 100})));
+        assertThat(realtimeSession.isOpen()).isTrue();
+    }
+
+    @Test
+    @DisplayName("单个 RealtimeBinaryMessageListener 抛出异常时不阻断其他监听器执行")
+    void testBinaryMessageListenerExceptionDoesNotAffectOtherListeners() throws Exception {
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager();
+        List<byte[]> receivedBySecondListener = new ArrayList<>();
+
+        RealtimeBinaryMessageListener failingListener = (sess, payload) -> {
+            throw new RuntimeException("Simulated audio decoder crash");
+        };
+        RealtimeBinaryMessageListener normalListener = (sess, payload) -> {
+            receivedBySecondListener.add(payload);
+        };
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("failingListener", failingListener);
+        beanFactory.addBean("normalListener", normalListener);
+
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(
+                sessionManager,
+                null,
+                null,
+                beanFactory.getBeanProvider(RealtimeBinaryMessageListener.class)
+        );
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("ws-bin-003");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-bin-3", "app", "client-bin-03");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        managedHandler.afterConnectionEstablished(session);
+        byte[] payload = new byte[]{7, 8, 9};
+        managedHandler.handleBinaryMessage(session, new BinaryMessage(ByteBuffer.wrap(payload)));
+
+        // 第二个监听器依然能成功消费，异常被安全捕获
+        assertThat(receivedBySecondListener).hasSize(1);
+        assertThat(receivedBySecondListener.get(0)).containsExactly(payload);
     }
 }

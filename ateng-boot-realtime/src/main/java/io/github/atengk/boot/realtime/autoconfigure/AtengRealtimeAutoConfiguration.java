@@ -10,6 +10,7 @@ import io.github.atengk.boot.realtime.cluster.RedissonClusterMetricsReporter;
 import io.github.atengk.boot.realtime.cluster.RedissonRealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.cluster.StandaloneClusterMetricsProvider;
 import io.github.atengk.boot.realtime.cluster.StandaloneRealtimeClusterBroadcaster;
+import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageListener;
 import io.github.atengk.boot.realtime.enums.ClusterMode;
@@ -278,8 +279,9 @@ public class AtengRealtimeAutoConfiguration {
         @ConditionalOnMissingBean(AtengWebSocketHandler.class)
         public AtengWebSocketHandler atengWebSocketHandler(RealtimeProperties properties,
                                                            ObjectProvider<RealtimeSessionManager> sessionManagerProvider,
-                                                           ObjectProvider<RealtimeMessageDispatcher> dispatcherProvider) {
-            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable(), properties);
+                                                           ObjectProvider<RealtimeMessageDispatcher> dispatcherProvider,
+                                                           ObjectProvider<RealtimeBinaryMessageListener> binaryListenersProvider) {
+            return new AtengWebSocketHandler(sessionManagerProvider.getIfAvailable(), dispatcherProvider.getIfAvailable(), properties, binaryListenersProvider);
         }
 
         /**
