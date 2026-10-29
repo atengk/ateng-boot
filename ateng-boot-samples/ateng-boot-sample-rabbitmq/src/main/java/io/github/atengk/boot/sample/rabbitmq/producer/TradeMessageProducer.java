@@ -115,4 +115,50 @@ public class TradeMessageProducer {
                 bizKey
         );
     }
+
+    /**
+     * 批量可靠投递：订单列表并发异步发送并聚合等待所有 Broker ACK
+     *
+     * @param orders 批量订单消息列表
+     */
+    public void sendBatchOrders(java.util.List<OrderCreateMessage> orders) {
+        log.info("[PRODUCER] 开始批量投递订单创建消息: count={}", orders.size());
+        rabbitReliableTemplate.sendBatchReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER,
+                orders
+        );
+        log.info("[PRODUCER] 批量订单消息全部收到 Broker Confirm ACK: count={}", orders.size());
+    }
+
+    /**
+     * 优先级可靠投递：投递高/低优先级订单消息
+     *
+     * @param order    订单创建消息
+     * @param priority 消息优先级 (0-255，对应队列 x-max-priority)
+     */
+    public void sendPriorityOrder(OrderCreateMessage order, int priority) {
+        log.info("[PRODUCER] 投递优先级订单消息: orderId={}, priority={}", order.orderId(), priority);
+        rabbitReliableTemplate.sendReliableWithPriority(
+                RabbitScenarioTopologyConfig.EXCHANGE_PRIORITY_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_PRIORITY_ORDER,
+                order,
+                priority,
+                order.orderId()
+        );
+    }
+
+    /**
+     * Fanout 广播投递：向所有动态绑定的匿名临时队列分发
+     *
+     * @param message 广播消息载荷
+     */
+    public void sendBroadcast(Object message) {
+        log.info("[PRODUCER] 发起 Fanout 临时广播: message={}", message);
+        rabbitReliableTemplate.sendReliable(
+                RabbitScenarioTopologyConfig.EXCHANGE_BROADCAST_FANOUT,
+                "",
+                message
+        );
+    }
 }

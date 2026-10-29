@@ -86,6 +86,21 @@ class SampleRabbitmqE2eTest {
     @Autowired
     private RabbitReliableTemplate rabbitReliableTemplate;
 
+    @Autowired
+    private BatchOrderConsumer batchOrderConsumer;
+
+    @Autowired
+    private PriorityOrderConsumer priorityOrderConsumer;
+
+    @Autowired
+    private AnonymousBroadcastConsumer broadcastConsumer;
+
+    @Autowired
+    private io.github.atengk.boot.sample.rabbitmq.service.DeadLetterReplayService deadLetterReplayService;
+
+    @Autowired
+    private com.rabbitmq.client.Channel mockChannel;
+
     @BeforeEach
     void setUp() {
         orderConsumer.clear();
@@ -94,6 +109,10 @@ class SampleRabbitmqE2eTest {
         delayConsumer.clear();
         poisonPillConsumer.clear();
         deadLetterAuditConsumer.clear();
+        batchOrderConsumer.clear();
+        priorityOrderConsumer.clear();
+        broadcastConsumer.clear();
+        reset(mockChannel);
         UserContextHolder.clear();
         TenantContextHolder.clear();
         MDC.clear();
@@ -223,6 +242,83 @@ class SampleRabbitmqE2eTest {
         assertThat(orderConsumer.getReceivedMessages()).isEmpty();
     }
 
+    @Test
+    @DisplayName("场景 F: 生产端 sendBatchReliable 批量发送与消费端批量削峰消费")
+    void testScenarioF_BatchOrderPublishAndConsume() {
+        List<OrderCreateMessage> orders = List.of(
+                new OrderCreateMessage("ORD-BATCH-001", new BigDecimal("10.00"), "user-1", LocalDateTime.now()),
+                new OrderCreateMessage("ORD-BATCH-002", new BigDecimal("20.00"), "user-2", LocalDateTime.now()),
+                new OrderCreateMessage("ORD-BATCH-003", new BigDecimal("30.00"), "user-3", LocalDateTime.now())
+        );
+
+        producer.sendBatchOrders(orders);
+
+        assertThat(batchOrderConsumer.getAllReceivedOrders()).hasSize(3);
+        assertThat(batchOrderConsumer.getAllReceivedOrders())
+                .extracting(OrderCreateMessage::orderId)
+                .containsExactly("ORD-BATCH-001", "ORD-BATCH-002", "ORD-BATCH-003");
+    }
+
+    @Test
+    @DisplayName("场景 G: Quorum 队列优先级消息投递与优先级属性接收")
+    void testScenarioG_PriorityAndQuorumOverflowTopology() {
+        OrderCreateMessage vipOrder = new OrderCreateMessage(
+                "ORD-VIP-001", new BigDecimal("9999.00"), "vip-user", LocalDateTime.now());
+
+        producer.sendPriorityOrder(vipOrder, 9);
+
+        assertThat(priorityOrderConsumer.getReceivedOrders()).hasSize(1);
+        assertThat(priorityOrderConsumer.getReceivedOrders().get(0).orderId()).isEqualTo("ORD-VIP-001");
+        assertThat(priorityOrderConsumer.getReceivedPriorities()).containsExactly(9);
+    }
+
+    @Test
+    @DisplayName("场景 H: Fanout 广播与动态匿名临时排他自动删除队列接收")
+    void testScenarioH_AnonymousBroadcastRouting() {
+        producer.sendBroadcast("SYSTEM_CONFIG_UPDATED");
+
+        assertThat(broadcastConsumer.getReceivedBroadcasts()).hasSize(1);
+        assertThat(broadcastConsumer.getReceivedBroadcasts().get(0)).isEqualTo("SYSTEM_CONFIG_UPDATED");
+    }
+
+    @Test
+    @DisplayName("场景 I: RabbitDeadLetterReplayTemplate 受控死信重放、探查与清空")
+    void testScenarioI_DeadLetterReplayAndAntiAvalanche() throws Exception {
+        // 1. 模拟死信队列中有 1 条因 rejected 产生的死信
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("bizKey", "ORD-DEAD-100");
+        Map<String, Object> xDeathMap = new HashMap<>();
+        xDeathMap.put("queue", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
+        xDeathMap.put("exchange", RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT);
+        xDeathMap.put("reason", "rejected");
+        xDeathMap.put("count", 1L);
+        headers.put("x-death", List.of(xDeathMap));
+
+        com.rabbitmq.client.AMQP.BasicProperties basicProps = new com.rabbitmq.client.AMQP.BasicProperties.Builder()
+                .headers(headers)
+                .contentType("application/json")
+                .build();
+        com.rabbitmq.client.Envelope envelope = new com.rabbitmq.client.Envelope(101L, false, "ex", "rk");
+        com.rabbitmq.client.GetResponse getResponse = new com.rabbitmq.client.GetResponse(
+                envelope, basicProps, "\"replayed-order-data\"".getBytes(StandardCharsets.UTF_8), 0);
+
+        when(mockChannel.basicGet(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ), eq(false)))
+                .thenReturn(getResponse, (com.rabbitmq.client.GetResponse) null);
+
+        // 2. 执行死信受控重放
+        int replayed = deadLetterReplayService.replayBizDeadLetters(5);
+        assertThat(replayed).isEqualTo(1);
+        verify(mockChannel, times(1)).basicAck(eq(101L), eq(false));
+
+        // 3. 模拟清空死信队列
+        com.rabbitmq.client.AMQP.Queue.PurgeOk purgeOk = mock(com.rabbitmq.client.AMQP.Queue.PurgeOk.class);
+        when(purgeOk.getMessageCount()).thenReturn(3);
+        when(mockChannel.queuePurge(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ))).thenReturn(purgeOk);
+
+        int purged = deadLetterReplayService.purgeBizDeadLetters();
+        assertThat(purged).isEqualTo(3);
+    }
+
     /**
      * 离线自洽 AMQP 测试配置：基于 Mockito 与内存直接路由模拟完整 Broker 交互与 Confirm/DLQ
      */
@@ -237,6 +333,12 @@ class SampleRabbitmqE2eTest {
 
         @Bean
         @Primary
+        public com.rabbitmq.client.Channel testChannel() {
+            return mock(com.rabbitmq.client.Channel.class);
+        }
+
+        @Bean
+        @Primary
         public RabbitTemplate testRabbitTemplate(
                 OrderConsumer orderConsumer,
                 LogTopicConsumer logTopicConsumer,
@@ -244,25 +346,35 @@ class SampleRabbitmqE2eTest {
                 OrderDelayConsumer delayConsumer,
                 PoisonPillConsumer poisonPillConsumer,
                 DeadLetterAuditConsumer deadLetterAuditConsumer,
-                RabbitListenerGlobalAdvice globalAdvice) {
+                BatchOrderConsumer batchOrderConsumer,
+                PriorityOrderConsumer priorityOrderConsumer,
+                AnonymousBroadcastConsumer broadcastConsumer,
+                RabbitListenerGlobalAdvice globalAdvice,
+                com.rabbitmq.client.Channel testChannel) {
 
             RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
             Jackson2JsonMessageConverter converter = new Jackson2JsonMessageConverter();
             when(rabbitTemplate.getMessageConverter()).thenReturn(converter);
 
-            // 模拟 Broker 路由分发与 Confirm ACK
-            doAnswer(invocation -> {
+            // 模拟 rabbitTemplate.execute 委派至 testChannel
+            when(rabbitTemplate.execute(any())).thenAnswer(invocation -> {
+                org.springframework.amqp.rabbit.core.ChannelCallback<?> callback = invocation.getArgument(0);
+                return callback.doInRabbit(testChannel);
+            });
+
+            // 路由派发闭包逻辑
+            org.mockito.stubbing.Answer<Object> routerAnswer = invocation -> {
                 String exchange = invocation.getArgument(0);
                 String routingKey = invocation.getArgument(1);
                 Message message = invocation.getArgument(2);
-                CorrelationData cd = invocation.getArgument(3);
-
-                // 1. 模拟 Broker Publisher Confirm ACK
-                if (cd != null) {
-                    cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+                if (invocation.getArguments().length > 3) {
+                    CorrelationData cd = invocation.getArgument(3);
+                    if (cd != null) {
+                        cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+                    }
                 }
 
-                // 2. 内存路由与消费模拟
+                // 内存路由与消费模拟
                 if (RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DIRECT.equals(exchange)) {
                     if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_CREATE.equals(routingKey)) {
                         OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
@@ -272,7 +384,6 @@ class SampleRabbitmqE2eTest {
                     } else if (RabbitScenarioTopologyConfig.ROUTING_KEY_ORDER_IDEMPOTENT.equals(routingKey)) {
                         String payload = (String) converter.fromMessage(message);
                         String bizKey = (String) message.getMessageProperties().getHeaders().get("X-Biz-Key");
-                        // 真实挂载 RabbitListenerGlobalAdvice 拦截切面，端到端检验幂等异常静默确认 (Silent ACK)
                         MethodInvocation methodInvocation = mock(MethodInvocation.class);
                         when(methodInvocation.getArguments()).thenReturn(new Object[]{message});
                         try {
@@ -292,12 +403,20 @@ class SampleRabbitmqE2eTest {
                 } else if (RabbitScenarioTopologyConfig.EXCHANGE_ORDER_DELAY.equals(exchange)) {
                     OrderTimeoutMessage payload = (OrderTimeoutMessage) converter.fromMessage(message);
                     delayConsumer.onTimeout(payload);
+                } else if (RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT.equals(exchange)) {
+                    OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
+                    batchOrderConsumer.onBatch(List.of(payload));
+                } else if (RabbitScenarioTopologyConfig.EXCHANGE_PRIORITY_DIRECT.equals(exchange)) {
+                    OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
+                    priorityOrderConsumer.onPriorityOrder(payload, message.getMessageProperties().getPriority());
+                } else if (RabbitScenarioTopologyConfig.EXCHANGE_BROADCAST_FANOUT.equals(exchange)) {
+                    String payload = new String(message.getBody(), StandardCharsets.UTF_8).replace("\"", "");
+                    broadcastConsumer.onBroadcast(payload);
                 } else if (RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT.equals(exchange)) {
                     String payload = (String) converter.fromMessage(message);
                     try {
                         poisonPillConsumer.onBizMessage(payload);
                     } catch (Exception ex) {
-                        // 模拟毒丸判定器与 DLX 路由至死信队列
                         MessageProperties dlProps = new MessageProperties();
                         Map<String, Object> deathHeader = new HashMap<>();
                         deathHeader.put("queue", RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
@@ -313,7 +432,10 @@ class SampleRabbitmqE2eTest {
                 }
 
                 return null;
-            }).when(rabbitTemplate).send(anyString(), anyString(), any(Message.class), any(CorrelationData.class));
+            };
+
+            doAnswer(routerAnswer).when(rabbitTemplate).send(anyString(), anyString(), any(Message.class), any(CorrelationData.class));
+            doAnswer(routerAnswer).when(rabbitTemplate).send(anyString(), anyString(), any(Message.class));
 
             return rabbitTemplate;
         }
