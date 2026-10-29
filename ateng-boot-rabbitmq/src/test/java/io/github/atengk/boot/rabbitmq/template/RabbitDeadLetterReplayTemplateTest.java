@@ -10,6 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.ChannelCallback;
@@ -17,7 +19,6 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -121,6 +122,34 @@ class RabbitDeadLetterReplayTemplateTest {
     }
 
     @Test
+    @DisplayName("对抗性测试：重放过程中 rabbitTemplate.send 抛出异常中断，当前拉取的消息确定性执行 basicNack(requeue=true) 补偿回滚")
+    void testReplaySendExceptionRequeuesCurrentMessage() throws IOException {
+        String dlq = "sample.order.dlq";
+        String targetExchange = "sample.order.direct";
+        String targetRoutingKey = "order.create";
+
+        Envelope envelope = new Envelope(102L, false, "origin.exchange", "origin.key");
+        AMQP.BasicProperties basicProps = new AMQP.BasicProperties.Builder()
+                .headers(Map.of("bizKey", "FAIL-01"))
+                .build();
+        GetResponse getResponse = new GetResponse(envelope, basicProps, "fail".getBytes(StandardCharsets.UTF_8), 0);
+        when(channel.basicGet(eq(dlq), eq(false))).thenReturn(getResponse);
+
+        // 模拟投递时抛出网络或 Broker 异常
+        doThrow(new AmqpException("Simulated broker network failure"))
+                .when(rabbitTemplate).send(anyString(), anyString(), any(Message.class));
+
+        assertThatThrownBy(() -> replayTemplate.replay(dlq, targetExchange, targetRoutingKey))
+                .isInstanceOf(AmqpException.class)
+                .hasMessageContaining("Simulated broker network failure");
+
+        // 验证严禁 ACK
+        verify(channel, never()).basicAck(anyLong(), anyBoolean());
+        // 验证当前消息必须被确定性 basicNack(requeue=true) 回滚，杜绝 unacked 消息悬挂
+        verify(channel, times(1)).basicNack(eq(102L), eq(false), eq(true));
+    }
+
+    @Test
     @DisplayName("防二次死信雪崩：消息重放次数已达上限时阻断重放，不发送至目标交换机，并将消息 requeue 回滚原队列")
     void testReplayAntiAvalancheBlocked() throws IOException {
         String dlq = "sample.order.dlq";
@@ -186,29 +215,35 @@ class RabbitDeadLetterReplayTemplateTest {
     }
 
     @Test
-    @DisplayName("只读探查 peek：探测头部消息而不出队确认，所有探查的消息在 finally 块中确定性 basicNack(requeue=true)")
-    void testPeekWithoutAck() throws IOException {
+    @DisplayName("只读探查 peek：探测头部消息而不出队确认，所有探查的消息在 finally 块中逆序 basicNack(requeue=true) 维持 FIFO 原序")
+    void testPeekWithoutAckAndMaintainsFifoOrder() throws IOException {
         String dlq = "sample.order.dlq";
 
-        Map<String, Object> headers = new HashMap<>();
-        headers.put("bizKey", "PEEK-01");
-        AMQP.BasicProperties props = new AMQP.BasicProperties.Builder().headers(headers).build();
-        GetResponse res = new GetResponse(new Envelope(401L, false, "ex", "rk"), props, "peek-payload".getBytes(StandardCharsets.UTF_8), 0);
+        // 模拟两条消息被依次拉取
+        GetResponse res1 = new GetResponse(new Envelope(401L, false, "ex", "rk"),
+                new AMQP.BasicProperties.Builder().headers(Map.of("bizKey", "PEEK-01")).build(),
+                "peek-payload-1".getBytes(StandardCharsets.UTF_8), 1);
+        GetResponse res2 = new GetResponse(new Envelope(402L, false, "ex", "rk"),
+                new AMQP.BasicProperties.Builder().headers(Map.of("bizKey", "PEEK-02")).build(),
+                "peek-payload-2".getBytes(StandardCharsets.UTF_8), 0);
 
-        when(channel.basicGet(eq(dlq), eq(false))).thenReturn(res, (GetResponse) null);
+        when(channel.basicGet(eq(dlq), eq(false))).thenReturn(res1, res2, (GetResponse) null);
 
         List<Message> peeked = replayTemplate.peek(dlq, 5);
 
-        assertThat(peeked).hasSize(1);
-        assertThat(new String(peeked.get(0).getBody(), StandardCharsets.UTF_8)).isEqualTo("peek-payload");
-        assertThat((String) peeked.get(0).getMessageProperties().getHeader("bizKey")).isEqualTo("PEEK-01");
+        assertThat(peeked).hasSize(2);
+        assertThat(new String(peeked.get(0).getBody(), StandardCharsets.UTF_8)).isEqualTo("peek-payload-1");
+        assertThat(new String(peeked.get(1).getBody(), StandardCharsets.UTF_8)).isEqualTo("peek-payload-2");
 
         // 严禁确认
         verify(channel, never()).basicAck(anyLong(), anyBoolean());
         // 严禁发送
         verify(rabbitTemplate, never()).send(anyString(), anyString(), any(Message.class));
-        // 必须 requeue 保留消息
-        verify(channel, times(1)).basicNack(eq(401L), eq(false), eq(true));
+
+        // 验证必须逆序执行 basicNack (先 402L，再 401L)，确保 401L 最终回到队头，维持严格 FIFO 顺序
+        InOrder inOrder = inOrder(channel);
+        inOrder.verify(channel).basicNack(eq(402L), eq(false), eq(true));
+        inOrder.verify(channel).basicNack(eq(401L), eq(false), eq(true));
     }
 
     @Test

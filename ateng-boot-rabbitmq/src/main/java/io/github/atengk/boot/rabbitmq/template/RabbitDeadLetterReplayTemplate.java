@@ -1,5 +1,7 @@
 package io.github.atengk.boot.rabbitmq.template;
 
+import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.GetResponse;
 import io.github.atengk.boot.rabbitmq.helper.RabbitDeadLetterHelper;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -114,21 +116,22 @@ public class RabbitDeadLetterReplayTemplate {
         return rabbitTemplate.execute(channel -> {
             int replayedCount = 0;
             List<Long> requeueTags = new ArrayList<>();
-            MessagePropertiesConverter converter = this.messagePropertiesConverter;
+            Long currentProcessingTag = null;
             try {
                 for (int i = 0; i < limit; i++) {
-                    com.rabbitmq.client.GetResponse response = channel.basicGet(dlq, false);
+                    GetResponse response = channel.basicGet(dlq, false);
                     if (response == null) {
                         break;
                     }
                     long deliveryTag = response.getEnvelope().getDeliveryTag();
-                    MessageProperties props = converter.toMessageProperties(
-                            response.getProps(), response.getEnvelope(), StandardCharsets.UTF_8.name());
-                    Message message = new Message(response.getBody(), props);
+                    currentProcessingTag = deliveryTag;
+                    Message message = convertResponseToMessage(response);
+                    MessageProperties props = message.getMessageProperties();
 
                     // 1. 谓词过滤校验
                     if (filter != null && !filter.test(message)) {
                         requeueTags.add(deliveryTag);
+                        currentProcessingTag = null;
                         continue;
                     }
 
@@ -138,6 +141,7 @@ public class RabbitDeadLetterReplayTemplate {
                         log.error("[MQ-DLQ-REPLAY-BLOCKED] 死信消息已达最大重放次数上限 ({} 次)，已阻断重放，防范二次死信雪崩死循环: dlq={}, targetExchange={}, targetRoutingKey={}",
                                 currentReplayCount, dlq, targetExchange, effectiveRoutingKey);
                         requeueTags.add(deliveryTag);
+                        currentProcessingTag = null;
                         continue;
                     }
 
@@ -149,17 +153,16 @@ public class RabbitDeadLetterReplayTemplate {
 
                     // 5. 确认消费并从死信队列可靠出队
                     channel.basicAck(deliveryTag, false);
+                    currentProcessingTag = null;
                     replayedCount++;
                 }
             } finally {
-                // 确保跳过的消息 (过滤不匹配或超限阻断) 确定性安全回滚到死信队列
-                for (Long tag : requeueTags) {
-                    try {
-                        channel.basicNack(tag, false, true);
-                    } catch (Exception ex) {
-                        log.warn("[MQ-REPLAY-NACK-WARN] 死信重放跳过消息回滚 NACK 异常: dlq={}, tag={}", dlq, tag, ex);
-                    }
+                // 若发生异常导致当前已拉取消息未能成功 ACK，确定性补充纳入回滚集合
+                if (currentProcessingTag != null) {
+                    requeueTags.add(currentProcessingTag);
                 }
+                // 逆序回滚未处理消息，保障原有队列 FIFO 顺序
+                requeueTags(channel, dlq, requeueTags, "REPLAY");
             }
             log.info("[MQ-DLQ-REPLAY] 死信队列重放执行完成: dlq={}, targetExchange={}, targetRoutingKey={}, replayedCount={}, totalAttempted={}",
                     dlq, targetExchange, effectiveRoutingKey, replayedCount, limit);
@@ -182,27 +185,18 @@ public class RabbitDeadLetterReplayTemplate {
         return rabbitTemplate.execute(channel -> {
             List<Message> messages = new ArrayList<>();
             List<Long> deliveryTags = new ArrayList<>();
-            MessagePropertiesConverter converter = this.messagePropertiesConverter;
             try {
                 for (int i = 0; i < limit; i++) {
-                    com.rabbitmq.client.GetResponse response = channel.basicGet(dlq, false);
+                    GetResponse response = channel.basicGet(dlq, false);
                     if (response == null) {
                         break;
                     }
                     deliveryTags.add(response.getEnvelope().getDeliveryTag());
-                    MessageProperties props = converter.toMessageProperties(
-                            response.getProps(), response.getEnvelope(), StandardCharsets.UTF_8.name());
-                    messages.add(new Message(response.getBody(), props));
+                    messages.add(convertResponseToMessage(response));
                 }
             } finally {
-                // 严格通过 basicNack(tag, false, true) 将所有已探查的消息放回原队列，杜绝丢信
-                for (Long tag : deliveryTags) {
-                    try {
-                        channel.basicNack(tag, false, true);
-                    } catch (Exception ex) {
-                        log.warn("[MQ-PEEK-NACK-WARN] 死信探查回滚 NACK 异常: dlq={}, tag={}", dlq, tag, ex);
-                    }
-                }
+                // 严格通过逆序 basicNack(tag, false, true) 将所有已探查的消息放回原队列，保全 FIFO 原序
+                requeueTags(channel, dlq, deliveryTags, "PEEK");
             }
             return Collections.unmodifiableList(messages);
         });
@@ -231,6 +225,33 @@ public class RabbitDeadLetterReplayTemplate {
             log.info("[MQ-DLQ-PURGE] 成功清空死信队列: dlq={}, purgedCount={}", dlq, purged);
             return purged;
         });
+    }
+
+    /**
+     * 将 AMQP 原生 GetResponse 转换为 Spring Message 实体
+     */
+    private Message convertResponseToMessage(GetResponse response) {
+        MessageProperties props = messagePropertiesConverter.toMessageProperties(
+                response.getProps(), response.getEnvelope(), StandardCharsets.UTF_8.name());
+        return new Message(response.getBody(), props);
+    }
+
+    /**
+     * 对消息标签列表逆序执行 basicNack(requeue=true) 补偿回滚
+     * 逆序执行能够保障当消息依次插入队列头部时，最终整体维持原有的 FIFO 顺序
+     */
+    private void requeueTags(Channel channel, String dlq, List<Long> tags, String opName) {
+        if (tags == null || tags.isEmpty()) {
+            return;
+        }
+        for (int i = tags.size() - 1; i >= 0; i--) {
+            Long tag = tags.get(i);
+            try {
+                channel.basicNack(tag, false, true);
+            } catch (Exception ex) {
+                log.warn("[MQ-{}-NACK-WARN] 死信回滚 NACK 异常: dlq={}, tag={}", opName, dlq, tag, ex);
+            }
+        }
     }
 
     /**
@@ -281,7 +302,7 @@ public class RabbitDeadLetterReplayTemplate {
     }
 
     /**
-     * 提取消息当前的重放次数，不存在时返回 0
+     * 提取消息当前的重放次数，不存在或解析异常时降级返回 0
      */
     private int extractReplayCount(MessageProperties props) {
         if (props == null) {
@@ -293,7 +314,9 @@ public class RabbitDeadLetterReplayTemplate {
         } else if (countObj != null) {
             try {
                 return Integer.parseInt(String.valueOf(countObj));
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException e) {
+                log.debug("[MQ-DLQ-REPLAY-WARN] 无法解析消息头重放次数数值，降级重置为 0: headerValue={}, error={}",
+                        countObj, e.getMessage());
             }
         }
         return 0;
