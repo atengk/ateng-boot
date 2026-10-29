@@ -42,7 +42,7 @@ import java.util.function.Supplier;
 @Slf4j
 public class KafkaOffsetManager {
 
-    private static final String MQ_TYPE_KAFKA = "KAFKA";
+    private static final String MQ_TYPE_KAFKA = "kafka";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
 
     private final KafkaAdmin kafkaAdmin;
@@ -156,34 +156,7 @@ public class KafkaOffsetManager {
      * @return 重置后的各分区位移映射
      */
     public Map<TopicPartition, OffsetAndMetadata> resetOffsetsToEarliest(String groupId, String topic) {
-        Assert.hasText(groupId, "groupId 不能为空白");
-        Assert.hasText(topic, "topic 不能为空白");
-        try (AdminClient adminClient = createAdminClient()) {
-            List<TopicPartition> partitions = getTopicPartitions(adminClient, topic);
-
-            Map<TopicPartition, OffsetSpec> offsetSpecs = new HashMap<>();
-            for (TopicPartition tp : partitions) {
-                offsetSpecs.put(tp, OffsetSpec.earliest());
-            }
-            Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> listOffsetsResult =
-                    adminClient.listOffsets(offsetSpecs).all().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-
-            Map<TopicPartition, OffsetAndMetadata> offsetsToAlter = new HashMap<>();
-            for (Map.Entry<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> entry : listOffsetsResult.entrySet()) {
-                offsetsToAlter.put(entry.getKey(), new OffsetAndMetadata(entry.getValue().offset()));
-            }
-
-            adminClient.alterConsumerGroupOffsets(groupId, offsetsToAlter)
-                    .all().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-
-            log.info("[MQ-OFFSET-RESET-EARLIEST] 成功将消费组位移重置至最早位移: groupId={}, topic={}, partitionsCount={}",
-                    groupId, topic, offsetsToAlter.size());
-            return Collections.unmodifiableMap(offsetsToAlter);
-        } catch (Exception ex) {
-            log.error("[MQ-OFFSET-RESET-FAILED] 重置消费组位移至最早失败: groupId={}, topic={}, error={}",
-                    groupId, topic, ex.getMessage(), ex);
-            throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null, "重置消费组位移至最早失败: " + ex.getMessage(), ex);
-        }
+        return resetOffsetsByStrategy(groupId, topic, ResetStrategy.EARLIEST);
     }
 
     /**
@@ -194,6 +167,16 @@ public class KafkaOffsetManager {
      * @return 重置后的各分区位移映射
      */
     public Map<TopicPartition, OffsetAndMetadata> resetOffsetsToLatest(String groupId, String topic) {
+        return resetOffsetsByStrategy(groupId, topic, ResetStrategy.LATEST);
+    }
+
+    /**
+     * 按指定策略通用重置消费组在目标主题各分区的位移
+     */
+    private Map<TopicPartition, OffsetAndMetadata> resetOffsetsByStrategy(
+            String groupId,
+            String topic,
+            ResetStrategy strategy) {
         Assert.hasText(groupId, "groupId 不能为空白");
         Assert.hasText(topic, "topic 不能为空白");
         try (AdminClient adminClient = createAdminClient()) {
@@ -201,7 +184,7 @@ public class KafkaOffsetManager {
 
             Map<TopicPartition, OffsetSpec> offsetSpecs = new HashMap<>();
             for (TopicPartition tp : partitions) {
-                offsetSpecs.put(tp, OffsetSpec.latest());
+                offsetSpecs.put(tp, strategy.offsetSpec);
             }
             Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> listOffsetsResult =
                     adminClient.listOffsets(offsetSpecs).all().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -214,13 +197,31 @@ public class KafkaOffsetManager {
             adminClient.alterConsumerGroupOffsets(groupId, offsetsToAlter)
                     .all().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
 
-            log.info("[MQ-OFFSET-RESET-LATEST] 成功将消费组位移重置至最新位移: groupId={}, topic={}, partitionsCount={}",
-                    groupId, topic, offsetsToAlter.size());
+            log.info("[MQ-OFFSET-RESET-{}] 成功将消费组位移重置至{}位移: groupId={}, topic={}, partitionsCount={}",
+                    strategy.code, strategy.description, groupId, topic, offsetsToAlter.size());
             return Collections.unmodifiableMap(offsetsToAlter);
         } catch (Exception ex) {
-            log.error("[MQ-OFFSET-RESET-FAILED] 重置消费组位移至最新失败: groupId={}, topic={}, error={}",
-                    groupId, topic, ex.getMessage(), ex);
-            throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null, "重置消费组位移至最新失败: " + ex.getMessage(), ex);
+            log.error("[MQ-OFFSET-RESET-FAILED] 重置消费组位移至{}失败: groupId={}, topic={}, error={}",
+                    strategy.description, groupId, topic, ex.getMessage(), ex);
+            throw new MessageDeliveryException(MQ_TYPE_KAFKA, topic, null, "重置消费组位移至" + strategy.description + "失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 内部位移重置策略定义（消除参数偏执，内聚规范与元数据）
+     */
+    private enum ResetStrategy {
+        EARLIEST(OffsetSpec.earliest(), "最早", "EARLIEST"),
+        LATEST(OffsetSpec.latest(), "最新", "LATEST");
+
+        private final OffsetSpec offsetSpec;
+        private final String description;
+        private final String code;
+
+        ResetStrategy(OffsetSpec offsetSpec, String description, String code) {
+            this.offsetSpec = offsetSpec;
+            this.description = description;
+            this.code = code;
         }
     }
 

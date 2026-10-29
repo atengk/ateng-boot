@@ -61,6 +61,10 @@ public class KafkaDeadLetterReplayTemplate {
     public static final int DEFAULT_REPLAY_LIMIT = 100;
     public static final int HARD_MAX_REPLAY_LIMIT = 1000;
 
+    public static final Duration DEFAULT_POLL_INTERVAL = Duration.ofMillis(500);
+    public static final Duration DEFAULT_PEEK_TIMEOUT = Duration.ofSeconds(5);
+    public static final Duration DEFAULT_OPERATION_TIMEOUT = Duration.ofSeconds(10);
+
     private static final String MQ_TYPE_KAFKA = "kafka";
 
     private final ConsumerFactory<Object, Object> consumerFactory;
@@ -165,10 +169,10 @@ public class KafkaDeadLetterReplayTemplate {
             consumer.seekToBeginning(topicPartitions);
 
             List<ConsumerRecord<byte[], byte[]>> result = new ArrayList<>(limit);
-            long deadline = System.currentTimeMillis() + 5000;
+            long deadline = System.currentTimeMillis() + DEFAULT_PEEK_TIMEOUT.toMillis();
 
             while (result.size() < limit && System.currentTimeMillis() < deadline) {
-                ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(DEFAULT_POLL_INTERVAL);
                 if (records.isEmpty()) {
                     break;
                 }
@@ -270,10 +274,10 @@ public class KafkaDeadLetterReplayTemplate {
             consumer.assign(topicPartitions);
 
             Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = new HashMap<>();
-            long deadline = System.currentTimeMillis() + 10000;
+            long deadline = System.currentTimeMillis() + DEFAULT_OPERATION_TIMEOUT.toMillis();
 
             while (replayedCount < limit && System.currentTimeMillis() < deadline) {
-                ConsumerRecords<byte[], byte[]> records = consumer.poll(Duration.ofMillis(500));
+                ConsumerRecords<byte[], byte[]> records = consumer.poll(DEFAULT_POLL_INTERVAL);
                 if (records.isEmpty()) {
                     break;
                 }
@@ -354,7 +358,8 @@ public class KafkaDeadLetterReplayTemplate {
         try (AdminClient adminClient = AdminClient.create(kafkaAdmin.getConfigurationProperties())) {
             // 1. 获取主题全部分区
             DescribeTopicsResult describeTopicsResult = adminClient.describeTopics(Collections.singletonList(dlqTopic));
-            TopicDescription description = describeTopicsResult.values().get(dlqTopic).get(10, TimeUnit.SECONDS);
+            TopicDescription description = describeTopicsResult.values().get(dlqTopic)
+                    .get(DEFAULT_OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             List<TopicPartition> partitions = description.partitions().stream()
                     .map(p -> new TopicPartition(dlqTopic, p.partition()))
                     .toList();
@@ -369,7 +374,8 @@ public class KafkaDeadLetterReplayTemplate {
                 offsetSpecMap.put(tp, OffsetSpec.latest());
             }
             Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> endOffsets =
-                    adminClient.listOffsets(offsetSpecMap).all().get(10, TimeUnit.SECONDS);
+                    adminClient.listOffsets(offsetSpecMap).all()
+                            .get(DEFAULT_OPERATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
 
             // 3. 构造 deleteRecords 映射 (删除 endOffset 之前的所有历史消息)
             Map<TopicPartition, RecordsToDelete> recordsToDeleteMap = new HashMap<>();
