@@ -239,4 +239,108 @@ class RealtimeTemplateTest {
         // 验证由于发生异常，该会话已被安全自动排空移除
         assertThat(template.isSessionOnline(key)).isFalse();
     }
+
+    @Test
+    @DisplayName("解散群组测试: dismissGroup 移出成员并向其下发 group_dismissed 事件通知")
+    void testDismissGroupAndEventEmission() throws Exception {
+        WebSocketSession ws1 = mock(WebSocketSession.class);
+        when(ws1.isOpen()).thenReturn(true);
+        WebSocketSession ws2 = mock(WebSocketSession.class);
+        when(ws2.isOpen()).thenReturn(true);
+
+        SessionKey k1 = SessionKey.of("user-dis-1", "c1");
+        SessionKey k2 = SessionKey.of("user-dis-2", "c2");
+
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1, ws1));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k2, ws2));
+
+        template.joinGroup("room-to-dismiss", k1);
+        template.joinGroup("room-to-dismiss", k2);
+
+        assertThat(template.getClusterGroupMemberCount("room-to-dismiss")).isEqualTo(2);
+        assertThat(template.getClusterGroupMembers("room-to-dismiss")).containsExactlyInAnyOrder(k1, k2);
+
+        int dismissedCount = template.dismissGroup("room-to-dismiss");
+        assertThat(dismissedCount).isEqualTo(2);
+
+        // 验证群组已被移出
+        assertThat(template.getGroupMemberCount("room-to-dismiss")).isZero();
+        assertThat(template.getGroupSessions("room-to-dismiss")).isEmpty();
+
+        // 验证客户端已收到 group_dismissed 消息
+        verify(ws1, atLeastOnce()).sendMessage(argThat(msg ->
+                ((TextMessage) msg).getPayload().contains("group_dismissed")));
+        verify(ws2, atLeastOnce()).sendMessage(argThat(msg ->
+                ((TextMessage) msg).getPayload().contains("group_dismissed")));
+    }
+
+    @Test
+    @DisplayName("租户全量剔除: kickoutTenant 驱逐名下所有活跃会话")
+    void testKickoutTenant() throws Exception {
+        WebSocketSession ws1 = mock(WebSocketSession.class);
+        when(ws1.isOpen()).thenReturn(true);
+        WebSocketSession ws2 = mock(WebSocketSession.class);
+        when(ws2.isOpen()).thenReturn(true);
+
+        SessionKey k1 = SessionKey.of("u1", "c1");
+        SessionKey k2 = SessionKey.of("u2", "c2");
+
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k1, ws1, 888L, null));
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(k2, ws2, 888L, null));
+
+        assertThat(sessionManager.getOnlineCountByTenant(888L)).isEqualTo(2);
+
+        int kicked = template.kickoutTenant(888L);
+        assertThat(kicked).isEqualTo(2);
+        assertThat(sessionManager.getOnlineCountByTenant(888L)).isZero();
+
+        verify(ws1).close(RealtimeCloseStatus.USER_KICKED_OUT);
+        verify(ws2).close(RealtimeCloseStatus.USER_KICKED_OUT);
+    }
+
+    @Test
+    @DisplayName("远端集群广播信令调度测试: DISMISS_GROUP 与 KICKOUT_TENANT")
+    void testDispatchRemoteDismissGroupAndKickoutTenant() throws Exception {
+        io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster mockBroadcaster =
+                mock(io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster.class);
+        when(mockBroadcaster.isClusterEnabled()).thenReturn(true);
+        when(mockBroadcaster.getNodeId()).thenReturn("node-remote-test");
+
+        RealtimeTemplate clusterTemplate = new RealtimeTemplate(
+                sessionManager, groupManager, properties, mockBroadcaster);
+
+        // 捕获注册的消费者回调
+        org.mockito.ArgumentCaptor<java.util.function.Consumer<io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket>> captor =
+                org.mockito.ArgumentCaptor.forClass(java.util.function.Consumer.class);
+        verify(mockBroadcaster).addConsumer(captor.capture());
+        java.util.function.Consumer<io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket> consumer = captor.getValue();
+
+        // 1. 模拟收到 DISMISS_GROUP 数据包
+        WebSocketSession wsDismiss = mock(WebSocketSession.class);
+        when(wsDismiss.isOpen()).thenReturn(true);
+        SessionKey kDismiss = SessionKey.of("user-remote-dis", "c1");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(kDismiss, wsDismiss));
+        clusterTemplate.joinGroup("group-remote", kDismiss);
+
+        io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket dismissPacket =
+                io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket.ofDismissGroup("node-other", "group-remote");
+        consumer.accept(dismissPacket);
+
+        assertThat(groupManager.getGroupMemberCount("group-remote")).isZero();
+        verify(wsDismiss, atLeastOnce()).sendMessage(argThat(msg ->
+                ((TextMessage) msg).getPayload().contains("group_dismissed")));
+
+        // 2. 模拟收到 KICKOUT_TENANT 数据包
+        WebSocketSession wsTenant = mock(WebSocketSession.class);
+        when(wsTenant.isOpen()).thenReturn(true);
+        SessionKey kTenant = SessionKey.of("user-remote-tenant", "c2");
+        sessionManager.registerSession(RealtimeSession.ofWebSocket(kTenant, wsTenant, 999L, null));
+
+        io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket kickTenantPacket =
+                io.github.atengk.boot.realtime.cluster.RealtimeClusterPacket.ofKickoutTenant("node-other", 999L, 4002, "Tenant disabled");
+        consumer.accept(kickTenantPacket);
+
+        assertThat(sessionManager.getOnlineCountByTenant(999L)).isZero();
+        verify(wsTenant).close(any(org.springframework.web.socket.CloseStatus.class));
+    }
 }

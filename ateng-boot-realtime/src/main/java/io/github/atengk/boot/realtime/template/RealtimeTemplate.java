@@ -149,6 +149,41 @@ public class RealtimeTemplate {
                     }
                 }
             }
+            case DISMISS_GROUP -> {
+                String groupId = packet.getTargetKey();
+                if (groupId != null) {
+                    Set<SessionKey> members = groupManager.dismissGroup(groupId);
+                    RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
+                            RealtimeMessage.EVENT_GROUP_DISMISSED,
+                            Map.of("groupId", groupId, "message", "Group has been dismissed")
+                    );
+                    List<RealtimeSession> sessions = new ArrayList<>(members.size());
+                    for (SessionKey key : members) {
+                        RealtimeSession session = sessionManager.getSession(key);
+                        if (session != null) {
+                            sessions.add(session);
+                        }
+                    }
+                    sendToSessions(sessions, null, dismissMessage);
+                }
+            }
+            case KICKOUT_TENANT -> {
+                String tenantKey = packet.getTargetKey();
+                if (tenantKey != null) {
+                    try {
+                        Long tenantId = Long.valueOf(tenantKey);
+                        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
+                        CloseStatus closeStatus = packet.getCloseStatusCode() != null
+                                ? new CloseStatus(packet.getCloseStatusCode(), packet.getReason())
+                                : RealtimeCloseStatus.USER_KICKED_OUT;
+                        for (RealtimeSession s : sessions) {
+                            sessionManager.removeAndClose(s.getSessionKey(), closeStatus);
+                        }
+                    } catch (NumberFormatException e) {
+                        log.warn("[Realtime-Cluster] 远端广播租户踢人 ID 格式非法，忽略处理: tenantKey={}", tenantKey);
+                    }
+                }
+            }
         }
     }
 
@@ -405,6 +440,68 @@ public class RealtimeTemplate {
         return groupManager.getGroupMemberCount(groupId);
     }
 
+    /**
+     * 获取全集群指定群组的在线成员总数
+     * <p>
+     * 若处于集群协同模式，从分布式协调中心 (Redis) 汇总全域存活节点的在线成员总数；
+     * 若处于单机模式或未启用分布式群组，平滑回退为当前单机节点的在线成员数。
+     * </p>
+     *
+     * @param groupId 群组标识
+     * @return 全集群成员连接总数
+     */
+    public int getClusterGroupMemberCount(String groupId) {
+        return groupManager.getClusterGroupMemberCount(groupId);
+    }
+
+    /**
+     * 获取全集群指定群组名下的所有在线成员会话坐标
+     * <p>
+     * 若处于集群协同模式，从分布式协调中心 (Redis) 检索全域存活节点的名下成员坐标集合；
+     * 若处于单机模式或未启用分布式群组，平滑回退为当前单机节点的成员坐标集合。
+     * </p>
+     *
+     * @param groupId 群组标识
+     * @return 会话坐标集合（空安全防御，绝不返回 null）
+     */
+    public Set<SessionKey> getClusterGroupMembers(String groupId) {
+        return groupManager.getClusterGroupMembers(groupId);
+    }
+
+    /**
+     * 解散指定群组/房间，全集群广播通知并移出所有群组成员
+     *
+     * @param groupId 群组标识
+     * @return 本节点解散并通知的成员会话数量
+     */
+    public int dismissGroup(String groupId) {
+        if (groupId == null || groupId.isBlank()) {
+            return 0;
+        }
+        String cleanGroupId = groupId.trim();
+        // 1. 本地解散并获取本地成员
+        Set<SessionKey> localMembers = groupManager.dismissGroup(cleanGroupId);
+        // 2. 向本地成员推送 group_dismissed 事件
+        RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
+                RealtimeMessage.EVENT_GROUP_DISMISSED,
+                Map.of("groupId", cleanGroupId, "message", "Group has been dismissed")
+        );
+        List<RealtimeSession> sessions = new ArrayList<>(localMembers.size());
+        for (SessionKey key : localMembers) {
+            RealtimeSession session = sessionManager.getSession(key);
+            if (session != null) {
+                sessions.add(session);
+            }
+        }
+        int localCount = sendToSessions(sessions, null, dismissMessage);
+        // 3. 若处于集群模式，广播 DISMISS_GROUP 信令
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofDismissGroup(clusterBroadcaster.getNodeId(), cleanGroupId));
+        }
+        log.info("[Realtime] 解散群组完成: groupId={}, localEjectedCount={}", cleanGroupId, localCount);
+        return localCount;
+    }
+
     // ==================== 租户隔离广播与全服广播 (Tenant & Global Broadcast) ====================
 
     /**
@@ -505,6 +602,43 @@ public class RealtimeTemplate {
         return kickoutUser(userId, RealtimeCloseStatus.USER_KICKED_OUT);
     }
 
+    /**
+     * 主动驱逐指定多租户下的所有在线设备会话下线（携带自定义关闭状态码）
+     *
+     * @param tenantId 租户标识
+     * @param status   关闭状态原因
+     * @return 成功驱逐的会话数量
+     */
+    public int kickoutTenant(Long tenantId, CloseStatus status) {
+        if (tenantId == null) {
+            return 0;
+        }
+        List<RealtimeSession> sessions = sessionManager.getSessionsByTenant(tenantId);
+        int count = 0;
+        CloseStatus closeStatus = status != null ? status : RealtimeCloseStatus.USER_KICKED_OUT;
+        for (RealtimeSession s : sessions) {
+            if (sessionManager.removeAndClose(s.getSessionKey(), closeStatus) != null) {
+                count++;
+            }
+        }
+        if (clusterBroadcaster.isClusterEnabled()) {
+            clusterBroadcaster.broadcast(RealtimeClusterPacket.ofKickoutTenant(
+                    clusterBroadcaster.getNodeId(), tenantId, closeStatus.getCode(), closeStatus.getReason()));
+        }
+        log.info("[Realtime] 主动驱逐租户全部会话下线: tenantId={}, localCount={}", tenantId, count);
+        return count;
+    }
+
+    /**
+     * 主动驱逐指定多租户下的所有在线设备会话下线（以默认 USER_KICKED_OUT 状态码）
+     *
+     * @param tenantId 租户标识
+     * @return 成功驱逐的会话数量
+     */
+    public int kickoutTenant(Long tenantId) {
+        return kickoutTenant(tenantId, RealtimeCloseStatus.USER_KICKED_OUT);
+    }
+
     // ==================== 状态度量与会话查询 (Metrics & Status) ====================
 
     /**
@@ -569,6 +703,16 @@ public class RealtimeTemplate {
      */
     public int getOnlineCountByChannel(ChannelType channelType) {
         return sessionManager.getOnlineCountByChannel(channelType);
+    }
+
+    /**
+     * 获取指定多租户维度的在线连接数
+     *
+     * @param tenantId 租户标识
+     * @return 租户在线连接数
+     */
+    public int getOnlineCountByTenant(Long tenantId) {
+        return sessionManager.getOnlineCountByTenant(tenantId);
     }
 
     /**

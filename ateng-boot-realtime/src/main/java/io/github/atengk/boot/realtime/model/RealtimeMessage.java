@@ -51,6 +51,11 @@ public class RealtimeMessage<T> implements Serializable {
     public static final String EVENT_ERROR = "error";
 
     /**
+     * 常用事件名常量：群组/房间解散通知
+     */
+    public static final String EVENT_GROUP_DISMISSED = "group_dismissed";
+
+    /**
      * 常用事件名常量：流式数据 Chunk (打字机推流)
      */
     public static final String EVENT_STREAM_CHUNK = "stream:chunk";

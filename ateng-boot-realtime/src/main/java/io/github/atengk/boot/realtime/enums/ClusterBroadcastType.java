@@ -36,7 +36,17 @@ public enum ClusterBroadcastType {
     /**
      * 强制剔除用户下线信令（广播至所有节点强制关闭该用户的全部连接）
      */
-    KICKOUT("kickout", "强制踢人下线信令");
+    KICKOUT("kickout", "强制踢人下线信令"),
+
+    /**
+     * 解散群组房间信令（广播至所有节点在本地解散该群组并通知成员）
+     */
+    DISMISS_GROUP("dismiss_group", "解散群组房间信令"),
+
+    /**
+     * 强制剔除租户全部会话下线信令（广播至所有节点强制关闭该租户的全部连接）
+     */
+    KICKOUT_TENANT("kickout_tenant", "强制剔除租户下线信令");
 
     private final String code;
     private final String description;

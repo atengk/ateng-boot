@@ -43,6 +43,10 @@ class AtengRealtimeAutoConfigurationTest {
             RealtimeClusterBroadcaster broadcaster = context.getBean(RealtimeClusterBroadcaster.class);
             assertThat(broadcaster).isInstanceOf(StandaloneRealtimeClusterBroadcaster.class);
             assertThat(broadcaster.isClusterEnabled()).isFalse();
+
+            assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+            assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                    .isExactlyInstanceOf(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
         });
     }
 
@@ -59,6 +63,10 @@ class AtengRealtimeAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RealtimeClusterMetricsProvider.class);
                     RealtimeClusterMetricsProvider metricsProvider = context.getBean(RealtimeClusterMetricsProvider.class);
                     assertThat(metricsProvider).isInstanceOf(RedissonClusterMetricsReporter.class);
+
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+                    assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                            .isInstanceOf(io.github.atengk.boot.realtime.group.RedissonRealtimeGroupManager.class);
                 });
     }
 
@@ -76,6 +84,10 @@ class AtengRealtimeAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RealtimeClusterMetricsProvider.class);
                     RealtimeClusterMetricsProvider metricsProvider = context.getBean(RealtimeClusterMetricsProvider.class);
                     assertThat(metricsProvider).isInstanceOf(StandaloneClusterMetricsProvider.class);
+
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
+                    assertThat(context.getBean(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class))
+                            .isExactlyInstanceOf(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
                 });
     }
 
@@ -128,6 +140,8 @@ class AtengRealtimeAutoConfigurationTest {
             when(client.getTopic(anyString())).thenReturn(topic);
             RMap<String, String> map = mock(RMap.class);
             when(client.<String, String>getMap(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(map);
+            org.redisson.api.RSet<String> set = mock(org.redisson.api.RSet.class);
+            when(client.<String>getSet(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(set);
             return client;
         }
     }

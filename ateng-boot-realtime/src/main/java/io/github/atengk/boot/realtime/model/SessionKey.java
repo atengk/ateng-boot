@@ -108,6 +108,31 @@ public final class SessionKey implements Serializable, Comparable<SessionKey> {
         return userId + ":" + deviceType + ":" + clientId;
     }
 
+    /**
+     * 从标准化格式化字符串解析会话坐标
+     *
+     * @param formatted 标准化字符串 (userId:deviceType:clientId)
+     * @return 会话坐标实例
+     * @throws IllegalArgumentException 当格式非法或为空时抛出
+     */
+    public static SessionKey parse(String formatted) {
+        if (formatted == null || formatted.isBlank()) {
+            throw new IllegalArgumentException("formatted session key must not be null or blank");
+        }
+        int lastColon = formatted.lastIndexOf(':');
+        if (lastColon <= 0) {
+            throw new IllegalArgumentException("Invalid session key format: " + formatted);
+        }
+        int secondLastColon = formatted.lastIndexOf(':', lastColon - 1);
+        if (secondLastColon <= 0) {
+            throw new IllegalArgumentException("Invalid session key format: " + formatted);
+        }
+        String userId = formatted.substring(0, secondLastColon);
+        String deviceType = formatted.substring(secondLastColon + 1, lastColon);
+        String clientId = formatted.substring(lastColon + 1);
+        return of(userId, deviceType, clientId);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {

@@ -138,4 +138,29 @@ public class RealtimeClusterPacket implements Serializable {
                 .reason(reason)
                 .build();
     }
+
+    /**
+     * 构建解散群组房间信令广播包
+     */
+    public static RealtimeClusterPacket ofDismissGroup(String sourceNodeId, String groupId) {
+        return RealtimeClusterPacket.builder()
+                .sourceNodeId(sourceNodeId)
+                .broadcastType(ClusterBroadcastType.DISMISS_GROUP)
+                .targetKey(groupId)
+                .build();
+    }
+
+    /**
+     * 构建租户全量剔除信令广播包
+     */
+    public static RealtimeClusterPacket ofKickoutTenant(String sourceNodeId, Long tenantId, Integer closeStatusCode, String reason) {
+        return RealtimeClusterPacket.builder()
+                .sourceNodeId(sourceNodeId)
+                .broadcastType(ClusterBroadcastType.KICKOUT_TENANT)
+                .targetKey(tenantId != null ? String.valueOf(tenantId) : null)
+                .tenantId(tenantId)
+                .closeStatusCode(closeStatusCode)
+                .reason(reason)
+                .build();
+    }
 }

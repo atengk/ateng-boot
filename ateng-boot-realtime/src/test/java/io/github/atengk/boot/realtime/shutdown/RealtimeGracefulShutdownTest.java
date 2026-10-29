@@ -50,6 +50,7 @@ class RealtimeGracefulShutdownTest {
     private RealtimeSessionManager sessionManager;
     private RealtimeClusterBroadcaster clusterBroadcaster;
     private RedissonClusterMetricsReporter metricsReporter;
+    private io.github.atengk.boot.realtime.group.RealtimeGroupManager groupManager;
     private RealtimeGracefulShutdownHandler shutdownHandler;
 
     @BeforeEach
@@ -62,16 +63,19 @@ class RealtimeGracefulShutdownTest {
         sessionManager = new RealtimeSessionManager(properties);
         clusterBroadcaster = mock(RedissonRealtimeClusterBroadcaster.class);
         metricsReporter = mock(RedissonClusterMetricsReporter.class);
+        groupManager = mock(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class);
 
         StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
         beanFactory.addBean("broadcaster", clusterBroadcaster);
         beanFactory.addBean("metricsReporter", metricsReporter);
+        beanFactory.addBean("groupManager", groupManager);
 
         shutdownHandler = new RealtimeGracefulShutdownHandler(
                 properties,
                 sessionManager,
                 beanFactory.getBeanProvider(RealtimeClusterBroadcaster.class),
-                beanFactory.getBeanProvider(RealtimeClusterMetricsProvider.class)
+                beanFactory.getBeanProvider(RealtimeClusterMetricsProvider.class),
+                beanFactory.getBeanProvider(io.github.atengk.boot.realtime.group.RealtimeGroupManager.class)
         );
     }
 
@@ -119,6 +123,7 @@ class RealtimeGracefulShutdownTest {
         // 验证 Phase 4: 资源注销与回调触发
         verify(metricsReporter, times(1)).cleanup();
         verify((DisposableBean) clusterBroadcaster, times(1)).destroy();
+        verify(groupManager, times(1)).clear();
         assertThat(callbackInvoked.get()).isTrue();
         assertThat(shutdownHandler.isRunning()).isFalse();
         assertThat(shutdownHandler.isDraining()).isTrue();

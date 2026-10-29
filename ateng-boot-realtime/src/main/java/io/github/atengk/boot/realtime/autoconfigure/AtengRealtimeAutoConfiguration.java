@@ -100,15 +100,6 @@ public class AtengRealtimeAutoConfiguration {
     }
 
     /**
-     * 注册单机会话分组与频道订阅受管管理器
-     */
-    @Bean
-    @ConditionalOnMissingBean(RealtimeGroupManager.class)
-    public RealtimeGroupManager realtimeGroupManager() {
-        return new RealtimeGroupManager();
-    }
-
-    /**
      * 注册幽灵死链检测与心跳探针任务
      */
     @Bean
@@ -157,9 +148,10 @@ public class AtengRealtimeAutoConfiguration {
             RealtimeProperties properties,
             RealtimeSessionManager sessionManager,
             ObjectProvider<RealtimeClusterBroadcaster> clusterBroadcasterProvider,
-            ObjectProvider<RealtimeClusterMetricsProvider> clusterMetricsProvider) {
+            ObjectProvider<RealtimeClusterMetricsProvider> clusterMetricsProvider,
+            ObjectProvider<RealtimeGroupManager> groupManagerProvider) {
         return new RealtimeGracefulShutdownHandler(properties, sessionManager,
-                clusterBroadcasterProvider, clusterMetricsProvider);
+                clusterBroadcasterProvider, clusterMetricsProvider, groupManagerProvider);
     }
 
     /**
@@ -214,6 +206,18 @@ public class AtengRealtimeAutoConfiguration {
             }
             return new RedissonClusterMetricsReporter(redissonClient, properties, sessionManager, clusterBroadcaster);
         }
+
+        @Bean
+        @ConditionalOnBean(RedissonClient.class)
+        @ConditionalOnMissingBean(RealtimeGroupManager.class)
+        public RealtimeGroupManager redissonRealtimeGroupManager(
+                RedissonClient redissonClient,
+                RealtimeProperties properties) {
+            if (properties.getClusterMode() == ClusterMode.STANDALONE) {
+                return new RealtimeGroupManager();
+            }
+            return new io.github.atengk.boot.realtime.group.RedissonRealtimeGroupManager(redissonClient, properties);
+        }
     }
 
     /**
@@ -232,6 +236,15 @@ public class AtengRealtimeAutoConfiguration {
     @ConditionalOnMissingBean(RealtimeClusterMetricsProvider.class)
     public RealtimeClusterMetricsProvider standaloneClusterMetricsProvider(RealtimeSessionManager sessionManager) {
         return new StandaloneClusterMetricsProvider(sessionManager);
+    }
+
+    /**
+     * 注册单机保底会话分组受管管理器（当无 Redisson 或未配置集群时生效）
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeGroupManager.class)
+    public RealtimeGroupManager standaloneRealtimeGroupManager() {
+        return new RealtimeGroupManager();
     }
 
     /**

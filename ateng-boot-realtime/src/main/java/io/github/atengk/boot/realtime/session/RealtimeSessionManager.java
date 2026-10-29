@@ -344,6 +344,20 @@ public class RealtimeSessionManager {
     }
 
     /**
+     * 获取指定多租户维度的在线连接数
+     *
+     * @param tenantId 租户标识
+     * @return 租户在线连接数
+     */
+    public int getOnlineCountByTenant(Long tenantId) {
+        if (tenantId == null) {
+            return 0;
+        }
+        Set<SessionKey> keys = tenantSessions.get(tenantId);
+        return keys != null ? keys.size() : 0;
+    }
+
+    /**
      * 判断当前会话是否存在且活跃
      *
      * @param sessionKey 会话坐标

@@ -272,6 +272,16 @@ public class RealtimeProperties {
         private String nodesHashKey = "ateng:realtime:cluster:nodes";
 
         /**
+         * 集群分布式群组正向成员索引 Redis Set 键前缀（默认: ateng:realtime:cluster:group:）
+         */
+        private String groupKeyPrefix = "ateng:realtime:cluster:group:";
+
+        /**
+         * 集群分布式群组反向所属索引 Redis Set 键前缀（默认: ateng:realtime:cluster:session:）
+         */
+        private String sessionGroupsKeyPrefix = "ateng:realtime:cluster:session:";
+
+        /**
          * 集群节点度量上报心跳周期（默认: 5s）
          */
         private Duration metricsInterval = Duration.ofSeconds(5);
