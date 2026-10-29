@@ -108,6 +108,57 @@ public class KafkaTopicBuilder {
     }
 
     /**
+     * 开启日志压实策略 (cleanup.policy=compact)
+     *
+     * <p>适用于状态快照（最新账户余额、配置广播、元数据同步）等场景，
+     * Kafka 仅为每个 Key 保留最新一条记录。</p>
+     *
+     * @return 当前构建器
+     */
+    public KafkaTopicBuilder compact() {
+        this.configs.put(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT);
+        return this;
+    }
+
+    /**
+     * 开启保留删除与日志压实双重策略 (cleanup.policy=delete,compact)
+     *
+     * <p>兼顾按时间/容量过期清理与相同 Key 的日志压实。</p>
+     *
+     * @return 当前构建器
+     */
+    public KafkaTopicBuilder deleteAndCompact() {
+        this.configs.put(TopicConfig.CLEANUP_POLICY_CONFIG, "delete,compact");
+        return this;
+    }
+
+    /**
+     * 设置单条消息最大体积限制 max.message.bytes
+     *
+     * @param maxMessageBytes 单条消息最大体积限制 (强类型 DataSize，消除单位歧义)
+     * @return 当前构建器
+     */
+    public KafkaTopicBuilder maxMessageBytes(DataSize maxMessageBytes) {
+        if (maxMessageBytes != null) {
+            this.configs.put(TopicConfig.MAX_MESSAGE_BYTES_CONFIG, String.valueOf(maxMessageBytes.toBytes()));
+        }
+        return this;
+    }
+
+    /**
+     * 设置主题端压缩类型 compression.type (如 producer, gzip, snappy, lz4, zstd, uncompressed)
+     *
+     * @param compressionType 压缩类型
+     * @return 当前构建器
+     */
+    public KafkaTopicBuilder compressionType(String compressionType) {
+        if (compressionType != null && !compressionType.isBlank()) {
+            this.configs.put(TopicConfig.COMPRESSION_TYPE_CONFIG, compressionType);
+        }
+        return this;
+    }
+
+    /**
      * 设置通用底层主题配置参数
      */
     public KafkaTopicBuilder config(String key, String value) {
@@ -243,6 +294,30 @@ public class KafkaTopicBuilder {
         public DltConfigBuilder retention(Duration retention) {
             if (retention != null) {
                 this.configs.put(TopicConfig.RETENTION_MS_CONFIG, String.valueOf(retention.toMillis()));
+            }
+            return this;
+        }
+
+        public DltConfigBuilder compact() {
+            this.configs.put(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT);
+            return this;
+        }
+
+        public DltConfigBuilder deleteAndCompact() {
+            this.configs.put(TopicConfig.CLEANUP_POLICY_CONFIG, "delete,compact");
+            return this;
+        }
+
+        public DltConfigBuilder maxMessageBytes(DataSize maxMessageBytes) {
+            if (maxMessageBytes != null) {
+                this.configs.put(TopicConfig.MAX_MESSAGE_BYTES_CONFIG, String.valueOf(maxMessageBytes.toBytes()));
+            }
+            return this;
+        }
+
+        public DltConfigBuilder compressionType(String compressionType) {
+            if (compressionType != null && !compressionType.isBlank()) {
+                this.configs.put(TopicConfig.COMPRESSION_TYPE_CONFIG, compressionType);
             }
             return this;
         }

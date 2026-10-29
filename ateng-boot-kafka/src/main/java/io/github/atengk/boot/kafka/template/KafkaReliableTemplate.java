@@ -17,6 +17,7 @@ import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -24,7 +25,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.*;
@@ -301,7 +304,43 @@ public class KafkaReliableTemplate {
     }
 
     // =========================================================================
-    // 4. 批量可靠发送 (sendBatch)
+    // 4. 原生 Kafka 分布式事务执行 (executeInTransaction)
+    // =========================================================================
+
+    /**
+     * 在原生 Kafka 分布式事务中安全执行原子发送或 Consume-Transform-Produce 流式操作
+     *
+     * <p>自动透传四维上下文标头（TraceId、TenantId、UserId、BizKey）至事务中发送的每条消息，
+     * 并在事务执行失败时转译为统一的受管 {@link MessageDeliveryException}，同时保留底层原始因果链。</p>
+     *
+     * @param callback 事务执行回调，持有事务受管的 {@link KafkaOperations} 实例
+     * @param <T>      回调返回值泛型
+     * @return 事务回调执行结果
+     * @throws MessageDeliveryException 事务执行超时、中断或底层异常时抛出
+     */
+    public <T> T executeInTransaction(KafkaOperations.OperationsCallback<Object, Object, T> callback) {
+        Assert.notNull(callback, "callback 不能为空");
+        try {
+            return kafkaTemplate.executeInTransaction(operations -> {
+                KafkaOperations<Object, Object> wrappedOperations = wrapTransactionalOperations(operations);
+                return callback.doInOperations(wrappedOperations);
+            });
+        } catch (MessageDeliveryException ex) {
+            throw ex;
+        } catch (Throwable ex) {
+            Throwable cause = ex instanceof ExecutionException && ex.getCause() != null ? ex.getCause() : ex;
+            throw new MessageDeliveryException(
+                    MQ_TYPE_KAFKA,
+                    null,
+                    null,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "Kafka 原生分布式事务执行失败: " + cause.getMessage(),
+                    cause);
+        }
+    }
+
+    // =========================================================================
+    // 5. 批量可靠发送 (sendBatch)
     // =========================================================================
 
     /**
@@ -512,17 +551,68 @@ public class KafkaReliableTemplate {
         if (record == null || record.headers() == null) {
             return;
         }
-        if (record.headers().lastHeader(MessageHeaderConstants.TRACE_ID) == null) {
-            String keyStr = record.key() != null ? record.key().toString() : null;
-            String resolvedBizKey = resolveBizKey(record.value(), keyStr, null);
-            Map<String, Object> contextHeaders = new HashMap<>();
-            MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
-            for (Map.Entry<String, Object> entry : contextHeaders.entrySet()) {
-                if (entry.getValue() != null && record.headers().lastHeader(entry.getKey()) == null) {
-                    record.headers().add(new RecordHeader(entry.getKey(), entry.getValue().toString().getBytes(StandardCharsets.UTF_8)));
-                }
+        String keyStr = record.key() != null ? record.key().toString() : null;
+        String resolvedBizKey = resolveBizKey(record.value(), keyStr, null);
+        Map<String, Object> contextHeaders = new HashMap<>();
+        MessageContextPropagator.inject(contextHeaders, resolvedBizKey);
+        for (Map.Entry<String, Object> entry : contextHeaders.entrySet()) {
+            if (entry.getValue() != null && record.headers().lastHeader(entry.getKey()) == null) {
+                record.headers().add(new RecordHeader(entry.getKey(), entry.getValue().toString().getBytes(StandardCharsets.UTF_8)));
             }
         }
+    }
+
+    /**
+     * 包装事务操作句柄以在消息发送时自动透传四维上下文
+     */
+    @SuppressWarnings("unchecked")
+    private KafkaOperations<Object, Object> wrapTransactionalOperations(KafkaOperations<Object, Object> operations) {
+        if (operations == null) {
+            return null;
+        }
+        return (KafkaOperations<Object, Object>) Proxy.newProxyInstance(
+                KafkaOperations.class.getClassLoader(),
+                new Class<?>[]{KafkaOperations.class},
+                (proxy, method, args) -> {
+                    String methodName = method.getName();
+                    if ("send".equals(methodName) && args != null && args.length > 0) {
+                        if (args[0] instanceof ProducerRecord<?, ?> rec) {
+                            ensureContextHeaders((ProducerRecord<Object, Object>) rec);
+                            try {
+                                return method.invoke(operations, args);
+                            } catch (InvocationTargetException ite) {
+                                throw ite.getCause() != null ? ite.getCause() : ite;
+                            }
+                        } else if (args[0] instanceof String) {
+                            ProducerRecord<Object, Object> rec = convertToProducerRecord(args);
+                            ensureContextHeaders(rec);
+                            return operations.send(rec);
+                        }
+                    }
+                    try {
+                        return method.invoke(operations, args);
+                    } catch (InvocationTargetException ite) {
+                        throw ite.getCause() != null ? ite.getCause() : ite;
+                    }
+                }
+        );
+    }
+
+    /**
+     * 将 send(topic, ...) 的重载可变参数转换为标准的 ProducerRecord 实例
+     */
+    private ProducerRecord<Object, Object> convertToProducerRecord(Object[] args) {
+        String topic = (String) args[0];
+        if (args.length == 2) {
+            return new ProducerRecord<>(topic, args[1]);
+        } else if (args.length == 3) {
+            return new ProducerRecord<>(topic, args[1], args[2]);
+        } else if (args.length == 4) {
+            return new ProducerRecord<>(topic, (Integer) args[1], args[2], args[3]);
+        } else if (args.length >= 5) {
+            return new ProducerRecord<>(topic, (Integer) args[1], (Long) args[2], args[3], args[4]);
+        }
+        throw new IllegalArgumentException("不支持的 send 参数组合");
     }
 
     /**
