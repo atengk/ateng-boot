@@ -37,11 +37,11 @@ _Avoid_: HttpClientCustomizer, HttpCustomizer
 _Avoid_: ContextInterceptor, HeaderInterceptor, TraceFilter
 
 **HttpLoggingInterceptor**:
-出站 HTTP 结构化日志拦截器，提供四级日志开关、终端可复现 cURL 脚本打印、敏感 Header 动态掩码脱敏及大响应体容量安全截断。
+出站 HTTP 结构化日志拦截器，提供四级日志开关、终端可复现 cURL 脚本打印、敏感 Header 与 URL Query 参数动态掩码脱敏及大响应体容量安全截断。
 _Avoid_: LoggingInterceptor, HttpLogger, CurlInterceptor
 
 **HttpRetryInterceptor**:
-出站弹性重试拦截器，深度接入 Core 模块 RetryUtil 函数式引擎，针对幂等动词在遭遇网络 I/O 抖动与 502/503/504 异常时执行指数退避重试与随机抖动打散。
+出站弹性重试拦截器，深度接入 Core 模块 RetryUtil 函数式引擎，针对幂等动词在遭遇网络 I/O 抖动与 429/502/503/504 异常时执行指数退避重试与随机抖动打散，自适应解析 RFC 7231 / RFC 6585 Retry-After 响应头精准覆盖退避时延。
 _Avoid_: RetryInterceptor, BackoffInterceptor, SpringRetryTemplate
 
 **HttpResultCode**:

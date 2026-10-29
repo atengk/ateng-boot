@@ -4,8 +4,10 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpRemoteException;
+import io.github.atengk.boot.sample.http.client.OrderServiceClient;
 import io.github.atengk.boot.sample.http.client.UserServiceClient;
 import io.github.atengk.boot.sample.http.client.WechatPayClient;
+import io.github.atengk.boot.sample.http.dto.OrderResponse;
 import io.github.atengk.boot.sample.http.dto.UserRequest;
 import io.github.atengk.boot.sample.http.dto.UserResponse;
 import io.github.atengk.boot.sample.http.dto.WechatNativeOrderRequest;
@@ -61,6 +63,9 @@ class DeclarativeClientScenarioTest {
     @Autowired
     private WechatPayClient wechatPayClient;
 
+    @Autowired
+    private OrderServiceClient orderServiceClient;
+
     @Autowired(required = false)
     @Qualifier("taskExecutor")
     private ThreadPoolTaskExecutor taskExecutor;
@@ -82,10 +87,25 @@ class DeclarativeClientScenarioTest {
     static void configureProperties(DynamicPropertyRegistry registry) {
         registry.add("sample.user-service.url", () -> mockWebServer.url("/").toString());
         registry.add("sample.wechat-pay.url", () -> mockWebServer.url("/").toString());
+        registry.add("sample.order-service.url", () -> mockWebServer.url("/").toString());
     }
 
     @AfterEach
     void tearDown() {
+        // 排空 MockWebServer 队列中残留的历史请求，杜绝跨测试用例污染
+        if (mockWebServer != null) {
+            while (true) {
+                try {
+                    RecordedRequest extra = mockWebServer.takeRequest(10, TimeUnit.MILLISECONDS);
+                    if (extra == null) {
+                        break;
+                    }
+                } catch (Exception ignored) {
+                    break;
+                }
+            }
+        }
+
         // 守卫上下文零污染铁律：无条件清理线程上下文
         MDC.clear();
         UserContextHolder.clear();
@@ -280,6 +300,59 @@ class DeclarativeClientScenarioTest {
         } finally {
             wrapper.shutdown();
         }
+    }
+
+    @Test
+    @DisplayName("场景 5：声明式订单服务正常通信验证")
+    void testOrderServiceClientSuccess() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"orderId\":\"ORD-1001\",\"status\":\"PAID\",\"message\":\"success\"}"));
+
+        OrderResponse response = orderServiceClient.getOrderStatus("ORD-1001");
+        assertThat(response).isNotNull();
+        assertThat(response.getOrderId()).isEqualTo("ORD-1001");
+        assertThat(response.getStatus()).isEqualTo("PAID");
+
+        RecordedRequest request = mockWebServer.takeRequest();
+        assertThat(request.getPath()).isEqualTo("/orders/ORD-1001/status");
+    }
+
+    @Test
+    @DisplayName("场景 6：远端 500 故障自动触发 @HttpClient(fallback = ...) 本地优雅降级")
+    void testOrderServiceClientFallbackOnServerError() {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(500)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"error\":\"Internal DB Down\"}"));
+
+        OrderResponse response = orderServiceClient.getOrderStatus("ORD-FAIL-500");
+        assertThat(response).isNotNull();
+        assertThat(response.getOrderId()).isEqualTo("ORD-FAIL-500");
+        assertThat(response.getStatus()).isEqualTo("UNKNOWN");
+        assertThat(response.getMessage()).contains("降级");
+    }
+
+    @Test
+    @DisplayName("场景 7：方法级 @HttpTimeout 超时覆盖生效并触发 Fallback 降级")
+    void testOrderServiceClientMethodLevelTimeoutFallback() {
+        // 远端延迟 1.5 秒，超过 @HttpTimeout(readTimeout = "300ms")，触发超时并进入降级
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"orderId\":\"ORD-TIMEOUT\",\"status\":\"SUCCESS\"}")
+                .setHeadersDelay(1500, TimeUnit.MILLISECONDS));
+
+        long start = System.currentTimeMillis();
+        OrderResponse response = orderServiceClient.getOrderById("ORD-TIMEOUT");
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertThat(response).isNotNull();
+        assertThat(response.getOrderId()).isEqualTo("ORD-TIMEOUT");
+        assertThat(response.getStatus()).isEqualTo("DEGRADED");
+        assertThat(response.getMessage()).contains("本地优雅降级兜底");
+        assertThat(elapsed).isLessThan(1200);
     }
 
     /**

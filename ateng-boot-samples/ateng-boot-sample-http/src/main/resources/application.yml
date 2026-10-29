@@ -33,3 +33,16 @@ ateng:
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: false
+        order-service:
+          base-url: ${sample.order-service.url:http://localhost:8080}
+          connect-timeout: 2s
+          read-timeout: 5s
+          propagate-context: true
+        scoped-proxy-client:
+          base-url: http://proxy-target.internal:8080
+          connect-timeout: 2s
+          read-timeout: 5s
+          proxy:
+            enabled: true
+            host: 127.0.0.1
+            port: 8888

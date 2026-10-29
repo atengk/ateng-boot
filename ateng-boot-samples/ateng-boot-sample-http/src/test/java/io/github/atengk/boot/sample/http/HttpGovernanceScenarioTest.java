@@ -52,6 +52,9 @@ class HttpGovernanceScenarioTest {
     @Autowired
     private HttpProperties httpProperties;
 
+    @Autowired
+    private io.github.atengk.boot.http.factory.RestClientRegistry restClientRegistry;
+
     private MockWebServer mockWebServer;
     private String baseUrl;
 
@@ -335,5 +338,42 @@ class HttpGovernanceScenarioTest {
                 .filter(event -> event.getFormattedMessage().contains("HTTP GET"))
                 .count();
         assertThat(httpLogCount).as("内层日志拦截器应完整记录 3 次物理调用（2次503与1次200）").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("场景 6：命名客户端专属正向代理与专属连接配置端到端解析验证")
+    void testScopedProxyClientConfigurationBinding() {
+        HttpClientItemProperties scopedProxy = httpProperties.getClients().get("scoped-proxy-client");
+        assertThat(scopedProxy).isNotNull();
+        assertThat(scopedProxy.getBaseUrl()).isEqualTo("http://proxy-target.internal:8080");
+        assertThat(scopedProxy.getProxy()).isNotNull();
+        assertThat(scopedProxy.getProxy().isEnabled()).isTrue();
+        assertThat(scopedProxy.getProxy().getHost()).isEqualTo("127.0.0.1");
+        assertThat(scopedProxy.getProxy().getPort()).isEqualTo(8888);
+
+        // 验证从注册表获取该客户端单例成功装配
+        org.springframework.web.client.RestClient client = restClientRegistry.getClient("scoped-proxy-client");
+        assertThat(client).isNotNull();
+        assertThat(restClientRegistry.contains("scoped-proxy-client")).isTrue();
+    }
+
+    @Test
+    @DisplayName("场景 7：mTLS 与 SSL 凭据配置防御性自洽断言")
+    void testMtlsAndSslPropertiesIntegrity() {
+        // 验证全局 SSL 属性默认安全配置
+        assertThat(httpProperties.getSsl()).isNotNull();
+        assertThat(httpProperties.getSsl().isInsecure()).isFalse();
+
+        // 动态配置专属客户端 mTLS 证书路径与安全模型，验证对象结构与防御规则
+        HttpClientItemProperties mtlsClient = new HttpClientItemProperties();
+        io.github.atengk.boot.http.properties.HttpSslProperties ssl = new io.github.atengk.boot.http.properties.HttpSslProperties();
+        ssl.setKeyStore("classpath:certs/client.p12");
+        ssl.setKeyStorePassword("client-secret-pass");
+        ssl.setKeyStoreType("PKCS12");
+        mtlsClient.setSsl(ssl);
+
+        assertThat(mtlsClient.getSsl().getKeyStore()).isEqualTo("classpath:certs/client.p12");
+        assertThat(mtlsClient.getSsl().getKeyStoreType()).isEqualTo("PKCS12");
+        assertThat(mtlsClient.getSsl().hasKeyStore()).isTrue();
     }
 }

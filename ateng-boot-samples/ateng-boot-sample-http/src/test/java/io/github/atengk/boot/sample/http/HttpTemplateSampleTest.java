@@ -541,6 +541,130 @@ class HttpTemplateSampleTest {
         assertThat(recordedRequest.getHeader("User-Agent")).isEqualTo("ateng-sample-agent/1.0.0");
     }
 
+    @Test
+    @DisplayName("测试 HttpTemplate 执行 PATCH 局部更新请求（Class 与 ParameterizedTypeReference 双模）")
+    void testHttpPatch() throws InterruptedException {
+        // 1. Class 模式
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"id\":1001,\"email\":\"patch@example.com\"}"));
+
+        Map<?, ?> patchResult = httpTemplate.patch(
+                baseUrl + "users/1001",
+                Map.of("email", "patch@example.com"),
+                Map.class
+        );
+        assertThat(patchResult).isNotNull();
+        assertThat(patchResult.get("email")).isEqualTo("patch@example.com");
+
+        RecordedRequest patchRequest = mockWebServer.takeRequest();
+        assertThat(patchRequest.getMethod()).isEqualTo("PATCH");
+        assertThat(patchRequest.getPath()).isEqualTo("/users/1001");
+        assertThat(patchRequest.getBody().readUtf8()).contains("patch@example.com");
+
+        // 2. ParameterizedTypeReference 泛型模式
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"code\":200,\"msg\":\"操作成功\",\"data\":{\"status\":\"PATCHED\"}}"));
+
+        Result<Map<String, Object>> genericPatchResult = httpTemplate.patch(
+                baseUrl + "users/1001/status",
+                Map.of("status", "PATCHED"),
+                new ParameterizedTypeReference<>() {}
+        );
+        assertThat(genericPatchResult).isNotNull();
+        assertThat(genericPatchResult.getData().get("status")).isEqualTo("PATCHED");
+    }
+
+    @Test
+    @DisplayName("测试 HttpTemplate 执行 HEAD 请求获取元数据响应头")
+    void testHttpHead() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Length", "1024")
+                .setHeader("Content-Type", "text/plain;charset=UTF-8")
+                .setHeader("X-Resource-Version", "v2.1.0"));
+
+        org.springframework.http.HttpHeaders headers = httpTemplate.head(baseUrl + "meta/resource.txt");
+        assertThat(headers).isNotNull();
+        assertThat(headers.getContentLength()).isEqualTo(1024L);
+        assertThat(headers.getFirst("X-Resource-Version")).isEqualTo("v2.1.0");
+
+        RecordedRequest headRequest = mockWebServer.takeRequest();
+        assertThat(headRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(headRequest.getPath()).isEqualTo("/meta/resource.txt");
+    }
+
+    @Test
+    @DisplayName("测试 HttpTemplate 执行 OPTIONS 请求探测支持动词集合")
+    void testHttpOptions() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Allow", "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH"));
+
+        org.springframework.http.HttpHeaders headers = httpTemplate.options(baseUrl + "api/resources");
+        assertThat(headers).isNotNull();
+        assertThat(headers.getAllow()).contains(HttpMethod.GET, HttpMethod.POST, HttpMethod.PATCH);
+
+        RecordedRequest optionsRequest = mockWebServer.takeRequest();
+        assertThat(optionsRequest.getMethod()).isEqualTo("OPTIONS");
+        assertThat(optionsRequest.getPath()).isEqualTo("/api/resources");
+    }
+
+    @Test
+    @DisplayName("测试 HttpTemplate 执行 application/x-www-form-urlencoded 表单提交")
+    void testHttpPostForm() throws InterruptedException {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"access_token\":\"sample-token-123\",\"expires_in\":3600}"));
+
+        org.springframework.util.MultiValueMap<String, String> formData = new org.springframework.util.LinkedMultiValueMap<>();
+        formData.add("grant_type", "client_credentials");
+        formData.add("client_id", "ateng-app");
+        formData.add("client_secret", "app-secret-888");
+
+        Map<?, ?> formResult = httpTemplate.postForm(baseUrl + "oauth2/token", formData, Map.class);
+        assertThat(formResult).isNotNull();
+        assertThat(formResult.get("access_token")).isEqualTo("sample-token-123");
+
+        RecordedRequest formRequest = mockWebServer.takeRequest();
+        assertThat(formRequest.getMethod()).isEqualTo("POST");
+        assertThat(formRequest.getHeader("Content-Type")).contains("application/x-www-form-urlencoded");
+        String body = formRequest.getBody().readUtf8();
+        assertThat(body).contains("grant_type=client_credentials")
+                .contains("client_id=ateng-app")
+                .contains("client_secret=app-secret-888");
+    }
+
+    @Test
+    @DisplayName("测试 HttpTemplate 执行 Server-Sent Events (SSE) 流式消费并确保无内存溢出与安全释放")
+    void testHttpConsumeStream() throws InterruptedException {
+        String ssePayload = "data: {\"chunk\":\"hello\"}\n\ndata: {\"chunk\":\"world\"}\n\ndata: [DONE]\n\n";
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream;charset=UTF-8")
+                .setBody(ssePayload));
+
+        List<String> receivedLines = new java.util.concurrent.CopyOnWriteArrayList<>();
+        httpTemplate.consumeStream(baseUrl + "ai/chat/stream", line -> {
+            if (org.springframework.util.StringUtils.hasText(line)) {
+                receivedLines.add(line);
+            }
+        });
+
+        assertThat(receivedLines).hasSize(3);
+        assertThat(receivedLines.get(0)).isEqualTo("data: {\"chunk\":\"hello\"}");
+        assertThat(receivedLines.get(1)).isEqualTo("data: {\"chunk\":\"world\"}");
+        assertThat(receivedLines.get(2)).isEqualTo("data: [DONE]");
+
+        RecordedRequest streamRequest = mockWebServer.takeRequest();
+        assertThat(streamRequest.getMethod()).isEqualTo("GET");
+        assertThat(streamRequest.getPath()).isEqualTo("/ai/chat/stream");
+    }
+
     private static class NamedByteArrayResource extends ByteArrayResource {
         private final String filename;
 
