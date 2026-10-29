@@ -132,6 +132,21 @@ public class TradeMessageProducer {
     }
 
     /**
+     * 批量异步可靠投递：订单列表并发异步发送并返回 CompletableFuture
+     *
+     * @param orders 批量订单消息列表
+     * @return 聚合异步确认 Future
+     */
+    public CompletableFuture<Void> sendBatchOrdersAsync(java.util.List<OrderCreateMessage> orders) {
+        log.info("[PRODUCER] 开始批量异步投递订单创建消息: count={}", orders.size());
+        return rabbitReliableTemplate.sendBatchReliableAsync(
+                RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT,
+                RabbitScenarioTopologyConfig.ROUTING_KEY_BATCH_ORDER,
+                orders
+        );
+    }
+
+    /**
      * 优先级可靠投递：投递高/低优先级订单消息
      *
      * @param order    订单创建消息

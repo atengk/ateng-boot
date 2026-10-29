@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.rabbitmq.consumer;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -19,6 +20,7 @@ public class AnonymousBroadcastConsumer {
 
     private final List<String> receivedBroadcasts = new CopyOnWriteArrayList<>();
 
+    @RabbitListener(queues = "#{broadcastAnonymousQueue.name}")
     public void onBroadcast(String message) {
         log.info("[CONSUMER-BROADCAST] 动态匿名队列收到广播消息: message={}", message);
         this.receivedBroadcasts.add(message);

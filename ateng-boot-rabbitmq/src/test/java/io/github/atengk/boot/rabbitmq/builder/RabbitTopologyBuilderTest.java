@@ -264,7 +264,9 @@ class RabbitTopologyBuilderTest {
         assertThatThrownBy(() -> RabbitTopologyBuilder.delayed(""))
                 .isInstanceOf(IllegalArgumentException.class);
 
-        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue(null))
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue((String) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue((Queue) null))
                 .isInstanceOf(IllegalArgumentException.class);
 
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").ttl(Duration.ofMinutes(-1)))

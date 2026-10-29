@@ -162,6 +162,17 @@ public final class RabbitTopologyBuilder {
         }
 
         /**
+         * 声明绑定已初始化的队列实例 (如 Spring 受管的 AnonymousQueue 或自定义 Queue Bean)
+         *
+         * @param queue 队列实例
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep queue(Queue queue) {
+            Assert.notNull(queue, "queue 不能为空");
+            return new QueueStep(this.exchange, queue);
+        }
+
+        /**
          * 声明基于 Spring AMQP 的动态匿名排他自动删除队列 (AnonymousQueue)
          * 常用于 Fanout 广播或多实例临时订阅消费场景，连接断开后由 Broker 自动销毁
          *

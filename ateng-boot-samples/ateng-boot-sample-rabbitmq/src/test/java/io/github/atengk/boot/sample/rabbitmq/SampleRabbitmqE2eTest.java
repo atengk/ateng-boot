@@ -31,7 +31,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Profile;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -55,7 +57,8 @@ import static org.mockito.Mockito.*;
  * @author Ateng
  * @since 2026-10-21
  */
-@SpringBootTest(classes = {SampleRabbitmqApplication.class, SampleRabbitmqE2eTest.TestAmqpConfig.class})
+@SpringBootTest(classes = SampleRabbitmqApplication.class)
+@Import(SampleRabbitmqE2eTest.TestAmqpConfig.class)
 @DisplayName("RabbitMQ 场景沙箱 1:1 端到端端离线集成测试")
 class SampleRabbitmqE2eTest {
 
@@ -243,7 +246,7 @@ class SampleRabbitmqE2eTest {
     }
 
     @Test
-    @DisplayName("场景 F: 生产端 sendBatchReliable 批量发送与消费端批量削峰消费")
+    @DisplayName("场景 F: 生产端 sendBatchReliable 同步/异步批量发送与消费端批量削峰消费")
     void testScenarioF_BatchOrderPublishAndConsume() {
         List<OrderCreateMessage> orders = List.of(
                 new OrderCreateMessage("ORD-BATCH-001", new BigDecimal("10.00"), "user-1", LocalDateTime.now()),
@@ -251,12 +254,18 @@ class SampleRabbitmqE2eTest {
                 new OrderCreateMessage("ORD-BATCH-003", new BigDecimal("30.00"), "user-3", LocalDateTime.now())
         );
 
+        // 1. 同步批量投递
         producer.sendBatchOrders(orders);
 
         assertThat(batchOrderConsumer.getAllReceivedOrders()).hasSize(3);
         assertThat(batchOrderConsumer.getAllReceivedOrders())
                 .extracting(OrderCreateMessage::orderId)
                 .containsExactly("ORD-BATCH-001", "ORD-BATCH-002", "ORD-BATCH-003");
+
+        // 2. 异步批量投递
+        batchOrderConsumer.clear();
+        producer.sendBatchOrdersAsync(orders).join();
+        assertThat(batchOrderConsumer.getAllReceivedOrders()).hasSize(3);
     }
 
     @Test
@@ -282,9 +291,9 @@ class SampleRabbitmqE2eTest {
     }
 
     @Test
-    @DisplayName("场景 I: RabbitDeadLetterReplayTemplate 受控死信重放、探查与清空")
+    @DisplayName("场景 I: RabbitDeadLetterReplayTemplate 受控死信重放、元数据清洗、防二次雪崩熔断与清空")
     void testScenarioI_DeadLetterReplayAndAntiAvalanche() throws Exception {
-        // 1. 模拟死信队列中有 1 条因 rejected 产生的死信
+        // 1. 模拟死信队列中有 1 条因 rejected 产生的原始死信
         Map<String, Object> headers = new HashMap<>();
         headers.put("bizKey", "ORD-DEAD-100");
         Map<String, Object> xDeathMap = new HashMap<>();
@@ -305,12 +314,34 @@ class SampleRabbitmqE2eTest {
         when(mockChannel.basicGet(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ), eq(false)))
                 .thenReturn(getResponse, (com.rabbitmq.client.GetResponse) null);
 
-        // 2. 执行死信受控重放
+        // 2. 执行死信受控重放并验证出队确认
         int replayed = deadLetterReplayService.replayBizDeadLetters(5);
         assertThat(replayed).isEqualTo(1);
         verify(mockChannel, times(1)).basicAck(eq(101L), eq(false));
 
-        // 3. 模拟清空死信队列
+        // 3. 验证防二次死信雪崩：重放次数已达上限的消息被熔断拦截并安全 requeue 回滚原队列
+        Map<String, Object> avalancheHeaders = new HashMap<>();
+        avalancheHeaders.put("bizKey", "ORD-DEAD-AVALANCHE");
+        avalancheHeaders.put(io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate.HEADER_X_DEAD_LETTER_REPLAYED, true);
+        avalancheHeaders.put(io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate.HEADER_X_REPLAY_COUNT, 1);
+
+        com.rabbitmq.client.AMQP.BasicProperties avalancheProps = new com.rabbitmq.client.AMQP.BasicProperties.Builder()
+                .headers(avalancheHeaders)
+                .contentType("application/json")
+                .build();
+        com.rabbitmq.client.GetResponse avalancheResponse = new com.rabbitmq.client.GetResponse(
+                new com.rabbitmq.client.Envelope(102L, false, "ex", "rk"), avalancheProps, "\"bad-data\"".getBytes(StandardCharsets.UTF_8), 0);
+
+        when(mockChannel.basicGet(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ), eq(false)))
+                .thenReturn(avalancheResponse, (com.rabbitmq.client.GetResponse) null);
+
+        int blockedReplayed = deadLetterReplayService.replayBizDeadLetters(5);
+        assertThat(blockedReplayed).isEqualTo(0);
+        // 关键断言：超限消息绝不 ACK，必须 basicNack(requeue=true) 回退死信队列保存现场
+        verify(mockChannel, never()).basicAck(eq(102L), anyBoolean());
+        verify(mockChannel, times(1)).basicNack(eq(102L), eq(false), eq(true));
+
+        // 4. 模拟清空死信队列
         com.rabbitmq.client.AMQP.Queue.PurgeOk purgeOk = mock(com.rabbitmq.client.AMQP.Queue.PurgeOk.class);
         when(purgeOk.getMessageCount()).thenReturn(3);
         when(mockChannel.queuePurge(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ))).thenReturn(purgeOk);
@@ -323,6 +354,7 @@ class SampleRabbitmqE2eTest {
      * 离线自洽 AMQP 测试配置：基于 Mockito 与内存直接路由模拟完整 Broker 交互与 Confirm/DLQ
      */
     @TestConfiguration(proxyBeanMethods = false)
+    @Profile("!local")
     static class TestAmqpConfig {
 
         @Bean

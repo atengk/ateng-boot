@@ -5,7 +5,7 @@
 ## Language
 
 **RabbitReliableTemplate**:
-RabbitMQ 生产端高可靠投递与事务感知增强门面，提供同步等待 Broker 确认的 `sendReliable`、异步非阻塞 `sendReliableAsync`、延迟投递 `sendDelayed`、本地事务提交感知发信 `sendAfterCommit`，内置四维上下文自动注入、大报文超限 Fail-Fast 与透明 GZIP 压缩。
+RabbitMQ 生产端高可靠投递与事务感知增强门面，提供同步等待 Broker 确认的 `sendReliable`、异步非阻塞 `sendReliableAsync`、批量可靠投递 `sendBatchReliable` 与异步批量 `sendBatchReliableAsync`、延迟投递 `sendDelayed`、本地事务提交感知发信 `sendAfterCommit`，内置四维上下文自动注入、单批上限防卫 (1000条)、大报文超限 Fail-Fast 与透明 GZIP 压缩。
 _Avoid_: RabbitSender, MqProducer, ReliableAmqpTemplate, RabbitHelper
 
 **RabbitTopologyBuilder**:
@@ -23,6 +23,10 @@ _Avoid_: DlqReplayer, DeadLetterManager, RabbitDlqService
 **OverflowStrategy**:
 RabbitMQ 队列溢出策略强类型枚举，定义队列到达最大长度或最大容量时的丢弃与拒绝行为（`DROP_HEAD`、`REJECT_PUBLISH`、`REJECT_PUBLISH_DLX`）。
 _Avoid_: QueueOverflowMode, MqOverflowType
+
+**DeadLetterStrategy**:
+RabbitMQ Quorum 仲裁队列死信流转策略强类型枚举，对应 `x-dead-letter-strategy` 参数，支持 `AT_LEAST_ONCE`（至少一次死信可靠流转标准）。
+_Avoid_: DlqStrategyEnum, QuorumDeadLetterMode
 
 **RabbitListenerGlobalAdvice**:
 消费端全局统一环绕拦截通知链，位于消费容器最外层，负责在调用业务消费方法前激活四维消息上下文（TraceId、TenantId、UserId）与 MDC，耗时度量，并在捕获 `IdempotentException` 时执行静默确认（Silent ACK）阻断重试风暴，在 `finally` 块中执行确定性现场清理。

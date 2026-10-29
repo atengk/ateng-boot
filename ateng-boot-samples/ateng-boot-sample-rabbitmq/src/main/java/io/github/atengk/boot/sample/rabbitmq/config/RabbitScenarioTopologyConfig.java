@@ -1,8 +1,11 @@
 package io.github.atengk.boot.sample.rabbitmq.config;
 
+import io.github.atengk.boot.rabbitmq.builder.DeadLetterStrategy;
 import io.github.atengk.boot.rabbitmq.builder.OverflowStrategy;
 import io.github.atengk.boot.rabbitmq.builder.RabbitTopologyBuilder;
+import org.springframework.amqp.core.AnonymousQueue;
 import org.springframework.amqp.core.Declarables;
+import org.springframework.amqp.core.Queue;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -134,19 +137,27 @@ public class RabbitScenarioTopologyConfig {
                 .maxPriority(10)
                 .overflow(OverflowStrategy.REJECT_PUBLISH_DLX)
                 .deliveryLimit(5)
-                .deadLetterStrategy("at-least-once")
+                .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
                 .deadLetter(EXCHANGE_BIZ_DLX, QUEUE_BIZ_DLQ, ROUTING_KEY_BIZ_DEAD)
                 .routingKey(ROUTING_KEY_PRIORITY_ORDER)
                 .build();
     }
 
     /**
+     * 场景 H: Fanout 广播动态匿名排他自动删除队列 Bean
+     */
+    @Bean
+    public Queue broadcastAnonymousQueue() {
+        return new AnonymousQueue();
+    }
+
+    /**
      * 场景 H: Fanout 广播与动态匿名临时排他自动删除队列拓扑
      */
     @Bean
-    public Declarables broadcastFanoutTopology() {
+    public Declarables broadcastFanoutTopology(Queue broadcastAnonymousQueue) {
         return RabbitTopologyBuilder.fanout(EXCHANGE_BROADCAST_FANOUT)
-                .anonymousQueue()
+                .queue(broadcastAnonymousQueue)
                 .build();
     }
 }
