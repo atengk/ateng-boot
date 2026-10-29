@@ -1,0 +1,18 @@
+# ===================================================================
+# Kafka 本地场景联调配置模板
+# 复制当前文件并重命名为 application-local.yml 填入真实连接信息即可直连测试
+# 注意：application-local.yml 已被 .gitignore 强制忽略，严禁提交敏感凭据！
+# ===================================================================
+spring:
+  config:
+    activate:
+      on-profile: local
+  kafka:
+    bootstrap-servers: YOUR_KAFKA_BOOTSTRAP_SERVERS
+    producer:
+      transaction-id-prefix: "sample-tx-"
+    consumer:
+      group-id: sample-kafka-local-group
+      auto-offset-reset: earliest
+    listener:
+      auto-startup: true

@@ -64,6 +64,9 @@ public class KafkaReliableTemplate {
         this.kafkaTemplate = (KafkaTemplate<Object, Object>) Objects.requireNonNull(kafkaTemplate, "kafkaTemplate 不能为空");
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.failureCallbackProvider = failureCallbackProvider;
+        if (this.kafkaTemplate.isTransactional()) {
+            this.kafkaTemplate.setAllowNonTransactional(true);
+        }
     }
 
     @SuppressWarnings("unchecked")
