@@ -229,8 +229,34 @@ class RabbitBatchReliableTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("exchange 交换机名称不能为空");
 
+        // 5. payloads 超过单批次上限 (1000)
+        List<String> oversizedList = Collections.nCopies(1001, "item");
+        assertThatThrownBy(() -> template.sendBatchReliable("batch.exchange", "batch.key", oversizedList))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("payloads 批量投递数量不能超过 1000 条");
+
         // 验证以上所有校验失败时绝对零网络调用
         verify(rabbitTemplate, never()).send(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("批量异步可靠投递：sendBatchReliableAsync 非阻塞执行并成功聚合返回 CompletableFuture")
+    void testSendBatchReliableAsyncSuccess() {
+        List<String> payloads = List.of("async-1", "async-2");
+
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbitTemplate).send(eq("batch.exchange"), eq("batch.key"), any(Message.class), any(CorrelationData.class));
+
+        java.util.concurrent.CompletableFuture<Void> future =
+                template.sendBatchReliableAsync("batch.exchange", "batch.key", payloads);
+
+        assertThat(future).isNotNull();
+        future.join(); // 必须成功完成且无异常
+
+        verify(rabbitTemplate, times(2)).send(eq("batch.exchange"), eq("batch.key"), any(Message.class), any(CorrelationData.class));
     }
 
     @Test

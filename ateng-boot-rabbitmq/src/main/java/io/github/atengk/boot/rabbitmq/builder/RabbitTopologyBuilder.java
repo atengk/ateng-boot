@@ -288,6 +288,17 @@ public final class RabbitTopologyBuilder {
         }
 
         /**
+         * 设置现代 Quorum 仲裁队列的死信流转策略枚举 (x-dead-letter-strategy)
+         *
+         * @param deadLetterStrategy 死信策略强类型枚举 (如 {@link DeadLetterStrategy#AT_LEAST_ONCE})
+         * @return 队列级拓扑构建器
+         */
+        public QueueStep deadLetterStrategy(DeadLetterStrategy deadLetterStrategy) {
+            Assert.notNull(deadLetterStrategy, "deadLetterStrategy 不能为 null");
+            return deadLetterStrategy(deadLetterStrategy.getValue());
+        }
+
+        /**
          * 设置现代 Quorum 仲裁队列的死信流转策略 (x-dead-letter-strategy)
          * 例如设置为 "at-least-once"，保障死信投递过程中的严格至少一次可靠性
          *

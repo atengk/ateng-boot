@@ -386,6 +386,16 @@ class RabbitTopologyBuilderTest {
         // deadLetterStrategy 非空校验
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deadLetterStrategy(" "))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").queue("q").deadLetterStrategy((DeadLetterStrategy) null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 验证枚举绑定参数正常生效
+        Declarables enumDecl = RabbitTopologyBuilder.direct("test")
+                .queue("q")
+                .deadLetterStrategy(DeadLetterStrategy.AT_LEAST_ONCE)
+                .build();
+        Queue q = (Queue) enumDecl.getDeclarables().stream().filter(d -> d instanceof Queue).findFirst().orElseThrow();
+        assertThat(q.getArguments()).containsEntry("x-dead-letter-strategy", "at-least-once");
 
         // alternateExchange 非空与同名校验
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test").alternateExchange(""))

@@ -43,6 +43,7 @@ import java.util.concurrent.TimeoutException;
 public class RabbitReliableTemplate {
 
     private static final String MQ_TYPE_RABBITMQ = "rabbitmq";
+    public static final int HARD_MAX_BATCH_SIZE = 1000;
 
     private final RabbitTemplate rabbitTemplate;
     private final RabbitmqProperties properties;
@@ -375,7 +376,7 @@ public class RabbitReliableTemplate {
     }
 
     // =========================================================================
-    // 3. 批量可靠发送 (sendBatchReliable)
+    // 3. 批量可靠发送 (sendBatchReliable & sendBatchReliableAsync)
     // =========================================================================
 
     /**
@@ -384,7 +385,7 @@ public class RabbitReliableTemplate {
      *
      * @param exchange   目标交换机
      * @param routingKey 目标路由键
-     * @param payloads   消息载荷列表 (不允许为 null 或空，且列表内元素不允许为 null)
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
      * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
      */
     public void sendBatchReliable(String exchange, String routingKey, List<?> payloads) {
@@ -396,15 +397,78 @@ public class RabbitReliableTemplate {
      *
      * @param exchange   目标交换机
      * @param routingKey 目标路由键
-     * @param payloads   消息载荷列表 (不允许为 null 或空，且列表内元素不允许为 null)
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
      * @param timeout    等待全部消息 Broker ACK 的总超时时间
      * @throws MessageDeliveryException 任何消息被拒、超时或底层异常时抛出，携带失败条目的索引与业务键
      */
     public void sendBatchReliable(String exchange, String routingKey, List<?> payloads, Duration timeout) {
         Assert.hasText(exchange, "exchange 交换机名称不能为空");
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
+        Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
+
+        if (Thread.currentThread().isInterrupted()) {
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    new InterruptedException("Current thread was interrupted before waiting for batch confirms"));
+        }
+
+        try {
+            sendBatchReliableAsync(exchange, routingKey, payloads, effectiveTimeout).get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
+                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
+                            exchange, effectiveRoutingKey),
+                    e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            if (cause instanceof MessageDeliveryException mde) {
+                throw mde;
+            }
+            throw new MessageDeliveryException(
+                    MQ_TYPE_RABBITMQ,
+                    exchange,
+                    "batch[" + (payloads != null ? payloads.size() : 0) + "]",
+                    cause.getMessage(),
+                    cause);
+        }
+    }
+
+    /**
+     * 批量异步可靠发送消息列表至指定交换机，使用默认确认超时时间，返回 CompletableFuture 聚合确认结果
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @return CompletableFuture 聚合确认 Future
+     */
+    public CompletableFuture<Void> sendBatchReliableAsync(String exchange, String routingKey, List<?> payloads) {
+        return sendBatchReliableAsync(exchange, routingKey, payloads, properties.getReliable().getDefaultTimeout());
+    }
+
+    /**
+     * 批量异步可靠发送消息列表至指定交换机，显式指定确认超时时间，返回 CompletableFuture 聚合确认结果
+     *
+     * @param exchange   目标交换机
+     * @param routingKey 目标路由键
+     * @param payloads   消息载荷列表 (不允许为 null 或空，单批上限 1000 条，且列表内元素不允许为 null)
+     * @param timeout    等待全部消息 Broker ACK 的总超时时间
+     * @return CompletableFuture 聚合确认 Future
+     */
+    public CompletableFuture<Void> sendBatchReliableAsync(String exchange, String routingKey, List<?> payloads, Duration timeout) {
+        Assert.hasText(exchange, "exchange 交换机名称不能为空");
+        String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Assert.notNull(payloads, "payloads 消息载荷列表不能为空");
         Assert.notEmpty(payloads, "payloads 消息载荷列表不能为空列表");
+        Assert.isTrue(payloads.size() <= HARD_MAX_BATCH_SIZE,
+                String.format("payloads 批量投递数量不能超过 %d 条 (当前: %d)", HARD_MAX_BATCH_SIZE, payloads.size()));
 
         Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
         int size = payloads.size();
@@ -430,83 +494,82 @@ public class RabbitReliableTemplate {
             allFutures.add(future);
         }
 
-        // 3. 聚合等待所有消息的确认结果
-        try {
-            CompletableFuture.allOf(allFutures.toArray(new CompletableFuture[0]))
-                    .get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            List<String> failedDetails = new ArrayList<>();
-            for (BatchFutureItem item : futureItems) {
-                if (!item.future().isDone()) {
-                    failedDetails.add(String.format("index=%d(bizKey=%s, status=TIMEOUT)", item.index(), item.bizKey()));
-                } else if (item.future().isCompletedExceptionally()) {
-                    Throwable itemErr = null;
-                    try {
-                        item.future().getNow(null);
-                    } catch (Throwable t) {
-                        itemErr = t.getCause() != null ? t.getCause() : t;
+        // 3. 异步聚合等待所有消息的确认结果并处理超时与 NACK
+        CompletableFuture<Void> resultFuture = new CompletableFuture<>();
+        CompletableFuture.allOf(allFutures.toArray(new CompletableFuture[0]))
+                .orTimeout(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                .whenComplete((ignored, ex) -> {
+                    if (ex != null) {
+                        Throwable rootErr = ex.getCause() != null ? ex.getCause() : ex;
+                        if (rootErr instanceof TimeoutException) {
+                            List<String> failedDetails = new ArrayList<>();
+                            for (BatchFutureItem item : futureItems) {
+                                if (!item.future().isDone()) {
+                                    failedDetails.add(String.format("index=%d(bizKey=%s, status=TIMEOUT)", item.index(), item.bizKey()));
+                                } else if (item.future().isCompletedExceptionally()) {
+                                    Throwable itemErr = null;
+                                    try {
+                                        item.future().getNow(null);
+                                    } catch (Throwable t) {
+                                        itemErr = t.getCause() != null ? t.getCause() : t;
+                                    }
+                                    String errMsg = itemErr != null ? itemErr.getMessage() : "unknown";
+                                    failedDetails.add(String.format("index=%d(bizKey=%s, status=FAILED, error=%s)", item.index(), item.bizKey(), errMsg));
+                                } else {
+                                    CorrelationData.Confirm confirm = item.future().getNow(null);
+                                    if (confirm != null && !confirm.isAck()) {
+                                        failedDetails.add(String.format("index=%d(bizKey=%s, status=NACK, reason=%s)", item.index(), item.bizKey(), confirm.getReason()));
+                                    }
+                                }
+                            }
+                            resultFuture.completeExceptionally(new MessageDeliveryException(
+                                    MQ_TYPE_RABBITMQ,
+                                    exchange,
+                                    "batch[" + size + "]",
+                                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 超时 (%dms), 失败明细: %s",
+                                            effectiveTimeout.toMillis(), failedDetails),
+                                    rootErr));
+                            return;
+                        }
                     }
-                    String errMsg = itemErr != null ? itemErr.getMessage() : "unknown";
-                    failedDetails.add(String.format("index=%d(bizKey=%s, status=FAILED, error=%s)", item.index(), item.bizKey(), errMsg));
-                } else {
-                    CorrelationData.Confirm confirm = item.future().getNow(null);
-                    if (confirm != null && !confirm.isAck()) {
-                        failedDetails.add(String.format("index=%d(bizKey=%s, status=NACK, reason=%s)", item.index(), item.bizKey(), confirm.getReason()));
+
+                    // 4. 精确检查每条消息的 Confirm 结果与异常
+                    List<String> failedItems = new ArrayList<>();
+                    Throwable firstCause = null;
+
+                    for (BatchFutureItem item : futureItems) {
+                        try {
+                            CorrelationData.Confirm confirm = item.future().getNow(null);
+                            if (confirm == null || !confirm.isAck()) {
+                                String reason = confirm != null ? confirm.getReason() : "Broker returned null confirm";
+                                failedItems.add(String.format("index=%d(bizKey=%s, reason=%s)", item.index(), item.bizKey(), reason));
+                            }
+                        } catch (Throwable itemEx) {
+                            Throwable cause = itemEx.getCause() != null ? itemEx.getCause() : itemEx;
+                            if (firstCause == null) {
+                                firstCause = cause;
+                            }
+                            String detail = cause.getCause() != null
+                                    ? cause.getMessage() + " (" + cause.getCause().getMessage() + ")"
+                                    : cause.getMessage();
+                            failedItems.add(String.format("index=%d(bizKey=%s, error=%s)", item.index(), item.bizKey(), detail));
+                        }
                     }
-                }
-            }
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + size + "]",
-                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 超时 (%dms), 失败明细: %s",
-                            effectiveTimeout.toMillis(), failedDetails),
-                    e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + size + "]",
-                    String.format("RabbitMQ 批量消息发送等待 Broker ACK 被中断: exchange=%s, routingKey=%s",
-                            exchange, effectiveRoutingKey),
-                    e);
-        } catch (ExecutionException ignored) {
-            // allOf 完成但存在部分失败，交由下方统一精确检查收集
-        }
 
-        // 4. 精确检查每条消息的 Confirm 结果与异常
-        List<String> failedItems = new ArrayList<>();
-        Throwable firstCause = null;
+                    if (!failedItems.isEmpty()) {
+                        resultFuture.completeExceptionally(new MessageDeliveryException(
+                                MQ_TYPE_RABBITMQ,
+                                exchange,
+                                "batch[" + size + "]",
+                                String.format("RabbitMQ 批量消息部分发送被 Broker 拒绝或异常: exchange=%s, routingKey=%s, 失败条数=%d/%d, 失败明细: %s",
+                                        exchange, effectiveRoutingKey, failedItems.size(), size, failedItems),
+                                firstCause != null ? firstCause : ex));
+                    } else {
+                        resultFuture.complete(null);
+                    }
+                });
 
-        for (BatchFutureItem item : futureItems) {
-            try {
-                CorrelationData.Confirm confirm = item.future().getNow(null);
-                if (confirm == null || !confirm.isAck()) {
-                    String reason = confirm != null ? confirm.getReason() : "Broker returned null confirm";
-                    failedItems.add(String.format("index=%d(bizKey=%s, reason=%s)", item.index(), item.bizKey(), reason));
-                }
-            } catch (Throwable ex) {
-                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                if (firstCause == null) {
-                    firstCause = cause;
-                }
-                String detail = cause.getCause() != null
-                        ? cause.getMessage() + " (" + cause.getCause().getMessage() + ")"
-                        : cause.getMessage();
-                failedItems.add(String.format("index=%d(bizKey=%s, error=%s)", item.index(), item.bizKey(), detail));
-            }
-        }
-
-        if (!failedItems.isEmpty()) {
-            throw new MessageDeliveryException(
-                    MQ_TYPE_RABBITMQ,
-                    exchange,
-                    "batch[" + size + "]",
-                    String.format("RabbitMQ 批量消息部分发送被 Broker 拒绝或异常: exchange=%s, routingKey=%s, 失败条数=%d/%d, 失败明细: %s",
-                            exchange, effectiveRoutingKey, failedItems.size(), size, failedItems),
-                    firstCause);
-        }
+        return resultFuture;
     }
 
     // =========================================================================
