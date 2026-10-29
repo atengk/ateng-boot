@@ -18,18 +18,24 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URI;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -44,6 +50,7 @@ public class HttpTemplate {
     private static final int BUFFER_SIZE = 8192; // 8KB 零堆缓冲直刷
 
     private final RestClient restClient;
+    private final RestClient streamingRestClient;
     private final HttpErrorHandler httpErrorHandler;
     private final Executor executor;
 
@@ -64,14 +71,12 @@ public class HttpTemplate {
      * @param executor         受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
      */
     public HttpTemplate(RestClient restClient, HttpErrorHandler httpErrorHandler, Executor executor) {
-        Assert.notNull(restClient, "restClient 实例不可为 null");
-        this.restClient = restClient;
-        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
-        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+        this(restClient, restClient, httpErrorHandler, executor);
     }
 
     /**
      * 基于 RestClient.Builder 构建 HttpTemplate
+     * 自动通过 clone() 清除拦截器链构建流式专职 streamingRestClient，旁路内存全量缓冲
      *
      * @param restClientBuilder RestClient 构建器，不可为 null
      */
@@ -89,6 +94,25 @@ public class HttpTemplate {
     public HttpTemplate(RestClient.Builder restClientBuilder, HttpErrorHandler httpErrorHandler, Executor executor) {
         Assert.notNull(restClientBuilder, "restClientBuilder 实例不可为 null");
         this.restClient = restClientBuilder.build();
+        this.streamingRestClient = restClientBuilder.clone()
+                .requestInterceptors(List::clear)
+                .build();
+        this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
+        this.executor = executor != null ? executor : ForkJoinPool.commonPool();
+    }
+
+    /**
+     * 基于普通 RestClient、直通流式 RestClient、HttpErrorHandler 与受管异步执行器构建 HttpTemplate
+     *
+     * @param restClient          基础 RestClient 实例，不可为 null
+     * @param streamingRestClient 直通流式 RestClient 实例（旁路拦截器内存缓冲），若为 null 则退化使用 restClient
+     * @param httpErrorHandler    HTTP 统一异常响应处理器
+     * @param executor            受管异步任务执行器（为 null 时默认采用 ForkJoinPool.commonPool()）
+     */
+    public HttpTemplate(RestClient restClient, RestClient streamingRestClient, HttpErrorHandler httpErrorHandler, Executor executor) {
+        Assert.notNull(restClient, "restClient 实例不可为 null");
+        this.restClient = restClient;
+        this.streamingRestClient = streamingRestClient != null ? streamingRestClient : restClient;
         this.httpErrorHandler = httpErrorHandler != null ? httpErrorHandler : new HttpErrorHandler();
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
     }
@@ -873,6 +897,86 @@ public class HttpTemplate {
     }
 
     // ==========================================
+    // 大模型与事件流流式消费 (SSE / NDJSON)
+    // ==========================================
+
+    /**
+     * 流式消费远程事件流或大模型文本行（如 SSE text/event-stream 或 application/x-ndjson）
+     * 依托 BufferedReader.readLine() 零内存堆积实时按行推流，严格遵循 RFC 8895 保留空行作为 SSE 事件切片边界
+     *
+     * @param url          请求 URL 绝对路径
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, Consumer<String> lineConsumer) {
+        consumeStream(url, HttpMethod.GET, null, null, lineConsumer);
+    }
+
+    /**
+     * 携带动态 RequestOptions 流式消费远程事件流或大模型文本行
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, RequestOptions options, Consumer<String> lineConsumer) {
+        consumeStream(url, HttpMethod.GET, null, options, lineConsumer);
+    }
+
+    /**
+     * 携带 HTTP 动词与请求载荷流式消费远程事件流或大模型文本行（支持 AI 大模型 POST /chat/completions 等场景）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 请求动词（如 GET 或 POST）
+     * @param body         请求载荷对象（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, HttpMethod method, Object body, Consumer<String> lineConsumer) {
+        consumeStream(url, method, body, null, lineConsumer);
+    }
+
+    /**
+     * 携带 HTTP 动词、请求载荷及动态 RequestOptions 流式消费远程事件流或大模型文本行
+     * 依托 BufferedReader.readLine() 零内存堆积实时按行推流，严格遵循 RFC 8895 保留空行作为 SSE 事件切片边界
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 请求动词（如 GET 或 POST）
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param lineConsumer 单行消费回调（空行传入 "" 作为事件分隔边界，回调不可为 null）
+     */
+    public void consumeStream(String url, HttpMethod method, Object body, RequestOptions options, Consumer<String> lineConsumer) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(method, "HttpMethod 不能为空");
+        Assert.notNull(lineConsumer, "lineConsumer 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.method(method).uri(uri);
+        spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
+        spec.accept(MediaType.TEXT_EVENT_STREAM, MediaType.APPLICATION_NDJSON, MediaType.ALL);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        spec.exchange((request, response) -> {
+            if (response.getStatusCode().isError()) {
+                this.httpErrorHandler.handleError(uri, method, response);
+            }
+            Charset charset = StandardCharsets.UTF_8;
+            MediaType contentType = response.getHeaders().getContentType();
+            if (contentType != null && contentType.getCharset() != null) {
+                charset = contentType.getCharset();
+            }
+            try (InputStream in = response.getBody();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(in, charset))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lineConsumer.accept(line);
+                }
+            }
+            return null;
+        });
+    }
+
+    // ==========================================
     // 大流传输（零缓冲下载与上传）
     // ==========================================
 
@@ -1060,7 +1164,8 @@ public class HttpTemplate {
         Assert.notNull(parts, "parts 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
         URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RestClient.RequestBodySpec spec = this.streamingRestClient.post().uri(uri);
+        spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
         RequestOptionsApplier.apply(spec, options);
         spec.contentType(MediaType.MULTIPART_FORM_DATA);
         spec.body(parts);
@@ -1082,7 +1187,8 @@ public class HttpTemplate {
         Assert.notNull(parts, "parts 不能为空");
         Assert.notNull(responseType, "responseType 不能为空");
         URI uri = RequestOptionsApplier.resolveUri(url, options);
-        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RestClient.RequestBodySpec spec = this.streamingRestClient.post().uri(uri);
+        spec.header(HttpConstants.HEADER_STREAM_TRANSFER, "true");
         RequestOptionsApplier.apply(spec, options);
         spec.contentType(MediaType.MULTIPART_FORM_DATA);
         spec.body(parts);
@@ -1113,5 +1219,14 @@ public class HttpTemplate {
      */
     public RestClient getClient() {
         return this.restClient;
+    }
+
+    /**
+     * 获取底层持有的用于直通大流传输的 RestClient 实例（已旁路拦截器内存缓冲）
+     *
+     * @return 直通流式 RestClient 实例
+     */
+    public RestClient getStreamingClient() {
+        return this.streamingRestClient;
     }
 }
