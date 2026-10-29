@@ -31,6 +31,7 @@ public class EmbeddedMqttBroker {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
+    private volatile boolean stopped = false;
 
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
@@ -133,19 +134,39 @@ public class EmbeddedMqttBroker {
     }
 
     public synchronized void stop() {
+        if (stopped) {
+            return;
+        }
+        stopped = true;
         log.info("[EmbeddedMqttBroker] Stopping In-Memory MQTT Broker on port [{}]", boundPort);
         if (serverChannel != null) {
             try {
-                serverChannel.close().sync();
+                if (serverChannel.isOpen()) {
+                    serverChannel.close().sync();
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            } catch (Throwable ignored) {
+                // 防御关闭竞争或事件循环已终止 (RejectedExecutionException)
+            } finally {
+                serverChannel = null;
             }
         }
         if (workerGroup != null) {
-            workerGroup.shutdownGracefully();
+            try {
+                workerGroup.shutdownGracefully();
+            } catch (Throwable ignored) {
+            } finally {
+                workerGroup = null;
+            }
         }
         if (bossGroup != null) {
-            bossGroup.shutdownGracefully();
+            try {
+                bossGroup.shutdownGracefully();
+            } catch (Throwable ignored) {
+            } finally {
+                bossGroup = null;
+            }
         }
         channelSubscriptions.clear();
         clientIds.clear();

@@ -374,6 +374,7 @@ class MqttTemplateTest {
     void shouldTriggerFailureHandlerOnPublishError() {
         // 关闭 Broker 模拟物理断网与连接不可达
         broker.stop();
+        broker = null; // 标记已关闭，防御 tearDown 重复停止触发 Netty 线程拒绝
 
         assertThatThrownBy(() -> mqttTemplate.publish("test/failure", "fail-payload"))
                 .isInstanceOf(RuntimeException.class);
