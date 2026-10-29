@@ -26,6 +26,10 @@
 | **03** | 订单延时超时取消 | `RabbitReliableTemplate.sendDelayed` | 投递带有 delay 时长的超时取消消息 | 延迟消费者成功接收超时订单履约信令 |
 | **04** | 毒丸隔离与死信元数据诊断 | `RabbitFatalExceptionStrategy` + `RabbitDeadLetterHelper` | 投递毒丸消息触发死信流转 | 消息被快速路由至 DLQ，死信助手准确提取原队列、死因与流转计数 |
 | **05** | 本地事务感知发信 | `RabbitReliableTemplate.sendAfterCommit` | 分别执行事务提交与事务回滚 | 事务提交后发信成功，事务回滚时零发信杜绝幽灵消息 |
+| **06** | 生产端微批投递与消费端批量削峰 | `sendBatchReliable` + `batchRabbitListenerContainerFactory` | 同步/异步批量投递与微批拉取 | 批量投递原子确认，批量监听器通过 `List<T>` 接收削峰消息 |
+| **07** | Quorum 队列现代治理策略与优先级 | `RabbitTopologyBuilder.quorum()` / `deliveryLimit` / `overflow` | 投递高优先级订单消息与拓扑断言 | 强断言 `x-overflow`、`x-delivery-limit`、`x-dead-letter-strategy` 治理参数并验证消息接收 |
+| **08** | Fanout 广播与动态匿名临时排他队列 | `@QueueBinding` + `@Queue` 动态声明 | 投递系统广播通知 | 消费者基于通道自洽创建匿名临时队列接收广播，Broker 断开自动销毁 |
+| **09** | 死信受控重放、元数据清洗与防雪崩熔断 | `RabbitDeadLetterReplayTemplate.replay` / `purge` | 出队重放死信消息与模拟超限死信 | 强断言出队重放剥离 `x-death`、注入重放标记与计数，超限消息熔断 Nack(requeue=true) |
 
 ---
 

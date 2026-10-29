@@ -467,8 +467,11 @@ public class RabbitReliableTemplate {
         String effectiveRoutingKey = routingKey != null ? routingKey : "";
         Assert.notNull(payloads, "payloads 消息载荷列表不能为空");
         Assert.notEmpty(payloads, "payloads 消息载荷列表不能为空列表");
-        Assert.isTrue(payloads.size() <= HARD_MAX_BATCH_SIZE,
-                String.format("payloads 批量投递数量不能超过 %d 条 (当前: %d)", HARD_MAX_BATCH_SIZE, payloads.size()));
+        int maxBatchSize = properties.getProducer() != null && properties.getProducer().getMaxBatchSize() > 0
+                ? properties.getProducer().getMaxBatchSize()
+                : HARD_MAX_BATCH_SIZE;
+        Assert.isTrue(payloads.size() <= maxBatchSize,
+                String.format("payloads 批量投递数量不能超过 %d 条 (当前: %d)", maxBatchSize, payloads.size()));
 
         Duration effectiveTimeout = timeout != null ? timeout : properties.getReliable().getDefaultTimeout();
         int size = payloads.size();

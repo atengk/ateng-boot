@@ -202,6 +202,15 @@ public final class RabbitTopologyBuilder {
         public QueueStep exclusiveAutoDeleteQueue() {
             return anonymousQueue();
         }
+
+        /**
+         * 构建仅包含交换机的 Declarables (常用于广播交换机或由消费者端独立声明队列与绑定的场景)
+         *
+         * @return Declarables 实例
+         */
+        public Declarables build() {
+            return new Declarables(this.exchange);
+        }
     }
 
     /**

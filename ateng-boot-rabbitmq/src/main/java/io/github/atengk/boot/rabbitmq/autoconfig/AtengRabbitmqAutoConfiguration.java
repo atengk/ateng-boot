@@ -20,6 +20,7 @@ import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.config.ContainerCustomizer;
 import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.ConditionalRejectingErrorHandler;
@@ -38,6 +39,7 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration;
 import org.springframework.boot.autoconfigure.amqp.RabbitTemplateCustomizer;
+import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -200,6 +202,46 @@ public class AtengRabbitmqAutoConfiguration {
     }
 
     /**
+     * 装配专用的批量监听器容器工厂，支持高并发批量微批削峰消费
+     * 下游监听器可通过 @RabbitListener(containerFactory = "batchRabbitListenerContainerFactory") 独立绑定
+     */
+    @Bean(name = "batchRabbitListenerContainerFactory")
+    @ConditionalOnMissingBean(name = "batchRabbitListenerContainerFactory")
+    @ConditionalOnBean(ConnectionFactory.class)
+    public SimpleRabbitListenerContainerFactory batchRabbitListenerContainerFactory(
+            ObjectProvider<SimpleRabbitListenerContainerFactoryConfigurer> configurerProvider,
+            ConnectionFactory connectionFactory,
+            RabbitmqProperties properties,
+            MessageConverter messageConverter,
+            ObjectProvider<ConditionalRejectingErrorHandler> errorHandlerProvider,
+            ObjectProvider<RabbitListenerGlobalAdvice> adviceProvider,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        configurerProvider.ifAvailable(configurer -> configurer.configure(factory, connectionFactory));
+        factory.setConnectionFactory(connectionFactory);
+        factory.setConsumerBatchEnabled(true);
+        factory.setBatchListener(true);
+
+        RabbitmqProperties.Consumer consumer = properties.getConsumer();
+        factory.setPrefetchCount(consumer.getPrefetch());
+        factory.setConcurrentConsumers(consumer.getConcurrency());
+        factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
+
+        RabbitmqProperties.Consumer.Batch batch = consumer.getBatch();
+        factory.setBatchSize(batch.getSize() > 0 ? batch.getSize() : 10);
+        if (batch.getMaxWaitTime() != null) {
+            factory.setBatchReceiveTimeout(batch.getMaxWaitTime().toMillis());
+        }
+
+        factory.setMessageConverter(messageConverter);
+        errorHandlerProvider.ifAvailable(factory::setErrorHandler);
+        adviceProvider.ifAvailable(factory::setAdviceChain);
+        factory.setAfterReceivePostProcessors(new GUnzipPostProcessor());
+        observationRegistryProvider.ifAvailable(registry -> factory.setObservationEnabled(true));
+        return factory;
+    }
+
+    /**
      * 容器工厂与 RabbitAdmin 生命周期后置增强处理器
      */
     @Bean
@@ -253,10 +295,10 @@ public class AtengRabbitmqAutoConfiguration {
 
                     // 批量消费削峰支持
                     RabbitmqProperties.Consumer.Batch batch = consumer.getBatch();
-                    if (batch.isEnabled()) {
+                    if ("batchRabbitListenerContainerFactory".equals(beanName) || batch.isEnabled()) {
                         factory.setConsumerBatchEnabled(true);
                         factory.setBatchListener(true);
-                        factory.setBatchSize(batch.getSize());
+                        factory.setBatchSize(batch.getSize() > 0 ? batch.getSize() : 10);
                         if (batch.getMaxWaitTime() != null) {
                             factory.setBatchReceiveTimeout(batch.getMaxWaitTime().toMillis());
                         }

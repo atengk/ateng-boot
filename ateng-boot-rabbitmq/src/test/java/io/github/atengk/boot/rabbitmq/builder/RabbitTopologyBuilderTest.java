@@ -405,4 +405,14 @@ class RabbitTopologyBuilderTest {
         assertThatThrownBy(() -> RabbitTopologyBuilder.direct("test.exchange").alternateExchange("test.exchange"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("支持仅声明交换机而不挂载静态队列 (build)")
+    void testExchangeOnlyBuild() {
+        Declarables fanoutDecl = RabbitTopologyBuilder.fanout("sample.fanout.standalone").build();
+        assertThat(fanoutDecl.getDeclarables()).hasSize(1);
+        assertThat(fanoutDecl.getDeclarables().iterator().next()).isInstanceOf(FanoutExchange.class);
+        FanoutExchange fanoutExchange = (FanoutExchange) fanoutDecl.getDeclarables().iterator().next();
+        assertThat(fanoutExchange.getName()).isEqualTo("sample.fanout.standalone");
+    }
 }

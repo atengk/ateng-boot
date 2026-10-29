@@ -105,6 +105,13 @@ class SampleRabbitmqE2eTest {
     private DeadLetterReplayService deadLetterReplayService;
 
     @Autowired(required = false)
+    private RabbitTemplate testRabbitTemplate;
+
+    @Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("priorityQuorumTopology")
+    private org.springframework.amqp.core.Declarables priorityQuorumTopology;
+
+    @Autowired(required = false)
     private com.rabbitmq.client.Channel mockChannel;
 
     @Autowired(required = false)
@@ -322,8 +329,25 @@ class SampleRabbitmqE2eTest {
     }
 
     @Test
-    @DisplayName("场景 G: Quorum 队列优先级消息投递与优先级属性接收")
+    @DisplayName("场景 G: Quorum 队列优先级消息投递与优先级属性接收，并显式强断言现代治理策略")
     void testScenarioG_PriorityAndQuorumOverflowTopology() {
+        // 1. 显式强断言 Quorum 队列现代 Raft 仲裁、溢出策略与投递次数上限等治理参数
+        org.springframework.amqp.core.Queue quorumQueue = priorityQuorumTopology.getDeclarables().stream()
+                .filter(d -> d instanceof org.springframework.amqp.core.Queue)
+                .map(d -> (org.springframework.amqp.core.Queue) d)
+                .filter(q -> RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER.equals(q.getName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("未找到 Quorum 队列: " + RabbitScenarioTopologyConfig.QUEUE_PRIORITY_ORDER));
+
+        Map<String, Object> queueArgs = quorumQueue.getArguments();
+        assertThat(queueArgs.get("x-queue-type")).isEqualTo("quorum");
+        assertThat(queueArgs.get("x-overflow")).isEqualTo("reject-publish-dlx");
+        assertThat(queueArgs.get("x-delivery-limit")).isEqualTo(5);
+        assertThat(queueArgs.get("x-dead-letter-strategy")).isEqualTo("at-least-once");
+        assertThat(queueArgs.get("x-dead-letter-exchange")).isEqualTo(RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DLX);
+        assertThat(queueArgs.get("x-dead-letter-routing-key")).isEqualTo(RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ_DEAD);
+
+        // 2. 验证优先级消息投递与接收
         OrderCreateMessage vipOrder = new OrderCreateMessage(
                 "ORD-VIP-001", new BigDecimal("9999.00"), "vip-user", LocalDateTime.now());
 
@@ -384,10 +408,34 @@ class SampleRabbitmqE2eTest {
         when(mockChannel.basicGet(eq(RabbitScenarioTopologyConfig.QUEUE_BIZ_DLQ), eq(false)))
                 .thenReturn(getResponse, (com.rabbitmq.client.GetResponse) null);
 
-        // 2. 执行死信受控重放并验证出队确认
+        // 2. 执行死信受控重放并验证出队确认与元数据清洗剥离
         int replayed = deadLetterReplayService.replayBizDeadLetters(5);
         assertThat(replayed).isEqualTo(1);
         verify(mockChannel, times(1)).basicAck(eq(101L), eq(false));
+
+        // 关键断言：验证底层 send 转发时对 x-death 元数据进行了安全清洗与重放溯源标记注入
+        org.mockito.ArgumentCaptor<Message> replayedCaptor = org.mockito.ArgumentCaptor.forClass(Message.class);
+        verify(testRabbitTemplate, atLeastOnce()).send(
+                eq(RabbitScenarioTopologyConfig.EXCHANGE_BIZ_DIRECT),
+                eq(RabbitScenarioTopologyConfig.ROUTING_KEY_BIZ),
+                replayedCaptor.capture()
+        );
+        Message capturedReplayedMsg = replayedCaptor.getValue();
+        assertThat(capturedReplayedMsg).isNotNull();
+        Map<String, Object> replayedHeaders = capturedReplayedMsg.getMessageProperties().getHeaders();
+        // 强断言：底层 x-death 结构及衍生系统头 100% 被清洗剥离，防止下游重复误判
+        assertThat(replayedHeaders).doesNotContainKey("x-death");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-exchange");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-queue");
+        assertThat(replayedHeaders).doesNotContainKey("x-first-death-reason");
+        // 强断言：注入标准化重放溯源标记与计数
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_DEAD_LETTER_REPLAYED)).isEqualTo(true);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_REPLAY_COUNT)).isEqualTo(1);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_ORIGINAL_DEAD_LETTER_QUEUE))
+                .isEqualTo(RabbitScenarioTopologyConfig.QUEUE_BIZ_MAIN);
+        assertThat(replayedHeaders.get(RabbitDeadLetterReplayTemplate.HEADER_X_ORIGINAL_DEAD_LETTER_REASON))
+                .isEqualTo("rejected");
+        assertThat(replayedHeaders.get("bizKey")).isEqualTo("ORD-DEAD-100");
 
         // 3. 验证防二次死信雪崩：重放次数已达上限的消息被熔断拦截并安全 requeue 回滚原队列
         Map<String, Object> avalancheHeaders = new HashMap<>();
@@ -508,7 +556,7 @@ class SampleRabbitmqE2eTest {
                     delayConsumerProvider.ifAvailable(consumer -> consumer.onTimeout(payload));
                 } else if (RabbitScenarioTopologyConfig.EXCHANGE_BATCH_DIRECT.equals(exchange)) {
                     OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
-                    batchOrderConsumer.onBatch(payload);
+                    batchOrderConsumer.onBatch(List.of(payload));
                 } else if (RabbitScenarioTopologyConfig.EXCHANGE_PRIORITY_DIRECT.equals(exchange)) {
                     OrderCreateMessage payload = (OrderCreateMessage) converter.fromMessage(message);
                     priorityOrderConsumer.onPriorityOrder(payload, message.getMessageProperties().getPriority());

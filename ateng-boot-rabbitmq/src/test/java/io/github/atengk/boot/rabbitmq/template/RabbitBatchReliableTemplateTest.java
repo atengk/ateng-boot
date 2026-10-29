@@ -276,4 +276,17 @@ class RabbitBatchReliableTemplateTest {
         // 关键断言：一旦前置预校验失败，整批全部拦截，绝对零网络发信！
         verify(rabbitTemplate, never()).send(any(), any(), any(), any());
     }
+
+    @Test
+    @DisplayName("批量前置防卫：自定义 maxBatchSize 时超出阈值触发 Fail-Fast 阻断")
+    void testSendBatchReliableCustomMaxBatchSizeExceeded() {
+        properties.getProducer().setMaxBatchSize(50);
+
+        List<String> oversizedList = Collections.nCopies(51, "item");
+        assertThatThrownBy(() -> template.sendBatchReliable("batch.exchange", "batch.key", oversizedList))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("payloads 批量投递数量不能超过 50 条");
+
+        verify(rabbitTemplate, never()).send(any(), any(), any(), any());
+    }
 }

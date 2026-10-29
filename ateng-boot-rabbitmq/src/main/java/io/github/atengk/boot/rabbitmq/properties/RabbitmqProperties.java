@@ -74,6 +74,11 @@ public class RabbitmqProperties {
          * 是否启用大报文透明 GZIP 压缩特性
          */
         private boolean compressionEnabled = true;
+
+        /**
+         * 批量投递单批次消息上限保护阈值，防止一次性发射过量消息导致 OOM (默认 1000)
+         */
+        private int maxBatchSize = 1000;
     }
 
     @Data

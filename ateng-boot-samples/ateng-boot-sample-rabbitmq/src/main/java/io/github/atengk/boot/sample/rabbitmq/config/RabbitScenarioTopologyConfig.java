@@ -146,20 +146,11 @@ public class RabbitScenarioTopologyConfig {
     }
 
     /**
-     * 场景 H: Fanout 广播订阅队列 Bean (声明为标准持久队列，支持跨连接多消费者稳定监听)
+     * 场景 H: Fanout 广播交换机拓扑 (动态匿名排他自动删除队列由消费端通过 @RabbitListener(bindings = @QueueBinding(...)) 原生自洽绑定)
      */
     @Bean
-    public Queue broadcastAnonymousQueue() {
-        return new Queue("sample.broadcast.fanout.queue", true, false, false);
-    }
-
-    /**
-     * 场景 H: Fanout 广播与动态匿名临时排他自动删除队列拓扑
-     */
-    @Bean
-    public Declarables broadcastFanoutTopology(Queue broadcastAnonymousQueue) {
+    public Declarables broadcastFanoutTopology() {
         return RabbitTopologyBuilder.fanout(EXCHANGE_BROADCAST_FANOUT)
-                .queue(broadcastAnonymousQueue)
                 .build();
     }
 }
