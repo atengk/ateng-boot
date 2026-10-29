@@ -48,6 +48,12 @@ public class AtengKafkaProperties {
     private DeadLetter deadLetter = new DeadLetter();
 
     /**
+     * 位移治理与集群运维增强配置
+     */
+    @NestedConfigurationProperty
+    private Offset offset = new Offset();
+
+    /**
      * 生产端参数配置
      */
     @Data
@@ -131,5 +137,17 @@ public class AtengKafkaProperties {
          * 死信重放专属消费组 ID（默认 "ateng-kafka-dlt-replay-group"）
          */
         private String replayGroupId = "ateng-kafka-dlt-replay-group";
+    }
+
+    /**
+     * 位移治理参数配置
+     */
+    @Data
+    public static class Offset {
+
+        /**
+         * AdminClient 操作超时时间（默认 10s）
+         */
+        private Duration timeout = Duration.ofSeconds(10);
     }
 }

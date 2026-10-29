@@ -43,6 +43,14 @@ class AtengKafkaPropertiesTest {
         assertEquals(2.0, properties.getConsumer().getRetryMultiplier());
         assertEquals(Duration.ofSeconds(10), properties.getConsumer().getShutdownTimeout());
         assertEquals(".DLT", properties.getConsumer().getDltSuffix());
+
+        // DeadLetter
+        assertEquals(100, properties.getDeadLetter().getDefaultReplayLimit());
+        assertEquals(1, properties.getDeadLetter().getMaxReplayCount());
+        assertEquals("ateng-kafka-dlt-replay-group", properties.getDeadLetter().getReplayGroupId());
+
+        // Offset
+        assertEquals(Duration.ofSeconds(10), properties.getOffset().getTimeout());
     }
 
     @Test
@@ -61,6 +69,10 @@ class AtengKafkaPropertiesTest {
         map.put("ateng.boot.kafka.consumer.retry-multiplier", "3.0");
         map.put("ateng.boot.kafka.consumer.shutdown-timeout", "20s");
         map.put("ateng.boot.kafka.consumer.dlt-suffix", ".DEAD_LETTER");
+        map.put("ateng.boot.kafka.dead-letter.default-replay-limit", "200");
+        map.put("ateng.boot.kafka.dead-letter.max-replay-count", "3");
+        map.put("ateng.boot.kafka.dead-letter.replay-group-id", "custom-replay-group");
+        map.put("ateng.boot.kafka.offset.timeout", "15s");
 
         ConfigurationPropertySource source = new MapConfigurationPropertySource(map);
         Binder binder = new Binder(source);
@@ -81,5 +93,11 @@ class AtengKafkaPropertiesTest {
         assertEquals(3.0, properties.getConsumer().getRetryMultiplier());
         assertEquals(Duration.ofSeconds(20), properties.getConsumer().getShutdownTimeout());
         assertEquals(".DEAD_LETTER", properties.getConsumer().getDltSuffix());
+
+        assertEquals(200, properties.getDeadLetter().getDefaultReplayLimit());
+        assertEquals(3, properties.getDeadLetter().getMaxReplayCount());
+        assertEquals("custom-replay-group", properties.getDeadLetter().getReplayGroupId());
+
+        assertEquals(Duration.ofSeconds(15), properties.getOffset().getTimeout());
     }
 }

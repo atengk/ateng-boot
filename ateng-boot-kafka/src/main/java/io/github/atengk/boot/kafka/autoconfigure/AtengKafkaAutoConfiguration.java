@@ -8,6 +8,7 @@ import io.github.atengk.boot.kafka.interceptor.KafkaBatchInterceptor;
 import io.github.atengk.boot.kafka.interceptor.KafkaRecordInterceptor;
 import io.github.atengk.boot.kafka.listener.AtengDeadLetterPublishingRecoverer;
 import io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler;
+import io.github.atengk.boot.kafka.manager.KafkaOffsetManager;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import io.github.atengk.boot.kafka.spi.KafkaTransactionFailureCallback;
 import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
@@ -114,6 +115,18 @@ public class AtengKafkaAutoConfiguration {
             ObjectProvider<KafkaAdmin> kafkaAdminProvider,
             AtengKafkaProperties properties) {
         return new KafkaDeadLetterReplayTemplate(kafkaConsumerFactory, kafkaTemplate, kafkaAdminProvider.getIfAvailable(), properties);
+    }
+
+    /**
+     * Kafka 位移治理与实时 Lag 积压探测门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public KafkaOffsetManager kafkaOffsetManager(
+            ObjectProvider<KafkaAdmin> kafkaAdminProvider,
+            ObjectProvider<ConsumerFactory<?, ?>> consumerFactoryProvider,
+            AtengKafkaProperties properties) {
+        return new KafkaOffsetManager(kafkaAdminProvider.getIfAvailable(), properties, consumerFactoryProvider.getIfAvailable());
     }
 
     /**
