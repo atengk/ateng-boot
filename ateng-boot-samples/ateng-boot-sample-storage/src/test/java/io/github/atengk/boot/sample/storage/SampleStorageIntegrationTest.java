@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.storage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.atengk.boot.sample.storage.config.SampleStorageTestS3Config;
 import io.github.atengk.boot.sample.storage.listener.SampleStorageEventListener;
 import io.github.atengk.boot.sample.storage.service.FileStorageDemoService;
 import io.github.atengk.boot.storage.resource.StorageResource;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
@@ -59,6 +61,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@Import(SampleStorageTestS3Config.class)
 @DisplayName("ateng-boot-sample-storage 对象存储自验集成门禁测试")
 class SampleStorageIntegrationTest {
 
