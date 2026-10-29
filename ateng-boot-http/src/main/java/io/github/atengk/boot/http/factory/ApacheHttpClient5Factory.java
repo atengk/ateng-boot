@@ -168,10 +168,11 @@ public final class ApacheHttpClient5Factory {
             @Override
             public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
                 ClientHttpRequest request = super.createRequest(uri, httpMethod);
-                Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
-                if (perRequestTimeout != null) {
+                Duration perRequestReadTimeout = HttpRequestContextHolder.getReadTimeout();
+                Duration perRequestConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
+                if (perRequestReadTimeout != null || perRequestConnectTimeout != null) {
                     try {
-                        RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
+                        RequestOptionsApplier.applyTimeout(request, perRequestReadTimeout, perRequestConnectTimeout);
                     } finally {
                         HttpRequestContextHolder.clear();
                     }

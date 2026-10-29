@@ -35,23 +35,27 @@ public class ClientScopedHttpRequestFactory implements ClientHttpRequestFactory 
 
     @Override
     public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
-        Duration previousTimeout = HttpRequestContextHolder.getReadTimeout();
-        // 仅在当前未绑定单次特定超时时，应用客户端专属读取超时作为当前线程上下文默认值
-        if (this.readTimeout != null && previousTimeout == null) {
+        Duration previousReadTimeout = HttpRequestContextHolder.getReadTimeout();
+        Duration previousConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
+
+        // 仅在当前未绑定单次特定超时时，应用客户端专属超时作为当前线程上下文默认值
+        if (this.readTimeout != null && previousReadTimeout == null) {
             HttpRequestContextHolder.setReadTimeout(this.readTimeout);
+        }
+        if (this.connectTimeout != null && previousConnectTimeout == null) {
+            HttpRequestContextHolder.setConnectTimeout(this.connectTimeout);
         }
         try {
             ClientHttpRequest request = this.delegate.createRequest(uri, httpMethod);
-            // 将客户端专属的 readTimeout 与 connectTimeout 精准赋能至物理请求对象
-            RequestOptionsApplier.applyTimeout(request, this.readTimeout, this.connectTimeout);
+            // 将生效的 readTimeout 与 connectTimeout 精准赋能至物理请求对象（上下文显式超时 > 客户端专属配置）
+            Duration effectiveReadTimeout = (previousReadTimeout != null) ? previousReadTimeout : this.readTimeout;
+            Duration effectiveConnectTimeout = (previousConnectTimeout != null) ? previousConnectTimeout : this.connectTimeout;
+            RequestOptionsApplier.applyTimeout(request, effectiveReadTimeout, effectiveConnectTimeout);
             return request;
         } finally {
             // 恪守上下文对称清理与现场还原铁律，恢复原有上下文状态，严防线程复用污染
-            if (this.readTimeout != null && previousTimeout == null) {
-                HttpRequestContextHolder.clear();
-            } else {
-                HttpRequestContextHolder.setReadTimeout(previousTimeout);
-            }
+            HttpRequestContextHolder.setReadTimeout(previousReadTimeout);
+            HttpRequestContextHolder.setConnectTimeout(previousConnectTimeout);
         }
     }
 }

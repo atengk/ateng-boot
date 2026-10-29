@@ -173,6 +173,7 @@ public class HttpInterfaceRegistrar implements ImportBeanDefinitionRegistrar, En
         }
         Assert.hasText(name, () -> "@HttpClient 'name' or 'value' must not be blank on interface " + candidateInterface.getName());
         String url = annotation.getString("url");
+        Class<?> fallback = annotation.getClass("fallback");
 
         String beanClassName = candidateInterface.getName();
         String beanName = generateBeanName(registry, candidateInterface);
@@ -187,11 +188,14 @@ public class HttpInterfaceRegistrar implements ImportBeanDefinitionRegistrar, En
         builder.addPropertyValue("interfaceType", candidateInterface);
         builder.addPropertyValue("clientName", name);
         builder.addPropertyValue("url", url);
+        if (fallback != null && fallback != void.class) {
+            builder.addPropertyValue("fallback", fallback);
+        }
         builder.setLazyInit(false);
 
         AbstractBeanDefinition beanDefinition = builder.getBeanDefinition();
         beanDefinition.setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE, candidateInterface);
-        beanDefinition.setPrimary(false);
+        beanDefinition.setPrimary(true);
 
         BeanDefinitionHolder holder = new BeanDefinitionHolder(beanDefinition, beanName);
         BeanDefinitionReaderUtils.registerBeanDefinition(holder, registry);

@@ -48,4 +48,14 @@ public @interface HttpClient {
      */
     String url() default "";
 
+    /**
+     * 声明式本地优雅降级实现类
+     * 必须实现目标客户端接口，并注册为 Spring 容器中的受管 Bean。
+     * 当发生网络故障、连接超时或远端异常（如 HttpRemoteException、ResourceAccessException 等）时自动委托执行。
+     * 默认 void.class 表示不启用降级。
+     *
+     * @return 降级实现类类型
+     */
+    Class<?> fallback() default void.class;
+
 }
