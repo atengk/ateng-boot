@@ -5,6 +5,7 @@ import io.github.atengk.boot.rocketmq.consumer.DefaultPushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
+import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
@@ -180,5 +181,14 @@ public class AtengRocketmqAutoConfiguration {
                 clientConfigurationProvider,
                 pushConsumerFactory,
                 validatorProvider);
+    }
+
+    /**
+     * RocketMQ 运行期消费监听容器运维与动态流控门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RocketmqContainerManager rocketmqContainerManager(RocketmqConsumerContainer consumerContainer) {
+        return new RocketmqContainerManager(consumerContainer);
     }
 }

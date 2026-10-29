@@ -23,6 +23,14 @@ import java.lang.annotation.Target;
 public @interface RocketmqListener {
 
     /**
+     * 监听端点唯一标识（默认空，若为空则自动回退为 "consumerGroup#topic"）
+     * 支持 Spring 属性占位符表达式，例如 "${ateng.mq.consumer.id:order-listener}"
+     *
+     * @return 监听端点唯一标识或占位符
+     */
+    String id() default "";
+
+    /**
      * 监听的 RocketMQ Topic 主题名称
      * 支持 Spring 属性占位符表达式，例如 "${ateng.mq.order-topic:order_topic}"
      *

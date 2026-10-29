@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * RocketMQ 消费端声明式监听器反射调用与受控防卫核心执行器
@@ -60,6 +61,7 @@ public class RocketmqListenerInvoker implements MessageListener {
     @Getter
     private final String consumerGroup;
     private final Validator validator;
+    private final AtomicBoolean paused = new AtomicBoolean(false);
 
     public RocketmqListenerInvoker(Object targetBean, Method method, String topic, String consumerGroup) {
         this(targetBean, method, topic, consumerGroup, null);
@@ -77,6 +79,31 @@ public class RocketmqListenerInvoker implements MessageListener {
         this.consumerGroup = Objects.requireNonNull(consumerGroup, "consumerGroup 不能为空");
         this.validator = validator;
         ReflectionUtils.makeAccessible(this.method);
+    }
+
+    /**
+     * 判断当前监听端点是否处于暂停状态
+     *
+     * @return 若处于暂停流控状态返回 true
+     */
+    public boolean isPaused() {
+        return this.paused.get();
+    }
+
+    /**
+     * 暂停当前监听端点消费
+     */
+    public void pause() {
+        this.paused.set(true);
+        log.warn("[ateng-boot-rocketmq] 监听端点已暂停消费: topic={}, consumerGroup={}", topic, consumerGroup);
+    }
+
+    /**
+     * 恢复当前监听端点消费
+     */
+    public void resume() {
+        this.paused.set(false);
+        log.info("[ateng-boot-rocketmq] 监听端点已恢复消费: topic={}, consumerGroup={}", topic, consumerGroup);
     }
 
     @Override
@@ -98,10 +125,17 @@ public class RocketmqListenerInvoker implements MessageListener {
         try (MessageContextPropagator.ContextScope ignored = MessageContextPropagator.activate(properties)) {
             String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
 
-            // 2. 提取 bizKey (优先 properties 约定 -> 原生 keys -> traceId 兜底)
+            // 2. 检查是否处于暂停流控状态
+            if (this.paused.get()) {
+                log.warn("[MQ-CONSUME-PAUSED] mq=rocketmq topic={} consumerGroup={} tag={} traceId={} messageId={} 监听端点处于暂停状态，返回 FAILURE 触发 Broker 阶梯退避重试",
+                        topic, consumerGroup, tag, traceId, messageId);
+                return ConsumeResult.FAILURE;
+            }
+
+            // 3. 提取 bizKey (优先 properties 约定 -> 原生 keys -> traceId 兜底)
             String bizKey = resolveBizKey(properties, messageView, traceId);
 
-            // 3. 提取报文并透明解压
+            // 4. 提取报文并透明解压
             byte[] bodyBytes;
             try {
                 bodyBytes = extractAndDecompressBody(messageView, properties);
@@ -113,7 +147,7 @@ public class RocketmqListenerInvoker implements MessageListener {
 
             int bodySize = bodyBytes.length;
 
-            // 4. 解析监听方法实参 (依据入参声明强类型与泛型集合推断反序列化)
+            // 5. 解析监听方法实参 (依据入参声明强类型与泛型集合推断反序列化)
             Object[] args;
             try {
                 args = resolveArguments(messageView, bodyBytes);
@@ -123,7 +157,7 @@ public class RocketmqListenerInvoker implements MessageListener {
                 return ConsumeResult.SUCCESS;
             }
 
-            // 5. 执行 JSR-303 参数校验
+            // 6. 执行 JSR-303 参数校验
             try {
                 validateArguments(args);
             } catch (Throwable t) {
@@ -132,7 +166,7 @@ public class RocketmqListenerInvoker implements MessageListener {
                 return ConsumeResult.SUCCESS;
             }
 
-            // 6. 反射执行业务监听方法
+            // 7. 反射执行业务监听方法
             try {
                 method.invoke(targetBean, args);
                 long cost = System.currentTimeMillis() - startTime;
