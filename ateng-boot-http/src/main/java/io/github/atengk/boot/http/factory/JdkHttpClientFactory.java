@@ -7,6 +7,8 @@ import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpSslProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpRequest;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -14,21 +16,28 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Authenticator;
 import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
+import java.net.Proxy;
 import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * JDK 17 原生 HttpClient 物理连接工厂
@@ -61,41 +70,72 @@ public final class JdkHttpClientFactory {
             builder.connectTimeout(pool.getConnectTimeout());
         }
 
-        // 2. SSL Insecure 信任全部证书支持
-        if (ssl.isInsecure()) {
+        // 2. SSL Insecure 信任全部证书与客户端 mTLS 双向认证
+        boolean hasKeyStore = ssl.hasKeyStore();
+        if (ssl.isInsecure() || hasKeyStore) {
             try {
-                TrustManager[] trustAllCerts = new TrustManager[]{
-                        new X509TrustManager() {
-                            @Override
-                            public X509Certificate[] getAcceptedIssuers() {
-                                return new X509Certificate[0];
-                            }
+                TrustManager[] trustManagers = null;
+                if (ssl.isInsecure()) {
+                    trustManagers = new TrustManager[]{
+                            new X509TrustManager() {
+                                @Override
+                                public X509Certificate[] getAcceptedIssuers() {
+                                    return new X509Certificate[0];
+                                }
 
-                            @Override
-                            public void checkClientTrusted(X509Certificate[] certs, String authType) {
-                            }
+                                @Override
+                                public void checkClientTrusted(X509Certificate[] certs, String authType) {
+                                }
 
-                            @Override
-                            public void checkServerTrusted(X509Certificate[] certs, String authType) {
+                                @Override
+                                public void checkServerTrusted(X509Certificate[] certs, String authType) {
+                                }
                             }
-                        }
-                };
+                    };
+                }
+                KeyManager[] keyManagers = null;
+                if (hasKeyStore) {
+                    keyManagers = loadKeyManagers(ssl);
+                }
                 SSLContext sslContext = SSLContext.getInstance("TLS");
-                sslContext.init(null, trustAllCerts, new SecureRandom());
+                sslContext.init(keyManagers, trustManagers, new SecureRandom());
                 builder.sslContext(sslContext);
-                SSLParameters sslParameters = new SSLParameters();
-                sslParameters.setEndpointIdentificationAlgorithm("");
-                builder.sslParameters(sslParameters);
-                log.info("JDK HttpClient 已启用 Insecure SSL 模式，信任所有证书并跳过主机名校验");
-            } catch (GeneralSecurityException e) {
-                throw new IllegalStateException("构建 JDK Insecure SSLContext 失败", e);
+                if (ssl.isInsecure()) {
+                    SSLParameters sslParameters = new SSLParameters();
+                    sslParameters.setEndpointIdentificationAlgorithm("");
+                    builder.sslParameters(sslParameters);
+                    log.info("JDK HttpClient 已启用 Insecure SSL 模式，信任所有证书并跳过主机名校验");
+                }
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalStateException("构建 JDK SSLContext 失败: " + e.getMessage(), e);
             }
         }
 
-        // 3. 出口正向代理支持
+        // 3. 出口正向代理与白名单直连支持
         if (proxy.isEnabled()) {
             Assert.hasText(proxy.getHost(), "HTTP 代理已启用(ateng.boot.http.proxy.enabled=true)，代理主机 host 不能为空");
-            builder.proxy(ProxySelector.of(new InetSocketAddress(proxy.getHost(), proxy.getPort())));
+            InetSocketAddress proxyAddress = new InetSocketAddress(proxy.getHost(), proxy.getPort());
+            Proxy proxyObj = new Proxy(Proxy.Type.HTTP, proxyAddress);
+            if (proxy.getNonProxyHosts() != null && !proxy.getNonProxyHosts().isEmpty()) {
+                builder.proxy(new ProxySelector() {
+                    @Override
+                    public List<Proxy> select(URI uri) {
+                        if (uri != null && proxy.isNonProxyHost(uri.getHost())) {
+                            return List.of(Proxy.NO_PROXY);
+                        }
+                        return List.of(proxyObj);
+                    }
+
+                    @Override
+                    public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
+                        log.warn("JDK 代理服务器连接失败: uri={}, sa={}, error={}", uri, sa, ioe.getMessage());
+                    }
+                });
+            } else {
+                builder.proxy(ProxySelector.of(proxyAddress));
+            }
             if (StringUtils.hasText(proxy.getUsername())) {
                 builder.authenticator(new Authenticator() {
                     @Override
@@ -107,7 +147,7 @@ public final class JdkHttpClientFactory {
                     }
                 });
             }
-            log.info("JDK HttpClient 已启用出口代理: {}:{}", proxy.getHost(), proxy.getPort());
+            log.info("JDK HttpClient 已启用出口代理: {}:{}, nonProxyHosts={}", proxy.getHost(), proxy.getPort(), proxy.getNonProxyHosts());
         }
 
         HttpClient httpClient = builder.build();
@@ -133,5 +173,31 @@ public final class JdkHttpClientFactory {
         log.info("JDK 17 原生 HttpClient 工厂初始化成功 [connectTimeout={}, readTimeout={}]",
                 pool.getConnectTimeout(), pool.getReadTimeout());
         return factory;
+    }
+
+    /**
+     * 加载 mTLS 客户端私钥证书 KeyManager 数组
+     *
+     * @param ssl SSL 配置属性
+     * @return KeyManager 数组
+     * @throws Exception 证书加载或解析异常
+     */
+    private static KeyManager[] loadKeyManagers(HttpSslProperties ssl) throws Exception {
+        String keyStorePath = ssl.getKeyStore();
+        Assert.hasText(keyStorePath, "keyStore 路径不能为空");
+        Resource resource = new DefaultResourceLoader().getResource(keyStorePath);
+        if (!resource.exists()) {
+            throw new IllegalArgumentException("未找到 mTLS 客户端证书文件: " + keyStorePath);
+        }
+        String type = StringUtils.hasText(ssl.getKeyStoreType()) ? ssl.getKeyStoreType() : "PKCS12";
+        KeyStore keyStore = KeyStore.getInstance(type);
+        char[] password = StringUtils.hasText(ssl.getKeyStorePassword()) ? ssl.getKeyStorePassword().toCharArray() : new char[0];
+        try (InputStream in = resource.getInputStream()) {
+            keyStore.load(in, password);
+        }
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(keyStore, password);
+        log.info("成功为 JDK HttpClient 加载 mTLS 客户端私钥证书: [{}] (type: {})", keyStorePath, type);
+        return kmf.getKeyManagers();
     }
 }

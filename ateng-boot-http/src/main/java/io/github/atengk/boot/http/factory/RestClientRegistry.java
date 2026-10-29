@@ -6,6 +6,7 @@ import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
 import io.github.atengk.boot.http.interceptor.HttpRetryInterceptor;
 import io.github.atengk.boot.http.properties.HttpClientItemProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
+import io.github.atengk.boot.http.properties.HttpSslProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.env.Environment;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -207,27 +208,27 @@ public class RestClientRegistry {
             builder.baseUrl(resolvedBaseUrl);
         }
 
-        // 4. 超时策略隔离与物理连接池共享
-        Duration connectTimeout = item != null ? item.getConnectTimeout() : null;
-        Duration readTimeout = item != null ? item.getReadTimeout() : null;
-        if (connectTimeout != null || readTimeout != null) {
-            ClientHttpRequestFactory scopedFactory = new ClientScopedHttpRequestFactory(
-                    this.globalRequestFactory,
-                    readTimeout,
-                    connectTimeout
-            );
-            builder.requestFactory(scopedFactory);
-        } else {
-            builder.requestFactory(this.globalRequestFactory);
+        // 4. 专属代理、SSL/mTLS 隔离或超时策略隔离与物理连接池共享
+        ClientHttpRequestFactory clientFactory = resolveRequestFactory(item);
+        builder.requestFactory(clientFactory);
+
+        // 5. 注入客户端专属默认请求头（支持 ${...} 占位符解析）
+        if (item != null && item.getDefaultHeaders() != null && !item.getDefaultHeaders().isEmpty()) {
+            item.getDefaultHeaders().forEach((headerName, headerValue) -> {
+                if (StringUtils.hasText(headerName) && headerValue != null) {
+                    String resolvedValue = resolvePlaceholders(headerValue);
+                    builder.defaultHeader(headerName, resolvedValue);
+                }
+            });
         }
 
-        // 5. 四维上下文出站透传与非信任域隔离
+        // 6. 四维上下文出站透传与非信任域隔离
         builder.defaultHeader(HttpConstants.HEADER_CLIENT_NAME_OVERRIDE, clientName);
         if (item != null) {
             builder.defaultHeader(HttpConstants.HEADER_PROPAGATE_CONTEXT_OVERRIDE, String.valueOf(item.isPropagateContext()));
         }
 
-        // 6. 专属重试策略隔离
+        // 7. 专属重试策略隔离
         if (item != null && item.getRetry() != null) {
             HttpProperties scopedProperties = new HttpProperties();
             scopedProperties.setRetry(item.getRetry());
@@ -248,15 +249,50 @@ public class RestClientRegistry {
             });
         }
 
-        // 7. 统一绑定 HTTP 状态码异常响应处理器
+        // 8. 统一绑定 HTTP 状态码异常响应处理器
         if (this.httpErrorHandler != null) {
             builder.defaultStatusHandler(this.httpErrorHandler);
         }
 
         log.info("Initialized scoped RestClient for clientName '{}' [baseUrl={}, connectTimeout={}, readTimeout={}, propagateContext={}]",
-                clientName, resolvedBaseUrl, connectTimeout, readTimeout, item != null ? item.isPropagateContext() : true);
+                clientName, resolvedBaseUrl, item != null ? item.getConnectTimeout() : null, item != null ? item.getReadTimeout() : null, item != null ? item.isPropagateContext() : true);
 
         return builder.build();
+    }
+
+    /**
+     * 为命名客户端解析底层 ClientHttpRequestFactory
+     * 若客户端配置了专属 proxy 或专属 ssl (如 mTLS 客户端证书)，则构建专职物理连接工厂；否则默认共享全局连接池，按需应用超时隔离
+     *
+     * @param item 命名客户端配置项（可为 null）
+     * @return 适用于该客户端的 ClientHttpRequestFactory
+     */
+    private ClientHttpRequestFactory resolveRequestFactory(HttpClientItemProperties item) {
+        boolean hasCustomProxy = item != null && item.getProxy() != null;
+        HttpSslProperties resolvedSsl = item != null ? item.getResolvedSsl() : null;
+        boolean hasCustomSsl = resolvedSsl != null && (
+                resolvedSsl.isInsecure() != this.properties.getSsl().isInsecure()
+                || resolvedSsl.hasKeyStore()
+        );
+
+        ClientHttpRequestFactory baseFactory;
+        if (hasCustomProxy || hasCustomSsl) {
+            HttpProperties scopedProperties = new HttpProperties();
+            scopedProperties.setEngine(this.properties.getEngine());
+            scopedProperties.setPool(this.properties.getPool());
+            scopedProperties.setProxy(hasCustomProxy ? item.getProxy() : this.properties.getProxy());
+            scopedProperties.setSsl(hasCustomSsl ? resolvedSsl : this.properties.getSsl());
+            baseFactory = ClientHttpRequestFactoryBuilder.build(scopedProperties, null);
+        } else {
+            baseFactory = this.globalRequestFactory;
+        }
+
+        Duration connectTimeout = item != null ? item.getConnectTimeout() : null;
+        Duration readTimeout = item != null ? item.getReadTimeout() : null;
+        if (connectTimeout != null || readTimeout != null) {
+            return new ClientScopedHttpRequestFactory(baseFactory, readTimeout, connectTimeout);
+        }
+        return baseFactory;
     }
 
     /**
