@@ -26,6 +26,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -313,6 +314,31 @@ class HttpTemplateTest {
         assertThat(requestBody).contains("action=verify_sms");
         assertThat(requestBody).contains("phone=13800138000");
         assertThat(requestBody).contains("code=123456");
+    }
+
+    @Test
+    @DisplayName("postForm: 普通 Map 携带对象数组与基本类型数组自动打散展开为同名多值")
+    void testPostFormWithArrayValues() throws Exception {
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"success\":true}"));
+
+        Map<String, Object> form = new LinkedHashMap<>();
+        form.put("name", "ateng");
+        form.put("tags", new String[]{"java", "spring"});
+        form.put("ids", new int[]{101, 102});
+
+        Map<?, ?> response = httpTemplate.postForm(baseUrl + "/array-test", form, Map.class);
+        assertThat(response).isNotNull();
+
+        RecordedRequest recorded = server.takeRequest();
+        String requestBody = URLDecoder.decode(recorded.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertThat(requestBody).contains("name=ateng");
+        assertThat(requestBody).contains("tags=java");
+        assertThat(requestBody).contains("tags=spring");
+        assertThat(requestBody).contains("ids=101");
+        assertThat(requestBody).contains("ids=102");
     }
 
     @Test

@@ -465,6 +465,20 @@ public class HttpTemplate {
                                 multiValueMap.add(k, item);
                             }
                         }
+                    } else if (v instanceof Object[] array) {
+                        for (Object item : array) {
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
+                    } else if (v.getClass().isArray()) {
+                        int length = java.lang.reflect.Array.getLength(v);
+                        for (int i = 0; i < length; i++) {
+                            Object item = java.lang.reflect.Array.get(v, i);
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
                     } else {
                         multiValueMap.add(k, v);
                     }
