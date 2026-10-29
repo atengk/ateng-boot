@@ -50,6 +50,7 @@ public final class RetryUtil {
      * @param retryPredicate 判定发生异常时是否需要重试的谓词（返回 true 表示重试，false 表示立即终止重试并抛出或降级）
      * @param jitter         是否启用 Equal Jitter 平滑随机抖动（打散重试洪峰，公式：delay/2 + random(0, delay/2)）
      * @param onRetry        重试监听器（在休眠等待前被调度，可用于度量打点与告警）
+     * @param delayFunction  动态延迟计算函数（根据抛出的异常动态返回重试等待时长，返回非空且非负 Duration 时将覆盖退避休眠时长；若返回 null 或负数则回退默认退避策略）
      */
     public record RetryConfig(
             int maxAttempts,
@@ -58,7 +59,8 @@ public final class RetryUtil {
             Duration maxDelay,
             Predicate<Throwable> retryPredicate,
             boolean jitter,
-            RetryListener onRetry
+            RetryListener onRetry,
+            Function<Throwable, Duration> delayFunction
     ) {
         public RetryConfig {
             if (maxAttempts < 1) {
@@ -79,10 +81,17 @@ public final class RetryUtil {
         }
 
         /**
-         * 兼容既有 5 参数构造器，保持 100% 向后二进制与源码兼容（默认禁用 jitter，onRetry 为 null）
+         * 兼容 7 参数构造器，保持向后二进制与源码兼容（delayFunction 为 null）
+         */
+        public RetryConfig(int maxAttempts, Duration delay, double multiplier, Duration maxDelay, Predicate<Throwable> retryPredicate, boolean jitter, RetryListener onRetry) {
+            this(maxAttempts, delay, multiplier, maxDelay, retryPredicate, jitter, onRetry, null);
+        }
+
+        /**
+         * 兼容既有 5 参数构造器，保持 100% 向后二进制与源码兼容（默认禁用 jitter，onRetry 为 null，delayFunction 为 null）
          */
         public RetryConfig(int maxAttempts, Duration delay, double multiplier, Duration maxDelay, Predicate<Throwable> retryPredicate) {
-            this(maxAttempts, delay, multiplier, maxDelay, retryPredicate, false, null);
+            this(maxAttempts, delay, multiplier, maxDelay, retryPredicate, false, null, null);
         }
 
         /**
@@ -102,6 +111,7 @@ public final class RetryUtil {
             private Predicate<Throwable> retryPredicate = ex -> true;
             private boolean jitter = false;
             private RetryListener onRetry = null;
+            private Function<Throwable, Duration> delayFunction = null;
 
             public Builder maxAttempts(int maxAttempts) {
                 if (maxAttempts < 1) {
@@ -147,8 +157,13 @@ public final class RetryUtil {
                 return this;
             }
 
+            public Builder delayFunction(Function<Throwable, Duration> delayFunction) {
+                this.delayFunction = delayFunction;
+                return this;
+            }
+
             public RetryConfig build() {
-                return new RetryConfig(maxAttempts, delay, multiplier, maxDelay, retryPredicate, jitter, onRetry);
+                return new RetryConfig(maxAttempts, delay, multiplier, maxDelay, retryPredicate, jitter, onRetry, delayFunction);
             }
         }
     }
@@ -208,6 +223,7 @@ public final class RetryUtil {
         Predicate<Throwable> predicate = config.retryPredicate();
         boolean jitter = config.jitter();
         RetryListener onRetry = config.onRetry();
+        Function<Throwable, Duration> delayFunction = config.delayFunction();
 
         int attempt = 0;
         while (true) {
@@ -237,9 +253,22 @@ public final class RetryUtil {
                     }
                 }
 
-                // 计算本次休眠实际时长（Equal Jitter: delay/2 + random(0, delay/2)）
+                // 计算本次休眠实际时长（优先采用动态 delayFunction，否则按指数退避与 Equal Jitter 计算）
                 long actualSleepMs = currentDelayMs;
-                if (jitter) {
+                boolean customDelayApplied = false;
+                if (delayFunction != null) {
+                    try {
+                        Duration customDelay = delayFunction.apply(ex);
+                        if (customDelay != null && !customDelay.isNegative()) {
+                            actualSleepMs = customDelay.toMillis();
+                            customDelayApplied = true;
+                        }
+                    } catch (Throwable t) {
+                        log.warn("动态重试延迟函数 delayFunction 执行异常，回退默认退避策略: {}", t.getMessage(), t);
+                    }
+                }
+
+                if (!customDelayApplied && jitter) {
                     long half = currentDelayMs / 2;
                     if (half > 0) {
                         long jitterOffset = ThreadLocalRandom.current().nextLong(half + 1);

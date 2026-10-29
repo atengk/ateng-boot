@@ -304,6 +304,80 @@ class RetryUtilTest {
         assertEquals(Duration.ofMillis(1000), config.maxDelay());
         assertFalse(config.jitter(), "默认 jitter 应为 false");
         assertNull(config.onRetry(), "默认 onRetry 监听器应为 null");
+        assertNull(config.delayFunction(), "默认 delayFunction 应为 null");
+
+        // 验证 7 参数构造函数兼容
+        RetryUtil.RetryConfig config7 = new RetryUtil.RetryConfig(
+                3,
+                Duration.ofMillis(100),
+                2.0,
+                Duration.ofMillis(1000),
+                ex -> true,
+                true,
+                null
+        );
+        assertTrue(config7.jitter());
+        assertNull(config7.delayFunction());
+    }
+
+    @Test
+    @DisplayName("delayFunction：动态异常延迟计算并覆盖休眠等待")
+    void shouldApplyDynamicDelayFunctionWhenProvided() {
+        AtomicInteger count = new AtomicInteger();
+        long start = System.currentTimeMillis();
+
+        class CustomDynamicDelayException extends RuntimeException {
+            final Duration retryAfter;
+            CustomDynamicDelayException(Duration retryAfter) {
+                this.retryAfter = retryAfter;
+            }
+        }
+
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(2)
+                .delay(Duration.ofSeconds(10)) // 默认非常大
+                .delayFunction(ex -> {
+                    if (ex instanceof CustomDynamicDelayException cde) {
+                        return cde.retryAfter;
+                    }
+                    return null;
+                })
+                .build();
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 2) {
+                throw new CustomDynamicDelayException(Duration.ofMillis(30));
+            }
+            return "dynamic-delay-ok";
+        }, config);
+
+        long elapsed = System.currentTimeMillis() - start;
+        assertEquals("dynamic-delay-ok", result);
+        assertEquals(2, count.get());
+        assertTrue(elapsed >= 25 && elapsed < 3000, "实际等待耗时应基于 delayFunction 动态计算（~30ms），而非默认的 10s");
+    }
+
+    @Test
+    @DisplayName("delayFunction 异常隔离：当 delayFunction 内部抛出异常时回退默认退避")
+    void shouldFallbackToDefaultDelayWhenDelayFunctionThrows() {
+        AtomicInteger count = new AtomicInteger();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(2)
+                .delay(Duration.ofMillis(10))
+                .delayFunction(ex -> {
+                    throw new RuntimeException("动态计算函数异常");
+                })
+                .build();
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 2) {
+                throw new RuntimeException("业务错误");
+            }
+            return "fallback-delay-ok";
+        }, config);
+
+        assertEquals("fallback-delay-ok", result);
+        assertEquals(2, count.get());
     }
 
     @Test

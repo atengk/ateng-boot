@@ -67,4 +67,33 @@ class HttpRemoteExceptionTest {
         assertThat(ex.getCause()).isSameAs(rootCause);
         assertThat(ex.getResponseBody()).isEqualTo("Gateway Timeout");
     }
+
+    @Test
+    @DisplayName("测试 getResponseBodyAs 针对 Class 与 ParameterizedTypeReference 强类型反序列化")
+    void testGetResponseBodyAs() {
+        URI url = URI.create("https://api.example.com/orders");
+        String jsonBody = "{\"orderId\":\"ORD-8888\",\"amount\":199.99,\"items\":[\"apple\",\"banana\"]}";
+
+        HttpRemoteException ex = new HttpRemoteException(400, HttpMethod.POST, url, jsonBody);
+
+        // 1. 反序列化为普通 Class
+        ErrorOrderDto order = ex.getResponseBodyAs(ErrorOrderDto.class);
+        assertThat(order).isNotNull();
+        assertThat(order.orderId()).isEqualTo("ORD-8888");
+        assertThat(order.amount()).isEqualTo(199.99);
+        assertThat(order.items()).containsExactly("apple", "banana");
+
+        // 2. 反序列化为 ParameterizedTypeReference 泛型复杂对象 (Map<String, Object>)
+        java.util.Map<String, Object> map = ex.getResponseBodyAs(new org.springframework.core.ParameterizedTypeReference<java.util.Map<String, Object>>() {});
+        assertThat(map).isNotNull();
+        assertThat(map.get("orderId")).isEqualTo("ORD-8888");
+
+        // 3. 空响应体或 null 目标类型返回 null
+        HttpRemoteException emptyEx = new HttpRemoteException(500, HttpMethod.GET, url, null);
+        assertThat(emptyEx.getResponseBodyAs(ErrorOrderDto.class)).isNull();
+        assertThat(ex.getResponseBodyAs((Class<ErrorOrderDto>) null)).isNull();
+        assertThat(ex.getResponseBodyAs((org.springframework.core.ParameterizedTypeReference<ErrorOrderDto>) null)).isNull();
+    }
+
+    private record ErrorOrderDto(String orderId, double amount, java.util.List<String> items) {}
 }

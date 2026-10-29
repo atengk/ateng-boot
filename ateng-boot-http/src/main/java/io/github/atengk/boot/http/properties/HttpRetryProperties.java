@@ -51,7 +51,7 @@ public class HttpRetryProperties {
     private List<String> retryMethods = new ArrayList<>(List.of("GET", "HEAD"));
 
     /**
-     * 允许触发自动重试的远端 HTTP 状态码列表（默认针对网络临时不可达或网关抖动：502, 503, 504）
+     * 允许触发自动重试的远端 HTTP 状态码列表（默认针对网络临时不可达、限流或网关抖动：429, 502, 503, 504）
      */
-    private List<Integer> retryStatusCodes = new ArrayList<>(List.of(502, 503, 504));
+    private List<Integer> retryStatusCodes = new ArrayList<>(List.of(429, 502, 503, 504));
 }

@@ -15,6 +15,11 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 
@@ -66,8 +71,14 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
                     }
                     return throwable instanceof RetryableIoException;
                 })
+                .delayFunction(throwable -> {
+                    if (throwable instanceof RetryableStatusCodeException rse && rse.getRetryAfter() != null) {
+                        return rse.getRetryAfter();
+                    }
+                    return null;
+                })
                 .onRetry((attempt, ex) -> {
-                    // 当遭遇重试状态码（502/503/504）触发重试时，显式关闭上一次失败轮次的物理响应流，安全归还连接池，严防物理连接泄漏
+                    // 当遭遇重试状态码（502/503/504/429）触发重试时，显式关闭上一次失败轮次的物理响应流，安全归还连接池，严防物理连接泄漏
                     if (ex instanceof RetryableStatusCodeException rse && rse.getResponse() != null) {
                         try {
                             rse.getResponse().close();
@@ -76,9 +87,9 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
                         }
                     }
                     String reason = ex instanceof RetryableStatusCodeException rse
-                            ? "HTTP 状态码 " + rse.getStatusCode()
+                            ? "HTTP 状态码 " + rse.getStatusCode() + (rse.getRetryAfter() != null ? " (Retry-After=" + rse.getRetryAfter().getSeconds() + "s)" : "")
                             : ex.getMessage();
-                    log.warn("HTTP {} {} 第 {} 次调用遭遇临时故障 [{}], 正在执行指数退避重试...",
+                    log.warn("HTTP {} {} 第 {} 次调用遭遇临时故障 [{}], 正在执行退避重试...",
                             request.getMethod(), request.getURI(), attempt, reason);
                 })
                 .build();
@@ -90,7 +101,8 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
                     ClientHttpResponse response = executeSingleAttempt(request, body, execution);
                     int statusCode = response.getStatusCode().value();
                     if (retry.getRetryStatusCodes().contains(statusCode)) {
-                        throw new RetryableStatusCodeException(response, statusCode);
+                        Duration retryAfter = parseRetryAfter(response.getHeaders().getFirst("Retry-After"));
+                        throw new RetryableStatusCodeException(response, statusCode, retryAfter);
                     }
                     return response;
                 } catch (IOException e) {
@@ -149,17 +161,53 @@ public class HttpRetryInterceptor implements ClientHttpRequestInterceptor {
     }
 
     /**
+     * 自适应解析 RFC 7231 §7.1.3 与 RFC 6585 定义的 Retry-After 响应头
+     * 支持非负整数秒数（delay-seconds，如 "120"）及符合 RFC 1123 规范的 HTTP-date 时间戳（如 "Wed, 21 Oct 2026 07:28:00 GMT"）
+     *
+     * @param retryAfterHeader 原始 Retry-After 响应头文本
+     * @return 对应的等待时长 Duration；若不存在、已过期或格式不合法则返回 null 或 Duration.ZERO
+     */
+    public static Duration parseRetryAfter(String retryAfterHeader) {
+        if (!StringUtils.hasText(retryAfterHeader)) {
+            return null;
+        }
+        String trimmed = retryAfterHeader.trim();
+        // 1. 尝试解析为纯数字秒数（delay-seconds）
+        try {
+            long seconds = Long.parseLong(trimmed);
+            if (seconds >= 0) {
+                return Duration.ofSeconds(seconds);
+            }
+            return Duration.ZERO;
+        } catch (NumberFormatException ignored) {
+            // 非纯数字，继续尝试按 RFC 1123 HTTP-date 解析
+        }
+
+        // 2. 尝试解析为 RFC 1123 HTTP-date 时间点
+        try {
+            ZonedDateTime retryDate = ZonedDateTime.parse(trimmed, DateTimeFormatter.RFC_1123_DATE_TIME);
+            Duration diff = Duration.between(Instant.now(), retryDate.toInstant());
+            return diff.isNegative() ? Duration.ZERO : diff;
+        } catch (DateTimeParseException ignored) {
+            // 无法识别的非法格式，回退 null 走默认退避
+        }
+        return null;
+    }
+
+    /**
      * 内部用于触发 RetryUtil 退避的远端异常状态码载荷包装类
      */
     @Getter
     private static class RetryableStatusCodeException extends RuntimeException {
         private final ClientHttpResponse response;
         private final int statusCode;
+        private final Duration retryAfter;
 
-        public RetryableStatusCodeException(ClientHttpResponse response, int statusCode) {
+        public RetryableStatusCodeException(ClientHttpResponse response, int statusCode, Duration retryAfter) {
             super("HTTP 远端服务响应可重试状态码: " + statusCode);
             this.response = response;
             this.statusCode = statusCode;
+            this.retryAfter = retryAfter;
         }
     }
 

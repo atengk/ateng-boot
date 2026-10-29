@@ -137,9 +137,10 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
         HttpMethod method = request.getMethod();
         URI uri = request.getURI();
         HttpLoggingLevel level = logging.getLevel();
+        String maskedUri = maskUri(uri, logging.getMaskParams());
 
         if (error != null) {
-            log.warn("HTTP {} {} -> FAILED: {} ({}ms)", method, uri, error.getMessage(), costMs);
+            log.warn("HTTP {} {} -> FAILED: {} ({}ms)", method, maskedUri, error.getMessage(), costMs);
             return;
         }
 
@@ -148,13 +149,13 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
             String statusText = response.getStatusText();
 
             if (level == HttpLoggingLevel.BASIC) {
-                log.info("HTTP {} {} -> {} {} ({}ms)", method, uri, statusCode, statusText, costMs);
+                log.info("HTTP {} {} -> {} {} ({}ms)", method, maskedUri, statusCode, statusText, costMs);
                 return;
             }
 
             StringBuilder sb = new StringBuilder();
             sb.append("\n==================== [HTTP Outbound Exchange] ====================")
-                    .append("\nRequest  : ").append(method).append(" ").append(uri)
+                    .append("\nRequest  : ").append(method).append(" ").append(maskedUri)
                     .append("\nResponse : ").append(statusCode).append(" ").append(statusText).append(" (").append(costMs).append("ms)");
 
             // 打印请求头与响应头 (已脱敏)
@@ -198,8 +199,9 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
      * 生成标准可直接在终端执行复现的 cURL 命令字符串
      */
     public String generateCurlCommand(HttpRequest request, byte[] body, HttpLoggingProperties logging) {
+        String maskedUri = maskUri(request.getURI(), logging != null ? logging.getMaskParams() : Collections.emptyList());
         StringBuilder curl = new StringBuilder("curl -X ").append(request.getMethod().name());
-        curl.append(" '").append(request.getURI().toString()).append("'");
+        curl.append(" '").append(maskedUri).append("'");
 
         HttpHeaders headers = request.getHeaders();
         List<String> maskHeaders = logging != null ? logging.getMaskHeaders() : Collections.emptyList();
@@ -257,6 +259,63 @@ public class HttpLoggingInterceptor implements ClientHttpRequestInterceptor {
         }
         sb.append("}");
         return sb.toString();
+    }
+
+    /**
+     * 对请求 URI 中的敏感 Query 参数执行动态脱敏，杜绝日志与 cURL 泄露私密凭证
+     *
+     * @param uri        请求 URI 对象
+     * @param maskParams 敏感查询参数名列表（不区分大小写匹配）
+     * @return 脱敏后的 URI 字符串形式
+     */
+    public String maskUri(URI uri, List<String> maskParams) {
+        if (uri == null) {
+            return "";
+        }
+        String rawQuery = uri.getRawQuery();
+        if (!StringUtils.hasText(rawQuery) || maskParams == null || maskParams.isEmpty()) {
+            return uri.toString();
+        }
+
+        String[] pairs = rawQuery.split("&");
+        StringBuilder maskedQuery = new StringBuilder();
+        boolean changed = false;
+
+        for (int i = 0; i < pairs.length; i++) {
+            if (i > 0) {
+                maskedQuery.append("&");
+            }
+            String pair = pairs[i];
+            int eqIdx = pair.indexOf('=');
+            if (eqIdx == -1) {
+                maskedQuery.append(pair);
+            } else {
+                String paramKey = pair.substring(0, eqIdx);
+                String paramVal = pair.substring(eqIdx + 1);
+                boolean isSensitive = maskParams.stream().anyMatch(p -> p.equalsIgnoreCase(paramKey));
+                if (isSensitive) {
+                    changed = true;
+                    maskedQuery.append(paramKey).append("=").append(maskTokenString(paramVal));
+                } else {
+                    maskedQuery.append(pair);
+                }
+            }
+        }
+
+        if (!changed) {
+            return uri.toString();
+        }
+
+        String uriStr = uri.toString();
+        int qIdx = uriStr.indexOf('?');
+        if (qIdx != -1) {
+            int hashIdx = uriStr.indexOf('#', qIdx);
+            if (hashIdx != -1) {
+                return uriStr.substring(0, qIdx + 1) + maskedQuery + uriStr.substring(hashIdx);
+            }
+            return uriStr.substring(0, qIdx + 1) + maskedQuery;
+        }
+        return uriStr;
     }
 
     /**

@@ -18,6 +18,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.web.client.RestClientAutoConfiguration;
+import org.springframework.boot.autoconfigure.web.client.RestClientBuilderConfigurer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
@@ -160,22 +161,30 @@ public class AtengHttpAutoConfiguration {
     }
 
     /**
-     * 自动装配受管的 RestClient.Builder，绑定物理连接工厂与统一异常处理器，并自动应用所有 RestClientCustomizer 定制器
+     * 自动装配受管的 RestClient.Builder，优先继承 Spring Boot 官方 RestClientBuilderConfigurer（无缝对齐消息转换器与 Actuator 观测度量），
+     * 绑定物理连接工厂与统一异常处理器，并自动应用所有 RestClientCustomizer 定制器
      *
      * @param clientHttpRequestFactory 底层物理连接工厂
      * @param httpErrorHandler HTTP 统一异常响应转译处理器
-     * @param customizers RestClient 定制器提供者
+     * @param configurerProvider 官方 RestClientBuilderConfigurer 提供者（若存在则优先调用以继承官方基线配置）
+     * @param customizers RestClient 定制器提供者（当无 configurer 时作为兜底直接生效）
      * @return RestClient.Builder
      */
     @Bean
     @ConditionalOnMissingBean
     public RestClient.Builder restClientBuilder(ClientHttpRequestFactory clientHttpRequestFactory,
                                                 HttpErrorHandler httpErrorHandler,
+                                                ObjectProvider<RestClientBuilderConfigurer> configurerProvider,
                                                 ObjectProvider<RestClientCustomizer> customizers) {
-        RestClient.Builder builder = RestClient.builder()
-                .requestFactory(clientHttpRequestFactory)
+        RestClient.Builder builder = RestClient.builder();
+        RestClientBuilderConfigurer configurer = configurerProvider.getIfAvailable();
+        if (configurer != null) {
+            configurer.configure(builder);
+        } else {
+            customizers.orderedStream().forEach(customizer -> customizer.customize(builder));
+        }
+        builder.requestFactory(clientHttpRequestFactory)
                 .defaultStatusHandler(httpErrorHandler);
-        customizers.orderedStream().forEach(customizer -> customizer.customize(builder));
         return builder;
     }
 

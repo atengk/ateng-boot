@@ -17,9 +17,10 @@
 | **专属超时隔离** | 客户端专属超时包装工厂 | `ClientScopedHttpRequestFactory` | `ateng.boot.http.clients.<name>.connect-timeout`<br>`ateng.boot.http.clients.<name>.read-timeout` | 100% 共享全局物理连接池，采用 `previousTimeout` 现场还原模式为特定客户端安全附加独立的建联与读取响应超时 | `RestClientRegistryTest` / `DeclarativeClientScenarioTest` |
 | **全链路上下文** | 四维上下文出站透传 | `TraceContextInterceptor` | `ateng.boot.http.tracing.enabled`<br>`ateng.boot.http.tracing.trace-id-header`<br>`ateng.boot.http.tracing.tenant-id-header`<br>`ateng.boot.http.tracing.user-id-header`<br>`ateng.boot.http.tracing.ignore-tenant-header` | 自动提取当前线程 MDC `traceId`、`TenantContextHolder` 与 `UserContextHolder` 注入出站请求头（缺省自动通过 `IdUtil.fastSimpleUUID()` 注入），实现分布式全链路可观测闭环 | `TraceContextInterceptorTest` / `HttpGovernanceScenarioTest` / `DeclarativeClientScenarioTest` |
 | **非信任域隔离** | 外部公网敏感头安全剥离 | `TraceContextInterceptor`<br>`HttpInterceptorUtil` | `ateng.boot.http.clients.<name>.propagate-context` | 依据目标 URL 最长前缀匹配或单次请求显式声明，向外部非信任域（微信、支付宝、第三方 SaaS 等）发起调用时强制安全剥离内网租户与用户标识，杜绝敏感身份泄漏 | `TraceContextInterceptorTest` / `HttpGovernanceScenarioTest` / `DeclarativeClientScenarioTest` |
-| **出站审计日志** | 结构化 cURL 脱敏日志 | `HttpLoggingInterceptor` | `ateng.boot.http.logging.enabled`<br>`ateng.boot.http.logging.level`<br>`ateng.boot.http.logging.max-body-length`<br>`ateng.boot.http.logging.sensitive-headers` | 格式化输出出站请求 cURL 片段与响应耗时，对 Authorization/Cookie/Token 等私有敏感头自动掩码脱敏，大载荷安全截断防爆内存 | `HttpLoggingInterceptorTest` / `HttpGovernanceScenarioTest` |
-| **弹性指数退避** | 幂等动词指数退避重试 | `HttpRetryInterceptor` | `ateng.boot.http.retry.enabled`<br>`ateng.boot.http.retry.max-attempts`<br>`ateng.boot.http.retry.delay`<br>`ateng.boot.http.retry.multiplier`<br>`ateng.boot.http.retry.max-delay`<br>`ateng.boot.http.retry.jitter`<br>`ateng.boot.http.retry.retry-status-codes`<br>`ateng.boot.http.retry.retry-methods` | 仅针对幂等动词（GET/HEAD）在遭遇网络抖动或 502/503/504 错误码时执行指数退避重试与随机抖动，单次重试前显式释放物理响应流，环绕内聚日志记录 | `HttpRetryInterceptorTest` / `HttpGovernanceScenarioTest` |
-| **因果异常体系** | 统一异常响应转译处理器 | `HttpErrorHandler`<br>`HttpRemoteException`<br>`HttpResultCode` | - | 统一拦截 4xx 与 5xx 状态码并转译为业务受管的 `HttpRemoteException`（继承 `BusinessException`），安全截断响应体，100% 保持原始因果链并映射清晰错误码 | `HttpErrorHandlerTest` / `HttpRemoteExceptionTest` / `HttpTemplateSampleTest` / `DeclarativeClientScenarioTest` |
+| **出站审计日志** | 结构化 cURL 脱敏日志 | `HttpLoggingInterceptor` | `ateng.boot.http.logging.enabled`<br>`ateng.boot.http.logging.level`<br>`ateng.boot.http.logging.max-body-length`<br>`ateng.boot.http.logging.sensitive-headers`<br>`ateng.boot.http.logging.mask-params` | 格式化输出出站请求 cURL 片段与响应耗时，对 Authorization/Cookie/Token 等敏感头及 URL 查询参数（token、secret、password、apiKey 等）自动掩码脱敏，大载荷安全截断防爆内存 | `HttpLoggingInterceptorTest` / `HttpGovernanceScenarioTest` |
+| **弹性指数退避** | 幂等重试与 RFC Retry-After 降频 | `HttpRetryInterceptor` | `ateng.boot.http.retry.enabled`<br>`ateng.boot.http.retry.max-attempts`<br>`ateng.boot.http.retry.delay`<br>`ateng.boot.http.retry.multiplier`<br>`ateng.boot.http.retry.max-delay`<br>`ateng.boot.http.retry.jitter`<br>`ateng.boot.http.retry.retry-status-codes`<br>`ateng.boot.http.retry.retry-methods` | 仅针对幂等动词（GET/HEAD）在遭遇网络抖动或 429/502/503/504 错误码时执行指数退避重试与随机抖动，自适应解析 RFC 7231 / RFC 6585 `Retry-After` 响应头精准覆盖本地退避时延，单次重试前显式释放物理响应流，环绕内聚日志记录 | `HttpRetryInterceptorTest` / `HttpGovernanceScenarioTest` |
+| **因果异常体系** | 统一异常转译与强类型反序列化 | `HttpErrorHandler`<br>`HttpRemoteException`<br>`HttpResultCode` | - | 统一拦截 4xx 与 5xx 状态码并转译为业务受管的 `HttpRemoteException`（继承 `BusinessException`），提供 `getResponseBodyAs(Class<T>)` / `getResponseBodyAs(ParameterizedTypeReference<T>)` 强类型错误载荷反序列化，100% 保持原始因果链并映射清晰错误码 | `HttpErrorHandlerTest` / `HttpRemoteExceptionTest` / `HttpTemplateSampleTest` / `DeclarativeClientScenarioTest` |
+| **官方基线融合** | Spring Boot 官方基线配置器对齐 | `AtengHttpAutoConfiguration`<br>`RestClientBuilderConfigurer` | - | 自动注入并调度 Spring Boot 官方 `RestClientBuilderConfigurer.configure(builder)`，无缝继承容器消息转换器与 Actuator Micrometer `http.client.requests` 度量指标 | `AtengHttpAutoConfigurationTest` |
 | **Apache 扩展 SPI** | HttpClient 5 定制器扩展 | `HttpClient5Customizer` | - | 提供回调接口自定义扩展 `HttpClientBuilder` 与 `PoolingHttpClientConnectionManagerBuilder`（如定制 User-Agent、DNS 解析器、Socket 参数等） | `ClientHttpRequestFactoryBuilderTest` / `HttpTemplateSampleTest` |
 | **Spring 定制 SPI** | RestClient 全局定制器 | `RestClientCustomizer` | - | Spring Boot 官方标准定制扩展，支持下游添加全局请求头、消息转换器与全局拦截器 | `RestClientRegistryTest` / `HttpTemplateSampleTest` |
 
@@ -88,6 +89,14 @@ ateng:
           - Cookie
           - Set-Cookie
           - X-Token
+        mask-params:                    # 强制自动掩码脱敏的 URL 查询参数（默认包含密码、密钥与令牌）
+          - secret
+          - password
+          - token
+          - apiKey
+          - api_key
+          - key
+          - access_token
       retry:
         enabled: true                   # 是否启用弹性指数退避重试（默认：true）
         max-attempts: 3                 # 最大尝试次数（含首次请求，默认：3）
@@ -95,7 +104,7 @@ ateng:
         multiplier: 2.0                 # 退避递增倍数（默认：2.0）
         max-delay: 5s                   # 最大退避时延上限（默认：5s）
         jitter: true                    # 是否引入随机抖动防共振（默认：true）
-        retry-status-codes: [502, 503, 504] # 触发重试的服务端瞬态状态码
+        retry-status-codes: [429, 502, 503, 504] # 触发重试的服务端瞬态状态码（支持 429 降频与 5xx 故障）
         retry-methods: [GET, HEAD]      # 允许重试的幂等 HTTP 动词（坚决杜绝重试 POST/PUT）
       clients:
         user-service:
