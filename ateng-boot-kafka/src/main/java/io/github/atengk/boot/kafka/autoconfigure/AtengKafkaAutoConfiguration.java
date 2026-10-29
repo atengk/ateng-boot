@@ -10,6 +10,7 @@ import io.github.atengk.boot.kafka.listener.AtengDeadLetterPublishingRecoverer;
 import io.github.atengk.boot.kafka.listener.AtengKafkaErrorHandler;
 import io.github.atengk.boot.kafka.properties.AtengKafkaProperties;
 import io.github.atengk.boot.kafka.spi.KafkaTransactionFailureCallback;
+import io.github.atengk.boot.kafka.template.KafkaDeadLetterReplayTemplate;
 import io.github.atengk.boot.kafka.template.KafkaReliableTemplate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeansException;
@@ -99,6 +100,20 @@ public class AtengKafkaAutoConfiguration {
             AtengKafkaProperties properties,
             ObjectProvider<KafkaTransactionFailureCallback> failureCallbackProvider) {
         return new KafkaReliableTemplate(kafkaTemplate, properties, failureCallbackProvider);
+    }
+
+    /**
+     * Kafka 死信受控治理与安全重放门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({ConsumerFactory.class, KafkaTemplate.class})
+    public KafkaDeadLetterReplayTemplate kafkaDeadLetterReplayTemplate(
+            ConsumerFactory<?, ?> kafkaConsumerFactory,
+            KafkaTemplate<?, ?> kafkaTemplate,
+            ObjectProvider<KafkaAdmin> kafkaAdminProvider,
+            AtengKafkaProperties properties) {
+        return new KafkaDeadLetterReplayTemplate(kafkaConsumerFactory, kafkaTemplate, kafkaAdminProvider.getIfAvailable(), properties);
     }
 
     /**

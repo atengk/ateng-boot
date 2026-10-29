@@ -42,6 +42,12 @@ public class AtengKafkaProperties {
     private Consumer consumer = new Consumer();
 
     /**
+     * 死信受控治理增强配置
+     */
+    @NestedConfigurationProperty
+    private DeadLetter deadLetter = new DeadLetter();
+
+    /**
      * 生产端参数配置
      */
     @Data
@@ -103,5 +109,27 @@ public class AtengKafkaProperties {
          * 死信 Topic 后缀（默认 ".DLT"）
          */
         private String dltSuffix = ".DLT";
+    }
+
+    /**
+     * 死信受控治理参数配置
+     */
+    @Data
+    public static class DeadLetter {
+
+        /**
+         * 单批次默认最大重放数量（默认 100）
+         */
+        private int defaultReplayLimit = 100;
+
+        /**
+         * 单条死信消息最大允许重放次数，超出将触发防二次雪崩熔断（默认 1）
+         */
+        private int maxReplayCount = 1;
+
+        /**
+         * 死信重放专属消费组 ID（默认 "ateng-kafka-dlt-replay-group"）
+         */
+        private String replayGroupId = "ateng-kafka-dlt-replay-group";
     }
 }
