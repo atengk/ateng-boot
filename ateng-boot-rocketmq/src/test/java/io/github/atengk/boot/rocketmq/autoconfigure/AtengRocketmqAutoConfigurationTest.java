@@ -7,6 +7,7 @@ import io.github.atengk.boot.rocketmq.container.RocketmqContainerManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
@@ -45,6 +46,7 @@ class AtengRocketmqAutoConfigurationTest {
             assertThat(context).doesNotHaveBean(ClientConfiguration.class);
             assertThat(context).doesNotHaveBean(Producer.class);
             assertThat(context).doesNotHaveBean(RocketmqTemplate.class);
+            assertThat(context).doesNotHaveBean(RocketmqDeadLetterReplayTemplate.class);
 
             AtengRocketmqProperties properties = context.getBean(AtengRocketmqProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -52,6 +54,10 @@ class AtengRocketmqAutoConfigurationTest {
             assertThat(properties.getRequestTimeout().toSeconds()).isEqualTo(3);
             assertThat(properties.getProducer().getMaxPayloadSize().toMegabytes()).isEqualTo(4);
             assertThat(properties.getConsumer().getConsumptionThreadCount()).isEqualTo(20);
+            assertThat(properties.getDeadLetter().getMaxReplayAttempts()).isEqualTo(3);
+            assertThat(properties.getDeadLetter().getDefaultBatchSize()).isEqualTo(32);
+            assertThat(properties.getDeadLetter().getMaxBatchSize()).isEqualTo(100);
+            assertThat(properties.getDeadLetter().getInvisibleDuration().toSeconds()).isEqualTo(30);
         });
     }
 
@@ -107,16 +113,21 @@ class AtengRocketmqAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("存在 Producer Bean 时成功自动装配 RocketmqTemplate")
+    @DisplayName("存在 Producer Bean 时成功自动装配 RocketmqTemplate 与 RocketmqDeadLetterReplayTemplate")
     void testRocketmqTemplateAutoConfigurationWithProducer() {
         contextRunner
                 .withUserConfiguration(MockProducerConfiguration.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(Producer.class);
                     assertThat(context).hasSingleBean(RocketmqTemplate.class);
+                    assertThat(context).hasSingleBean(RocketmqDeadLetterReplayTemplate.class);
 
                     RocketmqTemplate template = context.getBean(RocketmqTemplate.class);
                     assertThat(template.getProducer()).isSameAs(context.getBean(Producer.class));
+
+                    RocketmqDeadLetterReplayTemplate replayTemplate = context.getBean(RocketmqDeadLetterReplayTemplate.class);
+                    assertThat(replayTemplate.getRocketmqTemplate()).isSameAs(template);
+                    assertThat(replayTemplate.getSimpleConsumerTemplate()).isSameAs(context.getBean(RocketmqSimpleConsumerTemplate.class));
                 });
     }
 

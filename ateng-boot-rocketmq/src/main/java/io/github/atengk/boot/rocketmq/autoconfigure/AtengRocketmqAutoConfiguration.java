@@ -10,6 +10,7 @@ import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
+import io.github.atengk.boot.rocketmq.template.RocketmqDeadLetterReplayTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import jakarta.validation.Validator;
@@ -190,5 +191,18 @@ public class AtengRocketmqAutoConfiguration {
     @ConditionalOnMissingBean
     public RocketmqContainerManager rocketmqContainerManager(RocketmqConsumerContainer consumerContainer) {
         return new RocketmqContainerManager(consumerContainer);
+    }
+
+    /**
+     * RocketMQ 死信队列治理与受控重放门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({RocketmqTemplate.class, RocketmqSimpleConsumerTemplate.class})
+    public RocketmqDeadLetterReplayTemplate rocketmqDeadLetterReplayTemplate(
+            RocketmqSimpleConsumerTemplate simpleConsumerTemplate,
+            RocketmqTemplate rocketmqTemplate,
+            AtengRocketmqProperties properties) {
+        return new RocketmqDeadLetterReplayTemplate(simpleConsumerTemplate, rocketmqTemplate, properties);
     }
 }

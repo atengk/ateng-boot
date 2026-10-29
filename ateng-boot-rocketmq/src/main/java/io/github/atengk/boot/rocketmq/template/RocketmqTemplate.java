@@ -211,16 +211,36 @@ public class RocketmqTemplate {
     }
 
     public SendReceipt sendOrderly(String topic, String tag, String bizKey, Object payload, String messageGroup) {
+        return sendOrderly(topic, tag, bizKey, payload, messageGroup, null);
+    }
+
+    public SendReceipt sendOrderly(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            String messageGroup,
+            Map<String, String> userProperties) {
         Assert.hasText(messageGroup, "messageGroup 顺序分组标识不能为空");
         String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, messageGroup, null, null);
+        Message message = buildMessage(topic, tag, finalBizKey, payload, messageGroup, null, userProperties);
         return doSendSync(message, topic, tag, finalBizKey);
     }
 
     public CompletableFuture<SendReceipt> sendOrderlyAsync(String topic, String tag, String bizKey, Object payload, String messageGroup) {
+        return sendOrderlyAsync(topic, tag, bizKey, payload, messageGroup, null);
+    }
+
+    public CompletableFuture<SendReceipt> sendOrderlyAsync(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            String messageGroup,
+            Map<String, String> userProperties) {
         Assert.hasText(messageGroup, "messageGroup 顺序分组标识不能为空");
         String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
-        Message message = buildMessage(topic, tag, finalBizKey, payload, messageGroup, null, null);
+        Message message = buildMessage(topic, tag, finalBizKey, payload, messageGroup, null, userProperties);
         return doSendAsync(message, topic, tag, finalBizKey);
     }
 

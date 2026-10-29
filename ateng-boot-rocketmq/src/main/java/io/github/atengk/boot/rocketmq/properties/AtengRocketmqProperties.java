@@ -65,6 +65,12 @@ public class AtengRocketmqProperties {
     private SimpleConsumer simpleConsumer = new SimpleConsumer();
 
     /**
+     * 死信队列治理与受控重放配置
+     */
+    @NestedConfigurationProperty
+    private DeadLetter deadLetter = new DeadLetter();
+
+    /**
      * 生产端参数配置
      */
     @Data
@@ -143,5 +149,32 @@ public class AtengRocketmqProperties {
          * 长轮询拉取最大挂起等待时间（默认 5s）
          */
         private Duration awaitDuration = Duration.ofSeconds(5);
+    }
+
+    /**
+     * 死信队列治理与受控重放参数配置
+     */
+    @Data
+    public static class DeadLetter {
+
+        /**
+         * 单条死信最大允许重放次数，超过将触发防二次雪崩熔断拦截（默认 3 次）
+         */
+        private int maxReplayAttempts = 3;
+
+        /**
+         * 死信探查与重放默认批量大小（默认 32）
+         */
+        private int defaultBatchSize = 32;
+
+        /**
+         * 死信探查与重放单批次最大容量上限，超出将触发 Fail-Fast（默认 100）
+         */
+        private int maxBatchSize = 100;
+
+        /**
+         * 死信探查与拉取时默认隐身不可见租约时长（默认 30s）
+         */
+        private Duration invisibleDuration = Duration.ofSeconds(30);
     }
 }
