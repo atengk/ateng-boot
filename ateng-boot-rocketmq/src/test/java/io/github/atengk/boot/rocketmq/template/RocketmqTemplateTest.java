@@ -12,6 +12,7 @@ import org.apache.rocketmq.client.apis.ClientException;
 import org.apache.rocketmq.client.apis.message.Message;
 import org.apache.rocketmq.client.apis.message.MessageId;
 import org.apache.rocketmq.client.apis.producer.Producer;
+import org.apache.rocketmq.client.apis.producer.RecallReceipt;
 import org.apache.rocketmq.client.apis.producer.SendReceipt;
 import org.apache.rocketmq.client.apis.producer.Transaction;
 import org.apache.rocketmq.client.apis.producer.TransactionResolution;
@@ -30,8 +31,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -410,5 +413,125 @@ class RocketmqTemplateTest {
                 r -> TransactionResolution.ROLLBACK))
                 .isInstanceOf(MessageDeliveryException.class)
                 .hasMessageContaining("RocketMQ 事务回滚失败");
+    }
+
+    // =========================================================================
+    // 单向发信 (sendOneway) 测试
+    // =========================================================================
+
+    @Test
+    @DisplayName("验证单向发送：极速非阻塞投递成功")
+    void testSendOnewaySuccess() {
+        Map<String, String> payload = Collections.singletonMap("log", "audit_event");
+        rocketmqTemplate.sendOneway("audit_topic", "audit", "BIZ-AUDIT-001", payload);
+
+        verify(producer, times(1)).sendAsync(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("验证单向发送：底层异步发信异常时不向调用方抛错")
+    void testSendOnewayFailureDoesNotThrow() {
+        CompletableFuture<SendReceipt> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("Broker network failure"));
+        when(producer.sendAsync(any(Message.class))).thenReturn(failedFuture);
+
+        Map<String, String> payload = Collections.singletonMap("log", "audit_event");
+        rocketmqTemplate.sendOneway("audit_topic", "audit", "BIZ-AUDIT-002", payload);
+
+        verify(producer, times(1)).sendAsync(any(Message.class));
+    }
+
+    // =========================================================================
+    // 批量发送 (sendBatch / sendBatchAsync) 测试
+    // =========================================================================
+
+    @Test
+    @DisplayName("验证批量发送：正常并发分发并汇聚回执列表")
+    void testSendBatchSuccess() {
+        List<Map<String, Object>> payloads = List.of(
+                Collections.singletonMap("id", 1),
+                Collections.singletonMap("id", 2),
+                Collections.singletonMap("id", 3)
+        );
+
+        List<SendReceipt> receipts = rocketmqTemplate.sendBatch("batch_order_topic", "batch", payloads);
+
+        assertThat(receipts).hasSize(3);
+        verify(producer, times(3)).sendAsync(any(Message.class));
+    }
+
+    @Test
+    @DisplayName("验证批量发送：空列表抛出 IllegalArgumentException")
+    void testSendBatchEmptyPayloadsThrowsException() {
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("payloads 不能为空且不可为空集合");
+    }
+
+    @Test
+    @DisplayName("验证批量发送：超出 maxBatchSize 上限触发 Fail-Fast")
+    void testSendBatchExceedsMaxBatchSizeThrowsException() {
+        List<String> largeBatch = new ArrayList<>(501);
+        for (int i = 0; i < 501; i++) {
+            largeBatch.add("item-" + i);
+        }
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_order_topic", largeBatch))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出配置上限 [500]");
+    }
+
+    @Test
+    @DisplayName("验证批量发送：异步批量返回 CompletableFuture")
+    void testSendBatchAsyncSuccess() throws Exception {
+        List<String> payloads = List.of("msg1", "msg2");
+        CompletableFuture<List<SendReceipt>> future = rocketmqTemplate.sendBatchAsync("batch_order_topic", payloads);
+
+        List<SendReceipt> receipts = future.get();
+        assertThat(receipts).hasSize(2);
+    }
+
+    // =========================================================================
+    // 定时消息撤回 (recallMessage / recallMessageAsync) 测试
+    // =========================================================================
+
+    @Test
+    @DisplayName("验证定时消息撤回：成功返回 RecallReceipt")
+    void testRecallMessageSuccess() {
+        RecallReceipt mockRecallReceipt = mock(RecallReceipt.class);
+        when(mockRecallReceipt.getMessageId()).thenReturn(mockMessageId);
+        when(producer.recallMessageAsync("order_delay_topic", "HANDLE-DELAY-001"))
+                .thenReturn(CompletableFuture.completedFuture(mockRecallReceipt));
+
+        RecallReceipt receipt = rocketmqTemplate.recallMessage("order_delay_topic", "HANDLE-DELAY-001");
+
+        assertThat(receipt).isSameAs(mockRecallReceipt);
+        verify(producer).recallMessageAsync("order_delay_topic", "HANDLE-DELAY-001");
+    }
+
+    @Test
+    @DisplayName("验证定时消息撤回：空 topic 或 recallHandle 拦截")
+    void testRecallMessageValidation() {
+        assertThatThrownBy(() -> rocketmqTemplate.recallMessage("", "HANDLE-001"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("topic 不能为空");
+
+        assertThatThrownBy(() -> rocketmqTemplate.recallMessage("order_topic", ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recallHandle 不能为空");
+    }
+
+    @Test
+    @DisplayName("验证定时消息撤回：底层失败转译为 MessageDeliveryException")
+    void testRecallMessageFailureThrowsException() {
+        CompletableFuture<RecallReceipt> failedFuture = new CompletableFuture<>();
+        failedFuture.completeExceptionally(new RuntimeException("Message already delivered"));
+        when(producer.recallMessageAsync("order_delay_topic", "HANDLE-EXPIRED"))
+                .thenReturn(failedFuture);
+
+        assertThatThrownBy(() -> rocketmqTemplate.recallMessage("order_delay_topic", "HANDLE-EXPIRED"))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("RocketMQ 撤回定时消息失败")
+                .hasRootCauseInstanceOf(RuntimeException.class);
     }
 }

@@ -75,6 +75,11 @@ public class AtengRocketmqProperties {
         private int maxAttempts = 3;
 
         /**
+         * 批量发信单批次最大容量上限，超出将触发 Fail-Fast（默认 500 条）
+         */
+        private int maxBatchSize = 500;
+
+        /**
          * 单条消息最大载荷容量限制，超出将触发 Fail-Fast（默认 4MB）
          */
         private DataSize maxPayloadSize = DataSize.ofMegabytes(4);

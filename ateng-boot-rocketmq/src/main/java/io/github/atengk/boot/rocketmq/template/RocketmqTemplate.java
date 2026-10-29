@@ -14,6 +14,7 @@ import org.apache.rocketmq.client.apis.ClientServiceProvider;
 import org.apache.rocketmq.client.apis.message.Message;
 import org.apache.rocketmq.client.apis.message.MessageBuilder;
 import org.apache.rocketmq.client.apis.producer.Producer;
+import org.apache.rocketmq.client.apis.producer.RecallReceipt;
 import org.apache.rocketmq.client.apis.producer.SendReceipt;
 import org.apache.rocketmq.client.apis.producer.Transaction;
 import org.apache.rocketmq.client.apis.producer.TransactionResolution;
@@ -27,11 +28,14 @@ import org.springframework.util.StringUtils;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RocketMQ 5.x 生产端高阶增强门面
@@ -394,6 +398,195 @@ public class RocketmqTemplate {
         }
 
         return receipt;
+    }
+
+    // =========================================================================
+    // 7. 单向极速发送 (sendOneway)
+    // =========================================================================
+
+    public void sendOneway(String topic, Object payload) {
+        sendOneway(topic, null, null, payload, null);
+    }
+
+    public void sendOneway(String topic, String tag, Object payload) {
+        sendOneway(topic, tag, null, payload, null);
+    }
+
+    public void sendOneway(String topic, String tag, String bizKey, Object payload) {
+        sendOneway(topic, tag, bizKey, payload, null);
+    }
+
+    public void sendOneway(
+            String topic,
+            String tag,
+            String bizKey,
+            Object payload,
+            Map<String, String> userProperties) {
+        String finalBizKey = RocketmqMessageHelper.resolveBizKey(bizKey, payload);
+        Message message = buildMessage(topic, tag, finalBizKey, payload, null, null, userProperties);
+        long startTime = System.currentTimeMillis();
+        String traceId = MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY);
+        int bodySize = message.getBody().remaining();
+
+        producer.sendAsync(message)
+                .whenComplete((receipt, ex) -> {
+                    long cost = System.currentTimeMillis() - startTime;
+                    if (ex != null) {
+                        Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+                        log.warn("[MQ-ONEWAY-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
+                                topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
+                                bodySize, cost, cause.getMessage());
+                    } else {
+                        log.debug("[MQ-ONEWAY-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=SUCCESS cost={}ms messageId={}",
+                                topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
+                                bodySize, cost, receipt.getMessageId());
+                    }
+                });
+    }
+
+    // =========================================================================
+    // 8. 批量可靠发送 (sendBatch / sendBatchAsync)
+    // =========================================================================
+
+    public List<SendReceipt> sendBatch(String topic, List<?> payloads) {
+        return sendBatch(topic, null, payloads, properties.getProducer().getSendTimeout());
+    }
+
+    public List<SendReceipt> sendBatch(String topic, String tag, List<?> payloads) {
+        return sendBatch(topic, tag, payloads, properties.getProducer().getSendTimeout());
+    }
+
+    public List<SendReceipt> sendBatch(String topic, String tag, List<?> payloads, Duration timeout) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.notEmpty(payloads, "payloads 不能为空且不可为空集合");
+        int maxBatchSize = properties.getProducer().getMaxBatchSize();
+        Assert.isTrue(payloads.size() <= maxBatchSize,
+                String.format("批量发送消息数量 [%d] 超出配置上限 [%d]", payloads.size(), maxBatchSize));
+        Duration effectiveTimeout = (timeout != null && !timeout.isZero() && !timeout.isNegative())
+                ? timeout : properties.getProducer().getSendTimeout();
+
+        try {
+            return sendBatchAsync(topic, tag, payloads).get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    null,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    String.format("RocketMQ 批量发送等待超时 (%s): topic=%s, batchSize=%d", effectiveTimeout, topic, payloads.size()),
+                    ex);
+        } catch (Exception ex) {
+            Throwable cause = (ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null) ? ex.getCause() : ex;
+            if (cause instanceof MessageDeliveryException mde) {
+                throw mde;
+            }
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    null,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "RocketMQ 批量发送失败: " + cause.getMessage(),
+                    cause);
+        }
+    }
+
+    public CompletableFuture<List<SendReceipt>> sendBatchAsync(String topic, List<?> payloads) {
+        return sendBatchAsync(topic, null, payloads);
+    }
+
+    public CompletableFuture<List<SendReceipt>> sendBatchAsync(String topic, String tag, List<?> payloads) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.notEmpty(payloads, "payloads 不能为空且不可为空集合");
+        int maxBatchSize = properties.getProducer().getMaxBatchSize();
+        Assert.isTrue(payloads.size() <= maxBatchSize,
+                String.format("批量发送消息数量 [%d] 超出配置上限 [%d]", payloads.size(), maxBatchSize));
+
+        long startTime = System.currentTimeMillis();
+        List<CompletableFuture<SendReceipt>> futures = new ArrayList<>(payloads.size());
+        for (Object payload : payloads) {
+            futures.add(sendAsync(topic, tag, null, payload, null));
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    List<SendReceipt> receipts = new ArrayList<>(futures.size());
+                    for (CompletableFuture<SendReceipt> future : futures) {
+                        receipts.add(future.join());
+                    }
+                    long cost = System.currentTimeMillis() - startTime;
+                    log.info("[MQ-BATCH-SEND] mq=rocketmq topic={} tag={} count={} status=SUCCESS cost={}ms",
+                            topic, tag != null ? tag : "", payloads.size(), cost);
+                    return receipts;
+                });
+    }
+
+    // =========================================================================
+    // 9. 定时消息精准撤回 (recallMessage / recallMessageAsync)
+    // =========================================================================
+
+    public RecallReceipt recallMessage(String topic, String recallHandle) {
+        return recallMessage(topic, recallHandle, properties.getProducer().getSendTimeout());
+    }
+
+    public RecallReceipt recallMessage(String topic, String recallHandle, Duration timeout) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.hasText(recallHandle, "recallHandle 不能为空");
+        Duration effectiveTimeout = (timeout != null && !timeout.isZero() && !timeout.isNegative())
+                ? timeout : properties.getProducer().getSendTimeout();
+
+        try {
+            return recallMessageAsync(topic, recallHandle).get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    recallHandle,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    String.format("RocketMQ 撤回消息等待超时 (%s): topic=%s, recallHandle=%s", effectiveTimeout, topic, recallHandle),
+                    ex);
+        } catch (Exception ex) {
+            Throwable cause = (ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null) ? ex.getCause() : ex;
+            if (cause instanceof MessageDeliveryException mde) {
+                throw mde;
+            }
+            throw new MessageDeliveryException(
+                    RocketmqConstants.MQ_TYPE,
+                    topic,
+                    recallHandle,
+                    CommonResultCode.INTERNAL_SERVER_ERROR,
+                    "RocketMQ 撤回定时消息失败: " + cause.getMessage(),
+                    cause);
+        }
+    }
+
+    public CompletableFuture<RecallReceipt> recallMessageAsync(String topic, String recallHandle) {
+        Assert.hasText(topic, "topic 不能为空");
+        Assert.hasText(recallHandle, "recallHandle 不能为空");
+
+        long startTime = System.currentTimeMillis();
+        CompletableFuture<RecallReceipt> resultFuture = new CompletableFuture<>();
+        producer.recallMessageAsync(topic.trim(), recallHandle.trim())
+                .whenComplete((receipt, ex) -> {
+                    long cost = System.currentTimeMillis() - startTime;
+                    if (ex != null) {
+                        Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
+                        log.warn("[MQ-RECALL] mq=rocketmq topic={} recallHandle={} status=FAILED cost={}ms error={}",
+                                topic, recallHandle, cost, cause.getMessage());
+                        MessageDeliveryException deliveryException = new MessageDeliveryException(
+                                RocketmqConstants.MQ_TYPE,
+                                topic,
+                                recallHandle,
+                                CommonResultCode.INTERNAL_SERVER_ERROR,
+                                "RocketMQ 撤回定时消息失败: " + cause.getMessage(),
+                                cause);
+                        resultFuture.completeExceptionally(deliveryException);
+                    } else {
+                        log.info("[MQ-RECALL] mq=rocketmq topic={} recallHandle={} status=SUCCESS cost={}ms messageId={}",
+                                topic, recallHandle, cost, receipt.getMessageId());
+                        resultFuture.complete(receipt);
+                    }
+                });
+        return resultFuture;
     }
 
     // =========================================================================

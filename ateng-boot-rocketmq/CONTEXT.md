@@ -1,12 +1,24 @@
 # RocketMQ Context
 
-`ateng-boot-rocketmq` 负责提供基于 RocketMQ 5.x 官方新一代 gRPC 瘦客户端的生产增强与原生分布式事务底座，支持受管高阶门面 RocketmqTemplate、延时调度与 FIFO 保序投递、原生 2PC 分布式事务半消息与统一回查分发架构 RocketmqTransactionChecker、本地事务提交感知发信（sendAfterCommit + 补偿 SPI）、声明式 @RocketmqListener 事件驱动容器、微服务推断反序列化解耦、大报文 4MB 前置防御与 4KB 透明 GZIP 压缩、消费端毒丸丢弃与 @Idempotent 幂等静默确认、SmartLifecycle 确定性停机排空与 100% 离线自洽 TestDouble 测试沙箱。
+`ateng-boot-rocketmq` 负责提供基于 RocketMQ 5.x 官方新一代 gRPC 瘦客户端的生产增强与原生分布式事务底座，支持受管高阶门面 RocketmqTemplate、单向极速投递与批量可靠发信、延时调度与定时消息精准撤回、FIFO 保序投递、原生 2PC 分布式事务半消息与统一回查分发架构 RocketmqTransactionChecker、本地事务提交感知发信（sendAfterCommit + 补偿 SPI）、声明式 @RocketmqListener 事件驱动容器、SimpleConsumer 租约拉取与流式处理门面 RocketmqSimpleConsumerTemplate、运行期容器动态运维 RocketmqContainerManager、死信队列治理与受控重放 RocketmqDeadLetterReplayTemplate、微服务推断反序列化解耦、大报文 4MB 前置防御与 4KB 透明 GZIP 压缩、消费端毒丸丢弃与 @Idempotent 幂等静默确认、SmartLifecycle 确定性停机排空与 100% 离线自洽 TestDouble 测试沙箱。
 
 ## Language
 
 **RocketmqTemplate**:
-RocketMQ 5.x 生产端高阶增强门面，提供同步发送 `send`、异步非阻塞发送 `sendAsync`、毫秒级延时发送 `sendDelayed` 与 `sendDeliverAt`、FIFO 顺序发送 `sendOrderly`、原生 2PC 事务半消息 `sendTransaction`、本地事务提交感知发信 `sendAfterCommit`，内置四维上下文自动注入、原生 `keys` 与 `X-Biz-Key` 双写、4MB 大报文 Fail-Fast 拦截与 4KB 透明 GZIP 压缩，底层原生 `Producer` 作为可选 Bean 暴露。
+RocketMQ 5.x 生产端高阶增强门面，提供同步发送 `send`、异步非阻塞发送 `sendAsync`、单向极速投递 `sendOneway`、批量并发发送 `sendBatch` / `sendBatchAsync`、毫秒级延时发送 `sendDelayed` 与 `sendDeliverAt`、定时消息精准撤回 `recallMessage` / `recallMessageAsync`、FIFO 顺序发送 `sendOrderly`、原生 2PC 事务半消息 `sendTransaction`、本地事务提交感知发信 `sendAfterCommit`，内置四维上下文自动注入、原生 `keys` 与 `X-Biz-Key` 双写、4MB 大报文 Fail-Fast 拦截与 4KB 透明 GZIP 压缩，底层原生 `Producer` 作为可选 Bean 暴露。
 _Avoid_: RocketmqSender, RocketmqProducer, RocketmqHelper, SimpleRocketmqTemplate
+
+**RocketmqSimpleConsumerTemplate**:
+RocketMQ 5.x 消费端流式拉取与租约控制高阶门面，基于官方 `SimpleConsumer` 提供按需批量拉取 `receive`、主动确认 `ack`、不可见租约动态续期 `changeInvisibleDuration` 与函数式闭包 `receiveAndExecute`，内聚推断反序列化、四维上下文还原与消息租约心跳守护。
+_Avoid_: RocketmqPullConsumer, SimpleConsumerHelper, RocketmqPopTemplate
+
+**RocketmqContainerManager**:
+RocketMQ 5.x 运行期消费容器动态运维与生命周期管理门面，管理由 `@RocketmqListener` 注册的所有活动端点，提供端点查询 `getEndpoints`、动态暂停消费 `pause`、恢复消费 `resume`、动态销毁 `stop` 与重启 `start`，支撑平滑发布与高并发故障熔断。
+_Avoid_: ContainerManager, RocketmqEndpointRegistry, MqConsumerManager
+
+**RocketmqDeadLetterReplayTemplate**:
+RocketMQ 5.x 死信队列 (DLQ) 治理与受控重放门面，支持从死信主题 `%DLQ%<ConsumerGroup>` 巡检死信 `peekDeadLetters` 与受控重放 `replayDeadLetters`，内聚内部重试属性清洗、重放深度防二次雪崩与投递成功原死信确认。
+_Avoid_: DlqManager, RocketmqDeadLetterService, DeadLetterCleaner
 
 **RocketmqTransactionChecker**:
 RocketMQ 5.x 全局统一事务回查分发器，作为原生 `Producer` 的全局唯一 Checker，扫描并管理所有实现了 `RocketmqLocalTransactionChecker` SPI 的 Bean，当 Broker 触发状态回查时，依据消息 Topic 策略路由分发至对应的业务检查器，彻底解耦微服务多业务事务回查。
@@ -29,5 +41,5 @@ RocketMQ 增强底座强类型配置属性类，纳管于 `ateng.boot.rocketmq.*
 _Avoid_: RocketmqConfig, RocketmqSettings, AtengRocketmqConfig
 
 **AtengRocketmqAutoConfiguration**:
-RocketMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，配置缺失 `endpoints` 时平滑静默跳过，装配 `RocketmqTemplate`、原生 `Producer`、全局事务回查分发器与 `@RocketmqListener` 容器注册器。
+RocketMQ 增强底座自动装配核心类，统一注册于 Spring Boot 3 标准 `AutoConfiguration.imports`，配置缺失 `endpoints` 时平滑静默跳过，装配 `RocketmqTemplate`、原生 `Producer`、全局事务回查分发器、`RocketmqSimpleConsumerTemplate`、`RocketmqContainerManager`、`RocketmqDeadLetterReplayTemplate` 与 `@RocketmqListener` 容器注册器。
 _Avoid_: RocketmqConfiguration, RocketmqConfigRegistry, RocketmqStarterAutoConfiguration

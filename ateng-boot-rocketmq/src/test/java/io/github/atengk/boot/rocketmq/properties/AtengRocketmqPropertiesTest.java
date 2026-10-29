@@ -36,6 +36,7 @@ class AtengRocketmqPropertiesTest {
         // 生产端默认值
         assertThat(properties.getProducer().getSendTimeout()).isEqualTo(Duration.ofSeconds(3));
         assertThat(properties.getProducer().getMaxAttempts()).isEqualTo(3);
+        assertThat(properties.getProducer().getMaxBatchSize()).isEqualTo(500);
         assertThat(properties.getProducer().getMaxPayloadSize()).isEqualTo(DataSize.ofMegabytes(4));
         assertThat(properties.getProducer().getCompressionThreshold()).isEqualTo(DataSize.ofKilobytes(4));
         assertThat(properties.getProducer().getTopics()).isEmpty();
@@ -57,6 +58,7 @@ class AtengRocketmqPropertiesTest {
         map.put("ateng.boot.rocketmq.request-timeout", "5s");
         map.put("ateng.boot.rocketmq.producer.send-timeout", "6s");
         map.put("ateng.boot.rocketmq.producer.max-attempts", "5");
+        map.put("ateng.boot.rocketmq.producer.max-batch-size", "200");
         map.put("ateng.boot.rocketmq.producer.max-payload-size", "8MB");
         map.put("ateng.boot.rocketmq.producer.compression-threshold", "2KB");
         map.put("ateng.boot.rocketmq.producer.topics[0]", "order-topic");
@@ -75,6 +77,7 @@ class AtengRocketmqPropertiesTest {
         assertThat(properties.getRequestTimeout()).isEqualTo(Duration.ofSeconds(5));
         assertThat(properties.getProducer().getSendTimeout()).isEqualTo(Duration.ofSeconds(6));
         assertThat(properties.getProducer().getMaxAttempts()).isEqualTo(5);
+        assertThat(properties.getProducer().getMaxBatchSize()).isEqualTo(200);
         assertThat(properties.getProducer().getMaxPayloadSize()).isEqualTo(DataSize.ofMegabytes(8));
         assertThat(properties.getProducer().getCompressionThreshold()).isEqualTo(DataSize.ofKilobytes(2));
         assertThat(properties.getProducer().getTopics()).containsExactly("order-topic");
