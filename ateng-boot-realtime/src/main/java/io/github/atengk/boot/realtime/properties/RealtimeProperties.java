@@ -307,6 +307,11 @@ public class RealtimeProperties {
          * 离线消息保留时间（默认: 7d）
          */
         private Duration ttl = Duration.ofDays(7);
+
+        /**
+         * 离线消息 Redis ZSet 键前缀（默认: ateng:realtime:offline:）
+         */
+        private String keyPrefix = "ateng:realtime:offline:";
     }
 
     /**

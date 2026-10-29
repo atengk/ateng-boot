@@ -142,6 +142,8 @@ class AtengRealtimeAutoConfigurationTest {
             when(client.<String, String>getMap(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(map);
             org.redisson.api.RSet<String> set = mock(org.redisson.api.RSet.class);
             when(client.<String>getSet(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(set);
+            org.redisson.api.RScoredSortedSet<String> scoredSet = mock(org.redisson.api.RScoredSortedSet.class);
+            when(client.<String>getScoredSortedSet(anyString(), any(org.redisson.client.codec.Codec.class))).thenReturn(scoredSet);
             return client;
         }
     }

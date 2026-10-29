@@ -82,6 +82,33 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
     }
 
     @Override
+    public List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, long fromTimestamp) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        Deque<RealtimeMessage<?>> deque = messageMap.get(String.valueOf(userId));
+        if (deque == null || deque.isEmpty()) {
+            return Collections.emptyList();
+        }
+        long now = System.currentTimeMillis();
+        long ttlMillis = ttl.toMillis();
+        List<RealtimeMessage<?>> result = new ArrayList<>(deque.size());
+        synchronized (deque) {
+            for (RealtimeMessage<?> msg : deque) {
+                if (msg.getTimestamp() != null) {
+                    if (ttlMillis > 0 && (now - msg.getTimestamp() > ttlMillis)) {
+                        continue;
+                    }
+                    if (msg.getTimestamp() > fromTimestamp) {
+                        result.add(msg);
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    @Override
     public List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
         if (userId == null) {
             return Collections.emptyList();

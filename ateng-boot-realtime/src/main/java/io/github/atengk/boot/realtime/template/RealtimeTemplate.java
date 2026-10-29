@@ -786,6 +786,34 @@ public class RealtimeTemplate {
     }
 
     /**
+     * 根据起始时间戳（不含）只读获取指定用户的增量离线消息（支持 W3C SSE Last-Event-ID 断点重放与 CQS 幂等读取）
+     *
+     * @param userId        目标用户标识
+     * @param fromTimestamp 起始时间戳（毫秒）
+     * @return 增量离线消息列表
+     */
+    public List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, long fromTimestamp) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.getOfflineMessagesSince(userId, fromTimestamp);
+    }
+
+    /**
+     * 根据客户端上报的 Last-Event-ID 只读获取指定用户的增量离线消息（支持 W3C SSE 断点重放与 CQS 幂等读取）
+     *
+     * @param userId      目标用户标识
+     * @param lastEventId 客户端上报的最后事件标识
+     * @return 增量离线消息列表
+     */
+    public List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, String lastEventId) {
+        if (userId == null) {
+            return Collections.emptyList();
+        }
+        return offlineMessageProvider.getOfflineMessagesSince(userId, lastEventId);
+    }
+
+    /**
      * 清空指定用户的离线暂存消息
      *
      * @param userId 用户标识

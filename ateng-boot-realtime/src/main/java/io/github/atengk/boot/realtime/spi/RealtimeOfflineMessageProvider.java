@@ -44,6 +44,48 @@ public interface RealtimeOfflineMessageProvider {
     }
 
     /**
+     * 根据起始时间戳（不含）只读获取指定用户的增量离线消息（支持 W3C SSE Last-Event-ID 断点重放与 CQS 幂等读取）
+     *
+     * @param userId        目标用户唯一标识
+     * @param fromTimestamp 起始时间戳（毫秒，仅获取严格大于该时间戳的消息）
+     * @return 增量离线消息列表（保底返回空列表，绝不返回 null）
+     */
+    default List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, long fromTimestamp) {
+        return java.util.Collections.emptyList();
+    }
+
+    /**
+     * 根据客户端上报的 Last-Event-ID 只读获取指定用户的增量离线消息（支持 W3C SSE 断点重放与 CQS 幂等读取）
+     * <p>
+     * 优先将 lastEventId 尝试解析为毫秒级纪元时间戳；若非纯数字则遍历检索匹配该 ID 的基准消息并提取其时间戳作为游标。
+     * </p>
+     *
+     * @param userId      目标用户唯一标识
+     * @param lastEventId 客户端上报的最后事件标识（支持时间戳或消息 UUID）
+     * @return 增量离线消息列表（保底返回空列表，绝不返回 null）
+     */
+    default List<RealtimeMessage<?>> getOfflineMessagesSince(Object userId, String lastEventId) {
+        if (lastEventId == null || lastEventId.isBlank()) {
+            return getOfflineMessages(userId);
+        }
+        String trimmedId = lastEventId.trim();
+        List<RealtimeMessage<?>> all = getOfflineMessages(userId);
+        if (all != null && !all.isEmpty()) {
+            for (RealtimeMessage<?> msg : all) {
+                if (trimmedId.equals(msg.getId()) && msg.getTimestamp() != null) {
+                    return getOfflineMessagesSince(userId, msg.getTimestamp());
+                }
+            }
+        }
+        try {
+            long timestamp = Long.parseLong(trimmedId);
+            return getOfflineMessagesSince(userId, timestamp);
+        } catch (NumberFormatException ignored) {
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
      * 清空目标用户的离线暂存消息
      *
      * @param userId 目标用户唯一标识

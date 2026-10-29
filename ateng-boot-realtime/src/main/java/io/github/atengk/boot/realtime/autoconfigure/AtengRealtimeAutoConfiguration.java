@@ -110,18 +110,6 @@ public class AtengRealtimeAutoConfiguration {
     }
 
     /**
-     * 注册离线消息持久化提供者（当配置开启时默认提供内存防 OOM 提供者，否则 No-Op 保底）
-     */
-    @Bean
-    @ConditionalOnMissingBean(RealtimeOfflineMessageProvider.class)
-    public RealtimeOfflineMessageProvider realtimeOfflineMessageProvider(RealtimeProperties properties) {
-        if (properties.getOffline().isEnabled()) {
-            return new InMemoryRealtimeOfflineMessageProvider(properties);
-        }
-        return new NoOpRealtimeOfflineMessageProvider();
-    }
-
-    /**
      * 注册统一实时通信门面
      */
     @Bean
@@ -218,6 +206,21 @@ public class AtengRealtimeAutoConfiguration {
             }
             return new io.github.atengk.boot.realtime.group.RedissonRealtimeGroupManager(redissonClient, properties);
         }
+
+        @Bean
+        @ConditionalOnBean(RedissonClient.class)
+        @ConditionalOnMissingBean(RealtimeOfflineMessageProvider.class)
+        public RealtimeOfflineMessageProvider redissonRealtimeOfflineMessageProvider(
+                RedissonClient redissonClient,
+                RealtimeProperties properties) {
+            if (!properties.getOffline().isEnabled()) {
+                return new NoOpRealtimeOfflineMessageProvider();
+            }
+            if (properties.getClusterMode() == ClusterMode.STANDALONE) {
+                return new InMemoryRealtimeOfflineMessageProvider(properties);
+            }
+            return new io.github.atengk.boot.realtime.spi.RedissonRealtimeOfflineMessageProvider(redissonClient, properties);
+        }
     }
 
     /**
@@ -245,6 +248,18 @@ public class AtengRealtimeAutoConfiguration {
     @ConditionalOnMissingBean(RealtimeGroupManager.class)
     public RealtimeGroupManager standaloneRealtimeGroupManager() {
         return new RealtimeGroupManager();
+    }
+
+    /**
+     * 注册单机保底离线消息提供者（当无 Redisson 或未配置集群时生效）
+     */
+    @Bean
+    @ConditionalOnMissingBean(RealtimeOfflineMessageProvider.class)
+    public RealtimeOfflineMessageProvider standaloneRealtimeOfflineMessageProvider(RealtimeProperties properties) {
+        if (properties.getOffline().isEnabled()) {
+            return new InMemoryRealtimeOfflineMessageProvider(properties);
+        }
+        return new NoOpRealtimeOfflineMessageProvider();
     }
 
     /**
@@ -329,8 +344,9 @@ public class AtengRealtimeAutoConfiguration {
         public AtengSseController atengSseController(RealtimeProperties properties,
                                                      RealtimeSessionManager sessionManager,
                                                      ObjectProvider<RealtimeAuthHandshakeProvider> authProvider,
-                                                     ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider) {
-            return new AtengSseController(properties, sessionManager, authProvider, shutdownHandlerProvider);
+                                                     ObjectProvider<RealtimeGracefulShutdownHandler> shutdownHandlerProvider,
+                                                     ObjectProvider<RealtimeOfflineMessageProvider> offlineMessageProvider) {
+            return new AtengSseController(properties, sessionManager, authProvider, shutdownHandlerProvider, offlineMessageProvider);
         }
     }
 }
