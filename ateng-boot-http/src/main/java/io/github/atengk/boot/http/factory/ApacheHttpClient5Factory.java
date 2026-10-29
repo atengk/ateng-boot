@@ -7,6 +7,7 @@ import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpSslProperties;
+import io.github.atengk.boot.http.util.HttpSslUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hc.client5.http.auth.AuthScope;
 import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
@@ -171,11 +172,7 @@ public final class ApacheHttpClient5Factory {
                 Duration perRequestReadTimeout = HttpRequestContextHolder.getReadTimeout();
                 Duration perRequestConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
                 if (perRequestReadTimeout != null || perRequestConnectTimeout != null) {
-                    try {
-                        RequestOptionsApplier.applyTimeout(request, perRequestReadTimeout, perRequestConnectTimeout);
-                    } finally {
-                        HttpRequestContextHolder.clear();
-                    }
+                    RequestOptionsApplier.applyTimeout(request, perRequestReadTimeout, perRequestConnectTimeout);
                 }
                 return request;
             }
@@ -190,19 +187,8 @@ public final class ApacheHttpClient5Factory {
      * @throws Exception 证书加载或解析异常
      */
     private static void loadKeyMaterial(SSLContextBuilder sslContextBuilder, HttpSslProperties ssl) throws Exception {
-        String keyStorePath = ssl.getKeyStore();
-        Assert.hasText(keyStorePath, "keyStore 路径不能为空");
-        Resource resource = new DefaultResourceLoader().getResource(keyStorePath);
-        if (!resource.exists()) {
-            throw new IllegalArgumentException("未找到 mTLS 客户端证书文件: " + keyStorePath);
-        }
-        String type = StringUtils.hasText(ssl.getKeyStoreType()) ? ssl.getKeyStoreType() : "PKCS12";
-        KeyStore keyStore = KeyStore.getInstance(type);
+        KeyStore keyStore = HttpSslUtil.loadKeyStore(ssl);
         char[] password = StringUtils.hasText(ssl.getKeyStorePassword()) ? ssl.getKeyStorePassword().toCharArray() : new char[0];
-        try (InputStream in = resource.getInputStream()) {
-            keyStore.load(in, password);
-        }
         sslContextBuilder.loadKeyMaterial(keyStore, password);
-        log.info("成功加载 mTLS 客户端私钥证书: [{}] (type: {})", keyStorePath, type);
     }
 }

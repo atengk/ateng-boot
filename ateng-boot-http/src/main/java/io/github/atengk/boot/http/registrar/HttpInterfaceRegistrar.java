@@ -175,6 +175,8 @@ public class HttpInterfaceRegistrar implements ImportBeanDefinitionRegistrar, En
         String url = annotation.getString("url");
         Class<?> fallback = annotation.getClass("fallback");
 
+        boolean primary = annotation.getBoolean("primary");
+
         String beanClassName = candidateInterface.getName();
         String beanName = generateBeanName(registry, candidateInterface);
 
@@ -195,7 +197,7 @@ public class HttpInterfaceRegistrar implements ImportBeanDefinitionRegistrar, En
 
         AbstractBeanDefinition beanDefinition = builder.getBeanDefinition();
         beanDefinition.setAttribute(FactoryBean.OBJECT_TYPE_ATTRIBUTE, candidateInterface);
-        beanDefinition.setPrimary(true);
+        beanDefinition.setPrimary(primary);
 
         BeanDefinitionHolder holder = new BeanDefinitionHolder(beanDefinition, beanName);
         BeanDefinitionReaderUtils.registerBeanDefinition(holder, registry);

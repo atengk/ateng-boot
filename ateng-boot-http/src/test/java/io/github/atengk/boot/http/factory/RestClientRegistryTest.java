@@ -426,6 +426,40 @@ class RestClientRegistryTest {
         assertThrows(IllegalArgumentException.class, () -> registry.getClient("bad-cert-client"));
     }
 
+    @Test
+    @DisplayName("测试客户端专属 proxy/ssl 初始化独立工厂时正常回调 HttpClient5Customizer")
+    void testClientScopedPhysicalFactoryInvokesCustomizer() {
+        HttpProperties properties = new HttpProperties();
+        HttpClientItemProperties item = new HttpClientItemProperties();
+        HttpProxyProperties proxy = new HttpProxyProperties();
+        proxy.setHost("127.0.0.1");
+        proxy.setPort(8888);
+        item.setProxy(proxy);
+        properties.getClients().put("custom-proxy-client", item);
+
+        java.util.concurrent.atomic.AtomicBoolean customizerInvoked = new java.util.concurrent.atomic.AtomicBoolean(false);
+        io.github.atengk.boot.http.customizer.HttpClient5Customizer customizer = (clientBuilder, connManagerBuilder) -> {
+            customizerInvoked.set(true);
+        };
+
+        MockEnvironment env = new MockEnvironment();
+        ClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        RestClient.Builder builder = RestClient.builder().requestFactory(factory);
+        RestClientRegistry registry = new RestClientRegistry(
+                builder,
+                factory,
+                properties,
+                new HttpErrorHandler(),
+                env,
+                null,
+                List.of(customizer)
+        );
+
+        RestClient client = registry.getClient("custom-proxy-client");
+        assertNotNull(client);
+        assertTrue(customizerInvoked.get(), "专属客户端物理工厂创建时应正确触发 HttpClient5Customizer 回调");
+    }
+
     @Configuration
     @EnableHttpInterfaces(clients = IntegrationServiceClient.class)
     static class IntegrationTestConfig {

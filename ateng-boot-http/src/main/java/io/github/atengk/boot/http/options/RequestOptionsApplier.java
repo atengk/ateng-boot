@@ -116,8 +116,8 @@ public final class RequestOptionsApplier {
                 return;
             }
 
-            // 尝试 JDK 17 原生 Client 适配（JDK 17 原生 Client 单次请求仅支持设置读取超时）
-            if (tryApplyJdkClient(current, readTimeout)) {
+            // 尝试 JDK 17 原生 Client 适配（JDK 17 原生 Client 单次请求仅支持设置读取超时，若未指定读取超时则以建联超时保底）
+            if (tryApplyJdkClient(current, readTimeout != null ? readTimeout : connectTimeout)) {
                 return;
             }
 

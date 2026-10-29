@@ -58,4 +58,13 @@ public @interface HttpClient {
      */
     Class<?> fallback() default void.class;
 
+    /**
+     * 是否将当前声明式客户端代理 Bean 注册为 Primary Bean
+     * 默认 true，用于存在 fallback 本地降级实现类时，业务服务按接口类型自动装配能够无歧义优先注入代理门面对象。
+     * 若存在多个同接口同级实现且需通过 @Qualifier 精准区分时，可显式配置为 false。
+     *
+     * @return true 声明为 Primary，false 不声明
+     */
+    boolean primary() default true;
+
 }

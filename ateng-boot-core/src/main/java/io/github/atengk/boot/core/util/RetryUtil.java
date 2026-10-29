@@ -260,7 +260,8 @@ public final class RetryUtil {
                     try {
                         Duration customDelay = delayFunction.apply(ex);
                         if (customDelay != null && !customDelay.isNegative()) {
-                            actualSleepMs = customDelay.toMillis();
+                            // 防御性上限拦截：动态延迟受 maxDelayMs 强行保底约束，严防远端极端大时延导致工作线程无限挂起
+                            actualSleepMs = Math.min(customDelay.toMillis(), maxDelayMs);
                             customDelayApplied = true;
                         }
                     } catch (Throwable t) {

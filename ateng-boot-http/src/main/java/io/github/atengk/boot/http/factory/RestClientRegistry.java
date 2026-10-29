@@ -1,6 +1,7 @@
 package io.github.atengk.boot.http.factory;
 
 import io.github.atengk.boot.http.constant.HttpConstants;
+import io.github.atengk.boot.http.customizer.HttpClient5Customizer;
 import io.github.atengk.boot.http.error.HttpErrorHandler;
 import io.github.atengk.boot.http.interceptor.HttpLoggingInterceptor;
 import io.github.atengk.boot.http.interceptor.HttpRetryInterceptor;
@@ -17,6 +18,7 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -37,6 +39,7 @@ public class RestClientRegistry {
     private final HttpErrorHandler httpErrorHandler;
     private final Environment environment;
     private final HttpLoggingInterceptor loggingInterceptor;
+    private final List<HttpClient5Customizer> httpClient5Customizers;
 
     private final ConcurrentMap<String, RestClient> clientCache = new ConcurrentHashMap<>();
 
@@ -45,7 +48,7 @@ public class RestClientRegistry {
                               HttpProperties properties,
                               HttpErrorHandler httpErrorHandler,
                               Environment environment) {
-        this(baseRestClientBuilder, globalRequestFactory, properties, httpErrorHandler, environment, null);
+        this(baseRestClientBuilder, globalRequestFactory, properties, httpErrorHandler, environment, null, Collections.emptyList());
     }
 
     public RestClientRegistry(RestClient.Builder baseRestClientBuilder,
@@ -54,6 +57,16 @@ public class RestClientRegistry {
                               HttpErrorHandler httpErrorHandler,
                               Environment environment,
                               HttpLoggingInterceptor loggingInterceptor) {
+        this(baseRestClientBuilder, globalRequestFactory, properties, httpErrorHandler, environment, loggingInterceptor, Collections.emptyList());
+    }
+
+    public RestClientRegistry(RestClient.Builder baseRestClientBuilder,
+                              ClientHttpRequestFactory globalRequestFactory,
+                              HttpProperties properties,
+                              HttpErrorHandler httpErrorHandler,
+                              Environment environment,
+                              HttpLoggingInterceptor loggingInterceptor,
+                              List<HttpClient5Customizer> httpClient5Customizers) {
         Assert.notNull(baseRestClientBuilder, "baseRestClientBuilder must not be null");
         Assert.notNull(globalRequestFactory, "globalRequestFactory must not be null");
         this.baseRestClientBuilder = baseRestClientBuilder;
@@ -62,6 +75,7 @@ public class RestClientRegistry {
         this.httpErrorHandler = httpErrorHandler;
         this.environment = environment;
         this.loggingInterceptor = loggingInterceptor;
+        this.httpClient5Customizers = httpClient5Customizers != null ? Collections.unmodifiableList(httpClient5Customizers) : Collections.emptyList();
     }
 
     /**
@@ -282,7 +296,7 @@ public class RestClientRegistry {
             scopedProperties.setPool(this.properties.getPool());
             scopedProperties.setProxy(hasCustomProxy ? item.getProxy() : this.properties.getProxy());
             scopedProperties.setSsl(hasCustomSsl ? resolvedSsl : this.properties.getSsl());
-            baseFactory = ClientHttpRequestFactoryBuilder.build(scopedProperties, null);
+            baseFactory = ClientHttpRequestFactoryBuilder.build(scopedProperties, this.httpClient5Customizers);
         } else {
             baseFactory = this.globalRequestFactory;
         }

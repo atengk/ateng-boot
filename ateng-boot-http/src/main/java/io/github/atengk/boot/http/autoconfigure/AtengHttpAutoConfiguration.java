@@ -27,6 +27,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
@@ -224,14 +225,17 @@ public class AtengHttpAutoConfiguration {
                                                  HttpProperties properties,
                                                  HttpErrorHandler httpErrorHandler,
                                                  Environment environment,
-                                                 ObjectProvider<HttpLoggingInterceptor> loggingInterceptorProvider) {
+                                                 ObjectProvider<HttpLoggingInterceptor> loggingInterceptorProvider,
+                                                 ObjectProvider<List<HttpClient5Customizer>> customizersProvider) {
+        List<HttpClient5Customizer> customizers = customizersProvider.getIfAvailable();
         return new RestClientRegistry(
                 restClientBuilder,
                 clientHttpRequestFactory,
                 properties,
                 httpErrorHandler,
                 environment,
-                loggingInterceptorProvider.getIfAvailable()
+                loggingInterceptorProvider.getIfAvailable(),
+                customizers
         );
     }
 }

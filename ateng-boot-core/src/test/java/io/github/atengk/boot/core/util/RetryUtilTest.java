@@ -381,6 +381,31 @@ class RetryUtilTest {
     }
 
     @Test
+    @DisplayName("delayFunction 防御性上限拦截：动态延迟超限时强制受 maxDelay 约束截断")
+    void shouldClampDynamicDelayWithMaxDelay() {
+        AtomicInteger count = new AtomicInteger();
+        long startTime = System.currentTimeMillis();
+        RetryUtil.RetryConfig config = RetryUtil.RetryConfig.builder()
+                .maxAttempts(2)
+                .delay(Duration.ofMillis(10))
+                .maxDelay(Duration.ofMillis(30))
+                .delayFunction(ex -> Duration.ofHours(1)) // 远端返回 1 小时超大 Retry-After
+                .build();
+
+        String result = RetryUtil.execute(() -> {
+            if (count.incrementAndGet() < 2) {
+                throw new RuntimeException("429 Too Many Requests");
+            }
+            return "clamped-ok";
+        }, config);
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        assertEquals("clamped-ok", result);
+        assertEquals(2, count.get());
+        assertTrue(elapsed < 2000, "实际休眠时长必须被 maxDelay 强行截断，绝不能休眠 1 小时");
+    }
+
+    @Test
     @DisplayName("RetryConfig 紧凑构造对非法入参实施强类型防卫拦截")
     void shouldDefendAgainstInvalidParametersInRecordConstructor() {
         assertThrows(IllegalArgumentException.class, () ->

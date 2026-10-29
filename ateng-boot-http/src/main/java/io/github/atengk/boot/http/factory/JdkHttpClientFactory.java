@@ -6,6 +6,7 @@ import io.github.atengk.boot.http.properties.HttpPoolProperties;
 import io.github.atengk.boot.http.properties.HttpProperties;
 import io.github.atengk.boot.http.properties.HttpProxyProperties;
 import io.github.atengk.boot.http.properties.HttpSslProperties;
+import io.github.atengk.boot.http.util.HttpSslUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
@@ -155,13 +156,10 @@ public final class JdkHttpClientFactory {
             @Override
             public ClientHttpRequest createRequest(URI uri, HttpMethod httpMethod) throws IOException {
                 ClientHttpRequest request = super.createRequest(uri, httpMethod);
-                Duration perRequestTimeout = HttpRequestContextHolder.getReadTimeout();
-                if (perRequestTimeout != null) {
-                    try {
-                        RequestOptionsApplier.applyTimeout(request, perRequestTimeout);
-                    } finally {
-                        HttpRequestContextHolder.clear();
-                    }
+                Duration perRequestReadTimeout = HttpRequestContextHolder.getReadTimeout();
+                Duration perRequestConnectTimeout = HttpRequestContextHolder.getConnectTimeout();
+                if (perRequestReadTimeout != null || perRequestConnectTimeout != null) {
+                    RequestOptionsApplier.applyTimeout(request, perRequestReadTimeout, perRequestConnectTimeout);
                 }
                 return request;
             }
@@ -183,21 +181,6 @@ public final class JdkHttpClientFactory {
      * @throws Exception 证书加载或解析异常
      */
     private static KeyManager[] loadKeyManagers(HttpSslProperties ssl) throws Exception {
-        String keyStorePath = ssl.getKeyStore();
-        Assert.hasText(keyStorePath, "keyStore 路径不能为空");
-        Resource resource = new DefaultResourceLoader().getResource(keyStorePath);
-        if (!resource.exists()) {
-            throw new IllegalArgumentException("未找到 mTLS 客户端证书文件: " + keyStorePath);
-        }
-        String type = StringUtils.hasText(ssl.getKeyStoreType()) ? ssl.getKeyStoreType() : "PKCS12";
-        KeyStore keyStore = KeyStore.getInstance(type);
-        char[] password = StringUtils.hasText(ssl.getKeyStorePassword()) ? ssl.getKeyStorePassword().toCharArray() : new char[0];
-        try (InputStream in = resource.getInputStream()) {
-            keyStore.load(in, password);
-        }
-        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-        kmf.init(keyStore, password);
-        log.info("成功为 JDK HttpClient 加载 mTLS 客户端私钥证书: [{}] (type: {})", keyStorePath, type);
-        return kmf.getKeyManagers();
+        return HttpSslUtil.loadKeyManagers(ssl);
     }
 }
