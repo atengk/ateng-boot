@@ -1,11 +1,18 @@
 package io.github.atengk.boot.realtime.dispatcher;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.annotation.RealtimeAction;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -114,20 +121,61 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
         ActionMethod actionMethod = actionMap.get(event);
         if (actionMethod != null) {
             try {
+                // 1.1 提取并绑定 MDC traceId
+                String traceId = (message.getTraceId() != null && !message.getTraceId().isBlank())
+                        ? message.getTraceId()
+                        : null;
+                if (traceId == null && session.getAttributes() != null) {
+                    Object attrTrace = session.getAttributes().get("traceId");
+                    if (attrTrace instanceof String str && !str.isBlank()) {
+                        traceId = str;
+                    }
+                }
+                if (traceId == null) {
+                    traceId = IdUtil.fastSimpleUUID();
+                }
+                MDC.put("traceId", traceId);
+
+                // 1.2 填充 User 上下文
+                if (session.getSessionKey() != null && session.getSessionKey().getUserId() != null) {
+                    UserContextHolder.set(session.getSessionKey().getUserId());
+                }
+
+                // 1.3 填充 Tenant 上下文
+                if (session.getTenantId() != null) {
+                    TenantContextHolder.setTenantId(session.getTenantId());
+                } else if (message.getTenantId() != null && !message.getTenantId().isBlank()) {
+                    TenantContextHolder.setTenantId(message.getTenantId());
+                }
+
                 Object[] args = resolveArguments(actionMethod.method, session, message);
                 Object result = actionMethod.method.invoke(actionMethod.bean, args);
-                // 若方法返回 RealtimeMessage 实例，则自动回执下发给当前会话
-                if (result instanceof RealtimeMessage<?> replyMsg) {
-                    session.sendMessage(replyMsg);
-                }
+                // 双向 Request-Response: 处理返回值自动应答回发
+                handleActionReply(session, message, event, result);
                 return true;
             } catch (Throwable t) {
                 Throwable cause = (t instanceof InvocationTargetException ite && ite.getCause() != null)
                         ? ite.getCause()
                         : t;
+                if (cause instanceof BusinessException be) {
+                    log.warn("[Realtime] 执行 @RealtimeAction [{}] 触发业务异常: sessionKey={}, code={}, msg={}",
+                            event, session.getSessionKey(), be.getCode(), be.getMsg());
+                    Integer code = be.getCode() != null ? be.getCode()
+                            : (be.getResultCode() != null ? be.getResultCode().getCode() : CommonResultCode.INTERNAL_SERVER_ERROR.getCode());
+                    String msg = be.getMsg() != null ? be.getMsg()
+                            : (be.getMessage() != null ? be.getMessage() : "Business error");
+                    Result<Void> failResult = Result.failure(code, msg);
+                    handleActionReply(session, message, event, failResult);
+                    return true;
+                }
                 log.error("[Realtime] 执行 @RealtimeAction [{}] 异常: sessionKey={}, error={}",
                         event, session.getSessionKey(), cause.getMessage(), cause);
                 return false;
+            } finally {
+                // 彻底确定性清理上下文，防御线程复用污染
+                MDC.remove("traceId");
+                UserContextHolder.clear();
+                TenantContextHolder.clear();
             }
         }
 
@@ -191,6 +239,50 @@ public class RealtimeMessageDispatcher implements SmartInitializingSingleton, Ap
             }
         }
         return args;
+    }
+
+    /**
+     * 处理 @RealtimeAction 执行结果的双向应答回发
+     *
+     * @param session        发起端会话
+     * @param requestMessage 原始上行消息
+     * @param event          触发的业务事件
+     * @param result         方法返回值或异常转译结果
+     */
+    private void handleActionReply(RealtimeSession session, RealtimeMessage<?> requestMessage, String event, Object result) {
+        if (result == null) {
+            return;
+        }
+        try {
+            if (result instanceof RealtimeMessage<?> replyMsg) {
+                if (requestMessage.getId() != null) {
+                    replyMsg.setId(requestMessage.getId());
+                } else if (replyMsg.getId() == null) {
+                    replyMsg.setId(IdUtil.nextIdStr());
+                }
+                if (replyMsg.getEvent() == null) {
+                    replyMsg.setEvent(event + ":reply");
+                }
+                if (replyMsg.getTraceId() == null) {
+                    replyMsg.setTraceId(MDC.get("traceId"));
+                }
+                if (replyMsg.getTenantId() == null) {
+                    replyMsg.setTenantId(TenantContextHolder.getTenantId());
+                }
+                if (replyMsg.getTimestamp() == null) {
+                    replyMsg.setTimestamp(System.currentTimeMillis());
+                }
+                session.sendMessage(replyMsg);
+            } else {
+                String replyEvent = event + ":reply";
+                String requestId = requestMessage.getId();
+                RealtimeMessage<Object> replyMsg = RealtimeMessage.of(requestId, replyEvent, result);
+                session.sendMessage(replyMsg);
+            }
+        } catch (Throwable t) {
+            log.error("[Realtime] 回发 @RealtimeAction 应答消息失败: event={}, sessionKey={}, error={}",
+                    event, session.getSessionKey(), t.getMessage(), t);
+        }
     }
 
     private static class ActionMethod {
