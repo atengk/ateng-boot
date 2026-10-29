@@ -119,4 +119,74 @@ class SseSubscriptionScenarioTest {
         assertThat(receivedData.toString()).contains("Hello");
         assertThat(receivedData.toString()).contains("ateng-boot-realtime");
     }
+
+    @Test
+    @DisplayName("端到端验证: SSE 客户端携带 Last-Event-ID 重连，自动触发离线消息只读断点重放")
+    void testSseLastEventIdResumption() throws Exception {
+        String testUserId = "sse-resuming-user";
+        realtimeTemplate.clearOfflineMessages(testUserId);
+
+        // 1. 服务端下发 3 条持久化离线消息
+        RealtimeMessage<String> msg1 = RealtimeMessage.of("evt-01", "chat:notice", "Message 1");
+        msg1.setPersistent(true);
+        realtimeTemplate.sendToUser(testUserId, msg1);
+
+        Thread.sleep(20);
+        RealtimeMessage<String> msg2 = RealtimeMessage.of("evt-02", "chat:notice", "Message 2");
+        msg2.setPersistent(true);
+        realtimeTemplate.sendToUser(testUserId, msg2);
+
+        Thread.sleep(20);
+        RealtimeMessage<String> msg3 = RealtimeMessage.of("evt-03", "chat:notice", "Message 3");
+        msg3.setPersistent(true);
+        realtimeTemplate.sendToUser(testUserId, msg3);
+
+        // 验证当前离线消息总数为 3
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        // 2. 客户端发起连接，携带 Last-Event-ID: evt-01
+        HttpClient client = HttpClient.newHttpClient();
+        String sseUrl = "http://127.0.0.1:" + port + "/sse/realtime?userId=" + testUserId + "&clientId=sse-resume-01";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(sseUrl))
+                .header("Accept", "text/event-stream")
+                .header("Last-Event-ID", "evt-01")
+                .GET()
+                .build();
+
+        HttpResponse<java.io.InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        assertThat(response.statusCode()).isEqualTo(200);
+
+        BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8));
+        BlockingQueue<String> eventIds = new LinkedBlockingQueue<>();
+        BlockingQueue<String> dataLines = new LinkedBlockingQueue<>();
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("id:")) {
+                        eventIds.offer(line.substring(3).trim());
+                    } else if (line.startsWith("data:")) {
+                        dataLines.offer(line.substring(5).trim());
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        });
+
+        // 3. 验证客户端收到 evt-02 和 evt-03，不包含已收到的 evt-01
+        String firstId = eventIds.poll(5, TimeUnit.SECONDS);
+        String secondId = eventIds.poll(5, TimeUnit.SECONDS);
+
+        assertThat(firstId).isEqualTo("evt-02");
+        assertThat(secondId).isEqualTo("evt-03");
+
+        // 4. 验证离线队列未被破坏性清空（只读窥探，确保多端多标签页安全性）
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        response.body().close();
+        realtimeTemplate.clearOfflineMessages(testUserId);
+    }
 }

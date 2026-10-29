@@ -64,6 +64,7 @@ class ClusterAndOfflineScenarioTest {
         if (realtimeTemplate != null) {
             realtimeTemplate.clearOfflineMessages("user-offline-sample");
             realtimeTemplate.clearOfflineMessages("user-satoken-ban");
+            realtimeTemplate.clearOfflineMessages("user-zset-test");
         }
     }
 
@@ -171,6 +172,33 @@ class ClusterAndOfflineScenarioTest {
         CloseStatus closeStatus = handler.awaitClose(5, TimeUnit.SECONDS);
         assertThat(closeStatus).isNotNull();
         assertThat(closeStatus.getCode()).isEqualTo(RealtimeCloseStatus.USER_KICKED_OUT.getCode());
+    }
+
+    @Test
+    @DisplayName("端到端验证: 离线存储 ZSet 结构非破坏性窥探与清空生命周期")
+    void testZSetStoragePeekAndFifoEviction() {
+        String testUserId = "user-zset-test";
+        realtimeTemplate.clearOfflineMessages(testUserId);
+
+        // 1. 发送 3 条持久化离线消息
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:1", "Payload 1"));
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:2", "Payload 2"));
+        realtimeTemplate.sendToUser(testUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:3", "Payload 3"));
+
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        // 2. 只读窥探：消息按时间序返回，底层存储不减少
+        java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> peeked = realtimeTemplate.getOfflineMessages(testUserId);
+        assertThat(peeked).hasSize(3);
+        assertThat(peeked.get(0).getEvent()).isEqualTo("evt:1");
+        assertThat(peeked.get(1).getEvent()).isEqualTo("evt:2");
+        assertThat(peeked.get(2).getEvent()).isEqualTo("evt:3");
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isEqualTo(3);
+
+        // 3. 一次性消费拉取并清空
+        java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> pulled = realtimeTemplate.pullAndClearOfflineMessages(testUserId);
+        assertThat(pulled).hasSize(3);
+        assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isZero();
     }
 
     private static class KickoutHandler extends TextWebSocketHandler {

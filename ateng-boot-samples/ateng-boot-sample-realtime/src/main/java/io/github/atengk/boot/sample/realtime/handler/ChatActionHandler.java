@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.realtime.handler;
 
+import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.realtime.annotation.RealtimeAction;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.model.SessionKey;
@@ -81,5 +83,30 @@ public class ChatActionHandler {
         log.info("[Sample] 房间组播转发: roomId={}, content={}", roomId, content);
 
         realtimeTemplate.sendToGroup(roomId, RealtimeMessage.of("room:message", content));
+    }
+
+    /**
+     * 演示双向 Request-Response 自动应答回发
+     *
+     * @param payload 订单查询参数
+     * @return 强类型 Result 结果，框架自动回发为 order:query:reply
+     */
+    @RealtimeAction("order:query")
+    public Result<Map<String, Object>> handleOrderQuery(Map<String, Object> payload) {
+        String orderId = payload != null ? String.valueOf(payload.get("orderId")) : "ORD-001";
+        log.info("[Sample] 收到订单查询请求: orderId={}", orderId);
+        return Result.success(Map.of("orderId", orderId, "status", "PAID", "amount", 199.9));
+    }
+
+    /**
+     * 演示业务异常拦截并语义化转译为 Result.failure 响应帧
+     *
+     * @param payload 订单取消参数
+     */
+    @RealtimeAction("order:cancel")
+    public Result<Void> handleOrderCancel(Map<String, Object> payload) {
+        String orderId = payload != null ? String.valueOf(payload.get("orderId")) : "ORD-001";
+        log.info("[Sample] 收到订单取消请求: orderId={}", orderId);
+        throw new BusinessException(40001, "订单 [" + orderId + "] 已锁定不可取消");
     }
 }

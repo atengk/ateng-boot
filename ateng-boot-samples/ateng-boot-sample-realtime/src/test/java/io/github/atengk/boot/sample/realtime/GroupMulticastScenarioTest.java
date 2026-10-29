@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.realtime;
 
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
+import io.github.atengk.boot.realtime.model.SessionKey;
 import io.github.atengk.boot.realtime.template.RealtimeTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -87,6 +89,60 @@ class GroupMulticastScenarioTest {
 
         sessionA.close();
         sessionB.close();
+    }
+
+    @Test
+    @DisplayName("端到端验证: 群组成员全集群查询、广播解散通知与生命周期闭环")
+    void testGroupDismissalAndMemberLifecycle() throws Exception {
+        StandardWebSocketClient client = new StandardWebSocketClient();
+
+        TestHandler handler1 = new TestHandler();
+        TestHandler handler2 = new TestHandler();
+
+        String url1 = "ws://127.0.0.1:" + port + "/ws/realtime?clientId=dismiss-client-1";
+        String url2 = "ws://127.0.0.1:" + port + "/ws/realtime?clientId=dismiss-client-2";
+
+        client.execute(handler1, url1);
+        client.execute(handler2, url2);
+
+        WebSocketSession session1 = handler1.awaitConnection(5, TimeUnit.SECONDS);
+        WebSocketSession session2 = handler2.awaitConnection(5, TimeUnit.SECONDS);
+
+        assertThat(session1.isOpen()).isTrue();
+        assertThat(session2.isOpen()).isTrue();
+
+        String roomId = "room-dismiss-777";
+
+        // 加入房间
+        RealtimeMessage<Map<String, Object>> join1 = RealtimeMessage.of("join-room", Map.of("roomId", roomId));
+        session1.sendMessage(new TextMessage(JsonUtil.toJsonString(join1)));
+        RealtimeMessage<Map<String, Object>> join2 = RealtimeMessage.of("join-room", Map.of("roomId", roomId));
+        session2.sendMessage(new TextMessage(JsonUtil.toJsonString(join2)));
+
+        assertThat(handler1.pollMessage(5, TimeUnit.SECONDS)).contains("room:joined");
+        assertThat(handler2.pollMessage(5, TimeUnit.SECONDS)).contains("room:joined");
+
+        // 1. 全集群成员查询与计数验证
+        Set<SessionKey> members = realtimeTemplate.getClusterGroupMembers(roomId);
+        assertThat(members).hasSize(2);
+        assertThat(realtimeTemplate.getClusterGroupMemberCount(roomId)).isEqualTo(2);
+
+        // 2. 广播解散房间
+        int dismissed = realtimeTemplate.dismissGroup(roomId);
+        assertThat(dismissed).isEqualTo(2);
+
+        // 3. 验证客户端均收到 group_dismissed 广播通知帧
+        String dismissNotice1 = handler1.pollMessage(5, TimeUnit.SECONDS);
+        String dismissNotice2 = handler2.pollMessage(5, TimeUnit.SECONDS);
+        assertThat(dismissNotice1).contains(RealtimeMessage.EVENT_GROUP_DISMISSED).contains(roomId);
+        assertThat(dismissNotice2).contains(RealtimeMessage.EVENT_GROUP_DISMISSED).contains(roomId);
+
+        // 4. 验证解散后群组清空
+        assertThat(realtimeTemplate.getClusterGroupMemberCount(roomId)).isZero();
+        assertThat(realtimeTemplate.getClusterGroupMembers(roomId)).isEmpty();
+
+        session1.close();
+        session2.close();
     }
 
     static class TestHandler extends TextWebSocketHandler {
