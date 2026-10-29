@@ -5,7 +5,7 @@
 ## Language
 
 **HttpTemplate**:
-HTTP 模块命令式操作核心门面具体类，提供对称的动词 CRUD、流式上传下载、泛型反序列化及单次 RequestOptions 覆盖能力。
+HTTP 模块命令式操作核心门面具体类，提供对称的动词 CRUD、RFC 5789 PATCH、HEAD/OPTIONS 元数据拉取、application/x-www-form-urlencoded 标准表单提交、大文件与 SSE 文本行零缓冲流式传输、ResponseEntity 完整实体包装及单次 RequestOptions 动态覆盖能力。
 _Avoid_: RestTemplate, HttpUtil, WebClient, HttpClientHelper
 
 **ApacheHttpClient5Factory**:
@@ -21,7 +21,7 @@ _Avoid_: SimpleClientHttpRequestFactory, FallbackClientFactory
 _Avoid_: HttpOptions, RequestConfig, CallOptions
 
 **HttpRemoteException**:
-HTTP 远程通信统一语义化业务异常（继承 Core 模块 BusinessException），封装远端 HTTP 状态码、请求方法、URI、安全截断的响应体及统一错误码。
+HTTP 远程通信统一语义化业务异常（继承 Core 模块 BusinessException），封装远端 HTTP 状态码、请求方法、URI、安全截断的响应体及统一错误码，提供 getResponseBodyAs 强类型结构化错误载荷解析能力。
 _Avoid_: RestClientException, RemoteException, HttpCallException
 
 **HttpErrorHandler**:
@@ -49,8 +49,12 @@ HTTP 远程通信专职语义化结果码枚举（实现 Core 模块 IResultCode
 _Avoid_: ResultCode, HttpResponseCode, ErrorCode
 
 **HttpClient**:
-声明式 HTTP 客户端核心标记注解，用于修饰 Spring 6 远程契约接口并显式绑定命名客户端标识、BaseUrl 及其占位符。
+声明式 HTTP 客户端核心标记注解，用于修饰 Spring 6 远程契约接口并显式绑定命名客户端标识、BaseUrl、占位符及 fallback 本地优雅降级实现类。
 _Avoid_: FeignClient, RetrofitClient, HttpApi, RemoteService
+
+**HttpTimeout**:
+声明式 HTTP 超时控制注解，支持标注于 @HttpClient 接口类或特定方法上，提供微粒度建联超时与读取超时覆盖控制，调用时现场还原防线程复用污染。
+_Avoid_: Timeout, ReadTimeout, RequestTimeout
 
 **EnableHttpInterfaces**:
 声明式 HTTP 客户端接口包扫描驱动注解，自动导入 HttpInterfaceRegistrar 扫描指定候选包路径并向 Spring 容器注册代理工厂 Bean。
@@ -65,5 +69,5 @@ _Avoid_: FeignClientsRegistrar, HttpClientScanner, HttpServiceRegistrar
 _Avoid_: HttpProxyFactoryBean, FeignClientFactoryBean, DynamicHttpProxy
 
 **RestClientRegistry**:
-多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/隔离性）与单例实例缓存。
+多命名客户端 RestClient 实例集中纳管注册表，提供按 clientName 的配置融合（BaseUrl/超时/默认请求头/隔离性）与单例实例缓存。
 _Avoid_: ClientManager, HttpClientContainer, RestClientPool

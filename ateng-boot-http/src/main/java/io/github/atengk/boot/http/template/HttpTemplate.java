@@ -9,8 +9,10 @@ import io.github.atengk.boot.http.options.RequestOptions;
 import io.github.atengk.boot.http.options.RequestOptionsApplier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.util.Assert;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -22,7 +24,9 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -297,6 +301,156 @@ public class HttpTemplate {
     }
 
     // ==========================================
+    // POST FORM 表单提交 (application/x-www-form-urlencoded)
+    // ==========================================
+
+    /**
+     * 发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, Class<T> responseType) {
+        return postForm(url, formData, null, responseType);
+    }
+
+    /**
+     * 发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, formData, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, RequestOptions options, Class<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        spec.contentType(MediaType.APPLICATION_FORM_URLENCODED);
+        if (formData != null) {
+            spec.body(formData);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     表单键值对集合
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, MultiValueMap<String, ?> formData, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.post().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        spec.contentType(MediaType.APPLICATION_FORM_URLENCODED);
+        if (formData != null) {
+            spec.body(formData);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    /**
+     * 基于普通 Map 字典发起 application/x-www-form-urlencoded 标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, Class<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), null, responseType);
+    }
+
+    /**
+     * 基于普通 Map 字典发起 application/x-www-form-urlencoded 标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 并基于普通 Map 字典发起标准表单 POST 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, RequestOptions options, Class<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), options, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 并基于普通 Map 字典发起标准表单 POST 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param formData     普通 Map 字典（自动转译为 MultiValueMap）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T postForm(String url, Map<String, ?> formData, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return postForm(url, toMultiValueMap(formData), options, responseType);
+    }
+
+    private static MultiValueMap<String, Object> toMultiValueMap(Map<String, ?> map) {
+        MultiValueMap<String, Object> multiValueMap = new LinkedMultiValueMap<>();
+        if (map != null) {
+            map.forEach((k, v) -> {
+                if (k != null && v != null) {
+                    if (v instanceof Iterable<?> iterable) {
+                        for (Object item : iterable) {
+                            if (item != null) {
+                                multiValueMap.add(k, item);
+                            }
+                        }
+                    } else {
+                        multiValueMap.add(k, v);
+                    }
+                }
+            });
+        }
+        return multiValueMap;
+    }
+
+    // ==========================================
     // PUT 操作
     // ==========================================
 
@@ -371,6 +525,80 @@ public class HttpTemplate {
     }
 
     // ==========================================
+    // PATCH 操作 (RFC 5789 局部更新)
+    // ==========================================
+
+    /**
+     * 发起 HTTP PATCH 请求并发送 JSON 请求体
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, Class<T> responseType) {
+        return patch(url, body, null, responseType);
+    }
+
+    /**
+     * 发起 HTTP PATCH 请求并依据复杂泛型类型反序列化响应体
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, ParameterizedTypeReference<T> responseType) {
+        return patch(url, body, null, responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PATCH 请求
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, RequestOptions options, Class<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.patch().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    /**
+     * 发起携带动态 RequestOptions 配置的 HTTP PATCH 请求并反序列化为复杂泛型
+     *
+     * @param url          请求 URL 绝对路径
+     * @param body         请求载荷对象
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 反序列化后的实体对象
+     */
+    public <T> T patch(String url, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.patch().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
     // DELETE 操作
     // ==========================================
 
@@ -432,6 +660,216 @@ public class HttpTemplate {
         RestClient.RequestHeadersSpec<?> spec = this.restClient.delete().uri(uri);
         RequestOptionsApplier.apply(spec, options);
         return spec.retrieve().body(responseType);
+    }
+
+    // ==========================================
+    // HEAD 操作 (元数据提取)
+    // ==========================================
+
+    /**
+     * 发起 HTTP HEAD 请求，仅获取响应头元数据而不下载响应体
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 远端响应头对象
+     */
+    public HttpHeaders head(String url) {
+        return head(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP HEAD 请求
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 远端响应头对象
+     */
+    public HttpHeaders head(String url, RequestOptions options) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.head().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().toBodilessEntity().getHeaders();
+    }
+
+    // ==========================================
+    // OPTIONS 操作 (端点能力探测)
+    // ==========================================
+
+    /**
+     * 发起 HTTP OPTIONS 请求，获取目标端点支持的完整响应头（含 Allow 与 CORS 头）
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 远端响应头对象
+     */
+    public HttpHeaders options(String url) {
+        return options(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP OPTIONS 请求
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 远端响应头对象
+     */
+    public HttpHeaders options(String url, RequestOptions options) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestHeadersSpec<?> spec = this.restClient.options().uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        return spec.retrieve().toBodilessEntity().getHeaders();
+    }
+
+    /**
+     * 发起 HTTP OPTIONS 请求并提取允许的 HTTP 动词集合 (Allow Header)
+     *
+     * @param url 请求 URL 绝对路径
+     * @return 允许的 HttpMethod 集合（若未返回 Allow 头则返回空集合）
+     */
+    public Set<HttpMethod> optionsForAllow(String url) {
+        return optionsForAllow(url, null);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP OPTIONS 请求并提取允许的 HTTP 动词集合
+     *
+     * @param url     请求 URL 绝对路径
+     * @param options 单次请求配置载荷（可为 null）
+     * @return 允许的 HttpMethod 集合（若未返回 Allow 头则返回空集合）
+     */
+    public Set<HttpMethod> optionsForAllow(String url, RequestOptions options) {
+        HttpHeaders headers = options(url, options);
+        return headers != null ? headers.getAllow() : Set.of();
+    }
+
+    // ==========================================
+    // 实体包装与元数据穿透操作 (ResponseEntity)
+    // ==========================================
+
+    /**
+     * 发起 HTTP GET 请求并返回完整的 ResponseEntity（含 HTTP 状态码与响应头）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, Class<T> responseType) {
+        return getEntity(url, null, responseType);
+    }
+
+    /**
+     * 发起 HTTP GET 请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, ParameterizedTypeReference<T> responseType) {
+        return getEntity(url, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP GET 请求并返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, RequestOptions options, Class<T> responseType) {
+        return exchange(url, HttpMethod.GET, null, options, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 发起 HTTP GET 请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> getEntity(String url, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        return exchange(url, HttpMethod.GET, null, options, responseType);
+    }
+
+    /**
+     * 通用 HTTP 动词交换方法，执行任意请求并返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, Class<T> responseType) {
+        return exchange(url, method, body, null, responseType);
+    }
+
+    /**
+     * 通用 HTTP 动词交换方法，执行任意请求并依据复杂泛型返回完整的 ResponseEntity
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, ParameterizedTypeReference<T> responseType) {
+        return exchange(url, method, body, null, responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 的通用 HTTP 动词交换方法
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体 Class 类型
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, RequestOptions options, Class<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(method, "HttpMethod 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.method(method).uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().toEntity(responseType);
+    }
+
+    /**
+     * 携带动态 RequestOptions 的通用 HTTP 动词交换方法（复杂泛型反序列化）
+     *
+     * @param url          请求 URL 绝对路径
+     * @param method       HTTP 动词
+     * @param body         请求载荷对象（可为 null）
+     * @param options      单次请求配置载荷（可为 null）
+     * @param responseType 响应体泛型类型引用
+     * @param <T>          泛型返回类型
+     * @return 包含响应头与状态码的 ResponseEntity 对象
+     */
+    public <T> ResponseEntity<T> exchange(String url, HttpMethod method, Object body, RequestOptions options, ParameterizedTypeReference<T> responseType) {
+        Assert.hasText(url, "请求 URL 不能为空");
+        Assert.notNull(method, "HttpMethod 不能为空");
+        Assert.notNull(responseType, "responseType 不能为空");
+        URI uri = RequestOptionsApplier.resolveUri(url, options);
+        RestClient.RequestBodySpec spec = this.restClient.method(method).uri(uri);
+        RequestOptionsApplier.apply(spec, options);
+        if (body != null) {
+            spec.body(body);
+        }
+        return spec.retrieve().toEntity(responseType);
     }
 
     // ==========================================
