@@ -117,6 +117,30 @@ public class RabbitmqProperties {
         @NestedConfigurationProperty
         private Retry retry = new Retry();
 
+        /**
+         * 消费端批量消费削峰配置
+         */
+        @NestedConfigurationProperty
+        private Batch batch = new Batch();
+
+        @Data
+        public static class Batch {
+            /**
+             * 是否开启消费端批量监听器削峰
+             */
+            private boolean enabled = false;
+
+            /**
+             * 单批次最大聚合消费消息数
+             */
+            private int size = 50;
+
+            /**
+             * 批量聚合最大等待超时时间
+             */
+            private Duration maxWaitTime = Duration.ofMillis(500);
+        }
+
         @Data
         public static class Retry {
             /**

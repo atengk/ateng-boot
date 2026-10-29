@@ -150,6 +150,41 @@ class AtengRabbitmqAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("consumer.batch.enabled=true 时后置增强 SimpleRabbitListenerContainerFactory 开启批量消费与超时")
+    void testConsumerBatchEnabledContainerFactoryCustomization() {
+        contextRunner
+                .withUserConfiguration(MockContainerFactoryConfiguration.class)
+                .withPropertyValues(
+                        "ateng.boot.rabbitmq.consumer.batch.enabled=true",
+                        "ateng.boot.rabbitmq.consumer.batch.size=80",
+                        "ateng.boot.rabbitmq.consumer.batch.max-wait-time=800ms"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+                    org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory factory =
+                            context.getBean(org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory.class);
+
+                    Boolean consumerBatchEnabled = (Boolean) org.springframework.test.util.ReflectionTestUtils.getField(factory, "consumerBatchEnabled");
+                    Boolean batchListener = (Boolean) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchListener");
+                    Integer batchSize = (Integer) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchSize");
+                    Long batchReceiveTimeout = (Long) org.springframework.test.util.ReflectionTestUtils.getField(factory, "batchReceiveTimeout");
+
+                    assertThat(consumerBatchEnabled).isTrue();
+                    assertThat(batchListener).isTrue();
+                    assertThat(batchSize).isEqualTo(80);
+                    assertThat(batchReceiveTimeout).isEqualTo(800L);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MockContainerFactoryConfiguration {
+        @Bean
+        public org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory() {
+            return new org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomLifecycleBeanPostProcessorConfiguration {
         @Bean

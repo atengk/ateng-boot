@@ -170,4 +170,106 @@ class RabbitListenerGlobalAdviceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("用户名不能为空");
     }
+
+    @Test
+    @DisplayName("批量消费拦截：List<Message> 入参安全激活首条消息四维上下文并在 finally 中 100% 确定性恢复现场")
+    void testBatchMessagesContextPropagationAndCleanup() throws Throwable {
+        MDC.put(MessageContextPropagator.MDC_TRACE_ID_KEY, "outer-batch-trace");
+        UserContextHolder.set("outer-batch-user");
+        TenantContextHolder.setTenantId("outer-batch-tenant");
+
+        MessageProperties props1 = new MessageProperties();
+        props1.setHeader(MessageHeaderConstants.TRACE_ID, "batch-trace-001");
+        props1.setHeader(MessageHeaderConstants.USER_ID, "batch-user-001");
+        props1.setHeader(MessageHeaderConstants.TENANT_ID, "batch-tenant-001");
+        props1.setHeader(MessageHeaderConstants.BIZ_KEY, "biz-item-1");
+        Message msg1 = new Message("payload-1".getBytes(StandardCharsets.UTF_8), props1);
+
+        MessageProperties props2 = new MessageProperties();
+        props2.setHeader(MessageHeaderConstants.TRACE_ID, "batch-trace-002");
+        Message msg2 = new Message("payload-2".getBytes(StandardCharsets.UTF_8), props2);
+
+        MethodInvocation invocation = mock(MethodInvocation.class);
+        when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of(msg1, msg2)});
+
+        AtomicBoolean methodExecuted = new AtomicBoolean(false);
+        AtomicReference<String> innerTrace = new AtomicReference<>();
+        AtomicReference<String> innerUser = new AtomicReference<>();
+        AtomicReference<String> innerTenant = new AtomicReference<>();
+
+        when(invocation.proceed()).thenAnswer(inv -> {
+            methodExecuted.set(true);
+            innerTrace.set(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            innerUser.set(UserContextHolder.get());
+            innerTenant.set(TenantContextHolder.getTenantId());
+            return "BATCH_SUCCESS";
+        });
+
+        Object result = advice.invoke(invocation);
+
+        assertThat(methodExecuted.get()).isTrue();
+        assertThat(result).isEqualTo("BATCH_SUCCESS");
+
+        // 验证方法内提取到的四维上下文为首条消息的主上下文
+        assertThat(innerTrace.get()).isEqualTo("batch-trace-001");
+        assertThat(innerUser.get()).isEqualTo("batch-user-001");
+        assertThat(innerTenant.get()).isEqualTo("batch-tenant-001");
+
+        // 验证执行完成后外部现场 100% 确定性恢复
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isEqualTo("outer-batch-trace");
+        assertThat(UserContextHolder.get()).isEqualTo("outer-batch-user");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("outer-batch-tenant");
+    }
+
+    @Test
+    @DisplayName("批量消费拦截：List<?> POJO 入参无原生 Message 头时自适应生成链路 TraceId 且现场零污染")
+    void testBatchPojoListContextHandling() throws Throwable {
+        MethodInvocation invocation = mock(MethodInvocation.class);
+        when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of("pojo-1", "pojo-2")});
+
+        AtomicReference<String> generatedTrace = new AtomicReference<>();
+        when(invocation.proceed()).thenAnswer(inv -> {
+            generatedTrace.set(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY));
+            return "POJO_BATCH_OK";
+        });
+
+        Object result = advice.invoke(invocation);
+
+        assertThat(result).isEqualTo("POJO_BATCH_OK");
+        assertThat(generatedTrace.get()).isNotBlank(); // 自适应兜底生成唯一 TraceId
+
+        // 执行后外部 MDC 恢复为空
+        assertThat(MDC.get(MessageContextPropagator.MDC_TRACE_ID_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("批量消费拦截：批量处理过程中抛出 IdempotentException 触发整批静默确认 (Silent ACK)")
+    void testBatchIdempotentExceptionSilentAck() throws Throwable {
+        MessageProperties props = new MessageProperties();
+        props.setHeader(MessageHeaderConstants.BIZ_KEY, "batch-dup-biz");
+        Message msg = new Message("data".getBytes(StandardCharsets.UTF_8), props);
+
+        MethodInvocation invocation = mock(MethodInvocation.class);
+        when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of(msg)});
+        when(invocation.proceed()).thenThrow(new IdempotentException("批次中已处理，触发静默 ACK"));
+
+        Object result = advice.invoke(invocation);
+
+        assertThat(result).isNull(); // 返回 null 触发 AUTO 模式静默确认
+    }
+
+    @Test
+    @DisplayName("批量消费拦截：批量处理抛出可自愈异常时原样向外抛出供重试")
+    void testBatchRetryableExceptionRethrown() throws Throwable {
+        MessageProperties props = new MessageProperties();
+        Message msg = new Message("data".getBytes(StandardCharsets.UTF_8), props);
+
+        MethodInvocation invocation = mock(MethodInvocation.class);
+        when(invocation.getArguments()).thenReturn(new Object[]{java.util.List.of(msg)});
+        when(invocation.proceed()).thenThrow(new IOException("远程服务调用超时"));
+
+        assertThatThrownBy(() -> advice.invoke(invocation))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("远程服务调用超时");
+    }
 }

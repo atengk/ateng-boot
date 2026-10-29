@@ -251,6 +251,17 @@ public class AtengRabbitmqAutoConfiguration {
                     factory.setConcurrentConsumers(consumer.getConcurrency());
                     factory.setMaxConcurrentConsumers(consumer.getMaxConcurrency());
 
+                    // 批量消费削峰支持
+                    RabbitmqProperties.Consumer.Batch batch = consumer.getBatch();
+                    if (batch.isEnabled()) {
+                        factory.setConsumerBatchEnabled(true);
+                        factory.setBatchListener(true);
+                        factory.setBatchSize(batch.getSize());
+                        if (batch.getMaxWaitTime() != null) {
+                            factory.setBatchReceiveTimeout(batch.getMaxWaitTime().toMillis());
+                        }
+                    }
+
                     // 装配消费端受控防卫拦截链与本地指数退避重试
                     RabbitListenerGlobalAdvice globalAdvice = adviceProvider.getIfAvailable();
                     if (globalAdvice != null) {
