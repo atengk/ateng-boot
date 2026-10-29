@@ -199,6 +199,22 @@ class ClusterAndOfflineScenarioTest {
         java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> pulled = realtimeTemplate.pullAndClearOfflineMessages(testUserId);
         assertThat(pulled).hasSize(3);
         assertThat(realtimeTemplate.getOfflineMessageCount(testUserId)).isZero();
+
+        // 4. FIFO 淘汰验证：默认最大保留 100 条离线消息
+        String fifoUserId = "user-zset-fifo";
+        realtimeTemplate.clearOfflineMessages(fifoUserId);
+        try {
+            for (int i = 0; i < 105; i++) {
+                realtimeTemplate.sendToUser(fifoUserId, io.github.atengk.boot.realtime.model.RealtimeMessage.ofPersistent("evt:" + i, "Payload-" + i));
+            }
+            assertThat(realtimeTemplate.getOfflineMessageCount(fifoUserId)).isEqualTo(100);
+            java.util.List<io.github.atengk.boot.realtime.model.RealtimeMessage<?>> retained = realtimeTemplate.getOfflineMessages(fifoUserId);
+            assertThat(retained).hasSize(100);
+            assertThat(retained.get(0).getData()).isEqualTo("Payload-5");
+            assertThat(retained.get(99).getData()).isEqualTo("Payload-104");
+        } finally {
+            realtimeTemplate.clearOfflineMessages(fifoUserId);
+        }
     }
 
     private static class KickoutHandler extends TextWebSocketHandler {

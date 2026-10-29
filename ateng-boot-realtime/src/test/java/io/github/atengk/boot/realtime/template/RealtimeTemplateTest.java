@@ -69,6 +69,28 @@ class RealtimeTemplateTest {
     }
 
     @Test
+    @DisplayName("二进制下行推送: sendBinary 向 WebSocket 会话发送二进制数据帧")
+    void testSendBinary() throws Exception {
+        WebSocketSession mockWs = mock(WebSocketSession.class);
+        when(mockWs.isOpen()).thenReturn(true);
+
+        SessionKey key = SessionKey.of("user-bin-send", "client-bin");
+        RealtimeSession session = RealtimeSession.ofWebSocket(key, mockWs);
+        sessionManager.registerSession(session);
+
+        byte[] payload = new byte[]{10, 20, 30};
+        boolean success = template.sendBinary(key, payload);
+        assertThat(success).isTrue();
+        verify(mockWs, times(1)).sendMessage(any(org.springframework.web.socket.BinaryMessage.class));
+
+        // 向不存在会话发送保底返回 false
+        assertThat(template.sendBinary(SessionKey.of("non-exist", "c"), payload)).isFalse();
+        // 空入参防御
+        assertThat(template.sendBinary(null, payload)).isFalse();
+        assertThat(template.sendBinary(key, null)).isFalse();
+    }
+
+    @Test
     @DisplayName("用户多端广播: sendToUser 向名下全部会话广播下发")
     void testSendToUser() throws Exception {
         WebSocketSession ws1 = mock(WebSocketSession.class);
@@ -289,6 +311,8 @@ class RealtimeTemplateTest {
         sessionManager.registerSession(RealtimeSession.ofWebSocket(k2, ws2, 888L, null));
 
         assertThat(sessionManager.getOnlineCountByTenant(888L)).isEqualTo(2);
+        assertThat(template.getSessionsByTenant(888L)).hasSize(2);
+        assertThat(template.getSessionsByTenant(null)).isEmpty();
 
         int kicked = template.kickoutTenant(888L);
         assertThat(kicked).isEqualTo(2);

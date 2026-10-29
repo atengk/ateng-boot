@@ -63,8 +63,8 @@ class RedissonRealtimeOfflineMessageProviderTest {
         verify(mockScoredSet).add(eq(1700000000000.0), contains("hello offline"));
         // 验证设置键级 TTL
         verify(mockScoredSet).expire(Duration.ofDays(7));
-        // 验证原子 FIFO 截断最早消息: removeRangeByRank(0, 0)
-        verify(mockScoredSet).removeRangeByRank(0, 0);
+        // 验证原子 FIFO 负向索引截断最早消息: removeRangeByRank(0, -4)
+        verify(mockScoredSet).removeRangeByRank(0, -4);
     }
 
     @Test

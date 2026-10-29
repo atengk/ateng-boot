@@ -1,5 +1,8 @@
 package io.github.atengk.boot.realtime.websocket;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.constant.RealtimeCloseStatus;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
@@ -12,6 +15,7 @@ import io.github.atengk.boot.realtime.ratelimit.SessionRateLimiter;
 import io.github.atengk.boot.realtime.session.RealtimeSession;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
@@ -104,11 +108,6 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
                 }
             }
             RealtimeSession realtimeSession = RealtimeSession.ofWebSocket(sessionKey, session, tenantId, attributes);
-            if (properties != null && properties.getWebsocket() != null
-                    && properties.getWebsocket().getRateLimit() != null
-                    && properties.getWebsocket().getRateLimit().isEnabled()) {
-                realtimeSession.setRateLimiter(new SessionRateLimiter(properties.getWebsocket().getRateLimit()));
-            }
             sessionManager.registerSession(realtimeSession);
         }
     }
@@ -124,37 +123,13 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
             realtimeSession.updateActiveTime();
         }
 
-        // 1. 会话级上行流量限制检查与阶梯防御
-        if (realtimeSession != null && realtimeSession.getRateLimiter() != null) {
-            RateLimitDecision decision = realtimeSession.getRateLimiter().tryAcquire();
-            if (decision == RateLimitDecision.CLOSE) {
-                log.warn("[Realtime] 会话持续超限触发熔断切断: sessionKey={}, sessionId={}",
-                        realtimeSession.getSessionKey(), session.getId());
-                try {
-                    RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
-                            Map.of("code", 429, "message", "Rate limit exceeded. Connection terminated."));
-                    session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
-                } catch (Throwable ignored) {
-                }
-                realtimeSession.close(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED);
-                return;
-            } else if (decision == RateLimitDecision.WARNING) {
-                log.warn("[Realtime] 会话上行流量超限丢弃请求帧: sessionKey={}, sessionId={}",
-                        realtimeSession.getSessionKey(), session.getId());
-                RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
-                        Map.of("code", 429, "message", "Rate limit exceeded. Please slow down."));
-                session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
-                return;
-            }
-        }
-
-        // 2. 快速判定字符串字面量心跳 "ping"
+        // 1. 快速判定字符串字面量心跳 "ping"（心跳放行，不计入上行业务限流）
         if ("ping".equalsIgnoreCase(payload.trim())) {
             session.sendMessage(new TextMessage("pong"));
             return;
         }
 
-        // 3. 判定标准 JSON RealtimeMessage 心跳
+        // 2. 判定标准 JSON RealtimeMessage 心跳
         RealtimeMessage<?> realtimeMessage = null;
         try {
             realtimeMessage = JsonUtil.parseObject(payload, RealtimeMessage.class);
@@ -165,6 +140,35 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (Exception ignored) {
             // 非 JSON 格式或自定义消息
+        }
+
+        // 3. 会话级上行流量限制检查与阶梯防御（心跳放行后，仅对业务请求进行频控）
+        if (realtimeSession != null && realtimeSession.getRateLimiter() != null) {
+            RateLimitDecision decision = realtimeSession.getRateLimiter().tryAcquire();
+            if (decision == RateLimitDecision.CLOSE) {
+                log.warn("[Realtime] 会话持续超限触发熔断切断: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                try {
+                    RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
+                            Map.of("code", 429, "message", "Rate limit exceeded. Connection terminated."));
+                    session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
+                } catch (Throwable e) {
+                    log.debug("[Realtime] 发送限流熔断告警帧失败: sessionId={}, error={}", session.getId(), e.getMessage());
+                }
+                realtimeSession.close(RealtimeCloseStatus.RATE_LIMIT_EXCEEDED);
+                return;
+            } else if (decision == RateLimitDecision.WARNING) {
+                log.warn("[Realtime] 会话上行流量超限丢弃请求帧: sessionKey={}, sessionId={}",
+                        realtimeSession.getSessionKey(), session.getId());
+                try {
+                    RealtimeMessage<Map<String, Object>> errorMsg = RealtimeMessage.of(RealtimeMessage.EVENT_ERROR,
+                            Map.of("code", 429, "message", "Rate limit exceeded. Please slow down."));
+                    session.sendMessage(new TextMessage(JsonUtil.toJsonString(errorMsg)));
+                } catch (Throwable e) {
+                    log.debug("[Realtime] 发送限流告警帧失败: sessionId={}, error={}", session.getId(), e.getMessage());
+                }
+                return;
+            }
         }
 
         // 4. 上行业务事件通过 RealtimeMessageDispatcher 统一路由调度
@@ -214,16 +218,30 @@ public class AtengWebSocketHandler extends TextWebSocketHandler {
             byteBuffer.duplicate().get(payloadBytes);
         }
 
-        // 3. 正交派发给已注册的 RealtimeBinaryMessageListener SPI 监听器
+        // 3. 正交派发给已注册的 RealtimeBinaryMessageListener SPI 监听器（贯通四维快照与全链路追踪）
         if (binaryListeners != null && realtimeSession != null) {
-            binaryListeners.orderedStream().forEach(listener -> {
-                try {
-                    listener.onBinaryMessage(realtimeSession, payloadBytes);
-                } catch (Throwable t) {
-                    log.warn("[Realtime] RealtimeBinaryMessageListener 执行异常: listener={}, sessionKey={}, error={}",
-                            listener.getClass().getName(), realtimeSession.getSessionKey(), t.getMessage(), t);
-                }
-            });
+            String traceId = IdUtil.fastSimpleUUID();
+            MDC.put("traceId", traceId);
+            if (realtimeSession.getSessionKey() != null && realtimeSession.getSessionKey().getUserId() != null) {
+                UserContextHolder.set(realtimeSession.getSessionKey().getUserId());
+            }
+            if (realtimeSession.getTenantId() != null) {
+                TenantContextHolder.setTenantId(realtimeSession.getTenantId());
+            }
+            try {
+                binaryListeners.orderedStream().forEach(listener -> {
+                    try {
+                        listener.onBinaryMessage(realtimeSession, payloadBytes);
+                    } catch (Throwable t) {
+                        log.warn("[Realtime] RealtimeBinaryMessageListener 执行异常: listener={}, sessionKey={}, error={}",
+                                listener.getClass().getName(), realtimeSession.getSessionKey(), t.getMessage(), t);
+                    }
+                });
+            } finally {
+                MDC.remove("traceId");
+                UserContextHolder.clear();
+                TenantContextHolder.clear();
+            }
         }
     }
 

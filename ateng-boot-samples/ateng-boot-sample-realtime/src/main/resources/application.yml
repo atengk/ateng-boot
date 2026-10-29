@@ -4,11 +4,16 @@ server:
 spring:
   application:
     name: ateng-boot-sample-realtime
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
+    redis:
+      enabled: false
     realtime:
       enabled: true
+      cluster-mode: standalone
       websocket:
         enabled: true
         path: /ws/realtime

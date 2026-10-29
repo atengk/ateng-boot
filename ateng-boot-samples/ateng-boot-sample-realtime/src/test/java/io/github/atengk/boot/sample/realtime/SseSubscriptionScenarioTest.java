@@ -131,12 +131,10 @@ class SseSubscriptionScenarioTest {
         msg1.setPersistent(true);
         realtimeTemplate.sendToUser(testUserId, msg1);
 
-        Thread.sleep(20);
         RealtimeMessage<String> msg2 = RealtimeMessage.of("evt-02", "chat:notice", "Message 2");
         msg2.setPersistent(true);
         realtimeTemplate.sendToUser(testUserId, msg2);
 
-        Thread.sleep(20);
         RealtimeMessage<String> msg3 = RealtimeMessage.of("evt-03", "chat:notice", "Message 3");
         msg3.setPersistent(true);
         realtimeTemplate.sendToUser(testUserId, msg3);

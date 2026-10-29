@@ -29,6 +29,12 @@
             <artifactId>ateng-boot-realtime</artifactId>
         </dependency>
 
+        <!-- Redis 基础设施与分布式协同 Starter (用于集群群组治理与有界离线存储实测) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
+        </dependency>
+
         <!-- Sa-Token 权限与会话安全 Starter (用于三阶握手鉴权实测) -->
         <dependency>
             <groupId>cn.dev33</groupId>

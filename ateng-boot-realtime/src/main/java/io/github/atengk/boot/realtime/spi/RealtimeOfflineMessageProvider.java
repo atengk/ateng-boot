@@ -71,9 +71,13 @@ public interface RealtimeOfflineMessageProvider {
         String trimmedId = lastEventId.trim();
         List<RealtimeMessage<?>> all = getOfflineMessages(userId);
         if (all != null && !all.isEmpty()) {
-            for (RealtimeMessage<?> msg : all) {
-                if (trimmedId.equals(msg.getId()) && msg.getTimestamp() != null) {
-                    return getOfflineMessagesSince(userId, msg.getTimestamp());
+            for (int i = 0; i < all.size(); i++) {
+                RealtimeMessage<?> msg = all.get(i);
+                if (trimmedId.equals(msg.getId())) {
+                    if (i + 1 < all.size()) {
+                        return java.util.Collections.unmodifiableList(new java.util.ArrayList<>(all.subList(i + 1, all.size())));
+                    }
+                    return java.util.Collections.emptyList();
                 }
             }
         }

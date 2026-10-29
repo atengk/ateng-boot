@@ -1,5 +1,7 @@
 package io.github.atengk.boot.realtime.websocket;
 
+import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeBinaryMessageListener;
 import io.github.atengk.boot.realtime.dispatcher.RealtimeMessageDispatcher;
@@ -10,9 +12,11 @@ import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.web.socket.*;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -171,6 +175,87 @@ class AtengWebSocketHandlerTest {
     }
 
     @Test
+    @DisplayName("心跳检测优先于限流: 高频字符串 ping 与 JSON ping 不消耗业务限流额度")
+    void testPingHeartbeatDoesNotConsumeRateLimitQuota() throws Exception {
+        io.github.atengk.boot.realtime.properties.RealtimeProperties props = new io.github.atengk.boot.realtime.properties.RealtimeProperties();
+        props.getWebsocket().getRateLimit().setEnabled(true);
+        props.getWebsocket().getRateLimit().setMaxRequestsPerSecond(2);
+        props.getWebsocket().getRateLimit().setConsecutiveViolationsBeforeClose(2);
+
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(props);
+        RealtimeMessageDispatcher dispatcher = mock(RealtimeMessageDispatcher.class);
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(sessionManager, dispatcher, props);
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("rate-ping-001");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-ping", "pc", "client-ping");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        managedHandler.afterConnectionEstablished(session);
+        RealtimeSession realtimeSession = sessionManager.getSession(key);
+        assertThat(realtimeSession).isNotNull();
+
+        // 1. 发送 10 次字符串 ping 和 10 次 JSON ping
+        TextMessage stringPing = new TextMessage("ping");
+        TextMessage jsonPing = new TextMessage(JsonUtil.toJsonString(RealtimeMessage.ping()));
+        for (int i = 0; i < 10; i++) {
+            managedHandler.handleTextMessage(session, stringPing);
+            managedHandler.handleTextMessage(session, jsonPing);
+        }
+
+        // 心跳不经过 dispatcher，不消耗限流额度，连接正常存活且未收到 429
+        verify(dispatcher, never()).dispatch(any(), any());
+        verify(session, never()).close(any());
+
+        // 2. 紧接着发送 2 次业务消息，依然可以全量正常放行（未被心跳占用额度）
+        TextMessage bizMsg = new TextMessage("{\"event\":\"chat:send\",\"data\":\"msg\"}");
+        managedHandler.handleTextMessage(session, bizMsg);
+        managedHandler.handleTextMessage(session, bizMsg);
+        verify(dispatcher, times(2)).dispatch(eq(realtimeSession), any(RealtimeMessage.class));
+    }
+
+    @Test
+    @DisplayName("限流 429 告警帧网络发送失败时不崩溃抛出异常，保持会话稳定")
+    void testRateLimitWarningSendFailureDoesNotCrashSocket() throws Exception {
+        io.github.atengk.boot.realtime.properties.RealtimeProperties props = new io.github.atengk.boot.realtime.properties.RealtimeProperties();
+        props.getWebsocket().getRateLimit().setEnabled(true);
+        props.getWebsocket().getRateLimit().setMaxRequestsPerSecond(1);
+        props.getWebsocket().getRateLimit().setConsecutiveViolationsBeforeClose(5);
+
+        RealtimeSessionManager sessionManager = new RealtimeSessionManager(props);
+        RealtimeMessageDispatcher dispatcher = mock(RealtimeMessageDispatcher.class);
+        AtengWebSocketHandler managedHandler = new AtengWebSocketHandler(sessionManager, dispatcher, props);
+
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("rate-warn-err-001");
+        when(session.isOpen()).thenReturn(true);
+        Map<String, Object> attrs = new HashMap<>();
+        SessionKey key = SessionKey.of("user-warn-err", "pc", "client-warn-err");
+        attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        when(session.getAttributes()).thenReturn(attrs);
+
+        managedHandler.afterConnectionEstablished(session);
+        RealtimeSession realtimeSession = sessionManager.getSession(key);
+        assertThat(realtimeSession).isNotNull();
+
+        TextMessage bizMsg = new TextMessage("{\"event\":\"test:event\",\"data\":\"data\"}");
+        // 第一次放行
+        managedHandler.handleTextMessage(session, bizMsg);
+
+        // 第二次超限触发 WARNING，模拟网络写失败抛出 IOException
+        doThrow(new IOException("Simulated network send broken pipe"))
+                .when(session).sendMessage(argThat(m -> ((TextMessage) m).getPayload().contains("429")));
+
+        // 不应向上抛出 IOException 导致 WebSocket 连接崩溃
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> {
+            managedHandler.handleTextMessage(session, bizMsg);
+        });
+    }
+
+    @Test
     @DisplayName("正交二进制帧上行分发: 正确委托 RealtimeBinaryMessageListener 且刷新活跃时间")
     void testBinaryMessageDelegatedToListenerAndRefreshesActiveTime() throws Exception {
         RealtimeSessionManager sessionManager = new RealtimeSessionManager();
@@ -178,9 +263,15 @@ class AtengWebSocketHandlerTest {
 
         List<byte[]> receivedPayloads = new ArrayList<>();
         List<RealtimeSession> receivedSessions = new ArrayList<>();
+        java.util.concurrent.atomic.AtomicReference<String> capturedTraceId = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> capturedUser = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Long> capturedTenant = new java.util.concurrent.atomic.AtomicReference<>();
         RealtimeBinaryMessageListener listener = (sess, payload) -> {
             receivedSessions.add(sess);
             receivedPayloads.add(payload);
+            capturedTraceId.set(MDC.get("traceId"));
+            capturedUser.set(UserContextHolder.get());
+            capturedTenant.set(TenantContextHolder.getTenantIdAsLong());
         };
 
         StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
@@ -199,6 +290,7 @@ class AtengWebSocketHandlerTest {
         Map<String, Object> attrs = new HashMap<>();
         SessionKey key = SessionKey.of("user-audio", "app", "client-bin-01");
         attrs.put(AtengWebSocketHandler.SESSION_KEY_ATTR, key);
+        attrs.put(AtengWebSocketHandler.TENANT_ID_ATTR, 777L);
         when(session.getAttributes()).thenReturn(attrs);
 
         // 1. 连接建立
@@ -215,6 +307,14 @@ class AtengWebSocketHandlerTest {
         assertThat(receivedSessions).containsExactly(realtimeSession);
         assertThat(receivedPayloads).hasSize(1);
         assertThat(receivedPayloads.get(0)).containsExactly(audioBytes);
+
+        // 4. 验证四维上下文全链路透传与执行后确定性清场
+        assertThat(capturedTraceId.get()).isNotBlank();
+        assertThat(capturedUser.get()).isEqualTo("user-audio");
+        assertThat(capturedTenant.get()).isEqualTo(777L);
+        assertThat(MDC.get("traceId")).isNull();
+        assertThat(UserContextHolder.get()).isNull();
+        assertThat(TenantContextHolder.getTenantId()).isNull();
 
         // 4. 验证与 JSON 注解路由正交解耦（dispatcher 从未被调用）
         verify(dispatcher, never()).dispatch(any(), any());

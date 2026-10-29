@@ -192,6 +192,26 @@ public class RealtimeSession implements Serializable {
     }
 
     /**
+     * 向当前物理会话下发原生二进制数据帧（仅 WebSocket 通道支持）
+     *
+     * @param payload 二进制字节数组载荷
+     * @throws IOException 当底层通道关闭或发送失败时抛出
+     * @throws UnsupportedOperationException 当通道类型不支持二进制帧时抛出（如半双工文本协议 SSE）
+     */
+    public void sendBinary(byte[] payload) throws IOException {
+        Objects.requireNonNull(payload, "payload must not be null");
+        if (!isOpen()) {
+            throw new IOException("Session is closed: " + sessionKey);
+        }
+        updateActiveTime();
+        if (channelType == ChannelType.WEBSOCKET && rawSession instanceof WebSocketSession ws) {
+            ws.sendMessage(new org.springframework.web.socket.BinaryMessage(payload));
+        } else {
+            throw new UnsupportedOperationException("Channel type [" + channelType + "] does not support binary messages: " + sessionKey);
+        }
+    }
+
+    /**
      * 以默认正常状态码关闭会话
      */
     public void close() {

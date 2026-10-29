@@ -152,19 +152,7 @@ public class RealtimeTemplate {
             case DISMISS_GROUP -> {
                 String groupId = packet.getTargetKey();
                 if (groupId != null) {
-                    Set<SessionKey> members = groupManager.dismissGroup(groupId);
-                    RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
-                            RealtimeMessage.EVENT_GROUP_DISMISSED,
-                            Map.of("groupId", groupId, "message", "Group has been dismissed")
-                    );
-                    List<RealtimeSession> sessions = new ArrayList<>(members.size());
-                    for (SessionKey key : members) {
-                        RealtimeSession session = sessionManager.getSession(key);
-                        if (session != null) {
-                            sessions.add(session);
-                        }
-                    }
-                    sendToSessions(sessions, null, dismissMessage);
+                    dismissGroupLocally(groupId);
                 }
             }
             case KICKOUT_TENANT -> {
@@ -218,6 +206,32 @@ public class RealtimeTemplate {
         }
         SessionKey sessionKey = SessionKey.of(userId, clientId);
         return sendToSession(sessionKey, message);
+    }
+
+    /**
+     * 向指定物理会话下发原生二进制数据帧（仅 WebSocket 通道支持）
+     *
+     * @param sessionKey 会话坐标
+     * @param payload    二进制字节数组载荷
+     * @return 是否成功投递
+     */
+    public boolean sendBinary(SessionKey sessionKey, byte[] payload) {
+        if (sessionKey == null || payload == null) {
+            return false;
+        }
+        RealtimeSession session = sessionManager.getSession(sessionKey);
+        if (session == null || !session.isOpen()) {
+            return false;
+        }
+        try {
+            session.sendBinary(payload);
+            return true;
+        } catch (IOException | UnsupportedOperationException e) {
+            log.warn("[Realtime] 发送二进制帧发生异常，执行安全排空: sessionKey={}, error={}",
+                    sessionKey, e.getMessage());
+            sessionManager.removeAndClose(sessionKey, CloseStatus.SERVER_ERROR);
+            return false;
+        }
     }
 
     /**
@@ -479,27 +493,42 @@ public class RealtimeTemplate {
             return 0;
         }
         String cleanGroupId = groupId.trim();
-        // 1. 本地解散并获取本地成员
-        Set<SessionKey> localMembers = groupManager.dismissGroup(cleanGroupId);
-        // 2. 向本地成员推送 group_dismissed 事件
-        RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
-                RealtimeMessage.EVENT_GROUP_DISMISSED,
-                Map.of("groupId", cleanGroupId, "message", "Group has been dismissed")
-        );
-        List<RealtimeSession> sessions = new ArrayList<>(localMembers.size());
-        for (SessionKey key : localMembers) {
-            RealtimeSession session = sessionManager.getSession(key);
-            if (session != null) {
-                sessions.add(session);
-            }
-        }
-        int localCount = sendToSessions(sessions, null, dismissMessage);
-        // 3. 若处于集群模式，广播 DISMISS_GROUP 信令
+        // 1. 本地解散并通知本地成员
+        int localCount = dismissGroupLocally(cleanGroupId);
+        // 2. 若处于集群模式，广播 DISMISS_GROUP 信令
         if (clusterBroadcaster.isClusterEnabled()) {
             clusterBroadcaster.broadcast(RealtimeClusterPacket.ofDismissGroup(clusterBroadcaster.getNodeId(), cleanGroupId));
         }
         log.info("[Realtime] 解散群组完成: groupId={}, localEjectedCount={}", cleanGroupId, localCount);
         return localCount;
+    }
+
+    /**
+     * 本地执行群组解散并向本地名下成员推送 group_dismissed 事件
+     *
+     * @param groupId 群组标识
+     * @return 成功投递的本地会话数量
+     */
+    private int dismissGroupLocally(String groupId) {
+        if (groupId == null || groupId.isBlank()) {
+            return 0;
+        }
+        Set<SessionKey> members = groupManager.dismissGroup(groupId);
+        if (members == null || members.isEmpty()) {
+            return 0;
+        }
+        RealtimeMessage<Map<String, Object>> dismissMessage = RealtimeMessage.of(
+                RealtimeMessage.EVENT_GROUP_DISMISSED,
+                Map.of("groupId", groupId, "message", "Group has been dismissed")
+        );
+        List<RealtimeSession> sessions = new ArrayList<>(members.size());
+        for (SessionKey key : members) {
+            RealtimeSession session = sessionManager.getSession(key);
+            if (session != null) {
+                sessions.add(session);
+            }
+        }
+        return sendToSessions(sessions, null, dismissMessage);
     }
 
     // ==================== 租户隔离广播与全服广播 (Tenant & Global Broadcast) ====================
@@ -713,6 +742,19 @@ public class RealtimeTemplate {
      */
     public int getOnlineCountByTenant(Long tenantId) {
         return sessionManager.getOnlineCountByTenant(tenantId);
+    }
+
+    /**
+     * 获取指定多租户维度的全量活跃会话列表
+     *
+     * @param tenantId 租户标识
+     * @return 会话不可变列表（保底返回空列表，绝不返回 null）
+     */
+    public List<RealtimeSession> getSessionsByTenant(Long tenantId) {
+        if (tenantId == null) {
+            return Collections.emptyList();
+        }
+        return sessionManager.getSessionsByTenant(tenantId);
     }
 
     /**

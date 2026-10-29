@@ -1,5 +1,6 @@
 package io.github.atengk.boot.realtime.spi;
 
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
@@ -48,6 +49,9 @@ public class RedissonRealtimeOfflineMessageProvider implements RealtimeOfflineMe
         if (message.getTimestamp() == null) {
             message.setTimestamp(timestamp);
         }
+        if (message.getId() == null || message.getId().isBlank()) {
+            message.setId(IdUtil.fastSimpleUUID());
+        }
 
         String json = JsonUtil.toJsonString(message);
         String key = getOfflineKey(userId);
@@ -63,17 +67,12 @@ public class RedissonRealtimeOfflineMessageProvider implements RealtimeOfflineMe
                 scoredSet.expire(ttl);
             }
 
-            // 2. 有界防爆仓原子 FIFO 截断：超出 maxMessagesPerUser 时剔除最早消息
+            // 2. 有界防爆仓原子 FIFO 截断：超出 maxMessagesPerUser 时通过负向索引原子截断
             int maxMessages = (properties.getOffline() != null)
                     ? properties.getOffline().getMaxMessagesPerUser()
                     : 100;
             if (maxMessages > 0) {
-                int currentSize = scoredSet.size();
-                if (currentSize > maxMessages) {
-                    int excess = currentSize - maxMessages;
-                    scoredSet.removeRangeByRank(0, excess - 1);
-                    log.debug("[Realtime-Offline] 离线消息超出配额，执行 FIFO 截断: userId={}, removedCount={}", userId, excess);
-                }
+                scoredSet.removeRangeByRank(0, -(maxMessages + 1));
             }
             log.debug("[Realtime-Offline] 成功暂存用户离线消息: userId={}, messageId={}, timestamp={}",
                     userId, message.getId(), timestamp);

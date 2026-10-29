@@ -55,7 +55,10 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * @since 2026-10-21
  */
 @AutoConfiguration
-@AutoConfigureAfter(name = "org.redisson.spring.starter.RedissonAutoConfiguration")
+@AutoConfigureAfter(name = {
+        "io.github.atengk.boot.redis.autoconfigure.AtengRedisAutoConfiguration",
+        "org.redisson.spring.starter.RedissonAutoConfiguration"
+})
 @EnableConfigurationProperties(RealtimeProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.realtime", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengRealtimeAutoConfiguration {

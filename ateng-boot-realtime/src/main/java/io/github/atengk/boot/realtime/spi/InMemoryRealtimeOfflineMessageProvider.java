@@ -1,5 +1,6 @@
 package io.github.atengk.boot.realtime.spi;
 
+import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.realtime.model.RealtimeMessage;
 import io.github.atengk.boot.realtime.properties.RealtimeProperties;
 
@@ -39,21 +40,29 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
         if (userId == null || message == null) {
             return;
         }
+        if (message.getTimestamp() == null || message.getTimestamp() <= 0) {
+            message.setTimestamp(System.currentTimeMillis());
+        }
+        if (message.getId() == null || message.getId().isBlank()) {
+            message.setId(IdUtil.fastSimpleUUID());
+        }
         String key = String.valueOf(userId);
         messageMap.compute(key, (k, deque) -> {
             if (deque == null) {
                 deque = new ArrayDeque<>();
             }
-            long now = System.currentTimeMillis();
-            long ttlMillis = ttl.toMillis();
-            if (ttlMillis > 0) {
-                deque.removeIf(msg -> msg.getTimestamp() != null && (now - msg.getTimestamp() > ttlMillis));
+            synchronized (deque) {
+                long now = System.currentTimeMillis();
+                long ttlMillis = ttl.toMillis();
+                if (ttlMillis > 0) {
+                    deque.removeIf(msg -> msg.getTimestamp() != null && (now - msg.getTimestamp() > ttlMillis));
+                }
+                // 防 OOM 治理：超出单用户最大配额时按照 FIFO 淘汰最早的消息
+                while (deque.size() >= maxMessagesPerUser) {
+                    deque.pollFirst();
+                }
+                deque.offerLast(message);
             }
-            // 防 OOM 治理：超出单用户最大配额时按照 FIFO 淘汰最早的消息
-            while (deque.size() >= maxMessagesPerUser) {
-                deque.pollFirst();
-            }
-            deque.offerLast(message);
             return deque;
         });
     }
@@ -71,12 +80,14 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
         long now = System.currentTimeMillis();
         long ttlMillis = ttl.toMillis();
         List<RealtimeMessage<?>> result = new ArrayList<>(deque.size());
-        for (RealtimeMessage<?> msg : deque) {
-            if (msg.getTimestamp() != null && ttlMillis > 0 && (now - msg.getTimestamp() > ttlMillis)) {
-                // 已过 TTL 保留期，自动丢弃
-                continue;
+        synchronized (deque) {
+            for (RealtimeMessage<?> msg : deque) {
+                if (msg.getTimestamp() != null && ttlMillis > 0 && (now - msg.getTimestamp() > ttlMillis)) {
+                    // 已过 TTL 保留期，自动丢弃
+                    continue;
+                }
+                result.add(msg);
             }
-            result.add(msg);
         }
         return Collections.unmodifiableList(result);
     }
@@ -110,25 +121,7 @@ public class InMemoryRealtimeOfflineMessageProvider implements RealtimeOfflineMe
 
     @Override
     public List<RealtimeMessage<?>> getOfflineMessages(Object userId) {
-        if (userId == null) {
-            return Collections.emptyList();
-        }
-        Deque<RealtimeMessage<?>> deque = messageMap.get(String.valueOf(userId));
-        if (deque == null || deque.isEmpty()) {
-            return Collections.emptyList();
-        }
-        long now = System.currentTimeMillis();
-        long ttlMillis = ttl.toMillis();
-        List<RealtimeMessage<?>> result = new ArrayList<>(deque.size());
-        synchronized (deque) {
-            for (RealtimeMessage<?> msg : deque) {
-                if (msg.getTimestamp() != null && ttlMillis > 0 && (now - msg.getTimestamp() > ttlMillis)) {
-                    continue;
-                }
-                result.add(msg);
-            }
-        }
-        return Collections.unmodifiableList(result);
+        return getOfflineMessagesSince(userId, 0L);
     }
 
     @Override
