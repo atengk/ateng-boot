@@ -57,6 +57,20 @@ public final class KafkaDeadLetterHelper {
     }
 
     /**
+     * 从消费记录中解析死信结构化记录（便捷别名）
+     */
+    public static DeadLetterRecord parse(ConsumerRecord<?, ?> record) {
+        return extractDeadLetterRecord(record);
+    }
+
+    /**
+     * 从消息头集合中解析死信结构化记录（便捷别名）
+     */
+    public static DeadLetterRecord parse(Headers headers) {
+        return extractDeadLetterRecord(headers);
+    }
+
+    /**
      * 从消息头集合中解析并组装完整的死信结构化诊断记录
      *
      * @param headers Kafka 消息头集合

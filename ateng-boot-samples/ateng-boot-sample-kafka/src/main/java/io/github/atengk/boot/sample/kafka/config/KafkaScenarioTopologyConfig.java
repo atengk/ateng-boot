@@ -27,6 +27,8 @@ public class KafkaScenarioTopologyConfig {
     public static final String TOPIC_USER = "sample.user.topic";
     public static final String TOPIC_BATCH = "sample.batch.topic";
     public static final String TOPIC_POISON = "sample.poison.topic";
+    public static final String TOPIC_RETRY_MAIN = "sample.retry.main.topic";
+    public static final String TOPIC_STATE_COMPACT = "sample.state.compact.topic";
 
     @Bean
     public KafkaAdmin.NewTopics orderTopics() {
@@ -61,6 +63,22 @@ public class KafkaScenarioTopologyConfig {
         return KafkaTopicBuilder.topic(TOPIC_POISON)
                 .partitions(1)
                 .replicas(1)
+                .withDlt()
+                .build();
+    }
+
+    @Bean
+    public KafkaAdmin.NewTopics stateCompactTopics() {
+        return KafkaTopicBuilder.topic(TOPIC_STATE_COMPACT)
+                .partitions(3)
+                .compact()
+                .build();
+    }
+
+    @Bean
+    public KafkaAdmin.NewTopics retryTopics() {
+        return KafkaTopicBuilder.topic(TOPIC_RETRY_MAIN)
+                .partitions(2)
                 .withDlt()
                 .build();
     }
