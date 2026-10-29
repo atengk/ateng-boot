@@ -13,11 +13,14 @@ import org.springframework.stereotype.Component;
 @Component
 public class OrderServiceClientFallback implements OrderServiceClient {
 
+    public static final String STATUS_DEGRADED = "DEGRADED";
+    public static final String STATUS_UNKNOWN = "UNKNOWN";
+
     @Override
     public OrderResponse getOrderById(String orderId) {
         return OrderResponse.builder()
                 .orderId(orderId)
-                .status("DEGRADED")
+                .status(STATUS_DEGRADED)
                 .message("远端服务异常，已触发本地优雅降级兜底")
                 .build();
     }
@@ -26,7 +29,7 @@ public class OrderServiceClientFallback implements OrderServiceClient {
     public OrderResponse getOrderStatus(String orderId) {
         return OrderResponse.builder()
                 .orderId(orderId)
-                .status("UNKNOWN")
+                .status(STATUS_UNKNOWN)
                 .message("远端订单状态查询降级")
                 .build();
     }

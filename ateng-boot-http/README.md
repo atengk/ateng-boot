@@ -8,13 +8,14 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **命令式通信** | 统一命令式操作门面 | `HttpTemplate` | `ateng.boot.http.enabled` | `get` / `getOptional` / `post` / `put` / `patch` / `delete` / `head` / `options` / `postForm` / `upload` / `download` / `consumeStream` / `executeAsync`，支持 Class 与 ParameterizedTypeReference 泛型双模、URL-encoded 表单、SSE AI 流式消费、大文件零缓冲传输与异常拦截 | `HttpTemplateSampleTest` / `HttpGovernanceScenarioTest` |
+| **命令式通信** | 统一命令式操作门面 | `HttpTemplate` | `ateng.boot.http.enabled` | `get` / `getOptional` / `getEntity` / `post` / `put` / `patch` / `delete` / `head` / `options` / `exchange` / `postForm` / `upload` / `download` / `consumeStream` / `executeAsync`，支持 Class 与 ParameterizedTypeReference 泛型双模、URL-encoded 表单、SSE AI 流式消费、大文件零缓冲传输与异常拦截 | `HttpTemplateSampleTest` / `HttpGovernanceScenarioTest` |
 | **单次动态参数** | 单次超时覆盖与头治理 | `RequestOptions`<br>`RequestOptionsApplier`<br>`HttpRequestContextHolder` | - | `RequestOptions.builder().readTimeout(Duration).header(name, value).queryParam(k, v).uriVariable(k, v).propagateContext(boolean).clientName(name).build()`，RFC 3986 安全编码与底层物理请求超时动态生效 | `RequestOptionsTest` / `RequestOptionsApplierTest` / `HttpTemplateSampleTest` |
 | **方法级超时** | 方法级细粒度超时声明 | `@HttpTimeout` | - | `@HttpTimeout(readTimeout = "500ms", connectTimeout = "1s")`，声明在接口方法上动态下发建联与读取超时，方法退出时对现场严格对称清理 | `HttpInterfaceFallbackAndTimeoutTest` / `DeclarativeClientScenarioTest` |
-| **声明式客户端** | 声明式接口标记驱动 | `@HttpClient`<br>`@HttpExchange` | `ateng.boot.http.clients.<name>.*` | `@HttpClient(name = "user-service", url = "${remote.url}", fallback = Fallback.class)`，支持元注解派生、`${...}` 占位符解析与本地优雅降级 | `HttpInterfaceRegistrarTest` / `DeclarativeClientScenarioTest` |
+| **声明式客户端** | 声明式接口标记驱动 | `@HttpClient`<br>`@HttpExchange` | `ateng.boot.http.clients.<name>.*` | `@HttpClient(name = "user-service", url = "${remote.url}", fallback = Fallback.class, primary = true)`，支持元注解派生、`${...}` 占位符解析、Primary 开关与本地优雅降级 | `HttpInterfaceRegistrarTest` / `DeclarativeClientScenarioTest` |
 | **声明式包扫描** | 声明式轻量动态包扫描器 | `@EnableHttpInterfaces`<br>`HttpInterfaceRegistrar`<br>`HttpInterfaceFactoryBean` | - | `@EnableHttpInterfaces(basePackages = "com.example.client", clients = {UserClient.class})`，自研轻量 Spring 原生扫描器，桥接 Spring 6 `HttpServiceProxyFactory` 与动态代理 | `HttpInterfaceRegistrarTest` / `DeclarativeClientScenarioTest` |
 | **声明式降级** | 本地容错降级代理 | `@HttpClient.fallback`<br>`HttpInterfaceFactoryBean` | - | 当声明式客户端调用遭遇 4xx/5xx、超时或网络中断时，由动态代理自动拦截并平滑回退执行 Fallback Bean 的同名方法 | `HttpInterfaceFallbackAndTimeoutTest` / `DeclarativeClientScenarioTest` |
 | **多命名客户端** | 多命名客户端注册表与单例缓存 | `RestClientRegistry` | `ateng.boot.http.clients.<name>.*` | `getClient(clientName, annotationUrl)` / `getClient(clientName)` / `contains(clientName)` / `register(clientName, client)` / `unregister(clientName)` / `clear()` / `resolveBaseUrl(clientName, annotationUrl)`，复用全局物理连接池，单例并发安全 | `RestClientRegistryTest` / `DeclarativeClientScenarioTest` |
+| **双向 mTLS 证书** | 金融级双向认证与证书管理 | `HttpSslUtil`<br>`HttpSslProperties` | `ateng.boot.http.ssl.*`<br>`ateng.boot.http.clients.<name>.ssl.*` | `HttpSslUtil.loadKeyStore(ssl)` / `HttpSslUtil.loadKeyManagers(ssl)`，支持 PKCS12 / JKS 格式客户端私钥证书加载与密钥管理器初始化，支持命名客户端独立挂载专属证书 | `HttpSslUtilTest` / `HttpGovernanceScenarioTest` |
 | **物理连接池** | 双模自适应物理连接池 | `ClientHttpRequestFactoryBuilder`<br>`ApacheHttpClient5Factory`<br>`JdkHttpClientFactory` | `ateng.boot.http.engine`<br>`ateng.boot.http.pool.*`<br>`ateng.boot.http.ssl.*`<br>`ateng.boot.http.proxy.*` | 依据类路径自适应探测 Apache HttpClient 5 生产级池化连接（带后台驱逐守护）或平滑回退 JDK 17 原生 `HttpClient`，严防句柄与端口耗尽 | `ClientHttpRequestFactoryBuilderTest` / `HttpTemplateSampleTest` |
 | **专属超时隔离** | 客户端专属超时包装工厂 | `ClientScopedHttpRequestFactory` | `ateng.boot.http.clients.<name>.connect-timeout`<br>`ateng.boot.http.clients.<name>.read-timeout` | 100% 共享全局物理连接池，采用 `previousTimeout` 现场还原模式为特定客户端安全附加独立的建联与读取响应超时 | `RestClientRegistryTest` / `DeclarativeClientScenarioTest` |
 | **专属代理隔离** | 全局与命名客户端正向代理 | `HttpProxyProperties` | `ateng.boot.http.proxy.*`<br>`ateng.boot.http.clients.<name>.proxy.*` | 支持出站 HTTP 正向代理配置，命名客户端可独立声明专用代理通道或继承全局 | `HttpProxyPropertiesTest` / `HttpGovernanceScenarioTest` |
@@ -120,6 +121,18 @@ ateng:
           connect-timeout: 2s
           read-timeout: 5s
           propagate-context: false      # 外部非信任域：严格物理剥离内网私有租户与用户头
+        scoped-proxy-client:
+          base-url: http://proxy-target.internal:8080
+          proxy:
+            enabled: true
+            host: 127.0.0.1
+            port: 8888
+        mtls-service:
+          base-url: https://mtls.internal:8443
+          ssl:
+            key-store: classpath:certs/sample-client-cert.p12 # 客户端私钥证书路径
+            key-store-password: cert_password                 # 密钥库密码
+            key-store-type: PKCS12                            # 密钥库类型（默认 PKCS12）
 ```
 
 ---
@@ -313,7 +326,13 @@ public class CustomClientRegistrar implements InitializingBean {
 - **声明式外部公网敏感私有头 100% 剥离**：详见 `DeclarativeClientScenarioTest.java` 场景 2；
 - **声明式 404/500 因果异常转译与状态码断言**：详见 `DeclarativeClientScenarioTest.java` 场景 3；
 - **自适应虚拟线程 500+ 并发冲击与长连接复用压测**：详见 `DeclarativeClientScenarioTest.java` 场景 4；
+- **声明式方法级细粒度超时控制 (`@HttpTimeout`)**：详见 `DeclarativeClientScenarioTest.java` 场景 5；
+- **声明式本地优雅降级容错 (`@HttpClient.fallback`)**：详见 `DeclarativeClientScenarioTest.java` 场景 6；
+- **声明式方法级超时触发本地优雅降级协同**：详见 `DeclarativeClientScenarioTest.java` 场景 7；
 - **命令式全套动词通信与流式上传下载**：详见 `HttpTemplateSampleTest.java`；
-- **出站 cURL 脱敏日志与 503 指数退避重试**：详见 `HttpGovernanceScenarioTest.java`；
+- **出站 cURL 脱敏日志与 503 指数退避重试**：详见 `HttpGovernanceScenarioTest.java` 场景 1-5；
+- **命名客户端专属正向代理与连接配置解析验证**：详见 `HttpGovernanceScenarioTest.java` 场景 6；
+- **金融级 mTLS 双向认证证书配置绑定与专职物理工厂端到端装配**：详见 `HttpGovernanceScenarioTest.java` 场景 7；
 - **轻量扫描器与元注解派生**：详见 `HttpInterfaceRegistrarTest.java`；
-- **多命名客户端注册表单例并发与多级 BaseUrl 覆盖**：详见 `RestClientRegistryTest.java`。
+- **多命名客户端注册表单例并发与多级 BaseUrl 覆盖**：详见 `RestClientRegistryTest.java`；
+- **出站 SSL 与金融级 mTLS 证书工具类**：详见 `HttpSslUtilTest.java`。

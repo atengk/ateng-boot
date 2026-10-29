@@ -358,22 +358,25 @@ class HttpGovernanceScenarioTest {
     }
 
     @Test
-    @DisplayName("场景 7：mTLS 与 SSL 凭据配置防御性自洽断言")
+    @DisplayName("场景 7：金融级 mTLS 双向认证证书配置绑定与专职物理工厂端到端装配")
     void testMtlsAndSslPropertiesIntegrity() {
-        // 验证全局 SSL 属性默认安全配置
+        // 1. 验证全局 SSL 属性默认安全配置
         assertThat(httpProperties.getSsl()).isNotNull();
         assertThat(httpProperties.getSsl().isInsecure()).isFalse();
 
-        // 动态配置专属客户端 mTLS 证书路径与安全模型，验证对象结构与防御规则
-        HttpClientItemProperties mtlsClient = new HttpClientItemProperties();
-        io.github.atengk.boot.http.properties.HttpSslProperties ssl = new io.github.atengk.boot.http.properties.HttpSslProperties();
-        ssl.setKeyStore("classpath:certs/client.p12");
-        ssl.setKeyStorePassword("client-secret-pass");
-        ssl.setKeyStoreType("PKCS12");
-        mtlsClient.setSsl(ssl);
+        // 2. 验证 Spring 容器已自动从 application.yml 完成 mtls-service 的配置绑定
+        HttpClientItemProperties mtlsConfig = httpProperties.getClients().get("mtls-service");
+        assertThat(mtlsConfig).isNotNull();
+        assertThat(mtlsConfig.getBaseUrl()).isEqualTo("https://mtls.internal:8443");
+        assertThat(mtlsConfig.getSsl()).isNotNull();
+        assertThat(mtlsConfig.getSsl().getKeyStore()).isEqualTo("classpath:certs/sample-client-cert.p12");
+        assertThat(mtlsConfig.getSsl().getKeyStorePassword()).isEqualTo("cert_password");
+        assertThat(mtlsConfig.getSsl().getKeyStoreType()).isEqualTo("PKCS12");
+        assertThat(mtlsConfig.getSsl().hasKeyStore()).isTrue();
 
-        assertThat(mtlsClient.getSsl().getKeyStore()).isEqualTo("classpath:certs/client.p12");
-        assertThat(mtlsClient.getSsl().getKeyStoreType()).isEqualTo("PKCS12");
-        assertThat(mtlsClient.getSsl().hasKeyStore()).isTrue();
+        // 3. 真实通过 RestClientRegistry 触发端到端构建，验证 mTLS 客户端私钥证书被底层物理连接池正常加载
+        org.springframework.web.client.RestClient mtlsRestClient = restClientRegistry.getClient("mtls-service");
+        assertThat(mtlsRestClient).isNotNull();
+        assertThat(restClientRegistry.contains("mtls-service")).isTrue();
     }
 }

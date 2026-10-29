@@ -46,3 +46,11 @@ ateng:
             enabled: true
             host: 127.0.0.1
             port: 8888
+        mtls-service:
+          base-url: https://mtls.internal:8443
+          connect-timeout: 2s
+          read-timeout: 5s
+          ssl:
+            key-store: ${sample.mtls-service.key-store:classpath:certs/sample-client-cert.p12}
+            key-store-password: ${sample.mtls-service.key-store-password:cert_password}
+            key-store-type: PKCS12

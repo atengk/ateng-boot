@@ -19,7 +19,18 @@ import java.io.Serializable;
 @AllArgsConstructor
 public class OrderResponse implements Serializable {
 
+    /**
+     * 业务订单唯一标识号
+     */
     private String orderId;
+
+    /**
+     * 订单当前处理状态（如 SUCCESS, DEGRADED, UNKNOWN）
+     */
     private String status;
+
+    /**
+     * 业务提示信息或降级说明
+     */
     private String message;
 }

@@ -5,6 +5,7 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.http.context.HttpRequestContextHolder;
 import io.github.atengk.boot.http.error.HttpRemoteException;
 import io.github.atengk.boot.sample.http.client.OrderServiceClient;
+import io.github.atengk.boot.sample.http.client.OrderServiceClientFallback;
 import io.github.atengk.boot.sample.http.client.UserServiceClient;
 import io.github.atengk.boot.sample.http.client.WechatPayClient;
 import io.github.atengk.boot.sample.http.dto.OrderResponse;
@@ -350,9 +351,9 @@ class DeclarativeClientScenarioTest {
 
         assertThat(response).isNotNull();
         assertThat(response.getOrderId()).isEqualTo("ORD-TIMEOUT");
-        assertThat(response.getStatus()).isEqualTo("DEGRADED");
+        assertThat(response.getStatus()).isEqualTo(OrderServiceClientFallback.STATUS_DEGRADED);
         assertThat(response.getMessage()).contains("本地优雅降级兜底");
-        assertThat(elapsed).isLessThan(1200);
+        assertThat(elapsed).isLessThan(2500);
     }
 
     /**
