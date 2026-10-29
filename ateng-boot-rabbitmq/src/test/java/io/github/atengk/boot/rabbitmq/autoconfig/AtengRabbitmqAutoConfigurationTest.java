@@ -1,6 +1,7 @@
 package io.github.atengk.boot.rabbitmq.autoconfig;
 
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
+import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -51,7 +52,7 @@ class AtengRabbitmqAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("存在 RabbitTemplate 时成功装配 RabbitReliableTemplate 门面")
+    @DisplayName("存在 RabbitTemplate 时成功装配 RabbitReliableTemplate 与 RabbitDeadLetterReplayTemplate 门面")
     void testRabbitReliableTemplateAutoConfiguration() {
         contextRunner
                 .withUserConfiguration(MockRabbitTemplateConfiguration.class)
@@ -59,6 +60,10 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RabbitReliableTemplate.class);
                     RabbitReliableTemplate template = context.getBean(RabbitReliableTemplate.class);
                     assertThat(template.getRabbitTemplate()).isNotNull();
+
+                    assertThat(context).hasSingleBean(RabbitDeadLetterReplayTemplate.class);
+                    RabbitDeadLetterReplayTemplate dlqTemplate = context.getBean(RabbitDeadLetterReplayTemplate.class);
+                    assertThat(dlqTemplate.getRabbitTemplate()).isNotNull();
                 });
     }
 
@@ -73,6 +78,7 @@ class AtengRabbitmqAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ContainerCustomizer.class);
                     assertThat(context).doesNotHaveBean(RabbitTemplate.ReturnsCallback.class);
                     assertThat(context).doesNotHaveBean(RabbitReliableTemplate.class);
+                    assertThat(context).doesNotHaveBean(RabbitDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(FatalExceptionStrategy.class);
                     assertThat(context).doesNotHaveBean(ConditionalRejectingErrorHandler.class);
                     assertThat(context).doesNotHaveBean(RabbitListenerGlobalAdvice.class);

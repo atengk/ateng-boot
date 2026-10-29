@@ -11,6 +11,7 @@ import io.github.atengk.boot.rabbitmq.error.RabbitFatalExceptionStrategy;
 import io.github.atengk.boot.rabbitmq.interceptor.RabbitListenerGlobalAdvice;
 import io.github.atengk.boot.rabbitmq.properties.RabbitmqProperties;
 import io.github.atengk.boot.rabbitmq.retry.RabbitRetryPolicy;
+import io.github.atengk.boot.rabbitmq.template.RabbitDeadLetterReplayTemplate;
 import io.github.atengk.boot.rabbitmq.template.RabbitReliableTemplate;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -143,6 +144,18 @@ public class AtengRabbitmqAutoConfiguration {
             RabbitmqProperties properties,
             ObjectProvider<RabbitTransactionFailureCallback> transactionFailureCallbackProvider) {
         return new RabbitReliableTemplate(rabbitTemplate, properties, transactionFailureCallbackProvider);
+    }
+
+    /**
+     * 装配死信队列受控治理与防雪崩重放门面模版
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(RabbitTemplate.class)
+    public RabbitDeadLetterReplayTemplate rabbitDeadLetterReplayTemplate(
+            RabbitTemplate rabbitTemplate,
+            RabbitmqProperties properties) {
+        return new RabbitDeadLetterReplayTemplate(rabbitTemplate, properties);
     }
 
     /**

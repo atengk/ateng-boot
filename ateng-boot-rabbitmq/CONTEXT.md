@@ -16,6 +16,14 @@ _Avoid_: AmqpTopologyHelper, QueueExchangeBuilder, MqTopologyManager
 RabbitMQ 死信元数据只读诊断助手工具类，从 AMQP 消息属性复杂的嵌套 `x-death` 头中安全提取原死信队列名、原交换机、死信原因（`rejected` / `expired` / `maxlen`）与流转计数值，宽容兼容 String、byte[] 与 LongString 等底层异构驱动类型。
 _Avoid_: DeadLetterUtil, XDeathExtractor, DlqDiagnosticHelper
 
+**RabbitDeadLetterReplayTemplate**:
+RabbitMQ 死信受控重放与治理门面，提供死信重新入队 `replay`、头部只读探查 `peek` 与队列清空 `purge`，内置单批上限保护与 `X-Dead-Letter-Replayed` 防二次死信雪崩标记。
+_Avoid_: DlqReplayer, DeadLetterManager, RabbitDlqService
+
+**OverflowStrategy**:
+RabbitMQ 队列溢出策略强类型枚举，定义队列到达最大长度或最大容量时的丢弃与拒绝行为（`DROP_HEAD`、`REJECT_PUBLISH`、`REJECT_PUBLISH_DLX`）。
+_Avoid_: QueueOverflowMode, MqOverflowType
+
 **RabbitListenerGlobalAdvice**:
 消费端全局统一环绕拦截通知链，位于消费容器最外层，负责在调用业务消费方法前激活四维消息上下文（TraceId、TenantId、UserId）与 MDC，耗时度量，并在捕获 `IdempotentException` 时执行静默确认（Silent ACK）阻断重试风暴，在 `finally` 块中执行确定性现场清理。
 _Avoid_: ConsumeAspect, RabbitInterceptor, MqConsumeAdvice
