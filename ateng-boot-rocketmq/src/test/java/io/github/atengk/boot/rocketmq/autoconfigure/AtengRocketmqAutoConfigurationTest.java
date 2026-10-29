@@ -2,9 +2,11 @@ package io.github.atengk.boot.rocketmq.autoconfigure;
 
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
+import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import org.apache.rocketmq.client.apis.ClientConfiguration;
 import org.apache.rocketmq.client.apis.message.MessageView;
@@ -64,7 +66,9 @@ class AtengRocketmqAutoConfigurationTest {
                     assertThat(context).hasSingleBean(ClientConfiguration.class);
                     assertThat(context).hasSingleBean(RocketmqTransactionChecker.class);
                     assertThat(context).hasSingleBean(PushConsumerFactory.class);
+                    assertThat(context).hasSingleBean(SimpleConsumerFactory.class);
                     assertThat(context).hasSingleBean(RocketmqConsumerContainer.class);
+                    assertThat(context).hasSingleBean(RocketmqSimpleConsumerTemplate.class);
 
                     AtengRocketmqProperties properties = context.getBean(AtengRocketmqProperties.class);
                     assertThat(properties.getEndpoints()).isEqualTo("127.0.0.1:8081");

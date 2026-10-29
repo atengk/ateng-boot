@@ -45,6 +45,11 @@ class AtengRocketmqPropertiesTest {
         assertThat(properties.getConsumer().getConsumptionThreadCount()).isEqualTo(20);
         assertThat(properties.getConsumer().getMaxCacheMessageCount()).isEqualTo(1024);
         assertThat(properties.getConsumer().getCloseTimeout()).isEqualTo(Duration.ofSeconds(15));
+
+        // SimpleConsumer 默认值
+        assertThat(properties.getSimpleConsumer().getInvisibleDuration()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(properties.getSimpleConsumer().getMaxMessageNum()).isEqualTo(32);
+        assertThat(properties.getSimpleConsumer().getAwaitDuration()).isEqualTo(Duration.ofSeconds(5));
     }
 
     @Test
@@ -65,6 +70,9 @@ class AtengRocketmqPropertiesTest {
         map.put("ateng.boot.rocketmq.consumer.consumption-thread-count", "30");
         map.put("ateng.boot.rocketmq.consumer.max-cache-message-count", "2048");
         map.put("ateng.boot.rocketmq.consumer.close-timeout", "20s");
+        map.put("ateng.boot.rocketmq.simple-consumer.invisible-duration", "45s");
+        map.put("ateng.boot.rocketmq.simple-consumer.max-message-num", "64");
+        map.put("ateng.boot.rocketmq.simple-consumer.await-duration", "10s");
 
         ConfigurationPropertySource source = new MapConfigurationPropertySource(map);
         Binder binder = new Binder(source);
@@ -84,5 +92,8 @@ class AtengRocketmqPropertiesTest {
         assertThat(properties.getConsumer().getConsumptionThreadCount()).isEqualTo(30);
         assertThat(properties.getConsumer().getMaxCacheMessageCount()).isEqualTo(2048);
         assertThat(properties.getConsumer().getCloseTimeout()).isEqualTo(Duration.ofSeconds(20));
+        assertThat(properties.getSimpleConsumer().getInvisibleDuration()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(properties.getSimpleConsumer().getMaxMessageNum()).isEqualTo(64);
+        assertThat(properties.getSimpleConsumer().getAwaitDuration()).isEqualTo(Duration.ofSeconds(10));
     }
 }

@@ -59,6 +59,12 @@ public class AtengRocketmqProperties {
     private Consumer consumer = new Consumer();
 
     /**
+     * SimpleConsumer 流式拉取消费配置
+     */
+    @NestedConfigurationProperty
+    private SimpleConsumer simpleConsumer = new SimpleConsumer();
+
+    /**
      * 生产端参数配置
      */
     @Data
@@ -115,5 +121,27 @@ public class AtengRocketmqProperties {
          * 优雅停机排空在途消费消息的最大等待超时时间（默认 15s）
          */
         private Duration closeTimeout = Duration.ofSeconds(15);
+    }
+
+    /**
+     * SimpleConsumer 流式拉取参数配置
+     */
+    @Data
+    public static class SimpleConsumer {
+
+        /**
+         * 消息拉取后默认隐身不可见租约时长（默认 30s）
+         */
+        private Duration invisibleDuration = Duration.ofSeconds(30);
+
+        /**
+         * 单次拉取最大批量消息数量（默认 32）
+         */
+        private int maxMessageNum = 32;
+
+        /**
+         * 长轮询拉取最大挂起等待时间（默认 5s）
+         */
+        private Duration awaitDuration = Duration.ofSeconds(5);
     }
 }

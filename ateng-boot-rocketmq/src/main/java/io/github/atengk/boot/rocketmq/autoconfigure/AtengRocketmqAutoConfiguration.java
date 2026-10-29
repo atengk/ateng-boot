@@ -2,11 +2,14 @@ package io.github.atengk.boot.rocketmq.autoconfigure;
 
 import io.github.atengk.boot.rocketmq.checker.RocketmqTransactionChecker;
 import io.github.atengk.boot.rocketmq.consumer.DefaultPushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.DefaultSimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.consumer.PushConsumerFactory;
+import io.github.atengk.boot.rocketmq.consumer.SimpleConsumerFactory;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.properties.AtengRocketmqProperties;
 import io.github.atengk.boot.rocketmq.spi.RocketmqLocalTransactionChecker;
 import io.github.atengk.boot.rocketmq.spi.RocketmqTransactionFailureCallback;
+import io.github.atengk.boot.rocketmq.template.RocketmqSimpleConsumerTemplate;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import jakarta.validation.Validator;
 import lombok.extern.slf4j.Slf4j;
@@ -139,6 +142,27 @@ public class AtengRocketmqAutoConfiguration {
     @ConditionalOnMissingBean
     public PushConsumerFactory pushConsumerFactory() {
         return new DefaultPushConsumerFactory();
+    }
+
+    /**
+     * RocketMQ SimpleConsumer 构造工厂
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SimpleConsumerFactory simpleConsumerFactory() {
+        return new DefaultSimpleConsumerFactory();
+    }
+
+    /**
+     * RocketMQ 消费端流式拉取与租约控制门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public RocketmqSimpleConsumerTemplate rocketmqSimpleConsumerTemplate(
+            AtengRocketmqProperties properties,
+            ObjectProvider<ClientConfiguration> clientConfigurationProvider,
+            SimpleConsumerFactory simpleConsumerFactory) {
+        return new RocketmqSimpleConsumerTemplate(properties, clientConfigurationProvider, simpleConsumerFactory);
     }
 
     /**
