@@ -18,7 +18,6 @@ import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
 import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
-import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
@@ -172,10 +171,10 @@ public class AtengHealthAutoConfiguration {
         @ConditionalOnMissingBean(name = "redisHealthIndicator")
         public RedisSafeHealthIndicator redisHealthIndicator(
                 ObjectProvider<RedisConnectionFactory> connectionFactoryProvider,
-                ObjectProvider<RedissonClient> redissonClientProvider,
+                ApplicationContext applicationContext,
                 ObservabilityProperties properties,
                 @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
-            return new RedisSafeHealthIndicator(connectionFactoryProvider, redissonClientProvider, properties, executorProvider.getIfAvailable());
+            return new RedisSafeHealthIndicator(connectionFactoryProvider, applicationContext, properties, executorProvider.getIfAvailable());
         }
     }
 

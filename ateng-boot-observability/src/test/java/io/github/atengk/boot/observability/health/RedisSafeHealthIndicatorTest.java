@@ -3,9 +3,9 @@ package io.github.atengk.boot.observability.health;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RedissonClient;
-import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
+import org.springframework.context.support.StaticApplicationContext;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -28,10 +28,12 @@ class RedisSafeHealthIndicatorTest {
     @Test
     @DisplayName("未装配任何 Redis 或 Redisson 实例时，返回 UNKNOWN 状态")
     void testNoRedisConfigured() {
-        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.refresh();
+
         RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
-                beanFactory.getBeanProvider(RedisConnectionFactory.class),
-                beanFactory.getBeanProvider(RedissonClient.class)
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context
         );
 
         Health health = indicator.health();
@@ -50,13 +52,14 @@ class RedisSafeHealthIndicatorTest {
         RedissonClient mockRedisson = mock(RedissonClient.class);
         when(mockRedisson.isShutdown()).thenReturn(false);
 
-        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
-        beanFactory.addBean("redisConnectionFactory", mockFactory);
-        beanFactory.addBean("redissonClient", mockRedisson);
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.registerBean("redisConnectionFactory", RedisConnectionFactory.class, () -> mockFactory);
+        context.registerBean("redissonClient", RedissonClient.class, () -> mockRedisson);
+        context.refresh();
 
         RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
-                beanFactory.getBeanProvider(RedisConnectionFactory.class),
-                beanFactory.getBeanProvider(RedissonClient.class),
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context,
                 Duration.ofSeconds(1),
                 null
         );
@@ -68,17 +71,41 @@ class RedisSafeHealthIndicatorTest {
     }
 
     @Test
+    @DisplayName("仅装配 Redis 连接工厂且未装配 Redisson 客户端时，正常返回 UP 状态")
+    void testOnlyRedisUp() {
+        RedisConnectionFactory mockFactory = mock(RedisConnectionFactory.class);
+        RedisConnection mockConnection = mock(RedisConnection.class);
+        when(mockFactory.getConnection()).thenReturn(mockConnection);
+        when(mockConnection.ping()).thenReturn("PONG");
+
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.registerBean("redisConnectionFactory", RedisConnectionFactory.class, () -> mockFactory);
+        context.refresh();
+
+        RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context
+        );
+
+        Health health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails()).containsEntry("ping", "PONG");
+        assertThat(health.getDetails()).doesNotContainKey("redisson");
+    }
+
+    @Test
     @DisplayName("Redis 连接探测抛出异常时，返回 DOWN 状态")
     void testRedisConnectionDown() {
         RedisConnectionFactory mockFactory = mock(RedisConnectionFactory.class);
         when(mockFactory.getConnection()).thenThrow(new RedisConnectionFailureException("Connection refused"));
 
-        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
-        beanFactory.addBean("redisConnectionFactory", mockFactory);
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.registerBean("redisConnectionFactory", RedisConnectionFactory.class, () -> mockFactory);
+        context.refresh();
 
         RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
-                beanFactory.getBeanProvider(RedisConnectionFactory.class),
-                beanFactory.getBeanProvider(RedissonClient.class)
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context
         );
 
         Health health = indicator.health();
@@ -92,12 +119,13 @@ class RedisSafeHealthIndicatorTest {
         RedissonClient mockRedisson = mock(RedissonClient.class);
         when(mockRedisson.isShutdown()).thenReturn(true);
 
-        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
-        beanFactory.addBean("redissonClient", mockRedisson);
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.registerBean("redissonClient", RedissonClient.class, () -> mockRedisson);
+        context.refresh();
 
         RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
-                beanFactory.getBeanProvider(RedisConnectionFactory.class),
-                beanFactory.getBeanProvider(RedissonClient.class)
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context
         );
 
         Health health = indicator.health();
@@ -117,12 +145,13 @@ class RedisSafeHealthIndicatorTest {
             return "PONG";
         });
 
-        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
-        beanFactory.addBean("redisConnectionFactory", mockFactory);
+        StaticApplicationContext context = new StaticApplicationContext();
+        context.registerBean("redisConnectionFactory", RedisConnectionFactory.class, () -> mockFactory);
+        context.refresh();
 
         RedisSafeHealthIndicator indicator = new RedisSafeHealthIndicator(
-                beanFactory.getBeanProvider(RedisConnectionFactory.class),
-                beanFactory.getBeanProvider(RedissonClient.class),
+                context.getBeanProvider(RedisConnectionFactory.class),
+                context,
                 Duration.ofMillis(80),
                 null
         );
