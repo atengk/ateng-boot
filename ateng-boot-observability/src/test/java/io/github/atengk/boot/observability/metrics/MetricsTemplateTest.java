@@ -186,4 +186,34 @@ class MetricsTemplateTest {
         String val = nullTemplate.record("test", () -> "fallback");
         assertThat(val).isEqualTo("fallback");
     }
+
+    @Test
+    @DisplayName("对称注销与生命周期清理：支持按 Meter、Id、指标名+标签注销及清空")
+    void testSymmetricRemoveAndClearOperations() {
+        // 注册指标
+        metricsTemplate.increment("order.temp.counter", 10.0, "type", "temp");
+        Counter counter = metricsTemplate.counter("order.temp.counter", "type", "temp");
+        assertThat(counter).isNotNull();
+
+        // 1. 按名称+标签注销
+        int removed = metricsTemplate.remove("order.temp.counter", "type", "temp");
+        assertThat(removed).isEqualTo(1);
+        assertThat(metricsTemplate.count("order.temp.counter", "type", "temp")).isEqualTo(0.0);
+
+        // 2. 重新注册并按 Meter 实例注销
+        metricsTemplate.increment("order.temp.counter2", 5.0, "type", "temp2");
+        Counter counter2 = metricsTemplate.counter("order.temp.counter2", "type", "temp2");
+        assertThat(metricsTemplate.remove(counter2)).isNotNull();
+
+        // 3. 按 Meter.Id 注销
+        Timer timer = metricsTemplate.timer("order.temp.timer", "type", "temp");
+        assertThat(timer).isNotNull();
+        assertThat(metricsTemplate.remove(timer.getId())).isNotNull();
+
+        // 4. clear 清空全部度量
+        metricsTemplate.increment("batch.metric.1");
+        metricsTemplate.increment("batch.metric.2");
+        metricsTemplate.clear();
+        assertThat(registry.getMeters()).isEmpty();
+    }
 }

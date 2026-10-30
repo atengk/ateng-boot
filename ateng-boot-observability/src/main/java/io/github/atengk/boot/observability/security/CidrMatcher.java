@@ -1,6 +1,7 @@
 package io.github.atengk.boot.observability.security;
 
 import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -163,12 +164,7 @@ public final class CidrMatcher {
         if (clientIp == null || clientIp.isBlank() || cidrsOrIps == null || cidrsOrIps.length == 0) {
             return false;
         }
-        for (String rule : cidrsOrIps) {
-            if (matches(clientIp, rule)) {
-                return true;
-            }
-        }
-        return false;
+        return matchesAny(clientIp, Arrays.asList(cidrsOrIps));
     }
 
     private static boolean isNumericIpv4(String s) {

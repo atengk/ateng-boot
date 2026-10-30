@@ -79,15 +79,10 @@ public class ObservedMetricAspect {
 
     private void recordSuccess(ObservedMetric annotation, String metricName, Tags baseTags, Timer.Sample sample) {
         try {
-            Tags successTags = baseTags.and("status", "success");
-            if (annotation.recordDuration() && sample != null) {
-                Timer.Builder builder = Timer.builder(metricName)
-                        .tags(successTags)
-                        .description("Observed method execution timer");
-                if (annotation.percentiles() != null && annotation.percentiles().length > 0) {
-                    builder.publishPercentiles(annotation.percentiles());
-                }
-                sample.stop(builder.register(this.metricsTemplate.getRegistry()));
+            // 严格遵守 Prometheus 指标规约：成功与失败分支必须保持完全相同的 Tag Keys 集合（补齐 exception="none"）
+            Tags successTags = baseTags.and("status", "success", "exception", "none");
+            if (annotation.recordDuration()) {
+                recordTimer(metricName, successTags, annotation.percentiles(), sample);
             }
             if (annotation.recordSuccess()) {
                 this.metricsTemplate.increment(metricName + ".calls", 1.0, successTags);
@@ -101,14 +96,8 @@ public class ObservedMetricAspect {
         try {
             String exceptionName = ex.getClass().getSimpleName();
             Tags failureTags = baseTags.and("status", "error", "exception", exceptionName);
-            if (annotation.recordDuration() && sample != null) {
-                Timer.Builder builder = Timer.builder(metricName)
-                        .tags(failureTags)
-                        .description("Observed method execution timer");
-                if (annotation.percentiles() != null && annotation.percentiles().length > 0) {
-                    builder.publishPercentiles(annotation.percentiles());
-                }
-                sample.stop(builder.register(this.metricsTemplate.getRegistry()));
+            if (annotation.recordDuration()) {
+                recordTimer(metricName, failureTags, annotation.percentiles(), sample);
             }
             if (annotation.recordFailure()) {
                 this.metricsTemplate.increment(metricName + ".calls", 1.0, failureTags);
@@ -116,5 +105,18 @@ public class ObservedMetricAspect {
         } catch (Exception e) {
             log.warn("ObservedMetricAspect 记录失败指标异常: {}", e.getMessage());
         }
+    }
+
+    private void recordTimer(String metricName, Tags tags, double[] percentiles, Timer.Sample sample) {
+        if (sample == null || this.metricsTemplate.getRegistry() == null) {
+            return;
+        }
+        Timer.Builder builder = Timer.builder(metricName)
+                .tags(tags)
+                .description("Observed method execution timer");
+        if (percentiles != null && percentiles.length > 0) {
+            builder.publishPercentiles(percentiles);
+        }
+        sample.stop(builder.register(this.metricsTemplate.getRegistry()));
     }
 }

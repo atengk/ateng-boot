@@ -348,4 +348,48 @@ class ActuatorEndpointSecurityFilterTest {
         verify(chainEnv, never()).doFilter(reqEnv, resEnv);
         assertThat(resEnv.getStatus()).isEqualTo(403);
     }
+
+    @Test
+    @DisplayName("前缀相似的常规业务端点（如 /actuators, /actuator-ui）不被误判为 Actuator 并正常放行")
+    void testSimilarPrefixEndpointNotBlocked() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setToken("strict-token");
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        String[] businessUris = {"/actuators", "/actuator-ui", "/actuator-monitor/metrics"};
+        for (String uri : businessUris) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", uri);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            FilterChain filterChain = mock(FilterChain.class);
+
+            filter.doFilter(request, response, filterChain);
+
+            verify(filterChain).doFilter(request, response);
+            assertThat(response.getStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    @DisplayName("服务端 Basic Auth 用户名密码未配置或为空时，空凭据无法逃逸放行并阻断 403")
+    void testBasicAuthEmptyConfiguredCredentialsRejectsEmptyInput() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        // 开启了 basic-auth 但未配置有效的 username 和 password
+        properties.getSecurity().getBasicAuth().setEnabled(true);
+        properties.getSecurity().getBasicAuth().setUsername("");
+        properties.getSecurity().getBasicAuth().setPassword("");
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        // 构造空凭据 Basic Og== (即解码为 ":")
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/actuator/env");
+        request.addHeader("Authorization", "Basic Og==");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain filterChain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
 }

@@ -73,10 +73,13 @@ public class ObservabilityEnvironmentPostProcessor implements EnvironmentPostPro
         Boolean k8sIsolationEnabled = environment.getProperty("ateng.boot.observability.health.k8s-isolation-enabled", Boolean.class, true);
         if (!Boolean.FALSE.equals(k8sIsolationEnabled)) {
             defaults.put("management.endpoint.health.group.liveness.include", "livenessState,ping");
+            defaults.put("management.endpoint.health.group.readiness.include", "*");
         }
 
         // 3. 健康检查详情始终展示（由上层 ActuatorEndpointSecurityFilter 统一拦截敏感信息）
         defaults.put("management.endpoint.health.show-details", "always");
+        defaults.put("management.endpoint.health.group.liveness.show-details", "always");
+        defaults.put("management.endpoint.health.group.readiness.show-details", "always");
 
         // 4. 应用信息环境探测开启
         defaults.put("management.info.env.enabled", "true");

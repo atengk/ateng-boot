@@ -127,7 +127,21 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
                     publishDegradedEvent("DOWN", costMs, "Probe reported DOWN status", null);
                 }
                 return health;
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                // 线程被主线程超时切断中断，由主线程负责发布 TIMEOUT 事件，工作线程避免重复发布次生事件
+                return Health.unknown()
+                        .withDetail("status", "CANCELLED")
+                        .withDetail("reason", "Probe execution cancelled by timeout")
+                        .build();
             } catch (Exception ex) {
+                if (Thread.currentThread().isInterrupted() || isInterruptedCause(ex)) {
+                    // 若线程已被中断取消，不再重复发布次生 DOWN 事件
+                    return Health.unknown()
+                            .withDetail("status", "CANCELLED")
+                            .withDetail("reason", "Probe execution cancelled by timeout")
+                            .build();
+                }
                 long costMs = System.currentTimeMillis() - startTime;
                 log.warn("健康探针 [{}] 执行检测异常: {}", getClass().getSimpleName(), ex.getMessage(), ex);
                 publishDegradedEvent("DOWN", costMs, ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(), ex);
@@ -201,4 +215,15 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator, Ap
      * @throws Exception 探测过程中抛出的任何异常
      */
     protected abstract void doCheck(Health.Builder builder) throws Exception;
+
+    private static boolean isInterruptedCause(Throwable ex) {
+        Throwable current = ex;
+        while (current != null) {
+            if (current instanceof InterruptedException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
 }

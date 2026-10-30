@@ -98,6 +98,7 @@ class ObservedMetricAspectTest {
                 .tag("class", "TestServiceImpl")
                 .tag("method", "defaultObservedMethod")
                 .tag("status", "success")
+                .tag("exception", "none")
                 .counter();
         assertThat(counter).isNotNull();
         assertThat(counter.count()).isEqualTo(1.0);
@@ -107,6 +108,7 @@ class ObservedMetricAspectTest {
                 .tag("class", "TestServiceImpl")
                 .tag("method", "defaultObservedMethod")
                 .tag("status", "success")
+                .tag("exception", "none")
                 .timer();
         assertThat(timer).isNotNull();
         assertThat(timer.count()).isEqualTo(1);
@@ -122,6 +124,7 @@ class ObservedMetricAspectTest {
                 .tag("class", "TestServiceImpl")
                 .tag("method", "customObservedMethod")
                 .tag("status", "success")
+                .tag("exception", "none")
                 .tag("region", "cn")
                 .tag("channel", "app")
                 .counter();
@@ -132,6 +135,7 @@ class ObservedMetricAspectTest {
                 .tag("region", "cn")
                 .tag("channel", "app")
                 .tag("status", "success")
+                .tag("exception", "none")
                 .timer();
         assertThat(timer).isNotNull();
         assertThat(timer.count()).isEqualTo(1);
@@ -205,6 +209,7 @@ class ObservedMetricAspectTest {
                 .tag("method", "doWork")
                 .tag("tier", "standard")
                 .tag("status", "success")
+                .tag("exception", "none")
                 .counter();
         assertThat(counter).isNotNull();
         assertThat(counter.count()).isEqualTo(1.0);

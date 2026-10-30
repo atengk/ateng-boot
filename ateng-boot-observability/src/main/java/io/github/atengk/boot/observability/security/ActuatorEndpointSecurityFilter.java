@@ -116,8 +116,8 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
             path = "";
         }
 
-        // 非 Actuator 端点请求，直接放行
-        if (!path.startsWith(this.basePath)) {
+        // 非 Actuator 端点请求，直接放行（严格比对路径全等或带斜杠子路径，防止误伤 /actuators 等常规业务端点）
+        if (!path.equals(this.basePath) && !path.startsWith(this.basePath + "/")) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -177,7 +177,6 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
         } else if (authHeader != null && authHeader.regionMatches(true, 0, "Basic ", 0, 6)) {
             reason = "未授权访问高危端点：Basic Auth 账号密码不匹配";
         } else if ((configuredToken == null || configuredToken.isBlank()) && (basicAuth == null || !basicAuth.isEnabled())) {
-            log.warn("Actuator 端点安全拦截：高危端点 [{}] 处于加固状态且未配置授权 Token 或 Basic Auth，来源 IP [{}] 拒绝访问", path, clientIp);
             reason = "高危敏感端点已加固锁定，未配置授权 Token 拒绝访问";
         } else {
             reason = "未授权访问高危端点：来源 IP 未在白名单且未提供有效授权凭据";
@@ -254,8 +253,12 @@ public class ActuatorEndpointSecurityFilter extends OncePerRequestFilter impleme
             String username = credentials.substring(0, colonIndex);
             String password = credentials.substring(colonIndex + 1);
 
-            String configuredUsername = Objects.requireNonNullElse(basicAuth.getUsername(), "");
-            String configuredPassword = Objects.requireNonNullElse(basicAuth.getPassword(), "");
+            String configuredUsername = basicAuth.getUsername();
+            String configuredPassword = basicAuth.getPassword();
+            if (configuredUsername == null || configuredUsername.isBlank()
+                    || configuredPassword == null || configuredPassword.isBlank()) {
+                return false;
+            }
 
             byte[] userA = username.getBytes(StandardCharsets.UTF_8);
             byte[] userB = configuredUsername.getBytes(StandardCharsets.UTF_8);

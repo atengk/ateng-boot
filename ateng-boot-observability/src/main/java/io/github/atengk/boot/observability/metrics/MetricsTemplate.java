@@ -2,6 +2,7 @@ package io.github.atengk.boot.observability.metrics;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
@@ -514,7 +515,79 @@ public class MetricsTemplate {
     }
 
     // ==========================================
-    // 5. 辅助与标签清洗方法
+    // 5. 动态注销与生命周期清理操作 (Symmetric Facades)
+    // ==========================================
+
+    /**
+     * 从当前 MeterRegistry 中注销并移除指定 Meter 实例
+     *
+     * @param meter 待移除的 Meter 实例
+     * @return 移除的 Meter，若注册表为空或未找到返回 null
+     */
+    public Meter remove(Meter meter) {
+        if (this.registry == null || meter == null) {
+            return null;
+        }
+        return this.registry.remove(meter);
+    }
+
+    /**
+     * 根据 Meter.Id 从当前 MeterRegistry 中注销并移除指定度量
+     *
+     * @param id 待移除的 Meter.Id
+     * @return 移除的 Meter，若注册表为空或未找到返回 null
+     */
+    public Meter remove(Meter.Id id) {
+        if (this.registry == null || id == null) {
+            return null;
+        }
+        return this.registry.remove(id);
+    }
+
+    /**
+     * 根据指标名称与标签注销并移除度量
+     *
+     * @param name 指标名称
+     * @param tags 标签键值对
+     * @return 移除的 Meter 集合数量
+     */
+    public int remove(String name, String... tags) {
+        return remove(name, toTags(tags));
+    }
+
+    /**
+     * 根据指标名称与标签注销并移除度量
+     *
+     * @param name 指标名称
+     * @param tags 标签集合
+     * @return 移除的 Meter 集合数量
+     */
+    public int remove(String name, Iterable<Tag> tags) {
+        if (this.registry == null || isBlank(name)) {
+            return 0;
+        }
+        Collection<Meter> meters = this.registry.find(name).tags(tags != null ? tags : Tags.empty()).meters();
+        int removedCount = 0;
+        for (Meter meter : meters) {
+            if (this.registry.remove(meter) != null) {
+                removedCount++;
+            }
+        }
+        return removedCount;
+    }
+
+    /**
+     * 清空当前注册表中的所有度量指标（谨慎调用，通常用于单元测试状态清理）
+     */
+    public void clear() {
+        if (this.registry == null) {
+            return;
+        }
+        this.registry.clear();
+    }
+
+    // ==========================================
+    // 6. 辅助与标签清洗方法
     // ==========================================
 
     /**

@@ -108,13 +108,19 @@ public class TrackingRejectedExecutionHandler implements RejectedExecutionHandle
     @Override
     public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {
         long count = rejectedCount.incrementAndGet();
-        if (log.isWarnEnabled()) {
-            log.warn("ateng-boot: Task rejected by ThreadPoolExecutor [pool={}, poolSize={}, activeCount={}, queueSize={}, cumulativeRejectedCount={}]",
-                    poolName, executor.getPoolSize(), executor.getActiveCount(),
-                    executor.getQueue() != null ? executor.getQueue().size() : 0, count);
+        if (executor != null) {
+            if (log.isWarnEnabled()) {
+                log.warn("ateng-boot: Task rejected by ThreadPoolExecutor [pool={}, poolSize={}, activeCount={}, queueSize={}, cumulativeRejectedCount={}]",
+                        poolName, executor.getPoolSize(), executor.getActiveCount(),
+                        executor.getQueue() != null ? executor.getQueue().size() : 0, count);
+            }
+            publishRejectedEvent(r, executor, count);
+        } else {
+            log.warn("ateng-boot: Task rejected with null ThreadPoolExecutor [pool={}, cumulativeRejectedCount={}]", poolName, count);
         }
-        publishRejectedEvent(r, executor, count);
-        delegate.rejectedExecution(r, executor);
+        if (delegate != null) {
+            delegate.rejectedExecution(r, executor);
+        }
     }
 
     /**
