@@ -2,12 +2,10 @@ package io.github.atengk.boot.mail.template.renderer;
 
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -61,50 +59,16 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         }
 
         // 2. 依次尝试查找类路径下的模板资源（支持国际化级联探测：template_en_US.html -> template_en.html -> template.html）
-        String base = templateName;
-        String ext = ".html";
-        if (templateName.endsWith(".html")) {
-            base = templateName.substring(0, templateName.length() - 5);
-            ext = ".html";
-        } else if (templateName.endsWith(".htm")) {
-            base = templateName.substring(0, templateName.length() - 4);
-            ext = ".htm";
-        } else if (templateName.endsWith(".ftl")) {
-            base = templateName.substring(0, templateName.length() - 4);
-            ext = ".ftl";
-        }
-
-        List<String> candidateNames = new ArrayList<>();
-        if (locale != null) {
-            if (locale.getCountry() != null && !locale.getCountry().isBlank()) {
-                candidateNames.add(base + "_" + locale.getLanguage() + "_" + locale.getCountry() + ext);
-            }
-            if (locale.getLanguage() != null && !locale.getLanguage().isBlank()) {
-                candidateNames.add(base + "_" + locale.getLanguage() + ext);
-            }
-        }
-        candidateNames.add(base + ext);
-        if (!candidateNames.contains(templateName)) {
-            candidateNames.add(templateName);
-        }
+        List<String> candidateNames = MailTemplateResourceUtil.buildPhysicalCandidateFileNames(templateName, locale, ".html");
 
         for (String candidate : candidateNames) {
-            String[] candidatePaths = new String[]{
-                    candidate,
-                    "templates/mail/" + candidate,
-                    "templates/" + candidate,
-                    "mail/" + candidate
-            };
-
-            for (String path : candidatePaths) {
-                Resource resource = new ClassPathResource(path);
-                if (resource.exists()) {
-                    try (InputStream in = resource.getInputStream()) {
-                        return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                    } catch (Exception e) {
-                        throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
-                                "读取类路径邮件模板失败: [" + path + "]", e);
-                    }
+            Resource resource = MailTemplateResourceUtil.resolveClasspathResource(candidate);
+            if (resource != null) {
+                try (InputStream in = resource.getInputStream()) {
+                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
+                            "读取类路径邮件模板失败: [" + candidate + "]", e);
                 }
             }
         }

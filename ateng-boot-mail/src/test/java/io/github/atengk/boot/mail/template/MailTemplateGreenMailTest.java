@@ -1942,6 +1942,27 @@ class MailTemplateGreenMailTest {
     }
 
     @Test
+    @DisplayName("测试 archive-bcc 防御不可变 Bcc 列表：传入 List.of 时安全合并绝不抛出异常")
+    void testArchiveBccWithImmutableBccListDoesNotThrow() throws Exception {
+        mailProperties.setArchiveBcc("compliance@atengk.com");
+
+        MailMessage msg = new MailMessage()
+                .to("target@example.com")
+                .subject("不可变密送合并测试")
+                .text("测试 List.of 不可变集合");
+        // 显式设置不可变 List
+        msg.setBcc(List.of("audit@atengk.com"));
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+
+        assertEquals(2, msg.getBcc().size());
+        assertTrue(msg.getBcc().contains("audit@atengk.com"));
+        assertTrue(msg.getBcc().contains("compliance@atengk.com"));
+    }
+
+    @Test
     @DisplayName("测试 MailPriority.HIGH 高优先级邮件自动注入 X-Priority 与 Importance 标头")
     void testMailPriorityHighHeaders() throws Exception {
         MailMessage msg = new MailMessage()

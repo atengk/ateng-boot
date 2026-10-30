@@ -2,12 +2,9 @@ package io.github.atengk.boot.mail.template.renderer;
 
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
-import org.springframework.core.io.ClassPathResource;
 import org.thymeleaf.context.Context;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -51,49 +48,6 @@ public class ThymeleafMailTemplateRenderer implements MailTemplateRenderer {
     }
 
     private String resolveTemplateName(String templateName, Locale locale) {
-        if (locale == null) {
-            return templateName;
-        }
-
-        String base = templateName;
-        String ext = "";
-        if (templateName.endsWith(".html")) {
-            base = templateName.substring(0, templateName.length() - 5);
-            ext = ".html";
-        }
-
-        String lang = locale.getLanguage();
-        String country = locale.getCountry();
-
-        List<String> candidates = new ArrayList<>();
-        if (country != null && !country.isBlank()) {
-            candidates.add(base + "_" + lang + "_" + country + ext);
-        }
-        if (lang != null && !lang.isBlank()) {
-            candidates.add(base + "_" + lang + ext);
-        }
-
-        for (String candidate : candidates) {
-            if (templateExists(candidate)) {
-                return candidate;
-            }
-        }
-        return templateName;
-    }
-
-    private boolean templateExists(String templateName) {
-        String path = templateName.endsWith(".html") ? templateName : templateName + ".html";
-        String[] probePaths = new String[]{
-                path,
-                "templates/" + path,
-                "templates/mail/" + path,
-                "mail/" + path
-        };
-        for (String probe : probePaths) {
-            if (new ClassPathResource(probe).exists()) {
-                return true;
-            }
-        }
-        return false;
+        return MailTemplateResourceUtil.resolveExistingTemplateName(templateName, locale);
     }
 }

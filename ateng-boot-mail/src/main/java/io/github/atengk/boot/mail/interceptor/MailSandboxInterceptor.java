@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -60,10 +61,11 @@ public class MailSandboxInterceptor implements MailSendInterceptor, Ordered {
         // 1. 纯日志模拟发信模式 (log-only=true)：不发起真实网络连接，仅在控制台输出脱敏完整报文
         if (properties.isLogOnly()) {
             logDesensitizedMessage(message);
-            if (message.getHeaders() == null) {
-                message.setHeaders(new LinkedHashMap<>());
-            }
-            message.getHeaders().put(HEADER_SANDBOX_LOG_ONLY, "true");
+            Map<String, String> headers = message.getHeaders() != null
+                    ? new LinkedHashMap<>(message.getHeaders())
+                    : new LinkedHashMap<>();
+            headers.put(HEADER_SANDBOX_LOG_ONLY, "true");
+            message.setHeaders(headers);
             return true;
         }
 
@@ -100,24 +102,21 @@ public class MailSandboxInterceptor implements MailSendInterceptor, Ordered {
         // 强制重写目标 To 列表
         message.setTo(new ArrayList<>(List.of(redirectTo.trim())));
 
-        // 强制清空 Cc 和 Bcc 列表
-        if (message.getCc() != null) {
-            message.getCc().clear();
-        }
-        if (message.getBcc() != null) {
-            message.getBcc().clear();
-        }
+        // 强制清空 Cc 和 Bcc 列表（防御调用方传入不可变集合，直接置换为新可变实例）
+        message.setCc(new ArrayList<>());
+        message.setBcc(new ArrayList<>());
 
         // 主题追加 [SANDBOX-REDIRECT to: original@...] 标头供测试核验
         String prefix = "[SANDBOX-REDIRECT to: " + originalTo + "] ";
         String originalSubject = message.getSubject() != null ? message.getSubject() : "";
         message.setSubject(prefix + originalSubject);
 
-        // 注入审计追踪标头
-        if (message.getHeaders() == null) {
-            message.setHeaders(new LinkedHashMap<>());
-        }
-        message.getHeaders().put(HEADER_SANDBOX_REDIRECTED_FROM, originalTo);
+        // 注入审计追踪标头（防御不可变 Map）
+        Map<String, String> headers = message.getHeaders() != null
+                ? new LinkedHashMap<>(message.getHeaders())
+                : new LinkedHashMap<>();
+        headers.put(HEADER_SANDBOX_REDIRECTED_FROM, originalTo);
+        message.setHeaders(headers);
 
         return true;
     }

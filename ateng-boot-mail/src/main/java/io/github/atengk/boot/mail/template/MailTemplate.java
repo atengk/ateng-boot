@@ -1503,24 +1503,27 @@ public class MailTemplate implements DisposableBean {
             return;
         }
 
-        if (message.getBcc() == null) {
-            message.setBcc(new ArrayList<>());
-        }
-
+        List<String> mutableBcc = message.getBcc() != null ? new ArrayList<>(message.getBcc()) : new ArrayList<>();
         Set<String> existing = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        existing.addAll(message.getBcc());
+        existing.addAll(mutableBcc);
 
+        boolean modified = false;
         for (String address : addresses) {
             if (address == null) {
                 continue;
             }
             String trimmed = address.trim();
             if (!trimmed.isBlank() && !existing.contains(trimmed)) {
-                message.getBcc().add(trimmed);
+                mutableBcc.add(trimmed);
                 existing.add(trimmed);
+                modified = true;
                 log.debug("Appended compliance archive-bcc: [{}] to mail: [{}]",
                         DesensitizeUtil.email(trimmed), message.getSubject());
             }
+        }
+
+        if (modified || message.getBcc() == null) {
+            message.setBcc(mutableBcc);
         }
     }
 

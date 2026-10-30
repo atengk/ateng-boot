@@ -9,6 +9,7 @@ import org.springframework.core.Ordered;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -185,5 +186,50 @@ class MailSandboxInterceptorTest {
         // 纯日志模式保留原收件人信息供日志观察
         assertThat(message.getTo()).containsExactly("user@external.com");
         assertThat(message.getCc()).containsExactly("manager@external.com");
+    }
+
+    @Test
+    @DisplayName("防御不可变集合：传入不可变 List.of 与 Map.of 时重定向与纯日志模式均安全无异常")
+    void testImmutableCollectionsDefensiveHandling() {
+        MailSandboxProperties props = new MailSandboxProperties();
+        props.setEnabled(true);
+        props.setAllowedRecipients(List.of("*@internal.com"));
+        props.setRedirectTo("mail-trap@company.com");
+        MailSandboxInterceptor interceptor = new MailSandboxInterceptor(props);
+
+        // 构造包含不可变 List.of 与 Map.of 的邮件对象
+        MailMessage message = MailMessage.builder()
+                .to(List.of("external-customer@gmail.com"))
+                .cc(List.of("external-cc@gmail.com"))
+                .bcc(List.of("external-bcc@gmail.com"))
+                .headers(Map.of("X-Custom-Trace", "12345"))
+                .subject("Invoice")
+                .text("Invoice Body")
+                .build();
+
+        // 验证重定向模式清空不可变 Cc/Bcc 绝不抛出 UnsupportedOperationException
+        boolean proceed = interceptor.preSend(message);
+        assertThat(proceed).isTrue();
+        assertThat(message.getTo()).containsExactly("mail-trap@company.com");
+        assertThat(message.getCc()).isEmpty();
+        assertThat(message.getBcc()).isEmpty();
+        assertThat(message.getHeaders())
+                .containsEntry("X-Custom-Trace", "12345")
+                .containsEntry(MailSandboxInterceptor.HEADER_SANDBOX_REDIRECTED_FROM, "external-customer@gmail.com");
+
+        // 验证纯日志模式向不可变 headers 注入标头绝不抛出 UnsupportedOperationException
+        props.setLogOnly(true);
+        MailMessage logOnlyMessage = MailMessage.builder()
+                .to(List.of("external@gmail.com"))
+                .headers(Map.of("X-Original-App", "pay-service"))
+                .subject("Payment Notice")
+                .text("Simulated")
+                .build();
+
+        boolean logOnlyProceed = interceptor.preSend(logOnlyMessage);
+        assertThat(logOnlyProceed).isTrue();
+        assertThat(logOnlyMessage.getHeaders())
+                .containsEntry("X-Original-App", "pay-service")
+                .containsEntry(MailSandboxInterceptor.HEADER_SANDBOX_LOG_ONLY, "true");
     }
 }
