@@ -57,6 +57,11 @@ class ObservabilityPropertiesTest {
         assertThat(properties.getSecurity()).isNotNull();
         assertThat(properties.getSecurity().isLockdownEnabled()).isTrue();
         assertThat(properties.getSecurity().getToken()).isEmpty();
+        assertThat(properties.getSecurity().getAllowedIpRanges()).isEmpty();
+        assertThat(properties.getSecurity().getBasicAuth()).isNotNull();
+        assertThat(properties.getSecurity().getBasicAuth().isEnabled()).isFalse();
+        assertThat(properties.getSecurity().getBasicAuth().getUsername()).isEmpty();
+        assertThat(properties.getSecurity().getBasicAuth().getPassword()).isEmpty();
 
         // Admin 客户端默认配置
         assertThat(properties.getAdminClient()).isNotNull();
@@ -85,6 +90,11 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.health.search.enabled=false",
                         "ateng.boot.observability.security.lockdown-enabled=true",
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
+                        "ateng.boot.observability.security.allowed-ip-ranges[0]=10.0.0.0/8",
+                        "ateng.boot.observability.security.allowed-ip-ranges[1]=192.168.1.0/24",
+                        "ateng.boot.observability.security.basic-auth.enabled=true",
+                        "ateng.boot.observability.security.basic-auth.username=admin",
+                        "ateng.boot.observability.security.basic-auth.password=secret123",
                         "ateng.boot.observability.admin-client.enabled=true",
                         "ateng.boot.observability.admin-client.client-secret=SBA_SECRET_777",
                         "ateng.boot.observability.admin-client.service-url=http://app:8080",
@@ -109,6 +119,10 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
+                    assertThat(props.getSecurity().getAllowedIpRanges()).containsExactly("10.0.0.0/8", "192.168.1.0/24");
+                    assertThat(props.getSecurity().getBasicAuth().isEnabled()).isTrue();
+                    assertThat(props.getSecurity().getBasicAuth().getUsername()).isEqualTo("admin");
+                    assertThat(props.getSecurity().getBasicAuth().getPassword()).isEqualTo("secret123");
                     assertThat(props.getAdminClient().isEnabled()).isTrue();
                     assertThat(props.getAdminClient().getClientSecret()).isEqualTo("SBA_SECRET_777");
                     assertThat(props.getAdminClient().getServiceUrl()).isEqualTo("http://app:8080");

@@ -1,23 +1,30 @@
 package io.github.atengk.boot.observability.security;
 
+import io.github.atengk.boot.observability.event.ActuatorAccessDeniedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
  * ActuatorEndpointSecurityFilter 端点安全守卫过滤器单元测试
- * 验证白名单放行、高危端点锁定、Token 凭据核验及防时序绕过
+ * 验证白名单放行、高危端点锁定、CIDR IP 白名单免密、Basic Auth 与 Token 互斥核验、防时序绕过及安全事件发布
  *
  * @author Ateng
  * @since 2026-10-22
@@ -126,6 +133,162 @@ class ActuatorEndpointSecurityFilterTest {
 
         filter.doFilter(requestValidToken, responseValidToken, chainValidToken);
         verify(chainValidToken).doFilter(requestValidToken, responseValidToken);
+    }
+
+    @Test
+    @DisplayName("第一层网络防护：CIDR IP 白名单免密放行验证 (RemoteAddr 与 X-Forwarded-For)")
+    void testCidrIpWhitelistPassThrough() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setToken("super-token");
+        properties.getSecurity().setAllowedIpRanges(List.of("10.0.0.0/8", "192.168.1.0/24"));
+
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        // 1. RemoteAddr 命中 10.0.0.0/8 白名单 -> 免密放行
+        MockHttpServletRequest req1 = new MockHttpServletRequest("GET", "/actuator/env");
+        req1.setRemoteAddr("10.5.6.7");
+        MockHttpServletResponse res1 = new MockHttpServletResponse();
+        FilterChain chain1 = mock(FilterChain.class);
+
+        filter.doFilter(req1, res1, chain1);
+        verify(chain1).doFilter(req1, res1);
+        assertThat(res1.getStatus()).isEqualTo(200);
+
+        // 2. X-Forwarded-For 命中 192.168.1.0/24 白名单 -> 免密放行
+        MockHttpServletRequest req2 = new MockHttpServletRequest("GET", "/actuator/beans");
+        req2.setRemoteAddr("203.0.113.1");
+        req2.addHeader("X-Forwarded-For", "192.168.1.88, 10.0.0.1");
+        MockHttpServletResponse res2 = new MockHttpServletResponse();
+        FilterChain chain2 = mock(FilterChain.class);
+
+        filter.doFilter(req2, res2, chain2);
+        verify(chain2).doFilter(req2, res2);
+        assertThat(res2.getStatus()).isEqualTo(200);
+
+        // 3. IP 未命中白名单且无凭据 -> 阻断 403
+        MockHttpServletRequest req3 = new MockHttpServletRequest("GET", "/actuator/env");
+        req3.setRemoteAddr("203.0.113.50");
+        MockHttpServletResponse res3 = new MockHttpServletResponse();
+        FilterChain chain3 = mock(FilterChain.class);
+
+        filter.doFilter(req3, res3, chain3);
+        verify(chain3, never()).doFilter(req3, res3);
+        assertThat(res3.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("第二层凭据防护：HTTP Basic Auth 认证成功放行与失败阻断")
+    void testBasicAuthValidation() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().getBasicAuth().setEnabled(true);
+        properties.getSecurity().getBasicAuth().setUsername("actuator-admin");
+        properties.getSecurity().getBasicAuth().setPassword("Admin@2026");
+
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        // 1. 正确 Basic Auth 账号密码 -> 放行
+        String validAuth = "Basic " + Base64.getEncoder().encodeToString("actuator-admin:Admin@2026".getBytes(StandardCharsets.UTF_8));
+        MockHttpServletRequest reqValid = new MockHttpServletRequest("GET", "/actuator/env");
+        reqValid.addHeader(ActuatorEndpointSecurityFilter.AUTHORIZATION_HEADER, validAuth);
+        MockHttpServletResponse resValid = new MockHttpServletResponse();
+        FilterChain chainValid = mock(FilterChain.class);
+
+        filter.doFilter(reqValid, resValid, chainValid);
+        verify(chainValid).doFilter(reqValid, resValid);
+        assertThat(resValid.getStatus()).isEqualTo(200);
+
+        // 2. 错误密码 -> 阻断 403
+        String wrongAuth = "Basic " + Base64.getEncoder().encodeToString("actuator-admin:WrongPass".getBytes(StandardCharsets.UTF_8));
+        MockHttpServletRequest reqWrong = new MockHttpServletRequest("GET", "/actuator/env");
+        reqWrong.addHeader(ActuatorEndpointSecurityFilter.AUTHORIZATION_HEADER, wrongAuth);
+        MockHttpServletResponse resWrong = new MockHttpServletResponse();
+        FilterChain chainWrong = mock(FilterChain.class);
+
+        filter.doFilter(reqWrong, resWrong, chainWrong);
+        verify(chainWrong, never()).doFilter(reqWrong, resWrong);
+        assertThat(resWrong.getStatus()).isEqualTo(403);
+
+        // 3. 非法畸形 Basic Auth Header -> 阻断 403
+        MockHttpServletRequest reqMalformed = new MockHttpServletRequest("GET", "/actuator/env");
+        reqMalformed.addHeader(ActuatorEndpointSecurityFilter.AUTHORIZATION_HEADER, "Basic ???not-valid-base64???");
+        MockHttpServletResponse resMalformed = new MockHttpServletResponse();
+        FilterChain chainMalformed = mock(FilterChain.class);
+
+        filter.doFilter(reqMalformed, resMalformed, chainMalformed);
+        verify(chainMalformed, never()).doFilter(reqMalformed, resMalformed);
+        assertThat(resMalformed.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("双因子互斥凭据核验 (Token OR Basic Auth 双通道)")
+    void testTokenAndBasicAuthOrLogic() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setToken("custom-token-999");
+        properties.getSecurity().getBasicAuth().setEnabled(true);
+        properties.getSecurity().getBasicAuth().setUsername("admin");
+        properties.getSecurity().getBasicAuth().setPassword("pwd123");
+
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties);
+
+        // 1. 仅携带合法 Token -> 放行
+        MockHttpServletRequest reqToken = new MockHttpServletRequest("GET", "/actuator/env");
+        reqToken.addHeader(ActuatorEndpointSecurityFilter.ACTUATOR_TOKEN_HEADER, "custom-token-999");
+        MockHttpServletResponse resToken = new MockHttpServletResponse();
+        FilterChain chainToken = mock(FilterChain.class);
+        filter.doFilter(reqToken, resToken, chainToken);
+        verify(chainToken).doFilter(reqToken, resToken);
+
+        // 2. 仅携带合法 Basic Auth -> 放行
+        String basic = "Basic " + Base64.getEncoder().encodeToString("admin:pwd123".getBytes(StandardCharsets.UTF_8));
+        MockHttpServletRequest reqBasic = new MockHttpServletRequest("GET", "/actuator/beans");
+        reqBasic.addHeader(ActuatorEndpointSecurityFilter.AUTHORIZATION_HEADER, basic);
+        MockHttpServletResponse resBasic = new MockHttpServletResponse();
+        FilterChain chainBasic = mock(FilterChain.class);
+        filter.doFilter(reqBasic, resBasic, chainBasic);
+        verify(chainBasic).doFilter(reqBasic, resBasic);
+
+        // 3. 既提供错误 Token 又提供错误 Basic -> 阻断 403
+        MockHttpServletRequest reqBothWrong = new MockHttpServletRequest("GET", "/actuator/beans");
+        reqBothWrong.addHeader(ActuatorEndpointSecurityFilter.ACTUATOR_TOKEN_HEADER, "wrong-token");
+        reqBothWrong.addHeader(ActuatorEndpointSecurityFilter.AUTHORIZATION_HEADER, "Basic " + Base64.getEncoder().encodeToString("admin:wrong".getBytes(StandardCharsets.UTF_8)));
+        MockHttpServletResponse resBothWrong = new MockHttpServletResponse();
+        FilterChain chainBothWrong = mock(FilterChain.class);
+        filter.doFilter(reqBothWrong, resBothWrong, chainBothWrong);
+        verify(chainBothWrong, never()).doFilter(reqBothWrong, resBothWrong);
+        assertThat(resBothWrong.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("未授权阻断时自动发布 ActuatorAccessDeniedEvent 领域审计事件")
+    void testAccessDeniedEventPublished() throws ServletException, IOException {
+        ObservabilityProperties properties = new ObservabilityProperties();
+        properties.getSecurity().setLockdownEnabled(true);
+        properties.getSecurity().setToken("safe-token");
+
+        ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
+        ActuatorEndpointSecurityFilter filter = new ActuatorEndpointSecurityFilter(properties, "/actuator", eventPublisher);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/actuator/env");
+        request.setRemoteAddr("198.51.100.22");
+        request.addHeader(ActuatorEndpointSecurityFilter.ACTUATOR_TOKEN_HEADER, "bad-token");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain filterChain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, filterChain);
+
+        assertThat(response.getStatus()).isEqualTo(403);
+
+        ArgumentCaptor<ActuatorAccessDeniedEvent> captor = ArgumentCaptor.forClass(ActuatorAccessDeniedEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+
+        ActuatorAccessDeniedEvent capturedEvent = captor.getValue();
+        assertThat(capturedEvent.getUri()).isEqualTo("/actuator/env");
+        assertThat(capturedEvent.getClientIp()).isEqualTo("198.51.100.22");
+        assertThat(capturedEvent.getReason()).contains("X-Actuator-Token 凭据缺失或不匹配");
+        assertThat(capturedEvent.toString()).contains("/actuator/env");
     }
 
     @Test

@@ -6,6 +6,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 云原生可观测性与度量运维配置属性
@@ -302,6 +304,40 @@ public class ObservabilityProperties {
          * 若为空字符串，则高危敏感端点完全禁止匿名外部访问，直接返回 403/404。
          */
         private String token = "";
+
+        /**
+         * 免密访问高危端点的内网 IP 或 CIDR 网段白名单（例如 10.0.0.0/8, 192.168.1.0/24, 127.0.0.1）
+         */
+        private List<String> allowedIpRanges = new ArrayList<>();
+
+        /**
+         * Actuator 端点 HTTP Basic Auth 认证配置
+         */
+        @NestedConfigurationProperty
+        private BasicAuthProperties basicAuth = new BasicAuthProperties();
+    }
+
+    /**
+     * Actuator 端点 HTTP Basic Auth 认证配置
+     */
+    @Getter
+    @Setter
+    public static class BasicAuthProperties {
+
+        /**
+         * 是否启用 Actuator 端点 HTTP Basic Auth 认证（默认关闭）
+         */
+        private boolean enabled = false;
+
+        /**
+         * HTTP Basic Auth 认证用户名
+         */
+        private String username = "";
+
+        /**
+         * HTTP Basic Auth 认证密码
+         */
+        private String password = "";
     }
 
     /**
