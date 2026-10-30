@@ -1,0 +1,27 @@
+# ==============================================================================
+# ateng-boot-sample-ftp 本地真实 FTP 中间件联调配置模板
+#
+# 使用指南：
+# 1. 复制当前文件至同目录并重命名为 application-local.yml
+# 2. 将下方占位符替换为您本地或企业测试环境的真实 FTP 连接参数
+# 3. 运行测试时追加参数 -Dspring.profiles.active=local 即可直连真实服务联调
+#
+# 安全防线：
+# application-local.yml 已被根目录 .gitignore 物理拦截，严禁包含真实公网 IP 或敏感凭据提交至 Git！
+# ==============================================================================
+ateng:
+  boot:
+    ftp:
+      enabled: true
+      host: YOUR_FTP_HOST
+      port: 21
+      username: YOUR_FTP_USERNAME
+      password: YOUR_FTP_PASSWORD
+      passive-mode: true
+      servers:
+        backup:
+          host: YOUR_BACKUP_FTP_HOST
+          port: 21
+          username: YOUR_BACKUP_FTP_USERNAME
+          password: YOUR_BACKUP_FTP_PASSWORD
+          passive-mode: true

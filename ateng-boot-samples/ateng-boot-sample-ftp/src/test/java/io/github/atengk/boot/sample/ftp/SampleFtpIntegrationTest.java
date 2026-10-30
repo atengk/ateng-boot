@@ -1,99 +1,116 @@
 package io.github.atengk.boot.sample.ftp;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.ftp.context.FtpContextHolder;
-import io.github.atengk.boot.sample.ftp.dto.FtpRenameRequest;
+import io.github.atengk.boot.ftp.model.BatchTransferResult;
+import io.github.atengk.boot.ftp.model.FtpFileInfo;
+import io.github.atengk.boot.sample.ftp.service.ConnectivityProbeScenarioService;
+import io.github.atengk.boot.sample.ftp.service.DocumentSyncScenarioService;
+import io.github.atengk.boot.sample.ftp.service.DynamicRoutingScenarioService;
+import io.github.atengk.boot.sample.ftp.service.LargeFileTransferScenarioService;
+import io.github.atengk.boot.sample.ftp.service.SettlementBatchSyncScenarioService;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockftpserver.fake.FakeFtpServer;
 import org.mockftpserver.fake.UserAccount;
 import org.mockftpserver.fake.filesystem.DirectoryEntry;
 import org.mockftpserver.fake.filesystem.FileSystem;
 import org.mockftpserver.fake.filesystem.UnixFakeFileSystem;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.web.servlet.MockMvc;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
- * FTP 样例服务端到端真实集成测试
+ * FTP 样例工程 5 大真实业务场景端到端集成实测
  * <p>
- * 覆盖：
- * 1. MultipartFile 表单原子上传与流式下载（含 Content-Disposition 与 UTF-8 编码）
- * 2. 纯文本快捷读写 (readText / writeText)
- * 3. 详细元数据获取 (info) 与存在性探查 (exists)
- * 4. 目录递归创建 (mkdir) 与 MLSD 目录列举 (list)
- * 5. 文件安全重命名 (rename) 与跨目录移动 (move)
- * 6. 文件与目录的确定性删除 (delete-file / delete-dir)
- * 7. 动态切源路由 (routed-read / upload 到 backup 节点)
- * 8. 原生会话逃逸舱 (native-pwd)
- * 9. 路径穿越与高危字符安全防御 (Path Traversal Guard)
- * 10. JSR-303 参数格式校验 Fail-Fast 防御
+ * 验证在真实 Spring Boot 容器环境下：
+ * 1. DocumentSyncScenarioService: 日常文件读写、流式上传下载、存在探测、元数据查看、增量追加、受管原子复制与安全删除
+ * 2. SettlementBatchSyncScenarioService: 金融日结对账全目录递归上传与下载同步、隐藏文件过滤与 Fail-Safe 容错聚合回执
+ * 3. LargeFileTransferScenarioService: 大文件流式上传下载与 FtpProgressListener 平滑防抖进度监听
+ * 4. DynamicRoutingScenarioService: 多节点动态切源 FtpContextHolder.runWith 栈式隔离与主备互斥
+ * 5. ConnectivityProbeScenarioService: 物理连通性自验探针 testConnection() 与 testConnectionOrThrow()
  * </p>
  *
  * @author Ateng
- * @since 2026-10-22
+ * @since 2026-10-30
  */
 @SpringBootTest
-@AutoConfigureMockMvc
+@Slf4j
+@DisplayName("FTP 样例工程 5 大真实业务场景端到端集成实测")
 public class SampleFtpIntegrationTest {
 
     private static FakeFtpServer defaultServer;
     private static FakeFtpServer backupServer;
 
     @Autowired
-    private MockMvc mockMvc;
+    private DocumentSyncScenarioService documentSyncService;
 
     @Autowired
-    private ObjectMapper objectMapper;
+    private SettlementBatchSyncScenarioService settlementBatchSyncService;
 
-    @BeforeAll
-    static void startServers() {
-        // 1. 启动默认主节点 (动态可用端口)
-        defaultServer = new FakeFtpServer();
-        defaultServer.setServerControlPort(0);
-        FileSystem defaultFs = new UnixFakeFileSystem();
-        defaultFs.add(new DirectoryEntry("/"));
-        defaultServer.setFileSystem(defaultFs);
-        defaultServer.addUserAccount(new UserAccount("admin", "password123", "/"));
-        defaultServer.start();
+    @Autowired
+    private LargeFileTransferScenarioService largeFileTransferService;
 
-        // 2. 启动备用数据源节点 (动态可用端口)
-        backupServer = new FakeFtpServer();
-        backupServer.setServerControlPort(0);
-        FileSystem backupFs = new UnixFakeFileSystem();
-        backupFs.add(new DirectoryEntry("/"));
-        backupServer.setFileSystem(backupFs);
-        backupServer.addUserAccount(new UserAccount("backup_user", "backup_password", "/"));
-        backupServer.start();
+    @Autowired
+    private DynamicRoutingScenarioService dynamicRoutingService;
+
+    @Autowired
+    private ConnectivityProbeScenarioService connectivityProbeService;
+
+    private static boolean isLocalProfile() {
+        String active = System.getProperty("spring.profiles.active");
+        if (active != null && active.contains("local")) {
+            return true;
+        }
+        String envActive = System.getenv("SPRING_PROFILES_ACTIVE");
+        return envActive != null && envActive.contains("local");
+    }
+
+    static {
+        if (!isLocalProfile()) {
+            // 1. 启动默认主节点 (动态可用端口)
+            defaultServer = new FakeFtpServer();
+            defaultServer.setServerControlPort(0);
+            FileSystem defaultFs = new UnixFakeFileSystem();
+            defaultFs.add(new DirectoryEntry("/"));
+            defaultServer.setFileSystem(defaultFs);
+            defaultServer.addUserAccount(new UserAccount("admin", "password123", "/"));
+            defaultServer.start();
+
+            // 2. 启动备用数据源节点 (动态可用端口)
+            backupServer = new FakeFtpServer();
+            backupServer.setServerControlPort(0);
+            FileSystem backupFs = new UnixFakeFileSystem();
+            backupFs.add(new DirectoryEntry("/"));
+            backupServer.setFileSystem(backupFs);
+            backupServer.addUserAccount(new UserAccount("backup_user", "backup_password", "/"));
+            backupServer.start();
+        }
     }
 
     @DynamicPropertySource
     static void configureFtpProperties(DynamicPropertyRegistry registry) {
-        registry.add("ateng.boot.ftp.port", () -> defaultServer.getServerControlPort());
-        registry.add("ateng.boot.ftp.servers.backup.port", () -> backupServer.getServerControlPort());
+        if (!isLocalProfile() && defaultServer != null && backupServer != null) {
+            registry.add("ateng.boot.ftp.port", () -> defaultServer.getServerControlPort());
+            registry.add("ateng.boot.ftp.servers.backup.port", () -> backupServer.getServerControlPort());
+        }
     }
 
     @AfterAll
@@ -111,217 +128,195 @@ public class SampleFtpIntegrationTest {
         FtpContextHolder.clear();
     }
 
-    @Test
-    @DisplayName("01. 表单文件原子上传与 HTTP 流式下载自验")
-    void testUploadAndDownload() throws Exception {
-        byte[] fileBytes = "Hello ateng-boot FTP Integration Test!".getBytes(StandardCharsets.UTF_8);
-        MockMultipartFile file = new MockMultipartFile("file", "sample-doc.txt", "text/plain", fileBytes);
-
-        // 1. 上传文件
-        mockMvc.perform(multipart("/api/ftp/upload")
-                        .file(file)
-                        .param("remotePath", "/data/sample-doc.txt"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(200)))
-                .andExpect(jsonPath("$.data", is(true)));
-
-        // 2. 流式下载文件
-        mockMvc.perform(get("/api/ftp/download")
-                        .param("remotePath", "/data/sample-doc.txt"))
-                .andExpect(status().isOk())
-                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, containsString("sample-doc.txt")))
-                .andExpect(content().bytes(fileBytes));
+    @TestConfiguration
+    @Profile("!local")
+    static class OfflineFtpTestConfig {
+        // 标配 @Profile("!local")，当激活 local Profile 联调真实环境时自动失效
     }
 
     @Test
-    @DisplayName("02. 纯文本快捷写入与读取自验")
-    void testWriteAndReadText() throws Exception {
-        String testContent = "Quick Text Content for FTP Test";
+    @DisplayName("01. DocumentSyncScenarioService: 企业日常文档全生命周期自验")
+    void testDocumentSyncScenario(@TempDir Path tempDir) throws IOException {
+        String remoteDocPath = "/docs/policy.txt";
+        String initialContent = "Enterprise Security Policy v1.0";
 
-        // 1. 写入文本
-        mockMvc.perform(post("/api/ftp/write-text")
-                        .param("remotePath", "/text/config.json")
-                        .param("content", testContent))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(200)))
-                .andExpect(jsonPath("$.data", is(true)));
+        // 1. 纯文本快捷写入与读取
+        boolean written = documentSyncService.writeText(remoteDocPath, initialContent);
+        assertThat(written).isTrue();
+        assertThat(documentSyncService.exists(remoteDocPath)).isTrue();
+        assertThat(documentSyncService.readText(remoteDocPath)).isEqualTo(initialContent);
 
-        // 2. 读取文本
-        mockMvc.perform(get("/api/ftp/read-text")
-                        .param("remotePath", "/text/config.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(200)))
-                .andExpect(jsonPath("$.data", is(testContent)));
+        // 2. 增量追加写入 (RFC 959 APPE)
+        boolean appended = documentSyncService.appendText(remoteDocPath, "\n[Append] Approved by Security Committee");
+        assertThat(appended).isTrue();
+        String updatedContent = documentSyncService.readText(remoteDocPath);
+        assertThat(updatedContent).contains("Approved by Security Committee");
+
+        // 3. 元数据解析
+        FtpFileInfo info = documentSyncService.getDocumentInfo(remoteDocPath);
+        assertThat(info).isNotNull();
+        assertThat(info.getName()).isEqualTo("policy.txt");
+        assertThat(info.getSize()).isPositive();
+        assertThat(info.isDirectory()).isFalse();
+        assertThat(info.isFile()).isTrue();
+
+        // 4. 受管单文件管道原子复制 (copy)
+        String copiedPath = "/docs/policy_backup.txt";
+        boolean copied = documentSyncService.copyDocument(remoteDocPath, copiedPath);
+        assertThat(copied).isTrue();
+        assertThat(documentSyncService.exists(copiedPath)).isTrue();
+        assertThat(documentSyncService.readText(copiedPath)).isEqualTo(updatedContent);
+
+        // 5. 重命名与跨目录移动
+        String renamedPath = "/docs/policy_v2.txt";
+        boolean renamed = documentSyncService.renameDocument(copiedPath, renamedPath);
+        assertThat(renamed).isTrue();
+        assertThat(documentSyncService.exists(copiedPath)).isFalse();
+        assertThat(documentSyncService.exists(renamedPath)).isTrue();
+
+        boolean moved = documentSyncService.moveDocument(renamedPath, "/archive");
+        assertThat(moved).isTrue();
+        assertThat(documentSyncService.exists(renamedPath)).isFalse();
+        assertThat(documentSyncService.exists("/archive/policy_v2.txt")).isTrue();
+
+        // 6. 字节上传与本地磁盘下载
+        byte[] rawBytes = "Raw Binary Data 2026".getBytes(StandardCharsets.UTF_8);
+        documentSyncService.uploadBytes("/docs/raw.bin", rawBytes);
+        Path localDownloadFile = tempDir.resolve("downloaded_raw.bin");
+        documentSyncService.downloadToFile("/docs/raw.bin", localDownloadFile.toFile());
+        assertThat(Files.readAllBytes(localDownloadFile)).isEqualTo(rawBytes);
+
+        // 7. 目录枚举与清理
+        List<FtpFileInfo> docList = documentSyncService.listDocuments("/docs");
+        assertThat(docList).extracting(FtpFileInfo::getName).contains("policy.txt", "raw.bin");
+
+        documentSyncService.deleteDocument(remoteDocPath);
+        documentSyncService.deleteDocument("/docs/raw.bin");
+        documentSyncService.deleteDirectory("/archive");
     }
 
     @Test
-    @DisplayName("03. 文件元数据获取与存在性探测自验")
-    void testFileInfoAndExists() throws Exception {
-        // 先确保测试文件已存在
-        mockMvc.perform(post("/api/ftp/write-text")
-                        .param("remotePath", "/text/probe.json")
-                        .param("content", "{\"probe\":true}"))
-                .andExpect(status().isOk());
+    @DisplayName("02. SettlementBatchSyncScenarioService: 金融日结对账全目录递归上传与下载自验")
+    void testSettlementBatchSyncScenario(@TempDir Path tempDir) throws IOException {
+        Path localSettlementDir = tempDir.resolve("settlement_source");
+        Files.createDirectories(localSettlementDir.resolve("20261030/sub_batch"));
+        Files.writeString(localSettlementDir.resolve("20261030/summary.csv"), "batch_id,total\nB001,10000.00");
+        Files.writeString(localSettlementDir.resolve("20261030/sub_batch/detail.csv"), "item_id,price\nITM01,50.00");
 
-        // 1. 探测已存在的文件
-        mockMvc.perform(get("/api/ftp/exists")
-                        .param("remotePath", "/text/probe.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
+        // 注入操作系统隐性文件 (验证自动剔除)
+        Files.writeString(localSettlementDir.resolve("desktop.ini"), "icon_cache");
+        Files.writeString(localSettlementDir.resolve("20261030/.DS_Store"), "mac_metadata");
+        Files.writeString(localSettlementDir.resolve("20261030/Thumbs.db"), "thumb_cache");
+        Files.writeString(localSettlementDir.resolve("20261030/temp.tmp"), "temp_data");
 
-        // 2. 获取文件元数据
-        mockMvc.perform(get("/api/ftp/info")
-                        .param("remotePath", "/text/probe.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.name", is("probe.json")))
-                .andExpect(jsonPath("$.data.directory", is(false)))
-                .andExpect(jsonPath("$.data.size", is("14")));
+        // 1. 批量递归同步至远端 FTP
+        String remoteSettlementDir = "/settlement/batch";
+        BatchTransferResult uploadResult = settlementBatchSyncService.syncSettlementToRemote(
+                localSettlementDir.toFile(), remoteSettlementDir);
 
-        // 3. 探测不存在的文件
-        mockMvc.perform(get("/api/ftp/exists")
-                        .param("remotePath", "/text/not-found-anywhere.json"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(false)));
+        assertThat(uploadResult.isAllSuccess()).isTrue();
+        assertThat(uploadResult.hasFailure()).isFalse();
+        assertThat(uploadResult.getSuccessCount()).isEqualTo(2);
+        assertThat(uploadResult.getSkippedCount()).isGreaterThanOrEqualTo(4);
+        assertThat(uploadResult.getTransferredBytes()).isPositive();
+        assertThat(uploadResult.getDuration()).isNotNull();
+
+        assertThat(documentSyncService.exists("/settlement/batch/20261030/summary.csv")).isTrue();
+        assertThat(documentSyncService.exists("/settlement/batch/20261030/sub_batch/detail.csv")).isTrue();
+        assertThat(documentSyncService.exists("/settlement/batch/desktop.ini")).isFalse();
+        assertThat(documentSyncService.exists("/settlement/batch/20261030/.DS_Store")).isFalse();
+
+        // 2. 批量递归下载回本地工作区
+        Path localAuditDir = tempDir.resolve("settlement_audit");
+        BatchTransferResult downloadResult = settlementBatchSyncService.syncSettlementFromRemote(
+                remoteSettlementDir, localAuditDir.toFile());
+
+        assertThat(downloadResult.isAllSuccess()).isTrue();
+        assertThat(downloadResult.getSuccessCount()).isEqualTo(2);
+        assertThat(Files.readString(localAuditDir.resolve("20261030/summary.csv"))).isEqualTo("batch_id,total\nB001,10000.00");
+        assertThat(Files.readString(localAuditDir.resolve("20261030/sub_batch/detail.csv"))).isEqualTo("item_id,price\nITM01,50.00");
+
+        // 3. 清理远端结算测试数据
+        documentSyncService.deleteDirectory("/settlement");
     }
 
     @Test
-    @DisplayName("04. 递归创建多级目录与目录列表检索自验")
-    void testListFilesAndMakeDirectories() throws Exception {
-        // 1. 递归创建多级目录
-        mockMvc.perform(post("/api/ftp/mkdir")
-                        .param("remoteDir", "/tree/level1/level2"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
+    @DisplayName("03. LargeFileTransferScenarioService: 大文件流式传输与平滑进度监听自验")
+    void testLargeFileTransferScenario(@TempDir Path tempDir) throws IOException {
+        Path localLargeFile = tempDir.resolve("sample_large_file.dat");
+        byte[] payload = new byte[64 * 1024]; // 64KB 数据载荷
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i % 128);
+        }
+        Files.write(localLargeFile, payload);
 
-        // 2. 在多级目录下写入文件
-        mockMvc.perform(post("/api/ftp/write-text")
-                        .param("remotePath", "/tree/level1/level2/nested.txt")
-                        .param("content", "Nested file content"))
-                .andExpect(status().isOk());
+        // 1. 上传大文件并挂载进度监听器
+        AtomicReference<Double> uploadProgress = new AtomicReference<>(0.0);
+        AtomicReference<Long> uploadBytes = new AtomicReference<>(0L);
+        boolean uploaded = largeFileTransferService.uploadLargeFile("/large/payload.dat", localLargeFile.toFile(),
+                (bytesTransferred, totalBytes, percentage) -> {
+                    uploadBytes.set(bytesTransferred);
+                    uploadProgress.set(percentage);
+                });
 
-        // 3. 列出目录内容
-        mockMvc.perform(get("/api/ftp/list")
-                        .param("remoteDir", "/tree/level1/level2"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", hasSize(1)))
-                .andExpect(jsonPath("$.data[0].name", is("nested.txt")));
+        assertThat(uploaded).isTrue();
+        assertThat(uploadBytes.get()).isEqualTo((long) payload.length);
+        assertThat(uploadProgress.get()).isEqualTo(100.0);
+
+        // 2. 下载大文件并挂载进度监听器
+        Path downloadedFile = tempDir.resolve("downloaded_large_file.dat");
+        AtomicReference<Double> downloadProgress = new AtomicReference<>(0.0);
+        AtomicReference<Long> downloadBytes = new AtomicReference<>(0L);
+        boolean downloaded = largeFileTransferService.downloadLargeFile("/large/payload.dat", downloadedFile.toFile(),
+                (bytesTransferred, totalBytes, percentage) -> {
+                    downloadBytes.set(bytesTransferred);
+                    downloadProgress.set(percentage);
+                });
+
+        assertThat(downloaded).isTrue();
+        assertThat(downloadBytes.get()).isEqualTo((long) payload.length);
+        assertThat(downloadProgress.get()).isEqualTo(100.0);
+        assertThat(Files.readAllBytes(downloadedFile)).isEqualTo(payload);
+
+        // 3. 清理远端测试文件
+        documentSyncService.deleteDirectory("/large");
     }
 
     @Test
-    @DisplayName("05. 文件重命名与跨目录移动自验")
-    void testRenameAndMove() throws Exception {
-        // 1. 写入初始文件
-        mockMvc.perform(post("/api/ftp/write-text")
-                        .param("remotePath", "/ops/original.txt")
-                        .param("content", "Move & Rename Test"))
-                .andExpect(status().isOk());
+    @DisplayName("04. DynamicRoutingScenarioService: 多节点动态切源与隔离路由自验")
+    void testDynamicRoutingScenario() {
+        String backupDocPath = "/backup_data/audit_log.txt";
+        String backupContent = "Audit Log Recorded in Backup Server 2026";
 
-        // 2. 重命名同目录
-        FtpRenameRequest renameReq = new FtpRenameRequest();
-        renameReq.setFromPath("/ops/original.txt");
-        renameReq.setToPath("/ops/renamed.txt");
+        // 1. 写入备用节点 (backup)
+        boolean written = dynamicRoutingService.writeToBackupServer(backupDocPath, backupContent);
+        assertThat(written).isTrue();
 
-        mockMvc.perform(post("/api/ftp/rename")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(renameReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
+        // 2. 从备用节点读取内容
+        String readBack = dynamicRoutingService.readFromBackupServer(backupDocPath);
+        assertThat(readBack).isEqualTo(backupContent);
+        assertThat(dynamicRoutingService.existsOnBackupServer(backupDocPath)).isTrue();
 
-        // 3. 跨目录移动（移动到目标父目录 /ops/target_dir）
-        FtpRenameRequest moveReq = new FtpRenameRequest();
-        moveReq.setFromPath("/ops/renamed.txt");
-        moveReq.setToPath("/ops/target_dir");
+        // 3. 验证主节点隔离性：主默认节点上不存在该路径
+        assertThat(documentSyncService.exists(backupDocPath)).isFalse();
 
-        mockMvc.perform(post("/api/ftp/move")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(moveReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
-
-        // 4. 验证移动后内容可在目标目录下读取
-        mockMvc.perform(get("/api/ftp/read-text")
-                        .param("remotePath", "/ops/target_dir/renamed.txt"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is("Move & Rename Test")));
+        // 4. 清理备用节点测试数据
+        dynamicRoutingService.executeOnServer("backup", () -> documentSyncService.deleteDirectory("/backup_data"));
     }
 
     @Test
-    @DisplayName("06. 文件删除与目录级联删除自验")
-    void testDeleteFileAndDirectory() throws Exception {
-        // 1. 准备待删文件
-        mockMvc.perform(post("/api/ftp/write-text")
-                        .param("remotePath", "/cleanup/subdir/temp.txt")
-                        .param("content", "To be deleted"))
-                .andExpect(status().isOk());
+    @DisplayName("05. ConnectivityProbeScenarioService: 物理连通性自验探针自验")
+    void testConnectivityProbeScenario() {
+        // 1. 探测默认主节点连通性
+        boolean defaultHealthy = connectivityProbeService.checkDefaultServerHealth();
+        assertThat(defaultHealthy).isTrue();
 
-        // 2. 删除文件
-        mockMvc.perform(delete("/api/ftp/delete-file")
-                        .param("remotePath", "/cleanup/subdir/temp.txt"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
+        // 2. 探测备用节点连通性
+        boolean backupHealthy = connectivityProbeService.checkServerHealth("backup");
+        assertThat(backupHealthy).isTrue();
 
-        // 3. 删除目录
-        mockMvc.perform(delete("/api/ftp/delete-dir")
-                        .param("remoteDir", "/cleanup"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
-    }
-
-    @Test
-    @DisplayName("07. 多节点动态切源路由隔离自验")
-    void testDynamicRoutingBetweenNodes() throws Exception {
-        // 1. 在 backup 节点上传文件
-        byte[] backupBytes = "Isolated content in backup server".getBytes(StandardCharsets.UTF_8);
-        MockMultipartFile file = new MockMultipartFile("file", "backup.log", "text/plain", backupBytes);
-
-        mockMvc.perform(multipart("/api/ftp/upload")
-                        .file(file)
-                        .param("remotePath", "/cluster/backup.log")
-                        .param("server", "backup"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(true)));
-
-        // 2. 切源读取 backup 节点数据成功
-        mockMvc.perform(get("/api/ftp/routed-read")
-                        .param("server", "backup")
-                        .param("remotePath", "/cluster/backup.log"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is("Isolated content in backup server")));
-
-        // 3. 在默认主节点读取该路径应不存在（隔离性保障）
-        mockMvc.perform(get("/api/ftp/exists")
-                        .param("remotePath", "/cluster/backup.log"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", is(false)));
-    }
-
-    @Test
-    @DisplayName("08. 逃逸舱模式执行原生会话指令自验")
-    void testNativeEscapeHatch() throws Exception {
-        mockMvc.perform(get("/api/ftp/native-pwd"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(200)))
-                .andExpect(jsonPath("$.data", is("/")));
-    }
-
-    @Test
-    @DisplayName("09. 路径穿越与高危字符安全防御自验")
-    void testPathTraversalDefense() throws Exception {
-        // 试图访问父级路径 /../../etc/passwd，触发 FtpException(INVALID_PATH) 阻断并由统一异常拦截器转译为业务错误契约
-        mockMvc.perform(get("/api/ftp/exists")
-                        .param("remotePath", "/../../etc/passwd"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(51007)));
-    }
-
-    @Test
-    @DisplayName("10. JSR-303 参数格式校验 Fail-Fast 自验")
-    void testValidationFailFast() throws Exception {
-        // 请求参数为空白字符串触发 @NotBlank 拦截
-        mockMvc.perform(get("/api/ftp/read-text")
-                        .param("remotePath", "   "))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code", is(400)))
-                .andExpect(jsonPath("$.msg", containsString("远程路径不能为空")));
+        // 3. 强断言连通性不抛出异常
+        assertThatCode(() -> connectivityProbeService.assertServerHealthy("backup"))
+                .doesNotThrowAnyException();
     }
 }

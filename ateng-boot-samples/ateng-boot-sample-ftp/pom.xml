@@ -17,12 +17,6 @@
     <description>ateng-boot FTP 客户端自验集成样例（连接池复用、多节点动态切源、原子上传与文件系统操作）</description>
 
     <dependencies>
-        <!-- Web 运行时增强 Starter (显式 Result<T> 响应、统一异常拦截等) -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
-        </dependency>
-
         <!-- FTP 核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>
