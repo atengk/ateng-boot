@@ -456,4 +456,83 @@ class FtpTemplateTest {
         byte[] downloaded = ftpTemplate.downloadToBytes(testPath);
         assertThat(new String(downloaded, StandardCharsets.UTF_8)).isEqualTo("test payload");
     }
+
+    @Test
+    @DisplayName("测试物理连通性自验健康探针 (健康节点与不可达节点)")
+    void testConnectionProbes() {
+        // 1. 测试正常服务节点
+        assertThat(ftpTemplate.testConnection()).isTrue();
+        ftpTemplate.testConnectionOrThrow();
+
+        // 2. 测试不可达/错误端口服务节点
+        FtpProperties brokenProps = new FtpProperties();
+        brokenProps.setHost("127.0.0.1");
+        brokenProps.setPort(59999);
+        brokenProps.setUsername("wrong_user");
+        brokenProps.setPassword("wrong_pass");
+        brokenProps.setConnectTimeout(Duration.ofMillis(300));
+        brokenProps.setDataTimeout(Duration.ofMillis(300));
+
+        FtpClientPooledObjectFactory brokenFactory = new FtpClientPooledObjectFactory(brokenProps);
+        GenericObjectPool<FTPClient> brokenPool = new GenericObjectPool<>(brokenFactory);
+        FtpTemplate brokenTemplate = new FtpTemplate(brokenPool, brokenProps);
+
+        try {
+            assertThat(brokenTemplate.testConnection()).isFalse();
+            assertThatThrownBy(brokenTemplate::testConnectionOrThrow)
+                    .isInstanceOf(FtpException.class)
+                    .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.CONNECT_FAILED.getCode()));
+        } finally {
+            brokenPool.close();
+        }
+    }
+
+    @Test
+    @DisplayName("测试增量追加写 (append)")
+    void testAppend() {
+        String testPath = "/test/append_test.txt";
+        ftpTemplate.writeString(testPath, "Initial");
+
+        boolean appendedText = ftpTemplate.append(testPath, " + Content");
+        assertThat(appendedText).isTrue();
+
+        boolean appendedBytes = ftpTemplate.append(testPath, " + Bytes".getBytes(StandardCharsets.UTF_8));
+        assertThat(appendedBytes).isTrue();
+
+        boolean appendedStream = ftpTemplate.append(testPath, new ByteArrayInputStream(" + Stream".getBytes(StandardCharsets.UTF_8)));
+        assertThat(appendedStream).isTrue();
+
+        String finalContent = ftpTemplate.readString(testPath);
+        assertThat(finalContent).isEqualTo("Initial + Content + Bytes + Stream");
+    }
+
+    @Test
+    @DisplayName("测试受管单文件管道原子复制 (copy) 与边界校验")
+    void testCopy() {
+        String sourcePath = "/test/source_copy.txt";
+        String destPath = "/test/dest_copy.txt";
+        String content = "Copy Payload 2026";
+        ftpTemplate.writeString(sourcePath, content);
+
+        // 1. 成功复制
+        boolean copied = ftpTemplate.copy(sourcePath, destPath);
+        assertThat(copied).isTrue();
+        assertThat(ftpTemplate.exists(sourcePath)).isTrue();
+        assertThat(ftpTemplate.exists(destPath)).isTrue();
+        assertThat(ftpTemplate.readString(destPath)).isEqualTo(content);
+
+        // 2. 源文件不存在异常
+        assertThatThrownBy(() -> ftpTemplate.copy("/test/not_exist_source.txt", "/test/out.txt"))
+                .isInstanceOf(FtpException.class)
+                .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.FILE_NOT_FOUND.getCode()));
+
+        // 3. 源文件为目录异常
+        assertThatThrownBy(() -> ftpTemplate.copy("/test", "/test_dest"))
+                .isInstanceOf(FtpException.class)
+                .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.INVALID_PATH.getCode()));
+
+        // 4. 源路径与目标路径相同异常
+        assertThatThrownBy(() -> ftpTemplate.copy(sourcePath, sourcePath))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

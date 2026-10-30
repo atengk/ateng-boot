@@ -19,6 +19,7 @@ import org.springframework.util.unit.DataSize;
 import java.io.*;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -137,6 +138,137 @@ public class FtpTemplate {
                 throw fe;
             }
             throw new FtpException(FtpResultCode.OPERATION_FAILED, "执行 FTP 操作失败: " + e.getMessage(), e);
+        } finally {
+            if (client != null && !invalidated) {
+                try {
+                    pool.returnObject(client);
+                } catch (Exception e) {
+                    log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    // 连通性自验健康探针 (Connectivity Health Probes)
+    // ==========================================
+
+    /**
+     * 探测当前/默认 FTP 服务节点的物理连通性
+     * <p>
+     * 自动借出连接发送 {@code NOOP} 指令验证 TCP 握手与会话鉴权状态，并在 finally 中确定性归还连接，
+     * 毫秒级快速返回，全程零文件读写副作用。若连接异常或不可达，安全返回 false。
+     * 支持优先感知 {@link FtpContextHolder} 绑定的线程级切源节点。
+     * </p>
+     *
+     * @return 连通成功返回 true，否则返回 false
+     */
+    public boolean testConnection() {
+        return testConnection(FtpContextHolder.getServer());
+    }
+
+    /**
+     * 探测指定具名 FTP 服务节点的物理连通性
+     *
+     * @param targetServerName 目标服务节点名称（若为 null 或空则使用当前节点）
+     * @return 连通成功返回 true，否则返回 false
+     */
+    public boolean testConnection(String targetServerName) {
+        if (targetServerName != null && !targetServerName.isBlank()
+                && registry != null
+                && !targetServerName.equalsIgnoreCase(this.serverName)) {
+            try {
+                return registry.getTemplate(targetServerName).testConnection();
+            } catch (Exception e) {
+                log.debug("探测指定 FTP 节点 [{}] 连通性失败: {}", targetServerName, e.getMessage());
+                return false;
+            }
+        }
+        return testConnectionInternal();
+    }
+
+    /**
+     * 探测当前/默认 FTP 服务节点的物理连通性，失败时抛出语义化异常
+     *
+     * @throws FtpException 当连接不可用、心跳失败或鉴权异常时抛出 CONNECT_FAILED 异常
+     */
+    public void testConnectionOrThrow() {
+        testConnectionOrThrow(FtpContextHolder.getServer());
+    }
+
+    /**
+     * 探测指定具名 FTP 服务节点的物理连通性，失败时抛出语义化异常
+     *
+     * @param targetServerName 目标服务节点名称（若为 null 或空则使用当前节点）
+     * @throws FtpException 当连接不可用、心跳失败或鉴权异常时抛出 CONNECT_FAILED 异常
+     */
+    public void testConnectionOrThrow(String targetServerName) {
+        if (targetServerName != null && !targetServerName.isBlank()
+                && registry != null
+                && !targetServerName.equalsIgnoreCase(this.serverName)) {
+            registry.getTemplate(targetServerName).testConnectionOrThrow();
+            return;
+        }
+        testConnectionOrThrowInternal();
+    }
+
+    private boolean testConnectionInternal() {
+        FTPClient client = null;
+        boolean invalidated = false;
+        try {
+            client = pool.borrowObject();
+            if (client == null || !client.isConnected() || !client.isAvailable()) {
+                return false;
+            }
+            return client.sendNoOp();
+        } catch (Exception e) {
+            log.debug("FTP 连通性探测失败: {}", e.getMessage());
+            if (client != null) {
+                try {
+                    pool.invalidateObject(client);
+                    invalidated = true;
+                } catch (Exception ignored) {
+                }
+            }
+            return false;
+        } finally {
+            if (client != null && !invalidated) {
+                try {
+                    pool.returnObject(client);
+                } catch (Exception e) {
+                    log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void testConnectionOrThrowInternal() {
+        FTPClient client = null;
+        boolean invalidated = false;
+        try {
+            client = pool.borrowObject();
+            if (client == null || !client.isConnected() || !client.isAvailable()) {
+                throw new FtpException(FtpResultCode.CONNECT_FAILED,
+                        "FTP 服务节点 [" + this.serverName + "] 连接不可用或已断开");
+            }
+            boolean ok = client.sendNoOp();
+            if (!ok) {
+                throw new FtpException(FtpResultCode.CONNECT_FAILED,
+                        "FTP 服务节点 [" + this.serverName + "] NOOP 心跳检测失败，响应码: " + client.getReplyCode());
+            }
+        } catch (Exception e) {
+            if (client != null) {
+                try {
+                    pool.invalidateObject(client);
+                    invalidated = true;
+                } catch (Exception ignored) {
+                }
+            }
+            if (e instanceof FtpException fe) {
+                throw fe;
+            }
+            throw new FtpException(FtpResultCode.CONNECT_FAILED,
+                    "FTP 服务节点 [" + this.serverName + "] 连通性探测失败: " + e.getMessage(), e);
         } finally {
             if (client != null && !invalidated) {
                 try {
@@ -308,6 +440,92 @@ public class FtpTemplate {
         Assert.notNull(content, "content must not be null");
         Charset targetCharset = charset != null ? charset : StandardCharsets.UTF_8;
         return upload(remotePath, content.getBytes(targetCharset));
+    }
+
+    // ==========================================
+    // 增量追加操作 (Incremental Append)
+    // ==========================================
+
+    /**
+     * 向远程文件末尾追加输入流数据（RFC 959 APPE 指令）
+     *
+     * @param remotePath 远程文件路径
+     * @param in         待追加的数据输入流
+     * @return 追加成功返回 true
+     */
+    public boolean append(String remotePath, InputStream in) {
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(in, "InputStream must not be null");
+        String safePath = cleanAndValidatePath(remotePath);
+        String wirePath = toWirePath(safePath);
+
+        return execute(client -> {
+            if (properties.isAutoCreateDirectories()) {
+                String parentDir = getParentPath(safePath);
+                if (parentDir != null && !parentDir.isBlank() && !"/".equals(parentDir)) {
+                    makeDirectoriesInternal(client, parentDir);
+                }
+            }
+            boolean success;
+            try {
+                success = client.appendFile(wirePath, in);
+            } catch (Exception e) {
+                throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                        "FTP 文件追加写入异常: " + safePath + ", 原因: " + e.getMessage(), e);
+            }
+            if (!success) {
+                int reply = client.getReplyCode();
+                throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                        "FTP 文件追加失败: " + safePath + ", 服务端返回码: " + reply);
+            }
+            return true;
+        });
+    }
+
+    /**
+     * 向远程文件末尾追加字节数组
+     *
+     * @param remotePath 远程文件路径
+     * @param bytes      待追加的字节数据
+     * @return 追加成功返回 true
+     */
+    public boolean append(String remotePath, byte[] bytes) {
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(bytes, "bytes must not be null");
+        try (InputStream in = new ByteArrayInputStream(bytes)) {
+            return append(remotePath, in);
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.UPLOAD_FAILED, "FTP 字节数组追加失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 向远程文件末尾追加纯文本内容（使用默认 UTF-8 编码）
+     *
+     * @param remotePath 远程文件路径
+     * @param content    待追加的文本内容
+     * @return 追加成功返回 true
+     */
+    public boolean append(String remotePath, String content) {
+        Charset charset = properties.getControlEncoding() != null
+                ? Charset.forName(properties.getControlEncoding())
+                : StandardCharsets.UTF_8;
+        return append(remotePath, content, charset);
+    }
+
+    /**
+     * 向远程文件末尾追加纯文本内容（指定字符编码）
+     *
+     * @param remotePath 远程文件路径
+     * @param content    待追加的文本内容
+     * @param charset    字符编码
+     * @return 追加成功返回 true
+     */
+    public boolean append(String remotePath, String content, Charset charset) {
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(content, "content must not be null");
+        Assert.notNull(charset, "charset must not be null");
+        return append(remotePath, content.getBytes(charset));
     }
 
     // ==========================================
@@ -798,6 +1016,78 @@ public class FtpTemplate {
         String fileName = getFileName(safeFrom);
         String targetPath = normalizePath(safeDir, fileName);
         return rename(safeFrom, targetPath);
+    }
+
+    /**
+     * 复制远程 FTP 文件到新路径（受管管道流单文件原子对拷）
+     * <p>
+     * 严格限定为单文件复制，目标端写入采用原子上传守护（.tmp + rename），
+     * 源文件不存在时立即抛出 {@link FtpResultCode#FILE_NOT_FOUND} 异常。
+     * </p>
+     *
+     * @param fromPath 源文件路径
+     * @param toPath   目标文件路径
+     * @return 复制成功返回 true
+     */
+    public boolean copy(String fromPath, String toPath) {
+        Assert.hasText(fromPath, "fromPath must not be blank");
+        Assert.hasText(toPath, "toPath must not be blank");
+        String safeFrom = cleanAndValidatePath(fromPath);
+        String safeTo = cleanAndValidatePath(toPath);
+
+        if (safeFrom.equals(safeTo)) {
+            throw new IllegalArgumentException("FTP 复制源路径与目标路径不能相同: " + safeFrom);
+        }
+
+        // 1. 验证源文件存在性
+        if (!exists(safeFrom)) {
+            throw new FtpException(FtpResultCode.FILE_NOT_FOUND, "FTP 源文件不存在，无法执行复制: " + safeFrom);
+        }
+
+        // 2. 验证源路径不能是目录 (优先探测 CWD 与 FtpFileInfo)
+        boolean isDir = execute(client -> {
+            String wireFrom = toWirePath(safeFrom);
+            String currentDir = client.printWorkingDirectory();
+            try {
+                if (client.changeWorkingDirectory(wireFrom)) {
+                    if (currentDir != null) {
+                        client.changeWorkingDirectory(currentDir);
+                    }
+                    return true;
+                }
+            } catch (Exception ignored) {
+            }
+            return false;
+        });
+        if (!isDir) {
+            FtpFileInfo fileInfo = getFileInfo(safeFrom);
+            if (fileInfo != null && fileInfo.isDirectory()) {
+                isDir = true;
+            }
+        }
+        if (isDir) {
+            throw new FtpException(FtpResultCode.INVALID_PATH, "FTP 复制仅支持单文件，不支持目录: " + safeFrom);
+        }
+
+        // 3. 借用受管临时文件进行流式中转对拷（兼顾内存防爆与连接池防死锁）
+        File tempBufferFile = null;
+        try {
+            tempBufferFile = File.createTempFile("ateng_ftp_copy_", ".tmp");
+            boolean downloaded = download(safeFrom, tempBufferFile);
+            if (!downloaded) {
+                throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "FTP 复制文件下载源文件失败: " + safeFrom);
+            }
+            return upload(safeTo, tempBufferFile);
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.OPERATION_FAILED, "FTP 复制文件创建本地缓冲临时文件失败: " + e.getMessage(), e);
+        } finally {
+            if (tempBufferFile != null && tempBufferFile.exists()) {
+                try {
+                    Files.deleteIfExists(tempBufferFile.toPath());
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     // ==========================================
