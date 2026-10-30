@@ -480,6 +480,18 @@ public class WebProperties {
     private XssProperties xss = new XssProperties();
 
     /**
+     * 启动一体化就绪总览卡片配置
+     */
+    @NestedConfigurationProperty
+    private ReadyCardProperties readyCard = new ReadyCardProperties();
+
+    /**
+     * 生产环境安全防呆自检配置
+     */
+    @NestedConfigurationProperty
+    private SanityCheckProperties sanityCheck = new SanityCheckProperties();
+
+    /**
      * HTTP 安全响应头属性配置
      */
     @Getter
@@ -566,6 +578,32 @@ public class WebProperties {
          * XSS 清洗排除路径白名单列表（Ant 风格匹配，如 /api/admin/announcement/**）
          */
         private List<String> excludeUrls = new ArrayList<>();
+    }
+
+    /**
+     * 启动一体化就绪总览卡片属性配置
+     */
+    @Getter
+    @Setter
+    public static class ReadyCardProperties {
+
+        /**
+         * 是否启用服务完全启动就绪 ASCII 卡片输出（默认 true）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * 生产环境安全防呆自检属性配置
+     */
+    @Getter
+    @Setter
+    public static class SanityCheckProperties {
+
+        /**
+         * 是否启用生产环境高危配置安全防呆自检（默认 true）
+         */
+        private boolean enabled = true;
     }
 }
 

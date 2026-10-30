@@ -33,6 +33,8 @@ class AtengWebAutoConfigurationTest {
             assertThat(registration.getOrder()).isEqualTo(org.springframework.core.Ordered.HIGHEST_PRECEDENCE);
             assertThat(context).hasSingleBean(GlobalExceptionHandler.class);
             assertThat(context).hasSingleBean(JacksonCustomizer.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.web.ready.ProductionSanityChecker.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.web.ready.ApplicationReadyCardListener.class);
             assertThat(context).doesNotHaveBean(CorsFilter.class);
             assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.aspect.WebLogAspect.class);
         });
@@ -210,6 +212,18 @@ class AtengWebAutoConfigurationTest {
                             context.getBean("xssFilterRegistration", org.springframework.boot.web.servlet.FilterRegistrationBean.class);
                     assertThat(registration.getOrder()).isEqualTo(io.github.atengk.boot.web.xss.XssFilter.ORDER);
                 });
+    }
+
+    @Test
+    @DisplayName("当配置 ateng.boot.web.ready-card.enabled=false 与 sanity-check.enabled=false 时禁用就绪卡片与防呆检查")
+    void shouldDisableReadyCardAndSanityCheckerWhenConfigured() {
+        contextRunner.withPropertyValues(
+                "ateng.boot.web.ready-card.enabled=false",
+                "ateng.boot.web.sanity-check.enabled=false"
+        ).run(context -> {
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.ready.ProductionSanityChecker.class);
+            assertThat(context).doesNotHaveBean(io.github.atengk.boot.web.ready.ApplicationReadyCardListener.class);
+        });
     }
 }
 

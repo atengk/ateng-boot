@@ -17,6 +17,8 @@ import io.github.atengk.boot.web.handler.GlobalExceptionCustomizer;
 import io.github.atengk.boot.web.handler.GlobalExceptionHandler;
 import io.github.atengk.boot.web.jackson.JacksonCustomizer;
 import io.github.atengk.boot.web.properties.WebProperties;
+import io.github.atengk.boot.web.ready.ApplicationReadyCardListener;
+import io.github.atengk.boot.web.ready.ProductionSanityChecker;
 import io.github.atengk.boot.web.trace.TraceFilter;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Aspect;
@@ -377,5 +379,31 @@ public class AtengWebAutoConfiguration {
                 io.github.atengk.boot.core.util.JsonUtil.init(objectMapper);
             }
         };
+    }
+
+    /**
+     * 自动装配生产环境高危配置防呆前置自检器
+     *
+     * @param webProperties Web 配置属性
+     * @return ProductionSanityChecker 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ProductionSanityChecker.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.web.sanity-check", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ProductionSanityChecker productionSanityChecker(WebProperties webProperties) {
+        return new ProductionSanityChecker(webProperties);
+    }
+
+    /**
+     * 自动装配服务启动就绪总览卡片监听器
+     *
+     * @param webProperties Web 配置属性
+     * @return ApplicationReadyCardListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ApplicationReadyCardListener.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.web.ready-card", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ApplicationReadyCardListener applicationReadyCardListener(WebProperties webProperties) {
+        return new ApplicationReadyCardListener(webProperties);
     }
 }
