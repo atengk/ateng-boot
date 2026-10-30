@@ -87,25 +87,13 @@ public class ProductionSanityChecker implements ApplicationListener<ApplicationR
         }
         ClassLoader classLoader = (context != null) ? context.getClassLoader() : ClassUtils.getDefaultClassLoader();
 
-        // 1. Swagger / OpenAPI 接口文档公网暴露自检
-        boolean springDocPresent = ClassUtils.isPresent("org.springdoc.core.properties.SpringDocConfigProperties", classLoader)
-                || ClassUtils.isPresent("org.springdoc.webmvc.ui.SwaggerIndexTransformer", classLoader);
-        if (springDocPresent) {
-            boolean apiDocsEnabled = environment.getProperty("springdoc.api-docs.enabled", Boolean.class, true);
-            boolean swaggerUiEnabled = environment.getProperty("springdoc.swagger-ui.enabled", Boolean.class, true);
-            if (apiDocsEnabled || swaggerUiEnabled) {
-                warnings.add("[SECURITY-WARN] Swagger/OpenAPI 在生产环境中处于启用状态！建议显式配置 'springdoc.api-docs.enabled=false' 与 'springdoc.swagger-ui.enabled=false' 防止敏感接口契约对外泄漏。");
-            }
+        // 1. Swagger / OpenAPI / Knife4j 接口文档公网暴露自检
+        if (DocDetectionHelper.isSpringDocEnabled(classLoader, environment)) {
+            warnings.add("[SECURITY-WARN] Swagger/OpenAPI 在生产环境中处于启用状态！建议显式配置 'springdoc.api-docs.enabled=false' 与 'springdoc.swagger-ui.enabled=false' 防止敏感接口契约对外泄漏。");
         }
 
-        boolean knife4jPresent = ClassUtils.isPresent("com.github.xiaoymin.knife4j.spring.configuration.Knife4jAutoConfiguration", classLoader)
-                || ClassUtils.isPresent("com.github.xiaoymin.knife4j.spring.extension.Knife4jOpenApiCustomizer", classLoader)
-                || Boolean.parseBoolean(environment.getProperty("knife4j.enable", "false"));
-        if (knife4jPresent) {
-            boolean knife4jEnabled = environment.getProperty("knife4j.enable", Boolean.class, false);
-            if (knife4jEnabled) {
-                warnings.add("[SECURITY-WARN] Knife4j 增强文档在生产环境中处于启用状态！建议在生产环境显式配置 'knife4j.enable=false'。");
-            }
+        if (DocDetectionHelper.isKnife4jEnabled(classLoader, environment)) {
+            warnings.add("[SECURITY-WARN] Knife4j 增强文档在生产环境中处于启用状态！建议在生产环境显式配置 'knife4j.enable=false'。");
         }
 
         // 2. HTTP Payload 全量请求/响应体采样日志自检

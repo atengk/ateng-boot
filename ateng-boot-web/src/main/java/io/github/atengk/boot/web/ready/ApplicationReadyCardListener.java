@@ -160,34 +160,7 @@ public class ApplicationReadyCardListener implements ApplicationListener<Applica
      */
     public static String resolveDocPath(Environment environment, ApplicationContext context) {
         ClassLoader classLoader = (context != null) ? context.getClassLoader() : ClassUtils.getDefaultClassLoader();
-
-        // 优先探测 Knife4j
-        boolean knife4jPresent = ClassUtils.isPresent("com.github.xiaoymin.knife4j.spring.configuration.Knife4jAutoConfiguration", classLoader)
-                || ClassUtils.isPresent("com.github.xiaoymin.knife4j.spring.extension.Knife4jOpenApiCustomizer", classLoader)
-                || Boolean.parseBoolean(environment.getProperty("knife4j.enable", "false"));
-        if (knife4jPresent) {
-            boolean knife4jEnabled = environment.getProperty("knife4j.enable", Boolean.class, true);
-            if (knife4jEnabled) {
-                return "/doc.html";
-            }
-        }
-
-        // 探测 SpringDoc OpenAPI
-        boolean springDocPresent = ClassUtils.isPresent("org.springdoc.core.properties.SpringDocConfigProperties", classLoader)
-                || ClassUtils.isPresent("org.springdoc.webmvc.ui.SwaggerIndexTransformer", classLoader);
-        if (springDocPresent) {
-            boolean apiDocsEnabled = environment.getProperty("springdoc.api-docs.enabled", Boolean.class, true);
-            boolean swaggerUiEnabled = environment.getProperty("springdoc.swagger-ui.enabled", Boolean.class, true);
-            if (apiDocsEnabled && swaggerUiEnabled) {
-                String customPath = environment.getProperty("springdoc.swagger-ui.path");
-                if (customPath != null && !customPath.isBlank()) {
-                    return customPath.trim();
-                }
-                return "/swagger-ui/index.html";
-            }
-        }
-
-        return null;
+        return DocDetectionHelper.resolveDocPath(environment, classLoader);
     }
 
     /**

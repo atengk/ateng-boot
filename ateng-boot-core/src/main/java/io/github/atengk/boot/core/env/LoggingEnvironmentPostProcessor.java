@@ -74,7 +74,7 @@ public class LoggingEnvironmentPostProcessor implements EnvironmentPostProcessor
     /**
      * 执行优先级：低于大部分配置加载器，以便用户配置优先
      */
-    public static final int ORDER = Ordered.LOWEST_PRECEDENCE - 8;
+    public static final int ORDER = Ordered.LOWEST_PRECEDENCE - 5;
 
     @Override
     public int getOrder() {

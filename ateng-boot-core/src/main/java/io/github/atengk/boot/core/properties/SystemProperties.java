@@ -27,7 +27,7 @@ public class SystemProperties {
     private String timezone = "Asia/Shanghai";
 
     /**
-     * 是否开启时区、UTF-8 字符集与 JVM 底层网络超时防卫（默认 true）
+     * 是否开启时区校准防卫（默认 true）
      */
     private boolean timezoneGuardEnabled = true;
 

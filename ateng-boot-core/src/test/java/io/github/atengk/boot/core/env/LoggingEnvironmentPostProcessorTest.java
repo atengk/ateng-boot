@@ -79,6 +79,31 @@ class LoggingEnvironmentPostProcessorTest {
     }
 
     @Test
+    @DisplayName("当 Classpath 中存在自定义 logback-spring.xml 或 logback.xml 时，框架 100% 平滑退让")
+    void shouldBypassWhenCustomLogbackXmlInClasspath() {
+        ClassLoader mockClassLoader = new ClassLoader(getClass().getClassLoader()) {
+            @Override
+            public java.net.URL getResource(String name) {
+                if ("logback-spring.xml".equals(name) || "logback.xml".equals(name)) {
+                    return getClass().getClassLoader().getResource("io/github/atengk/boot/core/logging/ateng-logback-base.xml");
+                }
+                return super.getResource(name);
+            }
+        };
+
+        ConfigurableEnvironment environment = new StandardEnvironment();
+        boolean hasCustom = LoggingEnvironmentPostProcessor.hasCustomLoggingConfiguration(environment, mockClassLoader);
+        assertThat(hasCustom).isTrue();
+
+        SpringApplication appWithMockCl = new SpringApplication();
+        appWithMockCl.setResourceLoader(new org.springframework.core.io.DefaultResourceLoader(mockClassLoader));
+        processor.postProcessEnvironment(environment, appWithMockCl);
+
+        assertThat(environment.getPropertySources().contains(LoggingEnvironmentPostProcessor.PROPERTY_SOURCE_NAME)).isFalse();
+        assertThat(environment.getProperty("logging.pattern.console")).isNull();
+    }
+
+    @Test
     @DisplayName("当开启 file.enabled 时，自动挂载内置双文件持久化 Logback 模板")
     void shouldSetFileLoggingConfigWhenFileEnabled() {
         MockEnvironment environment = new MockEnvironment();

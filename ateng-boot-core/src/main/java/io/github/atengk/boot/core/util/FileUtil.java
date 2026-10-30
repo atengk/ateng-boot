@@ -1,5 +1,8 @@
 package io.github.atengk.boot.core.util;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * 文件名与文件属性安全通用工具
  * 提供针对路径遍历攻击（Path Traversal）的纯净文件名清洗、扩展名提取与人类可读文件容量格式化
@@ -8,6 +11,8 @@ package io.github.atengk.boot.core.util;
  * @since 2026-10-17
  */
 public final class FileUtil {
+
+    private static final Logger log = LoggerFactory.getLogger(FileUtil.class);
 
     private static final String[] SIZE_UNITS = {"B", "KB", "MB", "GB", "TB", "PB"};
 
@@ -244,8 +249,8 @@ public final class FileUtil {
         try {
             java.nio.file.Files.createDirectories(appTempDir);
         } catch (java.io.IOException ex) {
-            // 防御目录创建异常，安全回退至系统临时目录
-            return java.nio.file.Paths.get(systemTmpDir);
+            log.error("创建应用受管临时目录失败: {}", appTempDir, ex);
+            throw new IllegalStateException("创建应用受管临时目录失败: " + appTempDir, ex);
         }
         return appTempDir;
     }
@@ -269,6 +274,16 @@ public final class FileUtil {
         if (directory == null || !java.nio.file.Files.exists(directory)) {
             return 0;
         }
+        // 防御性前置卫语句：严禁清理根系统临时目录或文件系统根目录
+        java.nio.file.Path normalizedTarget = directory.toAbsolutePath().normalize();
+        String systemTmp = System.getProperty("java.io.tmpdir");
+        if (systemTmp != null && !systemTmp.isBlank()) {
+            java.nio.file.Path normalizedSystemTmp = java.nio.file.Paths.get(systemTmp).toAbsolutePath().normalize();
+            if (normalizedTarget.equals(normalizedSystemTmp) || normalizedTarget.getParent() == null) {
+                log.warn("拒绝清理系统根临时目录或文件系统根路径: {}", normalizedTarget);
+                return 0;
+            }
+        }
         int cleanedCount = 0;
         try (java.util.stream.Stream<java.nio.file.Path> stream = java.nio.file.Files.walk(directory)) {
             java.util.List<java.nio.file.Path> paths = stream
@@ -279,12 +294,12 @@ public final class FileUtil {
                 try {
                     java.nio.file.Files.deleteIfExists(path);
                     cleanedCount++;
-                } catch (Throwable ignored) {
-                    // 防御特定文件被其他进程锁定时跳过
+                } catch (Throwable ex) {
+                    log.debug("跳过清理被占用或无权限文件: {}", path, ex);
                 }
             }
-        } catch (Throwable ignored) {
-            // 防御遍历异常
+        } catch (Throwable ex) {
+            log.warn("遍历清理目录失败: {}", directory, ex);
         }
         return cleanedCount;
     }

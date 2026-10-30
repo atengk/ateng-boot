@@ -3,6 +3,7 @@ package io.github.atengk.boot.core.diagnostic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.core.PriorityOrdered;
 
@@ -20,7 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * @author Ateng
  * @since 2026-10-30
  */
-public class SlowBeanDiagnosticPostProcessor implements BeanPostProcessor, PriorityOrdered {
+public class SlowBeanDiagnosticPostProcessor implements BeanPostProcessor, PriorityOrdered, DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(SlowBeanDiagnosticPostProcessor.class);
 
@@ -49,10 +50,25 @@ public class SlowBeanDiagnosticPostProcessor implements BeanPostProcessor, Prior
     }
 
     /**
-     * 清理记录的慢 Bean 清单（主要用于测试隔离）
+     * 获取当前实例记录的慢 Bean 初始化清单快照
+     *
+     * @return 慢 Bean 信息不可变列表
+     */
+    public List<SlowBeanInfo> getRecordedSlowBeans() {
+        return Collections.unmodifiableList(SLOW_BEANS);
+    }
+
+    /**
+     * 清理记录的慢 Bean 清单（主要用于测试隔离与容器关闭）
      */
     public static void clearSlowBeans() {
         SLOW_BEANS.clear();
+    }
+
+    @Override
+    public void destroy() {
+        SLOW_BEANS.clear();
+        beanStartTimes.clear();
     }
 
     @Override
@@ -63,7 +79,7 @@ public class SlowBeanDiagnosticPostProcessor implements BeanPostProcessor, Prior
     @Override
     public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
         if (thresholdMillis > 0 && beanName != null) {
-            beanStartTimes.put(beanName, System.currentTimeMillis());
+            beanStartTimes.put(beanName, System.nanoTime());
         }
         return bean;
     }
@@ -71,9 +87,9 @@ public class SlowBeanDiagnosticPostProcessor implements BeanPostProcessor, Prior
     @Override
     public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
         if (thresholdMillis > 0 && beanName != null) {
-            Long startTime = beanStartTimes.remove(beanName);
-            if (startTime != null) {
-                long cost = System.currentTimeMillis() - startTime;
+            Long startNano = beanStartTimes.remove(beanName);
+            if (startNano != null) {
+                long cost = (System.nanoTime() - startNano) / 1_000_000L;
                 if (cost >= thresholdMillis) {
                     String className = bean != null ? bean.getClass().getName() : "unknown";
                     SlowBeanInfo info = new SlowBeanInfo(beanName, className, cost);

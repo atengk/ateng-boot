@@ -64,17 +64,20 @@ public class SystemEnvironmentPostProcessor implements EnvironmentPostProcessor,
             return;
         }
 
-        // 2. 时区与系统环境防卫子开关校验（默认 true）
+        // 2. 规范系统编码与 Headless 模式及底层网络超时基线
+        applyEncodingAndNetworkBaseline();
+
+        // 3. 时区校准防卫子开关校验（默认 true）
         Boolean timezoneGuardEnabled = environment.getProperty("ateng.boot.core.system.timezone-guard-enabled", Boolean.class, true);
         if (Boolean.FALSE.equals(timezoneGuardEnabled)) {
             return;
         }
 
-        // 3. 读取目标时区标识（默认 Asia/Shanghai）
+        // 4. 读取目标时区标识并应用
         String timezone = environment.getProperty("ateng.boot.core.system.timezone", String.class, DEFAULT_TIMEZONE);
-        applySystemBaseline(timezone);
+        applyTimezoneBaseline(timezone);
 
-        // 4. 以最低优先级注入属性源，确保业务配置中心/application.yml 无缝覆写
+        // 5. 以最低优先级注入属性源，确保业务配置中心/application.yml 无缝覆写
         if (!environment.getPropertySources().contains(PROPERTY_SOURCE_NAME)) {
             Map<String, Object> defaults = new LinkedHashMap<>();
             defaults.put("ateng.boot.core.system.timezone", timezone);
@@ -84,30 +87,34 @@ public class SystemEnvironmentPostProcessor implements EnvironmentPostProcessor,
     }
 
     /**
-     * 应用系统底层运行时基线防卫
-     *
-     * @param timezone 目标时区标识
+     * 应用系统编码、Headless 与底层网络超时保底基线
      */
-    private void applySystemBaseline(String timezone) {
-        // 3.1 校准时区
-        try {
-            ZoneId zoneId = ZoneId.of(timezone);
-            TimeZone.setDefault(TimeZone.getTimeZone(zoneId));
-            System.setProperty("user.timezone", zoneId.getId());
-        } catch (Throwable ignored) {
-            // 防御非法时区字符串异常
-        }
-
-        // 3.2 规范系统编码与 Headless 模式
+    private void applyEncodingAndNetworkBaseline() {
+        // 规范系统编码与 Headless 模式
         System.setProperty("file.encoding", "UTF-8");
         System.setProperty("java.awt.headless", "true");
 
-        // 3.3 注入 JVM 底层网络连接与读取保底超时（防第三方无超时客户端无限挂起）
+        // 注入 JVM 底层网络连接与读取保底超时（防第三方无超时客户端无限挂起）
         if (System.getProperty("sun.net.client.defaultConnectTimeout") == null) {
             System.setProperty("sun.net.client.defaultConnectTimeout", DEFAULT_NETWORK_TIMEOUT_MS);
         }
         if (System.getProperty("sun.net.client.defaultReadTimeout") == null) {
             System.setProperty("sun.net.client.defaultReadTimeout", DEFAULT_NETWORK_TIMEOUT_MS);
+        }
+    }
+
+    /**
+     * 应用系统时区校准防卫
+     *
+     * @param timezone 目标时区标识
+     */
+    private void applyTimezoneBaseline(String timezone) {
+        try {
+            ZoneId zoneId = ZoneId.of(timezone);
+            TimeZone.setDefault(TimeZone.getTimeZone(zoneId));
+            System.setProperty("user.timezone", zoneId.getId());
+        } catch (Throwable ex) {
+            System.err.println("[ATENG] Failed to configure system timezone [" + timezone + "]: " + ex.getMessage());
         }
     }
 }

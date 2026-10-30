@@ -74,6 +74,20 @@ class ProductionSanityCheckerTest {
     }
 
     @Test
+    @DisplayName("生产 Profile 下当 SpringDoc 存在且启用时输出警告")
+    void shouldWarnWhenSpringDocEnabledInProd() {
+        WebProperties properties = new WebProperties();
+        ProductionSanityChecker checker = new ProductionSanityChecker(properties);
+
+        MockEnvironment env = new MockEnvironment();
+        env.setActiveProfiles("prod");
+        env.setProperty("springdoc.api-docs.enabled", "true");
+
+        List<String> warnings = checker.checkSanity(env, null);
+        assertThat(warnings).anyMatch(w -> w.contains("[SECURITY-WARN]") && w.contains("Swagger/OpenAPI"));
+    }
+
+    @Test
     @DisplayName("isProductionProfile: 正确判定多种生产 Profile 别名")
     void shouldCorrectlyIdentifyProdProfiles() {
         WebProperties properties = new WebProperties();

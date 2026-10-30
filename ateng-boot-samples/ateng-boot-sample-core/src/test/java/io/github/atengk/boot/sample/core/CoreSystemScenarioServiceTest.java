@@ -57,6 +57,12 @@ class CoreSystemScenarioServiceTest {
         assertThat(cost).isGreaterThanOrEqualTo(30);
     }
 
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        Path tempDir = FileUtil.getAppTempDirectory("sample-core");
+        FileUtil.cleanDirectorySafely(tempDir);
+    }
+
     @Test
     @DisplayName("全真验证：应用专属受管临时目录创建、读写与安全清理")
     void shouldCreateAndCleanManagedTempFile() throws IOException {

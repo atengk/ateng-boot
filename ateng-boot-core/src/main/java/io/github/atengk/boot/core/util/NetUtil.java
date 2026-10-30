@@ -1,5 +1,8 @@
 package io.github.atengk.boot.core.util;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -19,6 +22,8 @@ import java.util.regex.Pattern;
  */
 public final class NetUtil {
 
+    private static final Logger log = LoggerFactory.getLogger(NetUtil.class);
+
     public static final String LOCALHOST_IPV4 = "127.0.0.1";
     public static final int MIN_PORT = 1024;
     public static final int MAX_PORT = 65535;
@@ -27,7 +32,7 @@ public final class NetUtil {
      * 常见虚拟网卡与隧道接口黑名单名称模式
      */
     private static final Pattern VIRTUAL_INTERFACE_PATTERN = Pattern.compile(
-            "(?i).*(docker|veth|vmnet|virbr|vboxnet|hyper-v|wsl|dummy|tailscale|flannel|cni|br-|tap|tun).*"
+            "(?i).*(docker|veth|vmnet|virbr|vboxnet|hyper-v|wsl|dummy|tailscale).*"
     );
 
     private static volatile String cachedLocalIpv4;
@@ -58,8 +63,8 @@ public final class NetUtil {
             if (displayName != null && VIRTUAL_INTERFACE_PATTERN.matcher(displayName).matches()) {
                 return true;
             }
-        } catch (Throwable ignored) {
-            // 防御接口状态探测异常
+        } catch (Throwable ex) {
+            log.trace("探测网络接口状态异常: {}", ni, ex);
         }
         return false;
     }

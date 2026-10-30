@@ -68,12 +68,12 @@ public class SlowAlertAspect implements Ordered {
         }
 
         long threshold = resolveThreshold(slowAlert);
-        long start = System.currentTimeMillis();
+        long startNano = System.nanoTime();
 
         try {
             return joinPoint.proceed();
         } finally {
-            long cost = System.currentTimeMillis() - start;
+            long cost = (System.nanoTime() - startNano) / 1_000_000L;
             if (cost >= threshold) {
                 handleSlowCall(joinPoint, method, slowAlert, cost, threshold);
             }

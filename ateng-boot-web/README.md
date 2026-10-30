@@ -43,7 +43,7 @@
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 | **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
 | **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
-| **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动阻断自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`) 启动自检防呆，主动探测并阻断 H2 控制台、Druid 监控弱口令与未授权敏感端点暴露，输出红牌告警或抛出异常熔断阻断启动 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java` |
+| **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动防呆自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`) 启动就绪安全防呆自检，前置扫描并告警 Swagger/Knife4j 文档公网暴露、HTTP Payload 全量双向采样日志与 H2 控制台暴露，输出高危安全告警日志 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java`, `WebProductionSanitySampleTest.java` |
 
 ---
 
@@ -1130,19 +1130,25 @@ public class WebEnumSampleController {
 
 #### 控制台真实呈现效果（实测逆向提取）
 ```text
-╔════════════════════════════════════════════════════════════════════════════╗
-║                            :: Ateng Boot ::                                ║
-╠════════════════════════════════════════════════════════════════════════════╣
-║  Application   : ateng-boot-sample-web                                     ║
-║  Environment   : [local]                                                   ║
-║  Local URL     : http://localhost:8080/                                    ║
-║  Network URL   : http://192.168.1.100:8080/                                ║
-║  Doc URL       : http://192.168.1.100:8080/swagger-ui/index.html           ║
-║  Process PID   : 12345                                                     ║
-║  Java Version  : 17.0.12 (Eclipse Adoptium)                                ║
-║  Heap Memory   : Init: 512MB / Max: 4096MB                                 ║
-║  Startup Time  : 2.150s                                                    ║
-╚════════════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║     ___  _____ _____ _   _  ____                                                 ║
+║    / _ \_   _| ____| \ | |/ ___|   :: Ateng Boot :: (v1.2.0)                     ║
+║   / /_\ \| | |  _| |  \| | |  _                                                  ║
+║  / /   \ \ | | |___| |\  | |_| |                                                 ║
+║ /_/     \_\_| |_____|_| \_|\____|                                                ║
+╠══════════════════════════════════════════════════════════════════════════════════╣
+║ Application   : ateng-boot-sample-web                                            ║
+║ Active Profile: local                                                            ║
+║ Startup Time  : 2.15 s                                                           ║
+║ Local URL     : http://localhost:8080/                                           ║
+║ Network URL   : http://192.168.1.100:8080/                                       ║
+║ Doc URL       : http://192.168.1.100:8080/swagger-ui/index.html                 ║
+╠══════════════════════════════════════════════════════════════════════════════════╣
+║ Process PID   : 12345                                                            ║
+║ OS / Arch     : Windows 11 (amd64)                                               ║
+║ Java Runtime  : 17.0.12 (Eclipse Adoptium)                                       ║
+║ Heap Memory   : 128MB / 4096MB                                                   ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ---
@@ -1150,10 +1156,10 @@ public class WebEnumSampleController {
 ### 22.2 生产环境高危安全防呆自检 (`ProductionSanityChecker`)
 
 在生产环境（激活 `prod` 或 `production` Profile）下，`ProductionSanityChecker` 在就绪事件中主动执行红线安全自检：
-1. **H2 控制台泄露拦截**：检测 `spring.h2.console.enabled` 是否被误开启，坚决杜绝嵌入式数据库 Web 控制台在生产环境裸奔；
-2. **Druid 监控弱口令防御**：检测 Druid 监控页面是否使用缺省账号密码或未配置访问控制；
-3. **未授权接口与端点自检**：检测敏感监控与调试接口外网暴露隐患；
-4. **防御策略**：发现违规配置时，控制台输出醒目的红牌告警并打印危险配置项，彻底阻断安全合规隐患。
+1. **Swagger / OpenAPI / Knife4j 公网暴露拦截**：检测在线接口文档是否被意外暴露于公网，输出 `[SECURITY-WARN]` 告警提示关闭；
+2. **HTTP Payload 采样日志防呆**：检测 `ateng.boot.web.payload-log.enabled` 是否在生产环境误开启，避免高并发性能损耗与敏感凭据全量落盘；
+3. **H2 控制台泄露拦截**：检测 `spring.h2.console.enabled` 是否在生产环境误开启，防御数据库管理控制台公网暴露风险；
+4. **防御策略**：发现违规配置时，控制台输出醒目的 `[SECURITY-WARN]` 警示日志并打印危险配置项，指引运维与开发快速排查隐患。
 
 ---
 

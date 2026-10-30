@@ -82,10 +82,5 @@ public class LoggingProperties {
          * 是否独立分流生成 app-error.log 错误日志（默认 true）
          */
         private boolean splitError = true;
-
-        /**
-         * 是否在应用启动时清理历史日志文件（默认 false）
-         */
-        private boolean cleanHistoryOnStart = false;
     }
 }
