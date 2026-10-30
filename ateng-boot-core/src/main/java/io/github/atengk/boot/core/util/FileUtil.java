@@ -225,4 +225,67 @@ public final class FileUtil {
         tempFile.deleteOnExit();
         return tempFile;
     }
+
+    /**
+     * 获取当前应用专属的受管临时根目录
+     * 路径规范：${java.io.tmpdir}/ateng-boot/${appName}/
+     * 若目录不存在则自动创建，并对应用名称执行路径遍历安全清洗
+     *
+     * @param appName 应用名称（为空时回退至 "application"）
+     * @return 应用隔离的受管临时工作目录 Path
+     */
+    public static java.nio.file.Path getAppTempDirectory(String appName) {
+        String safeAppName = (appName != null && !appName.isBlank()) ? cleanFilename(appName) : "application";
+        if (safeAppName.isBlank()) {
+            safeAppName = "application";
+        }
+        String systemTmpDir = System.getProperty("java.io.tmpdir");
+        java.nio.file.Path appTempDir = java.nio.file.Paths.get(systemTmpDir, "ateng-boot", safeAppName);
+        try {
+            java.nio.file.Files.createDirectories(appTempDir);
+        } catch (java.io.IOException ex) {
+            // 防御目录创建异常，安全回退至系统临时目录
+            return java.nio.file.Paths.get(systemTmpDir);
+        }
+        return appTempDir;
+    }
+
+    /**
+     * 获取默认应用专属的受管临时根目录（应用名默认回退至 "application"）
+     *
+     * @return 应用隔离的受管临时工作目录 Path
+     */
+    public static java.nio.file.Path getAppTempDirectory() {
+        return getAppTempDirectory("application");
+    }
+
+    /**
+     * 安全扫描并清理指定目录下的所有临时文件与子目录（防御异常中断，尽力清理）
+     *
+     * @param directory 目标待清理目录
+     * @return 成功清理的文件与子目录总数
+     */
+    public static int cleanDirectorySafely(java.nio.file.Path directory) {
+        if (directory == null || !java.nio.file.Files.exists(directory)) {
+            return 0;
+        }
+        int cleanedCount = 0;
+        try (java.util.stream.Stream<java.nio.file.Path> stream = java.nio.file.Files.walk(directory)) {
+            java.util.List<java.nio.file.Path> paths = stream
+                    .filter(path -> !path.equals(directory))
+                    .sorted(java.util.Comparator.reverseOrder())
+                    .toList();
+            for (java.nio.file.Path path : paths) {
+                try {
+                    java.nio.file.Files.deleteIfExists(path);
+                    cleanedCount++;
+                } catch (Throwable ignored) {
+                    // 防御特定文件被其他进程锁定时跳过
+                }
+            }
+        } catch (Throwable ignored) {
+            // 防御遍历异常
+        }
+        return cleanedCount;
+    }
 }

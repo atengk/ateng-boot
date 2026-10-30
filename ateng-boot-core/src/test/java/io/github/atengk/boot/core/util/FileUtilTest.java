@@ -140,4 +140,46 @@ class FileUtilTest {
         assertTrue(sysTemp.exists());
         sysTemp.delete();
     }
+
+    @Test
+    @DisplayName("getAppTempDirectory: 应用隔离受管临时目录获取与安全清洗")
+    void shouldGetAppTempDirectorySafely() {
+        java.nio.file.Path appTempDir = FileUtil.getAppTempDirectory("order-service");
+        assertNotNull(appTempDir);
+        assertTrue(java.nio.file.Files.exists(appTempDir));
+        assertTrue(appTempDir.toString().contains("order-service"));
+
+        // 包含恶意路径时被清洗
+        java.nio.file.Path cleanTempDir = FileUtil.getAppTempDirectory("../evil-service");
+        assertNotNull(cleanTempDir);
+        assertTrue(java.nio.file.Files.exists(cleanTempDir));
+        assertFalse(cleanTempDir.toString().contains(".."));
+
+        // 默认重载
+        java.nio.file.Path defaultTempDir = FileUtil.getAppTempDirectory();
+        assertNotNull(defaultTempDir);
+        assertTrue(java.nio.file.Files.exists(defaultTempDir));
+    }
+
+    @Test
+    @DisplayName("cleanDirectorySafely: 安全清理目录及其子文件测试")
+    void shouldCleanDirectorySafely(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tempDir) throws java.io.IOException {
+        java.nio.file.Path subDir = tempDir.resolve("sub");
+        java.nio.file.Files.createDirectories(subDir);
+        java.nio.file.Path file1 = tempDir.resolve("file1.txt");
+        java.nio.file.Path file2 = subDir.resolve("file2.txt");
+        java.nio.file.Files.writeString(file1, "hello");
+        java.nio.file.Files.writeString(file2, "world");
+
+        int cleaned = FileUtil.cleanDirectorySafely(tempDir);
+        assertEquals(3, cleaned); // file1, file2, sub
+        assertTrue(java.nio.file.Files.exists(tempDir));
+        assertFalse(java.nio.file.Files.exists(file1));
+        assertFalse(java.nio.file.Files.exists(file2));
+        assertFalse(java.nio.file.Files.exists(subDir));
+
+        // 清理空目录或不存在目录
+        assertEquals(0, FileUtil.cleanDirectorySafely(null));
+        assertEquals(0, FileUtil.cleanDirectorySafely(tempDir.resolve("non-existent")));
+    }
 }

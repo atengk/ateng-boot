@@ -3,6 +3,8 @@ package io.github.atengk.boot.core.autoconfigure;
 import io.github.atengk.boot.core.aspect.SlowAlertAspect;
 import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor;
 import io.github.atengk.boot.core.id.Snowflake;
+import io.github.atengk.boot.core.lifecycle.AppShutdownListener;
+import io.github.atengk.boot.core.lifecycle.AppTempDirCleanupListener;
 import io.github.atengk.boot.core.properties.CoreProperties;
 import io.github.atengk.boot.core.properties.SnowflakeProperties;
 import io.github.atengk.boot.core.util.SpringUtil;
@@ -73,6 +75,34 @@ public class AtengCoreAutoConfiguration {
     public static SlowBeanDiagnosticPostProcessor slowBeanDiagnosticPostProcessor(org.springframework.core.env.Environment environment) {
         Duration threshold = environment.getProperty("ateng.boot.core.system.slow-bean-threshold", Duration.class, Duration.ofMillis(500));
         return new SlowBeanDiagnosticPostProcessor(threshold);
+    }
+
+    /**
+     * 自动装配应用优雅停机与 Uptime 摘要监听器
+     *
+     * @param properties Core 核心配置属性
+     * @return AppShutdownListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(AppShutdownListener.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.core.system", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AppShutdownListener appShutdownListener(CoreProperties properties) {
+        boolean enabled = properties.getSystem() != null && properties.getSystem().isShutdownUptimeEnabled();
+        return new AppShutdownListener(enabled);
+    }
+
+    /**
+     * 自动装配应用受管临时目录关机清理监听器
+     *
+     * @param environment Spring 运行时环境
+     * @return AppTempDirCleanupListener 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(AppTempDirCleanupListener.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.core.system", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public AppTempDirCleanupListener appTempDirCleanupListener(org.springframework.core.env.Environment environment) {
+        String appName = environment.getProperty("spring.application.name", "application");
+        return new AppTempDirCleanupListener(appName);
     }
 
     /**
