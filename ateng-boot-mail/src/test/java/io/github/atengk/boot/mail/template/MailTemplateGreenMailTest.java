@@ -15,10 +15,12 @@ import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.registry.MailAccountRegistry;
@@ -1505,5 +1507,95 @@ class MailTemplateGreenMailTest {
         // 5. 再次发信，验证重新触发懒加载
         template.send(message);
         assertEquals(3, providerCallCount.get(), "收到全量清空事件后再次发信必须重新触发 Provider 懒加载");
+    }
+
+    @Test
+    @DisplayName("测试批量个性化发信全量成功 (sendBatch)")
+    void testSendBatchSuccess() {
+        List<MailMessage> messages = new ArrayList<>();
+        for (int i = 1; i <= 5; i++) {
+            messages.add(new MailMessage()
+                    .to("user" + i + "@atengk.com")
+                    .subject("个性化工资条 第" + i + "期")
+                    .text("尊敬的员工" + i + "，您的实发薪资已到账。"));
+        }
+
+        BatchMailSendResult batchResult = mailTemplate.sendBatch(messages);
+
+        assertNotNull(batchResult);
+        assertEquals(5, batchResult.getTotalCount());
+        assertEquals(5, batchResult.getSuccessCount());
+        assertEquals(0, batchResult.getFailureCount());
+        assertTrue(batchResult.isAllSuccess());
+        assertFalse(batchResult.hasFailure());
+        assertEquals(5, batchResult.getItems().size());
+
+        for (int i = 0; i < 5; i++) {
+            MailSendResultItem item = batchResult.getItems().get(i);
+            assertEquals(i, item.getIndex());
+            assertTrue(item.isSuccess());
+            assertNotNull(item.getResult());
+            assertNotNull(item.getResult().getMessageId());
+            assertEquals(List.of("user" + (i + 1) + "@atengk.com"), item.getRecipients());
+        }
+
+        MimeMessage[] received = greenMail.getReceivedMessages();
+        assertTrue(received.length >= 5, "GreenMail 应收到全部 5 封邮件");
+    }
+
+    @Test
+    @DisplayName("测试批量个性化发信 Fail-Safe 容错与聚合统计")
+    void testSendBatchPartialFailureFailSafe() {
+        MailMessage msg1 = new MailMessage()
+                .to("valid1@atengk.com")
+                .subject("正常通知1")
+                .text("内容1");
+        // 制造收件人为空的异常邮件
+        MailMessage msg2 = new MailMessage()
+                .subject("异常邮件")
+                .text("无收件人");
+        MailMessage msg3 = new MailMessage()
+                .to("valid2@atengk.com")
+                .subject("正常通知2")
+                .text("内容2");
+
+        BatchMailSendResult batchResult = mailTemplate.sendBatch(List.of(msg1, msg2, msg3));
+
+        assertNotNull(batchResult);
+        assertEquals(3, batchResult.getTotalCount());
+        assertEquals(2, batchResult.getSuccessCount());
+        assertEquals(1, batchResult.getFailureCount());
+        assertFalse(batchResult.isAllSuccess());
+        assertTrue(batchResult.hasFailure());
+
+        assertEquals(2, batchResult.getSuccessItems().size());
+        assertEquals(1, batchResult.getFailureItems().size());
+
+        MailSendResultItem failureItem = batchResult.getFailureItems().get(0);
+        assertEquals(1, failureItem.getIndex());
+        assertFalse(failureItem.isSuccess());
+        assertNotNull(failureItem.getErrorMessage());
+        assertNotNull(failureItem.getCause());
+    }
+
+    @Test
+    @DisplayName("测试异步批量个性化发信 (sendBatchAsync)")
+    void testSendBatchAsync() throws Exception {
+        List<MailMessage> messages = new ArrayList<>();
+        for (int i = 1; i <= 3; i++) {
+            messages.add(new MailMessage()
+                    .to("async" + i + "@atengk.com")
+                    .subject("异步批量通知 第" + i + "期")
+                    .text("异步通知内容" + i));
+        }
+
+        CompletableFuture<BatchMailSendResult> future = mailTemplate.sendBatchAsync(messages);
+        BatchMailSendResult batchResult = future.get();
+
+        assertNotNull(batchResult);
+        assertEquals(3, batchResult.getTotalCount());
+        assertEquals(3, batchResult.getSuccessCount());
+        assertEquals(0, batchResult.getFailureCount());
+        assertTrue(batchResult.isAllSuccess());
     }
 }

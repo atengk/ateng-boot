@@ -64,6 +64,18 @@ _Avoid_: AccountCacheClearEvent, MailAccountInvalidateEvent, AccountEvictEvent
 物理发信拦截器 SPI，支持发信前置黑名单过滤、标头动态改写与频控配额拦截。
 _Avoid_: MailFilter, SendInterceptor, EmailInterceptor
 
+**BatchMailSendResult**:
+批量个性化发信执行聚合回执领域模型，结构化记录批次总数、成功数、失败数、总执行耗时及单封邮件投递明细（`MailSendResultItem`）。
+_Avoid_: BatchSendResult, MultiMailResponse, SendBatchResult
+
+**MailPriority**:
+强类型邮件重要性与优先级枚举，统一抽象标准 RFC 3798 / RFC 2156 邮件标头规范（映射 `X-Priority` 与 `Importance`）。
+_Avoid_: EmailPriority, PriorityLevel, MessagePriority
+
+**MailSandboxInterceptor**:
+邮件测试沙箱安全拦截器，专职在非生产环境中通过白名单通配放行、安全测试邮箱强制重定向与纯日志模拟杜绝向真实用户误发邮件。
+_Avoid_: MailDevFilter, SandboxFilter, TestMailInterceptor
+
 **MailSendException**:
 邮件发送统一语义化业务异常（继承 Core 模块 `BusinessException`），拦截底层 JavaMail `MessagingException` / `MailAuthenticationException` 并完整保留原始因果链。
 _Avoid_: MessagingException, MailException, EmailException

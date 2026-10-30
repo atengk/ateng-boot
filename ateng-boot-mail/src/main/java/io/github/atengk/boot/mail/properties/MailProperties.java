@@ -174,6 +174,12 @@ public class MailProperties {
     @NestedConfigurationProperty
     private MailRetryProperties retry = new MailRetryProperties();
 
+    /**
+     * 批量邮件合并发信配置
+     */
+    @NestedConfigurationProperty
+    private MailBatchProperties batch = new MailBatchProperties();
+
     public MailProperties() {
         this.async.setThreadNamePrefix("mail-async-");
         this.async.setVirtualThreadNamePrefix("mail-vt-async-");

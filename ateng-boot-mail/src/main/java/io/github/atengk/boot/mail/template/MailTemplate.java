@@ -14,11 +14,13 @@ import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailInlineResource;
 import io.github.atengk.boot.mail.model.MailMessage;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.model.TrackableMimeMessage;
 import io.github.atengk.boot.mail.properties.MailProperties;
 import io.github.atengk.boot.mail.properties.MailRetryProperties;
@@ -59,6 +61,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -441,6 +444,116 @@ public class MailTemplate implements DisposableBean {
         MailMessage message = new MailMessage();
         messageConfigurer.accept(message);
         return send(message);
+    }
+
+    // ==================== 批量个性化发信与邮件合并门面 ====================
+
+    /**
+     * 批量个性化发送邮件（受控并发分片投递与 Fail-Safe 独立容错聚合）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量发信聚合回执
+     */
+    public BatchMailSendResult sendBatch(List<MailMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return BatchMailSendResult.builder()
+                    .totalCount(0)
+                    .successCount(0)
+                    .failureCount(0)
+                    .duration(Duration.ZERO)
+                    .items(Collections.emptyList())
+                    .build();
+        }
+
+        long start = System.nanoTime();
+        int total = messages.size();
+        int concurrency = resolveBatchConcurrency();
+
+        MailSendResultItem[] results = new MailSendResultItem[total];
+        Semaphore semaphore = new Semaphore(concurrency);
+        List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+
+        for (int i = 0; i < total; i++) {
+            final int index = i;
+            final MailMessage message = messages.get(i);
+
+            try {
+                CompletableFuture<Void> future = CompletableFuture.runAsync(AsyncContext.wrap(() -> {
+                    try {
+                        semaphore.acquire();
+                        try {
+                            MailSendResult result = send(message);
+                            results[index] = MailSendResultItem.success(index, message, result);
+                        } catch (Throwable t) {
+                            // Fail-Safe 容错：单个发信失败不阻断批次内其余邮件，详细记录失败根因
+                            results[index] = MailSendResultItem.failure(index, message, t.getMessage(), t);
+                        } finally {
+                            semaphore.release();
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        results[index] = MailSendResultItem.failure(index, message, "批量发送任务被中断: " + ie.getMessage(), ie);
+                    }
+                }), executor);
+                futures.add(future);
+            } catch (Throwable t) {
+                results[index] = MailSendResultItem.failure(index, message, "任务提交失败: " + t.getMessage(), t);
+            }
+        }
+
+        if (!futures.isEmpty()) {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        }
+
+        Duration duration = Duration.ofNanos(System.nanoTime() - start);
+        List<MailSendResultItem> itemList = new ArrayList<>(total);
+        int successCount = 0;
+        int failureCount = 0;
+
+        for (int i = 0; i < total; i++) {
+            MailSendResultItem item = results[i];
+            if (item != null) {
+                itemList.add(item);
+                if (item.isSuccess()) {
+                    successCount++;
+                } else {
+                    failureCount++;
+                }
+            } else {
+                MailSendResultItem unknown = MailSendResultItem.failure(i, messages.get(i), "未获取到执行结果", null);
+                itemList.add(unknown);
+                failureCount++;
+            }
+        }
+
+        log.info("Batch mail merge completed in {} ms: total={}, success={}, failure={}",
+                duration.toMillis(), total, successCount, failureCount);
+
+        return BatchMailSendResult.builder()
+                .totalCount(total)
+                .successCount(successCount)
+                .failureCount(failureCount)
+                .duration(duration)
+                .items(itemList)
+                .build();
+    }
+
+    /**
+     * 异步批量个性化发送邮件
+     *
+     * @param messages 邮件消息列表
+     * @return 包含批量发信聚合回执的 CompletableFuture
+     */
+    public CompletableFuture<BatchMailSendResult> sendBatchAsync(List<MailMessage> messages) {
+        return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(messages)), executor);
+    }
+
+    private int resolveBatchConcurrency() {
+        if (properties != null && properties.getBatch() != null) {
+            int c = properties.getBatch().getConcurrency();
+            return Math.max(1, Math.min(32, c));
+        }
+        return 4;
     }
 
     /**
