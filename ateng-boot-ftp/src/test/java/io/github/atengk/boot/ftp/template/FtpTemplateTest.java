@@ -618,14 +618,14 @@ class FtpTemplateTest {
     }
 
     @Test
-    @DisplayName("测试批量上传时操作系统隐藏与临时文件自动过滤 (desktop.ini / .DS_Store / Thumbs.db / .git)")
+    @DisplayName("测试批量上传时操作系统隐藏与系统元数据文件自动过滤 (desktop.ini / .DS_Store / Thumbs.db / .git / ._*)")
     void testUploadDirectoryHiddenAndSystemFilesFiltering(@TempDir Path tempDir) throws IOException {
         Path hiddenDir = tempDir.resolve("hidden_dir");
         Files.createDirectories(hiddenDir.resolve(".git"));
         Files.writeString(hiddenDir.resolve("desktop.ini"), "desktop_ini_content");
         Files.writeString(hiddenDir.resolve(".DS_Store"), "ds_store_content");
         Files.writeString(hiddenDir.resolve("Thumbs.db"), "thumbs_db_content");
-        Files.writeString(hiddenDir.resolve("temp_file.tmp"), "temp_content");
+        Files.writeString(hiddenDir.resolve("._resource_fork"), "mac_resource_fork");
         Files.writeString(hiddenDir.resolve(".git/HEAD"), "ref: refs/heads/main");
         Files.writeString(hiddenDir.resolve("legit.txt"), "Legit Content");
 
@@ -638,7 +638,32 @@ class FtpTemplateTest {
         assertThat(ftpTemplate.exists("/hidden_remote/desktop.ini")).isFalse();
         assertThat(ftpTemplate.exists("/hidden_remote/.DS_Store")).isFalse();
         assertThat(ftpTemplate.exists("/hidden_remote/Thumbs.db")).isFalse();
-        assertThat(ftpTemplate.exists("/hidden_remote/temp_file.tmp")).isFalse();
+        assertThat(ftpTemplate.exists("/hidden_remote/._resource_fork")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试批量上传空目录时远端目标根目录同步创建")
+    void testUploadEmptyDirectoryCreatesRemoteDir(@TempDir Path tempDir) throws IOException {
+        Path emptyDir = tempDir.resolve("empty_local_dir");
+        Files.createDirectories(emptyDir);
+
+        BatchTransferResult result = ftpTemplate.uploadDirectory(emptyDir.toFile(), "/empty_remote_target");
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getTotalFiles()).isEqualTo(0);
+        assertThat(ftpTemplate.exists("/empty_remote_target")).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试批量上传时合法业务 .tmp 文件默认不被静默剔除")
+    void testUploadDirectoryWithTmpFileAllowedByDefault(@TempDir Path tempDir) throws IOException {
+        Path tmpDir = tempDir.resolve("tmp_file_dir");
+        Files.createDirectories(tmpDir);
+        Files.writeString(tmpDir.resolve("data.tmp"), "legit_tmp_content");
+
+        BatchTransferResult result = ftpTemplate.uploadDirectory(tmpDir.toFile(), "/tmp_remote_target");
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+        assertThat(ftpTemplate.exists("/tmp_remote_target/data.tmp")).isTrue();
     }
 
     @Test

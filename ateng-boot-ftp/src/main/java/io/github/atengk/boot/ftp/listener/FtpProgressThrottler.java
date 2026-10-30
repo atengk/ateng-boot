@@ -62,7 +62,7 @@ public class FtpProgressThrottler {
      */
     public FtpProgressThrottler(FtpProgressListener listener, long totalBytes, double stepPercentage, long minIntervalMs) {
         this.listener = listener;
-        this.totalBytes = totalBytes > 0 ? totalBytes : -1L;
+        this.totalBytes = totalBytes >= 0 ? totalBytes : -1L;
         this.stepPercentage = stepPercentage > 0 ? stepPercentage : DEFAULT_STEP_PERCENTAGE;
         this.minIntervalMs = minIntervalMs > 0 ? minIntervalMs : DEFAULT_MIN_INTERVAL_MS;
     }
@@ -81,12 +81,14 @@ public class FtpProgressThrottler {
         double currentPercentage = -1.0;
         if (totalBytes > 0) {
             currentPercentage = Math.min(100.0, (double) bytesTransferred / totalBytes * 100.0);
+        } else if (totalBytes == 0) {
+            currentPercentage = 100.0;
         }
 
         long now = System.currentTimeMillis();
         boolean shouldNotify = false;
 
-        if (totalBytes > 0) {
+        if (totalBytes >= 0) {
             // 首个包必定通知，或百分比增量满足步长，或达到最小时间间隔
             if (lastNotifiedPercentage < 0) {
                 shouldNotify = true;
@@ -122,7 +124,7 @@ public class FtpProgressThrottler {
         }
         this.completed = true;
 
-        if (totalBytes > 0) {
+        if (totalBytes >= 0) {
             long finalBytes = Math.max(bytesTransferred, totalBytes);
             // 只要尚未通知过满额 100.0%，即刻补发保底满额通知
             if (lastNotifiedPercentage < 100.0 || bytesTransferred < totalBytes) {

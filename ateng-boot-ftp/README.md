@@ -12,7 +12,7 @@
 | **流式进度监听** | 大文件传输进度监听与防抖节流 | `FtpTemplate`<br>`FtpProgressListener` | `buffer-size` | `upload(String, InputStream, long, FtpProgressListener)` / `upload(String, File, FtpProgressListener)` / `download(String, OutputStream, FtpProgressListener)` / `download(String, File, FtpProgressListener)`，内置 1% 步长或 200ms 防抖节流与 100% 满额保底 | `FtpProgressListenerTest` / `LargeFileTransferScenarioService` |
 | **全目录递归同步** | 镜像递归上传与下载 | `FtpTemplate` | `auto-create-directories` | `uploadDirectory(File, String)` / `uploadDirectory(File, String, Predicate<File>, boolean)` / `downloadDirectory(String, File)` / `downloadDirectory(String, File, Predicate<FtpFileInfo>, boolean)`，递归镜像多层级目录树 | `FtpTemplateTest` / `SettlementBatchSyncScenarioService` |
 | **Fail-Safe 批处理** | 容错聚合回执与失败隔离 | `BatchTransferResult`<br>`TransferFailureItem` | - | 批量传输默认采用 Fail-Safe 容错模型，单文件失败不中断批次，返回强类型聚合回执（记录成功/失败/跳过/字节量/耗时及失败明细列表）；支持 `failFast=true` 快速熔断 | `BatchTransferResultTest` / `SettlementBatchSyncScenarioService` |
-| **宿主隐性文件过滤** | 操作系统元数据自动剔除 | `FtpTemplate` | - | `isSystemOrHiddenFile(String)`，内置宿主中立过滤器，自动过滤 Windows `desktop.ini`、`Thumbs.db`、macOS `.DS_Store`、`._*` 元数据、Linux `.git` 与 `.tmp` 临时文件 | `FtpTemplateTest` / `SettlementBatchSyncScenarioService` |
+| **宿主隐性文件过滤** | 操作系统元数据自动剔除 | `FtpTemplate` | - | `isSystemOrHiddenFile(String)`，内置宿主中立过滤器，自动过滤 Windows `desktop.ini`、`Thumbs.db`、macOS `.DS_Store`、`._*` 元数据与 Linux `.git` | `FtpTemplateTest` / `SettlementBatchSyncScenarioService` |
 | **原子上传守护** | 临时文件缓冲与原子重命名 | `FtpTemplate` | `atomic-upload`<br>`temp-file-suffix` | 先写入 `.tmp` 临时文件，完整传输后原子执行 `RNFR` + `RNTO`；上传中断或异常时在独立干净会话中物理清理残留脏文件，杜绝下游消费残缺文件 | `FtpTemplateTest` / `DocumentSyncScenarioService` |
 | **增量追加写** | RFC 959 原生增量追加 | `FtpTemplate` | `control-encoding` | `append(String, InputStream)` / `append(String, byte[])` / `append(String, String)` / `append(String, String, Charset)`，基于 `APPE` 指令在远端已有文件末尾追加写入 | `FtpTemplateTest` / `DocumentSyncScenarioService` |
 | **受管单文件复制** | 跨路径管道流原子对拷 | `FtpTemplate` | `atomic-upload` | `copy(String, String)`，在受管管道中执行单文件流式对拷，目标端挂载原子上传守护，严格限定单文件防止阻塞长耗时 | `FtpTemplateTest` / `DocumentSyncScenarioService` |
@@ -244,7 +244,7 @@ public class CustomFtpConfig {
 - **异常物理清理**：若网络中断或上传抛出异常，门面在独立的干净连接会话中物理删除残留的 `.tmp` 临时文件，杜绝下游消费残缺文件。
 
 ### 4. 环境宿主中立与隐性文件过滤
-- 批量上传与下载遍历目录时，内置 `isSystemOrHiddenFile` 过滤器，自动识别并过滤 Windows 的 `desktop.ini`、`Thumbs.db`、macOS 的 `.DS_Store`、`._*` 苹果双分支元数据、Linux 的 `.git` 及 `.tmp` 临时文件；
+- 批量上传与下载遍历目录时，内置 `isSystemOrHiddenFile` 过滤器，自动识别并过滤 Windows 的 `desktop.ini`、`Thumbs.db`、macOS 的 `.DS_Store`、`._*` 苹果双分支元数据与 Linux 的 `.git`；
 - 杜绝开发机操作系统隐性垃圾文件污染远端生产服务器或本地对账审计目录。
 
 ### 5. Fail-Safe 容错批处理与 32 层递归深度防卫

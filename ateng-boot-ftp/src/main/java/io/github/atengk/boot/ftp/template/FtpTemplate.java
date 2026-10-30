@@ -221,32 +221,12 @@ public class FtpTemplate {
     }
 
     private boolean testConnectionInternal() {
-        FTPClient client = null;
-        boolean invalidated = false;
         try {
-            client = pool.borrowObject();
-            if (client == null || !client.isConnected() || !client.isAvailable()) {
-                return false;
-            }
-            return client.sendNoOp();
+            testConnectionOrThrowInternal();
+            return true;
         } catch (Exception e) {
             log.debug("FTP 连通性探测失败: {}", e.getMessage());
-            if (client != null) {
-                try {
-                    pool.invalidateObject(client);
-                    invalidated = true;
-                } catch (Exception ignored) {
-                }
-            }
             return false;
-        } finally {
-            if (client != null && !invalidated) {
-                try {
-                    pool.returnObject(client);
-                } catch (Exception e) {
-                    log.warn("归还 FTP 客户端至连接池失败: {}", e.getMessage());
-                }
-            }
         }
     }
 
@@ -453,13 +433,21 @@ public class FtpTemplate {
         Assert.notNull(in, "InputStream must not be null");
 
         long effectiveTotal = totalBytes;
-        if (effectiveTotal <= 0) {
-            try {
-                int avail = in.available();
-                if (avail > 0) {
-                    effectiveTotal = avail;
+        if (effectiveTotal < 0) {
+            if (in instanceof FileInputStream fis) {
+                try {
+                    effectiveTotal = fis.getChannel().size();
+                } catch (Exception ignored) {
+                    effectiveTotal = -1L;
                 }
-            } catch (Exception ignored) {
+            } else if (in instanceof ByteArrayInputStream bais) {
+                try {
+                    effectiveTotal = bais.available();
+                } catch (Exception ignored) {
+                    effectiveTotal = -1L;
+                }
+            } else {
+                effectiveTotal = -1L;
             }
         }
 
@@ -674,7 +662,7 @@ public class FtpTemplate {
         long totalBytes = -1L;
         try {
             FtpFileInfo info = getFileInfo(remotePath);
-            if (info != null && info.getSize() > 0) {
+            if (info != null && info.getSize() >= 0) {
                 totalBytes = info.getSize();
             }
         } catch (Exception ignored) {
@@ -1271,6 +1259,22 @@ public class FtpTemplate {
         long startTime = System.nanoTime();
         log.debug("开始批量递归上传目录: {} -> {} (failFast={})", localDir.getAbsolutePath(), safeRemoteDir, failFast);
 
+        // 先确保远端根目标目录存在（即使本地根目录为空也必须创建远端目标目录）
+        if (!"/".equals(safeRemoteDir)) {
+            try {
+                makeDirectories(safeRemoteDir);
+            } catch (Exception e) {
+                if (failFast) {
+                    if (e instanceof FtpException fe) {
+                        throw fe;
+                    }
+                    throw new FtpException(FtpResultCode.OPERATION_FAILED,
+                            "批量上传创建远端根目标目录失败: " + safeRemoteDir, e);
+                }
+                log.warn("批量上传创建远端根目标目录失败: {}", safeRemoteDir, e);
+            }
+        }
+
         BatchTransferResult result = new BatchTransferResult();
         try {
             uploadDirectoryInternal(localDir, localDir, safeRemoteDir, filter, failFast, result, 0);
@@ -1421,7 +1425,6 @@ public class FtpTemplate {
                         throw new FtpException(FtpResultCode.UPLOAD_FAILED, "上传文件返回未成功: " + targetRemotePath);
                     }
                 } catch (Exception e) {
-                    log.warn("批量上传单文件失败: {} -> {}, 错误: {}", file.getAbsolutePath(), targetRemotePath, e.getMessage());
                     result.addFailure(TransferFailureItem.of(targetRemotePath, e));
                     if (failFast) {
                         if (e instanceof FtpException fe) {
@@ -1430,6 +1433,7 @@ public class FtpTemplate {
                         throw new FtpException(FtpResultCode.UPLOAD_FAILED,
                                 "批量上传在文件 [" + targetRemotePath + "] 处发生异常，触发快速熔断: " + e.getMessage(), e);
                     }
+                    log.warn("批量上传单文件失败: {} -> {}, 错误: {}", file.getAbsolutePath(), targetRemotePath, e.getMessage());
                 }
             }
         }
@@ -1487,7 +1491,6 @@ public class FtpTemplate {
                         throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "下载文件返回未成功: " + info.getPath());
                     }
                 } catch (Exception e) {
-                    log.warn("批量下载单文件失败: {} -> {}, 错误: {}", info.getPath(), targetLocalFile.getAbsolutePath(), e.getMessage());
                     result.addFailure(TransferFailureItem.of(info.getPath(), e));
                     if (failFast) {
                         if (e instanceof FtpException fe) {
@@ -1496,6 +1499,7 @@ public class FtpTemplate {
                         throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
                                 "批量下载在文件 [" + info.getPath() + "] 处发生异常，触发快速熔断: " + e.getMessage(), e);
                     }
+                    log.warn("批量下载单文件失败: {} -> {}, 错误: {}", info.getPath(), targetLocalFile.getAbsolutePath(), e.getMessage());
                 }
             }
         }
@@ -1531,8 +1535,7 @@ public class FtpTemplate {
                 || lower.equals(".ds_store")
                 || lower.equals("thumbs.db")
                 || lower.equals(".git")
-                || lower.startsWith("._")
-                || lower.endsWith(".tmp");
+                || lower.startsWith("._");
     }
 
     // ==========================================

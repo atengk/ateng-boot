@@ -108,4 +108,22 @@ class FtpProgressListenerTest {
         validThrottler.update(-10);
         assertThat(notified.get()).isFalse();
     }
+
+    @Test
+    @DisplayName("测试 0 字节空文件终态 100% 满额保底通知")
+    void testZeroByteFileTerminalNotification() {
+        List<ProgressSnapshot> snapshots = new ArrayList<>();
+        FtpProgressListener listener = (transferred, total, percentage) ->
+                snapshots.add(new ProgressSnapshot(transferred, total, percentage));
+
+        FtpProgressThrottler throttler = new FtpProgressThrottler(listener, 0L);
+        throttler.finish();
+
+        assertThat(snapshots).hasSize(1);
+        ProgressSnapshot snapshot = snapshots.get(0);
+        assertThat(snapshot.bytesTransferred()).isEqualTo(0L);
+        assertThat(snapshot.totalBytes()).isEqualTo(0L);
+        assertThat(snapshot.percentage()).isEqualTo(100.0);
+        assertThat(throttler.isCompleted()).isTrue();
+    }
 }

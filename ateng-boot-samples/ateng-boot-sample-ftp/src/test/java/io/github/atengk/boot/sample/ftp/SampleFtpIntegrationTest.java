@@ -56,6 +56,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 @DisplayName("FTP 样例工程 5 大真实业务场景端到端集成实测")
 public class SampleFtpIntegrationTest {
 
+    private static final int SAMPLE_PAYLOAD_SIZE = 64 * 1024;
+    private static final int SAMPLE_BYTE_MODULO = 128;
+
     private static FakeFtpServer defaultServer;
     private static FakeFtpServer backupServer;
 
@@ -134,12 +137,6 @@ public class SampleFtpIntegrationTest {
         FtpContextHolder.clear();
     }
 
-    @TestConfiguration
-    @Profile("!local")
-    static class OfflineFtpTestConfig {
-        // 标配 @Profile("!local")，当激活 local Profile 联调真实环境时自动失效
-    }
-
     @Test
     @DisplayName("01. DocumentSyncScenarioService: 企业日常文档全生命周期自验")
     void testDocumentSyncScenario(@TempDir Path tempDir) throws IOException {
@@ -213,7 +210,7 @@ public class SampleFtpIntegrationTest {
         Files.writeString(localSettlementDir.resolve("desktop.ini"), "icon_cache");
         Files.writeString(localSettlementDir.resolve("20261030/.DS_Store"), "mac_metadata");
         Files.writeString(localSettlementDir.resolve("20261030/Thumbs.db"), "thumb_cache");
-        Files.writeString(localSettlementDir.resolve("20261030/temp.tmp"), "temp_data");
+        Files.writeString(localSettlementDir.resolve("20261030/._resource_fork"), "mac_metadata");
 
         // 1. 批量递归同步至远端 FTP
         String remoteSettlementDir = "/settlement/batch";
@@ -231,6 +228,7 @@ public class SampleFtpIntegrationTest {
         assertThat(documentSyncService.exists("/settlement/batch/20261030/sub_batch/detail.csv")).isTrue();
         assertThat(documentSyncService.exists("/settlement/batch/desktop.ini")).isFalse();
         assertThat(documentSyncService.exists("/settlement/batch/20261030/.DS_Store")).isFalse();
+        assertThat(documentSyncService.exists("/settlement/batch/20261030/._resource_fork")).isFalse();
 
         // 2. 批量递归下载回本地工作区
         Path localAuditDir = tempDir.resolve("settlement_audit");
@@ -250,9 +248,9 @@ public class SampleFtpIntegrationTest {
     @DisplayName("03. LargeFileTransferScenarioService: 大文件流式传输与平滑进度监听自验")
     void testLargeFileTransferScenario(@TempDir Path tempDir) throws IOException {
         Path localLargeFile = tempDir.resolve("sample_large_file.dat");
-        byte[] payload = new byte[64 * 1024]; // 64KB 数据载荷
+        byte[] payload = new byte[SAMPLE_PAYLOAD_SIZE];
         for (int i = 0; i < payload.length; i++) {
-            payload[i] = (byte) (i % 128);
+            payload[i] = (byte) (i % SAMPLE_BYTE_MODULO);
         }
         Files.write(localLargeFile, payload);
 
