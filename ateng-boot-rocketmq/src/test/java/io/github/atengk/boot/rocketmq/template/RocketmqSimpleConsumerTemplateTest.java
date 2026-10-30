@@ -241,4 +241,26 @@ class RocketmqSimpleConsumerTemplateTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("已关闭");
     }
+
+    @Test
+    @DisplayName("验证多组订阅相同 Topic 时自动推断抛出歧义异常防范串组")
+    void testResolveConsumerGroupWithMultipleGroupsThrowsException() throws Exception {
+        SimpleConsumer mockConsumerA = mock(SimpleConsumer.class);
+        SimpleConsumer mockConsumerB = mock(SimpleConsumer.class);
+        when(mockConsumerA.getSubscriptionExpressions()).thenReturn(Map.of("same_topic", mock(FilterExpression.class)));
+        when(mockConsumerB.getSubscriptionExpressions()).thenReturn(Map.of("same_topic", mock(FilterExpression.class)));
+
+        when(simpleConsumerFactory.createSimpleConsumer(any(), eq("group_a"), any(), any())).thenReturn(mockConsumerA);
+        when(simpleConsumerFactory.createSimpleConsumer(any(), eq("group_b"), any(), any())).thenReturn(mockConsumerB);
+
+        template.receive("same_topic", "group_a", 1, Duration.ofSeconds(10));
+        template.receive("same_topic", "group_b", 1, Duration.ofSeconds(10));
+
+        // 构造一个未经过 template.receive 追踪的 MessageView
+        MessageView untrackedMsg = createMockMessageView("same_topic", "UNTRACKED-MSG-1", "test".getBytes(StandardCharsets.UTF_8), null);
+
+        assertThatThrownBy(() -> template.ack(untrackedMsg))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("检测到存在多个消费者组");
+    }
 }

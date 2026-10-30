@@ -48,8 +48,17 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     private final ClientConfiguration clientConfiguration;
     private final SimpleConsumerFactory simpleConsumerFactory;
 
+    private static final int MAX_TRACKED_MESSAGES = 10000;
+
     private final Map<String, SimpleConsumer> consumerCache = new ConcurrentHashMap<>();
-    private final Map<String, String> messageGroupMap = new ConcurrentHashMap<>();
+    private final Map<String, String> messageGroupMap = Collections.synchronizedMap(
+            new LinkedHashMap<>(1024, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > MAX_TRACKED_MESSAGES;
+                }
+            }
+    );
     private final Object lock = new Object();
     private volatile boolean running = true;
 
@@ -101,9 +110,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
             String tag,
             int maxMessageNum,
             Duration invisibleDuration) {
-        Assert.isTrue(maxMessageNum > 0, "maxMessageNum 必须大于 0");
-        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
-        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
+        validateReceiveParams(maxMessageNum, invisibleDuration);
 
         SimpleConsumer consumer = getOrCreateConsumer(topic, consumerGroup, tag);
         long startTime = System.currentTimeMillis();
@@ -161,9 +168,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
             String tag,
             int maxMessageNum,
             Duration invisibleDuration) {
-        Assert.isTrue(maxMessageNum > 0, "maxMessageNum 必须大于 0");
-        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
-        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
+        validateReceiveParams(maxMessageNum, invisibleDuration);
 
         long startTime = System.currentTimeMillis();
         SimpleConsumer consumer;
@@ -207,6 +212,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
         }
         try {
             consumer.ack(messageView);
+            untrackMessageGroup(messageView);
             log.info("[MQ-SIMPLE-ACK] mq=rocketmq messageId={} topic={} group={}",
                     messageView.getMessageId(), messageView.getTopic(), consumerGroup);
         } catch (Exception ex) {
@@ -234,8 +240,11 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
                     "未找到属于消费者组 [" + consumerGroup + "] 的 SimpleConsumer 实例，请先执行拉取操作或显式初始化"));
         }
         return consumer.ackAsync(messageView)
-                .thenAccept(v -> log.info("[MQ-SIMPLE-ACK] mq=rocketmq messageId={} topic={} group={}",
-                        messageView.getMessageId(), messageView.getTopic(), consumerGroup));
+                .thenAccept(v -> {
+                    untrackMessageGroup(messageView);
+                    log.info("[MQ-SIMPLE-ACK] mq=rocketmq messageId={} topic={} group={}",
+                            messageView.getMessageId(), messageView.getTopic(), consumerGroup);
+                });
     }
 
     // =========================================================================
@@ -247,10 +256,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     }
 
     public void changeInvisibleDuration(String consumerGroup, MessageView messageView, Duration invisibleDuration) {
-        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
-        Assert.notNull(messageView, "messageView 不能为空");
-        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
-        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
+        validateLeaseParams(consumerGroup, messageView, invisibleDuration);
 
         SimpleConsumer consumer = consumerCache.get(consumerGroup.trim());
         if (consumer == null) {
@@ -276,10 +282,7 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     }
 
     public CompletableFuture<Void> changeInvisibleDurationAsync(String consumerGroup, MessageView messageView, Duration invisibleDuration) {
-        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
-        Assert.notNull(messageView, "messageView 不能为空");
-        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
-        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
+        validateLeaseParams(consumerGroup, messageView, invisibleDuration);
 
         SimpleConsumer consumer = consumerCache.get(consumerGroup.trim());
         if (consumer == null) {
@@ -424,28 +427,58 @@ public class RocketmqSimpleConsumerTemplate implements DisposableBean {
     }
 
     private void trackMessageGroup(String messageId, String consumerGroup) {
-        if (messageGroupMap.size() > 10000) {
-            messageGroupMap.clear();
+        if (messageId != null && StringUtils.hasText(consumerGroup)) {
+            messageGroupMap.put(messageId, consumerGroup.trim());
         }
-        messageGroupMap.put(messageId, consumerGroup.trim());
+    }
+
+    private void untrackMessageGroup(MessageView messageView) {
+        if (messageView != null && messageView.getMessageId() != null) {
+            messageGroupMap.remove(messageView.getMessageId().toString());
+        }
     }
 
     private String resolveConsumerGroup(MessageView messageView) {
         Assert.notNull(messageView, "messageView 不能为空");
         String messageId = messageView.getMessageId() != null ? messageView.getMessageId().toString() : null;
-        if (messageId != null && messageGroupMap.containsKey(messageId)) {
-            return messageGroupMap.get(messageId);
+        if (messageId != null) {
+            String mappedGroup = messageGroupMap.get(messageId);
+            if (StringUtils.hasText(mappedGroup)) {
+                return mappedGroup;
+            }
         }
         if (consumerCache.size() == 1) {
             return consumerCache.keySet().iterator().next();
         }
+        List<String> matchedGroups = new ArrayList<>();
         for (Map.Entry<String, SimpleConsumer> entry : consumerCache.entrySet()) {
             Map<String, FilterExpression> subs = entry.getValue().getSubscriptionExpressions();
             if (subs != null && subs.containsKey(messageView.getTopic())) {
-                return entry.getKey();
+                matchedGroups.add(entry.getKey());
             }
         }
+        if (matchedGroups.size() == 1) {
+            return matchedGroups.get(0);
+        }
+        if (matchedGroups.size() > 1) {
+            throw new IllegalStateException(String.format(
+                    "检测到存在多个消费者组 %s 同时订阅了主题 [%s]，无法自动推断 MessageView (messageId=%s) 所属 ConsumerGroup，请显式使用带 consumerGroup 参数的方法",
+                    matchedGroups, messageView.getTopic(), messageId));
+        }
         throw new IllegalStateException("无法自动推断 MessageView (messageId=" + messageId + ", topic=" + messageView.getTopic() + ") 的所属 ConsumerGroup，请显式使用带 consumerGroup 参数的方法");
+    }
+
+    private static void validateReceiveParams(int maxMessageNum, Duration invisibleDuration) {
+        Assert.isTrue(maxMessageNum > 0, "maxMessageNum 必须大于 0");
+        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
+        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
+    }
+
+    private static void validateLeaseParams(String consumerGroup, MessageView messageView, Duration invisibleDuration) {
+        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
+        Assert.notNull(messageView, "messageView 不能为空");
+        Assert.notNull(invisibleDuration, "invisibleDuration 不能为空");
+        Assert.isTrue(!invisibleDuration.isZero() && !invisibleDuration.isNegative(), "invisibleDuration 必须大于 0");
     }
 
     @SuppressWarnings("unchecked")

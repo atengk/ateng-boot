@@ -46,4 +46,22 @@ public class RocketmqListenerEndpoint {
     public boolean isPaused() {
         return this.invoker != null && this.invoker.isPaused();
     }
+
+    /**
+     * 暂停当前端点消费
+     */
+    public void pause() {
+        if (this.invoker != null) {
+            this.invoker.pause();
+        }
+    }
+
+    /**
+     * 恢复当前端点消费
+     */
+    public void resume() {
+        if (this.invoker != null) {
+            this.invoker.resume();
+        }
+    }
 }

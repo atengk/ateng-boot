@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -52,25 +53,54 @@ public class RocketmqTemplate {
     private final Producer producer;
     private final AtengRocketmqProperties properties;
     private final ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider;
+    private final Executor taskExecutor;
     private final ClientServiceProvider provider = ClientServiceProvider.loadService();
 
     public RocketmqTemplate(Producer producer, AtengRocketmqProperties properties) {
-        this(producer, properties, (ObjectProvider<RocketmqTransactionFailureCallback>) null);
+        this(producer, properties, (ObjectProvider<RocketmqTransactionFailureCallback>) null, (Executor) null);
     }
 
     public RocketmqTemplate(
             Producer producer,
             AtengRocketmqProperties properties,
             ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider) {
+        this(producer, properties, failureCallbackProvider, (Executor) null);
+    }
+
+    public RocketmqTemplate(
+            Producer producer,
+            AtengRocketmqProperties properties,
+            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider,
+            ObjectProvider<Executor> taskExecutorProvider) {
         this.producer = Objects.requireNonNull(producer, "producer 不能为空");
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
         this.failureCallbackProvider = failureCallbackProvider;
+        this.taskExecutor = taskExecutorProvider != null ? taskExecutorProvider.getIfAvailable() : null;
+    }
+
+    public RocketmqTemplate(
+            Producer producer,
+            AtengRocketmqProperties properties,
+            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider,
+            Executor taskExecutor) {
+        this.producer = Objects.requireNonNull(producer, "producer 不能为空");
+        this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.failureCallbackProvider = failureCallbackProvider;
+        this.taskExecutor = taskExecutor;
     }
 
     public RocketmqTemplate(
             Producer producer,
             AtengRocketmqProperties properties,
             RocketmqTransactionFailureCallback failureCallback) {
+        this(producer, properties, failureCallback, (Executor) null);
+    }
+
+    public RocketmqTemplate(
+            Producer producer,
+            AtengRocketmqProperties properties,
+            RocketmqTransactionFailureCallback failureCallback,
+            Executor taskExecutor) {
         this(producer, properties, new ObjectProvider<>() {
             @Override
             public RocketmqTransactionFailureCallback getObject(Object... args) {
@@ -91,7 +121,7 @@ public class RocketmqTemplate {
             public RocketmqTransactionFailureCallback getObject() {
                 return failureCallback;
             }
-        });
+        }, taskExecutor);
     }
 
     /**
@@ -453,9 +483,9 @@ public class RocketmqTemplate {
                     long cost = System.currentTimeMillis() - startTime;
                     if (ex != null) {
                         Throwable cause = (ex instanceof CompletionException && ex.getCause() != null) ? ex.getCause() : ex;
-                        log.warn("[MQ-ONEWAY-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
+                        log.error("[MQ-ONEWAY-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=FAILED cost={}ms error={}",
                                 topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
-                                bodySize, cost, cause.getMessage());
+                                bodySize, cost, cause.getMessage(), cause);
                     } else {
                         log.debug("[MQ-ONEWAY-SEND] mq=rocketmq topic={} tag={} bizKey={} traceId={} size={}B status=SUCCESS cost={}ms messageId={}",
                                 topic, tag != null ? tag : "", finalBizKey, traceId != null ? traceId : "",
@@ -496,7 +526,11 @@ public class RocketmqTemplate {
                     String.format("RocketMQ 批量发送等待超时 (%s): topic=%s, batchSize=%d", effectiveTimeout, topic, payloads.size()),
                     ex);
         } catch (Exception ex) {
-            Throwable cause = (ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null) ? ex.getCause() : ex;
+            Throwable cause = ex;
+            while ((cause instanceof java.util.concurrent.ExecutionException || cause instanceof CompletionException)
+                    && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
             if (cause instanceof MessageDeliveryException mde) {
                 throw mde;
             }
@@ -524,7 +558,12 @@ public class RocketmqTemplate {
         long startTime = System.currentTimeMillis();
         List<CompletableFuture<SendReceipt>> futures = new ArrayList<>(payloads.size());
         for (Object payload : payloads) {
-            futures.add(sendAsync(topic, tag, null, payload, null));
+            if (taskExecutor != null) {
+                futures.add(CompletableFuture.supplyAsync(() -> sendAsync(topic, tag, null, payload, null), taskExecutor)
+                        .thenCompose(future -> future));
+            } else {
+                futures.add(sendAsync(topic, tag, null, payload, null));
+            }
         }
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
@@ -565,7 +604,11 @@ public class RocketmqTemplate {
                     String.format("RocketMQ 撤回消息等待超时 (%s): topic=%s, recallHandle=%s", effectiveTimeout, topic, recallHandle),
                     ex);
         } catch (Exception ex) {
-            Throwable cause = (ex instanceof java.util.concurrent.ExecutionException && ex.getCause() != null) ? ex.getCause() : ex;
+            Throwable cause = ex;
+            while ((cause instanceof java.util.concurrent.ExecutionException || cause instanceof CompletionException)
+                    && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
             if (cause instanceof MessageDeliveryException mde) {
                 throw mde;
             }

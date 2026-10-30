@@ -156,12 +156,22 @@ public class RocketmqConsumerContainer implements
         String id;
         if (StringUtils.hasText(rawId)) {
             id = rawId.trim();
+            if (this.endpointMap.containsKey(id)) {
+                throw new IllegalArgumentException(String.format(
+                        "检测到重复的 RocketMQ Listener Endpoint ID [%s]！方法 [%s#%s] 与已有端点冲突，请确保 id 唯一！",
+                        id, bean.getClass().getSimpleName(), method.getName()));
+            }
         } else {
             String candidateId = consumerGroup + "#" + topic;
             if (this.endpointMap.containsKey(candidateId)) {
                 id = candidateId + "#" + method.getName();
             } else {
                 id = candidateId;
+            }
+            if (this.endpointMap.containsKey(id)) {
+                throw new IllegalArgumentException(String.format(
+                        "检测到重复的 RocketMQ Listener Endpoint ID [%s]！方法 [%s#%s] 与已有端点冲突！",
+                        id, bean.getClass().getSimpleName(), method.getName()));
             }
         }
 

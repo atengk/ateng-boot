@@ -116,13 +116,7 @@ public class RocketmqContainerManager {
             return false;
         }
 
-        int pausedCount = 0;
-        for (RocketmqListenerEndpoint ep : endpoints) {
-            if (ep.getInvoker() != null && !ep.getInvoker().isPaused()) {
-                ep.getInvoker().pause();
-                pausedCount++;
-            }
-        }
+        int pausedCount = forEachMatchedEndpoint(endpoints, ep -> !ep.isPaused(), RocketmqListenerEndpoint::pause);
         log.info("[MQ-CONTAINER-PAUSE] 成功暂停消费监听端点: idOrTopic={}, matchedCount={}, pausedCount={}",
                 idOrTopic, endpoints.size(), pausedCount);
         return true;
@@ -142,13 +136,7 @@ public class RocketmqContainerManager {
             return false;
         }
 
-        int resumedCount = 0;
-        for (RocketmqListenerEndpoint ep : endpoints) {
-            if (ep.getInvoker() != null && ep.getInvoker().isPaused()) {
-                ep.getInvoker().resume();
-                resumedCount++;
-            }
-        }
+        int resumedCount = forEachMatchedEndpoint(endpoints, RocketmqListenerEndpoint::isPaused, RocketmqListenerEndpoint::resume);
         log.info("[MQ-CONTAINER-RESUME] 成功恢复消费监听端点: idOrTopic={}, matchedCount={}, resumedCount={}",
                 idOrTopic, endpoints.size(), resumedCount);
         return true;
@@ -163,13 +151,7 @@ public class RocketmqContainerManager {
         if (container == null) {
             return 0;
         }
-        int count = 0;
-        for (RocketmqListenerEndpoint ep : container.getEndpoints()) {
-            if (ep.getInvoker() != null && !ep.getInvoker().isPaused()) {
-                ep.getInvoker().pause();
-                count++;
-            }
-        }
+        int count = forEachMatchedEndpoint(container.getEndpoints(), ep -> !ep.isPaused(), RocketmqListenerEndpoint::pause);
         log.info("[MQ-CONTAINER-PAUSE-ALL] 成功暂停所有消费监听端点: totalPaused={}", count);
         return count;
     }
@@ -183,13 +165,7 @@ public class RocketmqContainerManager {
         if (container == null) {
             return 0;
         }
-        int count = 0;
-        for (RocketmqListenerEndpoint ep : container.getEndpoints()) {
-            if (ep.getInvoker() != null && ep.getInvoker().isPaused()) {
-                ep.getInvoker().resume();
-                count++;
-            }
-        }
+        int count = forEachMatchedEndpoint(container.getEndpoints(), RocketmqListenerEndpoint::isPaused, RocketmqListenerEndpoint::resume);
         log.info("[MQ-CONTAINER-RESUME-ALL] 成功恢复所有消费监听端点: totalResumed={}", count);
         return count;
     }
@@ -322,5 +298,22 @@ public class RocketmqContainerManager {
             return false;
         }
         return endpoints.stream().allMatch(RocketmqListenerEndpoint::isRunning);
+    }
+
+    private int forEachMatchedEndpoint(
+            List<RocketmqListenerEndpoint> endpoints,
+            java.util.function.Predicate<RocketmqListenerEndpoint> predicate,
+            java.util.function.Consumer<RocketmqListenerEndpoint> consumer) {
+        if (endpoints == null || endpoints.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (RocketmqListenerEndpoint ep : endpoints) {
+            if (predicate.test(ep)) {
+                consumer.accept(ep);
+                count++;
+            }
+        }
+        return count;
     }
 }

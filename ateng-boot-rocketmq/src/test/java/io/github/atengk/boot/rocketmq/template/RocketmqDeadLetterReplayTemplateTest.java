@@ -433,4 +433,91 @@ class RocketmqDeadLetterReplayTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("格式非法");
     }
+
+    @Test
+    @DisplayName("discardDeadLetters 批量丢弃死信队列消息并显式 ACK")
+    void testDiscardDeadLetters() {
+        MessageView dlqMsg1 = createMockMessageView("%DLQ%GID_ORDER", "MSG-DISCARD-1", "test1".getBytes(StandardCharsets.UTF_8), Collections.emptyMap(), "TAG", null);
+        MessageView dlqMsg2 = createMockMessageView("%DLQ%GID_ORDER", "MSG-DISCARD-2", "test2".getBytes(StandardCharsets.UTF_8), Collections.emptyMap(), "TAG", null);
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(10), any(Duration.class)))
+                .thenReturn(List.of(dlqMsg1, dlqMsg2));
+
+        int count = replayTemplate.discardDeadLetters("GID_ORDER", 10);
+
+        assertThat(count).isEqualTo(2);
+        verify(simpleConsumerTemplate, times(1)).ack("GID_ORDER", dlqMsg1);
+        verify(simpleConsumerTemplate, times(1)).ack("GID_ORDER", dlqMsg2);
+    }
+
+    @Test
+    @DisplayName("discardDeadLetter 单条死信消息显式丢弃确认")
+    void testDiscardDeadLetterSingle() {
+        MessageView dlqMsg = createMockMessageView("%DLQ%GID_ORDER", "MSG-DISCARD-SINGLE", "test".getBytes(StandardCharsets.UTF_8), Collections.emptyMap(), "TAG", null);
+
+        replayTemplate.discardDeadLetter("GID_ORDER", dlqMsg);
+
+        verify(simpleConsumerTemplate, times(1)).ack("GID_ORDER", dlqMsg);
+    }
+
+    @Test
+    @DisplayName("replayDeadLetters 支持识别官方 Broker REAL_TOPIC 属性解析原主题")
+    void testResolveOriginalTopicWithBrokerRealTopicProperty() {
+        Map<String, String> dlqProps = new HashMap<>();
+        dlqProps.put("REAL_TOPIC", "order_topic_official");
+        dlqProps.put("X-Biz-Key", "BIZ-OFFICIAL-001");
+
+        MessageView dlqMsg = createMockMessageView("%DLQ%GID_ORDER", "MSG-REAL-TOPIC", "test".getBytes(StandardCharsets.UTF_8), dlqProps, "TAG_A", null);
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(5), any(Duration.class)))
+                .thenReturn(List.of(dlqMsg));
+
+        DeadLetterReplayResult result = replayTemplate.replayDeadLetters("GID_ORDER", 5);
+
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+        verify(rocketmqTemplate, times(1)).send(eq("order_topic_official"), eq("TAG_A"), eq("BIZ-OFFICIAL-001"), any(), any());
+        verify(simpleConsumerTemplate, times(1)).ack(eq("GID_ORDER"), eq(dlqMsg));
+    }
+
+    @Test
+    @DisplayName("replayDeadLetters 解压失败时拒绝伪降级，记录失败且不向业务主题投递损坏报文")
+    void testReplayDecompressFailureFailsFastWithoutCorruptingData() {
+        Map<String, String> dlqProps = new HashMap<>();
+        dlqProps.put("REAL_TOPIC", "order_topic");
+        dlqProps.put(RocketmqConstants.HEADER_COMPRESSION, RocketmqConstants.COMPRESSION_GZIP);
+        // 提供非法的 GZIP 报文体
+        byte[] invalidGzip = "not-a-gzip-stream".getBytes(StandardCharsets.UTF_8);
+
+        MessageView dlqMsg = createMockMessageView("%DLQ%GID_ORDER", "MSG-CORRUPT", invalidGzip, dlqProps, "TAG", null);
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(5), any(Duration.class)))
+                .thenReturn(List.of(dlqMsg));
+
+        DeadLetterReplayResult result = replayTemplate.replayDeadLetters("GID_ORDER", 5);
+
+        assertThat(result.getFailedCount()).isEqualTo(1);
+        assertThat(result.getSuccessCount()).isEqualTo(0);
+        // 绝不向业务 Topic 投递损坏乱码数据
+        verify(rocketmqTemplate, never()).send(anyString(), anyString(), anyString(), any(), any());
+        // 绝不错误 ACK 原死信
+        verify(simpleConsumerTemplate, never()).ack(anyString(), any(MessageView.class));
+    }
+
+    @Test
+    @DisplayName("replayDeadLetters 达到防雪崩熔断上限时，若配置了 discardOnMaxAttemptsBlocked 则自动 ACK 丢弃毒丸防死锁")
+    void testReplayBlockedDeadLetterAutoDiscardedWhenConfigured() {
+        properties.getDeadLetter().setDiscardOnMaxAttemptsBlocked(true);
+
+        Map<String, String> dlqProps = new HashMap<>();
+        dlqProps.put(RocketmqConstants.HEADER_DEAD_LETTER_REPLAY_COUNT, "3"); // 达上限 3
+        dlqProps.put("REAL_TOPIC", "order_topic");
+
+        MessageView poisonedMsg = createMockMessageView("%DLQ%GID_ORDER", "MSG-POISON", "poison".getBytes(StandardCharsets.UTF_8), dlqProps, "TAG", null);
+        when(simpleConsumerTemplate.receive(eq("%DLQ%GID_ORDER"), eq("GID_ORDER"), eq("*"), eq(5), any(Duration.class)))
+                .thenReturn(List.of(poisonedMsg));
+
+        DeadLetterReplayResult result = replayTemplate.replayDeadLetters("GID_ORDER", 5);
+
+        assertThat(result.getBlockedCount()).isEqualTo(1);
+        verify(rocketmqTemplate, never()).send(anyString(), anyString(), anyString(), any(), any());
+        // 验证自动执行了 ACK 将毒丸移出死信队列
+        verify(simpleConsumerTemplate, times(1)).ack("GID_ORDER", poisonedMsg);
+    }
 }

@@ -331,4 +331,31 @@ class RocketmqContainerManagerTest {
             return payConsumeCount.get();
         }
     }
+
+    @Test
+    @DisplayName("验证重复自定义 endpointId 时触发 Fail-Fast 抛出 IllegalArgumentException")
+    void testDuplicateCustomEndpointIdThrowsException() {
+        GenericApplicationContext ctx = new GenericApplicationContext();
+        ctx.registerBean("duplicateBean", DuplicateIdListenerBean.class);
+        ctx.refresh();
+
+        RocketmqConsumerContainer testContainer = new RocketmqConsumerContainer(
+                properties,
+                clientConfigProvider,
+                consumerFactory,
+                null);
+        testContainer.setApplicationContext(ctx);
+
+        assertThatThrownBy(testContainer::afterSingletonsInstantiated)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("检测到重复的 RocketMQ Listener Endpoint ID");
+    }
+
+    public static class DuplicateIdListenerBean {
+        @RocketmqListener(id = "same-id", topic = "topic_a", consumerGroup = "group_a")
+        public void methodA(String msg) {}
+
+        @RocketmqListener(id = "same-id", topic = "topic_b", consumerGroup = "group_b")
+        public void methodB(String msg) {}
+    }
 }

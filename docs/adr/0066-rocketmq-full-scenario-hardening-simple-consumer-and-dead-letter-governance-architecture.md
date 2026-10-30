@@ -54,9 +54,11 @@ flowchart TD
 
     subgraph DLQDomain["死信队列治理与受控重放 (RocketmqDeadLetterReplayTemplate)"]
         DLQPeek["peekDeadLetters<br>(只读巡检 %DLQ%<Group>，零 ACK)"]
-        DLQReplay["replayDeadLetters<br>(受控拉取、清洗重试头、重投递并原死信确认)"]
-        AntiAvalanche["防二次雪崩熔断防线<br>(X-Dead-Letter-Replay-Count 计数，超 3 次熔断拦截)"]
+        DLQReplay["replayDeadLetters / replayDeadLettersToTopic<br>(受控拉取、清洗重试头、重投递并原死信确认)"]
+        DLQDiscard["discardDeadLetters / discardDeadLetter<br>(物理丢弃清理，彻底移出死信队列)"]
+        AntiAvalanche["防二次雪崩熔断防线<br>(X-Dead-Letter-Replay-Count 计数，超 3 次熔断拦截或丢弃移出)"]
         DLQReplay --> AntiAvalanche
+        AntiAvalanche -.->|discardOnMaxAttemptsBlocked=true| DLQDiscard
     end
 
     subgraph SampleDomain["样例工程与双模自洽 (Sample & Dual-Mode)"]
@@ -84,7 +86,8 @@ flowchart TD
 ### 4. 死信队列治理与受控重放门面 (`RocketmqDeadLetterReplayTemplate`)
 - **自动定位死信主题**：自动依据目标组映射 `%DLQ%<ConsumerGroup>`；
 - **只读巡检**：`peekDeadLetters` 拉取消息并保留租约，不执行 ACK，供控制台或诊断排查；
-- **受控重放与防雪崩**：`replayDeadLetters` 拉取死信、自动剥离清洗内部重试属性、注入 `X-Dead-Letter-Replay-Count` 计数器。当计数超过上限（默认 3 次）时强行熔断并告警，投递成功后对原死信执行 ACK。
+- **受控重放与防雪崩**：`replayDeadLetters` / `replayDeadLettersToTopic` 拉取死信、自动剥离清洗内部重试属性、注入 `X-Dead-Letter-Replay-Count` 计数器。当计数超过上限（默认 3 次）时强行熔断并告警；若配置 `discardOnMaxAttemptsBlocked=true`，则自动 ACK 移出死信队列以彻底阻断死循环；投递成功后对原死信执行 ACK；
+- **对称丢弃清理**：`discardDeadLetters` / `discardDeadLetter` 提供物理丢弃清理能力，拉取死信后直接确认出队，确保死信生命周期完整闭环（巡检、重放、丢弃三位一体）。
 
 ### 5. 样例工程纯净化与双模自适应 (`ateng-boot-sample-rocketmq`)
 - **零 Controller 铁律**：彻底移除 `spring-boot-starter-web` 与 Controller，重构为场景组件驱动（`ScenarioService`）；

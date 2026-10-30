@@ -39,4 +39,9 @@ public class DeadLetterReplayScenarioService {
                 consumerGroup, limit, targetTopic);
         return deadLetterReplayTemplate.replayDeadLetters(consumerGroup, limit, targetTopic);
     }
+
+    public int discardDeadLetters(String consumerGroup, int limit) {
+        log.warn("[DLQ-SCENARIO] 批量清理丢弃死信消息: consumerGroup={}, limit={}", consumerGroup, limit);
+        return deadLetterReplayTemplate.discardDeadLetters(consumerGroup, limit);
+    }
 }

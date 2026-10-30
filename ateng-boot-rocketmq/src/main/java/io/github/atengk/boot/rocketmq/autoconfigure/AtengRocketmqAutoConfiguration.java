@@ -34,6 +34,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.concurrent.Executor;
 
 /**
  * RocketMQ 5.x 生产级增强基础设施自动装配核心类
@@ -77,7 +78,8 @@ public class AtengRocketmqAutoConfiguration {
 
         ClientConfigurationBuilder builder = ClientConfiguration.newBuilder()
                 .setEndpoints(properties.getEndpoints())
-                .setRequestTimeout(effectiveTimeout != null ? effectiveTimeout : properties.getRequestTimeout());
+                .setRequestTimeout(effectiveTimeout != null ? effectiveTimeout : properties.getRequestTimeout())
+                .enableSsl(properties.isSslEnabled());
 
         if (StringUtils.hasText(properties.getAccessKey()) && StringUtils.hasText(properties.getSecretKey())) {
             builder.setCredentialProvider(new StaticSessionCredentialsProvider(
@@ -133,8 +135,9 @@ public class AtengRocketmqAutoConfiguration {
     public RocketmqTemplate rocketmqTemplate(
             Producer producer,
             AtengRocketmqProperties properties,
-            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider) {
-        return new RocketmqTemplate(producer, properties, failureCallbackProvider);
+            ObjectProvider<RocketmqTransactionFailureCallback> failureCallbackProvider,
+            ObjectProvider<Executor> taskExecutorProvider) {
+        return new RocketmqTemplate(producer, properties, failureCallbackProvider, taskExecutorProvider);
     }
 
     /**

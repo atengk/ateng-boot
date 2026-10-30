@@ -1,6 +1,8 @@
 package io.github.atengk.boot.rocketmq.template;
 
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.MessageContextPropagator;
+import io.github.atengk.boot.core.exception.MessageDeliveryException;
 import io.github.atengk.boot.rocketmq.constant.RocketmqConstants;
 import io.github.atengk.boot.rocketmq.helper.RocketmqMessageHelper;
 import io.github.atengk.boot.rocketmq.model.DeadLetterReplayResult;
@@ -259,6 +261,16 @@ public class RocketmqDeadLetterReplayTemplate {
                             bizKey,
                             currentReplayCount,
                             String.format("死信累计重放次数已达到或超出上限 [%d]，防二次雪崩熔断拦截", maxReplayAttempts));
+                    if (properties.getDeadLetter().isDiscardOnMaxAttemptsBlocked()) {
+                        try {
+                            simpleConsumerTemplate.ack(consumerGroup, messageView);
+                            log.warn("[MQ-DLQ-AVALANCHE-DISCARD] mq=rocketmq dlqTopic={} consumerGroup={} messageId={} bizKey={} 毒丸死信已自动 ACK 移出死信队列防阻塞",
+                                    dlqTopic, consumerGroup, messageId, bizKey);
+                        } catch (Exception ex) {
+                            log.error("[MQ-DLQ-AVALANCHE-DISCARD-FAILED] 毒丸死信自动 ACK 失败: dlqTopic={}, messageId={}",
+                                    dlqTopic, messageId, ex);
+                        }
+                    }
                     continue;
                 }
 
@@ -287,7 +299,15 @@ public class RocketmqDeadLetterReplayTemplate {
                 }
 
                 // 5. 提取报文载荷与属性
-                byte[] bodyBytes = extractAndDecompressBody(messageView, originalProps);
+                byte[] bodyBytes;
+                try {
+                    bodyBytes = extractAndDecompressBody(messageView, originalProps);
+                } catch (Exception ex) {
+                    log.error("[MQ-DLQ-DECOMPRESS-FAILED] mq=rocketmq dlqTopic={} consumerGroup={} messageId={} bizKey={} 死信解压失败，跳过重放以防御投递乱码脏数据: {}",
+                            dlqTopic, consumerGroup, messageId, bizKey, ex.getMessage(), ex);
+                    result.recordFailed(messageId, bizKey, effectiveTopic, nextReplayCount, "死信报文解压失败: " + ex.getMessage());
+                    continue;
+                }
                 String tag = messageView.getTag().orElse(null);
                 String messageGroup = messageView.getMessageGroup().orElse(null);
 
@@ -326,6 +346,75 @@ public class RocketmqDeadLetterReplayTemplate {
         return result;
     }
 
+    // =========================================================================
+    // 3. 清理与丢弃死信队列 (discardDeadLetters / discardDeadLetter)
+    // =========================================================================
+
+    /**
+     * 批量丢弃目标消费组的死信消息（默认批量大小）
+     *
+     * @param consumerGroup 目标消费组
+     * @return 本次成功丢弃确认的死信数量
+     */
+    public int discardDeadLetters(String consumerGroup) {
+        return discardDeadLetters(consumerGroup, properties.getDeadLetter().getDefaultBatchSize());
+    }
+
+    /**
+     * 批量丢弃目标消费组的死信消息（指定最大拉取数量）
+     *
+     * @param consumerGroup 目标消费组
+     * @param maxMessageNum 最大拉取并丢弃数量
+     * @return 本次成功丢弃确认的死信数量
+     */
+    public int discardDeadLetters(String consumerGroup, int maxMessageNum) {
+        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
+        validateBatchSize(maxMessageNum);
+
+        String dlqTopic = getDlqTopic(consumerGroup);
+        log.warn("[MQ-DLQ-DISCARD-START] 开始批量丢弃清理死信消息: dlqTopic={}, consumerGroup={}, maxMessageNum={}",
+                dlqTopic, consumerGroup, maxMessageNum);
+
+        List<MessageView> dlqMessages = simpleConsumerTemplate.receive(
+                dlqTopic,
+                consumerGroup,
+                RocketmqConstants.TAG_ALL,
+                maxMessageNum,
+                properties.getDeadLetter().getInvisibleDuration());
+
+        if (dlqMessages == null || dlqMessages.isEmpty()) {
+            return 0;
+        }
+
+        int discardedCount = 0;
+        for (MessageView msg : dlqMessages) {
+            try {
+                simpleConsumerTemplate.ack(consumerGroup, msg);
+                discardedCount++;
+            } catch (Exception ex) {
+                log.error("[MQ-DLQ-DISCARD-FAILED] 丢弃死信 ACK 失败: dlqTopic={}, consumerGroup={}, messageId={}, error={}",
+                        dlqTopic, consumerGroup, msg.getMessageId(), ex.getMessage(), ex);
+            }
+        }
+        log.warn("[MQ-DLQ-DISCARD-FINISHED] 批量丢弃清理死信完成: dlqTopic={}, consumerGroup={}, discardedCount={}",
+                dlqTopic, consumerGroup, discardedCount);
+        return discardedCount;
+    }
+
+    /**
+     * 单条确认并丢弃死信消息
+     *
+     * @param consumerGroup 目标消费组
+     * @param messageView   待丢弃的死信消息视图
+     */
+    public void discardDeadLetter(String consumerGroup, MessageView messageView) {
+        Assert.hasText(consumerGroup, "consumerGroup 不能为空");
+        Assert.notNull(messageView, "messageView 不能为空");
+        simpleConsumerTemplate.ack(consumerGroup, messageView);
+        log.warn("[MQ-DLQ-DISCARD-SINGLE] 成功丢弃死信消息: consumerGroup={}, messageId={}",
+                consumerGroup, messageView.getMessageId());
+    }
+
     /**
      * 校验批量治理数量上限
      */
@@ -360,11 +449,15 @@ public class RocketmqDeadLetterReplayTemplate {
             if (StringUtils.hasText(originTopic)) {
                 return originTopic.trim();
             }
-            originTopic = properties.get("X-Original-Topic");
+            originTopic = properties.get("REAL_TOPIC");
             if (StringUtils.hasText(originTopic)) {
                 return originTopic.trim();
             }
             originTopic = properties.get("__REAL_TOPIC");
+            if (StringUtils.hasText(originTopic)) {
+                return originTopic.trim();
+            }
+            originTopic = properties.get("X-Original-Topic");
             if (StringUtils.hasText(originTopic)) {
                 return originTopic.trim();
             }
@@ -438,9 +531,13 @@ public class RocketmqDeadLetterReplayTemplate {
             try {
                 return RocketmqMessageHelper.decompressGzip(rawBytes);
             } catch (IOException e) {
-                log.warn("[ateng-boot-rocketmq] 死信重放解压 GZIP 报文失败，回退使用原始载荷: messageId={}",
-                        messageView.getMessageId(), e);
-                return rawBytes;
+                throw new MessageDeliveryException(
+                        RocketmqConstants.MQ_TYPE,
+                        messageView.getTopic(),
+                        RocketmqMessageHelper.extractBizKey(messageView),
+                        CommonResultCode.INTERNAL_SERVER_ERROR,
+                        "死信重放解压 GZIP 报文失败: " + e.getMessage(),
+                        e);
             }
         }
         return rawBytes;

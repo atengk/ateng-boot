@@ -52,6 +52,6 @@ public class StandardRocketmqScenarioService {
 
     public SendReceipt sendSqlFiltered(OrderMessage order, double amount) {
         log.info("[STANDARD-SCENARIO] 发送携带 SQL92 自定义属性消息: orderId={}, amount={}", order.getOrderId(), amount);
-        return rocketmqTemplate.send(TradeRocketmqProducer.TOPIC_SQL, null, order.getOrderId(), order, Map.of("amount", String.valueOf(amount)));
+        return rocketmqTemplate.send(TradeRocketmqProducer.TOPIC_SQL, "sql", order.getOrderId(), order, Map.of("amount", String.valueOf((long) amount)));
     }
 }

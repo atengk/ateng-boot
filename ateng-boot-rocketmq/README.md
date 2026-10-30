@@ -8,10 +8,10 @@
 
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.rocketmq.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **生产端高阶门面** | 可靠发信统一门面 (普通/延时/定时/FIFO/事务/批量) | `RocketmqTemplate` | `enabled`<br>`endpoints`<br>`request-timeout`<br>`producer.send-timeout`<br>`producer.max-attempts`<br>`producer.max-batch-size`<br>`producer.max-payload-size`<br>`producer.compression-threshold`<br>`producer.topics` | `send(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendAsync(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendOneway(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendDelayed(topic, [tag], [bizKey], payload, delay, [userProperties])`<br>`sendDelayedAsync(topic, [tag], [bizKey], payload, delay, [userProperties])`<br>`sendDeliverAt(topic, [tag], [bizKey], payload, deliverAt, [userProperties])`<br>`sendDeliverAtAsync(topic, [tag], [bizKey], payload, deliverAt, [userProperties])`<br>`recallMessage(topic, recallHandle)`<br>`recallMessageAsync(topic, recallHandle)`<br>`sendOrderly(topic, [tag], [bizKey], payload, messageGroup, [userProperties])`<br>`sendOrderlyAsync(topic, [tag], [bizKey], payload, messageGroup, [userProperties])`<br>`sendTransaction(topic, [tag], [bizKey], payload, executor, [userProperties])`<br>`sendAfterCommit(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendBatch(topic, [tag], payloads, [userProperties])`<br>`sendBatchAsync(topic, [tag], payloads, [userProperties])`<br>`getProducer()`：同步阻塞确认、异步非阻塞返回 `CompletableFuture`、单向日志发信、毫秒级定时调度、原生延时精准撤回、MessageGroup 顺序保序、2PC 事务半消息、本地事务提交感知发信、批量超限智能切片、多级 bizKey 兜底、Topic 正则防卫、4MB 报文超限 Fail-Fast、4KB GZIP 透明压缩、四维上下文透明注入与 `[MQ-SEND]` 结构化宏日志 | `RocketmqTemplateTest` / `SampleRocketmqE2eTest` |
+| **生产端高阶门面** | 可靠发信统一门面 (普通/延时/定时/FIFO/事务/批量) | `RocketmqTemplate` | `enabled`<br>`endpoints`<br>`ssl-enabled`<br>`request-timeout`<br>`producer.send-timeout`<br>`producer.max-attempts`<br>`producer.max-batch-size`<br>`producer.max-payload-size`<br>`producer.compression-threshold`<br>`producer.topics` | `send(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendAsync(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendOneway(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendDelayed(topic, [tag], [bizKey], payload, delay, [userProperties])`<br>`sendDelayedAsync(topic, [tag], [bizKey], payload, delay, [userProperties])`<br>`sendDeliverAt(topic, [tag], [bizKey], payload, deliverAt, [userProperties])`<br>`sendDeliverAtAsync(topic, [tag], [bizKey], payload, deliverAt, [userProperties])`<br>`recallMessage(topic, recallHandle)`<br>`recallMessageAsync(topic, recallHandle)`<br>`sendOrderly(topic, [tag], [bizKey], payload, messageGroup, [userProperties])`<br>`sendOrderlyAsync(topic, [tag], [bizKey], payload, messageGroup, [userProperties])`<br>`sendTransaction(topic, [tag], [bizKey], payload, executor, [userProperties])`<br>`sendAfterCommit(topic, [tag], [bizKey], payload, [userProperties])`<br>`sendBatch(topic, [tag], payloads, [userProperties])`<br>`sendBatchAsync(topic, [tag], payloads, [userProperties])`<br>`getProducer()`：同步阻塞确认、异步非阻塞返回 `CompletableFuture`、单向日志发信、毫秒级定时调度、原生延时精准撤回、MessageGroup 顺序保序、2PC 事务半消息、本地事务提交感知发信、批量超限智能切片、多级 bizKey 兜底、Topic 正则防卫、4MB 报文超限 Fail-Fast、4KB GZIP 透明压缩、四维上下文透明注入与 `[MQ-SEND]` 结构化宏日志 | `RocketmqTemplateTest` / `SampleRocketmqE2eTest` |
 | **流式拉取门面** | 消费端 SimpleConsumer 租约拉取与流控 | `RocketmqSimpleConsumerTemplate` | `simple-consumer.invisible-duration`<br>`simple-consumer.max-message-num`<br>`simple-consumer.await-duration` | `receive(topic, consumerGroup, [tag], [maxNum], [invisibleDuration])`<br>`receiveAsync(topic, consumerGroup, [tag], [maxNum], [invisibleDuration])`<br>`ack(consumerGroup, messageView)`<br>`ackAsync(consumerGroup, messageView)`<br>`changeInvisibleDuration(consumerGroup, messageView, invisibleDuration)`<br>`changeInvisibleDurationAsync(consumerGroup, messageView, invisibleDuration)`<br>`receiveAndExecute(topic, consumerGroup, [tag], [maxNum], [invisibleDuration], targetType, consumer)`<br>`getOrCreateConsumer(topic, consumerGroup, tag)`：基于官方 Pop 机制的长轮询微批流式拉取、动态隐身不可见租约续期、显式 ACK 确认、高阶推断反序列化与函数式闭包受控消费 | `RocketmqSimpleConsumerTemplateTest` / `SampleRocketmqE2eTest` |
 | **容器运维管控门面** | 消费监听容器动态流控与生命周期运维 | `RocketmqContainerManager` | `consumer.consumption-thread-count`<br>`consumer.max-cache-message-count`<br>`consumer.close-timeout` | `getEndpointIds()`<br>`getEndpoints()`<br>`getEndpoint(id)`<br>`findEndpoints(idOrTopic)`<br>`pause(idOrTopic)`<br>`resume(idOrTopic)`<br>`pauseAll()`<br>`resumeAll()`<br>`isPaused(idOrTopic)`<br>`start(idOrTopic)`<br>`stop(idOrTopic)`<br>`startAll()`<br>`stopAll()`<br>`isRunning(idOrTopic)`：全量端点审计可见性、运行期大促流量极速削峰（返回 FAILURE 促使 Broker 阶梯退避）、不重启物理优雅启停 PushConsumer 底层连接 | `RocketmqContainerManagerTest` / `SampleRocketmqE2eTest` |
-| **死信治理门面** | 死信队列只读探查与受控重放治理 | `RocketmqDeadLetterReplayTemplate` | `dead-letter.max-replay-attempts`<br>`dead-letter.default-batch-size`<br>`dead-letter.max-batch-size`<br>`dead-letter.invisible-duration` | `getDlqTopic(consumerGroup)`<br>`peekDeadLetters(consumerGroup, [maxNum], [invisibleDuration])`<br>`replayDeadLetters(consumerGroup, [maxNum], [targetTopic], [invisibleDuration])`<br>`getSimpleConsumerTemplate()`<br>`getRocketmqTemplate()`：死信主题 `%DLQ%<Group>` 自动映射、零 ACK 只读安全探查、受控限流原子重放至业务主题、内部重试头安全清洗、全链路审计打标、防二次雪崩熔断拦截与确定性源端 ACK 确认 | `RocketmqDeadLetterReplayTemplateTest` / `SampleRocketmqE2eTest` |
+| **死信治理门面** | 死信队列只读探查、受控重放与丢弃清理 | `RocketmqDeadLetterReplayTemplate` | `dead-letter.max-replay-attempts`<br>`dead-letter.default-batch-size`<br>`dead-letter.max-batch-size`<br>`dead-letter.invisible-duration`<br>`dead-letter.discard-on-max-attempts-blocked` | `getDlqTopic(consumerGroup)`<br>`peekDeadLetters(consumerGroup, [maxNum], [invisibleDuration])`<br>`replayDeadLetters(consumerGroup, [maxNum], [targetTopic], [invisibleDuration])`<br>`discardDeadLetters(consumerGroup, [maxNum])`<br>`discardDeadLetter(consumerGroup, messageView)`<br>`getSimpleConsumerTemplate()`<br>`getRocketmqTemplate()`：死信主题 `%DLQ%<Group>` 自动映射、零 ACK 只读安全探查、受控限流原子重放至业务主题、内部重试头安全清洗、全链路审计打标、防二次雪崩熔断拦截与确定性源端 ACK 确认、批量与单条对称清理丢弃 | `RocketmqDeadLetterReplayTemplateTest` / `SampleRocketmqE2eTest` |
 | **原生 2PC 分布式事务** | 统一事务回查分发器与领域解耦 SPI | `RocketmqTransactionChecker`<br>`RocketmqLocalTransactionChecker` | - | `check(messageView)`：统一实现 RocketMQ 5.x 官方 `TransactionChecker`，容器启动时自动发现业务 Checker，根据 Topic 动态策略路由至对应业务实现，决断 `COMMIT` / `ROLLBACK` / `UNKNOWN`，彻底消除微服务单体上帝类 | `RocketmqTransactionCheckerTest` / `SampleRocketmqE2eTest` |
 | **本地事务执行器** | 本地业务事务决断回调函数式接口 | `RocketmqLocalTransactionExecutor` | - | `execute(sendReceipt)`：在 2PC 事务半消息成功投递后被回调执行，根据本地数据库或业务处理结果返回 `TransactionResolution`（`COMMIT` / `ROLLBACK` / `UNKNOWN`），执行异常自动触发回滚 | `RocketmqTemplateTest` / `SampleRocketmqE2eTest` |
 | **事务发信补偿** | 本地事务提交后发信失败补偿 SPI | `RocketmqTransactionFailureCallback` | - | `onFailure(topic, tag, bizKey, payload, traceId, cause)`：当 `sendAfterCommit` 在本地数据库事务提交后因网络断连导致发信失败时被触发，供业务写入本地补偿表或推送到报警平台 | `RocketmqTemplateTest` |
@@ -21,7 +21,7 @@
 | **流式拉取工厂抽象** | SimpleConsumer 构造工厂与测试替身 SPI | `SimpleConsumerFactory` | - | `createSimpleConsumer(clientConfig, group, awaitDuration, subscriptions)`：解耦底层物理 SimpleConsumer 构建逻辑，支持生产环境默认工厂 `DefaultSimpleConsumerFactory` 与测试环境内存替身 `InMemoryRocketmqBroker` 拔插切换 | `RocketmqSimpleConsumerTemplateTest` / `SampleRocketmqE2eTest` |
 | **消费调用执行器** | 微服务推断反序列化与受控防卫核心 | `RocketmqListenerInvoker` | - | 实现 `MessageListener`：瞬态四维上下文入站还原（`MDC traceId`, `TenantContextHolder`, `UserContextHolder`）与 `finally` 现场清理；透明 GZIP 解压；依据方法参数类型与 `ParameterizedType` 精准推断反序列化（支持原生 `MessageView`、`byte[]`、`String`、业务 DTO 及泛型集合 `` `List<T>` ``）；JSR-303 参数校验；不可自愈毒丸快速丢弃返回 `SUCCESS`；`IdempotentException` 幂等冲突静默确认返回 `SUCCESS`；瞬态异常返回 `FAILURE` 触发服务端重试 | `RocketmqListenerInvokerTest` / `SampleRocketmqE2eTest` |
 | **消息辅助工具** | 序列化、四维上下文与 bizKey 解析工具 | `RocketmqMessageHelper` | - | `resolveBizKey(bizKey, payload)`：多级 bizKey 兜底（显式指定 -> 反射提取 `getId()`/`getBizKey()`/`getOrderNo()`/`getCode()`/`getKey()` -> MDC traceId 兜底 -> UUID）；`extractBizKey(messageView)`：入站消息对称提取业务标识（优先 `X-Biz-Key`，兜底原生 Keys）；`toPayloadBytes(payload)`：纯净 JSON 序列化；`compressGzip(bytes)` / `decompressGzip(bytes)`：透明压缩与解压 | `RocketmqMessageHelperTest` |
-| **配置属性与元数据** | 强类型配置属性类与 IDE 智能补全 | `AtengRocketmqProperties` | `ateng.boot.rocketmq.*` | 包含 `enabled`、`endpoints`、`access-key`、`secret-key`、`request-timeout`（`Duration`）、`producer.send-timeout`（`Duration`）、`producer.max-attempts`、`producer.max-batch-size`、`producer.max-payload-size`（`DataSize`）、`producer.compression-threshold`（`DataSize`）、`producer.topics`、`consumer.consumption-thread-count`、`consumer.max-cache-message-count`、`consumer.close-timeout`（`Duration`）、`simple-consumer.invisible-duration`（`Duration`）、`simple-consumer.max-message-num`、`simple-consumer.await-duration`（`Duration`）、`dead-letter.max-replay-attempts`、`dead-letter.default-batch-size`、`dead-letter.max-batch-size`、`dead-letter.invisible-duration`（`Duration`） | `AtengRocketmqPropertiesTest` |
+| **配置属性与元数据** | 强类型配置属性类与 IDE 智能补全 | `AtengRocketmqProperties` | `ateng.boot.rocketmq.*` | 包含 `enabled`、`endpoints`、`access-key`、`secret-key`、`ssl-enabled`、`request-timeout`（`Duration`）、`producer.send-timeout`（`Duration`）、`producer.max-attempts`、`producer.max-batch-size`、`producer.max-payload-size`（`DataSize`）、`producer.compression-threshold`（`DataSize`）、`producer.topics`、`consumer.consumption-thread-count`、`consumer.max-cache-message-count`、`consumer.close-timeout`（`Duration`）、`simple-consumer.invisible-duration`（`Duration`）、`simple-consumer.max-message-num`、`simple-consumer.await-duration`（`Duration`）、`dead-letter.max-replay-attempts`、`dead-letter.default-batch-size`、`dead-letter.max-batch-size`、`dead-letter.invisible-duration`（`Duration`）、`dead-letter.discard-on-max-attempts-blocked` | `AtengRocketmqPropertiesTest` |
 
 ---
 
@@ -69,6 +69,7 @@ ateng:
     rocketmq:
       enabled: true
       endpoints: "127.0.0.1:8081"
+      ssl-enabled: false
       request-timeout: 3s
       producer:
         send-timeout: 3s
@@ -95,6 +96,7 @@ ateng:
         default-batch-size: 32
         max-batch-size: 100
         invisible-duration: 30s
+        discard-on-max-attempts-blocked: false
 ```
 
 ### 开箱极简代码示例
@@ -176,7 +178,7 @@ public class StandardRocketmqScenarioService {
 
     public SendReceipt sendSqlFiltered(OrderMessage order, double amount) {
         log.info("[STANDARD-SCENARIO] 发送携带 SQL92 自定义属性消息: orderId={}, amount={}", order.getOrderId(), amount);
-        return rocketmqTemplate.send(TradeRocketmqProducer.TOPIC_SQL, null, order.getOrderId(), order, Map.of("amount", String.valueOf(amount)));
+        return rocketmqTemplate.send(TradeRocketmqProducer.TOPIC_SQL, "sql", order.getOrderId(), order, Map.of("amount", String.valueOf((long) amount)));
     }
 }
 ```
@@ -373,6 +375,11 @@ public class DeadLetterReplayScenarioService {
     // 3. 受控重放死信至指定分流主题
     public DeadLetterReplayResult replayDeadLettersToTopic(String consumerGroup, int limit, String targetTopic) {
         return deadLetterReplayTemplate.replayDeadLetters(consumerGroup, limit, targetTopic);
+    }
+
+    // 4. 批量清理丢弃死信消息（物理 ACK 彻底移出死信队列）
+    public int discardDeadLetters(String consumerGroup, int limit) {
+        return deadLetterReplayTemplate.discardDeadLetters(consumerGroup, limit);
     }
 }
 ```

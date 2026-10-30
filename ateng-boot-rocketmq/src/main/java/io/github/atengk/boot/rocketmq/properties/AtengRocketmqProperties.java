@@ -42,6 +42,11 @@ public class AtengRocketmqProperties {
     private String secretKey;
 
     /**
+     * 是否启用 SSL/TLS 通信加密（默认 false；开源私有化部署为明文，公网云上或开启 TLS 时显式配置为 true）
+     */
+    private boolean sslEnabled = false;
+
+    /**
      * 客户端默认请求超时时间（默认 3s）
      */
     private Duration requestTimeout = Duration.ofSeconds(3);
@@ -176,5 +181,10 @@ public class AtengRocketmqProperties {
          * 死信探查与拉取时默认隐身不可见租约时长（默认 30s）
          */
         private Duration invisibleDuration = Duration.ofSeconds(30);
+
+        /**
+         * 触发防二次雪崩熔断时，是否自动确认并丢弃毒丸死信（默认 false；若为 true 则在触发熔断时自动 ACK 移出死信队列以防队列死锁）
+         */
+        private boolean discardOnMaxAttemptsBlocked = false;
     }
 }

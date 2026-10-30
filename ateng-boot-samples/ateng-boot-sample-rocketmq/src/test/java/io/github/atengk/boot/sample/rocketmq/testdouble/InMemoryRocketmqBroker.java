@@ -225,12 +225,19 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
             int maxNum) {
         List<MessageView> polled = new ArrayList<>();
         if (subscriptionExpressions != null && !subscriptionExpressions.isEmpty()) {
-            for (String topic : subscriptionExpressions.keySet()) {
+            for (Map.Entry<String, FilterExpression> entry : subscriptionExpressions.entrySet()) {
+                String topic = entry.getKey();
+                FilterExpression filter = entry.getValue();
                 Queue<MessageView> queue = inMemoryQueues.get(topic);
                 if (queue != null) {
                     Iterator<MessageView> it = queue.iterator();
                     while (polled.size() < maxNum && it.hasNext()) {
-                        polled.add(it.next());
+                        MessageView mv = it.next();
+                        String tag = mv.getTag().orElse("");
+                        Map<String, String> props = mv.getProperties();
+                        if (matchesFilter(filter, tag, props)) {
+                            polled.add(mv);
+                        }
                     }
                 }
             }
@@ -459,7 +466,7 @@ public class InMemoryRocketmqBroker implements PushConsumerFactory, SimpleConsum
         return mv;
     }
 
-    public MessageView createMockMessageView(String topic, String msgId, byte[] body, Map<String, String> properties, String tag, String group) {
+    public static MessageView createMockMessageView(String topic, String msgId, byte[] body, Map<String, String> properties, String tag, String group) {
         MessageView mv = mock(MessageView.class);
         MessageId mockId = mock(MessageId.class);
         when(mockId.toString()).thenReturn(msgId);

@@ -26,9 +26,13 @@ public class SimpleConsumerPullScenarioService {
     private final RocketmqSimpleConsumerTemplate simpleConsumerTemplate;
 
     public List<MessageView> pullMessages(String topic, String group, int maxNum, Duration invisibleDuration) {
-        log.info("[SIMPLE-PULL-SCENARIO] 流式批量拉取消息: topic={}, group={}, maxNum={}, invisibleDuration={}",
-                topic, group, maxNum, invisibleDuration);
-        return simpleConsumerTemplate.receive(topic, group, maxNum, invisibleDuration);
+        return pullMessages(topic, group, "*", maxNum, invisibleDuration);
+    }
+
+    public List<MessageView> pullMessages(String topic, String group, String tag, int maxNum, Duration invisibleDuration) {
+        log.info("[SIMPLE-PULL-SCENARIO] 流式批量拉取消息: topic={}, group={}, tag={}, maxNum={}, invisibleDuration={}",
+                topic, group, tag, maxNum, invisibleDuration);
+        return simpleConsumerTemplate.receive(topic, group, tag, maxNum, invisibleDuration);
     }
 
     public void renewLease(String group, MessageView messageView, Duration newDuration) {
@@ -43,7 +47,18 @@ public class SimpleConsumerPullScenarioService {
     }
 
     public <T> int pullAndExecute(String topic, String group, Class<T> payloadClass, Consumer<T> consumer) {
-        log.info("[SIMPLE-PULL-SCENARIO] 执行高阶推断反序列化消费闭包: topic={}, group={}", topic, group);
-        return simpleConsumerTemplate.receiveAndExecute(topic, group, payloadClass, consumer);
+        return pullAndExecute(topic, group, "*", payloadClass, consumer);
+    }
+
+    public <T> int pullAndExecute(String topic, String group, String tag, Class<T> payloadClass, Consumer<T> consumer) {
+        log.info("[SIMPLE-PULL-SCENARIO] 执行高阶推断反序列化消费闭包: topic={}, group={}, tag={}", topic, group, tag);
+        return simpleConsumerTemplate.receiveAndExecute(
+                topic,
+                group,
+                tag,
+                10,
+                Duration.ofSeconds(30),
+                payloadClass,
+                (item, view) -> consumer.accept(item));
     }
 }

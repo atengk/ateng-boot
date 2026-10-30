@@ -491,6 +491,35 @@ class RocketmqTemplateTest {
         assertThat(receipts).hasSize(2);
     }
 
+    @Test
+    @DisplayName("验证批量发送接入受管 Executor：正常并发调度并成功返回")
+    void testSendBatchAsyncWithManagedExecutor() throws Exception {
+        java.util.concurrent.Executor managedExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            RocketmqTemplate templateWithExecutor = new RocketmqTemplate(producer, properties, (RocketmqTransactionFailureCallback) null, managedExecutor);
+            List<String> payloads = List.of("msg1", "msg2");
+            CompletableFuture<List<SendReceipt>> future = templateWithExecutor.sendBatchAsync("batch_order_topic", payloads);
+
+            List<SendReceipt> receipts = future.get();
+            assertThat(receipts).hasSize(2);
+        } finally {
+            ((java.util.concurrent.ExecutorService) managedExecutor).shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("验证批量发送异常转译：双层嵌套异常被彻底解包为 MessageDeliveryException")
+    void testSendBatchUnwrapsNestedExceptionsDirectly() {
+        when(producer.sendAsync(any(Message.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Simulated broker network drop")));
+
+        List<String> payloads = List.of("item1", "item2");
+
+        assertThatThrownBy(() -> rocketmqTemplate.sendBatch("batch_fail_topic", payloads))
+                .isInstanceOf(MessageDeliveryException.class)
+                .hasMessageContaining("Simulated broker network drop");
+    }
+
     // =========================================================================
     // 定时消息撤回 (recallMessage / recallMessageAsync) 测试
     // =========================================================================
