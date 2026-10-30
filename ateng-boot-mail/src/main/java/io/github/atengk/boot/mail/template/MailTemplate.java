@@ -13,6 +13,7 @@ import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
@@ -47,6 +48,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils;
 
 import java.io.FilterInputStream;
+import java.time.LocalDateTime;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -272,8 +274,30 @@ public class MailTemplate implements DisposableBean {
             // 发信拦截器链前置执行
             applyInterceptors(message);
 
+            // 重新计算拦截器改写后的脱敏收件人（如沙箱重定向）
+            String currentMaskedTo = (message.getTo() != null)
+                    ? message.getTo().stream().filter(Objects::nonNull).map(DesensitizeUtil::email).collect(Collectors.joining(","))
+                    : "";
+
             String traceId = resolveTraceId();
             String domain = resolveDomain(account);
+
+            // 检查是否命中沙箱纯日志模拟发信模式
+            if (isSandboxLogOnly(message)) {
+                String messageId = "<sandbox-log-" + traceId + "@" + domain + ">";
+                log.info("[MAIL-SANDBOX-LOG-ONLY] Simulated email delivery successfully without network connection. Message-ID: [{}], To: [{}], Subject: [{}]",
+                        messageId, currentMaskedTo, message.getSubject());
+
+                publishEvent(new MailSendingEvent(this, message));
+
+                MailSendResult result = MailSendResult.success(messageId,
+                        message.getTo() != null ? new ArrayList<>(message.getTo()) : Collections.emptyList(),
+                        Duration.ofMillis(1));
+
+                publishEvent(new MailSentEvent(this, message, result));
+                return result;
+            }
+
             String messageId = "<" + traceId + "-" + System.nanoTime() + "@" + domain + ">";
 
             publishEvent(new MailSendingEvent(this, message));
@@ -289,11 +313,11 @@ public class MailTemplate implements DisposableBean {
                         .jitter(retryProps.isJitter())
                         .retryPredicate(this::isRetryableException)
                         .onRetry((attempt, error) -> log.warn("Sending email to [{}] failed on attempt {}, preparing retry. Reason: {}",
-                                maskedTo, attempt, error.getMessage()))
+                                currentMaskedTo, attempt, error.getMessage()))
                         .build();
-                result = RetryUtil.execute(() -> doSendPhysical(account, message, maskedTo, traceId, messageId), retryConfig);
+                result = RetryUtil.execute(() -> doSendPhysical(account, message, currentMaskedTo, traceId, messageId), retryConfig);
             } else {
-                result = doSendPhysical(account, message, maskedTo, traceId, messageId);
+                result = doSendPhysical(account, message, currentMaskedTo, traceId, messageId);
             }
 
             publishEvent(new MailSentEvent(this, message, result));
@@ -1343,6 +1367,13 @@ public class MailTemplate implements DisposableBean {
                 }
             }
         }
+    }
+
+    private boolean isSandboxLogOnly(MailMessage message) {
+        if (properties.getSandbox() != null && properties.getSandbox().isEnabled() && properties.getSandbox().isLogOnly()) {
+            return true;
+        }
+        return message.getHeaders() != null && "true".equalsIgnoreCase(message.getHeaders().get(MailSandboxInterceptor.HEADER_SANDBOX_LOG_ONLY));
     }
 
     private void registerAfterCommitSynchronization(MailMessage message, Runnable deliveryTask, boolean isAsync) {

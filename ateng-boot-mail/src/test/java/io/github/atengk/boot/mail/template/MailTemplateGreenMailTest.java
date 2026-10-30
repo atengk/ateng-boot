@@ -13,6 +13,7 @@ import io.github.atengk.boot.mail.event.MailSentEvent;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.BatchMailSendResult;
@@ -1597,5 +1598,135 @@ class MailTemplateGreenMailTest {
         assertEquals(3, batchResult.getSuccessCount());
         assertEquals(0, batchResult.getFailureCount());
         assertTrue(batchResult.isAllSuccess());
+    }
+
+    @Test
+    @DisplayName("测试安全沙箱白名单放行真实物理发信")
+    void testMailSandboxWhitelistDelivery() throws Exception {
+        mailProperties.getSandbox().setEnabled(true);
+        mailProperties.getSandbox().setAllowedRecipients(List.of("*@atengk.com"));
+        mailProperties.getSandbox().setRedirectTo("trap@atengk.com");
+
+        MailSandboxInterceptor sandboxInterceptor = new MailSandboxInterceptor(mailProperties.getSandbox());
+        MailTemplate sandboxTemplate = new MailTemplate(
+                accountRegistry,
+                mailProperties,
+                new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(),
+                null,
+                null,
+                null,
+                null,
+                List.of(sandboxInterceptor)
+        );
+
+        try {
+            MailMessage message = new MailMessage()
+                    .to("valid@atengk.com")
+                    .subject("白名单员工通知")
+                    .text("欢迎查阅内部通知。");
+
+            MailSendResult result = sandboxTemplate.send(message);
+
+            assertNotNull(result);
+            assertTrue(result.isSuccess());
+
+            // GreenMail 真实物理接收到该邮件
+            jakarta.mail.internet.MimeMessage[] received = greenMail.getReceivedMessages();
+            assertEquals(1, received.length);
+            assertEquals("白名单员工通知", received[0].getSubject());
+            assertEquals("valid@atengk.com", received[0].getAllRecipients()[0].toString());
+        } finally {
+            sandboxTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试安全沙箱重定向模式改写 To 并清空 CC/BCC")
+    void testMailSandboxRedirectDelivery() throws Exception {
+        mailProperties.getSandbox().setEnabled(true);
+        mailProperties.getSandbox().setAllowedRecipients(List.of("*@internal.corp"));
+        mailProperties.getSandbox().setRedirectTo("trap@atengk.com");
+
+        MailSandboxInterceptor sandboxInterceptor = new MailSandboxInterceptor(mailProperties.getSandbox());
+        MailTemplate sandboxTemplate = new MailTemplate(
+                accountRegistry,
+                mailProperties,
+                new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(),
+                null,
+                null,
+                null,
+                null,
+                List.of(sandboxInterceptor)
+        );
+
+        try {
+            MailMessage message = new MailMessage()
+                    .to("real-customer@gmail.com")
+                    .cc("partner@qq.com")
+                    .bcc("secret-audit@external.com")
+                    .subject("生产敏感业务账单")
+                    .text("账单详情...");
+
+            MailSendResult result = sandboxTemplate.send(message);
+
+            assertNotNull(result);
+            assertTrue(result.isSuccess());
+
+            // 物理发信投递且仅投递至重定向安全邮箱
+            jakarta.mail.internet.MimeMessage[] received = greenMail.getReceivedMessages();
+            assertEquals(1, received.length);
+            // 主题自动注入重定向追踪标头
+            assertEquals("[SANDBOX-REDIRECT to: real-customer@gmail.com] 生产敏感业务账单", received[0].getSubject());
+            // 物理收件人仅有 trap@atengk.com
+            assertEquals(1, received[0].getAllRecipients().length);
+            assertEquals("trap@atengk.com", received[0].getAllRecipients()[0].toString());
+            // 原 CC 与 BCC 不在物理邮件标头中
+            assertNull(received[0].getRecipients(jakarta.mail.Message.RecipientType.CC));
+            assertNull(received[0].getRecipients(jakarta.mail.Message.RecipientType.BCC));
+        } finally {
+            sandboxTemplate.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("测试安全沙箱纯日志模式 (log-only=true) 零物理连接且返回合规虚拟回执")
+    void testMailSandboxLogOnlyDelivery() {
+        mailProperties.getSandbox().setEnabled(true);
+        mailProperties.getSandbox().setLogOnly(true);
+
+        MailSandboxInterceptor sandboxInterceptor = new MailSandboxInterceptor(mailProperties.getSandbox());
+        MailTemplate sandboxTemplate = new MailTemplate(
+                accountRegistry,
+                mailProperties,
+                new SimpleMailTemplateRenderer(),
+                new TenantMailAccountResolver(),
+                null,
+                null,
+                null,
+                null,
+                List.of(sandboxInterceptor)
+        );
+
+        try {
+            MailMessage message = new MailMessage()
+                    .to("simulated-user@external.com")
+                    .subject("纯日志模拟发信测试")
+                    .text("此邮件不会建立真实物理网络连接");
+
+            MailSendResult result = sandboxTemplate.send(message);
+
+            assertNotNull(result);
+            assertTrue(result.isSuccess());
+            assertTrue(result.getMessageId().startsWith("<sandbox-log-"),
+                    "纯日志模式回执 Message-ID 必须为 <sandbox-log-${traceId}@domain> 格式");
+
+            // 物理 SMTP 零流量
+            assertEquals(0, greenMail.getReceivedMessages().length,
+                    "纯日志模拟模式下绝不能向真实网络或 GreenMail 发送物理报文");
+        } finally {
+            sandboxTemplate.destroy();
+        }
     }
 }

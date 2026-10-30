@@ -180,6 +180,12 @@ public class MailProperties {
     @NestedConfigurationProperty
     private MailBatchProperties batch = new MailBatchProperties();
 
+    /**
+     * 邮件测试安全沙箱配置
+     */
+    @NestedConfigurationProperty
+    private MailSandboxProperties sandbox = new MailSandboxProperties();
+
     public MailProperties() {
         this.async.setThreadNamePrefix("mail-async-");
         this.async.setVirtualThreadNamePrefix("mail-vt-async-");

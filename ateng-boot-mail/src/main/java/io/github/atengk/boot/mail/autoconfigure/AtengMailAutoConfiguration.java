@@ -3,6 +3,7 @@ package io.github.atengk.boot.mail.autoconfigure;
 import io.github.atengk.boot.core.autoconfigure.AsyncExecutorFactory;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.MailAccount;
@@ -179,6 +180,20 @@ public class AtengMailAutoConfiguration {
     @ConditionalOnMissingBean
     public MailAccountEvictListener mailAccountEvictListener(MailAccountRegistry registry) {
         return new MailAccountEvictListener(registry);
+    }
+
+    /**
+     * 注册邮件安全沙箱前置拦截器 Bean
+     * 设定为框架最高优先级 (Ordered.HIGHEST_PRECEDENCE)，支持白名单放行、重定向清场与纯日志模拟发信
+     *
+     * @param properties 邮件全局配置属性
+     * @return 邮件沙箱拦截器实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.mail.sandbox", name = "enabled", havingValue = "true")
+    public MailSandboxInterceptor mailSandboxInterceptor(MailProperties properties) {
+        return new MailSandboxInterceptor(properties.getSandbox());
     }
 
     /**

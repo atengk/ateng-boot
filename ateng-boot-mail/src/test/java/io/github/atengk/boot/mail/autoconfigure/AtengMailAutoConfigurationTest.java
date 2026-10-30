@@ -2,6 +2,7 @@ package io.github.atengk.boot.mail.autoconfigure;
 
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.handler.MailSendFailureHandler;
+import io.github.atengk.boot.mail.interceptor.MailSandboxInterceptor;
 import io.github.atengk.boot.mail.interceptor.MailSendInterceptor;
 import io.github.atengk.boot.mail.listener.MailAccountEvictListener;
 import io.github.atengk.boot.mail.model.MailAccount;
@@ -322,6 +323,33 @@ class AtengMailAutoConfigurationTest {
                     assertThat(registry.dynamicSize()).isGreaterThan(0);
                     context.publishEvent(new MailAccountEvictEvent(this, null));
                     assertThat(registry.dynamicSize()).isEqualTo(0);
+                });
+    }
+
+    @Test
+    @DisplayName("开启 sandbox.enabled=true 时自动装配 MailSandboxInterceptor 并注入 MailTemplate")
+    void testMailSandboxInterceptorAutoConfiguredWhenEnabled() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.mail.host=smtp.example.com",
+                        "ateng.boot.mail.sandbox.enabled=true",
+                        "ateng.boot.mail.sandbox.redirect-to=mail-trap@company.com"
+                )
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MailSandboxInterceptor.class);
+                    MailTemplate template = context.getBean(MailTemplate.class);
+                    MailSandboxInterceptor interceptor = context.getBean(MailSandboxInterceptor.class);
+                    assertThat(template.getInterceptors()).contains(interceptor);
+                });
+    }
+
+    @Test
+    @DisplayName("未开启 sandbox.enabled 时不装配 MailSandboxInterceptor")
+    void testMailSandboxInterceptorNotConfiguredWhenDisabled() {
+        contextRunner
+                .withPropertyValues("ateng.boot.mail.host=smtp.example.com")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MailSandboxInterceptor.class);
                 });
     }
 }
