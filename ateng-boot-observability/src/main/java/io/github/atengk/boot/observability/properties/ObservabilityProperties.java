@@ -136,6 +136,30 @@ public class ObservabilityProperties {
          */
         @NestedConfigurationProperty
         private DynamicDatasourceHealthProperties dynamicDatasource = new DynamicDatasourceHealthProperties();
+
+        /**
+         * Redis / Redisson（ateng-boot-redis）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private RedisHealthProperties redis = new RedisHealthProperties();
+
+        /**
+         * Kafka（ateng-boot-kafka）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private KafkaHealthProperties kafka = new KafkaHealthProperties();
+
+        /**
+         * RabbitMQ（ateng-boot-rabbitmq）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private RabbitmqHealthProperties rabbitmq = new RabbitmqHealthProperties();
+
+        /**
+         * 搜索引擎 Elasticsearch（ateng-boot-search）健康探针配置
+         */
+        @NestedConfigurationProperty
+        private SearchHealthProperties search = new SearchHealthProperties();
     }
 
     /**
@@ -186,6 +210,58 @@ public class ObservabilityProperties {
 
         /**
          * 是否启用动态多数据源连通性探针（默认开启）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * Redis / Redisson 探针配置
+     */
+    @Getter
+    @Setter
+    public static class RedisHealthProperties {
+
+        /**
+         * 是否启用 Redis / Redisson 安全健康探针（默认开启）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * Kafka 探针配置
+     */
+    @Getter
+    @Setter
+    public static class KafkaHealthProperties {
+
+        /**
+         * 是否启用 Kafka 安全健康探针（默认开启）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * RabbitMQ 探针配置
+     */
+    @Getter
+    @Setter
+    public static class RabbitmqHealthProperties {
+
+        /**
+         * 是否启用 RabbitMQ 安全健康探针（默认开启）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * 搜索引擎 Elasticsearch 探针配置
+     */
+    @Getter
+    @Setter
+    public static class SearchHealthProperties {
+
+        /**
+         * 是否启用 Search 安全健康探针（默认开启）
          */
         private boolean enabled = true;
     }

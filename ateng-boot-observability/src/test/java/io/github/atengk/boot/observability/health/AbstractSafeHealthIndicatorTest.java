@@ -1,12 +1,16 @@
 package io.github.atengk.boot.observability.health;
 
+import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
+import org.springframework.context.ApplicationEvent;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -113,5 +117,93 @@ class AbstractSafeHealthIndicatorTest {
         Health health = indicator.health();
         assertThat(health.getStatus()).isEqualTo(Status.UP);
         assertThat(health.getDetails()).containsEntry("custom", true);
+    }
+
+    @Test
+    @DisplayName("领域事件发布：超时切断触发 HealthProbeDegradedEvent 发布")
+    void testDegradedEventOnTimeout() {
+        List<ApplicationEvent> events = new ArrayList<>();
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(Duration.ofMillis(80)) {
+            @Override
+            protected String getComponentName() {
+                return "test-component";
+            }
+
+            @Override
+            protected void doCheck(Health.Builder builder) throws Exception {
+                Thread.sleep(400);
+                builder.up();
+            }
+        };
+        indicator.setApplicationEventPublisher(event -> {
+            if (event instanceof ApplicationEvent appEvent) {
+                events.add(appEvent);
+            }
+        });
+
+        Health health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(HealthProbeDegradedEvent.class);
+
+        HealthProbeDegradedEvent event = (HealthProbeDegradedEvent) events.get(0);
+        assertThat(event.getComponentName()).isEqualTo("test-component");
+        assertThat(event.getStatus()).isEqualTo("TIMEOUT");
+        assertThat(event.getCostMs()).isGreaterThanOrEqualTo(80);
+        assertThat(event.getReason()).contains("timed out");
+    }
+
+    @Test
+    @DisplayName("领域事件发布：发生不可逆异常触发 HealthProbeDegradedEvent 发布")
+    void testDegradedEventOnException() {
+        List<ApplicationEvent> events = new ArrayList<>();
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(Duration.ofSeconds(1)) {
+            @Override
+            protected String getComponentName() {
+                return "database";
+            }
+
+            @Override
+            protected void doCheck(Health.Builder builder) {
+                throw new IllegalStateException("连接池耗尽");
+            }
+        };
+        indicator.setApplicationEventPublisher(event -> {
+            if (event instanceof ApplicationEvent appEvent) {
+                events.add(appEvent);
+            }
+        });
+
+        Health health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(HealthProbeDegradedEvent.class);
+
+        HealthProbeDegradedEvent event = (HealthProbeDegradedEvent) events.get(0);
+        assertThat(event.getComponentName()).isEqualTo("database");
+        assertThat(event.getStatus()).isEqualTo("DOWN");
+        assertThat(event.getReason()).isEqualTo("连接池耗尽");
+        assertThat(event.getCause()).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("领域事件发布：正常 UP 状态不发布降级事件")
+    void testNoDegradedEventOnUp() {
+        List<ApplicationEvent> events = new ArrayList<>();
+        AbstractSafeHealthIndicator indicator = new AbstractSafeHealthIndicator(Duration.ofSeconds(1)) {
+            @Override
+            protected void doCheck(Health.Builder builder) {
+                builder.up();
+            }
+        };
+        indicator.setApplicationEventPublisher(event -> {
+            if (event instanceof ApplicationEvent appEvent) {
+                events.add(appEvent);
+            }
+        });
+
+        Health health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(events).isEmpty();
     }
 }

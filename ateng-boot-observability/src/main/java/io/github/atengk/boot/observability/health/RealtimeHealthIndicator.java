@@ -63,6 +63,11 @@ public class RealtimeHealthIndicator extends AbstractSafeHealthIndicator {
     }
 
     @Override
+    protected String getComponentName() {
+        return "realtime";
+    }
+
+    @Override
     protected void doCheck(Health.Builder builder) throws Exception {
         RealtimeSessionManager sessionManager = sessionManagerProvider != null ? sessionManagerProvider.getIfAvailable() : null;
         if (sessionManager == null) {

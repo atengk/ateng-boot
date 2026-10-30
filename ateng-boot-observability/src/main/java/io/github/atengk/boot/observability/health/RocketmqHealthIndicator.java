@@ -63,6 +63,11 @@ public class RocketmqHealthIndicator extends AbstractSafeHealthIndicator {
     }
 
     @Override
+    protected String getComponentName() {
+        return "rocketmq";
+    }
+
+    @Override
     protected void doCheck(Health.Builder builder) throws Exception {
         RocketmqTemplate template = templateProvider != null ? templateProvider.getIfAvailable() : null;
         RocketmqConsumerContainer container = containerProvider != null ? containerProvider.getIfAvailable() : null;

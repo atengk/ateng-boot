@@ -65,6 +65,11 @@ public class StorageHealthIndicator extends AbstractSafeHealthIndicator {
     }
 
     @Override
+    protected String getComponentName() {
+        return "storage";
+    }
+
+    @Override
     protected void doCheck(Health.Builder builder) throws Exception {
         StorageDriverFactory factory = driverFactoryProvider != null ? driverFactoryProvider.getIfAvailable() : null;
         if (factory != null && !factory.getAllDrivers().isEmpty()) {

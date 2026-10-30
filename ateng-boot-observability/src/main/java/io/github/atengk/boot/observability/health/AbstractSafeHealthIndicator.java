@@ -1,11 +1,14 @@
 package io.github.atengk.boot.observability.health;
 
+import io.github.atengk.boot.observability.event.HealthProbeDegradedEvent;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.actuate.health.Status;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -28,7 +31,7 @@ import java.util.concurrent.TimeoutException;
  * @since 2026-10-22
  */
 @Slf4j
-public abstract class AbstractSafeHealthIndicator implements HealthIndicator {
+public abstract class AbstractSafeHealthIndicator implements HealthIndicator, ApplicationEventPublisherAware {
 
     /**
      * 探针安全探测默认超时时间（2 秒）
@@ -40,6 +43,20 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator {
 
     @Getter
     private final Executor executor;
+
+    private ApplicationEventPublisher eventPublisher;
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
+    /**
+     * 获取当前探针对应的组件名称（如 redis, kafka, storage 等，子类可覆写）
+     */
+    protected String getComponentName() {
+        return getClass().getSimpleName();
+    }
 
     /**
      * 默认构造器（使用默认 2s 超时阈值与公共工作线程池）
@@ -99,13 +116,21 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator {
 
     @Override
     public Health health() {
+        long startTime = System.currentTimeMillis();
         CompletableFuture<Health> future = CompletableFuture.supplyAsync(() -> {
             Health.Builder builder = new Health.Builder();
             try {
                 doCheck(builder);
-                return builder.build();
+                Health health = builder.build();
+                if (Status.DOWN.equals(health.getStatus())) {
+                    long costMs = System.currentTimeMillis() - startTime;
+                    publishDegradedEvent("DOWN", costMs, "Probe reported DOWN status", null);
+                }
+                return health;
             } catch (Exception ex) {
+                long costMs = System.currentTimeMillis() - startTime;
                 log.warn("健康探针 [{}] 执行检测异常: {}", getClass().getSimpleName(), ex.getMessage(), ex);
+                publishDegradedEvent("DOWN", costMs, ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(), ex);
                 return Health.down(ex)
                         .withDetail("reason", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName())
                         .build();
@@ -116,7 +141,9 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator {
             return future.get(this.timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
             future.cancel(true);
+            long costMs = System.currentTimeMillis() - startTime;
             log.warn("健康探针 [{}] 执行检测超时（阈值: {}），触发防假死降级", getClass().getSimpleName(), this.timeout);
+            publishDegradedEvent("TIMEOUT", costMs, "Probe execution timed out", ex);
             return Health.unknown()
                     .withDetail("status", "TIMEOUT")
                     .withDetail("timeout", this.timeout.toString())
@@ -124,16 +151,46 @@ public abstract class AbstractSafeHealthIndicator implements HealthIndicator {
                     .build();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
+            long costMs = System.currentTimeMillis() - startTime;
             log.warn("健康探针 [{}] 执行检测被中断", getClass().getSimpleName());
+            publishDegradedEvent("DOWN", costMs, "Probe execution interrupted", ex);
             return Health.down(ex)
                     .withDetail("reason", "Probe execution interrupted")
                     .build();
         } catch (ExecutionException ex) {
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            long costMs = System.currentTimeMillis() - startTime;
             log.warn("健康探针 [{}] 异步执行异常: {}", getClass().getSimpleName(), cause.getMessage(), cause);
+            publishDegradedEvent("DOWN", costMs, cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName(), cause);
             return Health.down(cause)
                     .withDetail("reason", cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName())
                     .build();
+        }
+    }
+
+    /**
+     * 发布健康探针降级或故障领域事件
+     *
+     * @param status 状态（TIMEOUT, DOWN 等）
+     * @param costMs 探测耗时（毫秒）
+     * @param reason 降级原因
+     * @param cause  根因异常
+     */
+    protected void publishDegradedEvent(String status, long costMs, String reason, Throwable cause) {
+        if (this.eventPublisher != null) {
+            try {
+                this.eventPublisher.publishEvent(new HealthProbeDegradedEvent(
+                        this,
+                        getClass().getSimpleName(),
+                        getComponentName(),
+                        status,
+                        costMs,
+                        reason,
+                        cause
+                ));
+            } catch (Exception e) {
+                log.warn("发布健康探针降级事件失败 [{}]: {}", getClass().getSimpleName(), e.getMessage());
+            }
         }
     }
 

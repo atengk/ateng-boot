@@ -3,20 +3,29 @@ package io.github.atengk.boot.observability.autoconfigure;
 import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.mybatisplus.guard.DynamicDatasourceGuard;
 import io.github.atengk.boot.observability.health.DynamicDatasourceHealthIndicator;
+import io.github.atengk.boot.observability.health.KafkaSafeHealthIndicator;
+import io.github.atengk.boot.observability.health.RabbitmqSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RealtimeHealthIndicator;
+import io.github.atengk.boot.observability.health.RedisSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.RocketmqHealthIndicator;
+import io.github.atengk.boot.observability.health.SearchSafeHealthIndicator;
 import io.github.atengk.boot.observability.health.StorageHealthIndicator;
 import io.github.atengk.boot.observability.properties.ObservabilityProperties;
 import io.github.atengk.boot.realtime.cluster.RealtimeClusterBroadcaster;
 import io.github.atengk.boot.realtime.session.RealtimeSessionManager;
 import io.github.atengk.boot.rocketmq.listener.RocketmqConsumerContainer;
 import io.github.atengk.boot.rocketmq.template.RocketmqTemplate;
+import io.github.atengk.boot.search.spi.SearchEngineClient;
 import io.github.atengk.boot.storage.driver.StorageDriver;
 import io.github.atengk.boot.storage.factory.StorageDriverFactory;
+import org.redisson.api.RedissonClient;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -24,6 +33,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.kafka.core.KafkaAdmin;
+import org.springframework.kafka.core.KafkaTemplate;
 
 import javax.sql.DataSource;
 import java.util.concurrent.Executor;
@@ -43,6 +55,11 @@ import java.util.concurrent.TimeUnit;
  * @since 2026-10-22
  */
 @AutoConfiguration
+@AutoConfigureBefore(name = {
+        "org.springframework.boot.actuate.autoconfigure.redis.RedisHealthContributorAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.amqp.RabbitHealthContributorAutoConfiguration",
+        "io.github.atengk.boot.search.autoconfigure.AtengSearchAutoConfiguration"
+})
 @ConditionalOnClass(HealthIndicator.class)
 @ConditionalOnProperty(prefix = "ateng.boot.observability", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(ObservabilityProperties.class)
@@ -140,6 +157,82 @@ public class AtengHealthAutoConfiguration {
                 ObservabilityProperties properties,
                 @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
             return new DynamicDatasourceHealthIndicator(applicationContext, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-redis 专属安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(RedisConnectionFactory.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class RedisHealthIndicatorConfiguration {
+
+        @Bean(name = {"redisHealthIndicator", "redisHealthContributor"})
+        @ConditionalOnMissingBean(name = "redisHealthIndicator")
+        public RedisSafeHealthIndicator redisHealthIndicator(
+                ObjectProvider<RedisConnectionFactory> connectionFactoryProvider,
+                ObjectProvider<RedissonClient> redissonClientProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new RedisSafeHealthIndicator(connectionFactoryProvider, redissonClientProvider, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-kafka 专属安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(KafkaTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.kafka", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class KafkaHealthIndicatorConfiguration {
+
+        @Bean(name = "kafkaHealthIndicator")
+        @ConditionalOnMissingBean(name = "kafkaHealthIndicator")
+        @SuppressWarnings("rawtypes")
+        public KafkaSafeHealthIndicator kafkaHealthIndicator(
+                ObjectProvider<KafkaTemplate> kafkaTemplateProvider,
+                ObjectProvider<KafkaAdmin> kafkaAdminProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new KafkaSafeHealthIndicator(kafkaTemplateProvider, kafkaAdminProvider, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-rabbitmq 专属安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(ConnectionFactory.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.rabbitmq", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class RabbitmqHealthIndicatorConfiguration {
+
+        @Bean(name = {"rabbitHealthIndicator", "rabbitHealthContributor"})
+        @ConditionalOnMissingBean(name = "rabbitHealthIndicator")
+        public RabbitmqSafeHealthIndicator rabbitHealthIndicator(
+                ObjectProvider<RabbitTemplate> rabbitTemplateProvider,
+                ObjectProvider<ConnectionFactory> connectionFactoryProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new RabbitmqSafeHealthIndicator(rabbitTemplateProvider, connectionFactoryProvider, properties, executorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * ateng-boot-search 专属安全健康探针装配
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(SearchEngineClient.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.observability.health.search", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static class SearchHealthIndicatorConfiguration {
+
+        @Bean(name = {"searchSafeHealthIndicator", "searchHealthIndicator"})
+        @ConditionalOnMissingBean(name = "searchSafeHealthIndicator")
+        public SearchSafeHealthIndicator searchSafeHealthIndicator(
+                ObjectProvider<SearchEngineClient> searchEngineClientProvider,
+                ObservabilityProperties properties,
+                @Qualifier(HEALTH_PROBE_EXECUTOR_BEAN_NAME) ObjectProvider<Executor> executorProvider) {
+            return new SearchSafeHealthIndicator(searchEngineClientProvider, properties, executorProvider.getIfAvailable());
         }
     }
 }

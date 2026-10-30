@@ -70,6 +70,34 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Redis 底座 (用于编译与装配 RedisSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Kafka 消息底座 (用于编译与装配 KafkaSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-kafka</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：RabbitMQ 消息底座 (用于编译与装配 RabbitmqSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-rabbitmq</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 可选依赖：Search 检索引擎底座 (用于编译与装配 SearchSafeHealthIndicator) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-search</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 可选依赖：Spring Boot Admin Client (用于 SBA 客户端透明增强与握手凭据注入) -->
         <dependency>
             <groupId>de.codecentric</groupId>

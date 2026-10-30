@@ -47,6 +47,10 @@ class ObservabilityPropertiesTest {
         assertThat(properties.getHealth().getRocketmq().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRealtime().isEnabled()).isTrue();
         assertThat(properties.getHealth().getDynamicDatasource().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getRedis().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getKafka().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getRabbitmq().isEnabled()).isTrue();
+        assertThat(properties.getHealth().getSearch().isEnabled()).isTrue();
 
         // 端点安全默认配置
         assertThat(properties.getSecurity()).isNotNull();
@@ -73,6 +77,10 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.health.k8s-isolation-enabled=false",
                         "ateng.boot.observability.health.storage.enabled=false",
                         "ateng.boot.observability.health.rocketmq.enabled=false",
+                        "ateng.boot.observability.health.redis.enabled=false",
+                        "ateng.boot.observability.health.kafka.enabled=false",
+                        "ateng.boot.observability.health.rabbitmq.enabled=false",
+                        "ateng.boot.observability.health.search.enabled=false",
                         "ateng.boot.observability.security.lockdown-enabled=true",
                         "ateng.boot.observability.security.token=SEC_TOKEN_123456",
                         "ateng.boot.observability.admin-client.enabled=true",
@@ -91,6 +99,10 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getHealth().isK8sIsolationEnabled()).isFalse();
                     assertThat(props.getHealth().getStorage().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRocketmq().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getRedis().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getKafka().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getRabbitmq().isEnabled()).isFalse();
+                    assertThat(props.getHealth().getSearch().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
                     assertThat(props.getSecurity().isLockdownEnabled()).isTrue();
                     assertThat(props.getSecurity().getToken()).isEqualTo("SEC_TOKEN_123456");
