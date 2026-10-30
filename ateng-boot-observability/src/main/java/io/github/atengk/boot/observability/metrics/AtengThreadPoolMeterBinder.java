@@ -119,8 +119,8 @@ public class AtengThreadPoolMeterBinder implements MeterBinder, ApplicationConte
                         .description("The approximate total number of tasks that have completed execution")
                         .register(registry);
 
-                // 透明包装 RejectedExecutionHandler 统计任务拒绝数
-                TrackingRejectedExecutionHandler trackingHandler = wrapAndSetRejectedExecutionHandler(tpe);
+                // 透明包装 RejectedExecutionHandler 统计任务拒绝数并广播领域事件
+                TrackingRejectedExecutionHandler trackingHandler = wrapAndSetRejectedExecutionHandler(tpe, beanName);
                 FunctionCounter.builder("ateng.threadpool.rejected.tasks.total", trackingHandler, TrackingRejectedExecutionHandler::getRejectedCount)
                         .tags("pool", beanName, "type", "platform")
                         .description("The total number of tasks rejected by the executor")
@@ -178,7 +178,7 @@ public class AtengThreadPoolMeterBinder implements MeterBinder, ApplicationConte
                     .description("The approximate total number of tasks that have completed execution")
                     .register(registry);
 
-            TrackingRejectedExecutionHandler trackingHandler = wrapAndSetRejectedExecutionHandler(tpe);
+            TrackingRejectedExecutionHandler trackingHandler = wrapAndSetRejectedExecutionHandler(tpe, beanName);
             FunctionCounter.builder("ateng.threadpool.rejected.tasks.total", trackingHandler, TrackingRejectedExecutionHandler::getRejectedCount)
                     .tags("pool", beanName, "type", "platform")
                     .description("The total number of tasks rejected by the executor")
@@ -217,15 +217,14 @@ public class AtengThreadPoolMeterBinder implements MeterBinder, ApplicationConte
     }
 
     /**
-     * 透明包装 ThreadPoolExecutor 的 RejectedExecutionHandler
+     * 透明包装 ThreadPoolExecutor 的 RejectedExecutionHandler 并绑定线程池名称与事件发布能力
      */
-    private TrackingRejectedExecutionHandler wrapAndSetRejectedExecutionHandler(ThreadPoolExecutor tpe) {
+    private TrackingRejectedExecutionHandler wrapAndSetRejectedExecutionHandler(ThreadPoolExecutor tpe, String poolName) {
         RejectedExecutionHandler current = tpe.getRejectedExecutionHandler();
-        if (current instanceof TrackingRejectedExecutionHandler existing) {
-            return existing;
+        TrackingRejectedExecutionHandler wrapped = TrackingRejectedExecutionHandler.wrap(current, poolName, this.applicationContext);
+        if (current != wrapped) {
+            tpe.setRejectedExecutionHandler(wrapped);
         }
-        TrackingRejectedExecutionHandler wrapped = TrackingRejectedExecutionHandler.wrap(current);
-        tpe.setRejectedExecutionHandler(wrapped);
         return wrapped;
     }
 }
