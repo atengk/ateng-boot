@@ -4,6 +4,7 @@ import io.github.atengk.boot.openapi.converter.OpenApiModelConverter;
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
 import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
+import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
 import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
 import io.github.atengk.boot.openapi.group.DynamicGroupedOpenApiRegistrar;
 import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
@@ -195,6 +196,20 @@ public class OpenApiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public StandardApiResponseCustomizer standardApiResponseCustomizer(OpenApiProperties properties) {
         return new StandardApiResponseCustomizer(properties);
+    }
+
+    /**
+     * 注册通用 SecuritySchemes 配置化定制器 (OpenApiCustomizer)
+     * <p>根据配置文件声明的 security-schemes 列表动态注册安全方案并激活锁头</p>
+     *
+     * @param properties 配置属性
+     * @return 通用鉴权定制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SecuritySchemesCustomizer securitySchemesCustomizer(OpenApiProperties properties) {
+        return new SecuritySchemesCustomizer(properties);
     }
 
     /**

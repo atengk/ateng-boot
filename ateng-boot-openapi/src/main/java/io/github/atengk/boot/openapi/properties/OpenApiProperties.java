@@ -92,6 +92,12 @@ public class OpenApiProperties {
      */
     private boolean standardResponses = true;
 
+    /**
+     * 通用 SecurityScheme 认证方案配置列表（如 HTTP Bearer、ApiKey 等）
+     */
+    @NestedConfigurationProperty
+    private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -202,6 +208,14 @@ public class OpenApiProperties {
 
     public void setStandardResponses(boolean standardResponses) {
         this.standardResponses = standardResponses;
+    }
+
+    public List<SecuritySchemeConfig> getSecuritySchemes() {
+        return securitySchemes != null ? securitySchemes : Collections.emptyList();
+    }
+
+    public void setSecuritySchemes(List<SecuritySchemeConfig> securitySchemes) {
+        this.securitySchemes = securitySchemes != null ? securitySchemes : new ArrayList<>();
     }
 
     /**
@@ -332,6 +346,12 @@ public class OpenApiProperties {
          */
         private boolean tenantId = true;
 
+        /**
+         * 自定义全局请求头列表
+         */
+        @NestedConfigurationProperty
+        private List<HeaderParam> custom = new ArrayList<>();
+
         public boolean isTraceId() {
             return traceId;
         }
@@ -346,6 +366,14 @@ public class OpenApiProperties {
 
         public void setTenantId(boolean tenantId) {
             this.tenantId = tenantId;
+        }
+
+        public List<HeaderParam> getCustom() {
+            return custom != null ? custom : Collections.emptyList();
+        }
+
+        public void setCustom(List<HeaderParam> custom) {
+            this.custom = custom != null ? custom : new ArrayList<>();
         }
     }
 
@@ -596,6 +624,194 @@ public class OpenApiProperties {
 
         public void setPackagesToScan(List<String> packagesToScan) {
             this.packagesToScan = packagesToScan != null ? packagesToScan : new ArrayList<>();
+        }
+    }
+
+    /**
+     * 自定义全局请求头参数配置
+     */
+    public static class HeaderParam {
+        /**
+         * 请求头参数名称（如 X-Custom-Header）
+         */
+        private String name;
+
+        /**
+         * 请求头描述说明
+         */
+        private String description;
+
+        /**
+         * 是否必填（默认 false）
+         */
+        private boolean required = false;
+
+        /**
+         * 默认值或示例值
+         */
+        private String defaultValue;
+
+        public HeaderParam() {
+        }
+
+        public HeaderParam(String name, String description, boolean required, String defaultValue) {
+            this.name = name;
+            this.description = description;
+            this.required = required;
+            this.defaultValue = defaultValue;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public boolean isRequired() {
+            return required;
+        }
+
+        public void setRequired(boolean required) {
+            this.required = required;
+        }
+
+        public String getDefaultValue() {
+            return defaultValue;
+        }
+
+        public void setDefaultValue(String defaultValue) {
+            this.defaultValue = defaultValue;
+        }
+    }
+
+    /**
+     * 通用 SecurityScheme 认证方案配置
+     */
+    public static class SecuritySchemeConfig {
+        /**
+         * 鉴权方案唯一标识键（若未配置，默认回退使用 name）
+         */
+        private String key;
+
+        /**
+         * 鉴权方案名称/参数名（例如 Authorization、X-Api-Key）
+         */
+        private String name;
+
+        /**
+         * 鉴权类型（例如 http, apiKey, oauth2, openIdConnect；默认为 http）
+         */
+        private String type = "http";
+
+        /**
+         * HTTP 认证方案（例如 bearer, basic；当 type 为 http 时有效，默认 bearer）
+         */
+        private String scheme = "bearer";
+
+        /**
+         * Bearer 令牌格式（例如 JWT）
+         */
+        private String bearerFormat;
+
+        /**
+         * 参数传递位置（例如 header, query, cookie；当 type 为 apiKey 时必填，默认 header）
+         */
+        private String in = "header";
+
+        /**
+         * 鉴权方案描述说明
+         */
+        private String description;
+
+        /**
+         * 是否全局挂载 SecurityRequirement 锁头（默认 true；设置为 false 时仅注册 scheme 但不全局强制激活锁头）
+         */
+        private boolean global = true;
+
+        public SecuritySchemeConfig() {
+        }
+
+        public SecuritySchemeConfig(String name, String type, String scheme, String bearerFormat, String in, String description) {
+            this.name = name;
+            this.type = type;
+            this.scheme = scheme;
+            this.bearerFormat = bearerFormat;
+            this.in = in;
+            this.description = description;
+        }
+
+        public String getKey() {
+            return key != null && !key.isBlank() ? key : name;
+        }
+
+        public void setKey(String key) {
+            this.key = key;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getType() {
+            return type != null && !type.isBlank() ? type : "http";
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getScheme() {
+            return scheme != null && !scheme.isBlank() ? scheme : "bearer";
+        }
+
+        public void setScheme(String scheme) {
+            this.scheme = scheme;
+        }
+
+        public String getBearerFormat() {
+            return bearerFormat;
+        }
+
+        public void setBearerFormat(String bearerFormat) {
+            this.bearerFormat = bearerFormat;
+        }
+
+        public String getIn() {
+            return in != null && !in.isBlank() ? in : "header";
+        }
+
+        public void setIn(String in) {
+            this.in = in;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public boolean isGlobal() {
+            return global;
+        }
+
+        public void setGlobal(boolean global) {
+            this.global = global;
         }
     }
 }
