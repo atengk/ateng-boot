@@ -48,6 +48,12 @@ public class CoreProperties {
     private SystemProperties system = new SystemProperties();
 
     /**
+     * 日志引擎与文件持久化配置
+     */
+    @NestedConfigurationProperty
+    private LoggingProperties logging = new LoggingProperties();
+
+    /**
      * 获取有效的时钟回拨容忍时长
      * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
      *
