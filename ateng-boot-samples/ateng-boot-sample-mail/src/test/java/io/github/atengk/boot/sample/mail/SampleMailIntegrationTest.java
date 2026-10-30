@@ -90,8 +90,12 @@ class SampleMailIntegrationTest {
 
     @DynamicPropertySource
     static void configureMailProperties(DynamicPropertyRegistry registry) {
+        registry.add("ateng.boot.mail.accounts.default.host", () -> "127.0.0.1");
         registry.add("ateng.boot.mail.accounts.default.port", () -> smtpPort);
+        registry.add("ateng.boot.mail.accounts.default.ssl", () -> false);
+        registry.add("ateng.boot.mail.accounts.ops.host", () -> "127.0.0.1");
         registry.add("ateng.boot.mail.accounts.ops.port", () -> smtpPort);
+        registry.add("ateng.boot.mail.accounts.ops.ssl", () -> false);
     }
 
     @Autowired

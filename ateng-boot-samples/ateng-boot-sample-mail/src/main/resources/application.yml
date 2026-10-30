@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-mail
+  config:
+    import: "optional:classpath:application-local.yml"
   thymeleaf:
     prefix: classpath:/templates/
     suffix: .html
