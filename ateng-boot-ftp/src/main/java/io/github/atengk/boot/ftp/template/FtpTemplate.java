@@ -7,7 +7,9 @@ import io.github.atengk.boot.ftp.listener.FtpProgressListener;
 import io.github.atengk.boot.ftp.listener.FtpProgressThrottler;
 import io.github.atengk.boot.ftp.listener.ProgressInputStream;
 import io.github.atengk.boot.ftp.listener.ProgressOutputStream;
+import io.github.atengk.boot.ftp.model.BatchTransferResult;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
+import io.github.atengk.boot.ftp.model.TransferFailureItem;
 import io.github.atengk.boot.ftp.pool.FtpClientCallback;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
 import io.github.atengk.boot.ftp.registry.FtpClientRegistry;
@@ -24,6 +26,8 @@ import java.io.*;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -1222,6 +1226,313 @@ public class FtpTemplate {
                 }
             }
         }
+    }
+
+    // ==========================================
+    // 批量目录同步与容错引擎 (Batch Directory Sync & Fail-Safe Engine)
+    // ==========================================
+
+    private static final int MAX_DIRECTORY_DEPTH = 32;
+
+    /**
+     * 批量递归上传本地目录至 FTP 远端目录（默认 Fail-Safe 容错模式）
+     *
+     * @param localDir  本地待上传的根目录
+     * @param remoteDir 远程目标目录路径
+     * @return 强类型批量传输聚合回执
+     */
+    public BatchTransferResult uploadDirectory(File localDir, String remoteDir) {
+        return uploadDirectory(localDir, remoteDir, null, false);
+    }
+
+    /**
+     * 批量递归上传本地目录至 FTP 远端目录（支持自定义断言过滤与 Fail-Fast / Fail-Safe 双模机制）
+     *
+     * @param localDir  本地待上传的根目录
+     * @param remoteDir 远程目标目录路径
+     * @param filter    文件断言过滤器（为 null 时传输全部非系统隐性文件）
+     * @param failFast  是否开启快速失败（true 表示遇错立即熔断抛出异常；false 表示 Fail-Safe 记录错误并继续传输）
+     * @return 强类型批量传输聚合回执
+     */
+    public BatchTransferResult uploadDirectory(File localDir, String remoteDir, Predicate<File> filter, boolean failFast) {
+        Assert.notNull(localDir, "localDir must not be null");
+        Assert.isTrue(localDir.exists(), "localDir does not exist: " + localDir.getAbsolutePath());
+        Assert.isTrue(localDir.isDirectory(), "localDir must be a directory: " + localDir.getAbsolutePath());
+        Assert.hasText(remoteDir, "remoteDir must not be blank");
+
+        String currentTarget = FtpContextHolder.getServer();
+        if (currentTarget != null && !currentTarget.isBlank()
+                && registry != null
+                && !currentTarget.equalsIgnoreCase(this.serverName)) {
+            return registry.getTemplate(currentTarget).uploadDirectory(localDir, remoteDir, filter, failFast);
+        }
+
+        String safeRemoteDir = cleanAndValidatePath(remoteDir);
+        long startTime = System.nanoTime();
+        log.debug("开始批量递归上传目录: {} -> {} (failFast={})", localDir.getAbsolutePath(), safeRemoteDir, failFast);
+
+        BatchTransferResult result = new BatchTransferResult();
+        try {
+            uploadDirectoryInternal(localDir, localDir, safeRemoteDir, filter, failFast, result, 0);
+        } finally {
+            result.setDuration(Duration.ofNanos(System.nanoTime() - startTime));
+            log.debug("完成批量递归上传目录: {} -> {}, 耗时: {}ms, 总文件: {}, 成功: {}, 失败: {}, 跳过: {}, 传输字节: {}",
+                    localDir.getAbsolutePath(), safeRemoteDir, result.getDuration().toMillis(),
+                    result.getTotalFiles(), result.getSuccessCount(), result.getFailureCount(),
+                    result.getSkippedCount(), result.getTransferredBytes());
+        }
+        return result;
+    }
+
+    /**
+     * 批量递归下载 FTP 远端目录至本地磁盘目录（默认 Fail-Safe 容错模式）
+     *
+     * @param remoteDir 远程待下载的根目录路径
+     * @param localDir  本地存储目标根目录
+     * @return 强类型批量传输聚合回执
+     */
+    public BatchTransferResult downloadDirectory(String remoteDir, File localDir) {
+        return downloadDirectory(remoteDir, localDir, null, false);
+    }
+
+    /**
+     * 批量递归下载 FTP 远端目录至本地磁盘目录（支持自定义断言过滤与 Fail-Fast / Fail-Safe 双模机制）
+     *
+     * @param remoteDir 远程待下载的根目录路径
+     * @param localDir  本地存储目标根目录
+     * @param filter    文件元数据断言过滤器（为 null 时下载全部非系统隐性文件）
+     * @param failFast  是否开启快速失败（true 表示遇错立即熔断抛出异常；false 表示 Fail-Safe 记录错误并继续传输）
+     * @return 强类型批量传输聚合回执
+     */
+    public BatchTransferResult downloadDirectory(String remoteDir, File localDir, Predicate<FtpFileInfo> filter, boolean failFast) {
+        Assert.hasText(remoteDir, "remoteDir must not be blank");
+        Assert.notNull(localDir, "localDir must not be null");
+        if (localDir.exists()) {
+            Assert.isTrue(localDir.isDirectory(), "localDir must be a directory: " + localDir.getAbsolutePath());
+        } else {
+            localDir.mkdirs();
+        }
+
+        String currentTarget = FtpContextHolder.getServer();
+        if (currentTarget != null && !currentTarget.isBlank()
+                && registry != null
+                && !currentTarget.equalsIgnoreCase(this.serverName)) {
+            return registry.getTemplate(currentTarget).downloadDirectory(remoteDir, localDir, filter, failFast);
+        }
+
+        String safeRemoteDir = cleanAndValidatePath(remoteDir);
+
+        // 验证远端目标存在且必须为有效目录
+        if (!"/".equals(safeRemoteDir)) {
+            boolean isDir = execute(client -> {
+                String wireDir = toWirePath(safeRemoteDir);
+                String currentDir = client.printWorkingDirectory();
+                try {
+                    if (client.changeWorkingDirectory(wireDir)) {
+                        if (currentDir != null) {
+                            client.changeWorkingDirectory(currentDir);
+                        }
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                }
+                return false;
+            });
+            if (!isDir) {
+                if (!exists(safeRemoteDir)) {
+                    throw new FtpException(FtpResultCode.FILE_NOT_FOUND, "FTP 远程目录不存在: " + safeRemoteDir);
+                }
+                throw new FtpException(FtpResultCode.INVALID_PATH, "FTP 远程路径不是有效目录: " + safeRemoteDir);
+            }
+        }
+
+        long startTime = System.nanoTime();
+        log.debug("开始批量递归下载目录: {} -> {} (failFast={})", safeRemoteDir, localDir.getAbsolutePath(), failFast);
+
+        BatchTransferResult result = new BatchTransferResult();
+        try {
+            downloadDirectoryInternal(safeRemoteDir, safeRemoteDir, localDir, filter, failFast, result, 0);
+        } finally {
+            result.setDuration(Duration.ofNanos(System.nanoTime() - startTime));
+            log.debug("完成批量递归下载目录: {} -> {}, 耗时: {}ms, 总文件: {}, 成功: {}, 失败: {}, 跳过: {}, 传输字节: {}",
+                    safeRemoteDir, localDir.getAbsolutePath(), result.getDuration().toMillis(),
+                    result.getTotalFiles(), result.getSuccessCount(), result.getFailureCount(),
+                    result.getSkippedCount(), result.getTransferredBytes());
+        }
+        return result;
+    }
+
+    private void uploadDirectoryInternal(File rootDir, File currentDir, String baseRemoteDir,
+                                         Predicate<File> filter, boolean failFast,
+                                         BatchTransferResult result, int depth) {
+        if (depth > MAX_DIRECTORY_DEPTH) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "本地目录递归层级超过最大安全深度限制 (" + MAX_DIRECTORY_DEPTH + "层): " + currentDir.getAbsolutePath());
+        }
+
+        File[] files = currentDir.listFiles();
+        if (files == null || files.length == 0) {
+            return;
+        }
+
+        for (File file : files) {
+            if (file == null) {
+                continue;
+            }
+
+            String fileName = file.getName();
+            if (file.isDirectory()) {
+                // 1. 过滤操作系统隐性系统目录（如 .git）
+                if (isSystemOrHiddenFile(fileName)) {
+                    continue;
+                }
+                // 计算当前子目录在服务端的相对路径并确保远端目录结构存在
+                String relPath = rootDir.toPath().relativize(file.toPath()).toString().replace('\\', '/');
+                String subRemoteDir = normalizePath(baseRemoteDir, relPath);
+                try {
+                    makeDirectories(subRemoteDir);
+                } catch (Exception e) {
+                    log.warn("批量上传创建远端子目录失败: {}", subRemoteDir, e);
+                }
+                uploadDirectoryInternal(rootDir, file, baseRemoteDir, filter, failFast, result, depth + 1);
+            } else if (file.isFile()) {
+                result.setTotalFiles(result.getTotalFiles() + 1);
+                // 2. 隐藏系统文件前置过滤（环境宿主中立防卫）
+                if (isSystemOrHiddenFile(fileName)) {
+                    result.setSkippedCount(result.getSkippedCount() + 1);
+                    continue;
+                }
+                // 3. 自定义谓词过滤
+                if (filter != null && !filter.test(file)) {
+                    result.setSkippedCount(result.getSkippedCount() + 1);
+                    continue;
+                }
+
+                // 4. 执行文件上传
+                String relPath = rootDir.toPath().relativize(file.toPath()).toString().replace('\\', '/');
+                String targetRemotePath = normalizePath(baseRemoteDir, relPath);
+                long fileLength = file.length();
+                try {
+                    boolean uploaded = upload(targetRemotePath, file);
+                    if (uploaded) {
+                        result.setSuccessCount(result.getSuccessCount() + 1);
+                        result.setTransferredBytes(result.getTransferredBytes() + fileLength);
+                    } else {
+                        throw new FtpException(FtpResultCode.UPLOAD_FAILED, "上传文件返回未成功: " + targetRemotePath);
+                    }
+                } catch (Exception e) {
+                    log.warn("批量上传单文件失败: {} -> {}, 错误: {}", file.getAbsolutePath(), targetRemotePath, e.getMessage());
+                    result.addFailure(TransferFailureItem.of(targetRemotePath, e));
+                    if (failFast) {
+                        if (e instanceof FtpException fe) {
+                            throw fe;
+                        }
+                        throw new FtpException(FtpResultCode.UPLOAD_FAILED,
+                                "批量上传在文件 [" + targetRemotePath + "] 处发生异常，触发快速熔断: " + e.getMessage(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    private void downloadDirectoryInternal(String rootRemoteDir, String currentRemoteDir, File baseLocalDir,
+                                           Predicate<FtpFileInfo> filter, boolean failFast,
+                                           BatchTransferResult result, int depth) {
+        if (depth > MAX_DIRECTORY_DEPTH) {
+            throw new FtpException(FtpResultCode.INVALID_PATH,
+                    "FTP 远程目录递归层级超过最大安全深度限制 (" + MAX_DIRECTORY_DEPTH + "层): " + currentRemoteDir);
+        }
+
+        List<FtpFileInfo> fileInfos = listFiles(currentRemoteDir);
+        if (fileInfos == null || fileInfos.isEmpty()) {
+            return;
+        }
+
+        for (FtpFileInfo info : fileInfos) {
+            if (info == null) {
+                continue;
+            }
+
+            String name = info.getName();
+            if (info.isDirectory()) {
+                if (isSystemOrHiddenFile(name)) {
+                    continue;
+                }
+                // 计算相对路径并创建本地对应子目录
+                String relPath = computeRelativePath(rootRemoteDir, info.getPath());
+                File subLocalDir = new File(baseLocalDir, relPath.replace('/', File.separatorChar));
+                if (!subLocalDir.exists()) {
+                    subLocalDir.mkdirs();
+                }
+                downloadDirectoryInternal(rootRemoteDir, info.getPath(), baseLocalDir, filter, failFast, result, depth + 1);
+            } else if (info.isFile()) {
+                result.setTotalFiles(result.getTotalFiles() + 1);
+                if (isSystemOrHiddenFile(name)) {
+                    result.setSkippedCount(result.getSkippedCount() + 1);
+                    continue;
+                }
+                if (filter != null && !filter.test(info)) {
+                    result.setSkippedCount(result.getSkippedCount() + 1);
+                    continue;
+                }
+
+                String relPath = computeRelativePath(rootRemoteDir, info.getPath());
+                File targetLocalFile = new File(baseLocalDir, relPath.replace('/', File.separatorChar));
+                try {
+                    boolean downloaded = download(info.getPath(), targetLocalFile);
+                    if (downloaded) {
+                        result.setSuccessCount(result.getSuccessCount() + 1);
+                        result.setTransferredBytes(result.getTransferredBytes() + targetLocalFile.length());
+                    } else {
+                        throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "下载文件返回未成功: " + info.getPath());
+                    }
+                } catch (Exception e) {
+                    log.warn("批量下载单文件失败: {} -> {}, 错误: {}", info.getPath(), targetLocalFile.getAbsolutePath(), e.getMessage());
+                    result.addFailure(TransferFailureItem.of(info.getPath(), e));
+                    if (failFast) {
+                        if (e instanceof FtpException fe) {
+                            throw fe;
+                        }
+                        throw new FtpException(FtpResultCode.DOWNLOAD_FAILED,
+                                "批量下载在文件 [" + info.getPath() + "] 处发生异常，触发快速熔断: " + e.getMessage(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    private String computeRelativePath(String baseDir, String fullPath) {
+        if (fullPath == null) {
+            return "";
+        }
+        if (baseDir == null || "/".equals(baseDir) || baseDir.isBlank()) {
+            return fullPath.startsWith("/") ? fullPath.substring(1) : fullPath;
+        }
+        String normalizedBase = baseDir.endsWith("/") ? baseDir.substring(0, baseDir.length() - 1) : baseDir;
+        if (fullPath.startsWith(normalizedBase)) {
+            String sub = fullPath.substring(normalizedBase.length());
+            return sub.startsWith("/") ? sub.substring(1) : sub;
+        }
+        return fullPath.startsWith("/") ? fullPath.substring(1) : fullPath;
+    }
+
+    /**
+     * 校验是否为操作系统隐性文件、临时文件或版本控制目录（环境宿主中立防卫）
+     *
+     * @param name 文件或目录名称
+     * @return 是隐性系统文件或垃圾元数据时返回 true
+     */
+    public static boolean isSystemOrHiddenFile(String name) {
+        if (name == null || name.isBlank()) {
+            return true;
+        }
+        String lower = name.toLowerCase();
+        return lower.equals("desktop.ini")
+                || lower.equals(".ds_store")
+                || lower.equals("thumbs.db")
+                || lower.equals(".git")
+                || lower.startsWith("._")
+                || lower.endsWith(".tmp");
     }
 
     // ==========================================

@@ -5,7 +5,9 @@ import io.github.atengk.boot.ftp.enums.FtpMode;
 import io.github.atengk.boot.ftp.exception.FtpException;
 import io.github.atengk.boot.ftp.exception.FtpResultCode;
 import io.github.atengk.boot.ftp.listener.FtpProgressListener;
+import io.github.atengk.boot.ftp.model.BatchTransferResult;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
+import io.github.atengk.boot.ftp.model.TransferFailureItem;
 import io.github.atengk.boot.ftp.pool.FtpClientPooledObjectFactory;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
 import org.apache.commons.net.ftp.FTPClient;
@@ -19,7 +21,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockftpserver.fake.FakeFtpServer;
 import org.mockftpserver.fake.UserAccount;
 import org.mockftpserver.fake.filesystem.DirectoryEntry;
+import org.mockftpserver.fake.filesystem.FileEntry;
 import org.mockftpserver.fake.filesystem.FileSystem;
+import org.mockftpserver.fake.filesystem.Permissions;
 import org.mockftpserver.fake.filesystem.UnixFakeFileSystem;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.util.unit.DataSize;
@@ -574,5 +578,146 @@ class FtpTemplateTest {
         assertThat(lastDownloadBytes.get()).isEqualTo((long) payload.length);
         assertThat(lastDownloadPercentage.get()).isEqualTo(100.0);
         assertThat(Files.readAllBytes(downloadedFile)).isEqualTo(payload);
+    }
+
+    @Test
+    @DisplayName("测试批量全目录递归镜像上传与下载 (uploadDirectory / downloadDirectory)")
+    void testUploadDirectoryAndDownloadDirectory(@TempDir Path tempDir) throws IOException {
+        Path srcDir = tempDir.resolve("src_sync");
+        Files.createDirectories(srcDir.resolve("sub/deep"));
+        Files.writeString(srcDir.resolve("root.txt"), "Root Content");
+        Files.writeString(srcDir.resolve("sub/sub.csv"), "col1,col2");
+        Files.writeString(srcDir.resolve("sub/deep/deep.json"), "{\"key\": \"val\"}");
+
+        // 1. 批量上传目录
+        BatchTransferResult uploadResult = ftpTemplate.uploadDirectory(srcDir.toFile(), "/sync_remote");
+        assertThat(uploadResult.isAllSuccess()).isTrue();
+        assertThat(uploadResult.hasFailure()).isFalse();
+        assertThat(uploadResult.getTotalFiles()).isEqualTo(3);
+        assertThat(uploadResult.getSuccessCount()).isEqualTo(3);
+        assertThat(uploadResult.getFailureCount()).isEqualTo(0);
+        assertThat(uploadResult.getSkippedCount()).isEqualTo(0);
+        assertThat(uploadResult.getTransferredBytes()).isPositive();
+        assertThat(uploadResult.getDuration()).isNotNull();
+        assertThat(uploadResult.getFailures()).isEmpty();
+
+        // 2. 批量下载目录
+        Path destDir = tempDir.resolve("dest_sync");
+        BatchTransferResult downloadResult = ftpTemplate.downloadDirectory("/sync_remote", destDir.toFile());
+        assertThat(downloadResult.isAllSuccess()).isTrue();
+        assertThat(downloadResult.hasFailure()).isFalse();
+        assertThat(downloadResult.getTotalFiles()).isEqualTo(3);
+        assertThat(downloadResult.getSuccessCount()).isEqualTo(3);
+        assertThat(downloadResult.getFailureCount()).isEqualTo(0);
+        assertThat(downloadResult.getFailures()).isEmpty();
+
+        // 3. 校验下载到本地的文件内容一致性
+        assertThat(Files.readString(destDir.resolve("root.txt"))).isEqualTo("Root Content");
+        assertThat(Files.readString(destDir.resolve("sub/sub.csv"))).isEqualTo("col1,col2");
+        assertThat(Files.readString(destDir.resolve("sub/deep/deep.json"))).isEqualTo("{\"key\": \"val\"}");
+    }
+
+    @Test
+    @DisplayName("测试批量上传时操作系统隐藏与临时文件自动过滤 (desktop.ini / .DS_Store / Thumbs.db / .git)")
+    void testUploadDirectoryHiddenAndSystemFilesFiltering(@TempDir Path tempDir) throws IOException {
+        Path hiddenDir = tempDir.resolve("hidden_dir");
+        Files.createDirectories(hiddenDir.resolve(".git"));
+        Files.writeString(hiddenDir.resolve("desktop.ini"), "desktop_ini_content");
+        Files.writeString(hiddenDir.resolve(".DS_Store"), "ds_store_content");
+        Files.writeString(hiddenDir.resolve("Thumbs.db"), "thumbs_db_content");
+        Files.writeString(hiddenDir.resolve("temp_file.tmp"), "temp_content");
+        Files.writeString(hiddenDir.resolve(".git/HEAD"), "ref: refs/heads/main");
+        Files.writeString(hiddenDir.resolve("legit.txt"), "Legit Content");
+
+        BatchTransferResult result = ftpTemplate.uploadDirectory(hiddenDir.toFile(), "/hidden_remote");
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getSuccessCount()).isEqualTo(1);
+        assertThat(result.getSkippedCount()).isGreaterThanOrEqualTo(4);
+
+        assertThat(ftpTemplate.exists("/hidden_remote/legit.txt")).isTrue();
+        assertThat(ftpTemplate.exists("/hidden_remote/desktop.ini")).isFalse();
+        assertThat(ftpTemplate.exists("/hidden_remote/.DS_Store")).isFalse();
+        assertThat(ftpTemplate.exists("/hidden_remote/Thumbs.db")).isFalse();
+        assertThat(ftpTemplate.exists("/hidden_remote/temp_file.tmp")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试批量上传自定义谓词过滤 (Predicate<File>)")
+    void testUploadDirectoryWithCustomFilter(@TempDir Path tempDir) throws IOException {
+        Path filterDir = tempDir.resolve("filter_dir");
+        Files.createDirectories(filterDir);
+        Files.writeString(filterDir.resolve("data1.csv"), "1,2,3");
+        Files.writeString(filterDir.resolve("data2.csv"), "4,5,6");
+        Files.writeString(filterDir.resolve("readme.txt"), "readme");
+
+        BatchTransferResult result = ftpTemplate.uploadDirectory(
+                filterDir.toFile(), "/filter_remote", file -> file.getName().endsWith(".csv"), false);
+
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getTotalFiles()).isEqualTo(3);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getSkippedCount()).isEqualTo(1);
+        assertThat(ftpTemplate.exists("/filter_remote/data1.csv")).isTrue();
+        assertThat(ftpTemplate.exists("/filter_remote/data2.csv")).isTrue();
+        assertThat(ftpTemplate.exists("/filter_remote/readme.txt")).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 Fail-Safe 容错批处理与 Fail-Fast 快速熔断双模机制")
+    void testFailSafeAndFailFastBatchUpload(@TempDir Path tempDir) throws IOException {
+        Path failDir = tempDir.resolve("fail_test_dir");
+        Files.createDirectories(failDir.resolve("good"));
+        Files.createDirectories(failDir.resolve("readonly"));
+        Files.writeString(failDir.resolve("good/file1.txt"), "good1");
+        Files.writeString(failDir.resolve("good/file2.txt"), "good2");
+        Files.writeString(failDir.resolve("readonly/file3.txt"), "bad");
+
+        // 在 FakeFtpServer 中将目标只读目录权限设为 NONE（拒绝写入）
+        DirectoryEntry readonlyDir = new DirectoryEntry("/fail_remote/readonly");
+        readonlyDir.setPermissions(Permissions.NONE);
+        fakeFtpServer.getFileSystem().add(readonlyDir);
+
+        // 1. Fail-Safe 模式 (failFast = false): 发生单文件失败不中断批次，记录明细并返回
+        BatchTransferResult safeResult = ftpTemplate.uploadDirectory(failDir.toFile(), "/fail_remote", null, false);
+        assertThat(safeResult.isAllSuccess()).isFalse();
+        assertThat(safeResult.hasFailure()).isTrue();
+        assertThat(safeResult.getSuccessCount()).isEqualTo(2);
+        assertThat(safeResult.getFailureCount()).isEqualTo(1);
+        assertThat(safeResult.getFailures()).hasSize(1);
+        TransferFailureItem failure = safeResult.getFailures().get(0);
+        assertThat(failure.getPath()).contains("file3.txt");
+        assertThat(failure.getErrorMessage()).isNotBlank();
+        assertThat(failure.getExceptionType()).isNotBlank();
+        assertThat(failure.getFailedAt()).isNotNull();
+
+        // 2. Fail-Fast 模式 (failFast = true): 遇到错误立即快速熔断抛出异常
+        assertThatThrownBy(() -> ftpTemplate.uploadDirectory(failDir.toFile(), "/fail_remote", null, true))
+                .isInstanceOf(FtpException.class);
+    }
+
+    @Test
+    @DisplayName("测试目录同步边界异常校验")
+    void testDirectorySyncValidationAndCornerCases(@TempDir Path tempDir) throws IOException {
+        // 1. 本地目录不存在校验
+        File nonExistent = new File(tempDir.toFile(), "not_exists_path");
+        assertThatThrownBy(() -> ftpTemplate.uploadDirectory(nonExistent, "/remote"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 2. 本地目标不是目录校验
+        Path singleFile = tempDir.resolve("file.txt");
+        Files.writeString(singleFile, "hello");
+        assertThatThrownBy(() -> ftpTemplate.uploadDirectory(singleFile.toFile(), "/remote"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 3. 远端目录不存在下载校验
+        assertThatThrownBy(() -> ftpTemplate.downloadDirectory("/not_exist_remote_dir", tempDir.toFile()))
+                .isInstanceOf(FtpException.class)
+                .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.FILE_NOT_FOUND.getCode()));
+
+        // 4. 远端路径为单文件非目录下载校验
+        ftpTemplate.writeString("/test_single.txt", "single_file");
+        assertThatThrownBy(() -> ftpTemplate.downloadDirectory("/test_single.txt", tempDir.toFile()))
+                .isInstanceOf(FtpException.class)
+                .satisfies(e -> assertThat(((FtpException) e).getCode()).isEqualTo(FtpResultCode.INVALID_PATH.getCode()));
     }
 }
