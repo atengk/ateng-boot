@@ -4,6 +4,7 @@ import io.github.atengk.boot.ftp.enums.FtpFileType;
 import io.github.atengk.boot.ftp.enums.FtpMode;
 import io.github.atengk.boot.ftp.exception.FtpException;
 import io.github.atengk.boot.ftp.exception.FtpResultCode;
+import io.github.atengk.boot.ftp.listener.FtpProgressListener;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
 import io.github.atengk.boot.ftp.pool.FtpClientPooledObjectFactory;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
@@ -534,5 +535,44 @@ class FtpTemplateTest {
         // 4. 源路径与目标路径相同异常
         assertThatThrownBy(() -> ftpTemplate.copy(sourcePath, sourcePath))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试大文件带 FtpProgressListener 进度监听的上传与下载对称操作")
+    void testUploadAndDownloadWithProgressListener(@TempDir Path tempDir) throws IOException {
+        Path localFile = tempDir.resolve("large_payload.bin");
+        byte[] payload = new byte[128 * 1024]; // 128KB payload
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i % 127);
+        }
+        Files.write(localFile, payload);
+
+        // 1. 测试文件上传并挂载进度监听器
+        AtomicReference<Double> lastUploadPercentage = new AtomicReference<>(0.0);
+        AtomicReference<Long> lastUploadBytes = new AtomicReference<>(0L);
+        boolean uploaded = ftpTemplate.upload("/test/large_payload.bin", localFile.toFile(),
+                (bytesTransferred, totalBytes, percentage) -> {
+                    lastUploadBytes.set(bytesTransferred);
+                    lastUploadPercentage.set(percentage);
+                });
+
+        assertThat(uploaded).isTrue();
+        assertThat(lastUploadBytes.get()).isEqualTo((long) payload.length);
+        assertThat(lastUploadPercentage.get()).isEqualTo(100.0);
+
+        // 2. 测试文件下载并挂载进度监听器
+        Path downloadedFile = tempDir.resolve("downloaded_payload.bin");
+        AtomicReference<Double> lastDownloadPercentage = new AtomicReference<>(0.0);
+        AtomicReference<Long> lastDownloadBytes = new AtomicReference<>(0L);
+        boolean downloaded = ftpTemplate.download("/test/large_payload.bin", downloadedFile.toFile(),
+                (bytesTransferred, totalBytes, percentage) -> {
+                    lastDownloadBytes.set(bytesTransferred);
+                    lastDownloadPercentage.set(percentage);
+                });
+
+        assertThat(downloaded).isTrue();
+        assertThat(lastDownloadBytes.get()).isEqualTo((long) payload.length);
+        assertThat(lastDownloadPercentage.get()).isEqualTo(100.0);
+        assertThat(Files.readAllBytes(downloadedFile)).isEqualTo(payload);
     }
 }

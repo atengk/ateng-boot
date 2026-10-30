@@ -3,6 +3,10 @@ package io.github.atengk.boot.ftp.template;
 import io.github.atengk.boot.ftp.context.FtpContextHolder;
 import io.github.atengk.boot.ftp.exception.FtpException;
 import io.github.atengk.boot.ftp.exception.FtpResultCode;
+import io.github.atengk.boot.ftp.listener.FtpProgressListener;
+import io.github.atengk.boot.ftp.listener.FtpProgressThrottler;
+import io.github.atengk.boot.ftp.listener.ProgressInputStream;
+import io.github.atengk.boot.ftp.listener.ProgressOutputStream;
 import io.github.atengk.boot.ftp.model.FtpFileInfo;
 import io.github.atengk.boot.ftp.pool.FtpClientCallback;
 import io.github.atengk.boot.ftp.properties.FtpProperties;
@@ -417,6 +421,78 @@ public class FtpTemplate {
     }
 
     /**
+     * 上传输入流到远程路径并挂载流式进度监听器
+     *
+     * @param remotePath       远程文件目标路径
+     * @param in               待上传的数据输入流
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 上传成功返回 true
+     */
+    public boolean upload(String remotePath, InputStream in, FtpProgressListener progressListener) {
+        return upload(remotePath, in, -1L, progressListener);
+    }
+
+    /**
+     * 上传输入流到远程路径并挂载流式进度监听器（显式指定总大小）
+     *
+     * @param remotePath       远程文件目标路径
+     * @param in               待上传的数据输入流
+     * @param totalBytes       数据流已知总大小（未知则传 -1）
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 上传成功返回 true
+     */
+    public boolean upload(String remotePath, InputStream in, long totalBytes, FtpProgressListener progressListener) {
+        if (progressListener == null) {
+            return upload(remotePath, in);
+        }
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(in, "InputStream must not be null");
+
+        long effectiveTotal = totalBytes;
+        if (effectiveTotal <= 0) {
+            try {
+                int avail = in.available();
+                if (avail > 0) {
+                    effectiveTotal = avail;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        FtpProgressThrottler throttler = new FtpProgressThrottler(progressListener, effectiveTotal);
+        ProgressInputStream pin = new ProgressInputStream(in, throttler);
+        boolean success = upload(remotePath, (InputStream) pin);
+        if (success) {
+            throttler.finish();
+        }
+        return success;
+    }
+
+    /**
+     * 上传本地文件到远程路径并挂载流式进度监听器
+     *
+     * @param remotePath       远程文件目标路径
+     * @param localFile        本地待上传文件
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 上传成功返回 true
+     */
+    public boolean upload(String remotePath, File localFile, FtpProgressListener progressListener) {
+        if (progressListener == null) {
+            return upload(remotePath, localFile);
+        }
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(localFile, "localFile must not be null");
+        if (!localFile.exists() || !localFile.isFile()) {
+            throw new FtpException(FtpResultCode.INVALID_PATH, "本地待上传文件不存在或不是标准文件: " + localFile.getAbsolutePath());
+        }
+        try (InputStream in = new BufferedInputStream(new FileInputStream(localFile))) {
+            return upload(remotePath, in, localFile.length(), progressListener);
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.UPLOAD_FAILED, "读取本地待上传文件失败: " + localFile.getAbsolutePath(), e);
+        }
+    }
+
+    /**
      * 便捷写入纯文本内容（默认使用 UTF-8 字符集）
      *
      * @param remotePath 远程文件目标路径
@@ -571,6 +647,64 @@ public class FtpTemplate {
         }
         try (OutputStream out = new BufferedOutputStream(new FileOutputStream(localFile))) {
             return download(remotePath, out);
+        } catch (IOException e) {
+            throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "写入本地下载文件失败: " + localFile.getAbsolutePath(), e);
+        }
+    }
+
+    /**
+     * 下载远程文件到指定输出流并挂载流式进度监听器
+     *
+     * @param remotePath       远程文件路径
+     * @param out              目标输出流
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 下载成功返回 true
+     */
+    public boolean download(String remotePath, OutputStream out, FtpProgressListener progressListener) {
+        if (progressListener == null) {
+            return download(remotePath, out);
+        }
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(out, "OutputStream must not be null");
+
+        long totalBytes = -1L;
+        try {
+            FtpFileInfo info = getFileInfo(remotePath);
+            if (info != null && info.getSize() > 0) {
+                totalBytes = info.getSize();
+            }
+        } catch (Exception ignored) {
+        }
+
+        FtpProgressThrottler throttler = new FtpProgressThrottler(progressListener, totalBytes);
+        ProgressOutputStream pout = new ProgressOutputStream(out, throttler);
+        boolean success = download(remotePath, (OutputStream) pout);
+        if (success) {
+            throttler.finish();
+        }
+        return success;
+    }
+
+    /**
+     * 下载远程文件并保存到本地磁盘文件并挂载流式进度监听器
+     *
+     * @param remotePath       远程文件路径
+     * @param localFile        本地目标文件
+     * @param progressListener 传输进度监听回调（可为 null）
+     * @return 下载成功返回 true
+     */
+    public boolean download(String remotePath, File localFile, FtpProgressListener progressListener) {
+        if (progressListener == null) {
+            return download(remotePath, localFile);
+        }
+        Assert.hasText(remotePath, "remotePath must not be blank");
+        Assert.notNull(localFile, "localFile must not be null");
+        File parent = localFile.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        try (OutputStream out = new BufferedOutputStream(new FileOutputStream(localFile))) {
+            return download(remotePath, out, progressListener);
         } catch (IOException e) {
             throw new FtpException(FtpResultCode.DOWNLOAD_FAILED, "写入本地下载文件失败: " + localFile.getAbsolutePath(), e);
         }
