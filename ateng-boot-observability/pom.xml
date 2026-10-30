@@ -35,6 +35,12 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
+        <!-- Spring Boot AOP Starter (用于 @ObservedMetric 方法度量切面拦截) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
         <!-- 可选依赖：Spring MVC (用于端点安全过滤器与 HTTP 访问，纯后台 Worker 场景免配) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

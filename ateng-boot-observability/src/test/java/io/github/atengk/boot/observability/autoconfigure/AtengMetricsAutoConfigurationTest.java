@@ -1,6 +1,8 @@
 package io.github.atengk.boot.observability.autoconfigure;
 
+import io.github.atengk.boot.observability.aspect.ObservedMetricAspect;
 import io.github.atengk.boot.observability.metrics.AtengThreadPoolMeterBinder;
+import io.github.atengk.boot.observability.metrics.MetricsTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
@@ -37,42 +39,81 @@ class AtengMetricsAutoConfigurationTest {
     }
 
     @Configuration
-    static class CustomBinderConfig {
+    static class CustomConfig {
         @Bean
         public AtengThreadPoolMeterBinder customThreadPoolMeterBinder() {
             return new AtengThreadPoolMeterBinder();
         }
+
+        @Bean
+        public MetricsTemplate customMetricsTemplate(MeterRegistry meterRegistry) {
+            return new MetricsTemplate(meterRegistry);
+        }
     }
 
     @Test
-    @DisplayName("默认情况下自动装配 AtengThreadPoolMeterBinder Bean")
+    @DisplayName("默认情况下自动装配 MetricsTemplate、ObservedMetricAspect 与 AtengThreadPoolMeterBinder Bean")
     void testDefaultAutoConfiguration() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(AtengMetricsAutoConfiguration.class);
+            assertThat(context).hasSingleBean(MetricsTemplate.class);
+            assertThat(context).hasSingleBean(ObservedMetricAspect.class);
             assertThat(context).hasSingleBean(AtengThreadPoolMeterBinder.class);
         });
     }
 
     @Test
-    @DisplayName("当 ateng.boot.observability.metrics.thread-pool.enabled=false 时跳过装配")
-    void testMetricsDisabled() {
+    @DisplayName("当 ateng.boot.observability.metrics.thread-pool.enabled=false 时仅跳过线程池绑定器装配")
+    void testThreadPoolMetricsDisabled() {
         contextRunner
                 .withPropertyValues("ateng.boot.observability.metrics.thread-pool.enabled=false")
                 .run(context -> {
-                    assertThat(context).doesNotHaveBean(AtengMetricsAutoConfiguration.class);
+                    assertThat(context).hasSingleBean(AtengMetricsAutoConfiguration.class);
+                    assertThat(context).hasSingleBean(MetricsTemplate.class);
+                    assertThat(context).hasSingleBean(ObservedMetricAspect.class);
                     assertThat(context).doesNotHaveBean(AtengThreadPoolMeterBinder.class);
                 });
     }
 
     @Test
-    @DisplayName("当容器已存在 AtengThreadPoolMeterBinder 时遵循 ConditionalOnMissingBean")
+    @DisplayName("当 ateng.boot.observability.metrics.observed.enabled=false 时仅跳过切面装配")
+    void testObservedAspectDisabled() {
+        contextRunner
+                .withPropertyValues("ateng.boot.observability.metrics.observed.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AtengMetricsAutoConfiguration.class);
+                    assertThat(context).hasSingleBean(MetricsTemplate.class);
+                    assertThat(context).doesNotHaveBean(ObservedMetricAspect.class);
+                    assertThat(context).hasSingleBean(AtengThreadPoolMeterBinder.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当 ateng.boot.observability.enabled=false 时全局跳过度量体系自动装配")
+    void testGlobalDisabled() {
+        contextRunner
+                .withPropertyValues("ateng.boot.observability.enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(AtengMetricsAutoConfiguration.class);
+                    assertThat(context).doesNotHaveBean(MetricsTemplate.class);
+                    assertThat(context).doesNotHaveBean(ObservedMetricAspect.class);
+                    assertThat(context).doesNotHaveBean(AtengThreadPoolMeterBinder.class);
+                });
+    }
+
+    @Test
+    @DisplayName("当容器已存在用户自定义 Bean 时遵循 ConditionalOnMissingBean")
     void testCustomBeanOverride() {
         contextRunner
-                .withUserConfiguration(CustomBinderConfig.class)
+                .withUserConfiguration(CustomConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(AtengThreadPoolMeterBinder.class);
                     assertThat(context.getBean(AtengThreadPoolMeterBinder.class))
                             .isSameAs(context.getBean("customThreadPoolMeterBinder"));
+
+                    assertThat(context).hasSingleBean(MetricsTemplate.class);
+                    assertThat(context.getBean(MetricsTemplate.class))
+                            .isSameAs(context.getBean("customMetricsTemplate"));
                 });
     }
 }

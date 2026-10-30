@@ -66,6 +66,12 @@ public class ObservabilityProperties {
          */
         @NestedConfigurationProperty
         private ThreadPoolProperties threadPool = new ThreadPoolProperties();
+
+        /**
+         * 声明式方法度量切面配置
+         */
+        @NestedConfigurationProperty
+        private ObservedProperties observed = new ObservedProperties();
     }
 
     /**
@@ -90,6 +96,19 @@ public class ObservabilityProperties {
 
         /**
          * 是否自动扫描并绑定 Spring 容器内所有受管线程池度量指标（默认开启）
+         */
+        private boolean enabled = true;
+    }
+
+    /**
+     * 声明式方法度量切面配置
+     */
+    @Getter
+    @Setter
+    public static class ObservedProperties {
+
+        /**
+         * 是否启用 @ObservedMetric 切面度量采集（默认开启）
          */
         private boolean enabled = true;
     }
