@@ -23,6 +23,7 @@ import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
+import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.model.MailSendResultItem;
 import io.github.atengk.boot.mail.provider.MailAccountProvider;
@@ -1847,5 +1848,169 @@ class MailTemplateGreenMailTest {
 
         assertTrue(session.testConnection());
         assertDoesNotThrow(session::testConnectionOrThrow);
+    }
+
+    // ==================== 合规密送底单 (archive-bcc) 与强类型邮件优先级标头测试 ====================
+
+    @Test
+    @DisplayName("测试全局配置 archive-bcc 自动为外发邮件追加合规密送")
+    void testArchiveBccAppendedAutomatically() throws Exception {
+        mailProperties.setArchiveBcc("compliance@atengk.com");
+
+        MailMessage msg = new MailMessage()
+                .to("client-user@example.com")
+                .subject("合规归档密送测试")
+                .text("正文内容...");
+
+        MailSendResult result = mailTemplate.send(msg);
+
+        assertTrue(result.isSuccess());
+        // 发送给 1 个 To + 1 个 Bcc，共投递 2 份副本
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(2, messages.length);
+        assertEquals("合规归档密送测试", messages[0].getSubject());
+
+        assertTrue(msg.getBcc().contains("compliance@atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试 archive-bcc 与业务显式 Bcc 大小写无关去重合并")
+    void testArchiveBccDeduplicationCaseInsensitive() throws Exception {
+        // 全局配置大写的归档邮箱以及额外的审计邮箱
+        mailProperties.setArchiveBcc("COMPLIANCE@atengk.com, audit@atengk.com");
+
+        MailMessage msg = new MailMessage()
+                .to("target@example.com")
+                .bcc("compliance@atengk.com", "other-bcc@example.com")
+                .subject("去重合并密送测试")
+                .text("验证重复与大小写不会产生冗余收件人");
+
+        MailSendResult result = mailTemplate.send(msg);
+
+        assertTrue(result.isSuccess());
+        // 1 To + 3 去重后的 Bcc (compliance@atengk.com, other-bcc@example.com, audit@atengk.com) = 4 份副本
+        assertTrue(greenMail.waitForIncomingEmail(5000, 4));
+
+        assertEquals(3, msg.getBcc().size());
+        assertTrue(msg.getBcc().contains("compliance@atengk.com"));
+        assertTrue(msg.getBcc().contains("other-bcc@example.com"));
+        assertTrue(msg.getBcc().contains("audit@atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试账号级别专职 archive-bcc 覆盖全局默认配置")
+    void testAccountSpecificArchiveBccOverride() throws Exception {
+        mailProperties.setArchiveBcc("global-archive@atengk.com");
+
+        // 注册独立配有 archiveBcc 的账号
+        int smtpPort = greenMail.getSmtp().getPort();
+        JavaMailSenderImpl customSender = new JavaMailSenderImpl();
+        customSender.setHost("127.0.0.1");
+        customSender.setPort(smtpPort);
+        customSender.setUsername("test@atengk.com");
+        customSender.setPassword("password");
+
+        MailAccount customAccount = MailAccount.builder()
+                .name("legal-channel")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("password")
+                .ssl(false)
+                .archiveBcc("legal-archive@atengk.com")
+                .sender(customSender)
+                .build();
+        accountRegistry.register(customAccount);
+
+        MailMessage msg = new MailMessage()
+                .account("legal-channel")
+                .to("external-partner@example.com")
+                .subject("法务通道专用归档")
+                .text("归档至 legal-archive");
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 2));
+
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertEquals(2, messages.length);
+
+        assertTrue(msg.getBcc().contains("legal-archive@atengk.com"));
+        assertFalse(msg.getBcc().contains("global-archive@atengk.com"));
+    }
+
+    @Test
+    @DisplayName("测试 MailPriority.HIGH 高优先级邮件自动注入 X-Priority 与 Importance 标头")
+    void testMailPriorityHighHeaders() throws Exception {
+        MailMessage msg = new MailMessage()
+                .to("urgent-user@example.com")
+                .subject("紧急线上故障告警")
+                .priority(MailPriority.HIGH)
+                .text("请立即处理 P0 故障！");
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        assertEquals("1", received.getHeader("X-Priority", null));
+        assertEquals("High", received.getHeader("Importance", null));
+        assertEquals("High", received.getHeader("X-MSMail-Priority", null));
+    }
+
+    @Test
+    @DisplayName("测试 MailPriority.LOW 低优先级邮件自动注入对应标头")
+    void testMailPriorityLowHeaders() throws Exception {
+        MailMessage msg = new MailMessage()
+                .to("digest-user@example.com")
+                .subject("每周技术周刊")
+                .priority(MailPriority.LOW)
+                .text("每周五轻量推送周报");
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        assertEquals("5", received.getHeader("X-Priority", null));
+        assertEquals("Low", received.getHeader("Importance", null));
+        assertEquals("Low", received.getHeader("X-MSMail-Priority", null));
+    }
+
+    @Test
+    @DisplayName("测试 readReceiptTo 显式指定阅读回执目标邮箱 (Disposition-Notification-To)")
+    void testReadReceiptToHeader() throws Exception {
+        MailMessage msg = new MailMessage()
+                .to("contract-signer@example.com")
+                .subject("重要合同盖章通知")
+                .readReceiptTo("receipt-inbox@atengk.com")
+                .text("请查收并确认阅读合同附件");
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        assertEquals("receipt-inbox@atengk.com", received.getHeader("Disposition-Notification-To", null));
+    }
+
+    @Test
+    @DisplayName("测试 requestReadReceipt(true) 未显式指定回执邮箱时自动使用有效发件人地址")
+    void testRequestReadReceiptFallbackToFrom() throws Exception {
+        MailMessage msg = new MailMessage()
+                .to("employee@example.com")
+                .subject("员工考勤确认函")
+                .requestReadReceipt(true)
+                .text("请阅读后点击确认回执");
+
+        MailSendResult result = mailTemplate.send(msg);
+        assertTrue(result.isSuccess());
+        assertTrue(greenMail.waitForIncomingEmail(5000, 1));
+
+        MimeMessage received = greenMail.getReceivedMessages()[0];
+        // 有效发件人地址为 defaultFrom: test@atengk.com
+        assertEquals("test@atengk.com", received.getHeader("Disposition-Notification-To", null));
     }
 }

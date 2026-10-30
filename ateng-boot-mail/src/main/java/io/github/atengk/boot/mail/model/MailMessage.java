@@ -114,6 +114,21 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     private Locale locale;
 
+    /**
+     * 强类型邮件优先级（X-Priority 与 Importance）
+     */
+    private MailPriority priority;
+
+    /**
+     * 阅读回执目标收件地址 (RFC 3798 Disposition-Notification-To)
+     */
+    private String readReceiptTo;
+
+    /**
+     * 是否请求阅读回执（若开启且未显式指定 readReceiptTo，则发信时默认回执至有效发件人）
+     */
+    private boolean requestReadReceipt;
+
     // ==================== 链式 Fluent / DSL 构造辅助方法 ====================
 
     /**
@@ -135,6 +150,40 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage locale(Locale locale) {
         this.locale = locale;
+        return this;
+    }
+
+    /**
+     * 设置强类型邮件优先级 (X-Priority: 1/3/5, Importance: High/Normal/Low)
+     *
+     * @param priority 邮件优先级枚举
+     * @return 当前消息构建对象
+     */
+    public MailMessage priority(MailPriority priority) {
+        this.priority = priority;
+        return this;
+    }
+
+    /**
+     * 设置阅读回执目标收件地址 (RFC 3798 Disposition-Notification-To)
+     *
+     * @param readReceiptTo 阅读回执目标邮箱
+     * @return 当前消息构建对象
+     */
+    public MailMessage readReceiptTo(String readReceiptTo) {
+        this.readReceiptTo = readReceiptTo;
+        this.requestReadReceipt = (readReceiptTo != null && !readReceiptTo.isBlank());
+        return this;
+    }
+
+    /**
+     * 是否请求已读/阅读回执（若开启且未显式指定 readReceiptTo，则发信时默认回执至发件人）
+     *
+     * @param requestReadReceipt 是否请求阅读回执
+     * @return 当前消息构建对象
+     */
+    public MailMessage requestReadReceipt(boolean requestReadReceipt) {
+        this.requestReadReceipt = requestReadReceipt;
         return this;
     }
 

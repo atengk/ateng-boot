@@ -70,6 +70,11 @@ public class MailAccountProperties {
     private String defaultFromName;
 
     /**
+     * 当前账号专职合规审计归档密送邮箱（若未配置，则回退继承全局 archive-bcc）
+     */
+    private String archiveBcc;
+
+    /**
      * 额外的底层 JavaMail 专有属性键值对
      */
     private Map<String, String> properties = new LinkedHashMap<>();

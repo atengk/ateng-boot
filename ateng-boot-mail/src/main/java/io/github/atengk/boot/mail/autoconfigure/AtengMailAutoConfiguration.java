@@ -90,6 +90,7 @@ public class AtengMailAutoConfiguration {
             props.setStarttls(properties.isStarttls());
             props.setDefaultFrom(properties.getDefaultFrom());
             props.setDefaultFromName(properties.getDefaultFromName());
+            props.setArchiveBcc(properties.getArchiveBcc());
             props.setProperties(properties.getProperties());
             registry.register(createMailAccount(properties.getDefaultAccount(), props, properties));
         } else if (StringUtils.hasText(env.getProperty("spring.mail.host"))) {
@@ -233,6 +234,10 @@ public class AtengMailAutoConfiguration {
     }
 
     private MailAccount createMailAccount(String name, MailAccountProperties accountProps, MailProperties globalProps) {
+        String archiveBcc = (accountProps != null && StringUtils.hasText(accountProps.getArchiveBcc()))
+                ? accountProps.getArchiveBcc()
+                : (globalProps != null ? globalProps.getArchiveBcc() : null);
+
         MailAccount account = MailAccount.builder()
                 .name(name)
                 .host(accountProps.getHost())
@@ -244,6 +249,7 @@ public class AtengMailAutoConfiguration {
                 .starttls(accountProps.isStarttls())
                 .defaultFrom(accountProps.getDefaultFrom())
                 .defaultFromName(accountProps.getDefaultFromName())
+                .archiveBcc(archiveBcc)
                 .properties(accountProps.getProperties())
                 .build();
 

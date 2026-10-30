@@ -181,6 +181,11 @@ public class MailProperties {
     private MailBatchProperties batch = new MailBatchProperties();
 
     /**
+     * 全局合规审计归档密送邮箱（若配置，外发邮件前自动将此地址追加至 Bcc 密送列表，支持逗号或分号分隔多个邮箱）
+     */
+    private String archiveBcc;
+
+    /**
      * 邮件测试安全沙箱配置
      */
     @NestedConfigurationProperty

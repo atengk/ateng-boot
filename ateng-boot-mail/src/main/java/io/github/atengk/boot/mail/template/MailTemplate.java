@@ -63,6 +63,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
@@ -270,6 +272,9 @@ public class MailTemplate implements DisposableBean {
                 : "";
 
         try {
+            // 0. 合规审计归档密送安全追加
+            applyArchiveBcc(account, message);
+
             // 容量防爆安全校验
             enforceSizeLimits(message);
 
@@ -392,6 +397,21 @@ public class MailTemplate implements DisposableBean {
                         helper.getMimeMessage().setHeader(header.getKey(), header.getValue());
                     }
                 }
+            }
+
+            // 4.1 强类型邮件优先级标头注入
+            if (message.getPriority() != null) {
+                helper.getMimeMessage().setHeader("X-Priority", message.getPriority().getXPriority());
+                helper.getMimeMessage().setHeader("Importance", message.getPriority().getImportance());
+                helper.getMimeMessage().setHeader("X-MSMail-Priority", message.getPriority().getImportance());
+            }
+
+            // 4.2 阅读回执标头注入 (RFC 3798)
+            String targetReceiptTo = (message.getReadReceiptTo() != null && !message.getReadReceiptTo().isBlank())
+                    ? message.getReadReceiptTo().trim()
+                    : (message.isRequestReadReceipt() ? fromAddress : null);
+            if (targetReceiptTo != null && !targetReceiptTo.isBlank()) {
+                helper.getMimeMessage().setHeader("Disposition-Notification-To", targetReceiptTo);
             }
 
             // 5. 正文内容装配
@@ -1463,6 +1483,47 @@ public class MailTemplate implements DisposableBean {
      *
      * @param message 待发送邮件消息
      */
+    /**
+     * 合规审计归档密送安全追加（支持大小写无关去重合并）
+     *
+     * @param account 目标发信账号
+     * @param message 待发信消息模型
+     */
+    private void applyArchiveBcc(MailAccount account, MailMessage message) {
+        String archiveBcc = (account != null && account.getArchiveBcc() != null && !account.getArchiveBcc().isBlank())
+                ? account.getArchiveBcc()
+                : (properties != null ? properties.getArchiveBcc() : null);
+
+        if (archiveBcc == null || archiveBcc.isBlank()) {
+            return;
+        }
+
+        String[] addresses = archiveBcc.split("[,;]");
+        if (addresses.length == 0) {
+            return;
+        }
+
+        if (message.getBcc() == null) {
+            message.setBcc(new ArrayList<>());
+        }
+
+        Set<String> existing = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        existing.addAll(message.getBcc());
+
+        for (String address : addresses) {
+            if (address == null) {
+                continue;
+            }
+            String trimmed = address.trim();
+            if (!trimmed.isBlank() && !existing.contains(trimmed)) {
+                message.getBcc().add(trimmed);
+                existing.add(trimmed);
+                log.debug("Appended compliance archive-bcc: [{}] to mail: [{}]",
+                        DesensitizeUtil.email(trimmed), message.getSubject());
+            }
+        }
+    }
+
     private void enforceSizeLimits(MailMessage message) {
         long maxAttachmentBytes = (properties.getMaxAttachmentSize() != null)
                 ? properties.getMaxAttachmentSize().toBytes()

@@ -75,6 +75,11 @@ public class MailAccount {
     private String defaultFromName;
 
     /**
+     * 合规审计归档密送邮箱（支持逗号或分号分隔多个邮箱）
+     */
+    private String archiveBcc;
+
+    /**
      * 额外的专有属性
      */
     @Builder.Default
