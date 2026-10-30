@@ -1,5 +1,6 @@
 package io.github.atengk.boot.openapi.autoconfigure;
 
+import io.github.atengk.boot.openapi.converter.OpenApiModelConverter;
 import io.github.atengk.boot.openapi.customizer.GlobalHeaderCustomizer;
 import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
@@ -194,5 +195,18 @@ public class OpenApiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public StandardApiResponseCustomizer standardApiResponseCustomizer(OpenApiProperties properties) {
         return new StandardApiResponseCustomizer(properties);
+    }
+
+    /**
+     * 注册契约模型转换器 (ModelConverter)
+     * <p>自动对齐 IBaseEnum 强类型 Schema/字典、ValidList 数组契约与 @FieldSensitive 掩码警示</p>
+     *
+     * @return 契约模型转换器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public OpenApiModelConverter openApiModelConverter() {
+        return new OpenApiModelConverter();
     }
 }
