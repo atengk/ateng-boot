@@ -1,8 +1,10 @@
 package io.github.atengk.boot.sample.openapi.controller.admin;
 
 import io.github.atengk.boot.core.model.Result;
+import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.sample.openapi.model.AdminUserCreateRequest;
 import io.github.atengk.boot.sample.openapi.model.AdminUserVO;
+import io.github.atengk.boot.sample.openapi.model.UserStatusEnum;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -42,10 +44,23 @@ public class AdminUserController {
                 request.getUsername(),
                 request.getRealName(),
                 request.getEmail(),
-                1,
+                "13800138000",
+                UserStatusEnum.ENABLE,
                 LocalDateTime.now()
         );
         return Result.success(user);
+    }
+
+    /**
+     * 批量创建系统用户（演示 ValidList 原生 Array 契约）
+     *
+     * @param requestList 批量创建参数列表
+     * @return 创建条数
+     */
+    @Operation(summary = "批量创建系统用户", description = "批量校验入参并初始化多个系统用户，支持 ValidList 原生 JSON 数组契约")
+    @PostMapping("/batch")
+    public Result<Integer> batchCreateUsers(@Valid @RequestBody ValidList<AdminUserCreateRequest> requestList) {
+        return Result.success(requestList != null ? requestList.size() : 0);
     }
 
     /**
@@ -62,7 +77,8 @@ public class AdminUserController {
                 "admin_dev",
                 "系统管理员",
                 "admin@example.com",
-                1,
+                "13800138000",
+                UserStatusEnum.ENABLE,
                 LocalDateTime.now()
         );
         return Result.success(user);
@@ -77,8 +93,8 @@ public class AdminUserController {
     @GetMapping
     public Result<List<AdminUserVO>> listUsers() {
         List<AdminUserVO> list = List.of(
-                new AdminUserVO(10001L, "admin_dev", "系统管理员", "admin@example.com", 1, LocalDateTime.now()),
-                new AdminUserVO(10002L, "operator", "普通运营人员", "operator@example.com", 1, LocalDateTime.now())
+                new AdminUserVO(10001L, "admin_dev", "系统管理员", "admin@example.com", "13800138000", UserStatusEnum.ENABLE, LocalDateTime.now()),
+                new AdminUserVO(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000", UserStatusEnum.ENABLE, LocalDateTime.now())
         );
         return Result.success(list);
     }

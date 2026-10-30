@@ -34,11 +34,35 @@ ateng:
       headers:
         trace-id: true
         tenant-id: true
+        custom:
+          - name: "X-App-Version"
+            description: "客户端应用版本号"
+            required: false
+            example: "1.2.0"
+      security-schemes:
+        - name: "bearerAuth"
+          type: "http"
+          scheme: "bearer"
+          bearer-format: "JWT"
+          description: "通用 JWT 认证方案"
+      export:
+        enabled: true
       guard:
         mode: NONE
         basic:
           username: "admin"
           password: "admin123"
+        token:
+          secret: "sample-doc-token"
+          header-name: "X-Doc-Token"
+          allow-query-param: true
+          query-param-name: "doc-token"
+        ip-whitelist:
+          enabled: false
+          trusted-header: "X-Forwarded-For"
+          cidrs:
+            - "127.0.0.1"
+            - "10.0.0.0/8"
       show-result-codes: true
       standard-responses: true
       redirect-docs: true

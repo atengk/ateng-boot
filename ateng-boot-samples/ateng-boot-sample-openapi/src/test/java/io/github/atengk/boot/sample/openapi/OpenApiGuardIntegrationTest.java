@@ -17,7 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * OpenAPI 生产安全访问守卫集成测试
+ * OpenAPI 生产安全访问守卫端到端集成测试
  *
  * @author Ateng
  * @since 2026-10-22
@@ -56,6 +56,13 @@ class OpenApiGuardIntegrationTest {
         @DisplayName("测试禁用时重定向路由 /docs 响应 404")
         void testDocsRedirectNotFound() throws Exception {
             mockMvc.perform(get("/docs"))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        @DisplayName("测试禁用时离线导出端点 /docs/export/json 响应 404")
+        void testExportEndpointNotFound() throws Exception {
+            mockMvc.perform(get("/docs/export/json"))
                     .andExpect(status().isNotFound());
         }
     }
@@ -104,8 +111,123 @@ class OpenApiGuardIntegrationTest {
         @DisplayName("测试静态资源在 Basic 守卫模式下白名单安全放行")
         void testStaticResourcesWhitelisted() throws Exception {
             mockMvc.perform(get("/swagger-ui/swagger-ui.css"))
-                    // 只要不是 401 拦截即代表通过守卫白名单放行
                     .andExpect(status().isOk());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=TOKEN",
+            "ateng.boot.openapi.guard.token.secret=sample-token-secret",
+            "ateng.boot.openapi.guard.token.header-name=X-Doc-Token",
+            "ateng.boot.openapi.guard.token.allow-query-param=true",
+            "ateng.boot.openapi.guard.token.query-param-name=doc-token",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 3：静态令牌 (TOKEN) 标头与 Query 参数访问守卫")
+    class TokenAuthGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        @DisplayName("测试未携带 Token 访问 /docs 响应 401")
+        void testMissingTokenRejected() throws Exception {
+            mockMvc.perform(get("/docs"))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("测试携带错误 Token 访问 /docs 响应 401")
+        void testWrongTokenRejected() throws Exception {
+            mockMvc.perform(get("/docs").header("X-Doc-Token", "wrong-secret"))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @DisplayName("测试通过 Header X-Doc-Token 携带正确令牌放行并重定向")
+        void testValidHeaderTokenAllowed() throws Exception {
+            mockMvc.perform(get("/docs").header("X-Doc-Token", "sample-token-secret"))
+                    .andExpect(status().isFound())
+                    .andExpect(header().string("Location", "/swagger-ui/index.html"));
+        }
+
+        @Test
+        @DisplayName("测试通过 Query 参数 ?doc-token=xxx 携带正确令牌放行")
+        void testValidQueryTokenAllowed() throws Exception {
+            mockMvc.perform(get("/docs").param("doc-token", "sample-token-secret"))
+                    .andExpect(status().isFound())
+                    .andExpect(header().string("Location", "/swagger-ui/index.html"));
+        }
+
+        @Test
+        @DisplayName("测试离线导出端点同样受 Token 守卫管辖")
+        void testExportGuardedByToken() throws Exception {
+            // 无 Token -> 401
+            mockMvc.perform(get("/docs/export/json"))
+                    .andExpect(status().isUnauthorized());
+
+            // 有 Token -> 200
+            mockMvc.perform(get("/docs/export/json").header("X-Doc-Token", "sample-token-secret"))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    @Nested
+    @SpringBootTest
+    @AutoConfigureMockMvc
+    @TestPropertySource(properties = {
+            "ateng.boot.openapi.guard.mode=IP_WHITELIST",
+            "ateng.boot.openapi.guard.ip-whitelist.cidrs=10.0.0.0/8,127.0.0.1",
+            "ateng.boot.openapi.guard.ip-whitelist.trusted-header=X-Forwarded-For",
+            "ateng.boot.web.shutdown.drain-timeout=0s"
+    })
+    @DisplayName("场景 4：CIDR 白名单与受信任反代标头网络防火墙")
+    class IpWhitelistGuardTest {
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Test
+        @DisplayName("测试直接物理 IP 为 127.0.0.1 时允许访问")
+        void testLocalhostIpAllowed() throws Exception {
+            mockMvc.perform(get("/docs").with(req -> {
+                req.setRemoteAddr("127.0.0.1");
+                return req;
+            })).andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试未授权 IP (192.168.1.50) 访问被 403 Forbidden 拦截")
+        void testUnauthorizedIpRejected() throws Exception {
+            mockMvc.perform(get("/docs").with(req -> {
+                req.setRemoteAddr("192.168.1.50");
+                return req;
+            })).andExpect(status().isForbidden());
+        }
+
+        @Test
+        @DisplayName("测试受信任反代标头 X-Forwarded-For 携带内网 CIDR IP (10.10.1.2) 放行")
+        void testTrustedHeaderCidrAllowed() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "10.10.1.2, 192.168.1.1")
+                    .with(req -> {
+                        req.setRemoteAddr("192.168.1.1");
+                        return req;
+                    })).andExpect(status().isFound());
+        }
+
+        @Test
+        @DisplayName("测试受信任反代标头 X-Forwarded-For 客户端伪造外网 IP (172.16.0.1) 拦截 403")
+        void testTrustedHeaderNonWhitelistedRejected() throws Exception {
+            mockMvc.perform(get("/docs")
+                    .header("X-Forwarded-For", "172.16.0.1")
+                    .with(req -> {
+                        req.setRemoteAddr("127.0.0.1");
+                        return req;
+                    })).andExpect(status().isForbidden());
         }
     }
 }

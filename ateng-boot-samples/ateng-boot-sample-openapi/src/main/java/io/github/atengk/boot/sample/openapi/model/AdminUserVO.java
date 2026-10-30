@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.openapi.model;
 
+import io.github.atengk.boot.core.annotation.FieldSensitive;
+import io.github.atengk.boot.core.enums.SensitiveType;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.LocalDateTime;
@@ -25,8 +27,12 @@ public class AdminUserVO {
     @Schema(description = "工作电子邮箱", example = "zhangsan@example.com")
     private String email;
 
-    @Schema(description = "账号状态 (1 正常，0 停用)", example = "1")
-    private Integer status;
+    @FieldSensitive(SensitiveType.MOBILE_PHONE)
+    @Schema(description = "联系手机号码")
+    private String phone;
+
+    @Schema(description = "账号状态")
+    private UserStatusEnum status;
 
     @Schema(description = "创建时间", example = "2026-10-22T10:00:00")
     private LocalDateTime createTime;
@@ -34,11 +40,12 @@ public class AdminUserVO {
     public AdminUserVO() {
     }
 
-    public AdminUserVO(Long id, String username, String realName, String email, Integer status, LocalDateTime createTime) {
+    public AdminUserVO(Long id, String username, String realName, String email, String phone, UserStatusEnum status, LocalDateTime createTime) {
         this.id = id;
         this.username = username;
         this.realName = realName;
         this.email = email;
+        this.phone = phone;
         this.status = status;
         this.createTime = createTime;
     }
@@ -75,11 +82,19 @@ public class AdminUserVO {
         this.email = email;
     }
 
-    public Integer getStatus() {
+    public String getPhone() {
+        return phone;
+    }
+
+    public void setPhone(String phone) {
+        this.phone = phone;
+    }
+
+    public UserStatusEnum getStatus() {
         return status;
     }
 
-    public void setStatus(Integer status) {
+    public void setStatus(UserStatusEnum status) {
         this.status = status;
     }
 
