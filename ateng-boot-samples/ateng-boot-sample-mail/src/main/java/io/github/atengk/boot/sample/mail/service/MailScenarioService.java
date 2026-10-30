@@ -1,9 +1,11 @@
 package io.github.atengk.boot.sample.mail.service;
 
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
+import io.github.atengk.boot.mail.model.BatchMailSendResult;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailAttachment;
 import io.github.atengk.boot.mail.model.MailMessage;
+import io.github.atengk.boot.mail.model.MailPriority;
 import io.github.atengk.boot.mail.model.MailSendResult;
 import io.github.atengk.boot.mail.template.MailTemplate;
 import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
@@ -15,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -212,5 +216,78 @@ public class MailScenarioService {
     public void publishEvictEvent(String accountName) {
         log.info("Publishing MailAccountEvictEvent for accountName: [{}]", accountName);
         eventPublisher.publishEvent(new MailAccountEvictEvent(this, accountName));
+    }
+
+    /**
+     * 批量个性化发送对账单/工资条通知（演示 sendBatch 高并发分片并发与 Fail-Safe 容错聚合）
+     *
+     * @param messages 邮件消息列表
+     * @return 批量聚合发信回执
+     */
+    public BatchMailSendResult sendBatchPersonalized(List<MailMessage> messages) {
+        log.info("Sending batch personalized emails: total={}", messages != null ? messages.size() : 0);
+        return mailTemplate.sendBatch(messages);
+    }
+
+    /**
+     * 发送多语言国际化验证码模板邮件
+     *
+     * @param to       目标邮箱
+     * @param username 用户名
+     * @param code     验证码
+     * @param locale   目标多语言区域（如 Locale.US, Locale.SIMPLIFIED_CHINESE）
+     * @return 发信结果
+     */
+    public MailSendResult sendLocalizedVerifyCode(String to, String username, String code, Locale locale) {
+        log.info("Sending localized template email to [{}], locale: {}", to, locale);
+        Map<String, Object> model = Map.of("username", username, "code", code);
+        return mailTemplate.sendTemplate(to, "Verification Notice", "mail/i18n-verify-code", model, locale);
+    }
+
+    /**
+     * 管理端 SMTP 物理连通性一键测试探针
+     *
+     * @param accountName 账号逻辑名称
+     * @return 快速布尔测试结果
+     */
+    public boolean testConnection(String accountName) {
+        log.info("Testing SMTP physical connection for account: [{}]", accountName);
+        return mailTemplate.testConnection(accountName);
+    }
+
+    /**
+     * 管理端 SMTP 物理连通性异常型强测试探针
+     *
+     * @param accountName 账号逻辑名称
+     */
+    public void testConnectionOrThrow(String accountName) {
+        log.info("Testing SMTP physical connection or throw for account: [{}]", accountName);
+        mailTemplate.testConnectionOrThrow(accountName);
+    }
+
+    /**
+     * 发送高优先级紧急线上告警邮件（支持强类型 MailPriority、阅读回执与合规归档密送）
+     *
+     * @param to                 接收人
+     * @param subject            主题
+     * @param content            正文
+     * @param priority           强类型优先级
+     * @param requestReadReceipt 是否请求阅读回执
+     * @param archiveBcc         合规归档密送（若指定）
+     * @return 发信结果
+     */
+    public MailSendResult sendUrgentAlert(String to, String subject, String content,
+                                         MailPriority priority, boolean requestReadReceipt, String archiveBcc) {
+        log.info("Sending urgent alert email to [{}], priority: {}, requestReadReceipt: {}", to, priority, requestReadReceipt);
+        MailMessage message = new MailMessage()
+                .to(to)
+                .subject(subject)
+                .text(content)
+                .priority(priority)
+                .requestReadReceipt(requestReadReceipt);
+        if (archiveBcc != null && !archiveBcc.isBlank()) {
+            message.bcc(archiveBcc);
+        }
+        return mailTemplate.send(message);
     }
 }

@@ -7,10 +7,12 @@ import com.icegreen.greenmail.util.GreenMailUtil;
 import com.icegreen.greenmail.util.ServerSetup;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.validation.ValidList;
 import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.model.MailSendResult;
+import io.github.atengk.boot.sample.mail.dto.BatchMailItemRequest;
 import io.github.atengk.boot.sample.mail.dto.SendMailRequest;
 import io.github.atengk.boot.sample.mail.handler.SampleMailFailureHandler;
 import io.github.atengk.boot.sample.mail.interceptor.SampleAuditMailInterceptor;
@@ -38,6 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -538,5 +541,120 @@ class SampleMailIntegrationTest {
         jakarta.mail.internet.InternetAddress addr = (jakarta.mail.internet.InternetAddress) from[0];
         assertThat(addr.getAddress()).isEqualTo("custom-support@example.com");
         assertThat(addr.getPersonal()).isEqualTo("专属客户经理");
+    }
+
+    @Test
+    @DisplayName("15. 批量个性化发送邮件端到端自验并验证聚合回执与物理送达")
+    void shouldSendBatchPersonalizedEmailsSuccessfully() throws Exception {
+        ValidList<BatchMailItemRequest> batchList = new ValidList<>(List.of(
+                BatchMailItemRequest.builder()
+                        .to("emp1@example.com")
+                        .subject("十月对账单-张三")
+                        .content("张三，您好！您十月的绩效对账单已生成。")
+                        .build(),
+                BatchMailItemRequest.builder()
+                        .to("emp2@example.com")
+                        .subject("十月对账单-李四")
+                        .content("李四，您好！您十月的绩效对账单已生成。")
+                        .build(),
+                BatchMailItemRequest.builder()
+                        .to("emp3@example.com")
+                        .subject("十月对账单-王五")
+                        .content("王五，您好！您十月的绩效对账单已生成。")
+                        .build()
+        ));
+
+        mockMvc.perform(post("/api/mail/batch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(batchList)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.successCount").value(3))
+                .andExpect(jsonPath("$.data.failureCount").value(0));
+
+        assertThat(greenMail.waitForIncomingEmail(5000, 3)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("16. 多语言国际化验证码模板端到端渲染验证")
+    void shouldSendLocalizedTemplateEmail() throws Exception {
+        SendMailRequest req = SendMailRequest.builder()
+                .to("international-user@example.com")
+                .subject("Security Code")
+                .content("ignored")
+                .username("JohnDoe")
+                .verifyCode("998877")
+                .build();
+
+        mockMvc.perform(post("/api/mail/localized-template")
+                        .param("language", "en")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        assertThat(greenMail.waitForIncomingEmail(5000, 1)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(1);
+        String body = GreenMailUtil.getBody(messages[0]);
+        assertThat(body).contains("Security Verification Code");
+        assertThat(body).contains("JohnDoe");
+        assertThat(body).contains("998877");
+    }
+
+    @Test
+    @DisplayName("17. 管理端 SMTP 物理连通性一键测试探针端到端接口自验")
+    void shouldTestConnectionViaEndpoint() throws Exception {
+        // 1. 存在的默认账号探针返回成功
+        mockMvc.perform(post("/api/mail/test-connection")
+                        .param("accountName", "default"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 2. 存在的 ops 账号探针返回成功
+        mockMvc.perform(post("/api/mail/test-connection")
+                        .param("accountName", "ops"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(true));
+
+        // 3. 不存在的账号探测触发语义化异常拦截 (40002)
+        mockMvc.perform(post("/api/mail/test-connection")
+                        .param("accountName", "non-existent-probe-acc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40002));
+    }
+
+    @Test
+    @DisplayName("18. 紧急告警邮件高优先级标头、阅读回执与合规密送端到端全真验证")
+    void shouldSendUrgentAlertWithHighPriorityAndHeaders() throws Exception {
+        SendMailRequest req = SendMailRequest.builder()
+                .to("ops-team@example.com")
+                .subject("线上数据库 CPU 100% 告警")
+                .content("主库 CPU 飙高，请立即处理！")
+                .build();
+
+        mockMvc.perform(post("/api/mail/urgent-alert")
+                        .param("requestReadReceipt", "true")
+                        .param("archiveBcc", "audit-compliance@atengk.com")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 1 To + 1 Bcc = 2 份副本
+        assertThat(greenMail.waitForIncomingEmail(5000, 2)).isTrue();
+        MimeMessage[] messages = greenMail.getReceivedMessages();
+        assertThat(messages).hasSize(2);
+
+        MimeMessage alertMsg = messages[0];
+        assertThat(alertMsg.getHeader("X-Priority", null)).isEqualTo("1");
+        assertThat(alertMsg.getHeader("Importance", null)).isEqualTo("High");
+        assertThat(alertMsg.getHeader("X-MSMail-Priority", null)).isEqualTo("High");
+        assertThat(alertMsg.getHeader("Disposition-Notification-To", null)).isEqualTo("default@example.com");
     }
 }
