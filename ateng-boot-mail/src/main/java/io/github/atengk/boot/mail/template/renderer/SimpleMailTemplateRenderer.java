@@ -7,6 +7,9 @@ import org.springframework.core.io.Resource;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -24,11 +27,16 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
 
     @Override
     public String render(String templateName, Map<String, Object> model) {
+        return render(templateName, model, null);
+    }
+
+    @Override
+    public String render(String templateName, Map<String, Object> model, Locale locale) {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
 
-        String templateContent = loadTemplate(templateName);
+        String templateContent = loadTemplate(templateName, locale);
         if (model == null || model.isEmpty()) {
             return templateContent;
         }
@@ -45,31 +53,58 @@ public class SimpleMailTemplateRenderer implements MailTemplateRenderer {
         return sb.toString();
     }
 
-    private String loadTemplate(String templateName) {
+    private String loadTemplate(String templateName, Locale locale) {
         // 1. 若字符串直接包含 HTML 标签、换行符或 ${ 占位符且不以常见模板文件后缀结尾，可直接作为内联模板内容解析
         if ((templateName.contains("${") || templateName.contains("<") || templateName.contains("\n"))
                 && !templateName.endsWith(".html") && !templateName.endsWith(".htm") && !templateName.endsWith(".ftl")) {
             return templateName;
         }
 
-        // 2. 依次尝试查找类路径下的模板资源
-        String suffix = templateName.endsWith(".html") || templateName.endsWith(".htm") ? "" : ".html";
-        String[] candidatePaths = new String[]{
-                templateName,
-                templateName + suffix,
-                "templates/mail/" + templateName + suffix,
-                "templates/" + templateName + suffix,
-                "mail/" + templateName + suffix
-        };
+        // 2. 依次尝试查找类路径下的模板资源（支持国际化级联探测：template_en_US.html -> template_en.html -> template.html）
+        String base = templateName;
+        String ext = ".html";
+        if (templateName.endsWith(".html")) {
+            base = templateName.substring(0, templateName.length() - 5);
+            ext = ".html";
+        } else if (templateName.endsWith(".htm")) {
+            base = templateName.substring(0, templateName.length() - 4);
+            ext = ".htm";
+        } else if (templateName.endsWith(".ftl")) {
+            base = templateName.substring(0, templateName.length() - 4);
+            ext = ".ftl";
+        }
 
-        for (String path : candidatePaths) {
-            Resource resource = new ClassPathResource(path);
-            if (resource.exists()) {
-                try (InputStream in = resource.getInputStream()) {
-                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                } catch (Exception e) {
-                    throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
-                            "读取类路径邮件模板失败: [" + path + "]", e);
+        List<String> candidateNames = new ArrayList<>();
+        if (locale != null) {
+            if (locale.getCountry() != null && !locale.getCountry().isBlank()) {
+                candidateNames.add(base + "_" + locale.getLanguage() + "_" + locale.getCountry() + ext);
+            }
+            if (locale.getLanguage() != null && !locale.getLanguage().isBlank()) {
+                candidateNames.add(base + "_" + locale.getLanguage() + ext);
+            }
+        }
+        candidateNames.add(base + ext);
+        if (!candidateNames.contains(templateName)) {
+            candidateNames.add(templateName);
+        }
+
+        for (String candidate : candidateNames) {
+            String[] candidatePaths = new String[]{
+                    candidate,
+                    "templates/mail/" + candidate,
+                    "templates/" + candidate,
+                    "mail/" + candidate
+            };
+
+            for (String path : candidatePaths) {
+                Resource resource = new ClassPathResource(path);
+                if (resource.exists()) {
+                    try (InputStream in = resource.getInputStream()) {
+                        return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                    } catch (Exception e) {
+                        throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR,
+                                "读取类路径邮件模板失败: [" + path + "]", e);
+                    }
                 }
             }
         }

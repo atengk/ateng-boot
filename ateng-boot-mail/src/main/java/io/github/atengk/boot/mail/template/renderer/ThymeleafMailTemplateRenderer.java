@@ -5,6 +5,7 @@ import io.github.atengk.boot.mail.exception.MailSendException;
 import org.thymeleaf.context.Context;
 import org.thymeleaf.spring6.SpringTemplateEngine;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -24,12 +25,17 @@ public class ThymeleafMailTemplateRenderer implements MailTemplateRenderer {
 
     @Override
     public String render(String templateName, Map<String, Object> model) {
+        return render(templateName, model, null);
+    }
+
+    @Override
+    public String render(String templateName, Map<String, Object> model, Locale locale) {
         if (templateName == null || templateName.isBlank()) {
             throw new MailSendException(MailResultCode.MAIL_TEMPLATE_RENDER_ERROR, "模板名称不能为空");
         }
 
         try {
-            Context context = new Context();
+            Context context = (locale != null) ? new Context(locale) : new Context();
             if (model != null) {
                 context.setVariables(model);
             }

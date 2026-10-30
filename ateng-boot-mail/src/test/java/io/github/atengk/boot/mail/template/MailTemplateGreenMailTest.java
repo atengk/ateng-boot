@@ -2,9 +2,12 @@ package io.github.atengk.boot.mail.template;
 
 import com.icegreen.greenmail.configuration.GreenMailConfiguration;
 import com.icegreen.greenmail.junit5.GreenMailExtension;
+import com.icegreen.greenmail.util.GreenMailUtil;
 import com.icegreen.greenmail.util.ServerSetupTest;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import org.springframework.context.i18n.LocaleContextHolder;
+import java.util.Locale;
 import io.github.atengk.boot.mail.event.MailAccountEvictEvent;
 import io.github.atengk.boot.mail.event.MailSendEvent;
 import io.github.atengk.boot.mail.event.MailSendFailedEvent;
@@ -149,6 +152,7 @@ class MailTemplateGreenMailTest {
         MDC.clear();
         UserContextHolder.clear();
         TenantContextHolder.clear();
+        LocaleContextHolder.resetLocaleContext();
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
         }
@@ -1728,5 +1732,120 @@ class MailTemplateGreenMailTest {
         } finally {
             sandboxTemplate.destroy();
         }
+    }
+
+    @Test
+    @DisplayName("测试显式传入 Locale 进行国际化模板渲染发信")
+    void testSendTemplateWithExplicitLocale() throws Exception {
+        MailSendResult result = mailTemplate.sendTemplate(
+                "locale-user@atengk.com",
+                "国际化多语言邮件",
+                "welcome",
+                Map.of("username", "Emma", "platform", "Ateng Cloud"),
+                Locale.US
+        );
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        jakarta.mail.internet.MimeMessage[] received = greenMail.getReceivedMessages();
+        assertEquals(1, received.length);
+        String content = GreenMailUtil.getBody(received[0]);
+        assertTrue(content.contains("Welcome US, Emma!"));
+        assertTrue(content.contains("Thank you for joining Ateng Cloud in US!"));
+    }
+
+    @Test
+    @DisplayName("测试自动探测 LocaleContextHolder 国际化语言环境渲染发信")
+    void testSendTemplateWithLocaleContextHolder() throws Exception {
+        LocaleContextHolder.setLocale(Locale.UK);
+        try {
+            MailSendResult result = mailTemplate.sendTemplate(
+                    "locale-uk@atengk.com",
+                    "UK通知",
+                    "welcome",
+                    Map.of("username", "Oliver", "platform", "Ateng Cloud")
+            );
+
+            assertNotNull(result);
+            assertTrue(result.isSuccess());
+
+            jakarta.mail.internet.MimeMessage[] received = greenMail.getReceivedMessages();
+            assertEquals(1, received.length);
+            String content = GreenMailUtil.getBody(received[0]);
+            // 级联降级匹配至 welcome_en.html
+            assertTrue(content.contains("Welcome EN, Oliver!"));
+        } finally {
+            LocaleContextHolder.resetLocaleContext();
+        }
+    }
+
+    @Test
+    @DisplayName("测试物理连通性健康探测 testConnection 与 testConnectionOrThrow 成功")
+    void testTestConnectionSuccess() {
+        // 1. 默认账号探测
+        assertTrue(mailTemplate.testConnection());
+        assertDoesNotThrow(() -> mailTemplate.testConnectionOrThrow());
+
+        // 2. 指定账号名探测
+        assertTrue(mailTemplate.testConnection("ops"));
+        assertDoesNotThrow(() -> mailTemplate.testConnectionOrThrow("ops"));
+
+        // 3. Registry 层级探测
+        assertTrue(accountRegistry.testConnection("default"));
+        assertDoesNotThrow(() -> accountRegistry.testConnectionOrThrow("default"));
+
+        // 验证探针为纯网络握手与认证，零发信副作用
+        assertEquals(0, greenMail.getReceivedMessages().length);
+    }
+
+    @Test
+    @DisplayName("测试物理连通性探针在认证失败时返回 false 并抛出 MAIL_AUTHENTICATION_ERROR")
+    void testTestConnectionAuthFailure() {
+        int smtpPort = greenMail.getSmtp().getPort();
+
+        // 注册密码错误的发件账号
+        JavaMailSenderImpl badSender = new JavaMailSenderImpl();
+        badSender.setHost("127.0.0.1");
+        badSender.setPort(smtpPort);
+        badSender.setUsername("test@atengk.com");
+        badSender.setPassword("invalid-password-12345");
+        badSender.getJavaMailProperties().put("mail.smtp.auth", "true");
+
+        MailAccount badAccount = MailAccount.builder()
+                .name("bad-auth")
+                .host("127.0.0.1")
+                .port(smtpPort)
+                .username("test@atengk.com")
+                .password("invalid-password-12345")
+                .sender(badSender)
+                .build();
+        accountRegistry.register(badAccount);
+
+        // 快速布尔型探测返回 false
+        assertFalse(mailTemplate.testConnection("bad-auth"));
+
+        // 异常型探测抛出 MAIL_AUTHENTICATION_ERROR
+        MailSendException ex = assertThrows(MailSendException.class, () -> mailTemplate.testConnectionOrThrow("bad-auth"));
+        assertEquals(MailResultCode.MAIL_AUTHENTICATION_ERROR, ex.getResultCode());
+        assertNotNull(ex.getCause());
+    }
+
+    @Test
+    @DisplayName("测试物理连通性探针在账号不存在时抛出 MAIL_ACCOUNT_NOT_FOUND")
+    void testTestConnectionAccountNotFound() {
+        assertFalse(mailTemplate.testConnection("non-existent-account-xyz"));
+        MailSendException ex = assertThrows(MailSendException.class, () -> mailTemplate.testConnectionOrThrow("non-existent-account-xyz"));
+        assertEquals(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, ex.getResultCode());
+    }
+
+    @Test
+    @DisplayName("测试 DynamicMailSession 门面调用 testConnection 探针")
+    void testDynamicMailSessionTestConnection() {
+        MailAccount defaultAcc = accountRegistry.getDefault();
+        DynamicMailSession session = mailTemplate.forDynamicAccount(defaultAcc);
+
+        assertTrue(session.testConnection());
+        assertDoesNotThrow(session::testConnectionOrThrow);
     }
 }

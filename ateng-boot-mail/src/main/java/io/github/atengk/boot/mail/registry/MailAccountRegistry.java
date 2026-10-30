@@ -4,6 +4,8 @@ import io.github.atengk.boot.mail.exception.MailResultCode;
 import io.github.atengk.boot.mail.exception.MailSendException;
 import io.github.atengk.boot.mail.model.MailAccount;
 import io.github.atengk.boot.mail.properties.MailProperties;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.MessagingException;
 import lombok.Getter;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 
@@ -11,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -257,6 +260,105 @@ public class MailAccountRegistry {
     public void clearDynamic() {
         dynamicAccountByNameCache.clear();
         dynamicAccountLruCache.clear();
+    }
+
+    /**
+     * 校验指定账号实体的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param account 待检测的发信账号
+     * @return 连通成功返回 true，发生网络或认证异常返回 false
+     */
+    public boolean testConnection(MailAccount account) {
+        try {
+            testConnectionOrThrow(account);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 校验指定逻辑名称账号的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param accountName 账号逻辑名称
+     * @return 连通成功返回 true，发生网络或认证异常返回 false
+     */
+    public boolean testConnection(String accountName) {
+        try {
+            testConnectionOrThrow(accountName);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 校验指定逻辑名称账号的物理 SMTP 连通性（异常型探测，失败时抛出语义化异常并保留因果链）
+     *
+     * @param accountName 账号逻辑名称
+     * @throws MailSendException 连通失败或账号不存在时抛出
+     */
+    public void testConnectionOrThrow(String accountName) {
+        MailAccount account = get(accountName);
+        if (account == null) {
+            account = getDynamic(accountName);
+        }
+        if (account == null) {
+            throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, "未找到指定的发信账号: [" + accountName + "]");
+        }
+        testConnectionOrThrow(account);
+    }
+
+    /**
+     * 校验指定账号实体的物理 SMTP 连通性（异常型探测，失败时抛出语义化异常并保留因果链）
+     *
+     * @param account 待检测的发信账号
+     * @throws MailSendException 连通失败时抛出
+     */
+    public void testConnectionOrThrow(MailAccount account) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        JavaMailSenderImpl sender = account.getSender();
+        if (sender == null) {
+            sender = createSender(account, null);
+        }
+        doTestConnection(account, sender);
+    }
+
+    private void doTestConnection(MailAccount account, JavaMailSenderImpl sender) {
+        try {
+            sender.testConnection();
+        } catch (AuthenticationFailedException afe) {
+            throw new MailSendException(MailResultCode.MAIL_AUTHENTICATION_ERROR,
+                    "发件账号 [" + account.getName() + "] 邮件服务器身份认证失败: " + afe.getMessage(), afe);
+        } catch (MessagingException me) {
+            Throwable cause = me.getCause();
+            if (isTimeoutOrConnectRefused(me, cause)) {
+                throw new MailSendException(MailResultCode.MAIL_CONNECT_TIMEOUT,
+                        "发件账号 [" + account.getName() + "] 邮件服务器连接超时或无法连接: " + me.getMessage(), me);
+            }
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                    "发件账号 [" + account.getName() + "] 邮件服务器连通性检测失败: " + me.getMessage(), me);
+        } catch (Exception e) {
+            throw new MailSendException(MailResultCode.MAIL_SEND_ERROR,
+                    "发件账号 [" + account.getName() + "] 邮件服务器连通性检测异常: " + e.getMessage(), e);
+        }
+    }
+
+    private static boolean isTimeoutOrConnectRefused(Throwable t, Throwable cause) {
+        if (t instanceof java.net.SocketTimeoutException || t instanceof java.net.ConnectException) {
+            return true;
+        }
+        if (cause instanceof java.net.SocketTimeoutException || cause instanceof java.net.ConnectException) {
+            return true;
+        }
+        String msg = t.getMessage();
+        if (msg != null) {
+            String lower = msg.toLowerCase(Locale.ROOT);
+            return lower.contains("timeout") || lower.contains("connect refused") || lower.contains("connection refused") || lower.contains("could not connect");
+        }
+        return false;
     }
 
     /**

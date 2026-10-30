@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.io.InputStreamSource;
 import org.springframework.mail.MailAuthenticationException;
@@ -59,6 +60,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -728,6 +730,44 @@ public class MailTemplate implements DisposableBean {
     // ==================== 模板动态渲染邮件发送快捷门面 ====================
 
     /**
+     * 渲染模板为富文本 HTML 字符串（自动探测 LocaleContextHolder 国际化语言）
+     *
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @return 渲染后的 HTML 字符串
+     */
+    public String renderTemplate(String templateName, Map<String, Object> model) {
+        return renderTemplate(templateName, model, resolveLocale(null));
+    }
+
+    /**
+     * 根据指定国际化语言渲染模板为富文本 HTML 字符串
+     *
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标语言区域（若为 null 则自动探测 LocaleContextHolder）
+     * @return 渲染后的 HTML 字符串
+     */
+    public String renderTemplate(String templateName, Map<String, Object> model, Locale locale) {
+        return templateRenderer.render(templateName, model, resolveLocale(locale));
+    }
+
+    private Locale resolveLocale(Locale explicitLocale) {
+        if (explicitLocale != null) {
+            return explicitLocale;
+        }
+        try {
+            Locale contextLocale = LocaleContextHolder.getLocale();
+            if (contextLocale != null) {
+                return contextLocale;
+            }
+        } catch (Throwable ignored) {
+            // 忽略上下文异常
+        }
+        return Locale.getDefault();
+    }
+
+    /**
      * 发送模板渲染邮件（默认账号）
      *
      * @param to           单个目标收件人
@@ -737,7 +777,21 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件（默认账号，指定国际化区域）
+     *
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -751,7 +805,22 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件（指定账号与国际化区域）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           单个目标收件人
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -764,7 +833,21 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(null, to, subject, templateName, model);
+        return sendTemplate(null, to, subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（默认账号，指定国际化区域）
+     *
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(null, to, subject, templateName, model, locale);
     }
 
     /**
@@ -778,7 +861,22 @@ public class MailTemplate implements DisposableBean {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        return sendTemplate(accountName, to, subject, templateName, model, null);
+    }
+
+    /**
+     * 发送模板渲染邮件给多个收件人（指定账号与国际化区域）
+     *
+     * @param accountName  账号逻辑名称
+     * @param to           目标收件人集合
+     * @param subject      邮件主题
+     * @param templateName 模板名称
+     * @param model        数据模型字典
+     * @param locale       目标国际化区域
+     * @return 发送结果回执
+     */
+    public MailSendResult sendTemplate(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         return sendHtml(accountName, to, subject, renderedHtml);
     }
 
@@ -955,7 +1053,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -969,7 +1071,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -982,7 +1088,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(null, to, subject, templateName, model);
+        return sendTemplateAsync(null, to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(null, to, subject, templateName, model, locale);
     }
 
     /**
@@ -996,7 +1106,11 @@ public class MailTemplate implements DisposableBean {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        return sendTemplateAsync(accountName, to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         return sendHtmlAsync(accountName, to, subject, renderedHtml);
     }
 
@@ -1149,19 +1263,35 @@ public class MailTemplate implements DisposableBean {
     }
 
     public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(null, to, subject, templateName, model);
+        sendTemplateAfterCommit(null, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(null, to, subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        sendTemplateAfterCommit(accountName, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         sendHtmlAfterCommit(accountName, to, subject, renderedHtml);
     }
 
@@ -1208,20 +1338,122 @@ public class MailTemplate implements DisposableBean {
     }
 
     public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(null, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(accountName, to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model);
+        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(null, to, subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = templateRenderer.render(templateName, model);
+        sendTemplateAsyncAfterCommit(accountName, to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String accountName, Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = renderTemplate(templateName, model, locale);
         sendHtmlAsyncAfterCommit(accountName, to, subject, renderedHtml);
+    }
+
+    // ==================== 物理 SMTP 连通性健康探针 ====================
+
+    /**
+     * 探测当前默认发信账号的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection() {
+        return testConnection((String) null);
+    }
+
+    /**
+     * 探测指定发信账号的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param accountName 账号逻辑名称（传 null 时自动解析默认或租户账号）
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection(String accountName) {
+        try {
+            testConnectionOrThrow(accountName);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 探测指定发件账号实体的物理 SMTP 连通性（快速布尔型探测）
+     *
+     * @param account 待检测发件账号
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection(MailAccount account) {
+        try {
+            testConnectionOrThrow(account);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 探测当前默认发信账号的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow() {
+        testConnectionOrThrow((String) null);
+    }
+
+    /**
+     * 探测指定发信账号的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @param accountName 账号逻辑名称（传 null 时自动解析默认或租户账号）
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow(String accountName) {
+        MailAccount account;
+        if (accountName != null && !accountName.isBlank()) {
+            account = findAccount(accountName);
+            if (account == null) {
+                throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND,
+                        "未找到指定的发信账号: [" + accountName + "]");
+            }
+        } else {
+            account = resolveAccount(new MailMessage());
+        }
+        if (account == null) {
+            throw new MailSendException(MailResultCode.MAIL_ACCOUNT_NOT_FOUND, "未找到可用的默认发信账号，请检查配置");
+        }
+        testConnectionOrThrow(account);
+    }
+
+    /**
+     * 探测指定发件账号实体的物理 SMTP 连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @param account 待检测发信账号
+     * @throws MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow(MailAccount account) {
+        if (account == null) {
+            throw new IllegalArgumentException("MailAccount must not be null");
+        }
+        accountRegistry.testConnectionOrThrow(account);
     }
 
     // ==================== 内部防御性校验与辅助逻辑 ====================

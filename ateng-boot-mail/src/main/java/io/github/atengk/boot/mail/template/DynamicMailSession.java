@@ -7,6 +7,7 @@ import io.github.atengk.boot.mail.model.MailSendResult;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -39,6 +40,24 @@ public class DynamicMailSession {
      */
     public MailAccount getAccount() {
         return account;
+    }
+
+    /**
+     * 探测当前动态会话绑定的发信账号物理连通性（快速布尔型探测）
+     *
+     * @return 连通成功返回 true，失败返回 false
+     */
+    public boolean testConnection() {
+        return template.testConnection(account);
+    }
+
+    /**
+     * 探测当前动态会话绑定的发信账号物理连通性（异常型探测，失败抛出语义化业务异常并保留因果链）
+     *
+     * @throws io.github.atengk.boot.mail.exception.MailSendException 连通失败或认证异常时抛出
+     */
+    public void testConnectionOrThrow() {
+        template.testConnectionOrThrow(account);
     }
 
     /**
@@ -131,7 +150,11 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public MailSendResult sendTemplate(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplate(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -144,7 +167,11 @@ public class DynamicMailSession {
      * @return 发送结果回执
      */
     public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        return sendTemplate(to, subject, templateName, model, null);
+    }
+
+    public MailSendResult sendTemplate(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         return sendHtml(to, subject, renderedHtml);
     }
 
@@ -244,7 +271,11 @@ public class DynamicMailSession {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model) {
-        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        return sendTemplateAsync(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     /**
@@ -257,7 +288,11 @@ public class DynamicMailSession {
      * @return 包含发送结果回执的异步 CompletableFuture
      */
     public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        return sendTemplateAsync(to, subject, templateName, model, null);
+    }
+
+    public CompletableFuture<MailSendResult> sendTemplateAsync(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         return sendHtmlAsync(to, subject, renderedHtml);
     }
 
@@ -340,11 +375,19 @@ public class DynamicMailSession {
     }
 
     public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendTemplateAfterCommit(to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         sendHtmlAfterCommit(to, subject, renderedHtml);
     }
 
@@ -373,11 +416,19 @@ public class DynamicMailSession {
     }
 
     public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model) {
-        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model);
+        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(String to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        sendTemplateAsyncAfterCommit(to != null ? List.of(to) : List.of(), subject, templateName, model, locale);
     }
 
     public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model) {
-        String renderedHtml = template.getTemplateRenderer().render(templateName, model);
+        sendTemplateAsyncAfterCommit(to, subject, templateName, model, null);
+    }
+
+    public void sendTemplateAsyncAfterCommit(Collection<String> to, String subject, String templateName, Map<String, Object> model, Locale locale) {
+        String renderedHtml = template.renderTemplate(templateName, model, locale);
         sendHtmlAsyncAfterCommit(to, subject, renderedHtml);
     }
 }

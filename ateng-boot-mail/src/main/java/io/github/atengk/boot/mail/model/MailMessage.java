@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -108,6 +109,11 @@ public class MailMessage implements AutoCloseable, Serializable {
     @Builder.Default
     private List<MailInlineResource> inlines = new ArrayList<>();
 
+    /**
+     * 邮件国际化多语言区域（用于模板引擎级联寻址，若为空则自动探测 LocaleContextHolder）
+     */
+    private Locale locale;
+
     // ==================== 链式 Fluent / DSL 构造辅助方法 ====================
 
     /**
@@ -118,6 +124,17 @@ public class MailMessage implements AutoCloseable, Serializable {
      */
     public MailMessage account(String account) {
         this.account = account;
+        return this;
+    }
+
+    /**
+     * 指定邮件国际化多语言区域
+     *
+     * @param locale 语言区域
+     * @return 当前消息构建对象
+     */
+    public MailMessage locale(Locale locale) {
+        this.locale = locale;
         return this;
     }
 
