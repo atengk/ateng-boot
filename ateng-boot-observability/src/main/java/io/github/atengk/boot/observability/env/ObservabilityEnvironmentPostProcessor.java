@@ -67,6 +67,14 @@ public class ObservabilityEnvironmentPostProcessor implements EnvironmentPostPro
         defaults.put("management.health.livenessstate.enabled", "true");
         defaults.put("management.health.readinessstate.enabled", "true");
 
+        // Kubernetes 探针硬分级隔离（默认开启）：
+        // 强制存活探针（liveness）仅探查进程内活性（livenessState 与 ping），所有外部物理中间件探针仅归属 readiness 就绪探针，
+        // 彻底杜绝外部依赖网络闪断引发的 Pod 死亡螺旋（Death-Spiral）与雪崩误杀
+        Boolean k8sIsolationEnabled = environment.getProperty("ateng.boot.observability.health.k8s-isolation-enabled", Boolean.class, true);
+        if (!Boolean.FALSE.equals(k8sIsolationEnabled)) {
+            defaults.put("management.endpoint.health.group.liveness.include", "livenessState,ping");
+        }
+
         // 3. 健康检查详情始终展示（由上层 ActuatorEndpointSecurityFilter 统一拦截敏感信息）
         defaults.put("management.endpoint.health.show-details", "always");
 

@@ -32,8 +32,38 @@ class ObservabilityEnvironmentPostProcessorTest {
         assertThat(environment.getProperty("management.endpoint.health.probes.enabled")).isEqualTo("true");
         assertThat(environment.getProperty("management.health.livenessstate.enabled")).isEqualTo("true");
         assertThat(environment.getProperty("management.health.readinessstate.enabled")).isEqualTo("true");
+        assertThat(environment.getProperty("management.endpoint.health.group.liveness.include")).isEqualTo("livenessState,ping");
         assertThat(environment.getProperty("management.endpoint.health.show-details")).isEqualTo("always");
         assertThat(environment.getProperty("management.info.env.enabled")).isEqualTo("true");
+    }
+
+    @Test
+    @DisplayName("当 k8s-isolation-enabled=false 时，跳过 liveness 分组基线注入")
+    void testK8sIsolationDisabled() {
+        ObservabilityEnvironmentPostProcessor processor = new ObservabilityEnvironmentPostProcessor();
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources().addFirst(new MapPropertySource("testConfig", Map.of(
+                "ateng.boot.observability.health.k8s-isolation-enabled", "false"
+        )));
+
+        processor.postProcessEnvironment(environment, null);
+
+        assertThat(environment.getPropertySources().contains(ObservabilityEnvironmentPostProcessor.PROPERTY_SOURCE_NAME)).isTrue();
+        assertThat(environment.getProperty("management.endpoint.health.group.liveness.include")).isNull();
+    }
+
+    @Test
+    @DisplayName("用户显式配置 liveness 分组属性时，享有最高优先级覆盖默认基线")
+    void testK8sIsolationUserOverride() {
+        ObservabilityEnvironmentPostProcessor processor = new ObservabilityEnvironmentPostProcessor();
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources().addFirst(new MapPropertySource("userConfig", Map.of(
+                "management.endpoint.health.group.liveness.include", "customProbe,ping"
+        )));
+
+        processor.postProcessEnvironment(environment, null);
+
+        assertThat(environment.getProperty("management.endpoint.health.group.liveness.include")).isEqualTo("customProbe,ping");
     }
 
     @Test

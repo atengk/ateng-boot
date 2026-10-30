@@ -107,6 +107,13 @@ public class ObservabilityProperties {
         private Duration timeout = Duration.ofSeconds(2);
 
         /**
+         * Kubernetes 黄金探针智能硬分级隔离开关（默认开启）。
+         * 开启时强制将外部物理依赖从 liveness 存活探针中剔除（仅包含 livenessState 与 ping），
+         * 外部依赖仅在 readiness 中聚合，从根本上杜绝外部网络抖动引发 Pod 死亡螺旋（Death-Spiral）与误杀重启。
+         */
+        private boolean k8sIsolationEnabled = true;
+
+        /**
          * 对象存储（ateng-boot-storage）健康探针配置
          */
         @NestedConfigurationProperty

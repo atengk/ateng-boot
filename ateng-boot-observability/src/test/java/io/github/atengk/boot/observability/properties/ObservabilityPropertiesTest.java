@@ -42,6 +42,7 @@ class ObservabilityPropertiesTest {
         // 健康探针默认配置
         assertThat(properties.getHealth()).isNotNull();
         assertThat(properties.getHealth().getTimeout()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(properties.getHealth().isK8sIsolationEnabled()).isTrue();
         assertThat(properties.getHealth().getStorage().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRocketmq().isEnabled()).isTrue();
         assertThat(properties.getHealth().getRealtime().isEnabled()).isTrue();
@@ -69,6 +70,7 @@ class ObservabilityPropertiesTest {
                         "ateng.boot.observability.metrics.prometheus.enabled=false",
                         "ateng.boot.observability.metrics.thread-pool.enabled=true",
                         "ateng.boot.observability.health.timeout=5s",
+                        "ateng.boot.observability.health.k8s-isolation-enabled=false",
                         "ateng.boot.observability.health.storage.enabled=false",
                         "ateng.boot.observability.health.rocketmq.enabled=false",
                         "ateng.boot.observability.security.lockdown-enabled=true",
@@ -86,6 +88,7 @@ class ObservabilityPropertiesTest {
                     assertThat(props.getMetrics().getPrometheus().isEnabled()).isFalse();
                     assertThat(props.getMetrics().getThreadPool().isEnabled()).isTrue();
                     assertThat(props.getHealth().getTimeout()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(props.getHealth().isK8sIsolationEnabled()).isFalse();
                     assertThat(props.getHealth().getStorage().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRocketmq().isEnabled()).isFalse();
                     assertThat(props.getHealth().getRealtime().isEnabled()).isTrue();
