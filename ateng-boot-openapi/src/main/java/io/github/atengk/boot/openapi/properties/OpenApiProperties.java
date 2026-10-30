@@ -354,7 +354,7 @@ public class OpenApiProperties {
      */
     public static class Guard {
         /**
-         * 访问守卫模式（NONE 免密公开，BASIC 浏览器弹窗，SATOKEN 桥接会话）
+         * 访问守卫模式（NONE 免密公开，BASIC 浏览器弹窗，SATOKEN 桥接会话，IP_WHITELIST 白名单，TOKEN 静态令牌）
          */
         private GuardMode mode = GuardMode.NONE;
 
@@ -363,6 +363,18 @@ public class OpenApiProperties {
          */
         @NestedConfigurationProperty
         private Basic basic = new Basic();
+
+        /**
+         * CIDR / IP 白名单网络防火墙配置
+         */
+        @NestedConfigurationProperty
+        private IpWhitelist ipWhitelist = new IpWhitelist();
+
+        /**
+         * 静态令牌认证配置
+         */
+        @NestedConfigurationProperty
+        private Token token = new Token();
 
         public GuardMode getMode() {
             return mode;
@@ -378,6 +390,124 @@ public class OpenApiProperties {
 
         public void setBasic(Basic basic) {
             this.basic = basic != null ? basic : new Basic();
+        }
+
+        public IpWhitelist getIpWhitelist() {
+            return ipWhitelist;
+        }
+
+        public void setIpWhitelist(IpWhitelist ipWhitelist) {
+            this.ipWhitelist = ipWhitelist != null ? ipWhitelist : new IpWhitelist();
+        }
+
+        public Token getToken() {
+            return token;
+        }
+
+        public void setToken(Token token) {
+            this.token = token != null ? token : new Token();
+        }
+    }
+
+    /**
+     * CIDR / IP 白名单网络防火墙配置
+     */
+    public static class IpWhitelist {
+        /**
+         * 是否启用 IP 白名单校验（默认 false；若设置为 true 或配置了非空 cidrs 列表且启用，将执行白名单强校验）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 允许访问的 IP 或 CIDR 网段列表（例如 127.0.0.1, 10.0.0.0/8, 192.168.1.0/24, ::1）
+         */
+        private List<String> cidrs = new ArrayList<>();
+
+        /**
+         * 受信任的反向代理标头（例如 X-Forwarded-For, X-Real-IP）。
+         * 若配置，则从该标头提取首个合法客户端真实 IP；若未配置，严格读取物理连接 IP（request.getRemoteAddr()），防御客户端伪造 Header 越权。
+         */
+        private String trustedHeader;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public List<String> getCidrs() {
+            return cidrs != null ? cidrs : Collections.emptyList();
+        }
+
+        public void setCidrs(List<String> cidrs) {
+            this.cidrs = cidrs != null ? cidrs : new ArrayList<>();
+        }
+
+        public String getTrustedHeader() {
+            return trustedHeader;
+        }
+
+        public void setTrustedHeader(String trustedHeader) {
+            this.trustedHeader = trustedHeader;
+        }
+    }
+
+    /**
+     * 静态令牌认证配置
+     */
+    public static class Token {
+        /**
+         * 静态令牌请求头名称（默认 X-Doc-Token）
+         */
+        private String headerName = "X-Doc-Token";
+
+        /**
+         * 静态令牌秘钥字符串（生产请配置高强度随机字符串）
+         */
+        private String secret;
+
+        /**
+         * 是否允许通过 URL Query 参数传入令牌（例如 ?doc-token=xxx，默认 true，方便浏览器地址栏直接输入调试）
+         */
+        private boolean allowQueryParam = true;
+
+        /**
+         * URL Query 参数名称（默认 doc-token）
+         */
+        private String queryParamName = "doc-token";
+
+        public String getHeaderName() {
+            return headerName != null && !headerName.isBlank() ? headerName : "X-Doc-Token";
+        }
+
+        public void setHeaderName(String headerName) {
+            this.headerName = headerName;
+        }
+
+        public String getSecret() {
+            return secret;
+        }
+
+        public void setSecret(String secret) {
+            this.secret = secret;
+        }
+
+        public boolean isAllowQueryParam() {
+            return allowQueryParam;
+        }
+
+        public void setAllowQueryParam(boolean allowQueryParam) {
+            this.allowQueryParam = allowQueryParam;
+        }
+
+        public String getQueryParamName() {
+            return queryParamName != null && !queryParamName.isBlank() ? queryParamName : "doc-token";
+        }
+
+        public void setQueryParamName(String queryParamName) {
+            this.queryParamName = queryParamName;
         }
     }
 

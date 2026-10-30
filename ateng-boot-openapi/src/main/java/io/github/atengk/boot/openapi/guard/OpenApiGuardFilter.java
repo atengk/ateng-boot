@@ -46,6 +46,7 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
     public static final String BASIC_REALM_HEADER = "Basic realm=\"OpenAPI Document Guard\"";
 
     private final OpenApiProperties properties;
+    private volatile OpenApiCidrMatcher cidrMatcher;
 
     public OpenApiGuardFilter(OpenApiProperties properties) {
         this.properties = properties;
@@ -72,6 +73,22 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
                 if (basic == null || !StringUtils.hasText(basic.getUsername()) || !StringUtils.hasText(basic.getPassword())) {
                     throw new IllegalStateException("OpenAPI guard mode is set to BASIC, but ateng.boot.openapi.guard.basic.username or password is not configured.");
                 }
+            } else if (mode == GuardMode.TOKEN && properties.isEnabled()) {
+                OpenApiProperties.Token token = properties.getGuard().getToken();
+                if (token == null || !StringUtils.hasText(token.getSecret())) {
+                    throw new IllegalStateException("OpenAPI guard mode is set to TOKEN, but ateng.boot.openapi.guard.token.secret is not configured.");
+                }
+            } else if (mode == GuardMode.IP_WHITELIST && properties.isEnabled()) {
+                OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
+                if (ipWhitelist == null || ipWhitelist.getCidrs().isEmpty()) {
+                    throw new IllegalStateException("OpenAPI guard mode is set to IP_WHITELIST, but ateng.boot.openapi.guard.ip-whitelist.cidrs is empty.");
+                }
+            }
+
+            // 预初始化 CIDR 匹配器
+            OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
+            if (ipWhitelist != null && !ipWhitelist.getCidrs().isEmpty()) {
+                this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
             }
         }
     }
@@ -95,21 +112,43 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             return;
         }
 
-        GuardMode mode = properties.getGuard() != null ? properties.getGuard().getMode() : GuardMode.NONE;
-
-        // 3. 免密模式：直接放行
-        if (mode == GuardMode.NONE) {
-            filterChain.doFilter(request, response);
-            return;
-        }
-
-        // 4. 凭证守卫模式下，静态资源（CSS, JS, WebJars, 图标等）白名单安全放行
+        // 3. 静态资源（CSS, JS, WebJars, 图标等）白名单安全放行，防御样式死锁
         if (isStaticResource(path)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // 5. HTTP Basic Auth 凭证守卫
+        OpenApiProperties.Guard guard = properties.getGuard() != null ? properties.getGuard() : new OpenApiProperties.Guard();
+        GuardMode mode = guard.getMode();
+        OpenApiProperties.IpWhitelist ipWhitelist = guard.getIpWhitelist();
+
+        // 4. 正交 CIDR / IP 白名单网络防火墙拦截
+        boolean ipWhitelistEnabled = (ipWhitelist != null && ipWhitelist.isEnabled()) || (mode == GuardMode.IP_WHITELIST);
+        if (ipWhitelistEnabled) {
+            String clientIp = extractClientIp(request);
+            OpenApiCidrMatcher matcher = getOrCreateCidrMatcher();
+            if (matcher == null || !matcher.matches(clientIp)) {
+                log.warn("OpenAPI document access rejected: client IP [{}] not in whitelist for path [{}]", clientIp, path);
+                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                response.setContentType("text/plain;charset=UTF-8");
+                response.getWriter().write("403 Forbidden: OpenAPI document access rejected by IP whitelist.");
+                return;
+            }
+        }
+
+        // 5. 纯 IP 白名单模式：白名单校验通过即直接放行
+        if (mode == GuardMode.IP_WHITELIST) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // 6. 免密模式：直接放行
+        if (mode == GuardMode.NONE) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // 7. HTTP Basic Auth 凭证守卫
         if (mode == GuardMode.BASIC) {
             if (handleBasicAuth(request, response)) {
                 filterChain.doFilter(request, response);
@@ -117,12 +156,69 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
             return;
         }
 
-        // 6. Sa-Token 会话凭证守卫
+        // 8. Sa-Token 会话凭证守卫
         if (mode == GuardMode.SATOKEN) {
             if (handleSaTokenAuth(request, response, path)) {
                 filterChain.doFilter(request, response);
             }
+            return;
         }
+
+        // 9. 静态令牌标头守卫
+        if (mode == GuardMode.TOKEN) {
+            if (handleTokenAuth(request, response, path)) {
+                filterChain.doFilter(request, response);
+            }
+        }
+    }
+
+    /**
+     * 获取或延迟构建 CIDR 匹配器
+     */
+    private OpenApiCidrMatcher getOrCreateCidrMatcher() {
+        if (cidrMatcher == null && properties.getGuard() != null) {
+            OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
+            if (ipWhitelist != null && !ipWhitelist.getCidrs().isEmpty()) {
+                cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
+            }
+        }
+        return cidrMatcher;
+    }
+
+    /**
+     * 提取客户端真实 IP 地址
+     * <p>
+     * 若配置了受信任代理标头（{@code trusted-header}，如 {@code X-Forwarded-For}），则从该标头提取首个非空有效 IP；
+     * 若未配置受信任标头，严格读取 {@link HttpServletRequest#getRemoteAddr()}，杜绝客户端伪造 Header 越权。
+     * </p>
+     *
+     * @param request HTTP 请求
+     * @return 客户端 IP 地址
+     */
+    public String extractClientIp(HttpServletRequest request) {
+        if (request == null) {
+            return "";
+        }
+        OpenApiProperties.IpWhitelist ipWhitelist = (properties.getGuard() != null)
+                ? properties.getGuard().getIpWhitelist()
+                : null;
+        String trustedHeader = (ipWhitelist != null) ? ipWhitelist.getTrustedHeader() : null;
+
+        if (StringUtils.hasText(trustedHeader)) {
+            String headerValue = request.getHeader(trustedHeader.trim());
+            if (StringUtils.hasText(headerValue)) {
+                String[] parts = headerValue.split(",");
+                for (String part : parts) {
+                    String candidate = part.trim();
+                    if (!candidate.isBlank() && !"unknown".equalsIgnoreCase(candidate)) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        String remoteAddr = request.getRemoteAddr();
+        return remoteAddr != null ? remoteAddr.trim() : "";
     }
 
     /**
@@ -208,6 +304,58 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("text/plain;charset=UTF-8");
         response.getWriter().write("401 Unauthorized: OpenAPI document access requires Basic authentication.");
+    }
+
+    /**
+     * 处理静态令牌认证逻辑
+     */
+    private boolean handleTokenAuth(HttpServletRequest request, HttpServletResponse response, String path) throws IOException {
+        OpenApiProperties.Token tokenProp = (properties.getGuard() != null)
+                ? properties.getGuard().getToken()
+                : null;
+
+        String expectedSecret = (tokenProp != null) ? tokenProp.getSecret() : null;
+        if (!StringUtils.hasText(expectedSecret)) {
+            log.warn("OpenAPI Token authentication rejected: secret is not configured.");
+            sendTokenChallenge(response);
+            return false;
+        }
+
+        String headerName = (tokenProp != null) ? tokenProp.getHeaderName() : "X-Doc-Token";
+        String providedToken = request.getHeader(headerName);
+
+        // 如果 Header 缺失且允许 Query 参数，则尝试从 Query 参数提取
+        if (!StringUtils.hasText(providedToken) && tokenProp != null && tokenProp.isAllowQueryParam()) {
+            providedToken = request.getParameter(tokenProp.getQueryParamName());
+        }
+
+        if (!StringUtils.hasText(providedToken)) {
+            log.warn("OpenAPI Token authentication rejected: missing token in header [{}] or query for path [{}]", headerName, path);
+            sendTokenChallenge(response);
+            return false;
+        }
+
+        boolean matches = MessageDigest.isEqual(
+                providedToken.trim().getBytes(StandardCharsets.UTF_8),
+                expectedSecret.trim().getBytes(StandardCharsets.UTF_8)
+        );
+
+        if (!matches) {
+            log.warn("OpenAPI Token authentication failed for path [{}]", path);
+            sendTokenChallenge(response);
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * 发送 HTTP 401 Token 认证失败响应
+     */
+    private void sendTokenChallenge(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType("text/plain;charset=UTF-8");
+        response.getWriter().write("401 Unauthorized: OpenAPI document access requires valid Token.");
     }
 
     /**

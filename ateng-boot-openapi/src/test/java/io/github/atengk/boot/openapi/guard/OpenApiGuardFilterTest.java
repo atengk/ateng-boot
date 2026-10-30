@@ -222,4 +222,196 @@ class OpenApiGuardFilterTest {
         verify(filterChain, times(1)).doFilter(request, response);
         assertThat(response.getStatus()).isEqualTo(200);
     }
+
+    @Test
+    @DisplayName("IP 白名单模式 GuardMode.IP_WHITELIST：白名单内 IP 放行")
+    void testIpWhitelistModePassThrough() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("10.2.3.4");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("IP 白名单模式 GuardMode.IP_WHITELIST：非白名单 IP 拦截并响应 403 Forbidden")
+    void testIpWhitelistModeRejected() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("192.168.1.100");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(any(), any());
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("rejected by IP whitelist");
+    }
+
+    @Test
+    @DisplayName("正交 IP 白名单防火墙：启用白名单但处于 BASIC 模式时，非白名单请求直接阻断为 403，不进入 Basic 质询")
+    void testOrthogonalIpWhitelistFirewallBlocksBeforeBasicAuth() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.BASIC);
+        properties.getGuard().getBasic().setUsername("admin");
+        properties.getGuard().getBasic().setPassword("secret123");
+        properties.getGuard().getIpWhitelist().setEnabled(true);
+        properties.getGuard().getIpWhitelist().getCidrs().add("192.168.1.0/24");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("8.8.8.8");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(any(), any());
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("反向代理标头防伪造：未配置 trusted-header 时，客户端伪造的 X-Forwarded-For 被安全忽略")
+    void testUntrustedHeaderIgnoredWhenTrustedHeaderNotConfigured() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("203.0.113.1"); // 公网非白名单 IP
+        request.addHeader("X-Forwarded-For", "10.0.0.1"); // 恶意伪造的内网白名单 IP
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(any(), any());
+        assertThat(response.getStatus()).isEqualTo(403);
+    }
+
+    @Test
+    @DisplayName("反向代理标头提取：显式配置 trusted-header 时，准确从代理链路中提取首个真实客户端 IP")
+    void testTrustedHeaderExtractedWhenConfigured() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+        properties.getGuard().getIpWhitelist().setTrustedHeader("X-Forwarded-For");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("172.16.0.1"); // 反代节点 IP
+        request.addHeader("X-Forwarded-For", "10.1.2.3, 172.16.0.1"); // 客户端真实 IP + 代理 IP
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("静态令牌模式 GuardMode.TOKEN：携带正确 X-Doc-Token 请求头放行")
+    void testTokenModeSuccessWithValidHeader() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.TOKEN);
+        properties.getGuard().getToken().setHeaderName("X-Doc-Token");
+        properties.getGuard().getToken().setSecret("my-secret-token-123");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/v3/api-docs");
+        request.addHeader("X-Doc-Token", "my-secret-token-123");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("静态令牌模式 GuardMode.TOKEN：未携带令牌或令牌错误响应 401 Unauthorized")
+    void testTokenModeRejectedWhenMissingOrWrongToken() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.TOKEN);
+        properties.getGuard().getToken().setSecret("my-secret-token-123");
+
+        // 1. 缺失 Token
+        MockHttpServletRequest request1 = new MockHttpServletRequest("GET", "/v3/api-docs");
+        MockHttpServletResponse response1 = new MockHttpServletResponse();
+        filter.doFilter(request1, response1, filterChain);
+        assertThat(response1.getStatus()).isEqualTo(401);
+
+        // 2. 错误 Token
+        MockHttpServletRequest request2 = new MockHttpServletRequest("GET", "/v3/api-docs");
+        request2.addHeader("X-Doc-Token", "wrong-secret");
+        MockHttpServletResponse response2 = new MockHttpServletResponse();
+        filter.doFilter(request2, response2, filterChain);
+        assertThat(response2.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    @DisplayName("静态令牌模式 GuardMode.TOKEN：通过 Query 参数 ?doc-token=xxx 放行调试")
+    void testTokenModeSuccessWithQueryParam() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.TOKEN);
+        properties.getGuard().getToken().setSecret("debug-token-888");
+        properties.getGuard().getToken().setAllowQueryParam(true);
+        properties.getGuard().getToken().setQueryParamName("doc-token");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/docs");
+        request.setParameter("doc-token", "debug-token-888");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("静态令牌模式 GuardMode.TOKEN：关闭 Query 参数时携带参数仍被拒绝")
+    void testTokenModeRejectedWithQueryParamWhenDisabled() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.TOKEN);
+        properties.getGuard().getToken().setSecret("debug-token-888");
+        properties.getGuard().getToken().setAllowQueryParam(false);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/docs");
+        request.setParameter("doc-token", "debug-token-888");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, never()).doFilter(any(), any());
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    @DisplayName("Fail-Fast 防御：配置 guard.mode=TOKEN 但未配置 secret 时启动抛出 IllegalStateException")
+    void testTokenModeFailFastWhenSecretNotConfigured() {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.TOKEN);
+        properties.getGuard().getToken().setSecret(null);
+
+        assertThatThrownBy(() -> filter.afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ateng.boot.openapi.guard.token.secret is not configured");
+    }
+
+    @Test
+    @DisplayName("Fail-Fast 防御：配置 guard.mode=IP_WHITELIST 但未配置 cidrs 时启动抛出 IllegalStateException")
+    void testIpWhitelistFailFastWhenCidrsEmpty() {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().clear();
+
+        assertThatThrownBy(() -> filter.afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ateng.boot.openapi.guard.ip-whitelist.cidrs is empty");
+    }
 }
