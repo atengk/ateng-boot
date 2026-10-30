@@ -39,14 +39,12 @@ public class AdminUserController {
     @Operation(summary = "创建系统用户", description = "校验账号格式与邮箱唯一性，成功后初始化并返回用户明细")
     @PostMapping
     public Result<AdminUserVO> createUser(@Valid @RequestBody AdminUserCreateRequest request) {
-        AdminUserVO user = new AdminUserVO(
+        AdminUserVO user = AdminUserVO.of(
                 10001L,
                 request.getUsername(),
                 request.getRealName(),
                 request.getEmail(),
-                "13800138000",
-                UserStatusEnum.ENABLE,
-                LocalDateTime.now()
+                "13800138000"
         );
         return Result.success(user);
     }
@@ -72,15 +70,7 @@ public class AdminUserController {
     @Operation(summary = "查询用户详情", description = "根据用户主键 ID 检索基础信息与状态")
     @GetMapping("/{id}")
     public Result<AdminUserVO> getUserById(@Parameter(description = "用户唯一 ID", example = "10001") @PathVariable("id") Long id) {
-        AdminUserVO user = new AdminUserVO(
-                id,
-                "admin_dev",
-                "系统管理员",
-                "admin@example.com",
-                "13800138000",
-                UserStatusEnum.ENABLE,
-                LocalDateTime.now()
-        );
+        AdminUserVO user = AdminUserVO.of(id, "admin_dev", "系统管理员");
         return Result.success(user);
     }
 
@@ -93,8 +83,8 @@ public class AdminUserController {
     @GetMapping
     public Result<List<AdminUserVO>> listUsers() {
         List<AdminUserVO> list = List.of(
-                new AdminUserVO(10001L, "admin_dev", "系统管理员", "admin@example.com", "13800138000", UserStatusEnum.ENABLE, LocalDateTime.now()),
-                new AdminUserVO(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000", UserStatusEnum.ENABLE, LocalDateTime.now())
+                AdminUserVO.of(10001L, "admin_dev", "系统管理员"),
+                AdminUserVO.of(10002L, "operator", "普通运营人员", "operator@example.com", "13900139000")
         );
         return Result.success(list);
     }

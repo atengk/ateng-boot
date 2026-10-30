@@ -1,5 +1,7 @@
 package io.github.atengk.boot.sample.openapi;
 
+import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
+import io.github.atengk.boot.openapi.export.OpenApiFormat;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,6 +11,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.not;
@@ -171,5 +177,31 @@ class OpenApiSampleEndToEndTest {
                 .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"openapi-app.json\""))
                 .andExpect(jsonPath("$.paths['/api/app/articles']").exists())
                 .andExpect(jsonPath("$.paths['/api/admin/users']").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("测试 OpenApiExportHelper 公开门面类直接导出 JSON / YAML / Bytes 契约")
+    void testOpenApiExportHelperDirectJavaApi() throws Exception {
+        // 1. 静态方式导出默认分组 JSON 与 YAML
+        String defaultJson = OpenApiExportHelper.exportJson();
+        assertThat(defaultJson).contains("ateng-boot OpenAPI 生产级契约沙箱");
+
+        String defaultYaml = OpenApiExportHelper.exportYaml();
+        assertThat(defaultYaml).contains("title: ateng-boot OpenAPI 生产级契约沙箱");
+
+        // 2. 静态方式导出 Admin 分组 JSON
+        String adminJson = OpenApiExportHelper.exportJson("admin");
+        assertThat(adminJson).contains("/api/admin/users");
+        assertThat(adminJson).doesNotContain("/api/app/articles");
+
+        // 3. 静态方式导出字节数组
+        byte[] adminJsonBytes = OpenApiExportHelper.exportBytes("admin", OpenApiFormat.JSON);
+        assertThat(adminJsonBytes).isNotEmpty();
+        assertThat(new String(adminJsonBytes, StandardCharsets.UTF_8)).isEqualTo(adminJson);
+
+        // 4. 流式导出至 OutputStream
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        OpenApiExportHelper.export("admin", OpenApiFormat.YAML, out);
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("title: ateng-boot OpenAPI 生产级契约沙箱");
     }
 }

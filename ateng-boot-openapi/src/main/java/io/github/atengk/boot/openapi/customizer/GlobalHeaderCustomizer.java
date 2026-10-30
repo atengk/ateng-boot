@@ -14,6 +14,7 @@ import org.springframework.web.method.HandlerMethod;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -62,16 +63,28 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
             return operation;
         }
 
-        // 1. 扫描 @IgnoreGlobalHeaders 豁免配置
-        IgnoreGlobalHeaders ignoreAnnotation = resolveIgnoreAnnotation(handlerMethod);
-        if (ignoreAnnotation != null) {
-            // 若 value 为空，代表全量豁免所有全局请求头
-            if (ignoreAnnotation.value().length == 0) {
-                return operation;
-            }
+        // 1. 扫描类与方法上的 @IgnoreGlobalHeaders 豁免配置（支持并集继承）
+        IgnoreGlobalHeaders methodAnnotation = (handlerMethod != null)
+                ? AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getMethod(), IgnoreGlobalHeaders.class)
+                : null;
+        IgnoreGlobalHeaders classAnnotation = (handlerMethod != null)
+                ? AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getBeanType(), IgnoreGlobalHeaders.class)
+                : null;
+
+        // 若类或方法任一处显式声明了无参全量豁免（value 为空数组），则全量豁免所有全局头
+        if ((methodAnnotation != null && methodAnnotation.value().length == 0)
+                || (classAnnotation != null && classAnnotation.value().length == 0)) {
+            return operation;
         }
 
-        Set<String> ignoredHeaders = resolveIgnoredHeaders(ignoreAnnotation);
+        // 合并类与方法指定的局部忽略清单（求并集）
+        Set<String> ignoredHeaders = new HashSet<>();
+        if (methodAnnotation != null) {
+            ignoredHeaders.addAll(resolveIgnoredHeaders(methodAnnotation));
+        }
+        if (classAnnotation != null) {
+            ignoredHeaders.addAll(resolveIgnoredHeaders(classAnnotation));
+        }
 
         // 2. 全链路追踪 Trace-Id 请求头注入
         if (headers.isTraceId() && !isHeaderIgnored(MessageHeaderConstants.TRACE_ID, ignoredHeaders)) {
@@ -94,23 +107,6 @@ public class GlobalHeaderCustomizer implements OperationCustomizer {
         }
 
         return operation;
-    }
-
-    /**
-     * 解析方法或类上的 @IgnoreGlobalHeaders 注解（优先方法级别）
-     *
-     * @param handlerMethod 当前请求对应的控制器方法
-     * @return 豁免注解，未声明时返回 null
-     */
-    private IgnoreGlobalHeaders resolveIgnoreAnnotation(HandlerMethod handlerMethod) {
-        if (handlerMethod == null) {
-            return null;
-        }
-        IgnoreGlobalHeaders annotation = AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getMethod(), IgnoreGlobalHeaders.class);
-        if (annotation == null) {
-            annotation = AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getBeanType(), IgnoreGlobalHeaders.class);
-        }
-        return annotation;
     }
 
     /**

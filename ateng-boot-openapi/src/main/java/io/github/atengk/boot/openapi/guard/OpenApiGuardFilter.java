@@ -78,16 +78,17 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
                 if (token == null || !StringUtils.hasText(token.getSecret())) {
                     throw new IllegalStateException("OpenAPI guard mode is set to TOKEN, but ateng.boot.openapi.guard.token.secret is not configured.");
                 }
-            } else if (mode == GuardMode.IP_WHITELIST && properties.isEnabled()) {
-                OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
-                if (ipWhitelist == null || ipWhitelist.getCidrs().isEmpty()) {
-                    throw new IllegalStateException("OpenAPI guard mode is set to IP_WHITELIST, but ateng.boot.openapi.guard.ip-whitelist.cidrs is empty.");
-                }
             }
 
-            // 预初始化 CIDR 匹配器
+            // 预初始化 CIDR 匹配器并校验白名单配置
             OpenApiProperties.IpWhitelist ipWhitelist = properties.getGuard().getIpWhitelist();
-            if (ipWhitelist != null && !ipWhitelist.getCidrs().isEmpty()) {
+            boolean ipWhitelistActive = (mode == GuardMode.IP_WHITELIST) || (ipWhitelist != null && ipWhitelist.isEnabled());
+            if (ipWhitelistActive && properties.isEnabled()) {
+                if (ipWhitelist == null || ipWhitelist.getCidrs() == null || ipWhitelist.getCidrs().isEmpty()) {
+                    throw new IllegalStateException("OpenAPI IP whitelist is enabled, but ateng.boot.openapi.guard.ip-whitelist.cidrs is empty.");
+                }
+                this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
+            } else if (ipWhitelist != null && ipWhitelist.getCidrs() != null && !ipWhitelist.getCidrs().isEmpty()) {
                 this.cidrMatcher = new OpenApiCidrMatcher(ipWhitelist.getCidrs());
             }
         }
@@ -211,14 +212,14 @@ public class OpenApiGuardFilter extends OncePerRequestFilter implements Ordered,
                 for (String part : parts) {
                     String candidate = part.trim();
                     if (!candidate.isBlank() && !"unknown".equalsIgnoreCase(candidate)) {
-                        return candidate;
+                        return OpenApiCidrMatcher.stripPort(candidate);
                     }
                 }
             }
         }
 
         String remoteAddr = request.getRemoteAddr();
-        return remoteAddr != null ? remoteAddr.trim() : "";
+        return remoteAddr != null ? OpenApiCidrMatcher.stripPort(remoteAddr.trim()) : "";
     }
 
     /**

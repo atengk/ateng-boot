@@ -156,6 +156,18 @@ class OpenApiModelConverterTest {
         @Schema(description = "普通颜色枚举")
         private NormalEnum color;
 
+        @Schema(description = "自定义首尾保留卡号")
+        @FieldSensitive(value = SensitiveType.KEEP_HEAD_TAIL, keepHead = 4, keepTail = 4)
+        private String customCard;
+
+        public String getCustomCard() {
+            return customCard;
+        }
+
+        public void setCustomCard(String customCard) {
+            this.customCard = customCard;
+        }
+
         public NormalEnum getColor() {
             return color;
         }
@@ -268,6 +280,13 @@ class OpenApiModelConverterTest {
         assertThat(genderSchema).isNotNull();
         assertThat(getEnumValues(genderSchema)).containsExactly("M", "F");
         assertThat(genderSchema.getDescription()).contains("**枚举选项**：");
+
+        // 5. 验证 KEEP_HEAD_TAIL 自定义脱敏描述
+        io.swagger.v3.oas.models.media.Schema<?> customCardSchema = properties.get("customCard");
+        assertThat(customCardSchema).isNotNull();
+        assertThat(customCardSchema.getDescription())
+                .contains("[脱敏字段: 保留首尾(前4后4)掩码]")
+                .contains("自定义首尾保留卡号");
     }
 
     @Test
@@ -281,5 +300,15 @@ class OpenApiModelConverterTest {
         assertThat(colorSchema.getDescription()).isEqualTo("普通颜色枚举");
         assertThat(colorSchema.getDescription()).doesNotContain("**枚举选项**：");
         assertThat(getEnumValues(colorSchema)).containsExactly("RED", "GREEN", "BLUE");
+    }
+
+    @Test
+    @DisplayName("DisposableBean 生命周期测试：destroy() 对称注销全局转换器")
+    void testDisposableBeanLifecycle() {
+        OpenApiModelConverter testConverter = new OpenApiModelConverter();
+        assertThat(ModelConverters.getInstance().getConverters()).contains(testConverter);
+
+        testConverter.destroy();
+        assertThat(ModelConverters.getInstance().getConverters()).doesNotContain(testConverter);
     }
 }

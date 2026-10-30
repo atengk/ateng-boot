@@ -48,6 +48,13 @@ class GlobalHeaderCustomizerTest {
         }
     }
 
+    @IgnoreGlobalHeaders({"X-Tenant-Id"})
+    static class IgnoreMergedController {
+        @IgnoreGlobalHeaders({"X-App-Version"})
+        public void mergedMethod() {
+        }
+    }
+
     @Test
     @DisplayName("测试默认配置下自动注入 X-Trace-Id 与 X-Tenant-Id")
     void testDefaultHeadersInjection() {
@@ -193,6 +200,28 @@ class GlobalHeaderCustomizerTest {
         assertThat(parameters).noneMatch(p -> "X-App-Version".equalsIgnoreCase(p.getName()));
         assertThat(parameters).anyMatch(p -> MessageHeaderConstants.TRACE_ID.equalsIgnoreCase(p.getName()));
         assertThat(parameters).anyMatch(p -> MessageHeaderConstants.TENANT_ID.equalsIgnoreCase(p.getName()));
+    }
+
+    @Test
+    @DisplayName("测试类标注与方法标注 @IgnoreGlobalHeaders 并集继承合并")
+    void testIgnoreMergedClassAndMethod() throws NoSuchMethodException {
+        OpenApiProperties properties = new OpenApiProperties();
+        properties.getHeaders().getCustom().add(new OpenApiProperties.HeaderParam("X-App-Version", "版本号", false, "1.0.0"));
+        GlobalHeaderCustomizer customizer = new GlobalHeaderCustomizer(properties);
+
+        IgnoreMergedController controller = new IgnoreMergedController();
+        Method method = IgnoreMergedController.class.getMethod("mergedMethod");
+        HandlerMethod handlerMethod = new HandlerMethod(controller, method);
+
+        Operation operation = new Operation();
+        customizer.customize(operation, handlerMethod);
+
+        List<Parameter> parameters = operation.getParameters();
+        assertThat(parameters).hasSize(1);
+        // 类上的 X-Tenant-Id 和方法上的 X-App-Version 均被豁免，仅保留 X-Trace-Id
+        assertThat(parameters).noneMatch(p -> MessageHeaderConstants.TENANT_ID.equalsIgnoreCase(p.getName()));
+        assertThat(parameters).noneMatch(p -> "X-App-Version".equalsIgnoreCase(p.getName()));
+        assertThat(parameters).anyMatch(p -> MessageHeaderConstants.TRACE_ID.equalsIgnoreCase(p.getName()));
     }
 
     @Test

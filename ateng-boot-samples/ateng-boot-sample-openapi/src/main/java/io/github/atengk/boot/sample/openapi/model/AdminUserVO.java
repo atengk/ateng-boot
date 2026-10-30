@@ -50,6 +50,14 @@ public class AdminUserVO {
         this.createTime = createTime;
     }
 
+    public static AdminUserVO of(Long id, String username, String realName) {
+        return of(id, username, realName, username + "@example.com", "13800138000");
+    }
+
+    public static AdminUserVO of(Long id, String username, String realName, String email, String phone) {
+        return new AdminUserVO(id, username, realName, email, phone, UserStatusEnum.ENABLE, LocalDateTime.now());
+    }
+
     public Long getId() {
         return id;
     }

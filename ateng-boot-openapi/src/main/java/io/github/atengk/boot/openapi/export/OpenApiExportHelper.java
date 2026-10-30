@@ -155,6 +155,37 @@ public class OpenApiExportHelper {
         getInstance().exportStream(group, format, out);
     }
 
+    /**
+     * 导出默认全量分组规范为二进制字节数组
+     *
+     * @param format 目标格式 (JSON / YAML)
+     * @return 格式化字节数组
+     */
+    public static byte[] exportBytes(OpenApiFormat format) {
+        return exportBytes((String) null, format);
+    }
+
+    /**
+     * 导出指定分组规范为二进制字节数组（默认 JSON 格式）
+     *
+     * @param group 业务分组名称（为 null 或空时回退为默认分组）
+     * @return JSON 字节数组
+     */
+    public static byte[] exportBytes(String group) {
+        return exportBytes(group, OpenApiFormat.JSON);
+    }
+
+    /**
+     * 导出指定分组规范为二进制字节数组
+     *
+     * @param group  业务分组名称（为 null 或空时回退为默认分组）
+     * @param format 目标格式 (JSON / YAML)
+     * @return 格式化字节数组
+     */
+    public static byte[] exportBytes(String group, OpenApiFormat format) {
+        return getInstance().exportBytes(group, format, null);
+    }
+
     // ==========================================
     // 独立脱机导出方法 (Standalone OpenAPI Model API)
     // ==========================================
@@ -285,13 +316,14 @@ public class OpenApiExportHelper {
      */
     public byte[] exportBytes(String group, OpenApiFormat format, HttpServletRequest request) {
         Objects.requireNonNull(format, "format must not be null");
-        HttpServletRequest effectiveRequest = resolveCurrentRequest(request);
         String targetGroup = StringUtils.hasText(group) ? group.trim() : resolveDefaultGroup();
 
         // 1. 若配置了多业务分组资源 (MultipleOpenApiWebMvcResource)
         if (multipleOpenApiResourceProvider != null) {
             MultipleOpenApiWebMvcResource multipleResource = multipleOpenApiResourceProvider.getIfAvailable();
             if (multipleResource != null) {
+                String apiDocsPath = "/v3/api-docs/" + targetGroup;
+                HttpServletRequest effectiveRequest = resolveCurrentRequest(request, apiDocsPath);
                 try {
                     return (format == OpenApiFormat.YAML)
                             ? multipleResource.openapiYaml(effectiveRequest, "/v3/api-docs", targetGroup, Locale.getDefault())
@@ -308,6 +340,8 @@ public class OpenApiExportHelper {
         if (openApiResourceProvider != null) {
             OpenApiWebMvcResource singleResource = openApiResourceProvider.getIfAvailable();
             if (singleResource != null) {
+                String apiDocsPath = "/v3/api-docs";
+                HttpServletRequest effectiveRequest = resolveCurrentRequest(request, apiDocsPath);
                 try {
                     return (format == OpenApiFormat.YAML)
                             ? singleResource.openapiYaml(effectiveRequest, "/v3/api-docs", Locale.getDefault())
@@ -345,46 +379,73 @@ public class OpenApiExportHelper {
     }
 
     /**
-     * 解析当前环境下的 HTTP 请求（若非 Web 环境则动态创建纯净桩以避免 SpringDoc 计算 BaseUrl 时 NPE）
+     * 解析当前环境下的 HTTP 请求（包装代理确保 getRequestURL 始终对齐 apiDocsPath）
      */
-    private HttpServletRequest resolveCurrentRequest(HttpServletRequest explicitRequest) {
-        if (explicitRequest != null) {
-            return explicitRequest;
-        }
-        RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
-        if (attrs instanceof ServletRequestAttributes servletAttrs) {
-            HttpServletRequest currentRequest = servletAttrs.getRequest();
-            if (currentRequest != null) {
-                return currentRequest;
+    private HttpServletRequest resolveCurrentRequest(HttpServletRequest explicitRequest, String apiDocsPath) {
+        HttpServletRequest baseRequest = explicitRequest;
+        if (baseRequest == null) {
+            RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
+            if (attrs instanceof ServletRequestAttributes servletAttrs) {
+                baseRequest = servletAttrs.getRequest();
             }
         }
-        return createDummyRequest();
-    }
 
-    /**
-     * 基于 JDK 动态代理构建轻量级只读 HttpServletRequest 桩对象
-     */
-    private static HttpServletRequest createDummyRequest() {
+        String baseUrl = extractBaseUrl(baseRequest);
+        String targetUrl = baseUrl + apiDocsPath;
+        HttpServletRequest targetBase = baseRequest;
+
         return (HttpServletRequest) Proxy.newProxyInstance(
                 HttpServletRequest.class.getClassLoader(),
                 new Class<?>[]{HttpServletRequest.class},
-                (proxy, method, args) -> switch (method.getName()) {
-                    case "getMethod" -> "GET";
-                    case "getRequestURL" -> new StringBuffer("http://localhost/v3/api-docs");
-                    case "getRequestURI" -> "/v3/api-docs";
-                    case "getContextPath", "getQueryString", "getPathInfo" -> "";
-                    case "getServletPath" -> "/v3/api-docs";
-                    case "getServerName" -> "localhost";
-                    case "getServerPort" -> 8080;
-                    case "getScheme" -> "http";
-                    case "getHeaderNames", "getParameterNames", "getAttributeNames" -> Collections.emptyEnumeration();
-                    case "getHeader", "getAttribute", "getParameter" -> null;
-                    case "getHeaders" -> Collections.emptyEnumeration();
-                    case "getLocales" -> Collections.enumeration(Collections.singleton(Locale.getDefault()));
-                    case "getLocale" -> Locale.getDefault();
-                    default -> defaultReturnValue(method.getReturnType());
+                (proxy, method, args) -> {
+                    if ("getRequestURL".equals(method.getName())) {
+                        return new StringBuffer(targetUrl);
+                    }
+                    if ("getRequestURI".equals(method.getName())) {
+                        return apiDocsPath;
+                    }
+                    if (targetBase != null) {
+                        return method.invoke(targetBase, args);
+                    }
+                    return switch (method.getName()) {
+                        case "getMethod" -> "GET";
+                        case "getContextPath", "getQueryString", "getPathInfo" -> "";
+                        case "getServletPath" -> apiDocsPath;
+                        case "getServerName" -> "localhost";
+                        case "getServerPort" -> 8080;
+                        case "getScheme" -> "http";
+                        case "getHeaderNames", "getParameterNames", "getAttributeNames" -> Collections.emptyEnumeration();
+                        case "getHeader", "getAttribute", "getParameter" -> null;
+                        case "getHeaders" -> Collections.emptyEnumeration();
+                        case "getLocales" -> Collections.enumeration(Collections.singleton(Locale.getDefault()));
+                        case "getLocale" -> Locale.getDefault();
+                        default -> defaultReturnValue(method.getReturnType());
+                    };
                 }
         );
+    }
+
+    private static String extractBaseUrl(HttpServletRequest request) {
+        if (request != null) {
+            try {
+                String scheme = request.getScheme();
+                String serverName = request.getServerName();
+                int port = request.getServerPort();
+                StringBuilder sb = new StringBuilder();
+                sb.append(StringUtils.hasText(scheme) ? scheme : "http").append("://");
+                sb.append(StringUtils.hasText(serverName) ? serverName : "localhost");
+                if (port > 0 && port != 80 && port != 443) {
+                    sb.append(":").append(port);
+                }
+                String contextPath = request.getContextPath();
+                if (StringUtils.hasText(contextPath)) {
+                    sb.append(contextPath);
+                }
+                return sb.toString();
+            } catch (Exception ignored) {
+            }
+        }
+        return "http://localhost:8080";
     }
 
     private static Object defaultReturnValue(Class<?> returnType) {

@@ -414,4 +414,38 @@ class OpenApiGuardFilterTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("ateng.boot.openapi.guard.ip-whitelist.cidrs is empty");
     }
+
+    @Test
+    @DisplayName("Fail-Fast 防御：正交 IP 白名单开启但处于 BASIC 模式且未配置 cidrs 时启动抛出 IllegalStateException")
+    void testOrthogonalIpWhitelistFailFastWhenCidrsEmptyUnderOtherMode() {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.BASIC);
+        properties.getGuard().getBasic().setUsername("admin");
+        properties.getGuard().getBasic().setPassword("secret123");
+        properties.getGuard().getIpWhitelist().setEnabled(true);
+        properties.getGuard().getIpWhitelist().getCidrs().clear();
+
+        assertThatThrownBy(() -> filter.afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ateng.boot.openapi.guard.ip-whitelist.cidrs is empty");
+    }
+
+    @Test
+    @DisplayName("反向代理标头端口剥离：trusted-header 携带端口号时成功清洗并匹配放行")
+    void testTrustedHeaderWithPortStrippedSuccessfully() throws ServletException, IOException {
+        properties.setEnabled(true);
+        properties.getGuard().setMode(GuardMode.IP_WHITELIST);
+        properties.getGuard().getIpWhitelist().getCidrs().add("10.0.0.0/8");
+        properties.getGuard().getIpWhitelist().setTrustedHeader("X-Forwarded-For");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/swagger-ui/index.html");
+        request.setRemoteAddr("172.16.0.1"); // 反代内网 IP
+        request.addHeader("X-Forwarded-For", "10.1.2.3:8080, 172.16.0.1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, filterChain);
+
+        verify(filterChain, times(1)).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
 }

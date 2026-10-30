@@ -29,7 +29,7 @@
 | **状态码扩展** | 业务状态码字典 SPI 扩展 | `ResultCodeProvider` | SPI 注册 | `getResultCodes()`, `getTitle()`, `resolveScenario()`: 动态向全局描述注入业务领域状态码字典 | [ResultCodeProviderTest](./src/test/java/io/github/atengk/boot/openapi/customizer/ResultCodeProviderTest.java) |
 | **契约规范** | 标准 HTTP 响应说明补全 | `StandardApiResponseCustomizer` | `standard-responses` (默认 `true`) | `customize(Operation, HandlerMethod)`: 为 Operation 补全 200/400/401/500 响应语义 | [StandardApiResponseCustomizerTest](./src/test/java/io/github/atengk/boot/openapi/customizer/StandardApiResponseCustomizerTest.java) |
 | **业务分组** | 配置驱动多业务分组路由 | `DynamicGroupedOpenApiRegistrar` | `groups` (配置列表) | `registerBeanDefinitions(...)`: 依据配置动态注册多 `GroupedOpenApi`，未配置时兜底单全量 | [DynamicGroupedOpenApiRegistrarTest](./src/test/java/io/github/atengk/boot/openapi/group/DynamicGroupedOpenApiRegistrarTest.java) |
-| **离线交付** | 离线契约导出门面助手 | `OpenApiExportHelper` | `exportJson(...)`<br>`exportYaml(...)`<br>`export(...)` | 支持指定分组或全量 OpenAPI 规范导出为 JSON/YAML 字符串、字节数组或写入输出流 | [OpenApiExportHelperTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportHelperTest.java) |
+| **离线交付** | 离线契约导出门面助手 | `OpenApiExportHelper` | `exportJson(...)`<br>`exportYaml(...)`<br>`export(...)` | 支持指定分组或全量 OpenAPI 规范导出为 JSON/YAML 字符串、字节数组或写入输出流 | [OpenApiExportHelperTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportHelperTest.java)<br>[OpenApiSampleEndToEndTest](../ateng-boot-samples/ateng-boot-sample-openapi/src/test/java/io/github/atengk/boot/sample/openapi/OpenApiSampleEndToEndTest.java) |
 | **离线交付** | 受管离线契约导出 REST 控制器 | `OpenApiExportController` | `export.enabled: true` | `GET /docs/export/{group}.json` 与 `/{group}.yaml`，带 `Content-Disposition` 附件下载响应头 | [OpenApiExportControllerTest](./src/test/java/io/github/atengk/boot/openapi/export/OpenApiExportControllerTest.java) |
 
 ---
@@ -129,14 +129,14 @@ public class AdminAuthController {
 @Component
 public class SampleResultCodeProvider implements ResultCodeProvider {
 
-    public enum OrderBusinessCode implements IResultCode {
-        ORDER_EXPIRED(8001, "订单已过期超时"),
-        PAY_FAILED(8002, "支付网关扣款失败");
+    public enum SampleBusinessCode implements IResultCode {
+        ARTICLE_AUDIT_PENDING(8001, "文章正在审核中"),
+        USER_ACCOUNT_LOCKED(8002, "用户账号已被风控锁定");
 
         private final Integer code;
         private final String msg;
 
-        OrderBusinessCode(Integer code, String msg) {
+        SampleBusinessCode(Integer code, String msg) {
             this.code = code;
             this.msg = msg;
         }
@@ -154,18 +154,21 @@ public class SampleResultCodeProvider implements ResultCodeProvider {
 
     @Override
     public String getTitle() {
-        return "### 订单中心专属业务状态码字典 (Order Result Codes)";
+        return "### 样例工程自定义业务状态码字典 (Sample Result Codes)";
     }
 
     @Override
     public Collection<? extends IResultCode> getResultCodes() {
-        return Arrays.asList(OrderBusinessCode.values());
+        return Arrays.asList(SampleBusinessCode.values());
     }
 
     @Override
     public String resolveScenario(IResultCode resultCode) {
-        if (resultCode == OrderBusinessCode.ORDER_EXPIRED) {
-            return "订单超过 30 分钟未支付自动关闭";
+        if (resultCode == SampleBusinessCode.ARTICLE_AUDIT_PENDING) {
+            return "敏感词拦截或新发布内容进入人工审核队列";
+        }
+        if (resultCode == SampleBusinessCode.USER_ACCOUNT_LOCKED) {
+            return "密码输错超限或异常地理位置登录触发风控冻结";
         }
         return resultCode.getMsg();
     }

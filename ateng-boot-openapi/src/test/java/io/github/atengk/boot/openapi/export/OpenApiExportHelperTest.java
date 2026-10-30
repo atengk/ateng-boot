@@ -127,6 +127,9 @@ class OpenApiExportHelperTest {
         // 验证静态门面代理
         assertThat(OpenApiExportHelper.exportJson("admin")).isEqualTo(mockAdminJson);
         assertThat(OpenApiExportHelper.exportYaml("admin")).isEqualTo(mockAdminYaml);
+        assertThat(OpenApiExportHelper.exportBytes("admin", OpenApiFormat.JSON)).isEqualTo(mockAdminJson.getBytes(StandardCharsets.UTF_8));
+        assertThat(OpenApiExportHelper.exportBytes("admin", OpenApiFormat.YAML)).isEqualTo(mockAdminYaml.getBytes(StandardCharsets.UTF_8));
+        assertThat(OpenApiExportHelper.exportBytes("admin")).isEqualTo(mockAdminJson.getBytes(StandardCharsets.UTF_8));
 
         // 验证流式写入
         ByteArrayOutputStream out = new ByteArrayOutputStream();
