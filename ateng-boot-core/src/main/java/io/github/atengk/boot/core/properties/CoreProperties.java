@@ -54,6 +54,12 @@ public class CoreProperties {
     private LoggingProperties logging = new LoggingProperties();
 
     /**
+     * 方法级慢调用告警配置
+     */
+    @NestedConfigurationProperty
+    private SlowAlertProperties slowAlert = new SlowAlertProperties();
+
+    /**
      * 获取有效的时钟回拨容忍时长
      * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
      *

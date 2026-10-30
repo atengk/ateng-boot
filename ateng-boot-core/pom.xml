@@ -63,6 +63,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Boot AOP (用于 @SlowAlert 慢调用告警切面，可选依赖) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Boot 自动装配（用于 AtengCoreAutoConfiguration 自动挂载 SpringUtil，可选依赖） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

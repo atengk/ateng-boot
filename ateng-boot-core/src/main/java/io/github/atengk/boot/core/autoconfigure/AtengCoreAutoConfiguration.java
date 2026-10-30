@@ -1,5 +1,7 @@
 package io.github.atengk.boot.core.autoconfigure;
 
+import io.github.atengk.boot.core.aspect.SlowAlertAspect;
+import io.github.atengk.boot.core.diagnostic.SlowBeanDiagnosticPostProcessor;
 import io.github.atengk.boot.core.id.Snowflake;
 import io.github.atengk.boot.core.properties.CoreProperties;
 import io.github.atengk.boot.core.properties.SnowflakeProperties;
@@ -10,12 +12,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
 
 /**
  * Core 核心通用底座自动配置类
- * 负责在 Spring 容器就绪后自动装配 SpringUtil 全局静态容器门面与受管分布式 Snowflake 雪花发号器
+ * 负责在 Spring 容器就绪后自动装配 SpringUtil 全局静态容器门面、分布式 Snowflake 雪花发号器、慢 Bean 诊断与 @SlowAlert 慢调用切面
  *
  * @author Ateng
  * @since 2026-10-17
@@ -56,5 +59,34 @@ public class AtengCoreAutoConfiguration {
         long maxBackwardMs = tolerance != null ? Math.max(0, tolerance.toMillis()) : Snowflake.DEFAULT_MAX_BACKWARD_MS;
 
         return new Snowflake(workerId, datacenterId, epoch, maxBackwardMs);
+    }
+
+    /**
+     * 自动装配慢 Bean 初始化耗时诊断后处理器（声明为 static 且注入 Environment，避免引发配置属性类过早实例化）
+     *
+     * @param environment Spring 运行时环境
+     * @return SlowBeanDiagnosticPostProcessor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SlowBeanDiagnosticPostProcessor.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.core.system", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public static SlowBeanDiagnosticPostProcessor slowBeanDiagnosticPostProcessor(org.springframework.core.env.Environment environment) {
+        Duration threshold = environment.getProperty("ateng.boot.core.system.slow-bean-threshold", Duration.class, Duration.ofMillis(500));
+        return new SlowBeanDiagnosticPostProcessor(threshold);
+    }
+
+    /**
+     * 方法级慢调用告警切面配置类（仅在引入 AspectJ 且开启配置时自动挂载）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
+    @ConditionalOnProperty(prefix = "ateng.boot.core.slow-alert", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class SlowAlertConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(SlowAlertAspect.class)
+        public SlowAlertAspect slowAlertAspect(CoreProperties properties) {
+            return new SlowAlertAspect(properties.getSlowAlert());
+        }
     }
 }
