@@ -48,7 +48,7 @@
 | **操作审计契约** | 操作日志模型与操作动作枚举 | `OperateLogModel`, `OperateTypeEnum` | - | `OperateLogModel.builder()`, `model.isSuccess()`, `model.addExtra(k, v)`, `OperateTypeEnum.of(code)`, `OperateTypeEnum.fromValue(val)` | `OperateLogModelTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **进程内滑动窗口流控** | 高性能单机内存滑动窗口限流器 | `SlidingWindowCounter` | - | `SlidingWindowCounter(duration, sliceCount)`, `incrementAndGet(delta)`, `tryAcquire(delta, threshold)`, `getCount()`, `reset()` (基于环形时间切片，零外部中间件平滑限流与防刷) | `SlidingWindowCounterTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **纳秒级任务秒表** | 阶梯多任务秒表与函数剖析门面 | `StopWatch` | - | `new StopWatch(id)`, `start(taskName)`, `stop()`, `getTotalTimeMillis()`, `prettyPrint()`, `measureMillis(runnable)`, `measure(supplier)` | `StopWatchTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
-| **网络通信地址工具** | 内网 IPv4 探测与端口可用性校验 | `NetUtil` | - | `NetUtil.getLocalIpv4()`, `isPortAvailable(port)` / `isUsableLocalPort(...)`, `findAvailablePort(min, max)`, `isReachable(...)` / `canConnect(...)` | `NetUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
+| **网络通信地址工具** | 强化物理网卡 IPv4 探测与端口可用性校验 | `NetUtil` | - | `NetUtil.getLocalIpv4()` 强化物理网卡 IPv4 探测（优先过滤 Docker/K8s/vEthernet/WSL 等虚拟网卡与回环，自适应保底）, `isPortAvailable(port)` / `isUsableLocalPort(...)`, `findAvailablePort(min, max)`, `isReachable(...)` / `canConnect(...)` | `NetUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java`, `CoreSystemScenarioServiceTest.java` |
 | **安全类型转换** | 纯原生强类型安全转换与保底默认值 | `ConvertUtil` | - | `ConvertUtil.toLong(obj, defaultVal)`, `toInt(obj, defaultVal)`, `toBoolean(obj, defaultVal)`, `toBigDecimal(obj, defaultVal)`, `toList(obj)` / `toList(obj, type)` (彻底杜绝 NPE 与 ClassCastException) | `ConvertUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **异常分析与堆栈截断** | 因果链深度分析与有界堆栈序列化 | `ExceptionUtil` | - | `ExceptionUtil.getRootCause(throwable)` (内置循环依赖防护), `getMessage(throwable)`, `stackTraceToString(throwable, maxLen)` (防日志/数据库撑爆优雅截断) | `ExceptionUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
 | **通用字符串算法** | 高性能占位符替换、驼峰下划线互转与安全截断 | `StringUtil` | - | `StringUtil.format(template, args)`, `toCamelCase(str)`, `toUnderlineCase(str)`, `containsAny(...)`, `containsIgnoreCase(...)`, `truncate(...)`, `mask(...)` | `StringUtilTest.java`, `CoreDataProcessingScenarioServiceTest.java` |
@@ -62,6 +62,11 @@
 | **单机流量整形与限流** | 纯无锁 CAS 纳秒级平滑令牌桶限流器 | `TokenBucketLimiter` | - | `new TokenBucketLimiter(capacity, refillRatePerSecond)`, `tryAcquire()`, `tryAcquire(permits)`, `tryAcquire(permits, timeout)`, `acquire()`, `acquire(permits)`, `getAvailableTokens()` | `TokenBucketLimiterTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **核心配置外置化与发号器装配** | Core 配置属性绑定与受管雪花发号器自动装配 | `CoreProperties`, `SnowflakeProperties`, `CacheProperties`, `AtengCoreAutoConfiguration`, `Snowflake` | `ateng.boot.core.clock-backoff-tolerance`, `ateng.boot.core.cache-ttl`, `ateng.boot.core.snowflake.enabled`, `worker-id`, `datacenter-id`, `epoch`, `clock-backoff-tolerance`, `ateng.boot.core.cache.default-max-capacity`, `default-ttl` | 自动装配 `@Bean Snowflake`，优雅自适应网卡/IP推导；时钟回拨熔断转译为 `BusinessException(INTERNAL_SERVER_ERROR)` | `AtengCoreAutoConfigurationTest.java`, `SnowflakeTest.java`, `CoreResilienceScenarioServiceTest.java` |
 | **强类型通用枚举** | 通用枚举契约、标准选项模型、别名注解、高速解析门面与 JSR-303 格式防卫 | `IBaseEnum<T>`, `OptionItem<T>`, `@EnumAlias`, `EnumUtil`, `@InEnum`, `InEnumValidator` | - | `IBaseEnum.getCode()`, `getLabel()`, `matches(code)`, `toOption()`, `getValue()`; `OptionItem.of(...)`; `EnumUtil.fromCode(...)`, `getByCodeOrThrow(...)`, `getLabelByCode(...)`, `isValidCode(...)`, `toOptions(...)`, `getAllCodes(...)`; `@InEnum(value = StatusEnum.class)` 第一道防线 JSR-303 校验拦截 | `EnumUtilTest.java`, `InEnumValidatorTest.java` |
+| **系统环境基线防卫** | 启动前置校准时区、编码、Headless 与底层网络防死锁超时 | `SystemEnvironmentPostProcessor`, `SystemProperties` | `ateng.boot.core.system.enabled`, `timezone`, `timezone-guard-enabled`, `shutdown-uptime-enabled` | 容器与应用启动前置校准 JVM 默认时区 (`Asia/Shanghai`)、UTF-8 字符集与 Headless，强制注入底层 Socket 默认连接与读取超时 (`10000ms`)，彻底防御网络无限挂死 | `SystemEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **零 XML 工业级日志引擎** | 零 XML 模式高亮彩色控制台、traceId 注入与双文件异步切片落盘 | `LoggingEnvironmentPostProcessor`, `LoggingProperties` | `ateng.boot.core.logging.enabled`, `console.enabled`, `file.enabled`, `file.path`, `file.max-file-size`, `file.max-history`, `file.total-size-cap`, `file.split-error`, `file.clean-history-on-start` | 零 XML 自动注入控制台彩色高亮与 MDC `traceId` 追踪格式；支持纯配置开启磁盘双文件落盘 (`app.log` / `app-error.log`)、大小时间滚动切片与启动自清理 | `LoggingEnvironmentPostProcessorTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **方法级慢调用主动告警** | 声明式慢方法执行耗时毫秒级监控与安全参数快照 | `@SlowAlert`, `SlowAlertAspect`, `SlowAlertProperties` | `ateng.boot.core.slow-alert.enabled`, `default-threshold`, `include-args`, `max-args-length` | `@SlowAlert(threshold = 30, includeArgs = true)` 监控业务方法执行耗时，超阈值输出 `[SLOW_METHOD]` WARN 告警，自动快照入参、1KB 截断防爆并安全脱敏 | `SlowAlertAspectTest.java`, `CoreSystemScenarioServiceTest.java` |
+| **慢 Bean 初始化耗时诊断** | Spring 容器启动期慢 Bean 耗时精准诊断定位 | `SlowBeanDiagnosticPostProcessor` | `ateng.boot.core.system.slow-bean-threshold` | 监听 Spring 容器内部所有 Bean 初始化耗时，超出阈值（默认 500ms）主动输出 `[SLOW_BEAN]` 告警并定位目标类与耗时，辅助冷启动性能分析调优 | `SlowBeanDiagnosticPostProcessorTest.java` |
+| **受管临时目录与生命周期治理** | 应用专属隔离临时目录、安全递归清理与关机存活时长摘要 | `FileUtil`, `AppTempDirCleanupListener`, `AppShutdownListener` | `ateng.boot.core.system.shutdown-uptime-enabled` | `FileUtil.getAppTempDirectory(appName)` 生成受管隔离临时目录，`cleanDirectorySafely(dir)` 递归安全清理，JVM 关闭钩子自动清理临时目录并输出优雅关机 Uptime 摘要 | `FileUtilTest.java`, `AppTempDirCleanupListenerTest.java`, `AppShutdownListenerTest.java`, `CoreSystemScenarioServiceTest.java` |
 
 ---
 
@@ -1603,9 +1608,128 @@ public class UserCreateRequest {
 
 ---
 
+## 13. 系统基线防卫、零 XML 工业级日志引擎与运行时诊断
+
+### 场景痛点
+1. **环境差异与时区漂移**：Docker 容器默认运行在 UTC 时区，或宿主机环境编码并非 UTF-8，导致持久化时间偏移 8 小时或乱码；
+2. **网络无界挂死**：JDK 默认的 `sun.net.client.defaultConnectTimeout` 与 `defaultReadTimeout` 为 `-1`（无限等待），当下游网络抖动时导致工作线程全部悬挂在原生 Socket 读写上引发线程耗尽与雪崩；
+3. **日志 XML 维护灾难**：各微服务到处拷贝一份上百行的 `logback-spring.xml`，格式混乱且缺乏 MDC `traceId` 注入与大小/时间双维度压缩切片策略；
+4. **性能黑盒与慢调用**：线上偶发核心业务变慢缺乏轻量的方法级监控手段；大型微服务启动慢，排查具体是哪个 Bean 初始化耗时过长如同盲盒；
+5. **临时文件失控堆积**：报表流式导出或文件上传产生的临时文件散落在宿主机各处，长期运行导致磁盘被挤爆。
+
 ---
 
-## 13. 模块配置属性参考 (`application.yml`)
+### 13.1 系统运行环境基线防卫 (`SystemEnvironmentPostProcessor` & `NetUtil`)
+
+在 Spring Boot 容器与日志系统初始化前，`SystemEnvironmentPostProcessor`（通过 `EnvironmentPostProcessor` 标准规范自动触发）自动执行四重系统安全基线防卫：
+1. **时区一致性校准**：将当前 JVM 默认时区校准为 `Asia/Shanghai`（可通过 `ateng.boot.core.system.timezone` 灵活定制），彻底消除 UTC 时区漂移；
+2. **字符集防卫**：前置校验 `file.encoding`，优先确保 UTF-8 运行环境；
+3. **Headless 无头模式**：强制设置 `java.awt.headless=true`，防御缺少图形环境的云原生容器环境因绘图崩溃；
+4. **网络通信防挂死超时**：前置设置 `sun.net.client.defaultConnectTimeout=10000` 与 `sun.net.client.defaultReadTimeout=10000`（10 秒默认超时），彻底杜绝原生网络调用无界悬挂；
+5. **强化物理网卡 IPv4 探测 (`NetUtil.getLocalIpv4()`)**：主动过滤回环、虚拟（如 `vEthernet`、`docker0`、`flannel`、`cni0`、`wsl`、`vmnet`、`virtualbox`）及下线网卡，精准提取宿主机第一张真实可用的物理网卡 IPv4 地址，杜绝微服务注册中心与欢迎卡片展示虚拟网段 IP。
+
+#### 核心使用范式
+```java
+// 1. 获取精准物理网卡 IPv4 地址（优先提取真实物理网卡）
+String localIpv4 = NetUtil.getLocalIpv4();
+
+// 2. 获取当前系统基线运行状态
+ZoneId zoneId = ZoneId.systemDefault(); // Asia/Shanghai
+String connectTimeout = System.getProperty("sun.net.client.defaultConnectTimeout"); // 10000
+```
+
+---
+
+### 13.2 零 XML 工业级日志引擎 (`LoggingEnvironmentPostProcessor`)
+
+无需在各工程中维护脆弱冗长的 `logback-spring.xml`，`LoggingEnvironmentPostProcessor` 纯原生接管 Logback 配置：
+1. **控制台日志（默认开启）**：自动注入高亮彩色与 MDC `traceId` 追踪格式（`[%clr(%d{...}){faint}] [%clr(%5p)] [%clr(%X{traceId:-}){magenta}] ...`），天然打通全链路追踪；
+2. **磁盘双文件异步切片落盘（可选开启）**：
+   - 仅需在 YAML 中配置 `ateng.boot.core.logging.file.enabled: true`，无需任何 XML 文件；
+   - 自动生成 `app.log`（全量运行日志）与 `app-error.log`（仅收集 WARN/ERROR 等级异常日志）；
+   - 支持基于大小（默认 100MB）与时间（天）的滚动压缩归档（`.gz`），支持历史保留天数（默认 30 天）与磁盘总占用上限（默认 10GB）自动清理；
+   - 支持启动期自动清理历史日志（`clean-history-on-start`），适用于边缘端或临时测试容器。
+
+#### 控制台真实输出示例
+```text
+2026-10-30 18:00:00.123  INFO 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.b.s.c.s.CoreSystemScenarioService : 系统运行基线校准完成
+```
+
+---
+
+### 13.3 方法级慢调用主动告警 (`@SlowAlert`)
+
+对于可能存在性能波动的核心计算、第三方调用或批处理方法，直接在方法上标注 `@SlowAlert` 声明耗时阈值与告警策略：
+
+#### 核心代码范式
+```java
+import io.github.atengk.boot.core.annotation.SlowAlert;
+import org.springframework.stereotype.Service;
+
+@Service
+public class CoreSystemScenarioService {
+
+    // 标注慢调用阈值 30ms，自动记录入参快照（敏感参数自动脱敏）
+    @SlowAlert(threshold = 30, includeArgs = true)
+    public long processSlowComputation(String taskId, String secretToken) {
+        // 模拟耗时业务计算...
+        try {
+            Thread.sleep(45);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+        return 45L;
+    }
+}
+```
+
+#### 告警日志输出规范
+当方法执行耗时超出阈值时，自动在日志中输出结构化 WARN 告警，并对入参执行 1KB 截断以防御超大报文引发 OOM：
+```text
+2026-10-30 18:00:00.180  WARN 12345 --- [ateng-boot-sample-core] [main] [a1b2c3d4e5f67890] i.g.a.b.c.a.SlowAlertAspect : [SLOW_METHOD] 方法执行耗时超过阈值! class=io.github.atengk.boot.sample.core.service.CoreSystemScenarioService, method=processSlowComputation, cost=46ms, threshold=30ms, args=[taskId="order-bench-99", secretToken="******"]
+```
+
+---
+
+### 13.4 慢 Bean 初始化耗时诊断 (`SlowBeanDiagnosticPostProcessor`)
+
+Spring 启动时，`SlowBeanDiagnosticPostProcessor`（基于 Spring 原生 `BeanPostProcessor`）在底层纳秒级统计每个单例 Bean 的初始化耗时。
+- 凡耗时超过阈值（默认 `500ms`，由 `ateng.boot.core.system.slow-bean-threshold` 配置）的 Bean，自动在控制台输出醒目的 WARN 诊断日志，精确展示 Bean 名称、目标类与耗时毫秒数；
+- 辅助运维与开发人员在应用冷启动缓慢时迅速定位拖慢启动的组件（如某些重量级外部客户端连接池、反射扫描类等）。
+
+#### 诊断日志输出示例
+```text
+2026-10-30 18:00:00.950  WARN 12345 --- [ateng-boot-sample-core] [main] [] i.g.a.b.c.a.SlowBeanDiagnosticPostProcessor : [SLOW_BEAN] Spring Bean 初始化耗时过长! beanName='heavyDataEngine', targetClass=com.example.HeavyDataEngine, cost=752ms, threshold=500ms
+```
+
+---
+
+### 13.5 受管临时目录治理与优雅关机摘要 (`FileUtil` & `AppShutdownListener`)
+
+#### 受管临时目录与安全清理
+框架提供受管且业务隔离的应用专属临时目录（位于系统临时目录下以应用名命名的子目录），杜绝跨系统或全局 `/tmp` 混乱：
+```java
+// 1. 获取当前应用专属受管临时目录（自动递归创建）
+Path appTempDir = FileUtil.getAppTempDirectory("sample-core");
+
+// 2. 在临时目录下创建业务临时文件
+Path targetFile = appTempDir.resolve("report-temp-1.txt");
+Files.writeString(targetFile, "Sample Content");
+
+// 3. 业务完成时安全递归清理目录（防止文件句柄泄露）
+int cleanedCount = FileUtil.cleanDirectorySafely(appTempDir);
+```
+- **自动关机兜底清理**：`AppTempDirCleanupListener` 注册了 JVM 关机钩子，在进程终止时自动递归清理受管临时目录，彻底杜绝磁盘垃圾堆积。
+
+#### 优雅停机存活时长摘要
+应用正常关闭时，`AppShutdownListener` 自动捕获 `ContextClosedEvent`，计算并打印服务总存活时长（Uptime），辅助排查意外停机或滚动发布记录：
+```text
+2026-10-30 18:30:00.000  INFO 12345 --- [ateng-boot-sample-core] [main] [] i.g.a.b.c.l.AppShutdownListener : [SHUTDOWN] 应用正在优雅关闭... 总存活时长: 1h 25m 43s (Uptime: 5143000ms)
+```
+
+---
+
+## 14. 模块配置属性参考 (`application.yml`)
 
 `ateng-boot-core` 提供核心底座全局配置属性（`CoreProperties`）与自适应双模受管异步任务执行器（`AtengAsyncAutoConfiguration`），支持开箱即用与按需定制：
 
@@ -1624,6 +1748,50 @@ ateng:
       clock-backoff-tolerance: 10ms
       # 进程内内存缓存默认存活时间（强类型 Duration 格式，默认 30m）
       cache-ttl: 30m
+      # 系统运行环境基线防卫配置
+      system:
+        # 是否启用系统环境防卫总开关（默认 true）
+        enabled: true
+        # 默认校准时区标识（默认 Asia/Shanghai）
+        timezone: "Asia/Shanghai"
+        # 是否开启时区、UTF-8 字符集与 JVM 底层网络超时防卫（默认 true）
+        timezone-guard-enabled: true
+        # 慢 Bean 初始化耗时诊断阈值（强类型 Duration，默认 500ms；设为 0 或 null 禁用）
+        slow-bean-threshold: 500ms
+        # 应用关闭时是否输出存活 Uptime 摘要（默认 true）
+        shutdown-uptime-enabled: true
+      # 零 XML 工业级日志引擎与持久化配置
+      logging:
+        # 日志引擎总开关（默认 true）
+        enabled: true
+        console:
+          # 是否开启高亮彩色 + traceId 控制台输出（默认 true）
+          enabled: true
+        file:
+          # 是否开启磁盘文件持久化落盘（默认 false）
+          enabled: false
+          # 日志文件输出目录路径（默认 logs）
+          path: "logs"
+          # 单日志文件滚动切片阈值（强类型 DataSize，默认 100MB）
+          max-file-size: 100MB
+          # 历史归档日志保留天数（默认 30 天）
+          max-history: 30
+          # 磁盘日志总占用上限（强类型 DataSize，默认 10GB）
+          total-size-cap: 10GB
+          # 是否独立分流生成 app-error.log 错误日志（默认 true）
+          split-error: true
+          # 是否在应用启动时清理历史日志文件（默认 false）
+          clean-history-on-start: false
+      # 方法级慢调用告警配置
+      slow-alert:
+        # 是否启用 @SlowAlert 切面（默认 true）
+        enabled: true
+        # 默认慢方法耗时判定阈值（强类型 Duration，默认 500ms）
+        default-threshold: 500ms
+        # 告警日志中是否记录方法入参快照（默认 true）
+        include-args: true
+        # 入参快照最大字符截断长度（默认 1024 字符，防大报文 OOM）
+        max-args-length: 1024
       # Snowflake 分布式雪花发号器配置
       snowflake:
         # 是否开启受管 Snowflake 发号器自动装配 Bean（默认 true）

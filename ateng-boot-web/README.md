@@ -42,6 +42,8 @@
 | **Servlet 上下文与下载** | 上下文安全门面与 RFC 6266 文件下载 | `ServletUtil` | - | `ServletUtil.getRequest()`, `getResponse()`, `getHeader()`, `writeDownload(response, filename, bytes/stream)`，RFC 6266 双重编码彻底杜绝浏览器乱码 | `ServletUtilTest.java`, `WebRuntimePipelineSampleControllerTest.java` |
 | **声明式 API 多版本分流** | 路径前缀与请求头双模版本控制 | `@ApiVersion`, `ApiVersionCondition`, `ApiVersionRequestMappingHandlerMapping`, `ApiVersionProperties` | `ateng.boot.web.api-version.enabled`, `default-version`, `header`, `path-prefix-enabled` | 支持 Controller 类或方法标注，URL 路径前缀（`/v{version}/`）与请求头（`X-API-Version`）双向自动分流，缺省默认版本回退与方法级覆盖类级 | `ApiVersionConditionTest.java`, `ApiVersionRequestMappingHandlerMappingTest.java`, `WebVersionSampleControllerTest.java` |
 | **枚举字典与反序列化** | 启动期枚举扫描注册表、三阶只读 HTTP 字典端点与 Jackson 强类型双向反序列化器 | `EnumDictionaryRegistry`, `EnumDictionaryController`, `EnumDictionaryProperties`, `EnumNamingStrategy`, `BaseEnumDeserializer`, `AtengEnumDictionaryAutoConfiguration` | `ateng.boot.web.enum.enabled`, `path-prefix`, `naming-strategy`, `scan-packages` | `GET {prefix}` 全量目录索引; `GET {prefix}/{name}` 单枚举查询; `POST/GET {prefix}/batch` 批量聚合; 别名冲突启动期 Fail-Fast; i18n 多语言透明适配 (`enum.{SimpleName}.{NAME}`) 与平滑回退; `BaseEnumDeserializer` 自动拦截数字 code、字符串 code 与常量名精准反序列化为 `IBaseEnum` 实例 | `EnumDictionaryTest.java`, `EnumDictionaryI18nTest.java`, `BaseEnumDeserializerTest.java`, `WebEnumSampleControllerTest.java` |
+| **启动一体化就绪卡片** | 启动完成规整 ASCII 欢迎卡片与在线文档直达 | `ApplicationReadyCardListener`, `ApplicationReadyEvent` | `ateng.boot.web.ready-card.enabled` | 容器启动就绪输出一体化 ASCII 卡片，自适应探测 Local/Network 访问地址、Swagger/SpringDoc 接口文档、运行环境、进程 PID、JVM 堆内存与秒级启动耗时 | `ApplicationReadyCardListenerTest.java`, `WebReadyCardSampleTest.java` |
+| **生产环境高危安全防呆** | 生产环境高危配置主动探测与启动阻断自检 | `ProductionSanityChecker`, `ApplicationReadyEvent` | `ateng.boot.web.sanity-check.enabled` | 生产环境 (`prod`/`production`) 启动自检防呆，主动探测并阻断 H2 控制台、Druid 监控弱口令与未授权敏感端点暴露，输出红牌告警或抛出异常熔断阻断启动 | `ProductionSanityCheckerTest.java`, `WebReadyCardSampleTest.java` |
 
 ---
 
@@ -1106,7 +1108,56 @@ public class WebEnumSampleController {
 
 ---
 
-## 22. 模块配置属性参考 (`application.yml`)
+## 22. 一体化启动就绪总览卡片与生产安全防呆
+
+### 场景痛点
+1. **控制台信息淹没**：Spring Boot 启动后输出海量框架初始化与组件日志，开发者需要向上大幅翻滚才能找到应用实际绑定的端口；多网卡环境下不清楚哪个物理局域网 IP 可供外部设备访问；
+2. **文档寻址困难**：在线接口文档（如 Swagger / Knife4j / SpringDoc）路径多样，各项目配置不同，测试人员或前端同学反复询问文档地址；
+3. **生产高危配置裸奔**：在开发或测试环境开启的 H2 Web Console（`spring.h2.console.enabled=true`）、Druid 默认弱口令监控页、未授权暴露的敏感 Actuator 端点或 Swagger，一旦带上生产环境直接构成重大等保漏洞。
+
+---
+
+### 22.1 一体化启动就绪总览卡片 (`ApplicationReadyCardListener`)
+
+当 Spring Boot 容器完全就绪并触发 `ApplicationReadyEvent` 时，`ApplicationReadyCardListener` 自动计算并输出统一且美观的双线 ASCII 卡片：
+- **自适应地址探测**：
+  - **Local URL**：准确获取 `server.port`（支持动态随机端口 `0`）与 `server.servlet.context-path` 拼接完整本地访问 URL；
+  - **Network URL**：联动 `ateng-boot-core` 的 `NetUtil.getLocalIpv4()`，智能过滤虚拟与容器网卡，输出真实宿主机内网物理 IPv4 访问 URL；
+  - **Doc URL**：自动嗅探 SpringDoc（`/swagger-ui/index.html`）、Knife4j（`/doc.html`）或原生 Swagger 接口文档端点，探测存在即自动展示直达超链接；
+- **环境与运行时快照**：
+  - 激活 Profile 环境、操作系统进程 PID、Java 运行版本（含供应商）、JVM 初始堆与最大堆容量；
+  - 从进程启动到完全就绪的秒级启动耗时（精确至毫秒）。
+
+#### 控制台真实呈现效果（实测逆向提取）
+```text
+╔════════════════════════════════════════════════════════════════════════════╗
+║                            :: Ateng Boot ::                                ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║  Application   : ateng-boot-sample-web                                     ║
+║  Environment   : [local]                                                   ║
+║  Local URL     : http://localhost:8080/                                    ║
+║  Network URL   : http://192.168.1.100:8080/                                ║
+║  Doc URL       : http://192.168.1.100:8080/swagger-ui/index.html           ║
+║  Process PID   : 12345                                                     ║
+║  Java Version  : 17.0.12 (Eclipse Adoptium)                                ║
+║  Heap Memory   : Init: 512MB / Max: 4096MB                                 ║
+║  Startup Time  : 2.150s                                                    ║
+╚════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+### 22.2 生产环境高危安全防呆自检 (`ProductionSanityChecker`)
+
+在生产环境（激活 `prod` 或 `production` Profile）下，`ProductionSanityChecker` 在就绪事件中主动执行红线安全自检：
+1. **H2 控制台泄露拦截**：检测 `spring.h2.console.enabled` 是否被误开启，坚决杜绝嵌入式数据库 Web 控制台在生产环境裸奔；
+2. **Druid 监控弱口令防御**：检测 Druid 监控页面是否使用缺省账号密码或未配置访问控制；
+3. **未授权接口与端点自检**：检测敏感监控与调试接口外网暴露隐患；
+4. **防御策略**：发现违规配置时，控制台输出醒目的红牌告警并打印危险配置项，彻底阻断安全合规隐患。
+
+---
+
+## 23. 模块配置属性参考 (`application.yml`)
 
 ```yaml
 ateng:
@@ -1287,4 +1338,10 @@ ateng:
         # 待扫描的枚举类基础包路径列表（启动期白名单扫描，为空时保持空注册表）
         scan-packages:
           - "io.github.atengk.boot.sample.web.enums"
+      ready-card:
+        # 是否启用服务启动就绪一体化 ASCII 卡片输出（默认 true）
+        enabled: true
+      sanity-check:
+        # 是否启用生产环境高危配置安全防呆自检（默认 true）
+        enabled: true
 ```
