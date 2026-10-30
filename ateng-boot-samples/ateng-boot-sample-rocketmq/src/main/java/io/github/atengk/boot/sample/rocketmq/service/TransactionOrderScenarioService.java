@@ -17,15 +17,17 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * 订单事务场景服务（演示 sendAfterCommit 本地事务感知投递与 2PC 原生分布式事务半消息）
+ * 订单分布式事务与本地事务感知场景业务服务
+ *
+ * <p>演示 2PC 原生分布式事务半消息（COMMIT/ROLLBACK）、事务回查分发以及本地事务提交感知发信（sendAfterCommit）。</p>
  *
  * @author Ateng
- * @since 2026-10-22
+ * @since 2026-10-30
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class RocketmqOrderTransactionService {
+public class TransactionOrderScenarioService {
 
     private final RocketmqTemplate rocketmqTemplate;
     private final SampleOrderTransactionChecker orderTransactionChecker;
@@ -40,7 +42,6 @@ public class RocketmqOrderTransactionService {
     public void createOrderWithSendAfterCommit(OrderMessage order) {
         log.info("[LOCAL-DB] 模拟本地数据库写入订单: orderId={}", order.getOrderId());
         localDbOrders.add(order.getOrderId());
-
         rocketmqTemplate.sendAfterCommit(TradeRocketmqProducer.TOPIC_ORDER, "create", order.getOrderId(), order);
     }
 
@@ -51,9 +52,7 @@ public class RocketmqOrderTransactionService {
     public void createOrderWithRollback(OrderMessage order) {
         log.info("[LOCAL-DB] 模拟本地数据库写入订单（将发生回滚）: orderId={}", order.getOrderId());
         localDbOrders.add(order.getOrderId());
-
         rocketmqTemplate.sendAfterCommit(TradeRocketmqProducer.TOPIC_ORDER, "create", order.getOrderId(), order);
-
         throw new IllegalStateException("模拟业务校验失败，触发本地事务回滚: orderId=" + order.getOrderId());
     }
 

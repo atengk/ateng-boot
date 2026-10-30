@@ -64,6 +64,14 @@ public class SampleOrderTransactionChecker implements RocketmqLocalTransactionCh
         rolledBackOrders.add(orderId);
     }
 
+    public boolean isCommitted(String orderId) {
+        return committedOrders.contains(orderId);
+    }
+
+    public boolean isRolledBack(String orderId) {
+        return rolledBackOrders.contains(orderId);
+    }
+
     public void clear() {
         committedOrders.clear();
         rolledBackOrders.clear();
