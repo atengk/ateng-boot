@@ -6,15 +6,23 @@ import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
 import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
+import io.github.atengk.boot.openapi.export.OpenApiExportController;
+import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
 import io.github.atengk.boot.openapi.group.DynamicGroupedOpenApiRegistrar;
 import io.github.atengk.boot.openapi.guard.OpenApiGuardFilter;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
+import io.github.atengk.boot.openapi.spi.ResultCodeProvider;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
 import io.swagger.v3.oas.models.servers.Server;
+import org.springdoc.core.models.GroupedOpenApi;
+import org.springdoc.webmvc.api.MultipleOpenApiWebMvcResource;
+import org.springdoc.webmvc.api.OpenApiWebMvcResource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,6 +35,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -128,7 +137,7 @@ public class OpenApiAutoConfiguration {
      * <p>
      * 无论是否启用 OpenAPI 均全局生效：
      * - {@code enabled=false} 时执行物理切断拦截，响应 HTTP 404；
-     * - {@code enabled=true} 且开启守卫时执行 Basic / Sa-Token 访问认证。
+     * - {@code enabled=true} 且开启守卫时执行 Basic / Sa-Token / Token / IP 白名单访问认证。
      * </p>
      *
      * @param properties 配置属性
@@ -173,16 +182,20 @@ public class OpenApiAutoConfiguration {
     }
 
     /**
-     * 注册系统通用状态码全景字典注入定制器 (OpenApiCustomizer)
+     * 注册系统通用与业务扩展状态码全景字典注入定制器 (OpenApiCustomizer)
      *
-     * @param properties 配置属性
+     * @param properties        配置属性
+     * @param providersProvider 业务状态码扩展 Provider 提供者
      * @return 状态码字典定制器 Bean
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public ResultCodeDictionaryCustomizer resultCodeDictionaryCustomizer(OpenApiProperties properties) {
-        return new ResultCodeDictionaryCustomizer(properties);
+    public ResultCodeDictionaryCustomizer resultCodeDictionaryCustomizer(
+            OpenApiProperties properties,
+            ObjectProvider<ResultCodeProvider> providersProvider) {
+        List<ResultCodeProvider> providers = providersProvider.orderedStream().toList();
+        return new ResultCodeDictionaryCustomizer(properties, providers);
     }
 
     /**
@@ -223,5 +236,40 @@ public class OpenApiAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public OpenApiModelConverter openApiModelConverter() {
         return new OpenApiModelConverter();
+    }
+
+    /**
+     * 注册离线契约导出门面 (OpenApiExportHelper)
+     *
+     * @param multipleOpenApiResourceProvider 多分组 WebMvc 资源提供者
+     * @param openApiResourceProvider         默认单分组 WebMvc 资源提供者
+     * @param openApiProvider                 OpenAPI 基础对象提供者
+     * @param groupedOpenApisProvider         分组列表提供者
+     * @return 离线契约导出门面 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public OpenApiExportHelper openApiExportHelper(
+            ObjectProvider<MultipleOpenApiWebMvcResource> multipleOpenApiResourceProvider,
+            ObjectProvider<OpenApiWebMvcResource> openApiResourceProvider,
+            ObjectProvider<OpenAPI> openApiProvider,
+            ObjectProvider<List<GroupedOpenApi>> groupedOpenApisProvider) {
+        List<GroupedOpenApi> groupedOpenApis = groupedOpenApisProvider.getIfAvailable(Collections::emptyList);
+        return new OpenApiExportHelper(multipleOpenApiResourceProvider, openApiResourceProvider, openApiProvider, groupedOpenApis);
+    }
+
+    /**
+     * 注册受管离线导出 REST 控制器 (OpenApiExportController)
+     *
+     * @param exportHelper 离线契约导出门面
+     * @return 导出控制器 Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(OpenApiExportHelper.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.openapi.export", name = "enabled", havingValue = "true")
+    public OpenApiExportController openApiExportController(OpenApiExportHelper exportHelper) {
+        return new OpenApiExportController(exportHelper);
     }
 }

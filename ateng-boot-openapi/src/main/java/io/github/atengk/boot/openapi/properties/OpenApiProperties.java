@@ -98,6 +98,12 @@ public class OpenApiProperties {
     @NestedConfigurationProperty
     private List<SecuritySchemeConfig> securitySchemes = new ArrayList<>();
 
+    /**
+     * OpenAPI 契约离线导出配置
+     */
+    @NestedConfigurationProperty
+    private Export export = new Export();
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -216,6 +222,14 @@ public class OpenApiProperties {
 
     public void setSecuritySchemes(List<SecuritySchemeConfig> securitySchemes) {
         this.securitySchemes = securitySchemes != null ? securitySchemes : new ArrayList<>();
+    }
+
+    public Export getExport() {
+        return export != null ? export : new Export();
+    }
+
+    public void setExport(Export export) {
+        this.export = export != null ? export : new Export();
     }
 
     /**
@@ -812,6 +826,25 @@ public class OpenApiProperties {
 
         public void setGlobal(boolean global) {
             this.global = global;
+        }
+    }
+
+    /**
+     * OpenAPI 契约离线导出配置属性
+     */
+    public static class Export {
+
+        /**
+         * 是否启用离线契约导出端点（默认 false）
+         */
+        private boolean enabled = false;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 }

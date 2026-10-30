@@ -6,6 +6,8 @@ import io.github.atengk.boot.openapi.customizer.ResultCodeDictionaryCustomizer;
 import io.github.atengk.boot.openapi.customizer.SaTokenSecurityCustomizer;
 import io.github.atengk.boot.openapi.customizer.SecuritySchemesCustomizer;
 import io.github.atengk.boot.openapi.customizer.StandardApiResponseCustomizer;
+import io.github.atengk.boot.openapi.export.OpenApiExportController;
+import io.github.atengk.boot.openapi.export.OpenApiExportHelper;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
@@ -44,6 +46,8 @@ class OpenApiAutoConfigurationTest {
             assertThat(context).hasSingleBean(StandardApiResponseCustomizer.class);
             assertThat(context).hasSingleBean(SecuritySchemesCustomizer.class);
             assertThat(context).hasSingleBean(OpenApiModelConverter.class);
+            assertThat(context).hasSingleBean(OpenApiExportHelper.class);
+            assertThat(context).doesNotHaveBean(OpenApiExportController.class);
 
             OpenAPI openAPI = context.getBean(OpenAPI.class);
             Info info = openAPI.getInfo();
@@ -69,6 +73,19 @@ class OpenApiAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(StandardApiResponseCustomizer.class);
                     assertThat(context).doesNotHaveBean(SecuritySchemesCustomizer.class);
                     assertThat(context).doesNotHaveBean(OpenApiModelConverter.class);
+                    assertThat(context).doesNotHaveBean(OpenApiExportHelper.class);
+                    assertThat(context).doesNotHaveBean(OpenApiExportController.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试开启 export.enabled=true 时装配 OpenApiExportController")
+    void testExportEnabledConfiguration() {
+        contextRunner
+                .withPropertyValues("ateng.boot.openapi.export.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(OpenApiExportHelper.class);
+                    assertThat(context).hasSingleBean(OpenApiExportController.class);
                 });
     }
 

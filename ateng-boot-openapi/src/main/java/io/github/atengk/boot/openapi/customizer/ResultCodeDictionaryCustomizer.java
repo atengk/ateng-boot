@@ -1,19 +1,27 @@
 package io.github.atengk.boot.openapi.customizer;
 
 import io.github.atengk.boot.core.code.CommonResultCode;
+import io.github.atengk.boot.core.code.IResultCode;
 import io.github.atengk.boot.openapi.properties.OpenApiProperties;
+import io.github.atengk.boot.openapi.spi.ResultCodeProvider;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import org.springdoc.core.customizers.OpenApiCustomizer;
+import org.springframework.core.OrderComparator;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
- * 系统通用状态码全景字典注入定制器
+ * 系统通用与业务扩展状态码全景字典注入定制器
  * <p>
- * 自动在 OpenAPI 元数据的 {@link Info#getDescription()} 尾部追加 Markdown 格式的系统状态码全景字典，
- * 基于 Core 底座 {@link CommonResultCode} 规范，消除前后端错误码歧义与沟通成本。
+ * 自动在 OpenAPI 元数据的 {@link Info#getDescription()} 尾部追加 Markdown 格式的状态码全景字典：
+ * 1. 系统核心底座基于 Core 模块 {@link CommonResultCode} 规范渲染通用状态码字典；
+ * 2. 动态聚合 Spring 容器中的所有 {@link ResultCodeProvider} 扩展实现，自动追加领域专属业务状态码字典。
  * </p>
  *
  * @author Ateng
@@ -22,16 +30,30 @@ import java.util.Objects;
 public class ResultCodeDictionaryCustomizer implements OpenApiCustomizer {
 
     public static final String DICTIONARY_TITLE = "### 通用业务响应状态码字典 (Common Result Codes)";
+    public static final String DEFAULT_CUSTOM_TITLE = "### 业务响应状态码字典 (Business Result Codes)";
 
     private final OpenApiProperties properties;
+    private final List<ResultCodeProvider> providers;
 
     /**
-     * 构造状态码字典定制器
+     * 构造状态码字典定制器（仅包含通用状态码）
      *
      * @param properties OpenAPI 配置属性
      */
     public ResultCodeDictionaryCustomizer(OpenApiProperties properties) {
+        this(properties, Collections.emptyList());
+    }
+
+    /**
+     * 构造状态码字典定制器（包含业务扩展 Provider）
+     *
+     * @param properties OpenAPI 配置属性
+     * @param providers  业务状态码扩展 Provider 列表
+     */
+    public ResultCodeDictionaryCustomizer(OpenApiProperties properties, List<ResultCodeProvider> providers) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
+        this.providers = (providers != null) ? new ArrayList<>(providers) : new ArrayList<>();
+        OrderComparator.sort(this.providers);
     }
 
     @Override
@@ -54,12 +76,32 @@ public class ResultCodeDictionaryCustomizer implements OpenApiCustomizer {
             return; // 防重幂等
         }
 
-        String markdownTable = buildResultCodeTable();
+        StringBuilder sb = new StringBuilder();
         if (StringUtils.hasText(currentDesc)) {
-            info.setDescription(currentDesc + "\n\n" + markdownTable);
-        } else {
-            info.setDescription(markdownTable);
+            sb.append(currentDesc).append("\n\n");
         }
+
+        // 1. 构建系统通用状态码字典
+        sb.append(buildResultCodeTable());
+
+        // 2. 动态追加业务扩展状态码字典
+        if (providers != null && !providers.isEmpty()) {
+            for (ResultCodeProvider provider : providers) {
+                if (provider == null) {
+                    continue;
+                }
+                Collection<? extends IResultCode> resultCodes = provider.getResultCodes();
+                if (resultCodes == null || resultCodes.isEmpty()) {
+                    continue;
+                }
+                String customTable = buildCustomResultCodeTable(provider, resultCodes);
+                if (StringUtils.hasText(customTable)) {
+                    sb.append("\n\n").append(customTable);
+                }
+            }
+        }
+
+        info.setDescription(sb.toString().trim());
     }
 
     /**
@@ -72,7 +114,7 @@ public class ResultCodeDictionaryCustomizer implements OpenApiCustomizer {
     }
 
     /**
-     * 构建 Markdown 格式的状态码全景字典表格
+     * 构建 Markdown 格式的系统通用状态码全景字典表格
      *
      * @return Markdown 表格字符串
      */
@@ -86,6 +128,46 @@ public class ResultCodeDictionaryCustomizer implements OpenApiCustomizer {
             sb.append("| `").append(rc.getCode()).append("` | ")
                     .append(rc.getMsg()).append(" | ")
                     .append(resolveScenario(rc)).append(" |\n");
+        }
+        return sb.toString().trim();
+    }
+
+    /**
+     * 构建 Markdown 格式的业务扩展状态码全景字典表格
+     *
+     * @param provider    业务状态码 Provider
+     * @param resultCodes 业务状态码集合
+     * @return Markdown 表格字符串
+     */
+    public static String buildCustomResultCodeTable(ResultCodeProvider provider, Collection<? extends IResultCode> resultCodes) {
+        if (resultCodes == null || resultCodes.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String title = (provider != null && StringUtils.hasText(provider.getTitle()))
+                ? provider.getTitle().trim()
+                : DEFAULT_CUSTOM_TITLE;
+        if (!title.startsWith("#")) {
+            title = "### " + title;
+        }
+        sb.append(title).append("\n\n");
+        sb.append("| 状态码 (code) | 语义说明 (msg) | 场景说明 |\n");
+        sb.append("| :--- | :--- | :--- |\n");
+
+        for (IResultCode rc : resultCodes) {
+            if (rc == null || rc.getCode() == null) {
+                continue;
+            }
+            String scenario = null;
+            if (provider != null) {
+                scenario = provider.resolveScenario(rc);
+            }
+            if (!StringUtils.hasText(scenario)) {
+                scenario = rc.getMsg();
+            }
+            sb.append("| `").append(rc.getCode()).append("` | ")
+                    .append(rc.getMsg() != null ? rc.getMsg() : "").append(" | ")
+                    .append(scenario != null ? scenario : "").append(" |\n");
         }
         return sb.toString().trim();
     }
