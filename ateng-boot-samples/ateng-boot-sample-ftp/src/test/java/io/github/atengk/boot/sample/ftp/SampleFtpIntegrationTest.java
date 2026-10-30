@@ -108,8 +108,14 @@ public class SampleFtpIntegrationTest {
     @DynamicPropertySource
     static void configureFtpProperties(DynamicPropertyRegistry registry) {
         if (!isLocalProfile() && defaultServer != null && backupServer != null) {
+            registry.add("ateng.boot.ftp.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ftp.port", () -> defaultServer.getServerControlPort());
+            registry.add("ateng.boot.ftp.username", () -> "admin");
+            registry.add("ateng.boot.ftp.password", () -> "password123");
+            registry.add("ateng.boot.ftp.servers.backup.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ftp.servers.backup.port", () -> backupServer.getServerControlPort());
+            registry.add("ateng.boot.ftp.servers.backup.username", () -> "backup_user");
+            registry.add("ateng.boot.ftp.servers.backup.password", () -> "backup_password");
         }
     }
 
