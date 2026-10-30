@@ -8,6 +8,7 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Enumeration;
+import java.util.regex.Pattern;
 
 /**
  * 网络与通信地址通用工具类
@@ -22,9 +23,54 @@ public final class NetUtil {
     public static final int MIN_PORT = 1024;
     public static final int MAX_PORT = 65535;
 
+    /**
+     * 常见虚拟网卡与隧道接口黑名单名称模式
+     */
+    private static final Pattern VIRTUAL_INTERFACE_PATTERN = Pattern.compile(
+            "(?i).*(docker|veth|vmnet|virbr|vboxnet|hyper-v|wsl|dummy|tailscale|flannel|cni|br-|tap|tun).*"
+    );
+
     private static volatile String cachedLocalIpv4;
 
     private NetUtil() {
+    }
+
+    /**
+     * 判断指定网络接口是否为虚拟网卡或无物理介质网卡
+     * 自动检测虚拟网卡标识、点对点链路以及 Docker、VMware、WSL 等常见虚拟网卡名称
+     *
+     * @param ni 网络接口对象
+     * @return true 表示为虚拟网卡或点对点网卡
+     */
+    public static boolean isVirtualInterface(NetworkInterface ni) {
+        if (ni == null) {
+            return false;
+        }
+        try {
+            if (ni.isVirtual() || ni.isPointToPoint()) {
+                return true;
+            }
+            String name = ni.getName();
+            if (name != null && VIRTUAL_INTERFACE_PATTERN.matcher(name).matches()) {
+                return true;
+            }
+            String displayName = ni.getDisplayName();
+            if (displayName != null && VIRTUAL_INTERFACE_PATTERN.matcher(displayName).matches()) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+            // 防御接口状态探测异常
+        }
+        return false;
+    }
+
+    /**
+     * 清理本机 IPv4 地址缓存（主要用于测试隔离或网络拓扑动态刷新）
+     */
+    public static void clearLocalIpv4Cache() {
+        synchronized (NetUtil.class) {
+            cachedLocalIpv4 = null;
+        }
     }
 
     /**
@@ -50,7 +96,7 @@ public final class NetUtil {
                 if (interfaces != null) {
                     while (interfaces.hasMoreElements()) {
                         NetworkInterface ni = interfaces.nextElement();
-                        if (ni.isLoopback() || !ni.isUp()) {
+                        if (ni.isLoopback() || !ni.isUp() || isVirtualInterface(ni)) {
                             continue;
                         }
 

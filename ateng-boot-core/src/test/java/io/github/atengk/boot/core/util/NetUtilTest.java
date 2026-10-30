@@ -18,15 +18,29 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class NetUtilTest {
 
     @Test
-    @DisplayName("获取本机内网 IPv4 与主机名验证")
+    @DisplayName("获取本机内网 IPv4 与主机名验证及缓存重置")
     void shouldGetLocalIpv4AndHostName() {
+        NetUtil.clearLocalIpv4Cache();
         String ipv4 = NetUtil.getLocalIpv4();
         assertThat(ipv4).isNotBlank();
         // 验证基本 IPv4 点分十进制结构
         assertThat(ipv4.split("\\.")).hasSize(4);
 
+        // 再次获取命中缓存
+        assertThat(NetUtil.getLocalIpv4()).isEqualTo(ipv4);
+
+        // 清理缓存后重新探测
+        NetUtil.clearLocalIpv4Cache();
+        assertThat(NetUtil.getLocalIpv4()).isNotBlank();
+
         String hostName = NetUtil.getLocalHostName();
         assertThat(hostName).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("虚拟网卡安全判断与空防御验证")
+    void shouldCheckVirtualInterfaceSafely() {
+        assertThat(NetUtil.isVirtualInterface(null)).isFalse();
     }
 
     @Test

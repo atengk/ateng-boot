@@ -42,6 +42,12 @@ public class CoreProperties {
     private CacheProperties cache = new CacheProperties();
 
     /**
+     * 系统基线与环境防卫配置
+     */
+    @NestedConfigurationProperty
+    private SystemProperties system = new SystemProperties();
+
+    /**
      * 获取有效的时钟回拨容忍时长
      * 优先采用 snowflake.clockBackoffTolerance，若未指定则回退到顶层 clockBackoffTolerance
      *
