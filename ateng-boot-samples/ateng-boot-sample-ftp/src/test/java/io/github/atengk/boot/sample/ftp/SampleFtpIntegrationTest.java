@@ -297,8 +297,10 @@ public class SampleFtpIntegrationTest {
         assertThat(readBack).isEqualTo(backupContent);
         assertThat(dynamicRoutingService.existsOnBackupServer(backupDocPath)).isTrue();
 
-        // 3. 验证主节点隔离性：主默认节点上不存在该路径
-        assertThat(documentSyncService.exists(backupDocPath)).isFalse();
+        // 3. 验证主节点隔离性：离线模式下主备节点为不同实例，验证隔离；local 模式共用单实例时跳过
+        if (!isLocalProfile()) {
+            assertThat(documentSyncService.exists(backupDocPath)).isFalse();
+        }
 
         // 4. 清理备用节点测试数据
         dynamicRoutingService.executeOnServer("backup", () -> documentSyncService.deleteDirectory("/backup_data"));
