@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.mqtt.context.MqttContextHolder;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.model.MqttPublishRecord;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
@@ -385,5 +386,187 @@ class MqttTemplateTest {
         assertThat(record.topic()).isEqualTo("test/failure");
         assertThat(new String(record.payload(), StandardCharsets.UTF_8)).isEqualTo("fail-payload");
         assertThat(record.cause()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("验证 MqttPublishRecord 强类型批量并发聚合投递与有序交付")
+    void shouldPublishBatchSynchronously() throws Exception {
+        List<MqttPublishRecord> records = List.of(
+                MqttPublishRecord.builder().topic("batch/topic1").payload("payload-1").qos(0).build(),
+                MqttPublishRecord.builder().topic("batch/topic2").payload("payload-2").qos(1).retained(true).build(),
+                MqttPublishRecord.builder().topic("batch/topic3").payload("payload-3").qos(2).build()
+        );
+
+        mqttTemplate.publishBatch(records);
+
+        Thread.sleep(250);
+
+        List<EmbeddedMqttBroker.ReceivedMessage> msgs = broker.getReceivedMessages();
+        assertThat(msgs).hasSize(3);
+
+        Map<String, EmbeddedMqttBroker.ReceivedMessage> msgMap = new HashMap<>();
+        for (EmbeddedMqttBroker.ReceivedMessage msg : msgs) {
+            msgMap.put(msg.getTopic(), msg);
+        }
+
+        assertThat(msgMap).containsKey("batch/topic1").containsKey("batch/topic2").containsKey("batch/topic3");
+        assertThat(new String(msgMap.get("batch/topic1").getPayload(), StandardCharsets.UTF_8)).isEqualTo("payload-1");
+        assertThat(msgMap.get("batch/topic1").getQos()).isEqualTo(MqttQoS.AT_MOST_ONCE);
+        assertThat(msgMap.get("batch/topic1").isRetained()).isFalse();
+
+        assertThat(new String(msgMap.get("batch/topic2").getPayload(), StandardCharsets.UTF_8)).isEqualTo("payload-2");
+        assertThat(msgMap.get("batch/topic2").getQos()).isEqualTo(MqttQoS.AT_LEAST_ONCE);
+        assertThat(msgMap.get("batch/topic2").isRetained()).isTrue();
+
+        assertThat(new String(msgMap.get("batch/topic3").getPayload(), StandardCharsets.UTF_8)).isEqualTo("payload-3");
+        assertThat(msgMap.get("batch/topic3").getQos()).isEqualTo(MqttQoS.EXACTLY_ONCE);
+    }
+
+    @Test
+    @DisplayName("验证 MqttPublishRecord 异步批量并发聚合投递")
+    void shouldPublishBatchAsynchronously() throws Exception {
+        List<MqttPublishRecord> records = List.of(
+                MqttPublishRecord.of("async/batch/1", "async-1"),
+                MqttPublishRecord.of("async/batch/2", "async-2")
+        );
+
+        mqttTemplate.publishBatchAsync(records).join();
+
+        Thread.sleep(200);
+
+        List<EmbeddedMqttBroker.ReceivedMessage> msgs = broker.getReceivedMessages();
+        assertThat(msgs).hasSize(2);
+
+        Map<String, String> receivedMap = new HashMap<>();
+        for (EmbeddedMqttBroker.ReceivedMessage msg : msgs) {
+            receivedMap.put(msg.getTopic(), new String(msg.getPayload(), StandardCharsets.UTF_8));
+        }
+
+        assertThat(receivedMap)
+                .containsEntry("async/batch/1", "async-1")
+                .containsEntry("async/batch/2", "async-2");
+    }
+
+    @Test
+    @DisplayName("验证 clearRetained 与 clearRetainedAsync 对称清理保留消息")
+    void shouldClearRetainedMessage() throws Exception {
+        // 1. 同步清理保留消息
+        mqttTemplate.clearRetained("test/retained/sym");
+
+        // 2. 异步清理保留消息
+        mqttTemplate.clearRetainedAsync("test/retained/sym-async").join();
+
+        Thread.sleep(200);
+
+        List<EmbeddedMqttBroker.ReceivedMessage> msgs = broker.getReceivedMessages();
+        assertThat(msgs).hasSize(2);
+
+        EmbeddedMqttBroker.ReceivedMessage msg1 = msgs.get(0);
+        assertThat(msg1.getTopic()).isEqualTo("test/retained/sym");
+        assertThat(msg1.getPayload()).isEmpty();
+        assertThat(msg1.isRetained()).isTrue();
+        assertThat(msg1.getQos()).isEqualTo(MqttQoS.AT_LEAST_ONCE);
+
+        EmbeddedMqttBroker.ReceivedMessage msg2 = msgs.get(1);
+        assertThat(msg2.getTopic()).isEqualTo("test/retained/sym-async");
+        assertThat(msg2.getPayload()).isEmpty();
+        assertThat(msg2.isRetained()).isTrue();
+        assertThat(msg2.getQos()).isEqualTo(MqttQoS.AT_LEAST_ONCE);
+    }
+
+    @Test
+    @DisplayName("验证 MQTT 5.0 消息过期时间 (messageExpiry) 与自定义 userProperties 透传")
+    void shouldPublishWithCustomMessageExpiryAndUserProperties() throws Exception {
+        MqttPublishRecord record = MqttPublishRecord.builder()
+                .topic("test/expiry/custom")
+                .payload("expiry-payload")
+                .qos(1)
+                .messageExpiry(Duration.ofSeconds(120))
+                .userProperty("custom-key", "custom-value")
+                .build();
+
+        mqttTemplate.publishBatch(List.of(record));
+
+        Thread.sleep(200);
+
+        List<EmbeddedMqttBroker.ReceivedMessage> msgs = broker.getReceivedMessages();
+        assertThat(msgs).hasSize(1);
+        EmbeddedMqttBroker.ReceivedMessage received = msgs.get(0);
+
+        MqttProperties properties = received.getProperties();
+        assertThat(properties).isNotNull();
+
+        // 验证自定义 userProperties
+        Map<String, String> userProps = new HashMap<>();
+        for (MqttProperties.MqttProperty<?> prop : properties.listAll()) {
+            if (prop instanceof MqttProperties.UserProperties up) {
+                for (MqttProperties.StringPair pair : up.value()) {
+                    userProps.put(pair.key, pair.value);
+                }
+            } else if (prop instanceof MqttProperties.UserProperty up) {
+                userProps.put(up.value().key, up.value().value);
+            }
+        }
+        assertThat(userProps).containsEntry("custom-key", "custom-value");
+
+        // 验证 messageExpiryInterval (Netty MqttPropertyType.PUBLICATION_EXPIRY_INTERVAL = 17)
+        MqttProperties.MqttProperty<?> expiryProp = properties.getProperty(MqttProperties.MqttPropertyType.PUBLICATION_EXPIRY_INTERVAL.value());
+        assertThat(expiryProp).isNotNull();
+        assertThat(expiryProp.value()).isEqualTo(120);
+    }
+
+    @Test
+    @DisplayName("验证 MqttPublishRecord 字段校验守卫与不可变性")
+    void shouldValidatePublishRecordFields() {
+        // 1. 空 topic 校验
+        assertThatThrownBy(() -> MqttPublishRecord.builder().topic("").payload("data").build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("topic must not be blank");
+
+        assertThatThrownBy(() -> MqttPublishRecord.builder().payload("data").build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("topic must not be blank");
+
+        // 2. 空 payload 校验
+        assertThatThrownBy(() -> MqttPublishRecord.builder().topic("t").build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("payload must not be null");
+
+        // 3. QoS 超界校验
+        assertThatThrownBy(() -> MqttPublishRecord.builder().topic("t").payload("p").qos(3).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("QoS must be between 0 and 2");
+
+        assertThatThrownBy(() -> MqttPublishRecord.builder().topic("t").payload("p").qos(-1).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("QoS must be between 0 and 2");
+
+        // 4. 负消息过期时间校验
+        assertThatThrownBy(() -> MqttPublishRecord.builder().topic("t").payload("p").messageExpiry(Duration.ofSeconds(-5)).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("messageExpiry must not be negative");
+
+        // 5. of 快捷工厂与默认值
+        MqttPublishRecord defaultRecord = MqttPublishRecord.of("default/topic", "default-payload");
+        assertThat(defaultRecord.topic()).isEqualTo("default/topic");
+        assertThat(defaultRecord.qos()).isEqualTo(1);
+        assertThat(defaultRecord.retained()).isFalse();
+        assertThat(defaultRecord.userProperties()).isEmpty();
+        assertThat(defaultRecord.messageExpiry()).isNull();
+
+        // 6. userProperties 不可变性
+        assertThatThrownBy(() -> defaultRecord.userProperties().put("k", "v"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    @DisplayName("验证批量发信在传入 null 或空列表时优雅幂等忽略")
+    void shouldHandleEmptyOrNullBatchGracefully() {
+        mqttTemplate.publishBatch(null);
+        mqttTemplate.publishBatch(List.of());
+        mqttTemplate.publishBatchAsync(null).join();
+        mqttTemplate.publishBatchAsync(List.of()).join();
+
+        assertThat(broker.getReceivedMessages()).isEmpty();
     }
 }

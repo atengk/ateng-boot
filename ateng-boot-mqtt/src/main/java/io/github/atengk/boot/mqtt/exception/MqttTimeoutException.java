@@ -16,6 +16,14 @@ public class MqttTimeoutException extends BusinessException {
     private final String correlationId;
     private final Duration timeout;
 
+    public MqttTimeoutException(String message) {
+        this(message, null, null, null, null);
+    }
+
+    public MqttTimeoutException(String message, Throwable cause) {
+        this(message, null, null, null, cause);
+    }
+
     public MqttTimeoutException(String message, String topic, String correlationId) {
         this(message, topic, correlationId, null, null);
     }

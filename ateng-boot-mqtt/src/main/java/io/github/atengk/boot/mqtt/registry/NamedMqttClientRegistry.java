@@ -209,6 +209,10 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         if ("3.1.1".equalsIgnoreCase(protocolVersion) || "3.1".equalsIgnoreCase(protocolVersion)) {
             log.info("[MQTT] Client [{}] configured for MQTT 3.1.1 legacy compatibility mode", clientName);
             connOpts.setSessionExpiryInterval(0L);
+            connOpts.setTopicAliasMaximum(0);
+        } else if (clientProps.getTopicAliasMaximum() > 0) {
+            connOpts.setTopicAliasMaximum(clientProps.getTopicAliasMaximum());
+            log.info("[MQTT] Configured topicAliasMaximum [{}] for client [{}]", clientProps.getTopicAliasMaximum(), clientName);
         }
 
         // TLS / SSL 安全套接字配置
