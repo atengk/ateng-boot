@@ -47,11 +47,14 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.expression.BeanFactoryResolver;
 import org.springframework.core.Ordered;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.ClassUtils;
 
 import javax.sql.DataSource;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * ateng-boot-datasource 核心自动装配入口
@@ -222,13 +225,25 @@ public class AtengDatasourceAutoConfiguration {
     /**
      * 注册具备从库故障感知与自动黑名单熔断自愈能力的高可用数据源策略
      *
-     * @param datasourceProperties 数据源配置属性
+     * @param datasourceProperties      数据源配置属性
+     * @param scheduledExecutorProvider 调度执行器 Provider
+     * @param taskSchedulerProvider     Spring 任务调度器 Provider
      * @return 高可用数据源策略实例
      */
-    @Bean
+    @Bean(destroyMethod = "destroy")
     @ConditionalOnMissingBean(HealthAwareDynamicDataSourceStrategy.class)
-    public HealthAwareDynamicDataSourceStrategy healthAwareDynamicDataSourceStrategy(DatasourceProperties datasourceProperties) {
-        return new HealthAwareDynamicDataSourceStrategy(datasourceProperties);
+    public HealthAwareDynamicDataSourceStrategy healthAwareDynamicDataSourceStrategy(
+            DatasourceProperties datasourceProperties,
+            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+        ScheduledExecutorService scheduler = scheduledExecutorProvider != null ? scheduledExecutorProvider.getIfAvailable() : null;
+        if (scheduler == null && taskSchedulerProvider != null) {
+            TaskScheduler taskScheduler = taskSchedulerProvider.getIfAvailable();
+            if (taskScheduler instanceof ThreadPoolTaskScheduler tpts) {
+                scheduler = tpts.getScheduledExecutor();
+            }
+        }
+        return new HealthAwareDynamicDataSourceStrategy(datasourceProperties, scheduler);
     }
 
     /**

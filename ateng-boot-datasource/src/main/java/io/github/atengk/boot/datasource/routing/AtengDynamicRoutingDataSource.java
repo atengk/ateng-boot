@@ -49,6 +49,9 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         this.healthAwareStrategy = healthAwareStrategy != null
                 ? healthAwareStrategy
                 : new HealthAwareDynamicDataSourceStrategy(this.datasourceProperties);
+        if (this.healthAwareStrategy.getDataSourceLocator() == null) {
+            this.healthAwareStrategy.setDataSourceLocator(this::findDataSource);
+        }
         this.readAfterWriteManager = readAfterWriteManager != null
                 ? readAfterWriteManager
                 : new ReadAfterWriteManager(this.datasourceProperties.getReadWriteSplit().getReadAfterWrite(), new DefaultWriteOccurredResolver());
@@ -279,6 +282,12 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         }
 
         // 若是单数据源
+        if (healthAwareStrategy != null && datasourceProperties.getReadWriteSplit().getFailover().isEnabled()
+                && healthAwareStrategy.isBlacklisted(dsKey)) {
+            log.warn("从库节点 [{}] 处于熔断黑名单中，高可用保底自动降级路由至主库: [{}]", dsKey, masterFallback);
+            return containsDataSource(masterFallback) ? getDataSource(masterFallback) : super.determineDataSource();
+        }
+
         return getDataSource(dsKey);
     }
 
@@ -378,6 +387,41 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             }
         }
         return null;
+    }
+
+    /**
+     * 依据数据源 Key 查找实际物理数据源实例
+     * 支持单物理库与从库分组库内各节点
+     *
+     * @param dsKey 数据源 Key
+     * @return 匹配的 DataSource 实例，未匹配返回 null
+     */
+    public DataSource findDataSource(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return null;
+        }
+        DataSource ds = getDataSources().get(dsKey);
+        if (ds != null) {
+            return ds;
+        }
+        GroupDataSource group = getGroupDataSources().get(dsKey);
+        if (group != null) {
+            return group.determineDataSource();
+        }
+        for (GroupDataSource g : getGroupDataSources().values()) {
+            if (g != null && g.getDataSourceMap() != null && g.getDataSourceMap().containsKey(dsKey)) {
+                return g.getDataSourceMap().get(dsKey);
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public void destroy() {
+        if (healthAwareStrategy != null) {
+            healthAwareStrategy.destroy();
+        }
+        super.destroy();
     }
 
     public HealthAwareDynamicDataSourceStrategy getHealthAwareStrategy() {

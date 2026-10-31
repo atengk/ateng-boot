@@ -162,6 +162,26 @@ public class DatasourceProperties {
          * 当所有从库均不可用时，是否自动保底降级路由至主库
          */
         private boolean fallbackToMaster = true;
+
+        /**
+         * 是否启用后台受管主动探活自愈机制
+         */
+        private boolean activeProbeEnabled = true;
+
+        /**
+         * 主动探活初始检测周期（默认 5 秒）
+         */
+        private Duration probeInitialInterval = Duration.ofSeconds(5);
+
+        /**
+         * 主动探活最大退避周期（默认 30 秒）
+         */
+        private Duration probeMaxInterval = Duration.ofSeconds(30);
+
+        /**
+         * 主动探活单次物理连接校验超时时间（默认 1 秒）
+         */
+        private Duration probeTimeout = Duration.ofSeconds(1);
     }
 
     /**
