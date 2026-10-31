@@ -33,6 +33,8 @@ class AtengSnailJobAutoConfigurationTest {
             assertThat(context).hasSingleBean(SnailJobPropertiesBridge.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.TenantJobTemplate.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar.class);
 
             io.github.atengk.boot.job.snail.properties.SnailJobProperties props =
                     context.getBean(io.github.atengk.boot.job.snail.properties.SnailJobProperties.class);
@@ -168,6 +170,41 @@ class AtengSnailJobAutoConfigurationTest {
                     assertThat(nativeProps.getToken()).isEqualTo("token-abc");
                     assertThat(nativeProps.getPort()).isEqualTo(19999);
                 });
+    }
+
+    @Test
+    @DisplayName("测试显式关闭 openapi 与 log-mirror 时相关 Bean 不被装配")
+    void testOpenApiAndLogMirrorDisabled() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.job.snail.openapi.enabled=false",
+                        "ateng.boot.job.snail.log-mirror-enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate.class);
+                    assertThat(context).doesNotHaveBean(io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自定义 SnailJobAdminTemplate 可平滑接管默认装配 (@ConditionalOnMissingBean)")
+    void testCustomAdminTemplateOverride() {
+        contextRunner
+                .withUserConfiguration(CustomAdminTemplateConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate.class);
+                    io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate adminTemplate =
+                            context.getBean(io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate.class);
+                    assertThat(adminTemplate).isNotNull();
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomAdminTemplateConfiguration {
+        @Bean
+        public io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate customAdminTemplate() {
+            return new io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate();
+        }
     }
 
     @Configuration(proxyBeanMethods = false)

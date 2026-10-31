@@ -1,13 +1,17 @@
 package io.github.atengk.boot.job.snail.autoconfigure;
 
 import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
+import com.aizuda.snailjob.client.core.openapi.RetryOpenApiClientV2;
+import com.aizuda.snailjob.client.job.core.openapi.JobOpenApiClientV2;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
+import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
+import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
 import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
 import io.github.atengk.boot.job.snail.template.TenantJobTemplate;
 import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
@@ -199,6 +203,36 @@ public class AtengSnailJobAutoConfiguration {
     public TenantJobTemplate tenantJobTemplate(
             ObjectProvider<TenantListProvider> tenantListProvider) {
         return new TenantJobTemplate(tenantListProvider.getIfAvailable());
+    }
+
+    /**
+     * SnailJob 官方 OpenAPI 编程式管理门面
+     *
+     * @param jobClientProvider   SnailJob 任务 OpenAPI 客户端提供者 (可选)
+     * @param retryClientProvider SnailJob 重试 OpenAPI 客户端提供者 (可选)
+     * @return SnailJobAdminTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SnailJobAdminTemplate snailJobAdminTemplate(
+            ObjectProvider<JobOpenApiClientV2> jobClientProvider,
+            ObjectProvider<RetryOpenApiClientV2> retryClientProvider) {
+        JobOpenApiClientV2 jobClient = jobClientProvider.getIfAvailable();
+        RetryOpenApiClientV2 retryClient = retryClientProvider.getIfAvailable();
+        return new SnailJobAdminTemplate(jobClient, retryClient);
+    }
+
+    /**
+     * SnailJob Logback 动态日志镜像追加器自动注册器
+     *
+     * @return SnailJobLogbackAppenderRegistrar 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail", name = "log-mirror-enabled", havingValue = "true", matchIfMissing = true)
+    public SnailJobLogbackAppenderRegistrar snailJobLogbackAppenderRegistrar() {
+        return new SnailJobLogbackAppenderRegistrar();
     }
 
     /**
