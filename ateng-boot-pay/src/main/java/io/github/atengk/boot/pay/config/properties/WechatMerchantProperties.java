@@ -71,6 +71,30 @@ public class WechatMerchantProperties implements Serializable {
     private String wechatPayPublicKeyId;
 
     /**
+     * 解析微信支付平台公钥配置源（优先使用行内文本，其次使用路径）
+     *
+     * @return 公钥源文本或路径，若未配置返回 null
+     */
+    public String resolvePublicKeySource() {
+        if (wechatPayPublicKey != null && !wechatPayPublicKey.isBlank()) {
+            return wechatPayPublicKey.trim();
+        }
+        if (wechatPayPublicKeyPath != null && !wechatPayPublicKeyPath.isBlank()) {
+            return wechatPayPublicKeyPath.trim();
+        }
+        return null;
+    }
+
+    /**
+     * 是否配置了微信支付平台公钥
+     *
+     * @return true 若配置了公钥文本或公钥路径
+     */
+    public boolean hasPublicKey() {
+        return resolvePublicKeySource() != null;
+    }
+
+    /**
      * 服务商商户号 (服务商模式专用)
      */
     private String spMchId;

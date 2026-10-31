@@ -61,6 +61,7 @@ import io.github.atengk.boot.pay.config.properties.PayProfitSharingProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
 import io.github.atengk.boot.pay.config.properties.WechatMerchantProperties;
+import io.github.atengk.boot.pay.config.properties.WechatPayProperties;
 import io.github.atengk.boot.pay.core.certificate.WechatAutoCertificateManager;
 import io.github.atengk.boot.pay.core.merchant.NamedMerchantRegistry;
 import io.github.atengk.boot.pay.enums.PayChannel;
@@ -133,28 +134,9 @@ public class WechatPayTemplate {
     private final PayProperties payProperties;
 
     /**
-     * 微信线下条码付撤销冲正重试策略（默认最多 3 次，间隔 3 秒）
+     * 微信线下条码付撤销冲正受控重试策略（基于配置属性构造，不可变）
      */
-    private volatile RetryUtil.RetryConfig wechatReverseRetryConfig = RetryUtil.RetryConfig.builder()
-            .maxAttempts(3)
-            .delay(Duration.ofSeconds(3))
-            .multiplier(1.0)
-            .maxDelay(Duration.ofSeconds(3))
-            .retryPredicate(throwable -> {
-                if (throwable instanceof HttpException) {
-                    return true;
-                }
-                if (throwable instanceof ServiceException se) {
-                    int status = se.getHttpStatusCode();
-                    String code = se.getErrorCode();
-                    return status >= 500
-                            || "SYSTEMERROR".equalsIgnoreCase(code)
-                            || "BANKERROR".equalsIgnoreCase(code)
-                            || "USERPAYING".equalsIgnoreCase(code);
-                }
-                return false;
-            })
-            .build();
+    private final RetryUtil.RetryConfig wechatReverseRetryConfig;
 
     /**
      * 商户服务持有者缓存：商户配置键/商户号 -> WechatServiceHolder
@@ -177,6 +159,35 @@ public class WechatPayTemplate {
         this.namedMerchantRegistry = Objects.requireNonNull(namedMerchantRegistry, "NamedMerchantRegistry 不能为空");
         this.wechatAutoCertificateManager = Objects.requireNonNull(wechatAutoCertificateManager, "WechatAutoCertificateManager 不能为空");
         this.payProperties = payProperties != null ? payProperties : new PayProperties();
+
+        WechatPayProperties.ReverseRetryProperties retryProps = this.payProperties.getWechat() != null
+                ? this.payProperties.getWechat().getReverseRetry()
+                : null;
+        int maxAttempts = retryProps != null && retryProps.getMaxAttempts() > 0 ? retryProps.getMaxAttempts() : 3;
+        Duration delay = retryProps != null && retryProps.getDelay() != null ? retryProps.getDelay() : Duration.ofSeconds(3);
+        double multiplier = retryProps != null && retryProps.getMultiplier() > 0 ? retryProps.getMultiplier() : 1.0;
+        Duration maxDelay = retryProps != null && retryProps.getMaxDelay() != null ? retryProps.getMaxDelay() : Duration.ofSeconds(3);
+
+        this.wechatReverseRetryConfig = RetryUtil.RetryConfig.builder()
+                .maxAttempts(maxAttempts)
+                .delay(delay)
+                .multiplier(multiplier)
+                .maxDelay(maxDelay)
+                .retryPredicate(throwable -> {
+                    if (throwable instanceof HttpException) {
+                        return true;
+                    }
+                    if (throwable instanceof ServiceException se) {
+                        int status = se.getHttpStatusCode();
+                        String code = se.getErrorCode();
+                        return status >= 500
+                                || "SYSTEMERROR".equalsIgnoreCase(code)
+                                || "BANKERROR".equalsIgnoreCase(code)
+                                || "USERPAYING".equalsIgnoreCase(code);
+                    }
+                    return false;
+                })
+                .build();
     }
 
     /**
@@ -247,16 +258,6 @@ public class WechatPayTemplate {
         this.holderCache.clear();
     }
 
-    /**
-     * 设置微信撤销冲正重试配置（主要用于单测毫秒级重试或高阶定制）
-     *
-     * @param wechatReverseRetryConfig 重试配置
-     */
-    public void setWechatReverseRetryConfig(RetryUtil.RetryConfig wechatReverseRetryConfig) {
-        if (wechatReverseRetryConfig != null) {
-            this.wechatReverseRetryConfig = wechatReverseRetryConfig;
-        }
-    }
 
     // =========================================================================
     // 1. Native 扫码支付 (生成二维码链接由用户扫描)
@@ -1043,8 +1044,8 @@ public class WechatPayTemplate {
             return PayResponse.builder()
                     .channel(PayChannel.WECHAT_PAY)
                     .outTradeNo(request.getOutTradeNo())
-                    .tradeState(PayTradeState.CLOSED)
-                    .rawTradeState(PayTradeState.CLOSED.getCode())
+                    .tradeState(PayTradeState.REVOKED)
+                    .rawTradeState(PayTradeState.REVOKED.getCode())
                     .tradeStateDesc("订单已成功撤销冲正")
                     .success(true)
                     .build();
@@ -2630,10 +2631,8 @@ public class WechatPayTemplate {
         PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
 
         Config config;
-        String pubKeySource = props.getWechatPayPublicKey() != null && !props.getWechatPayPublicKey().isBlank()
-                ? props.getWechatPayPublicKey()
-                : props.getWechatPayPublicKeyPath();
-        if (pubKeySource != null && !pubKeySource.isBlank()) {
+        if (props.hasPublicKey()) {
+            String pubKeySource = props.resolvePublicKeySource();
             PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
             String pubKeyId = props.getWechatPayPublicKeyId() != null && !props.getWechatPayPublicKeyId().isBlank()
                     ? props.getWechatPayPublicKeyId()

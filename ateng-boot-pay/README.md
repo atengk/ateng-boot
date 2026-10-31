@@ -2,7 +2,7 @@
 
 > 工业级企业多渠道专有支付中间件底座 Starter，深度集成腾讯官方权威 `wechatpay-java:0.2.17` 与蚂蚁金服 `alipay-sdk-java:4.40.1044.ALL` 原生 SDK，支持双轨专有独立门面 `WechatPayTemplate` 与 `AlipayTemplate`、顶层轻量统一收单门面 `PayTemplate`、支付宝小程序原生调起、微信平台公钥双模自适应验签、资金售后退款、单笔转账到零钱/账户、订单资金分账解冻、线下收银台条码付自动轮询与冲正退避重试、财务对账单流式解压解析引擎、四模密钥自适应解析加载、微信平台证书自动轮换与平滑衰退引擎、双轨异步 Webhook 自动化验签解密、双模防重并发排队锁、强类型业务回调监听器 SPI 与全域 BigDecimal 元契约治理。
 
-- **架构基线**：[ADR-0048 企业级多渠道专有支付中间件底座架构设计](../docs/adr/0048-enterprise-multi-channel-payment-architecture.md)、[ADR-0075 企业级支付底座官方SDK权威对齐与全场景加固架构](../docs/adr/0075-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md)
+- **架构基线**：[ADR-0048 企业级多渠道专有支付中间件底座架构设计](../docs/adr/0048-enterprise-multi-channel-payment-architecture.md)、[ADR-0077 企业级支付底座官方SDK权威对齐与全场景加固架构](../docs/adr/0077-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md)
 - **研发工单闭环**：[#552](https://github.com/atengk/ateng-boot/issues/552)（Parent 目标架构工单）、[#553](https://github.com/atengk/ateng-boot/issues/553)（微信平台公钥加载与自适应验签）、[#554](https://github.com/atengk/ateng-boot/issues/554)（微信支付 V3 线下条码付撤销冲正与受控退避重试）、[#555](https://github.com/atengk/ateng-boot/issues/555)（支付宝小程序统一收单创建与买家标识智能推导）、[#556](https://github.com/atengk/ateng-boot/issues/556)（Sample 样例工程双模驱动升级与 22 项全链路场景实测闭环）、[#557](https://github.com/atengk/ateng-boot/issues/557)（五维生产交付文档）
 
 ---
@@ -104,7 +104,7 @@
 
 ### 2.1 生产标准配置范式 (`application.yml`)
 
-遵循 [ADR-0028](../docs/adr/0028-samples-modularization-and-incremental-integration-testing.md) 与 [ADR-0075](../docs/adr/0075-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md)，配置支持 `optional:classpath:application-local.yml` 动态探测，保护生产凭据：
+遵循 [ADR-0028](../docs/adr/0028-samples-modularization-and-incremental-integration-testing.md) 与 [ADR-0077](../docs/adr/0077-enterprise-pay-official-alignment-and-full-scenario-hardening-architecture.md)，配置支持 `optional:classpath:application-local.yml` 动态探测，保护生产凭据：
 
 ```yaml
 server:
@@ -253,7 +253,7 @@ public class PayCheckoutController {
       "appId": "wx8888888888888888",
       "timeStamp": "1793453980",
       "nonceStr": "mock_nonce_12345",
-      "packageVal": "prepay_id=wx20261023prepay001",
+      "package": "prepay_id=wx20261023prepay001",
       "signType": "RSA",
       "paySign": "MOCK_SIGNATURE_BASE64_STRING=="
     }
@@ -681,8 +681,7 @@ public class CustomPayLockConfiguration {
 - `payTemplate.getWechatClient()`：获取腾讯官方 `com.wechat.pay.java.core.http.HttpClient`
 - `payTemplate.getAlipayClient()`：获取蚂蚁金服官方 `com.alipay.api.AlipayClient`
 - `payTemplate.getWechatPayTemplate()` / `payTemplate.getAlipayTemplate()`：获取专有独立门面
-- `alipayTemplate.clearClientCache()`：清理应用客户端缓存（支持单测桩网络切换）
-- `alipayTemplate.setBillStreamDownloader(...)`：注入自定义对账单流式下载器
+- `alipayTemplate.clearClientCache()`：清理应用客户端缓存（支持多商户运行态配置刷新与单测桩网络切换）
 
 ---
 
@@ -701,7 +700,7 @@ public class CustomPayLockConfiguration {
 ### 4.2 线下条码付撤销冲正因果链与受控退避重试机制
 
 条码收银面临网络超时、收银员提前取消或用户网络欠费等复杂异常：
-- **微信支付冲正与重试治理 (ADR-0075 / #554)**：
+- **微信支付冲正与重试治理 (ADR-0077 / #554)**：
   微信支付 V3 不提供撤销退款接口，必须调用官方撤销冲正接口 `/v3/pay/transactions/out-trade-no/{outTradeNo}/reverse`。
   当网络抖动或微信服务端返回 `SYSTEMERROR`（系统繁忙）时，`WechatPayTemplate.cancelOrder` 依托 Core 基础底座 `RetryUtil` 自动执行指数退避重试（最多 3 次，初始间隔 1 秒，倍率 2.0，上限 5 秒），确保订单冲正绝对确定性闭环，坚决杜绝超扣与悬挂；
 - **支付宝当面付冲正治理**：

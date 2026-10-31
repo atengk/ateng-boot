@@ -46,6 +46,7 @@ public final class PayKeyLoader {
 
     private static final String CLASSPATH_PREFIX = "classpath:";
     private static final String FILE_PREFIX = "file:";
+    private static final int MAX_CACHE_SIZE = 1024;
     private static final List<PayCertificateProvider> REGISTERED_PROVIDERS = new CopyOnWriteArrayList<>();
     private static final ConcurrentHashMap<String, PublicKey> PUBLIC_KEY_CACHE = new ConcurrentHashMap<>();
 
@@ -287,6 +288,9 @@ public final class PayKeyLoader {
             KeyFactory keyFactory = KeyFactory.getInstance("RSA");
             PublicKey publicKey = keyFactory.generatePublic(keySpec);
             if (customProvider == null) {
+                if (PUBLIC_KEY_CACHE.size() >= MAX_CACHE_SIZE) {
+                    PUBLIC_KEY_CACHE.clear();
+                }
                 PUBLIC_KEY_CACHE.put(locationOrContent, publicKey);
             }
             return publicKey;

@@ -120,6 +120,8 @@ class WechatPayTemplateTest {
         PayProperties payProperties = new PayProperties();
         WechatPayProperties wechat = payProperties.getWechat();
         wechat.setDefaultMerchant("default");
+        wechat.getReverseRetry().setDelay(Duration.ofMillis(20));
+        wechat.getReverseRetry().setMaxDelay(Duration.ofMillis(20));
 
         Map<String, WechatMerchantProperties> merchants = new HashMap<>();
 
@@ -160,7 +162,7 @@ class WechatPayTemplateTest {
         merchantRegistry = new NamedMerchantRegistry(payProperties);
 
         // 5. 初始化 WechatPayTemplate
-        payTemplate = new WechatPayTemplate(merchantRegistry, certificateManager);
+        payTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, payProperties);
 
         // 6. 注入重定向拦截器，将腾讯官方域名流量 100% 导入本地 MockWebServer
         OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
@@ -451,7 +453,7 @@ class WechatPayTemplateTest {
 
         assertNotNull(response);
         assertTrue(response.isSuccess());
-        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
         assertEquals("CANCEL_20261023_001", response.getOutTradeNo());
         assertEquals("订单已成功撤销冲正", response.getTradeStateDesc());
 
@@ -475,7 +477,7 @@ class WechatPayTemplateTest {
 
         assertNotNull(response);
         assertTrue(response.isSuccess());
-        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
         assertEquals("CANCEL_PARTNER_002", response.getOutTradeNo());
 
         RecordedRequest recorded = server.takeRequest();
@@ -489,14 +491,6 @@ class WechatPayTemplateTest {
     @Test
     @DisplayName("cancelOrder: 遭遇微信服务端 SYSTEMERROR 异常时依托 RetryUtil 自动重试并最终成功")
     void testCancelOrderRetryResilience() throws Exception {
-        payTemplate.setWechatReverseRetryConfig(io.github.atengk.boot.core.util.RetryUtil.RetryConfig.builder()
-                .maxAttempts(3)
-                .delay(Duration.ofMillis(20))
-                .multiplier(1.0)
-                .maxDelay(Duration.ofMillis(20))
-                .retryPredicate(ex -> true)
-                .build());
-
         String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
         server.enqueue(mockResponse(500, errorJson));
         server.enqueue(mockResponse(500, errorJson));
@@ -506,26 +500,25 @@ class WechatPayTemplateTest {
 
         assertNotNull(response);
         assertTrue(response.isSuccess());
-        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals(PayTradeState.REVOKED, response.getTradeState());
         assertEquals(3, server.getRequestCount());
     }
 
     @Test
     @DisplayName("cancelOrder: 重试耗尽后如实转译业务异常并暴露真实因果链")
     void testCancelOrderRetryExhaustedFails() throws Exception {
-        payTemplate.setWechatReverseRetryConfig(io.github.atengk.boot.core.util.RetryUtil.RetryConfig.builder()
-                .maxAttempts(2)
-                .delay(Duration.ofMillis(10))
-                .multiplier(1.0)
-                .maxDelay(Duration.ofMillis(10))
-                .retryPredicate(ex -> true)
-                .build());
+        PayProperties customProps = new PayProperties();
+        customProps.getWechat().getReverseRetry().setMaxAttempts(2);
+        customProps.getWechat().getReverseRetry().setDelay(Duration.ofMillis(10));
+        customProps.getWechat().getReverseRetry().setMaxDelay(Duration.ofMillis(10));
+        WechatPayTemplate retryFailTemplate = new WechatPayTemplate(merchantRegistry, certificateManager, customProps);
+        retryFailTemplate.setCustomHttpClient(payTemplate.getHttpClient());
 
         String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
         server.enqueue(mockResponse(500, errorJson));
         server.enqueue(mockResponse(500, errorJson));
 
-        PayTradeException ex = assertThrows(PayTradeException.class, () -> payTemplate.cancelOrder("CANCEL_FAIL_004"));
+        PayTradeException ex = assertThrows(PayTradeException.class, () -> retryFailTemplate.cancelOrder("CANCEL_FAIL_004"));
         assertEquals("SYSTEMERROR", ex.getRawErrorCode());
         assertTrue(ex.getRawErrorMessage().contains("系统繁忙"));
     }

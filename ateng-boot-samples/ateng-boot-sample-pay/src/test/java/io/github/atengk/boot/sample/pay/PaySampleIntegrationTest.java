@@ -35,6 +35,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -48,6 +49,7 @@ import java.security.PrivateKey;
 import java.security.Signature;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.zip.GZIPOutputStream;
 
@@ -62,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * 支付场景端到端真实集成测试 (双模自适应 + MockWebServer 网关驱动)
  * <p>
- * 遵循 ADR-0028 与 ADR-0075 规范：
+ * 遵循 ADR-0028 与 ADR-0077 规范：
  * 1. 彻底移除所有 {@code @MockBean} 假桩，让真实自动装配的 {@link PayTemplate}、{@link WechatPayTemplate}、
  *    {@link AlipayTemplate}、{@link BarcodePayExecutor} 与 {@link WechatProfitSharingService} 全真执行；
  * 2. 基于纯内存 {@link MockWebServer} 模拟微信支付 V3 与支付宝官方开放平台网关，全真跑通协议握手、加签与验签；
@@ -104,6 +106,13 @@ class PaySampleIntegrationTest {
 
     @Autowired
     private NamedMerchantRegistry namedMerchantRegistry;
+
+    @Autowired
+    private Environment environment;
+
+    private boolean isLocalProfile() {
+        return environment != null && Arrays.asList(environment.getActiveProfiles()).contains("local");
+    }
 
     private static MockWebServer server;
     private static PrivateKey rsaPrivateKey;
@@ -157,6 +166,9 @@ class PaySampleIntegrationTest {
 
     @BeforeEach
     void setUpRealTemplates() throws Exception {
+        if (isLocalProfile()) {
+            return;
+        }
         server.setDispatcher(createDispatcher());
 
         // 1. 将微信官方域名网络请求重定向至本地 MockWebServer

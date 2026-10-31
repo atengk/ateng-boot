@@ -358,10 +358,8 @@ public class PayCallbackHandler {
      */
     private NotificationParser createWechatNotificationParser(WechatMerchantProperties merchant, String serialNumber) {
         // 1. 若配置了微信平台公钥（静态公钥模式）
-        String pubKeySource = merchant.getWechatPayPublicKey() != null && !merchant.getWechatPayPublicKey().isBlank()
-                ? merchant.getWechatPayPublicKey()
-                : merchant.getWechatPayPublicKeyPath();
-        if (pubKeySource != null && !pubKeySource.isBlank()) {
+        if (merchant.hasPublicKey()) {
+            String pubKeySource = merchant.resolvePublicKeySource();
             PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
             String publicKeyId = merchant.getWechatPayPublicKeyId() != null && !merchant.getWechatPayPublicKeyId().isBlank()
                     ? merchant.getWechatPayPublicKeyId()

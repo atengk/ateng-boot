@@ -1283,9 +1283,9 @@ public class AlipayTemplate {
     }
 
     /**
-     * 注入自定义对账单流式下载器（主要供单元测试脱机离线使用）
+     * 注入自定义对账单流式下载器（包可见，主要供单元测试脱机离线使用）
      */
-    public void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
+    void setBillStreamDownloader(Function<String, InputStream> billStreamDownloader) {
         this.billStreamDownloader = billStreamDownloader;
     }
 

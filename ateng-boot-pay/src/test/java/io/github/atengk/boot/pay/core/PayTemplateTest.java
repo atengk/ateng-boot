@@ -716,7 +716,7 @@ class PayTemplateTest {
         PayResponse wxResp = PayResponse.builder()
                 .channel(PayChannel.WECHAT_PAY)
                 .outTradeNo("WX_CANCEL_001")
-                .tradeState(PayTradeState.CLOSED)
+                .tradeState(PayTradeState.REVOKED)
                 .success(true)
                 .build();
         when(wechatPayTemplate.cancelOrder(any(WechatPayRequest.class))).thenReturn(wxResp);

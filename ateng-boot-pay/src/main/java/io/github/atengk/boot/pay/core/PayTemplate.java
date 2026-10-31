@@ -55,6 +55,16 @@ public class PayTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(PayTemplate.class);
 
+    /**
+     * 支付宝买家会员 ID (UID) 标准前缀 (2088)
+     */
+    private static final String ALIPAY_BUYER_ID_PREFIX = "2088";
+
+    /**
+     * 支付宝买家会员 ID (UID) 标准长度 (16 位纯数字)
+     */
+    private static final int ALIPAY_BUYER_ID_LENGTH = 16;
+
     private final WechatPayTemplate wechatPayTemplate;
     private final AlipayTemplate alipayTemplate;
 
@@ -149,7 +159,7 @@ public class PayTemplate {
                         if ((buyerId == null || buyerId.isBlank()) && (buyerOpenId == null || buyerOpenId.isBlank())
                                 && request.getOpenid() != null && !request.getOpenid().isBlank()) {
                             String openid = request.getOpenid().trim();
-                            if (openid.startsWith("2088") && openid.length() == 16) {
+                            if (isAlipayBuyerId(openid)) {
                                 buyerId = openid;
                             } else {
                                 buyerOpenId = openid;
@@ -338,16 +348,7 @@ public class PayTemplate {
                         .outTradeNo(request.getOutTradeNo())
                         .subMchId(request.getSubMchId())
                         .build();
-                PayResponse cancelResp = wechatPayTemplate.cancelOrder(wechatReq);
-                yield PayResponse.builder()
-                        .channel(PayChannel.WECHAT_PAY)
-                        .outTradeNo(request.getOutTradeNo())
-                        .tradeState(PayTradeState.REVOKED)
-                        .rawTradeState(PayTradeState.REVOKED.getCode())
-                        .tradeStateDesc("微信订单已撤销冲正")
-                        .success(cancelResp.isSuccess())
-                        .rawResponse(cancelResp.getRawResponse())
-                        .build();
+                yield wechatPayTemplate.cancelOrder(wechatReq);
             }
             case ALIPAY -> {
                 if (alipayTemplate == null) {
@@ -797,6 +798,16 @@ public class PayTemplate {
         if (request.getTradeType() == null) {
             throw new PayException(PayResultCode.PAY_PARAM_INVALID, "交易场景类型 [tradeType] 不能为空");
         }
+    }
+
+    /**
+     * 判断 openid 是否为支付宝旧版 2088 会员 ID (UID)
+     *
+     * @param openid 标识符
+     * @return true 若为 2088 开头的 16 位数字 UID
+     */
+    private static boolean isAlipayBuyerId(String openid) {
+        return openid != null && openid.startsWith(ALIPAY_BUYER_ID_PREFIX) && openid.length() == ALIPAY_BUYER_ID_LENGTH;
     }
 
     private PayChannel resolveChannel(PayChannel explicitChannel) {

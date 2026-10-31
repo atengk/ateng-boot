@@ -1,4 +1,4 @@
-# 75. 支付底座官方SDK权威对齐、全场景加固、线下撤销冲正与双模样例闭环架构决策 (Payment Starter Official SDK Alignment, Full-Scenario Hardening, Offline Reversal & Dual-Mode Sample Architecture)
+# 77. 支付底座官方SDK权威对齐、全场景加固、线下撤销冲正与双模样例闭环架构决策 (Payment Starter Official SDK Alignment, Full-Scenario Hardening, Offline Reversal & Dual-Mode Sample Architecture)
 
 ## 状态
 `Accepted`

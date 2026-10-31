@@ -61,19 +61,4 @@ public class PayBarcodeController {
         }
         return Result.success(response);
     }
-
-    /**
-     * 条码收银快速超时冲正测试端点（以短超时触发自动撤销冲正）
-     */
-    @PostMapping("/cashier-with-reversal")
-    public Result<PayResponse> cashierWithReversal(@Valid @RequestBody PayBarcodeDTO dto) {
-        if (dto.getMaxWaitTime() == null) {
-            dto.setMaxWaitTime(java.time.Duration.ofMillis(300));
-        }
-        if (dto.getPollInterval() == null) {
-            dto.setPollInterval(java.time.Duration.ofMillis(100));
-        }
-        dto.setAutoCancelOnTimeout(true);
-        return cashierPay(dto);
-    }
 }

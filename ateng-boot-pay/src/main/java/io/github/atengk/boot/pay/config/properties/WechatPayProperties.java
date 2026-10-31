@@ -4,6 +4,7 @@ import lombok.Data;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -38,4 +39,44 @@ public class WechatPayProperties implements Serializable {
      */
     @NestedConfigurationProperty
     private Map<String, WechatMerchantProperties> merchants = new HashMap<>();
+
+    /**
+     * 微信线下条码付撤销冲正重试配置
+     */
+    @NestedConfigurationProperty
+    private ReverseRetryProperties reverseRetry = new ReverseRetryProperties();
+
+    /**
+     * 微信撤销冲正受控退避重试配置属性
+     */
+    @Data
+    public static class ReverseRetryProperties implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * 是否启用撤销冲正失败重试 (默认 true)
+         */
+        private boolean enabled = true;
+
+        /**
+         * 最大重试调用次数 (包括首次尝试，默认 3 次)
+         */
+        private int maxAttempts = 3;
+
+        /**
+         * 重试初始退避间隔时间 (默认 3 秒)
+         */
+        private Duration delay = Duration.ofSeconds(3);
+
+        /**
+         * 指数退避倍率 (默认 1.0)
+         */
+        private double multiplier = 1.0;
+
+        /**
+         * 最大退避间隔时间 (默认 3 秒)
+         */
+        private Duration maxDelay = Duration.ofSeconds(3);
+    }
 }
