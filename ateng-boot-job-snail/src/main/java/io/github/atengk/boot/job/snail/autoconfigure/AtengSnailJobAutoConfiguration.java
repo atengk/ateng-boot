@@ -2,7 +2,9 @@ package io.github.atengk.boot.job.snail.autoconfigure;
 
 import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
+import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -11,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
@@ -70,6 +73,34 @@ public class AtengSnailJobAutoConfiguration {
                 properties.getPort());
 
         return new SnailJobPropertiesBridge(properties, true);
+    }
+
+    /**
+     * SnailJob 本地硬超时看门狗引擎
+     *
+     * @param eventPublisher Spring 领域事件发布器
+     * @return SnailLocalWatchdog 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SnailLocalWatchdog snailLocalWatchdog(ApplicationEventPublisher eventPublisher) {
+        return new SnailLocalWatchdog(eventPublisher);
+    }
+
+    /**
+     * SnailJob 调度任务四维上下文与声明式增强切面
+     *
+     * @param watchdog 本地硬看门狗
+     * @param properties SnailJob 配置属性
+     * @return SnailJobContextAspect 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
+    public SnailJobContextAspect snailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties) {
+        return new SnailJobContextAspect(watchdog, properties);
     }
 
     /**
