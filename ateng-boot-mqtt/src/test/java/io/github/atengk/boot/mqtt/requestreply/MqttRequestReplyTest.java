@@ -364,4 +364,81 @@ class MqttRequestReplyTest {
         String deviceResponseTopic = clientRegistry.getClientHandle("device").getResponseTopic();
         assertThat(deviceResponseTopic).isEqualTo("sys/response/test-device");
     }
+
+    @Test
+    @DisplayName("非阻塞异步：MqttRequestReplyManager 直接发起强类型异步 RPC 交互")
+    void shouldSendAndReceiveAsyncDirectlyOnManager() throws Exception {
+        // 模拟设备响应
+        MqttSubscription sub = new MqttSubscription("cmd/device/async-rpc", 1);
+        clientRegistry.getClientHandle("device").getAsyncClient().subscribe(
+                new MqttSubscription[]{sub}, null, null,
+                new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{
+                        (topic, message) -> {
+                            MqttProperties reqProps = message.getProperties();
+                            MqttProperties replyProps = new MqttProperties();
+                            replyProps.setCorrelationData(reqProps.getCorrelationData());
+
+                            DeviceResponse response = new DeviceResponse("DEV-999", "ONLINE", 98);
+                            MqttMessage replyMsg = new MqttMessage(JsonUtil.toJsonBytes(response));
+                            replyMsg.setQos(1);
+                            replyMsg.setProperties(replyProps);
+
+                            clientRegistry.getClientHandle("device").getAsyncClient().publish(reqProps.getResponseTopic(), replyMsg);
+                        }
+                }, null
+        ).waitForCompletion(3000);
+
+        CompletableFuture<DeviceResponse> future = requestReplyManager.sendAndReceiveAsync(
+                "cmd/device/async-rpc",
+                new DeviceQuery("DEV-999"),
+                DeviceResponse.class,
+                Duration.ofSeconds(3)
+        );
+
+        DeviceResponse result = future.get(3, TimeUnit.SECONDS);
+        assertThat(result).isNotNull();
+        assertThat(result.deviceId()).isEqualTo("DEV-999");
+        assertThat(result.status()).isEqualTo("ONLINE");
+        assertThat(result.battery()).isEqualTo(98);
+    }
+
+    @Test
+    @DisplayName("断线重连响应通道自愈：重连后清除已订阅缓存并重新预订阅私有响应主题")
+    void shouldSelfHealResponseTopicOnReconnect() throws Exception {
+        assertThat(requestReplyManager.isSubscribed("primary")).isTrue();
+
+        // 模拟触发重连事件
+        requestReplyManager.handleReconnect("primary");
+
+        assertThat(requestReplyManager.isSubscribed("primary")).isTrue();
+
+        // 验证重连自愈后仍能正常走通 RPC
+        MqttSubscription sub = new MqttSubscription("cmd/device/after-reconnect", 1);
+        clientRegistry.getClientHandle("device").getAsyncClient().subscribe(
+                new MqttSubscription[]{sub}, null, null,
+                new org.eclipse.paho.mqttv5.client.IMqttMessageListener[]{
+                        (topic, message) -> {
+                            MqttProperties reqProps = message.getProperties();
+                            MqttProperties replyProps = new MqttProperties();
+                            replyProps.setCorrelationData(reqProps.getCorrelationData());
+
+                            MqttMessage replyMsg = new MqttMessage("HEALED_OK".getBytes(StandardCharsets.UTF_8));
+                            replyMsg.setQos(1);
+                            replyMsg.setProperties(replyProps);
+
+                            clientRegistry.getClientHandle("device").getAsyncClient().publish(reqProps.getResponseTopic(), replyMsg);
+                        }
+                }, null
+        ).waitForCompletion(3000);
+
+        CompletableFuture<String> future = requestReplyManager.sendAndReceiveAsync(
+                "cmd/device/after-reconnect",
+                "PING",
+                String.class,
+                Duration.ofSeconds(3)
+        );
+
+        String reply = future.get(3, TimeUnit.SECONDS);
+        assertThat(reply).isEqualTo("HEALED_OK");
+    }
 }

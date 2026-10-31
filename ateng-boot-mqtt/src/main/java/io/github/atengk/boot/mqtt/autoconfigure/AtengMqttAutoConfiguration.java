@@ -6,6 +6,7 @@ import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
@@ -18,6 +19,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -28,6 +30,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.List;
@@ -136,18 +139,30 @@ public class AtengMqttAutoConfiguration {
     public MqttListenerEndpointRegistry mqttListenerEndpointRegistry(NamedMqttClientRegistry namedMqttClientRegistry,
                                                                     PayloadGuard mqttPayloadGuard,
                                                                     ObjectProvider<MqttMetrics> metricsProvider,
+                                                                    ObjectProvider<MqttRequestReplyManager> requestReplyManagerProvider,
                                                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                                                     @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        return new MqttListenerEndpointRegistry(namedMqttClientRegistry, mqttPayloadGuard, executor, metricsProvider.getIfAvailable());
+        return new MqttListenerEndpointRegistry(
+                namedMqttClientRegistry,
+                mqttPayloadGuard,
+                executor,
+                metricsProvider.getIfAvailable(),
+                requestReplyManagerProvider.getIfAvailable()
+        );
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public static MqttListenerAnnotationBeanPostProcessor mqttListenerAnnotationBeanPostProcessor(
-            MqttListenerEndpointRegistry mqttListenerEndpointRegistry,
-            ObjectProvider<MqttMessageConverter> messageConverterProvider) {
-        return new MqttListenerAnnotationBeanPostProcessor(mqttListenerEndpointRegistry, messageConverterProvider.getIfAvailable());
+    public MqttContainerManager mqttContainerManager(MqttListenerEndpointRegistry mqttListenerEndpointRegistry) {
+        return new MqttContainerManager(mqttListenerEndpointRegistry);
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    @ConditionalOnMissingBean
+    public static MqttListenerAnnotationBeanPostProcessor mqttListenerAnnotationBeanPostProcessor() {
+        return new MqttListenerAnnotationBeanPostProcessor();
     }
 
     @Configuration(proxyBeanMethods = false)
