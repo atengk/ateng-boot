@@ -3,6 +3,7 @@ package io.github.atengk.boot.ssh.template;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.listener.SftpProgressListener;
+import io.github.atengk.boot.ssh.listener.SftpProgressThrottler;
 import io.github.atengk.boot.ssh.model.SftpFileInfo;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -532,5 +533,43 @@ class SftpTemplateTest {
                 .isInstanceOf(SshOperationException.class)
                 .extracting("resultCode")
                 .isEqualTo(SshResultCode.SFTP_FILE_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("测试 SftpTemplate 真实流式上传与下载挂载 SftpProgressThrottler 节流防抖协同工作")
+    void testUploadAndDownloadWithProgressThrottler() {
+        String testFile = "/test-throttle/big-payload.bin";
+        // 准备 256KB 测试数据（约 8 个 32KB buffer 块）
+        byte[] payload = new byte[256 * 1024];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i % 127);
+        }
+
+        AtomicBoolean uploadTerminalTriggered = new AtomicBoolean(false);
+        SftpProgressThrottler uploadThrottler = SftpProgressThrottler.of((transferred, total) -> {
+            if (transferred == total) {
+                uploadTerminalTriggered.set(true);
+            }
+        }, 10.0); // 步长 10%
+
+        // 1. 上传挂载节流器
+        sftpTemplate.upload(testFile, payload, uploadThrottler);
+        assertThat(uploadTerminalTriggered.get()).isTrue();
+        assertThat(uploadThrottler.isTerminalNotified()).isTrue();
+        assertThat(sftpTemplate.exists(testFile)).isTrue();
+
+        // 2. 下载挂载节流器
+        AtomicBoolean downloadTerminalTriggered = new AtomicBoolean(false);
+        SftpProgressThrottler downloadThrottler = SftpProgressThrottler.of((transferred, total) -> {
+            if (transferred == total) {
+                downloadTerminalTriggered.set(true);
+            }
+        }, 10.0);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        sftpTemplate.download(testFile, baos, downloadThrottler);
+        assertThat(downloadTerminalTriggered.get()).isTrue();
+        assertThat(downloadThrottler.isTerminalNotified()).isTrue();
+        assertThat(baos.toByteArray()).isEqualTo(payload);
     }
 }

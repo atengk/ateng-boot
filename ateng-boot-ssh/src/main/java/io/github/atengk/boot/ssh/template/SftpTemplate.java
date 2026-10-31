@@ -1259,14 +1259,24 @@ public class SftpTemplate {
         byte[] buffer = new byte[bufferSize];
         int bytesRead;
         long transferred = 0L;
-        while ((bytesRead = in.read(buffer)) != -1) {
-            out.write(buffer, 0, bytesRead);
-            transferred += bytesRead;
-            if (listener != null) {
+        try {
+            while ((bytesRead = in.read(buffer)) != -1) {
+                out.write(buffer, 0, bytesRead);
+                transferred += bytesRead;
+                if (listener != null) {
+                    try {
+                        listener.onProgress(transferred, totalBytes);
+                    } catch (Throwable t) {
+                        log.debug("ateng-boot-ssh: SftpProgressListener 进度回调异常: {}", t.getMessage());
+                    }
+                }
+            }
+        } finally {
+            if (listener instanceof AutoCloseable closeable) {
                 try {
-                    listener.onProgress(transferred, totalBytes);
-                } catch (Throwable t) {
-                    log.debug("ateng-boot-ssh: SftpProgressListener 进度回调异常: {}", t.getMessage());
+                    closeable.close();
+                } catch (Exception ignore) {
+                    log.debug("ateng-boot-ssh: 关闭 SftpProgressListener 异常: {}", ignore.getMessage());
                 }
             }
         }
