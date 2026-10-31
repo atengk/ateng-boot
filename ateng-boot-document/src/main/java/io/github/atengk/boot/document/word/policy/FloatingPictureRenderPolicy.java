@@ -58,16 +58,35 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
     @Override
     public PictureRenderData cast(Object data) throws Exception {
         currentFloating.remove();
+        if (data == null) {
+            return null;
+        }
         if (data instanceof FloatingPicture fp) {
             currentFloating.set(fp);
             try {
-                return fp.getPictureData();
+                PictureRenderData picData = fp.getPictureData();
+                if (picData == null || picData.readPictureData() == null || picData.readPictureData().length == 0) {
+                    log.warn("FloatingPicture 图片数据为空或不可读，将优雅清空占位符");
+                    currentFloating.remove();
+                    return null;
+                }
+                return picData;
             } catch (Exception e) {
+                log.warn("解析 FloatingPicture 图片数据异常，将优雅清空占位符: {}", e.getMessage());
                 currentFloating.remove();
-                throw e;
+                return null;
             }
         }
-        return super.cast(data);
+        try {
+            PictureRenderData picData = super.cast(data);
+            if (picData == null || picData.readPictureData() == null || picData.readPictureData().length == 0) {
+                return null;
+            }
+            return picData;
+        } catch (Exception e) {
+            log.warn("转换图片渲染数据异常，将优雅清空占位符: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -79,6 +98,9 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
 
     @Override
     public void doRender(RenderContext<PictureRenderData> context) throws Exception {
+        if (context == null || context.getData() == null) {
+            return;
+        }
         try {
             // 1. 先通过父类逻辑将图片写入当前 Run（此时为默认 CTInline 行内模式）
             super.doRender(context);

@@ -397,6 +397,110 @@ class WordTemplateTest {
         assertThat(closed[0]).isFalse();
     }
 
+    @Test
+    @DisplayName("测试 listVariableNames 逆向解析模板变量清单")
+    void testListVariableNames() {
+        WordTemplate wordTemplate = new WordTemplate();
+        List<String> variables = wordTemplate.listVariableNames(sampleTemplateBytes);
+
+        assertThat(variables).isNotNull();
+        // 验证包含 contractNo, remarks, showSecret, items, seal 且去重保持顺序
+        assertThat(variables).contains("contractNo", "remarks", "showSecret", "items", "seal");
+        assertThat(variables).doesNotHaveDuplicates();
+    }
+
+    @Test
+    @DisplayName("测试 extractText 提取 Word 正文与表格纯文本")
+    void testExtractText() {
+        WordTemplate wordTemplate = new WordTemplate();
+        Map<String, Object> model = createTestModel(true);
+        byte[] rendered = wordTemplate.renderToBytes(sampleTemplateBytes, model);
+
+        String text = wordTemplate.extractText(rendered);
+        assertThat(text).isNotNull();
+        assertThat(text).contains("合同编号：HT-2026-8888");
+        assertThat(text).contains("高性能服务器");
+        assertThat(text).contains("交换机");
+        assertThat(text).contains("工业级网线");
+        assertThat(text).contains("【机密条款】本合同内容受严格保密协议约束。");
+    }
+
+    @Test
+    @DisplayName("测试动态表格数据列表为空时自动优雅折叠且不残留原始占位符")
+    void testRenderWithEmptyDynamicTableCollection() throws Exception {
+        WordTemplate wordTemplate = new WordTemplate();
+        Map<String, Object> model = createTestModel(false);
+        // 清空表格列表数据
+        model.put("items", List.of());
+
+        byte[] rendered = wordTemplate.renderToBytes(sampleTemplateBytes, model);
+        assertThat(rendered).isNotEmpty();
+
+        try (XWPFDocument verifiedDoc = new XWPFDocument(new ByteArrayInputStream(rendered))) {
+            String fullText = getFullDocumentText(verifiedDoc);
+            // 验证不残留任何未渲染的 items 或 [name] 语法
+            assertThat(fullText).doesNotContain("{{items}}");
+            assertThat(fullText).doesNotContain("[name]");
+            assertThat(fullText).doesNotContain("[count]");
+            assertThat(fullText).doesNotContain("[price]");
+
+            // 验证表格仅保留 1 行表头
+            assertThat(verifiedDoc.getTables()).hasSize(1);
+            XWPFTable table = verifiedDoc.getTables().get(0);
+            assertThat(table.getRows()).hasSize(1);
+            assertThat(table.getRow(0).getCell(0).getText()).isEqualTo("商品名称");
+        }
+    }
+
+    @Test
+    @DisplayName("测试可选图元印章为 null 时优雅清空占位符且不阻断渲染")
+    void testRenderWithNullPictureGracefullyClearsPlaceholder() throws Exception {
+        WordTemplate wordTemplate = new WordTemplate();
+        Map<String, Object> model = createTestModel(false);
+        // 印章传入 null
+        model.put("seal", null);
+
+        byte[] rendered = wordTemplate.renderToBytes(sampleTemplateBytes, model);
+        assertThat(rendered).isNotEmpty();
+
+        try (XWPFDocument verifiedDoc = new XWPFDocument(new ByteArrayInputStream(rendered))) {
+            String fullText = getFullDocumentText(verifiedDoc);
+            // 占位符被优雅清空，不遗留 {{seal}} 字符串
+            assertThat(fullText).doesNotContain("{{seal}}");
+            assertThat(fullText).contains("企业落款印章：");
+        }
+    }
+
+    @Test
+    @DisplayName("测试 listVariableNames 与 extractText 前置空防御与异常转译")
+    void testIntrospectionDefensiveGuards() {
+        WordTemplate wordTemplate = new WordTemplate();
+
+        // 1. null 检验
+        assertThatThrownBy(() -> wordTemplate.listVariableNames(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source 不能为空");
+
+        assertThatThrownBy(() -> wordTemplate.extractText(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source 不能为空");
+
+        // 2. 不存在的模板文件
+        assertThatThrownBy(() -> wordTemplate.listVariableNames("classpath:not-found-template.docx"))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.TEMPLATE_NOT_FOUND);
+
+        assertThatThrownBy(() -> wordTemplate.extractText("classpath:not-found-template.docx"))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.TEMPLATE_NOT_FOUND);
+
+        // 3. 非法损坏数据
+        byte[] corruptBytes = new byte[]{0x01, 0x02, 0x03, 0x04};
+        assertThatThrownBy(() -> wordTemplate.extractText(corruptBytes))
+                .isInstanceOf(WordRenderException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.DOCUMENT_OPERATION_FAILED);
+    }
+
     private String getFullDocumentText(XWPFDocument doc) {
         StringBuilder sb = new StringBuilder();
         for (XWPFParagraph p : doc.getParagraphs()) {

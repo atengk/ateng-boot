@@ -4,6 +4,9 @@ import com.deepoove.poi.XWPFTemplate;
 import com.deepoove.poi.config.Configure;
 import com.deepoove.poi.config.ConfigureBuilder;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
+import com.deepoove.poi.template.BlockTemplate;
+import com.deepoove.poi.template.ElementTemplate;
+import com.deepoove.poi.template.MetaTemplate;
 import com.deepoove.poi.util.TableTools;
 import com.deepoove.poi.xwpf.NiceXWPFDocument;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
@@ -12,6 +15,7 @@ import io.github.atengk.boot.document.properties.DocumentWordProperties;
 import io.github.atengk.boot.document.word.policy.FloatingPictureRenderPolicy;
 import org.apache.poi.ooxml.POIXMLDocumentPart;
 import org.apache.poi.poifs.crypt.HashAlgorithm;
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFFactory;
 import org.apache.poi.xwpf.usermodel.XWPFRelation;
@@ -35,8 +39,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 企业级 Word (.docx) 模板渲染统一操作门面
@@ -214,6 +220,112 @@ public class WordTemplate {
             }
             throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
                     "编译 Word 模板异常 [" + source + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 逆向解析 Word 模板，提取其中包含的所有声明占位符变量名清单（保持文档出现顺序去重）
+     *
+     * @param source 模板数据源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @return 占位符变量名列表（如 ["employeeName", "items", "seal"]）
+     * @throws WordRenderException 模板不存在或解析失败时抛出
+     */
+    public List<String> listVariableNames(Object source) {
+        return listVariableNames(source, createDefaultConfigure());
+    }
+
+    /**
+     * 逆向解析 Word 模板，提取其中包含的所有声明占位符变量名清单（支持指定自定义 Configure 配置）
+     *
+     * @param source    模板数据源
+     * @param configure 自定义 poi-tl 配置
+     * @return 占位符变量名列表
+     * @throws WordRenderException 模板不存在或解析失败时抛出
+     */
+    public List<String> listVariableNames(Object source, Configure configure) {
+        Objects.requireNonNull(source, "source 不能为空");
+        Configure configToUse = configure != null ? configure : createDefaultConfigure();
+        XWPFTemplate template = null;
+        try {
+            template = compile(source, configToUse);
+            List<MetaTemplate> elementTemplates = template.getElementTemplates();
+            Set<String> variableNames = new LinkedHashSet<>();
+            if (elementTemplates != null) {
+                for (MetaTemplate meta : elementTemplates) {
+                    collectVariableNames(meta, variableNames);
+                }
+            }
+            return new ArrayList<>(variableNames);
+        } catch (WordRenderException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.WORD_RENDER_FAILED,
+                    "解析 Word 模板变量清单失败 [" + source + "]: " + e.getMessage(), e);
+        } finally {
+            if (template != null) {
+                try {
+                    template.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private void collectVariableNames(MetaTemplate meta, Set<String> names) {
+        if (meta == null) {
+            return;
+        }
+        if (meta instanceof ElementTemplate et) {
+            String tagName = et.getTagName();
+            if (tagName != null && !tagName.isBlank()) {
+                names.add(tagName.trim());
+            }
+        } else {
+            String var = meta.variable();
+            if (var != null && !var.isBlank()) {
+                names.add(var.trim());
+            }
+        }
+        if (meta instanceof BlockTemplate bt) {
+            if (bt.getStartMark() != null && bt.getStartMark().getTagName() != null) {
+                names.add(bt.getStartMark().getTagName().trim());
+            }
+            if (bt.getTemplates() != null) {
+                for (MetaTemplate child : bt.getTemplates()) {
+                    collectVariableNames(child, names);
+                }
+            }
+        }
+    }
+
+    /**
+     * 提取 Word (.docx) 文档正文段落与表格中的纯文本内容
+     *
+     * @param source Word 数据源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @return 正文纯文本
+     * @throws WordRenderException 读取或解析失败时抛出
+     */
+    public String extractText(Object source) {
+        Objects.requireNonNull(source, "source 不能为空");
+        InputStream is = null;
+        try {
+            is = resolveInputStream(source);
+            try (XWPFDocument doc = new XWPFDocument(is);
+                 XWPFWordExtractor extractor = new XWPFWordExtractor(doc)) {
+                return extractor.getText();
+            }
+        } catch (WordRenderException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WordRenderException(DocumentResultCode.DOCUMENT_OPERATION_FAILED,
+                    "提取 Word 文档正文纯文本失败 [" + source + "]: " + e.getMessage(), e);
+        } finally {
+            if (is != null && !(source instanceof InputStream)) {
+                try {
+                    is.close();
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 
