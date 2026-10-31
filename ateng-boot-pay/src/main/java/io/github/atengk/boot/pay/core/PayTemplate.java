@@ -315,21 +315,22 @@ public class PayTemplate {
                     throw new PayException(PayResultCode.PAY_GATEWAY_ERROR, "微信支付模块未装配或未启用");
                 }
                 if (!hasOutTradeNo) {
-                    throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付撤销/关单必须提供商户订单号 [outTradeNo]");
+                    throw new PayException(PayResultCode.PAY_PARAM_INVALID, "微信支付撤销冲正必须提供商户订单号 [outTradeNo]");
                 }
                 WechatPayRequest wechatReq = WechatPayRequest.builder()
                         .merchantKey(request.getMerchantKey())
                         .outTradeNo(request.getOutTradeNo())
                         .subMchId(request.getSubMchId())
                         .build();
-                PayResponse closeResp = wechatPayTemplate.closeOrder(wechatReq);
+                PayResponse cancelResp = wechatPayTemplate.cancelOrder(wechatReq);
                 yield PayResponse.builder()
                         .channel(PayChannel.WECHAT_PAY)
                         .outTradeNo(request.getOutTradeNo())
                         .tradeState(PayTradeState.REVOKED)
-                        .tradeStateDesc("微信订单已撤销关闭")
-                        .success(closeResp.isSuccess())
-                        .rawResponse(closeResp.getRawResponse())
+                        .rawTradeState(PayTradeState.REVOKED.getCode())
+                        .tradeStateDesc("微信订单已撤销冲正")
+                        .success(cancelResp.isSuccess())
+                        .rawResponse(cancelResp.getRawResponse())
                         .build();
             }
             case ALIPAY -> {

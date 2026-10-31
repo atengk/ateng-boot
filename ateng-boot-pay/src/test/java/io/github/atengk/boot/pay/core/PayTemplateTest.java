@@ -630,14 +630,14 @@ class PayTemplateTest {
         assertEquals(PayTradeState.REVOKED, respAli.getTradeState());
         assertTrue(respAli.isSuccess());
 
-        // 2. 微信关单冲正
+        // 2. 微信撤销冲正
         PayResponse wxResp = PayResponse.builder()
                 .channel(PayChannel.WECHAT_PAY)
                 .outTradeNo("WX_CANCEL_001")
                 .tradeState(PayTradeState.CLOSED)
                 .success(true)
                 .build();
-        when(wechatPayTemplate.closeOrder(any(WechatPayRequest.class))).thenReturn(wxResp);
+        when(wechatPayTemplate.cancelOrder(any(WechatPayRequest.class))).thenReturn(wxResp);
 
         PayResponse respWx = payTemplate.cancelOrder(PayChannel.WECHAT_PAY, "WX_CANCEL_001");
         assertNotNull(respWx);

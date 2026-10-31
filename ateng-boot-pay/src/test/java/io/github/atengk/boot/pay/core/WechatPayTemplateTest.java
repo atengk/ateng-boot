@@ -442,6 +442,103 @@ class WechatPayTemplateTest {
         assertTrue(recorded.getBody().readUtf8().contains("\"mchid\":\"1900000001\""));
     }
 
+    @Test
+    @DisplayName("cancelOrder: 直连商户成功发起撤销冲正并断言 URL 与 mchid")
+    void testCancelOrderDirect() throws Exception {
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse response = payTemplate.cancelOrder("CANCEL_20261023_001");
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals("CANCEL_20261023_001", response.getOutTradeNo());
+        assertEquals("订单已成功撤销冲正", response.getTradeStateDesc());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        assertEquals("/v3/pay/transactions/out-trade-no/CANCEL_20261023_001/reverse", recorded.getPath());
+        assertTrue(recorded.getBody().readUtf8().contains("\"mchid\":\"1900000001\""));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 服务商模式 (Partner) 撤销冲正注入 sp_mchid 与 sub_mchid")
+    void testCancelOrderPartner() throws Exception {
+        server.enqueue(mockResponse(204, null));
+
+        WechatPayRequest request = WechatPayRequest.builder()
+                .merchantKey("partner_tenant")
+                .outTradeNo("CANCEL_PARTNER_002")
+                .build();
+
+        PayResponse response = payTemplate.cancelOrder(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals("CANCEL_PARTNER_002", response.getOutTradeNo());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        assertEquals("/v3/pay/partner/transactions/out-trade-no/CANCEL_PARTNER_002/reverse", recorded.getPath());
+        String body = recorded.getBody().readUtf8();
+        assertTrue(body.contains("\"sp_mchid\":\"1900000000\""));
+        assertTrue(body.contains("\"sub_mchid\":\"1900000002\""));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 遭遇微信服务端 SYSTEMERROR 异常时依托 RetryUtil 自动重试并最终成功")
+    void testCancelOrderRetryResilience() throws Exception {
+        payTemplate.setWechatReverseRetryConfig(io.github.atengk.boot.core.util.RetryUtil.RetryConfig.builder()
+                .maxAttempts(3)
+                .delay(Duration.ofMillis(20))
+                .multiplier(1.0)
+                .maxDelay(Duration.ofMillis(20))
+                .retryPredicate(ex -> true)
+                .build());
+
+        String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(204, null));
+
+        PayResponse response = payTemplate.cancelOrder("CANCEL_RETRY_003");
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals(PayTradeState.CLOSED, response.getTradeState());
+        assertEquals(3, server.getRequestCount());
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 重试耗尽后如实转译业务异常并暴露真实因果链")
+    void testCancelOrderRetryExhaustedFails() throws Exception {
+        payTemplate.setWechatReverseRetryConfig(io.github.atengk.boot.core.util.RetryUtil.RetryConfig.builder()
+                .maxAttempts(2)
+                .delay(Duration.ofMillis(10))
+                .multiplier(1.0)
+                .maxDelay(Duration.ofMillis(10))
+                .retryPredicate(ex -> true)
+                .build());
+
+        String errorJson = "{\"code\":\"SYSTEMERROR\",\"message\":\"系统繁忙，请稍后重试\"}";
+        server.enqueue(mockResponse(500, errorJson));
+        server.enqueue(mockResponse(500, errorJson));
+
+        PayTradeException ex = assertThrows(PayTradeException.class, () -> payTemplate.cancelOrder("CANCEL_FAIL_004"));
+        assertEquals("SYSTEMERROR", ex.getRawErrorCode());
+        assertTrue(ex.getRawErrorMessage().contains("系统繁忙"));
+    }
+
+    @Test
+    @DisplayName("cancelOrder: 空入参或商户订单号缺失时 Fail-Fast 拦截")
+    void testCancelOrderValidation() {
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder((WechatPayRequest) null));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder((String) null));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder("   "));
+        assertThrows(PayException.class, () -> payTemplate.cancelOrder(WechatPayRequest.builder().build()));
+    }
+
     // =========================================================================
     // 7. 服务商模式测试 (ISV特约商户)
     // =========================================================================

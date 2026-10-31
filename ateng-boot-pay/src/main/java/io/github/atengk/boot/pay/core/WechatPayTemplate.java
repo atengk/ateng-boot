@@ -56,6 +56,7 @@ import com.wechat.pay.java.service.transferbatch.TransferBatchService;
 import com.wechat.pay.java.service.transferbatch.model.*;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.pay.config.properties.PayProfitSharingProperties;
 import io.github.atengk.boot.pay.config.properties.PayProperties;
 import io.github.atengk.boot.pay.config.properties.PayTransferProperties;
@@ -88,6 +89,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -123,10 +125,36 @@ public class WechatPayTemplate {
 
     private static final String DIRECT_CODEPAY_URL = "https://api.mch.weixin.qq.com/v3/pay/transactions/codepay";
     private static final String PARTNER_CODEPAY_URL = "https://api.mch.weixin.qq.com/v3/pay/partner/transactions/codepay";
+    private static final String DIRECT_REVERSE_URL = "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/%s/reverse";
+    private static final String PARTNER_REVERSE_URL = "https://api.mch.weixin.qq.com/v3/pay/partner/transactions/out-trade-no/%s/reverse";
 
     private final NamedMerchantRegistry namedMerchantRegistry;
     private final WechatAutoCertificateManager wechatAutoCertificateManager;
     private final PayProperties payProperties;
+
+    /**
+     * 微信线下条码付撤销冲正重试策略（默认最多 3 次，间隔 3 秒）
+     */
+    private volatile RetryUtil.RetryConfig wechatReverseRetryConfig = RetryUtil.RetryConfig.builder()
+            .maxAttempts(3)
+            .delay(Duration.ofSeconds(3))
+            .multiplier(1.0)
+            .maxDelay(Duration.ofSeconds(3))
+            .retryPredicate(throwable -> {
+                if (throwable instanceof HttpException) {
+                    return true;
+                }
+                if (throwable instanceof ServiceException se) {
+                    int status = se.getHttpStatusCode();
+                    String code = se.getErrorCode();
+                    return status >= 500
+                            || "SYSTEMERROR".equalsIgnoreCase(code)
+                            || "BANKERROR".equalsIgnoreCase(code)
+                            || "USERPAYING".equalsIgnoreCase(code);
+                }
+                return false;
+            })
+            .build();
 
     /**
      * 商户服务持有者缓存：商户配置键/商户号 -> WechatServiceHolder
@@ -217,6 +245,17 @@ public class WechatPayTemplate {
     public void setCustomHttpClient(HttpClient customHttpClient) {
         this.customHttpClient = customHttpClient;
         this.holderCache.clear();
+    }
+
+    /**
+     * 设置微信撤销冲正重试配置（主要用于单测毫秒级重试或高阶定制）
+     *
+     * @param wechatReverseRetryConfig 重试配置
+     */
+    public void setWechatReverseRetryConfig(RetryUtil.RetryConfig wechatReverseRetryConfig) {
+        if (wechatReverseRetryConfig != null) {
+            this.wechatReverseRetryConfig = wechatReverseRetryConfig;
+        }
     }
 
     // =========================================================================
@@ -949,6 +988,88 @@ public class WechatPayTemplate {
      */
     public PayResponse closeOrder(String merchantKey, String outTradeNo) {
         return closeOrder(WechatPayRequest.builder().merchantKey(merchantKey).outTradeNo(outTradeNo).build());
+    }
+
+    // =========================================================================
+    // 7.1 撤销/冲正订单 (cancelOrder / reverse)
+    // =========================================================================
+
+    /**
+     * 撤销/冲正微信支付订单（主要用于线下条码付等场景超时未决时的最终处置）
+     * <p>
+     * 微信官方说明：支付规则为若用户未支付则关闭订单，若用户已支付则自动原路退款。
+     * 当遇到网络通信抖动或微信系统繁忙（SYSTEMERROR/BANKERROR）时，内置依托 RetryUtil 最多重试 3 次（固定间隔 3 秒）。
+     * </p>
+     *
+     * @param request 撤销请求参数（必须提供 outTradeNo）
+     * @return 撤销冲正操作响应（tradeState 为 CLOSED）
+     */
+    public PayResponse cancelOrder(WechatPayRequest request) {
+        if (request == null || request.getOutTradeNo() == null || request.getOutTradeNo().isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "撤销订单必须提供商户订单号 [outTradeNo]");
+        }
+        WechatMerchantProperties merchantProps = resolveMerchant(request);
+        WechatServiceHolder holder = getServiceHolder(merchantProps);
+        boolean isPartner = isPartnerMode(merchantProps, request);
+
+        return executeWithExceptionTranslation("cancelOrder", () -> {
+            String url = isPartner
+                    ? String.format(PARTNER_REVERSE_URL, request.getOutTradeNo())
+                    : String.format(DIRECT_REVERSE_URL, request.getOutTradeNo());
+
+            Map<String, Object> bodyMap = new LinkedHashMap<>();
+            if (isPartner) {
+                bodyMap.put("sp_mchid", resolveSpMchId(merchantProps, request));
+                bodyMap.put("sub_mchid", resolveSubMchId(merchantProps, request));
+            } else {
+                bodyMap.put("mchid", merchantProps.getMchId());
+            }
+
+            String jsonBody = JsonUtil.toJsonString(bodyMap);
+
+            HttpRequest httpRequest = new HttpRequest.Builder()
+                    .httpMethod(HttpMethod.POST)
+                    .url(url)
+                    .addHeader("Accept", "application/json")
+                    .addHeader("Content-Type", "application/json")
+                    .body(new JsonRequestBody.Builder().body(jsonBody).build())
+                    .build();
+
+            // 依托 Core 原语 RetryUtil 执行受控退避重试（默认最多 3 次，间隔 3 秒）
+            RetryUtil.execute(() -> {
+                holder.getHttpClient().execute(httpRequest, Object.class);
+            }, wechatReverseRetryConfig);
+
+            return PayResponse.builder()
+                    .channel(PayChannel.WECHAT_PAY)
+                    .outTradeNo(request.getOutTradeNo())
+                    .tradeState(PayTradeState.CLOSED)
+                    .rawTradeState(PayTradeState.CLOSED.getCode())
+                    .tradeStateDesc("订单已成功撤销冲正")
+                    .success(true)
+                    .build();
+        });
+    }
+
+    /**
+     * 单标识符重载：撤销当前默认商户的订单
+     *
+     * @param outTradeNo 商户订单号
+     * @return 撤销冲正操作响应
+     */
+    public PayResponse cancelOrder(String outTradeNo) {
+        return cancelOrder(WechatPayRequest.builder().outTradeNo(outTradeNo).build());
+    }
+
+    /**
+     * 单标识符重载：指定商户号/商户别名撤销订单
+     *
+     * @param merchantKey 商户别名或商户号
+     * @param outTradeNo  商户订单号
+     * @return 撤销冲正操作响应
+     */
+    public PayResponse cancelOrder(String merchantKey, String outTradeNo) {
+        return cancelOrder(WechatPayRequest.builder().merchantKey(merchantKey).outTradeNo(outTradeNo).build());
     }
 
     // =========================================================================
