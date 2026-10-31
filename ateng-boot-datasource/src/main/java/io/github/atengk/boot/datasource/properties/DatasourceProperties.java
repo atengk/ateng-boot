@@ -221,6 +221,16 @@ public class DatasourceProperties {
          * 注销数据源时等待在途事务连接归还的优雅排空超时时间（默认 5 秒）
          */
         private Duration drainTimeout = Duration.ofSeconds(5);
+
+        /**
+         * 是否在动态挂载数据源时自动预热物理连接池（消除首批请求冷启动排队抖动）
+         */
+        private boolean preWarm = false;
+
+        /**
+         * 动态挂载数据源时预热的物理连接数量（默认 5）
+         */
+        private int preWarmConnections = 5;
     }
 
     /**

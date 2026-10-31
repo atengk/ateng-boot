@@ -424,12 +424,25 @@ public class DynamicDatasourceTemplate {
     }
 
     /**
-     * 动态注册并初始化受管数据源（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     * 动态注册受管数据源配置属性并创建物理连接池（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     * 依据 ateng.boot.datasource.dynamic-load.pre-warm 配置决定是否预热连接池
      *
      * @param dsKey    数据源唯一标识
      * @param property 数据源创建配置属性
      */
     public void addDataSource(String dsKey, DataSourceProperty property) {
+        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
+        addDataSource(dsKey, property, preWarm);
+    }
+
+    /**
+     * 动态注册受管数据源配置属性并创建物理连接池（支持显式指定是否预热）
+     *
+     * @param dsKey    数据源唯一标识
+     * @param property 数据源创建配置属性
+     * @param preWarm  是否在挂载后执行物理连接池并发预热
+     */
+    public void addDataSource(String dsKey, DataSourceProperty property, boolean preWarm) {
         Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
         Objects.requireNonNull(property, "数据源属性配置 (property) 不能为空");
         if (defaultDataSourceCreator == null) {
@@ -451,6 +464,13 @@ public class DynamicDatasourceTemplate {
             validateConnection(dsKey, newDs);
             dataSource.addDataSource(dsKey, newDs);
             log.info("ateng-boot-datasource: 动态注册受管数据源成功 [dsKey={}]", dsKey);
+
+            if (preWarm) {
+                int preWarmCount = datasourceProperties.getDynamicLoad() != null
+                        ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
+                        : 5;
+                preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+            }
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
                 lifecycleLock.unlock();
@@ -460,11 +480,24 @@ public class DynamicDatasourceTemplate {
 
     /**
      * 动态注册已就绪的受管物理数据源（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     * 依据 ateng.boot.datasource.dynamic-load.pre-warm 配置决定是否预热连接池
      *
-     * @param dsKey  数据源唯一标识
-     * @param newDs  待注册的物理数据源实例
+     * @param dsKey 数据源唯一标识
+     * @param newDs 待注册的物理数据源实例
      */
     public void addDataSource(String dsKey, DataSource newDs) {
+        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
+        addDataSource(dsKey, newDs, preWarm);
+    }
+
+    /**
+     * 动态注册已就绪的受管物理数据源（支持显式指定是否预热）
+     *
+     * @param dsKey   数据源唯一标识
+     * @param newDs   待注册的物理数据源实例
+     * @param preWarm 是否在挂载后执行物理连接池并发预热
+     */
+    public void addDataSource(String dsKey, DataSource newDs, boolean preWarm) {
         Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
         Objects.requireNonNull(newDs, "数据源实例 (newDs) 不能为空");
         lifecycleLock.lock();
@@ -475,11 +508,125 @@ public class DynamicDatasourceTemplate {
             validateConnection(dsKey, newDs);
             dataSource.addDataSource(dsKey, newDs);
             log.info("ateng-boot-datasource: 动态注册受管物理数据源成功 [dsKey={}]", dsKey);
+
+            if (preWarm) {
+                int preWarmCount = datasourceProperties.getDynamicLoad() != null
+                        ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
+                        : 5;
+                preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+            }
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
                 lifecycleLock.unlock();
             }
         }
+    }
+
+    /**
+     * 显式预热指定已注册数据源的连接池（使用配置的默认预热连接数）
+     *
+     * @param dsKey 数据源标识
+     * @return 实际成功预热并放回池中的物理连接数
+     */
+    public int preWarmDataSource(String dsKey) {
+        int preWarmCount = datasourceProperties.getDynamicLoad() != null
+                ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
+        : 5;
+        return preWarmDataSource(dsKey, preWarmCount);
+    }
+
+    /**
+     * 显式预热指定已注册数据源的连接池（指定并发预热连接数）
+     * 遵循 Fail-Safe 容错原则：预热失败仅记录告警日志，不向外抛出异常，保障系统可用性
+     *
+     * @param dsKey 数据源标识
+     * @param count 目标预热连接数（为 0 或负数时使用配置默认值）
+     * @return 实际成功预热并放回池中的物理连接数
+     */
+    public int preWarmDataSource(String dsKey, int count) {
+        Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
+        DataSource targetDs = resolveDataSource(dsKey);
+        if (targetDs == null) {
+            log.warn("ateng-boot-datasource: 预热数据源失败，目标数据源不存在 [dsKey={}]", dsKey);
+            return 0;
+        }
+        return preWarmDataSourceInternal(dsKey, targetDs, count);
+    }
+
+    /**
+     * 内部并发预热物理连接池实现
+     */
+    private int preWarmDataSourceInternal(String dsKey, DataSource ds, int count) {
+        int targetCount = count > 0
+                ? count
+                : (datasourceProperties.getDynamicLoad() != null ? datasourceProperties.getDynamicLoad().getPreWarmConnections() : 5);
+        if (targetCount <= 0) {
+            targetCount = 5;
+        }
+
+        if (ds instanceof HikariDataSource hikari && hikari.getMaximumPoolSize() > 0) {
+            targetCount = Math.min(targetCount, hikari.getMaximumPoolSize());
+        }
+
+        Duration probeTimeout = datasourceProperties.getDynamicLoad() != null
+                ? datasourceProperties.getDynamicLoad().getProbeTimeout()
+                : Duration.ofSeconds(2);
+        int timeoutSeconds = Math.max(1, (int) probeTimeout.toSeconds());
+
+        List<Connection> openedConnections = new ArrayList<>(targetCount);
+        try {
+            for (int i = 0; i < targetCount; i++) {
+                try {
+                    Connection conn = ds.getConnection();
+                    if (conn != null) {
+                        if (conn.isValid(timeoutSeconds)) {
+                            openedConnections.add(conn);
+                        } else {
+                            conn.close();
+                            log.warn("ateng-boot-datasource: 预热数据源 [{}] 物理连接有效性校验失败 (isValid=false)", dsKey);
+                            break;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("ateng-boot-datasource: 预热数据源 [{}] 建立第 {}/{} 个物理连接异常 (Fail-Safe 降级): {}",
+                            dsKey, i + 1, targetCount, e.getMessage());
+                    break;
+                }
+            }
+            log.info("ateng-boot-datasource: 预热数据源 [{}] 连接池完成，成功建立并释放 {}/{} 个物理连接",
+                    dsKey, openedConnections.size(), targetCount);
+            return openedConnections.size();
+        } finally {
+            for (Connection conn : openedConnections) {
+                if (conn != null) {
+                    try {
+                        conn.close();
+                    } catch (Exception e) {
+                        log.debug("ateng-boot-datasource: 归还预热连接异常: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 解析已注册的数据源实例（支持 AtengDynamicRoutingDataSource 分组与节点寻址）
+     */
+    private DataSource resolveDataSource(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return null;
+        }
+        if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+            return atengDs.findDataSource(dsKey);
+        }
+        DataSource ds = dataSource.getDataSources().get(dsKey);
+        if (ds != null) {
+            return ds;
+        }
+        if (dataSource.getGroupDataSources().containsKey(dsKey)) {
+            return dataSource.getGroupDataSources().get(dsKey).determineDataSource();
+        }
+        return null;
     }
 
     /**
