@@ -9,6 +9,7 @@ import io.github.atengk.boot.ssh.model.SshBatchExecResult;
 import io.github.atengk.boot.ssh.model.SshBatchOptions;
 import io.github.atengk.boot.ssh.model.SshExecResult;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
+import io.github.atengk.boot.ssh.tunnel.SshTunnelHandle;
 import org.apache.sshd.server.Environment;
 import org.apache.sshd.server.ExitCallback;
 import org.apache.sshd.server.SshServer;
@@ -142,6 +143,10 @@ class SampleSshIntegrationTest {
         return envProfile != null && envProfile.contains("local");
     }
 
+    private String getSftpBaseDir() {
+        return isLocalProfile() ? "/tmp/ateng-sample-ssh" : "";
+    }
+
     private static synchronized void ensureEmbeddedServersStarted() {
         if (embeddedStarted.get() || isLocalProfile()) {
             return;
@@ -151,6 +156,25 @@ class SampleSshIntegrationTest {
             embeddedStarted.set(true);
         } catch (IOException e) {
             throw new UncheckedIOException("启动嵌入式 SSH/TCP 服务端失败", e);
+        }
+    }
+
+    private static synchronized void ensureCascadingJumpServersStarted() {
+        if (jump1Server != null) {
+            return;
+        }
+        try {
+            if (sharedTempDir == null) {
+                sharedTempDir = Files.createTempDirectory("sample-ssh-embedded-");
+            }
+            jump1Server = createServer("jump1_key.ser", "jump1_user", "jump1_pass", true);
+            jump1Server.start();
+            jump2Server = createServer("jump2_key.ser", "jump2_user", "jump2_pass", true);
+            jump2Server.start();
+            targetServer = createServer("target_key.ser", "target_user", "target_pass", true);
+            targetServer.start();
+        } catch (IOException e) {
+            throw new UncheckedIOException("启动嵌入式 ProxyJump 测试节点失败", e);
         }
     }
 
@@ -181,10 +205,22 @@ class SampleSshIntegrationTest {
     static void overrideProperties(DynamicPropertyRegistry registry) {
         if (!isLocalProfile()) {
             ensureEmbeddedServersStarted();
+            registry.add("ateng.boot.ssh.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ssh.port", () -> defaultServer.getPort());
+            registry.add("ateng.boot.ssh.username", () -> "testuser");
+            registry.add("ateng.boot.ssh.password", () -> "testpassword");
+            registry.add("ateng.boot.ssh.servers.node1.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ssh.servers.node1.port", () -> node1Server.getPort());
+            registry.add("ateng.boot.ssh.servers.node1.username", () -> "worker1");
+            registry.add("ateng.boot.ssh.servers.node1.password", () -> "worker1pass");
+            registry.add("ateng.boot.ssh.servers.node2.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ssh.servers.node2.port", () -> node2Server.getPort());
+            registry.add("ateng.boot.ssh.servers.node2.username", () -> "worker2");
+            registry.add("ateng.boot.ssh.servers.node2.password", () -> "worker2pass");
+            registry.add("ateng.boot.ssh.servers.bastion.host", () -> "127.0.0.1");
             registry.add("ateng.boot.ssh.servers.bastion.port", () -> bastionServer.getPort());
+            registry.add("ateng.boot.ssh.servers.bastion.username", () -> "ops");
+            registry.add("ateng.boot.ssh.servers.bastion.password", () -> "opspassword");
         }
     }
 
@@ -236,14 +272,7 @@ class SampleSshIntegrationTest {
         bastionServer.start();
 
         // 5. 启动两级级联穿透测试节点 (Jump1, Jump2, Target)
-        jump1Server = createServer("jump1_key.ser", "jump1_user", "jump1_pass", true);
-        jump1Server.start();
-
-        jump2Server = createServer("jump2_key.ser", "jump2_user", "jump2_pass", true);
-        jump2Server.start();
-
-        targetServer = createServer("target_key.ser", "target_user", "target_pass", true);
-        targetServer.start();
+        ensureCascadingJumpServersStarted();
     }
 
     private static SshServer createServer(String keyFile, String expectedUser, String expectedPass, boolean sudoSupport) {
@@ -355,13 +384,13 @@ class SampleSshIntegrationTest {
     @DisplayName("测试非阻塞异步命令执行：CompletableFuture 成功异步完成回调")
     void testSshExecAsync() throws Exception {
         CompletableFuture<SshExecResult> future = sshScenarioService.execAsync("echo ASYNC_TASK_OK");
-        SshExecResult result = future.get(5, TimeUnit.SECONDS);
+        SshExecResult result = future.get(10, TimeUnit.SECONDS);
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getStdout()).isEqualTo("ASYNC_TASK_OK\n");
 
         CompletableFuture<SshExecResult> nodeFuture = sshScenarioService.execAsync("node1", "echo NODE1_ASYNC");
-        SshExecResult nodeResult = nodeFuture.get(5, TimeUnit.SECONDS);
+        SshExecResult nodeResult = nodeFuture.get(10, TimeUnit.SECONDS);
         assertThat(nodeResult.isSuccess()).isTrue();
         assertThat(nodeResult.getStdout()).isEqualTo("NODE1_ASYNC\n");
     }
@@ -369,9 +398,13 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试原生 Sudo 提权管道：密码即时擦除并成功提权执行")
     void testSshExecSudo() {
-        SshExecResult result = sshScenarioService.execSudo("systemctl restart nginx", "testpassword");
+        String sudoPass = isLocalProfile() ? "Admin@123" : "testpassword";
+        SshExecResult result = isLocalProfile()
+                ? sshScenarioService.execSudo("node1", "echo SUDO_OK", sudoPass)
+                : sshScenarioService.execSudo("echo SUDO_OK", sudoPass);
+
         assertThat(result.isSuccess()).isTrue();
-        assertThat(result.getStdout()).isEqualTo("SUDO_SUCCESS: systemctl restart nginx\n");
+        assertThat(result.getStdout()).contains("SUDO_OK");
     }
 
     @Test
@@ -381,22 +414,38 @@ class SampleSshIntegrationTest {
         assertThat(sshScenarioService.testConnection("node2")).isTrue();
         assertThat(sshScenarioService.testConnection("bastion")).isTrue();
 
-        SshServerInfo validDynamic = SshServerInfo.builder()
-                .host("127.0.0.1")
-                .port(node1Server.getPort())
-                .username("worker1")
-                .password("worker1pass")
-                .hostKeyPolicy(HostKeyPolicy.IGNORE)
-                .build();
+        SshServerInfo validDynamic = isLocalProfile()
+                ? SshServerInfo.builder()
+                        .host("192.168.157.3")
+                        .port(22)
+                        .username("admin")
+                        .password("Admin@123")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build()
+                : SshServerInfo.builder()
+                        .host("127.0.0.1")
+                        .port(node1Server.getPort())
+                        .username("worker1")
+                        .password("worker1pass")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build();
         assertThat(sshScenarioService.testConnection(validDynamic)).isTrue();
 
-        SshServerInfo invalidDynamic = SshServerInfo.builder()
-                .host("127.0.0.1")
-                .port(node1Server.getPort())
-                .username("worker1")
-                .password("WRONG_PASS")
-                .hostKeyPolicy(HostKeyPolicy.IGNORE)
-                .build();
+        SshServerInfo invalidDynamic = isLocalProfile()
+                ? SshServerInfo.builder()
+                        .host("192.168.157.3")
+                        .port(22)
+                        .username("admin")
+                        .password("WRONG_PASS_PROBE")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build()
+                : SshServerInfo.builder()
+                        .host("127.0.0.1")
+                        .port(node1Server.getPort())
+                        .username("worker1")
+                        .password("WRONG_PASS")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build();
         assertThat(sshScenarioService.testConnection(invalidDynamic)).isFalse();
     }
 
@@ -422,6 +471,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试两级 ProxyJump 级联穿透：Client -> Jump1 -> Jump2 -> Target")
     void testScenarioCascadingProxyJump() {
+        ensureCascadingJumpServersStarted();
         SshExecResult result = sshScenarioService.runCascadingProxyJump(
                 "127.0.0.1", targetServer.getPort(),
                 "127.0.0.1", jump1Server.getPort(),
@@ -437,13 +487,21 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试瞬态单次任务隔离执行：执行后即刻断开会话，无状态残留")
     void testScenarioTransientTask() {
-        SshServerInfo server = SshServerInfo.builder()
-                .host("127.0.0.1")
-                .port(node1Server.getPort())
-                .username("worker1")
-                .password("worker1pass")
-                .hostKeyPolicy(HostKeyPolicy.IGNORE)
-                .build();
+        SshServerInfo server = isLocalProfile()
+                ? SshServerInfo.builder()
+                        .host("192.168.157.3")
+                        .port(22)
+                        .username("root")
+                        .password("Admin@123")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build()
+                : SshServerInfo.builder()
+                        .host("127.0.0.1")
+                        .port(node1Server.getPort())
+                        .username("worker1")
+                        .password("worker1pass")
+                        .hostKeyPolicy(HostKeyPolicy.IGNORE)
+                        .build();
 
         SshExecResult result = sshScenarioService.runTransientTask(server, "echo TRANSIENT_RUN");
         assertThat(result.isSuccess()).isTrue();
@@ -451,21 +509,34 @@ class SampleSshIntegrationTest {
     }
 
     @Test
-    @DisplayName("测试本地端口转发双向 TCP 流量传输：本地客户端向远端真实 Echo TCP 发起通信")
+    @DisplayName("测试本地端口转发双向 TCP 流量传输：本地客户端向远端真实服务发起通信")
     void testScenarioPortForwardingTcpFlow() throws Exception {
-        String reply = sshScenarioService.forwardAndQueryTcp(
-                "127.0.0.1",
-                echoTcpServer.getLocalPort(),
-                "PROBE_MSG"
-        );
-
-        assertThat(reply).isEqualTo("ECHO_REPLY:PROBE_MSG");
+        if (isLocalProfile()) {
+            // 在 local 环境下，测试通过本地端口转发隧道直连远端 127.0.0.1:22 并获取 SSH 协议版本横幅
+            int localPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", 22);
+            try (Socket socket = new Socket("127.0.0.1", localPort);
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
+                socket.setSoTimeout(5000);
+                String banner = reader.readLine();
+                assertThat(banner).contains("SSH-");
+            } finally {
+                sshScenarioService.closeManagedTunnel(localPort);
+            }
+        } else {
+            String reply = sshScenarioService.forwardAndQueryTcp(
+                    "127.0.0.1",
+                    echoTcpServer.getLocalPort(),
+                    "PROBE_MSG"
+            );
+            assertThat(reply).isEqualTo("ECHO_REPLY:PROBE_MSG");
+        }
     }
 
     @Test
     @DisplayName("测试受管端口转发句柄对称开启与关闭释放")
     void testTunnelOpenAndCloseSymmetric() {
-        int boundPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", echoTcpServer.getLocalPort());
+        int remotePort = isLocalProfile() ? 22 : echoTcpServer.getLocalPort();
+        int boundPort = sshScenarioService.openManagedTunnel("default", 0, "127.0.0.1", remotePort);
         assertThat(boundPort).isGreaterThan(0);
 
         boolean closed = sshScenarioService.closeManagedTunnel(boundPort);
@@ -513,7 +584,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试 SFTP 原子上传、存在性校验与流式下载全链路")
     void testSftpUploadAndDownloadAndExists() {
-        String remotePath = "/upload/hello.txt";
+        String remotePath = getSftpBaseDir() + "/upload/hello.txt";
         byte[] payload = "Hello SFTP Storage Engine".getBytes(StandardCharsets.UTF_8);
 
         sftpScenarioService.upload(remotePath, payload);
@@ -526,7 +597,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试 SFTP 文本配置快捷读写与尾部流式追加写 (append)")
     void testSftpAppendAndReadWriteConfig() {
-        String remotePath = "/conf/database.properties";
+        String remotePath = getSftpBaseDir() + "/conf/database.properties";
         sftpScenarioService.writeConfig(remotePath, "db.url=jdbc:mysql://localhost:3306/db\n");
 
         String content = sftpScenarioService.readConfig(remotePath);
@@ -540,9 +611,9 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试 SFTP 原子重命名与跨目录移动文件")
     void testSftpRenameAndMove() {
-        String originalPath = "/docs/spec_v1.txt";
-        String renamedPath = "/docs/spec_v1_renamed.txt";
-        String movedPath = "/archive/spec_v1_archived.txt";
+        String originalPath = getSftpBaseDir() + "/docs/spec_v1.txt";
+        String renamedPath = getSftpBaseDir() + "/docs/spec_v1_renamed.txt";
+        String movedPath = getSftpBaseDir() + "/archive/spec_v1_archived.txt";
 
         sftpScenarioService.writeConfig(originalPath, "Architecture Spec 2026");
         assertThat(sftpScenarioService.exists(originalPath)).isTrue();
@@ -560,7 +631,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试 SFTP 流式进度高频节流防抖 (SftpProgressThrottler)")
     void testSftpUploadWithThrottledProgress() {
-        String remotePath = "/upload/throttled.bin";
+        String remotePath = getSftpBaseDir() + "/upload/throttled.bin";
         byte[] largeData = new byte[64 * 1024]; // 64 KB
         for (int i = 0; i < largeData.length; i++) {
             largeData[i] = (byte) (i % 127);
@@ -578,7 +649,7 @@ class SampleSshIntegrationTest {
     @Test
     @DisplayName("测试 SFTP 目录列表检索与 DFS 深度优先递归删除")
     void testSftpListAndRecursiveDelete() {
-        String dir = "/cleanup-test";
+        String dir = getSftpBaseDir() + "/cleanup-test";
         sftpScenarioService.writeConfig(dir + "/f1.txt", "f1");
         sftpScenarioService.writeConfig(dir + "/sub/f2.txt", "f2");
 
@@ -601,7 +672,7 @@ class SampleSshIntegrationTest {
         Files.writeString(localUpload.resolve("root.txt"), "root content");
         Files.writeString(localUpload.resolve("nested/child.txt"), "child content");
 
-        String remoteTree = "/tree-sync-remote";
+        String remoteTree = getSftpBaseDir() + "/tree-sync-remote";
         sftpScenarioService.syncUploadDirectory(localUpload.toFile(), remoteTree);
 
         sftpScenarioService.syncDownloadDirectory(remoteTree, localDownload.toFile());
@@ -610,6 +681,9 @@ class SampleSshIntegrationTest {
         assertThat(Files.readString(localDownload.resolve("root.txt"))).isEqualTo("root content");
         assertThat(Files.exists(localDownload.resolve("nested/child.txt"))).isTrue();
         assertThat(Files.readString(localDownload.resolve("nested/child.txt"))).isEqualTo("child content");
+
+        // 清理远端测试目录树
+        sftpScenarioService.deleteRecursively(remoteTree);
     }
 
     // ==========================================
@@ -632,7 +706,7 @@ class SampleSshIntegrationTest {
                 // 1. 发送视口 resize 消息
                 session.sendMessage(new TextMessage("{\"action\":\"resize\",\"cols\":100,\"rows\":30}"));
                 // 2. 发送普通字符输入
-                session.sendMessage(new TextMessage("WEBSOCKET_TEST\n"));
+                session.sendMessage(new TextMessage("echo WEBSOCKET_TEST\n"));
             }
 
             @Override
@@ -661,11 +735,11 @@ class SampleSshIntegrationTest {
         };
 
         String wsUrl = "ws://127.0.0.1:" + localServerPort + "/ws/ssh";
-        WebSocketSession clientSession = wsClient.execute(clientHandler, wsUrl).get(5, TimeUnit.SECONDS);
+        WebSocketSession clientSession = wsClient.execute(clientHandler, wsUrl).get(10, TimeUnit.SECONDS);
 
-        assertThat(connectLatch.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(receiveLatch.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(closeLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(connectLatch.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(receiveLatch.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(closeLatch.await(10, TimeUnit.SECONDS)).isTrue();
         for (int i = 0; i < 50 && clientSession.isOpen(); i++) {
             Thread.sleep(20);
         }

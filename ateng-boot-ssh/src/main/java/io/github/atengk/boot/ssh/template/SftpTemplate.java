@@ -1042,7 +1042,7 @@ public class SftpTemplate {
                     destination = destination.endsWith("/") ? destination + filename : destination + "/" + filename;
                 }
                 ensureParentDirectoryExists(sftp, destination);
-                sftp.rename(normalizedSource, destination, SftpClient.CopyMode.Overwrite);
+                doSafeRename(sftp, normalizedSource, destination);
                 return null;
             } catch (Exception e) {
                 throw translateException(e, normalizedSource + " -> " + normalizedTarget);
@@ -1232,7 +1232,7 @@ public class SftpTemplate {
                 out.flush();
             }
             // 完整闭合后执行原子重命名覆盖
-            sftp.rename(tempPath, remotePath, SftpClient.CopyMode.Overwrite);
+            doSafeRename(sftp, tempPath, remotePath);
         } catch (Exception e) {
             // 异常最佳努力补偿清理临时碎片文件
             try {
@@ -1242,6 +1242,32 @@ public class SftpTemplate {
             }
             throw e;
         }
+    }
+
+    /**
+     * 针对不同 SFTP 协议版本自适应执行原子文件重命名覆盖
+     * <p>
+     * SFTP v5+ 原生支持 {@link SftpClient.CopyMode#Overwrite} 协议选项；<br>
+     * SFTP v3 (OpenSSH 生产标配) 不支持携带 CopyOptions，显式传入会抛出 UnsupportedOperationException。
+     * 本方法自适应探测版本：在 v3 下先尝试删除已存在的目标文件再执行原子 rename。
+     * </p>
+     */
+    private void doSafeRename(SftpClient sftp, String source, String target) throws IOException {
+        if (sftp.getVersion() >= 5) {
+            try {
+                sftp.rename(source, target, SftpClient.CopyMode.Overwrite);
+                return;
+            } catch (UnsupportedOperationException ignored) {
+                // 降级至 v3 语义
+            }
+        }
+        // SFTP v3 / v4 降级防卫：先最佳努力删除目标已存在文件，然后原子重命名
+        try {
+            sftp.remove(target);
+        } catch (Exception ignored) {
+            // 目标不存在时忽略异常
+        }
+        sftp.rename(source, target);
     }
 
     private void doAppendStream(SftpClient sftp, String remotePath, InputStream in) throws IOException {

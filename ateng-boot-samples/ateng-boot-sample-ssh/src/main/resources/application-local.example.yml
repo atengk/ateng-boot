@@ -6,6 +6,11 @@
 # 2. 将以下 YOUR_* 占位符替换为本地或测试环境真实可用的 SSH/SFTP 服务器连接信息；
 # 3. 运行测试或启动应用时激活 local Profile：-Dspring.profiles.active=local
 # ==============================================================================
+spring:
+  config:
+    activate:
+      on-profile: "local"
+
 ateng:
   boot:
     ssh:
