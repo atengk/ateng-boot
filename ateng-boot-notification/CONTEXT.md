@@ -32,6 +32,14 @@ _Avoid_: ImgPayload, PicMessage, MediaMessage
 原始特化报文逃生舱领域模型，允许业务直接传入平台特定的原生 JSON 载荷以利用平台特有的极限高阶特性。
 _Avoid_: JsonMessage, CustomPayload, NativeMessage
 
+**LinkMessage**:
+轻量图文链接通知领域消息模型，承载标题（`title`）、文本摘要（`text`）、封面图 URL（`picUrl`）、点击跳转直达链接（`messageUrl`）及 @人 目标，由平台驱动自适应转译为钉钉 Link、企微 News 或飞书轻量卡片。
+_Avoid_: NewsMessage, UrlMessage, ArticleMessage, WebPageMessage
+
+**CardButtonOrientation**:
+交互卡片按钮排版方向枚举，定义按钮在卡片底部的排列布局（`VERTICAL` 竖排，`HORIZONTAL` 横向并排），自适应映射为钉钉 `btnOrientation` 及各端排版规范。
+_Avoid_: BtnLayout, ButtonDirection, ActionOrientation
+
 **CardButton**:
 交互卡片操作按钮实体模型，封装按钮显示文本、跳转链接 URL 与样式类型（`PRIMARY`、`DEFAULT`、`DANGER`）。
 _Avoid_: ActionBtn, CardAction, LinkButton

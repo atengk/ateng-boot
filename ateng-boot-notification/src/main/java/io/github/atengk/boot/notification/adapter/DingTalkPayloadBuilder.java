@@ -56,7 +56,31 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         root.put("msgtype", "markdown");
         Map<String, Object> mdNode = new LinkedHashMap<>();
         mdNode.put("title", msg.getTitle() != null ? msg.getTitle() : "系统通知");
-        mdNode.put("text", msg.getContent());
+
+        String text = msg.getContent() != null ? msg.getContent() : "";
+        MentionTarget mention = msg.getMention();
+        if (mention != null && mention.hasMentions()) {
+            StringBuilder appendBuilder = new StringBuilder();
+            if (mention.isAtAll() && !text.contains("@所有人") && !text.contains("@all")) {
+                appendBuilder.append("@所有人 ");
+            }
+            for (String mobile : mention.getAtMobiles()) {
+                if (!text.contains("@" + mobile)) {
+                    appendBuilder.append("@").append(mobile).append(" ");
+                }
+            }
+            for (String userId : mention.getAtUserIds()) {
+                if (!text.contains("@" + userId)) {
+                    appendBuilder.append("@").append(userId).append(" ");
+                }
+            }
+            String toAppend = appendBuilder.toString().trim();
+            if (!toAppend.isEmpty()) {
+                text = text.isEmpty() ? toAppend : text + "\n\n" + toAppend;
+            }
+        }
+
+        mdNode.put("text", text);
         root.put("markdown", mdNode);
 
         attachAt(root, msg.getMention());

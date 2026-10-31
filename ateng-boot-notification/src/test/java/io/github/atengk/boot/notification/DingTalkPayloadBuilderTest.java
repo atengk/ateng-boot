@@ -47,22 +47,44 @@ class DingTalkPayloadBuilderTest {
     }
 
     @Test
-    @DisplayName("验证 MarkdownMessage 转译为钉钉 markdown 报文")
+    @DisplayName("验证 MarkdownMessage 转译为钉钉 markdown 报文并幂等追加 @成员 文本")
     @SuppressWarnings("unchecked")
     void testBuildMarkdownPayload() {
         MarkdownMessage md = MarkdownMessage.of("构建告警", "### 编译失败\n- 模块: `core`")
-                .atMobiles("13900000000");
+                .atMobiles("13900000000")
+                .atUserIds("ding_dev_01");
 
         Map<String, Object> payload = builder.buildPayload(md);
 
         assertEquals("markdown", payload.get("msgtype"));
         Map<String, Object> mdObj = (Map<String, Object>) payload.get("markdown");
         assertEquals("构建告警", mdObj.get("title"));
-        assertEquals("### 编译失败\n- 模块: `core`", mdObj.get("text"));
+        assertEquals("### 编译失败\n- 模块: `core`\n\n@13900000000 @ding_dev_01", mdObj.get("text"));
 
         Map<String, Object> atObj = (Map<String, Object>) payload.get("at");
         assertNotNull(atObj);
         assertEquals(false, atObj.get("isAtAll"));
+        assertEquals(List.of("13900000000"), atObj.get("atMobiles"));
+        assertEquals(List.of("ding_dev_01"), atObj.get("atUserIds"));
+    }
+
+    @Test
+    @DisplayName("验证 MarkdownMessage 正文已存在 @ 成员文本时不会重复追加")
+    @SuppressWarnings("unchecked")
+    void testBuildMarkdownPayloadWithExistingMentions() {
+        MarkdownMessage md = MarkdownMessage.of("告警提醒", "注意：@所有人 @13900000000 请尽快上线核查")
+                .atAll()
+                .atMobiles("13900000000");
+
+        Map<String, Object> payload = builder.buildPayload(md);
+
+        Map<String, Object> mdObj = (Map<String, Object>) payload.get("markdown");
+        // 正文已包含 @所有人 和 @13900000000，保持原样，不重复追加
+        assertEquals("注意：@所有人 @13900000000 请尽快上线核查", mdObj.get("text"));
+
+        Map<String, Object> atObj = (Map<String, Object>) payload.get("at");
+        assertNotNull(atObj);
+        assertEquals(true, atObj.get("isAtAll"));
         assertEquals(List.of("13900000000"), atObj.get("atMobiles"));
     }
 
@@ -109,13 +131,14 @@ class DingTalkPayloadBuilderTest {
     }
 
     @Test
-    @DisplayName("验证 CardMessage 携带 @人 时钉钉 ActionCard 正确生成 at 节点")
+    @DisplayName("验证 CardMessage 携带 @人 时钉钉 ActionCard 正确生成 at 节点（覆盖所有人、手机号、工号）")
     @SuppressWarnings("unchecked")
     void testBuildCardPayloadWithMention() {
         CardMessage card = CardMessage.of("发布单待确认", "v1.2.0 发布申请已提交")
                 .singleAction("进入控制台审批", "https://ops.example.com/deploy/1")
                 .atAll()
-                .atMobiles("13800000001");
+                .atMobiles("13800000001")
+                .atUserIds("ding_user_456");
 
         Map<String, Object> payload = builder.buildPayload(card);
 
@@ -123,6 +146,7 @@ class DingTalkPayloadBuilderTest {
         assertNotNull(atObj);
         assertEquals(true, atObj.get("isAtAll"));
         assertEquals(List.of("13800000001"), atObj.get("atMobiles"));
+        assertEquals(List.of("ding_user_456"), atObj.get("atUserIds"));
     }
 
     @Test
