@@ -7,9 +7,11 @@ import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
+import io.github.atengk.boot.document.pdf.model.PageImageConsumer;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
 import io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor;
 import io.github.atengk.boot.document.pdf.model.PdfMetadata;
+import io.github.atengk.boot.document.pdf.model.PdfRenderOptions;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentPdfProperties;
@@ -43,6 +45,7 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDRadioButton;
 import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDVariableText;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.util.Matrix;
 import org.slf4j.Logger;
@@ -50,7 +53,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.WritableResource;
 
+import javax.imageio.ImageIO;
 import java.awt.Color;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -1746,7 +1751,282 @@ public class PdfTemplate {
     }
 
     // ==========================================
-    // 9. 10MB 阈值防 OOM 与临时文件物理清理核心逻辑
+    // 9. PDF 页面转高清图像/缩略图与防 OOM 流式治理 (Page-to-Image Rendering)
+    // ==========================================
+
+    /**
+     * 将 PDF 文档指定页面渲染为内存位图对象（BufferedImage）
+     *
+     * @param source    原始 PDF 输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @param pageIndex 页面索引（0-based，支持负数索引例如 -1 表示最后一页）
+     * @param dpi       渲染分辨率 DPI（有效范围 72.0f ~ 600.0f）
+     * @return 渲染出的 BufferedImage 对象
+     * @throws PdfOperationException 索引越界、文档加密或渲染失败时抛出
+     */
+    public BufferedImage renderPageToImage(Object source, int pageIndex, float dpi) {
+        return renderPageToImage(source, pageIndex, PdfRenderOptions.ofDpi(dpi));
+    }
+
+    /**
+     * 将 PDF 文档指定页面渲染为内存位图对象（使用高级选项）
+     *
+     * @param source    原始 PDF 输入源
+     * @param pageIndex 页面索引（0-based，支持负数索引）
+     * @param options   渲染配置选项（为 null 时使用默认 150 DPI RGB）
+     * @return 渲染出的 BufferedImage 对象
+     * @throws PdfOperationException 索引越界、文档加密或渲染失败时抛出
+     */
+    public BufferedImage renderPageToImage(Object source, int pageIndex, PdfRenderOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        PdfRenderOptions opts = options != null ? options : PdfRenderOptions.defaults();
+        validateDpi(opts.getDpi());
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再渲染页面图像");
+            }
+            int totalPages = doc.getNumberOfPages();
+            int actualIndex = pageIndex < 0 ? totalPages + pageIndex : pageIndex;
+            if (actualIndex < 0 || actualIndex >= totalPages) {
+                throw new PdfOperationException(DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS,
+                        String.format("PDF 页面索引越界 (总页数: %d, 请求页索引: %d)", totalPages, pageIndex));
+            }
+
+            PDFRenderer renderer = new PDFRenderer(doc);
+            return renderer.renderImageWithDPI(actualIndex, opts.getDpi(), opts.getImageType());
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "渲染 PDF 页面图像失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将 PDF 文档指定页面渲染为 PNG 图像字节数组（使用默认 150 DPI）
+     *
+     * @param source    原始 PDF 输入源
+     * @param pageIndex 页面索引（0-based，支持负数索引）
+     * @return PNG 图像二进制字节数组
+     */
+    public byte[] renderPageToPng(Object source, int pageIndex) {
+        return renderPageToPng(source, pageIndex, 150.0f);
+    }
+
+    /**
+     * 将 PDF 文档指定页面渲染为 PNG 图像字节数组
+     *
+     * @param source    原始 PDF 输入源
+     * @param pageIndex 页面索引（0-based，支持负数索引）
+     * @param dpi       渲染分辨率 DPI（有效范围 72.0f ~ 600.0f）
+     * @return PNG 图像二进制字节数组
+     */
+    public byte[] renderPageToPng(Object source, int pageIndex, float dpi) {
+        return renderPageToImageBytes(source, pageIndex, PdfRenderOptions.ofDpi(dpi));
+    }
+
+    /**
+     * 将 PDF 文档指定页面渲染为指定格式的图像字节数组
+     *
+     * @param source    原始 PDF 输入源
+     * @param pageIndex 页面索引（0-based，支持负数索引）
+     * @param options   渲染配置选项
+     * @return 图像二进制字节数组
+     */
+    public byte[] renderPageToImageBytes(Object source, int pageIndex, PdfRenderOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        PdfRenderOptions opts = options != null ? options : PdfRenderOptions.defaults();
+        validateDpi(opts.getDpi());
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再渲染页面图像");
+            }
+            int totalPages = doc.getNumberOfPages();
+            int actualIndex = pageIndex < 0 ? totalPages + pageIndex : pageIndex;
+            if (actualIndex < 0 || actualIndex >= totalPages) {
+                throw new PdfOperationException(DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS,
+                        String.format("PDF 页面索引越界 (总页数: %d, 请求页索引: %d)", totalPages, pageIndex));
+            }
+
+            PDFRenderer renderer = new PDFRenderer(doc);
+            BufferedImage image = renderer.renderImageWithDPI(actualIndex, opts.getDpi(), opts.getImageType());
+            try {
+                return toImageBytes(image, opts.getFormat());
+            } finally {
+                image.flush();
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "渲染 PDF 页面图像字节数组失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将 PDF 文档所有页面批量渲染为 PNG 图像字节数组列表（默认 150 DPI，上限 50 页）
+     *
+     * @param source 原始 PDF 输入源
+     * @return 逐页 PNG 图像字节数组列表
+     * @throws PdfOperationException 页数超限或渲染失败时抛出
+     */
+    public List<byte[]> renderAllPagesToPng(Object source) {
+        return renderAllPagesToPng(source, 150.0f);
+    }
+
+    /**
+     * 将 PDF 文档所有页面批量渲染为 PNG 图像字节数组列表（上限 50 页）
+     *
+     * @param source 原始 PDF 输入源
+     * @param dpi    渲染分辨率 DPI（有效范围 72.0f ~ 600.0f）
+     * @return 逐页 PNG 图像字节数组列表
+     * @throws PdfOperationException 页数超限或渲染失败时抛出
+     */
+    public List<byte[]> renderAllPagesToPng(Object source, float dpi) {
+        return renderAllPagesToBytes(source, PdfRenderOptions.ofDpi(dpi));
+    }
+
+    /**
+     * 将 PDF 文档所有页面批量渲染为图像字节数组列表（受 maxPages 安全上限守卫）
+     *
+     * @param source  原始 PDF 输入源
+     * @param options 渲染配置选项（包含 maxPages 堆内存保护上限）
+     * @return 逐页图像字节数组列表
+     * @throws PdfOperationException 页数超限或渲染失败时抛出
+     */
+    public List<byte[]> renderAllPagesToBytes(Object source, PdfRenderOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        PdfRenderOptions opts = options != null ? options : PdfRenderOptions.defaults();
+        validateDpi(opts.getDpi());
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再渲染页面图像");
+            }
+            int totalPages = doc.getNumberOfPages();
+            if (totalPages > opts.getMaxPages()) {
+                throw new PdfOperationException(DocumentResultCode.PDF_RENDER_EXCEEDED_MAX_PAGES,
+                        String.format("PDF 页面渲染总数 (%d) 超过单次安全上限 (%d)，请改用流式分批接口 renderPages 防御堆内存溢出",
+                                totalPages, opts.getMaxPages()));
+            }
+
+            PDFRenderer renderer = new PDFRenderer(doc);
+            List<byte[]> result = new ArrayList<>(totalPages);
+            for (int i = 0; i < totalPages; i++) {
+                BufferedImage image = renderer.renderImageWithDPI(i, opts.getDpi(), opts.getImageType());
+                try {
+                    result.add(toImageBytes(image, opts.getFormat()));
+                } finally {
+                    image.flush();
+                }
+            }
+            return result;
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "批量渲染 PDF 页面图像失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 全文档流式逐页渲染图像（每页回调后立即物理 flush 释放位图，防堆内存积压）
+     *
+     * @param source   原始 PDF 输入源
+     * @param options  渲染配置选项
+     * @param consumer 逐页位图消费回调函数
+     */
+    public void renderPages(Object source, PdfRenderOptions options, PageImageConsumer consumer) {
+        renderPages(source, 1, Integer.MAX_VALUE, options, consumer);
+    }
+
+    /**
+     * 按页码范围流式逐页渲染图像（每页回调后立即物理 flush 释放位图）
+     *
+     * @param source    原始 PDF 输入源
+     * @param startPage 起始页码（1-based 物理页码）
+     * @param endPage   结束页码（1-based 物理页码）
+     * @param dpi       渲染分辨率 DPI（有效范围 72.0f ~ 600.0f）
+     * @param consumer  逐页位图消费回调函数
+     */
+    public void renderPages(Object source, int startPage, int endPage, float dpi, PageImageConsumer consumer) {
+        renderPages(source, startPage, endPage, PdfRenderOptions.ofDpi(dpi), consumer);
+    }
+
+    /**
+     * 按页码范围流式逐页渲染图像（每页回调后立即物理 flush 释放位图，防 OOM 核心通道）
+     *
+     * @param source    原始 PDF 输入源
+     * @param startPage 起始页码（1-based 物理页码）
+     * @param endPage   结束页码（1-based 物理页码）
+     * @param options   渲染配置选项
+     * @param consumer  逐页位图消费回调函数
+     */
+    public void renderPages(Object source, int startPage, int endPage, PdfRenderOptions options, PageImageConsumer consumer) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(consumer, "页面图像消费回调 consumer 不能为空");
+
+        if (startPage < 1) {
+            throw new IllegalArgumentException("起始页码 startPage 必须大于等于 1");
+        }
+        if (endPage < startPage) {
+            throw new IllegalArgumentException(String.format("结束页码 endPage (%d) 不能小于起始页码 startPage (%d)", endPage, startPage));
+        }
+
+        PdfRenderOptions opts = options != null ? options : PdfRenderOptions.defaults();
+        validateDpi(opts.getDpi());
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再渲染页面图像");
+            }
+            int totalPages = doc.getNumberOfPages();
+            if (startPage > totalPages) {
+                throw new PdfOperationException(DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS,
+                        String.format("起始页码 (%d) 超出文档总页数 (%d)", startPage, totalPages));
+            }
+
+            int effectiveEndPage = Math.min(endPage, totalPages);
+            PDFRenderer renderer = new PDFRenderer(doc);
+
+            for (int p = startPage; p <= effectiveEndPage; p++) {
+                BufferedImage image = renderer.renderImageWithDPI(p - 1, opts.getDpi(), opts.getImageType());
+                try {
+                    consumer.accept(p, image);
+                } catch (Exception e) {
+                    throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED,
+                            String.format("流式消费第 %d 页图像时发生异常: %s", p, e.getMessage()), e);
+                } finally {
+                    image.flush();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "流式渲染 PDF 页面图像失败: " + e.getMessage(), e);
+        }
+    }
+
+    private static void validateDpi(float dpi) {
+        if (dpi < 72.0f || dpi > 600.0f) {
+            throw new IllegalArgumentException(String.format("渲染 DPI 超出安全范围 [72.0, 600.0]: %.1f", dpi));
+        }
+    }
+
+    private static byte[] toImageBytes(BufferedImage image, String format) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        String fmt = format != null && !format.trim().isEmpty() ? format.trim() : "PNG";
+        boolean written = ImageIO.write(image, fmt, baos);
+        if (!written) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "不支持的图像输出格式: " + fmt);
+        }
+        return baos.toByteArray();
+    }
+
+    // ==========================================
+    // 10. 10MB 阈值防 OOM 与临时文件物理清理核心逻辑
     // ==========================================
 
     private LoadedPdfDocument loadDocument(Object source) throws IOException {
