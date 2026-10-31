@@ -67,6 +67,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Micrometer 核心指标采集 (用于调度任务吞吐、耗时百分位与监控度量) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 可选依赖：协同通知组件 (用于任务失败与超时群告警桥接) -->
         <dependency>
             <groupId>io.github.atengk</groupId>

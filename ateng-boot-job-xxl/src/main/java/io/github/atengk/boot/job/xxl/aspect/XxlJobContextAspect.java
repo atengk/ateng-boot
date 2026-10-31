@@ -16,6 +16,7 @@ import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
+import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.model.ShardingContext;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.timeout.AdminTimeoutRegistry;
@@ -77,20 +78,31 @@ public class XxlJobContextAspect {
     private final XxlJobProperties properties;
     private final Executor taskExecutor;
     private final XxlJobAlertAggregator alertAggregator;
+    private final XxlJobMetricsBinder metricsBinder;
 
     public XxlJobContextAspect() {
-        this(null, null, null, null);
+        this(null, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
-        this(watchdog, properties, taskExecutor, null);
+        this(watchdog, properties, taskExecutor, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor, XxlJobAlertAggregator alertAggregator) {
+        this(watchdog, properties, taskExecutor, alertAggregator, null);
+    }
+
+    public XxlJobContextAspect(
+            LocalWatchdog watchdog,
+            XxlJobProperties properties,
+            Executor taskExecutor,
+            XxlJobAlertAggregator alertAggregator,
+            XxlJobMetricsBinder metricsBinder) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.taskExecutor = taskExecutor;
         this.alertAggregator = alertAggregator;
+        this.metricsBinder = metricsBinder;
     }
 
     @Around("@annotation(com.xxl.job.core.handler.annotation.XxlJob) || @annotation(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob) || @within(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob)")
@@ -187,20 +199,28 @@ public class XxlJobContextAspect {
                 result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
             }
 
-            // 7. 任务执行成功：触发告警聚合自愈探测
+            // 7. 任务执行成功：触发告警聚合自愈探测与 Micrometer 度量采集
+            long durationNs = System.nanoTime() - startNs;
             if (alertAggregator != null) {
-                long costMs = (System.nanoTime() - startNs) / 1_000_000;
+                long costMs = durationNs / 1_000_000;
                 alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs);
+            }
+            if (metricsBinder != null) {
+                metricsBinder.recordExecution(jobName, XxlJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
             }
             return result;
         } catch (Throwable t) {
+            long durationNs = System.nanoTime() - startNs;
             if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
                 log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
             }
-            // 8. 任务执行异常：触发告警风暴聚合判定
+            // 8. 任务执行异常：触发告警风暴聚合判定与 Micrometer 度量采集
             if (alertAggregator != null) {
-                long costMs = (System.nanoTime() - startNs) / 1_000_000;
+                long costMs = durationNs / 1_000_000;
                 alertAggregator.onJobFailure(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, t);
+            }
+            if (metricsBinder != null) {
+                metricsBinder.recordExecution(jobName, XxlJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
             }
             throw t;
         } finally {

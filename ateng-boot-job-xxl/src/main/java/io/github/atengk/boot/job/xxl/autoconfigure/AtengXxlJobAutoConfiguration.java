@@ -1,19 +1,27 @@
 package io.github.atengk.boot.job.xxl.autoconfigure;
 
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.actuator.XxlJobEndpoint;
+import io.github.atengk.boot.job.xxl.actuator.XxlJobHealthIndicator;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
+import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
+import io.github.atengk.boot.job.xxl.template.XxlMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.xxl.template.XxlShardingBatchTemplate;
 import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -21,6 +29,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
 import java.util.concurrent.Executor;
@@ -148,6 +157,7 @@ public class AtengXxlJobAutoConfiguration {
      * @param properties              配置属性
      * @param taskExecutorProvider    Core 受管异步线程池 Provider
      * @param alertAggregatorProvider 告警聚合引擎 Provider
+     * @param metricsBinderProvider   Micrometer 监控度量绑定器 Provider
      * @return 上下文切面实例
      */
     @Bean
@@ -157,13 +167,69 @@ public class AtengXxlJobAutoConfiguration {
             ObjectProvider<LocalWatchdog> watchdogProvider,
             XxlJobProperties properties,
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-            ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider) {
+            ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider,
+            ObjectProvider<XxlJobMetricsBinder> metricsBinderProvider) {
         return new XxlJobContextAspect(
                 watchdogProvider.getIfAvailable(),
                 properties,
                 taskExecutorProvider.getIfAvailable(),
-                alertAggregatorProvider.getIfAvailable()
+                alertAggregatorProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 注册 Micrometer 核心监控度量指标收集器
+     *
+     * <p>仅在引入 Micrometer 时生效，收集调度任务执行吞吐量、失败量与百分位耗时分布。</p>
+     *
+     * @return Micrometer 监控绑定器
+     */
+    @Bean
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnMissingBean
+    public XxlJobMetricsBinder xxlJobMetricsBinder() {
+        return new XxlJobMetricsBinder();
+    }
+
+    /**
+     * 注册脱网本地调试与端到端测试辅助门面
+     *
+     * @return 脱网调试辅助实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public XxlJobTestHelper xxlJobTestHelper() {
+        return new XxlJobTestHelper();
+    }
+
+    /**
+     * 注册 Actuator 健康探针
+     *
+     * @param properties       配置属性
+     * @param executorProvider 执行器 Provider
+     * @return 健康探针实例
+     */
+    @Bean
+    @ConditionalOnClass(HealthIndicator.class)
+    @ConditionalOnMissingBean(name = "xxlJobHealthIndicator")
+    public XxlJobHealthIndicator xxlJobHealthIndicator(
+            XxlJobProperties properties,
+            ObjectProvider<XxlJobSpringExecutor> executorProvider) {
+        return new XxlJobHealthIndicator(properties, executorProvider);
+    }
+
+    /**
+     * 注册 Actuator 运维与手动触发端点 (/actuator/xxljobs)
+     *
+     * @param properties 配置属性
+     * @return Actuator 端点实例
+     */
+    @Bean
+    @ConditionalOnClass(Endpoint.class)
+    @ConditionalOnMissingBean
+    public XxlJobEndpoint xxlJobEndpoint(XxlJobProperties properties) {
+        return new XxlJobEndpoint(properties);
     }
 
     /**
@@ -181,6 +247,21 @@ public class AtengXxlJobAutoConfiguration {
     }
 
     /**
+     * 联动 MyBatis-Plus 流式游标批处理配置
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate")
+    public static class XxlJobMyBatisConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(XxlShardingBatchTemplate.class)
+        public XxlMyBatisStreamingTemplate xxlMyBatisStreamingTemplate(
+                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+            return new XxlMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable());
+        }
+    }
+
+    /**
      * 注册分片流式批处理模板
      *
      * <p>提供大数据分片流式步长游标拉取、防 OOM 并发切片消费，并自动向子线程透传四维上下文与 XXL-Job 日志镜像句柄。</p>
@@ -189,7 +270,7 @@ public class AtengXxlJobAutoConfiguration {
      * @return 分片流式批处理模板实例
      */
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(XxlShardingBatchTemplate.class)
     public XxlShardingBatchTemplate xxlShardingBatchTemplate(
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         return new XxlShardingBatchTemplate(taskExecutorProvider.getIfAvailable());

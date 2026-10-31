@@ -40,11 +40,11 @@ class XxlShardingBatchTemplateTest {
             .withUserConfiguration(AtengXxlJobAutoConfiguration.class)
             .withPropertyValues("ateng.boot.job.xxl.admin-addresses=http://127.0.0.1:8080/xxl-job-admin");
 
-    private XxlShardingBatchTemplate template;
+    private XxlMyBatisStreamingTemplate template;
 
     @BeforeEach
     void setUp() {
-        template = new XxlShardingBatchTemplate();
+        template = new XxlMyBatisStreamingTemplate();
     }
 
     @AfterEach
