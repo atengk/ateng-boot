@@ -57,7 +57,7 @@ public class AtengXxlJobAutoConfiguration {
         log.info("开始装配 XXL-Job 执行器 [AppName: {}, AdminAddresses: {}, Port: {}]",
                 properties.getAppname(), properties.getAdminAddresses(), properties.getPort());
 
-        AtengXxlJobSpringExecutor executor = new AtengXxlJobSpringExecutor();
+        AtengXxlJobSpringExecutor executor = new AtengXxlJobSpringExecutor(properties);
         executor.setAdminAddresses(properties.getAdminAddresses());
         executor.setAppname(properties.getAppname());
 

@@ -87,4 +87,19 @@ public class XxlJobProperties {
      */
     private boolean managedPoolEnabled = false;
 
+    /**
+     * 执行器入站 CIDR 白名单网段列表 (支持单 IP 如 127.0.0.1 或 CIDR 掩码如 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16；为空时默认放行全部)
+     */
+    private java.util.List<String> cidrWhitelist = new java.util.ArrayList<>();
+
+    /**
+     * 容器平滑停机任务排空最大等待超时时限 (默认 30 秒)
+     */
+    private Duration drainTimeout = Duration.ofSeconds(30);
+
+    /**
+     * 端口冲突探测最大顺延重试步长 (默认最多尝试探测顺延 100 个端口)
+     */
+    private int portDetectionMaxRetry = 100;
+
 }
