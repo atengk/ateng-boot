@@ -260,6 +260,7 @@ class MqttListenerContainerTest {
         boolean completed = dynamicLatch.await(3, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(dynamicMessages).containsExactly("dynamic-temp-1");
+        Thread.sleep(100);
 
         // 3. 动态退订
         mqttTemplate.unsubscribe("dynamic/sensor/+");
