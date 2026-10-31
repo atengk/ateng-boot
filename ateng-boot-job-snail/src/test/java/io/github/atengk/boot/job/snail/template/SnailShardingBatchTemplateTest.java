@@ -216,8 +216,9 @@ class SnailShardingBatchTemplateTest {
         List<String> items = List.of("R1", "R2", "R3", "R4", "R5");
         MockCursor<String> cursor = new MockCursor<>(items);
 
+        SnailMyBatisStreamingTemplate streamingTemplate = new SnailMyBatisStreamingTemplate(Executors.newFixedThreadPool(4), 5, 4);
         List<String> consumed = new ArrayList<>();
-        BatchExecutionResult result = template.executeStreaming(
+        BatchExecutionResult result = streamingTemplate.executeStreaming(
                 () -> cursor,
                 2,
                 consumed::addAll

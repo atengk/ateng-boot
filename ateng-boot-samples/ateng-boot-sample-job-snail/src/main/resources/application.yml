@@ -1,0 +1,59 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-job-snail
+  config:
+    import: "optional:classpath:application-local.yml"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,snailjobs
+  endpoint:
+    health:
+      show-details: always
+
+ateng:
+  boot:
+    web:
+      trace:
+        enabled: true
+    job:
+      snail:
+        enabled: true
+        server: "127.0.0.1:17888"
+        group: "ateng-boot-sample-job-snail"
+        namespace: "default"
+        token: "default_token"
+        port: 17889
+        timeout: 10s
+        drain-timeout: 30s
+        default-job-timeout: 1h
+        log-mirror-enabled: true
+        managed-pool-enabled: true
+        job:
+          enabled: true
+          context-aspect-enabled: true
+          batch-template-enabled: true
+          tenant-template-enabled: true
+        retry:
+          enabled: true
+          context-aspect-enabled: true
+        openapi:
+          enabled: true
+          port: 8080
+          prefix: "snail-job"
+          https: false
+        alert:
+          enabled: true
+          suppress-duration: 30s
+          suppress-threshold: 3
+
+logging:
+  level:
+    root: INFO
+    io.github.atengk.boot.job.snail: DEBUG
+    io.github.atengk.boot.sample.job.snail: DEBUG

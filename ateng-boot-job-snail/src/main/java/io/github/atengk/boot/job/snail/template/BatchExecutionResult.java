@@ -61,7 +61,15 @@ public class BatchExecutionResult implements Serializable {
         return totalCount;
     }
 
+    public long totalCount() {
+        return totalCount;
+    }
+
     public long getSuccessCount() {
+        return successCount;
+    }
+
+    public long successCount() {
         return successCount;
     }
 
@@ -69,11 +77,23 @@ public class BatchExecutionResult implements Serializable {
         return failCount;
     }
 
+    public long failCount() {
+        return failCount;
+    }
+
     public int getBatchCount() {
         return batchCount;
     }
 
+    public int batchCount() {
+        return batchCount;
+    }
+
     public Duration getDuration() {
+        return duration;
+    }
+
+    public Duration duration() {
         return duration;
     }
 

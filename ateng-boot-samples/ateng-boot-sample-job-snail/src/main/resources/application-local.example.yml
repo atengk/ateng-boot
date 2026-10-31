@@ -1,0 +1,13 @@
+# 本地服务联调配置模板（请复制为 application-local.yml 并填入真实 SnailJob 调度服务端连接信息）
+# 真实 application-local.yml 已被 .gitignore 忽略，绝对严禁提交公网真实 IP 与密码凭据至 Git
+ateng:
+  boot:
+    job:
+      snail:
+        server: YOUR_SNAIL_JOB_SERVER_HOST:17888
+        group: YOUR_SNAIL_JOB_GROUP
+        namespace: default
+        token: YOUR_SNAIL_JOB_TOKEN
+        openapi:
+          port: 8080
+          prefix: snail-job

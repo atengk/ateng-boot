@@ -10,6 +10,7 @@ import io.github.atengk.boot.job.snail.actuator.SnailJobHealthIndicator;
 import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
+import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
@@ -19,11 +20,11 @@ import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGener
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import io.github.atengk.boot.job.snail.template.SnailJobAdminTemplate;
+import io.github.atengk.boot.job.snail.template.SnailMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
 import io.github.atengk.boot.job.snail.template.TenantJobTemplate;
 import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
-import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -39,6 +40,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
 
@@ -123,6 +125,17 @@ public class AtengSnailJobAutoConfiguration {
     @ConditionalOnMissingBean
     public GracefulDrainStateMachine snailJobGracefulDrainStateMachine(SnailJobProperties properties) {
         return new GracefulDrainStateMachine(properties);
+    }
+
+    /**
+     * SnailJob 脱网离线单元测试与端到端调试辅助门面
+     *
+     * @return SnailJobTestHelper 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SnailJobTestHelper snailJobTestHelper() {
+        return new SnailJobTestHelper();
     }
 
     /**
@@ -289,26 +302,30 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
-     * SnailJob 大数据游标批处理与流式分片执行门面
-     *
-     * @param taskExecutorProvider 异步受管线程池提供者 (优先注入 atengTaskExecutor)
-     * @param streamingQueryTemplateProvider MyBatis-Plus 游标流式模板提供者 (可选)
-     * @return SnailShardingBatchTemplate 实例
+     * SnailJob 大数据游标批处理与流式分片执行门面 (MyBatis-Plus 流式游标适配配置)
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate")
+    public static class SnailJobMyBatisConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
+        @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
+        public SnailMyBatisStreamingTemplate snailMyBatisStreamingTemplate(
+                @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+            return new SnailMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * SnailJob 大数据游标批处理与流式分片执行门面 (缺省分片批处理配置)
      */
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
     public SnailShardingBatchTemplate snailShardingBatchTemplate(
-            @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-            ObjectProvider<StreamingQueryTemplate> streamingQueryTemplateProvider) {
-        Executor executor = taskExecutorProvider.getIfAvailable();
-        StreamingQueryTemplate streamingTemplate = streamingQueryTemplateProvider.getIfAvailable();
-        return new SnailShardingBatchTemplate(
-                executor,
-                SnailShardingBatchTemplate.DEFAULT_BATCH_SIZE,
-                SnailShardingBatchTemplate.DEFAULT_MAX_CONCURRENCY,
-                streamingTemplate
-        );
+            @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new SnailShardingBatchTemplate(taskExecutorProvider.getIfAvailable());
     }
 
     /**

@@ -8,8 +8,6 @@ import io.github.atengk.boot.core.util.SpringUtil;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
-import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
-import org.apache.ibatis.cursor.Cursor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -56,25 +54,19 @@ public class SnailShardingBatchTemplate {
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
     private volatile boolean failFast = true;
-    private volatile StreamingQueryTemplate streamingQueryTemplate;
 
     public SnailShardingBatchTemplate() {
-        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, null);
+        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor) {
-        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, null);
+        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency) {
-        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, null);
-    }
-
-    public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, StreamingQueryTemplate streamingQueryTemplate) {
         this.taskExecutor = taskExecutor;
         this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
         this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
-        this.streamingQueryTemplate = streamingQueryTemplate;
     }
 
     public int getDefaultBatchSize() {
@@ -93,19 +85,8 @@ public class SnailShardingBatchTemplate {
         this.failFast = failFast;
     }
 
-    public StreamingQueryTemplate getStreamingQueryTemplate() {
-        if (this.streamingQueryTemplate != null) {
-            return this.streamingQueryTemplate;
-        }
-        try {
-            this.streamingQueryTemplate = SpringUtil.getBean(StreamingQueryTemplate.class);
-        } catch (Throwable ignored) {
-        }
-        return this.streamingQueryTemplate;
-    }
-
-    public void setStreamingQueryTemplate(StreamingQueryTemplate streamingQueryTemplate) {
-        this.streamingQueryTemplate = streamingQueryTemplate;
+    protected Executor getEffectiveExecutor() {
+        return this.taskExecutor != null ? this.taskExecutor : ForkJoinPool.commonPool();
     }
 
     // ==================== 1. 基于游标/步长流式分页 (单线程顺序消费) ====================
@@ -620,254 +601,6 @@ public class SnailShardingBatchTemplate {
                 throw re;
             }
             throw new IllegalStateException("分片并发批处理执行失败: " + t.getMessage(), t);
-        }
-
-        Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
-    }
-
-    // ==================== 4. MyBatis-Plus 流式游标批处理对接 ====================
-
-    /**
-     * 联动 MyBatis-Plus 流式游标分批流式消费（顺序消费）
-     *
-     * @param cursorSupplier 游标提供者
-     * @param batchSize      分批大小
-     * @param batchConsumer  分批消费逻辑
-     * @param <T>            实体类型
-     * @return 批处理执行汇总统计
-     */
-    public <T> BatchExecutionResult executeStreaming(
-            Supplier<Cursor<T>> cursorSupplier,
-            int batchSize,
-            Consumer<List<T>> batchConsumer) {
-        return executeStreaming(getStreamingQueryTemplate(), cursorSupplier, batchSize, batchConsumer);
-    }
-
-    /**
-     * 联动指定 StreamingQueryTemplate 进行游标流式分批消费（顺序消费）
-     *
-     * @param customStreamingTemplate 自定义或注入的 StreamingQueryTemplate
-     * @param cursorSupplier         游标提供者
-     * @param batchSize              分批大小
-     * @param batchConsumer          分批消费逻辑
-     * @param <T>                    实体类型
-     * @return 批处理执行汇总统计
-     */
-    public <T> BatchExecutionResult executeStreaming(
-            StreamingQueryTemplate customStreamingTemplate,
-            Supplier<Cursor<T>> cursorSupplier,
-            int batchSize,
-            Consumer<List<T>> batchConsumer) {
-        Objects.requireNonNull(cursorSupplier, "cursorSupplier 不能为 null");
-        Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
-        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
-
-        long startTime = System.nanoTime();
-        AtomicLong totalCount = new AtomicLong(0);
-        AtomicLong successCount = new AtomicLong(0);
-        AtomicLong failCount = new AtomicLong(0);
-        AtomicInteger batchCount = new AtomicInteger(0);
-
-        Consumer<List<T>> dispatcher = batch -> {
-            if (batch == null || batch.isEmpty()) {
-                return;
-            }
-            int size = batch.size();
-            totalCount.addAndGet(size);
-            int batchIndex = batchCount.incrementAndGet();
-            try {
-                batchConsumer.accept(Collections.unmodifiableList(batch));
-                successCount.addAndGet(size);
-            } catch (Throwable t) {
-                failCount.addAndGet(size);
-                if (isFailFast()) {
-                    if (t instanceof RuntimeException re) {
-                        throw re;
-                    }
-                    throw new IllegalStateException("流式游标消费异常", t);
-                }
-                log.error("[SnailShardingBatchTemplate] 流式游标批处理异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
-            }
-        };
-
-        if (customStreamingTemplate != null) {
-            customStreamingTemplate.forEachBatch(cursorSupplier, effectiveBatchSize, dispatcher);
-        } else {
-            try (Cursor<T> cursor = cursorSupplier.get()) {
-                if (cursor != null) {
-                    List<T> buffer = new ArrayList<>(effectiveBatchSize);
-                    for (T item : cursor) {
-                        buffer.add(item);
-                        if (buffer.size() >= effectiveBatchSize) {
-                            dispatcher.accept(buffer);
-                            buffer = new ArrayList<>(effectiveBatchSize);
-                        }
-                    }
-                    if (!buffer.isEmpty()) {
-                        dispatcher.accept(buffer);
-                    }
-                }
-            } catch (Exception e) {
-                if (isFailFast()) {
-                    if (e instanceof RuntimeException re) {
-                        throw re;
-                    }
-                    throw new IllegalStateException("MyBatis 游标遍历异常", e);
-                }
-                log.error("[SnailShardingBatchTemplate] 游标遍历底层异常: {}", e.getMessage(), e);
-            }
-        }
-
-        Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
-    }
-
-    /**
-     * 联动 MyBatis-Plus 流式游标分批并发消费（受管线程池 + 信号量背压）
-     */
-    public <T> BatchExecutionResult executeStreamingParallel(
-            Supplier<Cursor<T>> cursorSupplier,
-            int batchSize,
-            int maxConcurrency,
-            Consumer<List<T>> batchConsumer) {
-        return executeStreamingParallel(getStreamingQueryTemplate(), cursorSupplier, batchSize, maxConcurrency, batchConsumer);
-    }
-
-    /**
-     * 联动指定 StreamingQueryTemplate 进行游标流式分批并发消费
-     */
-    public <T> BatchExecutionResult executeStreamingParallel(
-            StreamingQueryTemplate customStreamingTemplate,
-            Supplier<Cursor<T>> cursorSupplier,
-            int batchSize,
-            int maxConcurrency,
-            Consumer<List<T>> batchConsumer) {
-        Objects.requireNonNull(cursorSupplier, "cursorSupplier 不能为 null");
-        Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
-
-        int effectiveBatchSize = batchSize > 0 ? batchSize : getDefaultBatchSize();
-        int effectiveConcurrency = maxConcurrency > 0 ? maxConcurrency : getDefaultMaxConcurrency();
-        Executor executor = (this.taskExecutor != null) ? this.taskExecutor : ForkJoinPool.commonPool();
-
-        long startTime = System.nanoTime();
-        AtomicLong totalCount = new AtomicLong(0);
-        AtomicLong successCount = new AtomicLong(0);
-        AtomicLong failCount = new AtomicLong(0);
-        AtomicInteger batchCount = new AtomicInteger(0);
-
-        Semaphore semaphore = new Semaphore(effectiveConcurrency);
-        List<CompletableFuture<Void>> futures = Collections.synchronizedList(new ArrayList<>());
-        AtomicReference<Throwable> firstError = new AtomicReference<>(null);
-
-        Map<String, String> mdcContext = MDC.getCopyOfContextMap();
-        String currentTenant = TenantContextHolder.getTenantId();
-        boolean ignoreTenant = TenantContextHolder.isIgnoreTenant();
-        String currentUser = UserContextHolder.getExplicit();
-        SnailJobContext parentJobContext = SnailJobContextHolder.get();
-
-        Consumer<List<T>> dispatcher = batch -> {
-            if (batch == null || batch.isEmpty() || (failFast && firstError.get() != null)) {
-                return;
-            }
-            int size = batch.size();
-            totalCount.addAndGet(size);
-            int batchIndex = batchCount.incrementAndGet();
-
-            try {
-                semaphore.acquire();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-
-            List<T> immutableBatch = Collections.unmodifiableList(batch);
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                Map<String, String> previousMdc = MDC.getCopyOfContextMap();
-                if (mdcContext != null) {
-                    MDC.setContextMap(mdcContext);
-                } else {
-                    MDC.clear();
-                }
-
-                TenantSnapshot tenantSnapshot = TenantContextHolder.capturePrevious();
-                TenantContextHolder.setTenantId(currentTenant);
-                TenantContextHolder.setIgnoreTenant(ignoreTenant);
-
-                String previousUser = UserContextHolder.getExplicit();
-                if (currentUser != null) {
-                    UserContextHolder.set(currentUser);
-                } else {
-                    UserContextHolder.clear();
-                }
-
-                SnailJobContextHolder.set(parentJobContext);
-
-                try {
-                    batchConsumer.accept(immutableBatch);
-                    successCount.addAndGet(size);
-                } catch (Throwable t) {
-                    failCount.addAndGet(size);
-                    firstError.compareAndSet(null, t);
-                    log.error("[SnailShardingBatchTemplate] 游标并发切片异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
-                } finally {
-                    semaphore.release();
-                    SnailJobContextHolder.remove();
-                    TenantContextHolder.restore(tenantSnapshot);
-                    if (previousUser != null) {
-                        UserContextHolder.set(previousUser);
-                    } else {
-                        UserContextHolder.clear();
-                    }
-                    if (previousMdc != null) {
-                        MDC.setContextMap(previousMdc);
-                    } else {
-                        MDC.clear();
-                    }
-                }
-            }, executor);
-
-            futures.add(future);
-        };
-
-        if (customStreamingTemplate != null) {
-            customStreamingTemplate.forEachBatch(cursorSupplier, effectiveBatchSize, dispatcher);
-        } else {
-            try (Cursor<T> cursor = cursorSupplier.get()) {
-                if (cursor != null) {
-                    List<T> buffer = new ArrayList<>(effectiveBatchSize);
-                    for (T item : cursor) {
-                        if (failFast && firstError.get() != null) {
-                            break;
-                        }
-                        buffer.add(item);
-                        if (buffer.size() >= effectiveBatchSize) {
-                            dispatcher.accept(buffer);
-                            buffer = new ArrayList<>(effectiveBatchSize);
-                        }
-                    }
-                    if (!buffer.isEmpty() && (!failFast || firstError.get() == null)) {
-                        dispatcher.accept(buffer);
-                    }
-                }
-            } catch (Exception e) {
-                firstError.compareAndSet(null, e);
-                log.error("[SnailShardingBatchTemplate] 游标并发流式异常: {}", e.getMessage(), e);
-            }
-        }
-
-        try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(1, TimeUnit.HOURS);
-        } catch (Exception e) {
-            firstError.compareAndSet(null, e);
-        }
-
-        if (failFast && firstError.get() != null) {
-            Throwable t = firstError.get();
-            if (t instanceof RuntimeException re) {
-                throw re;
-            }
-            throw new IllegalStateException("游标流式并发批处理执行失败: " + t.getMessage(), t);
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);

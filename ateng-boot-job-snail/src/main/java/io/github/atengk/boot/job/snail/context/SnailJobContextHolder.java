@@ -26,6 +26,33 @@ public final class SnailJobContextHolder {
     }
 
     /**
+     * 获取当前线程绑定的 SnailJob 上下文（get() 语义别名）
+     *
+     * @return SnailJobContext 实例，未绑定时返回 null
+     */
+    public static SnailJobContext getContext() {
+        return get();
+    }
+
+    /**
+     * 获取当前上下文中绑定的 traceId（若未设置则保底从 MDC 提取）
+     *
+     * @return traceId
+     */
+    public static String getTraceId() {
+        return org.slf4j.MDC.get("traceId");
+    }
+
+    /**
+     * 获取当前上下文中绑定的租户标识（若未设置则保底从 TenantContextHolder 提取）
+     *
+     * @return 租户标识
+     */
+    public static String getTenantId() {
+        return io.github.atengk.boot.core.context.TenantContextHolder.getTenantId();
+    }
+
+    /**
      * 绑定指定 SnailJob 上下文到当前线程
      *
      * @param context SnailJobContext 实例
@@ -43,5 +70,12 @@ public final class SnailJobContextHolder {
      */
     public static void remove() {
         CONTEXT_HOLDER.remove();
+    }
+
+    /**
+     * 清理当前线程绑定的上下文现场（remove() 语义别名）
+     */
+    public static void clear() {
+        remove();
     }
 }
