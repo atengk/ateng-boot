@@ -53,20 +53,25 @@ public class SnailShardingBatchTemplate {
     private final Executor taskExecutor;
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
-    private volatile boolean failFast = true;
+    private final boolean defaultFailFast;
 
     public SnailShardingBatchTemplate() {
-        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
+        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor) {
-        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
+        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, true);
     }
 
     public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency) {
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, true);
+    }
+
+    public SnailShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, boolean defaultFailFast) {
         this.taskExecutor = taskExecutor;
         this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
         this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
+        this.defaultFailFast = defaultFailFast;
     }
 
     public int getDefaultBatchSize() {
@@ -78,11 +83,7 @@ public class SnailShardingBatchTemplate {
     }
 
     public boolean isFailFast() {
-        return failFast;
-    }
-
-    public void setFailFast(boolean failFast) {
-        this.failFast = failFast;
+        return defaultFailFast;
     }
 
     protected Executor getEffectiveExecutor() {
@@ -109,7 +110,7 @@ public class SnailShardingBatchTemplate {
     }
 
     /**
-     * 基于游标步长流式分批拉取并消费（支持自定义初始游标与切片大小）
+     * 基于游标步长流式分批拉取并消费（支持自定义初始游标与切片大小，采用默认 failFast 策略）
      *
      * @param initialId     初始游标 ID（为 null 时从头查询）
      * @param batchSize     每批拉取条数
@@ -123,6 +124,29 @@ public class SnailShardingBatchTemplate {
     public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
             ID initialId,
             int batchSize,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer) {
+        return executeStep(initialId, batchSize, this.defaultFailFast, queryFunction, idExtractor, batchConsumer);
+    }
+
+    /**
+     * 基于游标步长流式分批拉取并消费（支持自定义初始游标、切片大小与快速失败控制）
+     *
+     * @param initialId     初始游标 ID（为 null 时从头查询）
+     * @param batchSize     每批拉取条数
+     * @param failFast      是否快速失败（true 遇异常中断抛出，false 记录异常统计并继续处理下一批次）
+     * @param queryFunction 游标查询函数：(lastId, batchSize) -> List<T>
+     * @param idExtractor   实体主键提取器
+     * @param batchConsumer 分批消费逻辑
+     * @param <T>           实体类型
+     * @param <ID>          游标 ID 类型
+     * @return 批处理执行汇总统计
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+            ID initialId,
+            int batchSize,
+            boolean failFast,
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
@@ -207,7 +231,7 @@ public class SnailShardingBatchTemplate {
     }
 
     /**
-     * 带有指定分片匹配的步长流式批处理
+     * 带有指定分片匹配的步长流式批处理（采用默认 failFast 策略）
      *
      * <p>仅将符合当前分片（sharding.match(id) == true）的数据切片交付给 batchConsumer，
      * 游标按底层原始拉取数据的最后一条推进，确保多节点调度无缝协同且不漏单。</p>
@@ -225,6 +249,30 @@ public class SnailShardingBatchTemplate {
             ShardingContext sharding,
             Long initialId,
             int batchSize,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer) {
+        return executeShardedStep(sharding, initialId, batchSize, this.defaultFailFast, queryFunction, idExtractor, batchConsumer);
+    }
+
+    /**
+     * 带有指定分片匹配的步长流式批处理（支持快速失败控制）
+     *
+     * @param sharding      当前节点分片上下文（若为 null 则不过滤）
+     * @param initialId     初始游标 ID（Long）
+     * @param batchSize     每批拉取大小
+     * @param failFast      是否快速失败（true 遇异常中断抛出，false 记录异常统计并继续处理下一批次）
+     * @param queryFunction 游标查询函数 (lastId, batchSize) -> List<T>
+     * @param idExtractor   Long 数值主键提取器
+     * @param batchConsumer 匹配分片的记录消费器
+     * @param <T>           实体类型
+     * @return 批处理执行汇总统计
+     */
+    public <T> BatchExecutionResult executeShardedStep(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            boolean failFast,
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {
@@ -269,13 +317,13 @@ public class SnailShardingBatchTemplate {
                     successCount += matchedSize;
                 } catch (Throwable t) {
                     failCount += matchedSize;
-                    log.error("[SnailShardingBatchTemplate] 分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
                     if (failFast) {
                         if (t instanceof RuntimeException re) {
                             throw re;
                         }
                         throw new IllegalStateException("分片流式批处理发生未受检异常", t);
                     }
+                    log.error("[SnailShardingBatchTemplate] 分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
                 }
             }
 
@@ -321,7 +369,7 @@ public class SnailShardingBatchTemplate {
     }
 
     /**
-     * 基于游标步长拉取 + 受管线程池并发消费
+     * 基于游标步长拉取 + 受管线程池并发消费（采用默认 failFast 策略）
      *
      * @param initialId      初始游标 ID
      * @param batchSize      每批条数
@@ -337,6 +385,31 @@ public class SnailShardingBatchTemplate {
             ID initialId,
             int batchSize,
             int maxConcurrency,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer) {
+        return executeStepParallel(initialId, batchSize, maxConcurrency, this.defaultFailFast, queryFunction, idExtractor, batchConsumer);
+    }
+
+    /**
+     * 基于游标步长拉取 + 受管线程池并发消费（支持快速失败控制）
+     *
+     * @param initialId      初始游标 ID
+     * @param batchSize      每批条数
+     * @param maxConcurrency 最大并行度（背压上限）
+     * @param failFast       是否快速失败（true 遇异常中断抛出，false 记录异常统计并继续处理下一批次）
+     * @param queryFunction  游标查询函数
+     * @param idExtractor    主键提取器
+     * @param batchConsumer  切片消费逻辑
+     * @param <T>            实体类型
+     * @param <ID>           游标类型
+     * @return 批处理执行汇总统计
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+            ID initialId,
+            int batchSize,
+            int maxConcurrency,
+            boolean failFast,
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
@@ -467,13 +540,39 @@ public class SnailShardingBatchTemplate {
     }
 
     /**
-     * 带有分片过滤的并发批处理
+     * 带有分片过滤的并发批处理（采用默认 failFast 策略）
      */
     public <T> BatchExecutionResult executeShardedStepParallel(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
             int maxConcurrency,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer) {
+        return executeShardedStepParallel(sharding, initialId, batchSize, maxConcurrency, this.defaultFailFast, queryFunction, idExtractor, batchConsumer);
+    }
+
+    /**
+     * 带有分片过滤的并发批处理（支持快速失败控制）
+     *
+     * @param sharding         当前节点分片上下文
+     * @param initialId        初始游标 ID
+     * @param batchSize        每批大小
+     * @param maxConcurrency   最大并发度
+     * @param failFast         是否快速失败
+     * @param queryFunction    查询函数
+     * @param idExtractor      主键提取器
+     * @param batchConsumer    切片消费逻辑
+     * @param <T>              实体类型
+     * @return 批处理执行汇总统计
+     */
+    public <T> BatchExecutionResult executeShardedStepParallel(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            int maxConcurrency,
+            boolean failFast,
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {

@@ -5,12 +5,13 @@ import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
 import com.aizuda.snailjob.client.job.core.cache.JobExecutorInfoCache;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
 import com.aizuda.snailjob.client.job.core.dto.JobExecutorInfo;
-import com.google.common.collect.Table;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import org.slf4j.MDC;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.Selector;
@@ -19,6 +20,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.util.ReflectionUtils;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
 
@@ -170,6 +172,7 @@ public class SnailJobEndpoint {
 
         long startTime = System.currentTimeMillis();
         String traceId = IdUtil.fastSimpleUUID();
+        String previousTraceId = MDC.get("traceId");
 
         // 构造本地执行上下文
         JobArgs jobArgs = new JobArgs();
@@ -185,12 +188,25 @@ public class SnailJobEndpoint {
         SnailJobContextHolder.set(snailContext);
 
         try {
+            MDC.put("traceId", traceId);
+
             Method method = jobInfo.getMethod();
             Object target = jobInfo.getExecutor();
             Object executionResult;
 
             if (method.getParameterCount() > 0) {
-                executionResult = ReflectionUtils.invokeMethod(method, target, jobArgs);
+                Class<?> paramType = method.getParameterTypes()[0];
+                Object resolvedArg;
+                if (JobArgs.class.isAssignableFrom(paramType)) {
+                    resolvedArg = jobArgs;
+                } else if (String.class.isAssignableFrom(paramType)) {
+                    resolvedArg = args;
+                } else if (args != null && !args.isBlank()) {
+                    resolvedArg = JsonUtil.parseObject(args, paramType);
+                } else {
+                    resolvedArg = null;
+                }
+                executionResult = ReflectionUtils.invokeMethod(method, target, resolvedArg);
             } else {
                 executionResult = ReflectionUtils.invokeMethod(method, target);
             }
@@ -203,14 +219,22 @@ public class SnailJobEndpoint {
             return response;
 
         } catch (Throwable t) {
+            Throwable root = (t instanceof InvocationTargetException ite && ite.getTargetException() != null)
+                    ? ite.getTargetException()
+                    : t;
             long durationMs = System.currentTimeMillis() - startTime;
             response.put("success", false);
             response.put("durationMs", durationMs);
             response.put("traceId", traceId);
-            response.put("error", t.getMessage());
+            response.put("error", root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName());
             return response;
 
         } finally {
+            if (previousTraceId != null) {
+                MDC.put("traceId", previousTraceId);
+            } else {
+                MDC.remove("traceId");
+            }
             SnailJobContextHolder.remove();
         }
     }
@@ -234,15 +258,33 @@ public class SnailJobEndpoint {
             Field field = RetryerInfoCache.class.getDeclaredField("RETRY_HANDLER_REPOSITORY");
             field.setAccessible(true);
             Object tableObj = field.get(null);
-            if (tableObj instanceof Table<?, ?, ?> table) {
-                Map<String, RetryerInfo> result = new LinkedHashMap<>();
-                for (Table.Cell<?, ?, ?> cell : table.cellSet()) {
-                    if (cell.getValue() instanceof RetryerInfo info) {
-                        String key = info.getScene() + "#" + info.getExecutorClassName();
-                        result.put(key, info);
+            if (tableObj != null) {
+                Method valuesMethod = null;
+                try {
+                    valuesMethod = tableObj.getClass().getMethod("values");
+                } catch (NoSuchMethodException e) {
+                    for (Class<?> iface : tableObj.getClass().getInterfaces()) {
+                        try {
+                            valuesMethod = iface.getMethod("values");
+                            break;
+                        } catch (NoSuchMethodException ignored) {
+                        }
                     }
                 }
-                return result;
+                if (valuesMethod != null) {
+                    valuesMethod.setAccessible(true);
+                    Object vals = valuesMethod.invoke(tableObj);
+                    if (vals instanceof Iterable<?> iterable) {
+                        Map<String, RetryerInfo> result = new LinkedHashMap<>();
+                        for (Object val : iterable) {
+                            if (val instanceof RetryerInfo info) {
+                                String key = info.getScene() + "#" + info.getExecutorClassName();
+                                result.put(key, info);
+                            }
+                        }
+                        return result;
+                    }
+                }
             }
         } catch (Throwable ignored) {
         }

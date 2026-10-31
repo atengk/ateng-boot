@@ -7,6 +7,10 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -31,13 +35,20 @@ public class TenantJobTemplate {
     private static final Logger log = LoggerFactory.getLogger(TenantJobTemplate.class);
 
     private final TenantListProvider tenantListProvider;
+    private final ObjectProvider<PlatformTransactionManager> transactionManagerProvider;
 
     public TenantJobTemplate() {
-        this(null);
+        this(null, null);
     }
 
     public TenantJobTemplate(TenantListProvider tenantListProvider) {
+        this(tenantListProvider, null);
+    }
+
+    public TenantJobTemplate(TenantListProvider tenantListProvider,
+                             ObjectProvider<PlatformTransactionManager> transactionManagerProvider) {
         this.tenantListProvider = tenantListProvider;
+        this.transactionManagerProvider = transactionManagerProvider;
     }
 
     /**
@@ -97,21 +108,21 @@ public class TenantJobTemplate {
 
             log.info("[TenantJobTemplate] [{}/{}] 正在执行租户 [{}] 的调度任务...", currentIndex, total, tenantId);
             try {
-                TenantContextHolder.runWithTenant(tenantId, () -> action.accept(tenantId));
+                runInTenantSandbox(tenantId, action);
                 successCount++;
             } catch (Throwable t) {
                 failCount++;
                 failedTenants.add(tenantId);
+
+                if (failFast) {
+                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                            "多租户遍历任务在租户 [" + tenantId + "] 快速失败中断: " + t.getMessage(), t);
+                }
+
                 log.error("[TenantJobTemplate] 租户 [{}] 调度任务执行失败: {}", tenantId, t.getMessage(), t);
                 try {
                     SnailJobLog.LOCAL.error("[TENANT-JOB] 租户 [{}] 执行失败: {}", tenantId, t.getMessage(), t);
                 } catch (Throwable ignored) {
-                }
-
-                if (failFast) {
-                    Duration duration = Duration.ofMillis(System.currentTimeMillis() - startTime);
-                    throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                            "多租户遍历任务在租户 [" + tenantId + "] 快速失败中断: " + t.getMessage(), t);
                 }
             }
         }
@@ -126,6 +137,26 @@ public class TenantJobTemplate {
         }
 
         return new BatchExecutionResult(total, successCount, failCount, (int) total, duration);
+    }
+
+    /**
+     * 在隔离租户沙箱中执行任务，若存在受管事务管理器，则自动包装为独立的 PROPAGATION_REQUIRES_NEW 事务沙箱
+     *
+     * @param tenantId 租户标识
+     * @param action   业务动作
+     */
+    protected void runInTenantSandbox(String tenantId, Consumer<String> action) {
+        TenantContextHolder.runWithTenant(tenantId, () -> {
+            PlatformTransactionManager txManager = (transactionManagerProvider != null)
+                    ? transactionManagerProvider.getIfAvailable() : null;
+            if (txManager != null) {
+                TransactionTemplate txTemplate = new TransactionTemplate(txManager);
+                txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                txTemplate.executeWithoutResult(status -> action.accept(tenantId));
+            } else {
+                action.accept(tenantId);
+            }
+        });
     }
 
     /**

@@ -3,13 +3,14 @@ package io.github.atengk.boot.job.snail.properties;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 
 /**
  * SnailJob 分布式任务调度与分布式重试双擎配置属性
  *
- * <p>统一遵循框架强类型时间规范（{@link Duration}），杜绝无量纲配置歧义。
+ * <p>统一遵循框架强类型时间规范（{@link Duration}）与容量规范（{@link DataSize}），杜绝无量纲配置歧义。
  * 支持细粒度特性开关（{@code job.enabled}、{@code retry.enabled}、{@code openapi.enabled}），
  * 兼顾单机极速起步与分布式集群生产级安全治理。</p>
  *
@@ -74,6 +75,11 @@ public class SnailJobProperties {
      * 是否将调度与重试方法提交至 Core 受管异步线程池设施执行
      */
     private boolean managedPoolEnabled = true;
+
+    /**
+     * 单次日志镜像或调度入参最大缓冲区容量（默认 1MB，防超大 payload 击穿 Netty 缓冲）
+     */
+    private DataSize maxPayloadSize = DataSize.ofMegabytes(1);
 
     /**
      * 分布式任务调度专属配置
@@ -168,6 +174,21 @@ public class SnailJobProperties {
          * 是否通过 HTTPS 协议与 SnailJob OpenAPI 交互
          */
         private boolean https = false;
+
+        /**
+         * OpenAPI 网络交互单次请求超时阈值
+         */
+        private Duration timeout = Duration.ofSeconds(10);
+
+        /**
+         * OpenAPI 网络调用失败最大重试次数（包含首次执行）
+         */
+        private int maxRetries = 3;
+
+        /**
+         * OpenAPI 网络调用重试退避初始间隔
+         */
+        private Duration retryInterval = Duration.ofMillis(500);
     }
 
     /**

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.snail.watchdog;
 
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.job.snail.event.SnailJobTimeoutEvent;
 import io.netty.util.HashedWheelTimer;
 import io.netty.util.Timeout;
@@ -7,7 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.scheduling.concurrent.CustomizableThreadFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -34,12 +34,12 @@ public class SnailLocalWatchdog implements DisposableBean {
     private final ApplicationEventPublisher eventPublisher;
 
     public SnailLocalWatchdog(ApplicationEventPublisher eventPublisher) {
-        this(eventPublisher, new CustomizableThreadFactory("ateng-snail-watchdog-"));
+        this(eventPublisher, new NamedThreadFactory("ateng-snail-watchdog-", true));
     }
 
     public SnailLocalWatchdog(ApplicationEventPublisher eventPublisher, ThreadFactory threadFactory) {
         this.eventPublisher = eventPublisher;
-        ThreadFactory factory = (threadFactory != null) ? threadFactory : new CustomizableThreadFactory("ateng-snail-watchdog-");
+        ThreadFactory factory = (threadFactory != null) ? threadFactory : new NamedThreadFactory("ateng-snail-watchdog-", true);
         // 刻度步长 50ms，512 个槽位的时间轮，具备极低 CPU 占用与精准超时检测
         this.timer = new HashedWheelTimer(factory, 50, TimeUnit.MILLISECONDS, 512);
     }

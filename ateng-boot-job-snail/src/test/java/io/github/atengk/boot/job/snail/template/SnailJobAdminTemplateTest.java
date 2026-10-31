@@ -11,6 +11,7 @@ import com.aizuda.snailjob.model.request.base.WorkflowTriggerRequest;
 import com.aizuda.snailjob.model.response.*;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -47,10 +48,14 @@ class SnailJobAdminTemplateTest {
     private RetryOpenApiClientV2 retryClient;
 
     private SnailJobAdminTemplate template;
+    private SnailJobProperties properties;
 
     @BeforeEach
     void setUp() {
-        template = new SnailJobAdminTemplate(jobClient, retryClient);
+        properties = new SnailJobProperties();
+        properties.getOpenapi().setMaxRetries(1); // 默认单测单次尝试，避免休眠耗时
+        properties.getOpenapi().setRetryInterval(java.time.Duration.ofMillis(10));
+        template = new SnailJobAdminTemplate(jobClient, retryClient, properties);
     }
 
     // =========================================================================
@@ -415,5 +420,26 @@ class SnailJobAdminTemplateTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> template.getJobDetailByBizId(null))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试网络瞬时异常指数退避重试：第 1 次失败，第 2 次重试成功")
+    void testExecuteWithRetrySuccess() {
+        SnailJobProperties retryProps = new SnailJobProperties();
+        retryProps.getOpenapi().setMaxRetries(3);
+        retryProps.getOpenapi().setRetryInterval(java.time.Duration.ofMillis(20));
+        SnailJobAdminTemplate retryTemplate = new SnailJobAdminTemplate(jobClient, retryClient, retryProps);
+
+        JobApiResponse response = new JobApiResponse();
+        response.setId(2001L);
+
+        when(jobClient.getJobDetail(2001L))
+                .thenThrow(new RuntimeException("Transient connection reset"))
+                .thenReturn(new Result<>(response));
+
+        JobApiResponse result = retryTemplate.getJobDetail(2001L);
+        assertThat(result).isNotNull();
+        assertThat(result.getId()).isEqualTo(2001L);
+        verify(jobClient, times(2)).getJobDetail(2001L);
     }
 }

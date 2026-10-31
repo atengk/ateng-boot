@@ -2,7 +2,7 @@ package io.github.atengk.boot.job.snail.retry.aspect;
 
 import com.aizuda.snailjob.client.core.annotation.Retryable;
 import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.aizuda.snailjob.common.core.model.IdempotentIdContext;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -10,13 +10,15 @@ import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
-import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
+import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
+import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -59,6 +61,9 @@ public class SnailRetryContextAspect {
     private final SnailJobMetricsBinder metricsBinder;
     private final SnailJobAlertAggregator alertAggregator;
 
+    private final SpelIdempotentIdGenerator spelIdempotentIdGenerator = new SpelIdempotentIdGenerator();
+    private final ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator = new ArgsHashIdempotentIdGenerator();
+
     public SnailRetryContextAspect() {
         this(null, null, null);
     }
@@ -89,6 +94,8 @@ public class SnailRetryContextAspect {
         String executorClassName = targetClass.getName();
         String contextKey = scene + ":" + executorClassName + ":" + specificMethod.getName();
         String classKey = scene + ":" + executorClassName;
+        String idempotentKey = resolveIdempotentKey(atengRetry, specificMethod, pjp.getArgs());
+        String fineGrainedKey = StringUtils.hasText(idempotentKey) ? (contextKey + ":" + idempotentKey) : contextKey;
 
         // 0. 平滑停机排空拦截与在途计数
         if (drainStateMachine != null && drainStateMachine.isDraining()) {
@@ -106,16 +113,22 @@ public class SnailRetryContextAspect {
                     || RetrySiteSnapshot.isRetryFlow();
 
             if (isRemoteRetry) {
-                // 远程重试阶段：保存当前工作线程初始现场，精准还原上报时的四维快照
+                // 远程重试阶段：保存当前工作线程初始现场，优先通过细粒度幂等键还原上报时的四维快照
                 AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                AsyncContext.ContextSnapshot recorded = SnailRetryContextRegistry.get(contextKey);
+                AsyncContext.ContextSnapshot recorded = SnailRetryContextRegistry.get(fineGrainedKey);
+                if (recorded == null && StringUtils.hasText(idempotentKey)) {
+                    recorded = SnailRetryContextRegistry.get(scene + ":" + idempotentKey);
+                }
+                if (recorded == null) {
+                    recorded = SnailRetryContextRegistry.get(contextKey);
+                }
                 if (recorded == null) {
                     recorded = SnailRetryContextRegistry.get(classKey);
                 }
 
                 if (recorded != null) {
                     recorded.apply();
-                    log.debug("SnailJob 远程重试已成功还原四维上下文快照 [Key: {}]", contextKey);
+                    log.debug("SnailJob 远程重试已成功还原四维上下文快照 [Key: {}]", fineGrainedKey);
                 } else {
                     // 若内存快照未命中（如重启或多节点），从方法实参中深度二次提取
                     restoreFromArgsFallback(pjp.getArgs(), atengRetry);
@@ -125,11 +138,19 @@ public class SnailRetryContextAspect {
                     result = pjp.proceed();
                 } finally {
                     previous.restore();
+                    SnailRetryContextRegistry.remove(fineGrainedKey);
+                    if (StringUtils.hasText(idempotentKey)) {
+                        SnailRetryContextRegistry.remove(scene + ":" + idempotentKey);
+                    }
                 }
             } else {
-                // 首次业务执行或本地重试阶段：捕获并登记当前四维快照
+                // 首次业务执行或本地重试阶段：捕获并登记当前四维快照（挂载细粒度键防多租户并发串写）
                 ensureTraceIdPresent();
                 AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
+                SnailRetryContextRegistry.put(fineGrainedKey, currentSnapshot);
+                if (StringUtils.hasText(idempotentKey)) {
+                    SnailRetryContextRegistry.put(scene + ":" + idempotentKey, currentSnapshot);
+                }
                 SnailRetryContextRegistry.put(contextKey, currentSnapshot);
                 SnailRetryContextRegistry.put(classKey, currentSnapshot);
 
@@ -137,6 +158,10 @@ public class SnailRetryContextAspect {
                     result = pjp.proceed();
                 } catch (Throwable t) {
                     // 发生异常即将上报，确保注册表中保持有效快照供远程重试消费
+                    SnailRetryContextRegistry.put(fineGrainedKey, currentSnapshot);
+                    if (StringUtils.hasText(idempotentKey)) {
+                        SnailRetryContextRegistry.put(scene + ":" + idempotentKey, currentSnapshot);
+                    }
                     SnailRetryContextRegistry.put(contextKey, currentSnapshot);
                     SnailRetryContextRegistry.put(classKey, currentSnapshot);
                     throw t;
@@ -182,14 +207,14 @@ public class SnailRetryContextAspect {
             return;
         }
 
-        String traceId = extractPropertyFromArgs(args, "getTraceId");
+        String traceId = SnailJobContextAspect.extractPropertyFromArgs(args, "getTraceId");
         if (StringUtils.hasText(traceId)) {
             MDC.put(TRACE_ID_KEY, traceId);
         } else if (!StringUtils.hasText(MDC.get(TRACE_ID_KEY))) {
             MDC.put(TRACE_ID_KEY, IdUtil.fastSimpleUUID());
         }
 
-        String user = extractPropertyFromArgs(args, "getUserId", "getUser");
+        String user = SnailJobContextAspect.extractPropertyFromArgs(args, "getUserId", "getUser");
         if (StringUtils.hasText(user)) {
             UserContextHolder.set(user);
         } else if (!StringUtils.hasText(UserContextHolder.getExplicit())) {
@@ -200,44 +225,42 @@ public class SnailRetryContextAspect {
         if (tenantMode == JobTenantMode.IGNORE) {
             TenantContextHolder.setIgnoreTenant(true);
         } else if (tenantMode == JobTenantMode.PARAM) {
-            String tenantId = extractPropertyFromArgs(args, "getTenantId");
+            String tenantId = SnailJobContextAspect.extractPropertyFromArgs(args, "getTenantId");
             if (StringUtils.hasText(tenantId)) {
                 TenantContextHolder.setTenantId(tenantId);
             }
         }
     }
 
-    private String extractPropertyFromArgs(Object[] args, String... getterNames) {
-        if (args == null || args.length == 0 || getterNames == null || getterNames.length == 0) {
-            return null;
+    /**
+     * 根据业务注解与方法实参动态解析细粒度幂等标识（防御并发多租户快照串写）
+     */
+    private String resolveIdempotentKey(AtengSnailRetry atengRetry, Method method, Object[] args) {
+        if (args == null || args.length == 0) {
+            return "empty";
         }
-        for (Object arg : args) {
-            if (arg != null && !(arg instanceof String)) {
-                for (String getterName : getterNames) {
-                    try {
-                        Method m = arg.getClass().getMethod(getterName);
-                        Object res = m.invoke(arg);
-                        if (res != null) {
-                            return String.valueOf(res);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-            } else if (arg instanceof String str && str.trim().startsWith("{") && str.trim().endsWith("}")) {
-                try {
-                    JsonNode node = JsonUtil.readTree(str);
-                    if (node != null) {
-                        for (String getterName : getterNames) {
-                            String prop = getterName.startsWith("get") ? Character.toLowerCase(getterName.charAt(3)) + getterName.substring(4) : getterName;
-                            if (node.hasNonNull(prop)) {
-                                return node.get(prop).asText();
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
+        if (atengRetry != null && StringUtils.hasText(atengRetry.idempotentSpel())) {
+            try {
+                return spelIdempotentIdGenerator.idGenerate(new IdempotentIdContext(
+                        atengRetry.scene(),
+                        method.getDeclaringClass().getName(),
+                        args,
+                        null,
+                        method.getName()
+                ));
+            } catch (Throwable ignored) {
             }
         }
-        return null;
+        try {
+            return argsHashIdempotentIdGenerator.idGenerate(new IdempotentIdContext(
+                    atengRetry != null ? atengRetry.scene() : "",
+                    method.getDeclaringClass().getName(),
+                    args,
+                    null,
+                    method.getName()
+            ));
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 }

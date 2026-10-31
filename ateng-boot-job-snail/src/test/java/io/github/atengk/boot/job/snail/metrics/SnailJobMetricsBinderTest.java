@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.snail.metrics;
 
+import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -95,5 +96,27 @@ public class SnailJobMetricsBinderTest {
         // Should not throw NPE when duration is null
         assertDoesNotThrow(() -> binder.recordJobExecution("job", "SUCCESS", "tenant", null));
         assertDoesNotThrow(() -> binder.recordRetryExecution("scene", "SUCCESS", "tenant", null));
+    }
+
+    @Test
+    public void testInFlightGauges() {
+        GracefulDrainStateMachine drain = new GracefulDrainStateMachine(null);
+        drain.incrementInFlightJob();
+        drain.incrementInFlightJob();
+        drain.incrementInFlightRetry();
+
+        SnailJobMetricsBinder binderWithDrain = new SnailJobMetricsBinder(drain);
+        binderWithDrain.bindTo(registry);
+
+        var jobGauge = registry.find(SnailJobMetricsBinder.INFLIGHT_JOB_METRIC_NAME).gauge();
+        assertNotNull(jobGauge);
+        assertEquals(2.0, jobGauge.value());
+
+        var retryGauge = registry.find(SnailJobMetricsBinder.INFLIGHT_RETRY_METRIC_NAME).gauge();
+        assertNotNull(retryGauge);
+        assertEquals(1.0, retryGauge.value());
+
+        drain.decrementInFlightJob();
+        assertEquals(1.0, jobGauge.value());
     }
 }

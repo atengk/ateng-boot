@@ -167,6 +167,40 @@ class SnailRetryAspectAndTemplateTest {
     }
 
     @Test
+    @DisplayName("测试并发多租户下通过细粒度幂等键实现四维上下文绝对隔离，杜绝跨租户串写")
+    void testConcurrentMultiTenantRetryContextIsolation() {
+        // 1. 租户 A 执行订单 A
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-tenant-A");
+        UserContextHolder.set("user-A");
+        TenantContextHolder.setTenantId("tenant-A");
+        OrderCommand orderA = new OrderCommand("ORDER_AAA", "item_a", 100);
+        mockRetryService.payOrder(orderA);
+
+        // 2. 租户 B 执行订单 B
+        MDC.put(SnailRetryContextAspect.TRACE_ID_KEY, "trace-tenant-B");
+        UserContextHolder.set("user-B");
+        TenantContextHolder.setTenantId("tenant-B");
+        OrderCommand orderB = new OrderCommand("ORDER_BBB", "item_b", 200);
+        mockRetryService.payOrder(orderB);
+
+        // 3. 模拟进入远程重试阶段
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+        RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.REMOTE.getStage());
+
+        try {
+            // 远程重试订单 A：断言恢复租户 A 的四维现场，绝不被租户 B 覆盖
+            mockRetryService.payOrderWithTenantAssert(orderA, "trace-tenant-A", "user-A", "tenant-A");
+
+            // 远程重试订单 B：断言恢复租户 B 的四维现场
+            mockRetryService.payOrderWithTenantAssert(orderB, "trace-tenant-B", "user-B", "tenant-B");
+        } finally {
+            RetrySiteSnapshot.removeAll();
+        }
+    }
+
+    @Test
     @DisplayName("测试 SnailRetryTemplate 手动上报方法在无外部服务时平滑保底返回")
     void testReportManualRetryFallback() {
         boolean reported = retryTemplate.reportManualRetry(
@@ -209,6 +243,17 @@ class SnailRetryAspectAndTemplateTest {
                 assertThat(MDC.get(SnailRetryContextAspect.TRACE_ID_KEY)).isEqualTo("trace-orig-1001");
                 assertThat(UserContextHolder.getExplicit()).isEqualTo("operator-user-1");
                 assertThat(TenantContextHolder.getTenantId()).isEqualTo("tenant-finance-01");
+            }
+            return "success: " + order.getOrderNo();
+        }
+
+        @AtengSnailRetry(scene = "orderPayScene", idempotentSpel = "#order.orderNo", tenantMode = JobTenantMode.PARAM)
+        public String payOrderWithTenantAssert(OrderCommand order, String expectedTraceId, String expectedUser, String expectedTenant) {
+            if (RetrySiteSnapshot.getStage() != null
+                    && RetrySiteSnapshot.getStage() == RetrySiteSnapshot.EnumStage.REMOTE.getStage()) {
+                assertThat(MDC.get(SnailRetryContextAspect.TRACE_ID_KEY)).isEqualTo(expectedTraceId);
+                assertThat(UserContextHolder.getExplicit()).isEqualTo(expectedUser);
+                assertThat(TenantContextHolder.getTenantId()).isEqualTo(expectedTenant);
             }
             return "success: " + order.getOrderNo();
         }

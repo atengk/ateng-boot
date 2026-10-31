@@ -13,13 +13,20 @@ import com.aizuda.snailjob.model.request.base.WorkflowTriggerRequest;
 import com.aizuda.snailjob.model.response.*;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.RetryUtil;
+import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
@@ -43,12 +50,13 @@ public class SnailJobAdminTemplate {
 
     private final JobOpenApiClientV2 jobClient;
     private final RetryOpenApiClientV2 retryClient;
+    private final SnailJobProperties properties;
 
     /**
      * 默认无参构造器：基于 SnailJob 默认 OpenAPI 客户端构建
      */
     public SnailJobAdminTemplate() {
-        this(null, null);
+        this(null, null, null);
     }
 
     /**
@@ -57,7 +65,7 @@ public class SnailJobAdminTemplate {
      * @param jobClient SnailJob 任务 OpenAPI 客户端
      */
     public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient) {
-        this(jobClient, null);
+        this(jobClient, null, null);
     }
 
     /**
@@ -67,8 +75,20 @@ public class SnailJobAdminTemplate {
      * @param retryClient SnailJob 重试 OpenAPI 客户端
      */
     public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient, RetryOpenApiClientV2 retryClient) {
+        this(jobClient, retryClient, null);
+    }
+
+    /**
+     * 全参数注入构造器（支持配置属性与 Mock 桩协同注入）
+     *
+     * @param jobClient   SnailJob 任务 OpenAPI 客户端
+     * @param retryClient SnailJob 重试 OpenAPI 客户端
+     * @param properties  SnailJob 全局配置属性
+     */
+    public SnailJobAdminTemplate(JobOpenApiClientV2 jobClient, RetryOpenApiClientV2 retryClient, SnailJobProperties properties) {
         this.jobClient = (jobClient != null) ? jobClient : createDefaultJobClient();
         this.retryClient = (retryClient != null) ? retryClient : createDefaultRetryClient();
+        this.properties = (properties != null) ? properties : new SnailJobProperties();
     }
 
     // =========================================================================
@@ -761,7 +781,8 @@ public class SnailJobAdminTemplate {
     // =========================================================================
 
     /**
-     * 统一执行 OpenAPI 请求调用，捕获底层网络/HTTP 异常或服务端业务失败并转译为 BusinessException
+     * 统一执行 OpenAPI 请求调用，内置强类型超时防卫与基于 RetryUtil 的指数退避受控重试，
+     * 捕获底层网络/HTTP 异常或服务端业务失败并转译为 BusinessException
      *
      * @param action        调用逻辑
      * @param operationName 操作名称 (用于诊断与日志)
@@ -770,15 +791,33 @@ public class SnailJobAdminTemplate {
      */
     private <T> T execute(Supplier<Result<T>> action, String operationName) {
         Assert.notNull(action, "执行动作不能为 null");
+        SnailJobProperties.OpenApiProperties apiProps = this.properties.getOpenapi();
+        int maxAttempts = apiProps != null && apiProps.getMaxRetries() > 0 ? apiProps.getMaxRetries() : 1;
+        Duration delay = apiProps != null && apiProps.getRetryInterval() != null ? apiProps.getRetryInterval() : Duration.ofMillis(500);
+        Duration timeout = apiProps != null && apiProps.getTimeout() != null ? apiProps.getTimeout() : Duration.ofSeconds(10);
+
+        RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                .maxAttempts(maxAttempts)
+                .delay(delay)
+                .multiplier(1.5)
+                .retryPredicate(error -> !(error instanceof BusinessException) && !(error instanceof IllegalArgumentException))
+                .onRetry((attempt, error) -> log.warn("SnailJob OpenAPI 操作 [{}] 第 {} 次调用异常，准备重试: {}",
+                        operationName, attempt, error.getMessage()))
+                .build();
+
         Result<T> result;
         try {
-            result = action.get();
-        } catch (BusinessException e) {
-            throw e;
+            result = RetryUtil.execute(() -> invokeWithTimeout(action, operationName, timeout), retryConfig);
+        } catch (BusinessException be) {
+            throw be;
         } catch (Throwable t) {
-            log.warn("SnailJob OpenAPI 操作 [{}] 底层网络/RPC 异常: {}", operationName, t.getMessage());
+            Throwable root = t;
+            while ((root instanceof ExecutionException || root instanceof IllegalStateException) && root.getCause() != null) {
+                root = root.getCause();
+            }
+            log.warn("SnailJob OpenAPI 操作 [{}] 远程调用失败: {}", operationName, root.getMessage());
             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR,
-                    "SnailJob OpenAPI 操作 [" + operationName + "] 远程调用失败: " + t.getMessage(), t);
+                    "SnailJob OpenAPI 操作 [" + operationName + "] 远程调用失败: " + root.getMessage(), root);
         }
 
         if (result == null) {
@@ -794,6 +833,28 @@ public class SnailJobAdminTemplate {
         }
 
         return result.getData();
+    }
+
+    private <T> Result<T> invokeWithTimeout(Supplier<Result<T>> action, String operationName, Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            return action.get();
+        }
+        CompletableFuture<Result<T>> future = CompletableFuture.supplyAsync(action::get);
+        try {
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            throw new IllegalStateException("SnailJob OpenAPI 操作 [" + operationName + "] 请求超时 (" + timeout.toMillis() + "ms)", te);
+        } catch (ExecutionException ee) {
+            Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new IllegalStateException(cause);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("SnailJob OpenAPI 操作 [" + operationName + "] 请求被中断", ie);
+        }
     }
 
     private JobOpenApiClientV2 requireJobClient() {

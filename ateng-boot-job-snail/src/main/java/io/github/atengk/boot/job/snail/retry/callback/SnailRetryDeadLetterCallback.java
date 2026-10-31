@@ -1,6 +1,8 @@
 package io.github.atengk.boot.job.snail.retry.callback;
 
+import com.aizuda.snailjob.client.core.cache.RetryerInfoCache;
 import com.aizuda.snailjob.client.core.callback.complete.RetryCompleteCallback;
+import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import org.slf4j.Logger;
@@ -51,9 +53,22 @@ public class SnailRetryDeadLetterCallback implements RetryCompleteCallback {
         }
 
         String traceId = MDC.get(TRACE_ID_KEY);
+        int retryCount = 1;
+        String bizNo = null;
+        try {
+            RetryerInfo retryerInfo = RetryerInfoCache.get(sceneName, executorName);
+            if (retryerInfo != null) {
+                if (retryerInfo.getLocalTimes() != null && retryerInfo.getLocalTimes() > 0) {
+                    retryCount = retryerInfo.getLocalTimes();
+                }
+                bizNo = retryerInfo.getBizNo();
+            }
+        } catch (Throwable ignored) {
+        }
+
         SnailJobAlertAggregator aggregator = alertAggregatorProvider != null ? alertAggregatorProvider.getIfAvailable() : null;
         if (aggregator != null) {
-            aggregator.onRetryDeadLetter(sceneName, null, null, executorName, argsStr, 0, null, traceId);
+            aggregator.onRetryDeadLetter(sceneName, null, bizNo, executorName, argsStr, retryCount, null, traceId);
         }
     }
 }

@@ -1,5 +1,7 @@
 package io.github.atengk.boot.job.snail.metrics;
 
+import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
@@ -32,6 +34,12 @@ public class SnailJobMetricsBinder implements MeterBinder {
     public static final String RETRY_METRIC_NAME = "ateng.job.snail.retry.execution";
     public static final String RETRY_METRIC_DESCRIPTION = "SnailJob 分布式重试执行吞吐量与耗时百分位度量";
 
+    public static final String INFLIGHT_JOB_METRIC_NAME = "ateng.job.snail.job.inflight";
+    public static final String INFLIGHT_JOB_METRIC_DESCRIPTION = "SnailJob 当前在途执行中的调度任务并发数";
+
+    public static final String INFLIGHT_RETRY_METRIC_NAME = "ateng.job.snail.retry.inflight";
+    public static final String INFLIGHT_RETRY_METRIC_DESCRIPTION = "SnailJob 当前在途执行中的重试任务并发数";
+
     public static final String TAG_JOB = "job";
     public static final String TAG_SCENE = "scene";
     public static final String TAG_STATUS = "status";
@@ -40,12 +48,29 @@ public class SnailJobMetricsBinder implements MeterBinder {
     public static final String STATUS_SUCCESS = "SUCCESS";
     public static final String STATUS_FAILURE = "FAILURE";
 
+    private final GracefulDrainStateMachine drainStateMachine;
     private MeterRegistry registry;
     private final ConcurrentMap<String, Timer> timerCache = new ConcurrentHashMap<>();
+
+    public SnailJobMetricsBinder() {
+        this(null);
+    }
+
+    public SnailJobMetricsBinder(GracefulDrainStateMachine drainStateMachine) {
+        this.drainStateMachine = drainStateMachine;
+    }
 
     @Override
     public void bindTo(MeterRegistry registry) {
         this.registry = registry;
+        if (drainStateMachine != null) {
+            Gauge.builder(INFLIGHT_JOB_METRIC_NAME, drainStateMachine, GracefulDrainStateMachine::getInFlightJobCount)
+                    .description(INFLIGHT_JOB_METRIC_DESCRIPTION)
+                    .register(registry);
+            Gauge.builder(INFLIGHT_RETRY_METRIC_NAME, drainStateMachine, GracefulDrainStateMachine::getInFlightRetryCount)
+                    .description(INFLIGHT_RETRY_METRIC_DESCRIPTION)
+                    .register(registry);
+        }
     }
 
     /**

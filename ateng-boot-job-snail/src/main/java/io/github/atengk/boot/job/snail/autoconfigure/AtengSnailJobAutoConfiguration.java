@@ -41,6 +41,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
 
@@ -172,13 +173,15 @@ public class AtengSnailJobAutoConfiguration {
     /**
      * SnailJob 调度与重试 Micrometer 核心监控度量绑定器
      *
+     * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
      * @return SnailJobMetricsBinder 实例
      */
     @Bean
     @ConditionalOnClass(MeterRegistry.class)
     @ConditionalOnMissingBean
-    public SnailJobMetricsBinder snailJobMetricsBinder() {
-        return new SnailJobMetricsBinder();
+    public SnailJobMetricsBinder snailJobMetricsBinder(
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider) {
+        return new SnailJobMetricsBinder(drainStateMachineProvider.getIfAvailable());
     }
 
     /**
@@ -305,13 +308,16 @@ public class AtengSnailJobAutoConfiguration {
      * SnailJob 大数据游标批处理与流式分片执行门面 (MyBatis-Plus 流式游标适配配置)
      */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(name = "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate")
+    @ConditionalOnClass(name = {
+            "io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate",
+            "org.apache.ibatis.cursor.Cursor"
+    })
     public static class SnailJobMyBatisConfiguration {
 
         @Bean
         @ConditionalOnMissingBean(SnailShardingBatchTemplate.class)
         @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
-        public SnailMyBatisStreamingTemplate snailMyBatisStreamingTemplate(
+        public SnailShardingBatchTemplate snailMyBatisStreamingTemplate(
                 @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
             return new SnailMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable());
         }
@@ -331,15 +337,17 @@ public class AtengSnailJobAutoConfiguration {
     /**
      * SnailJob 多租户隔离遍历执行门面
      *
-     * @param tenantListProvider 多租户列表提供者 SPI (可选)
+     * @param tenantListProvider         多租户列表提供者 SPI (可选)
+     * @param transactionManagerProvider 事务管理器提供者 (可选)
      * @return TenantJobTemplate 实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "tenant-template-enabled", havingValue = "true", matchIfMissing = true)
     public TenantJobTemplate tenantJobTemplate(
-            ObjectProvider<TenantListProvider> tenantListProvider) {
-        return new TenantJobTemplate(tenantListProvider.getIfAvailable());
+            ObjectProvider<TenantListProvider> tenantListProvider,
+            ObjectProvider<PlatformTransactionManager> transactionManagerProvider) {
+        return new TenantJobTemplate(tenantListProvider.getIfAvailable(), transactionManagerProvider);
     }
 
     /**
@@ -347,6 +355,7 @@ public class AtengSnailJobAutoConfiguration {
      *
      * @param jobClientProvider   SnailJob 任务 OpenAPI 客户端提供者 (可选)
      * @param retryClientProvider SnailJob 重试 OpenAPI 客户端提供者 (可选)
+     * @param properties          SnailJob 全局配置属性
      * @return SnailJobAdminTemplate 实例
      */
     @Bean
@@ -354,10 +363,11 @@ public class AtengSnailJobAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail.openapi", name = "enabled", havingValue = "true", matchIfMissing = true)
     public SnailJobAdminTemplate snailJobAdminTemplate(
             ObjectProvider<JobOpenApiClientV2> jobClientProvider,
-            ObjectProvider<RetryOpenApiClientV2> retryClientProvider) {
+            ObjectProvider<RetryOpenApiClientV2> retryClientProvider,
+            SnailJobProperties properties) {
         JobOpenApiClientV2 jobClient = jobClientProvider.getIfAvailable();
         RetryOpenApiClientV2 retryClient = retryClientProvider.getIfAvailable();
-        return new SnailJobAdminTemplate(jobClient, retryClient);
+        return new SnailJobAdminTemplate(jobClient, retryClient, properties);
     }
 
     /**
@@ -380,10 +390,11 @@ public class AtengSnailJobAutoConfiguration {
             com.aizuda.snailjob.client.common.config.SnailJobProperties target,
             Environment environment) {
 
-        // 1. 同步服务端地址解析
+        // 1. 同步服务端地址解析 (支持逗号分隔集群地址，解析主首选节点)
         String server = source.getServer();
         if (StringUtils.hasText(server)) {
-            String[] parts = server.split(":");
+            String primaryNode = server.contains(",") ? server.split(",")[0].trim() : server.trim();
+            String[] parts = primaryNode.split(":");
             ServerConfig serverConfig = target.getServer();
             if (serverConfig == null) {
                 serverConfig = new ServerConfig();
@@ -398,7 +409,7 @@ public class AtengSnailJobAutoConfiguration {
                     serverConfig.setPort(17888);
                 }
             } else {
-                serverConfig.setHost(server.trim());
+                serverConfig.setHost(primaryNode);
             }
         }
 

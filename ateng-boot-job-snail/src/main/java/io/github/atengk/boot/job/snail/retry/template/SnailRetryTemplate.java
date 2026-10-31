@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
+import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.util.Objects;
 
 /**
@@ -99,45 +101,44 @@ public class SnailRetryTemplate {
         String contextKey = scene + ":" + actualIdempotentId;
         SnailRetryContextRegistry.put(contextKey, snapshot);
 
-        int attempts = 0;
-        Throwable lastThrowable = null;
+        RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
+                .maxAttempts(DEFAULT_MAX_ATTEMPTS)
+                .delay(Duration.ofMillis(DEFAULT_BACKOFF_MS))
+                .multiplier(1.5)
+                .maxDelay(Duration.ofMillis(DEFAULT_BACKOFF_MS * DEFAULT_MAX_ATTEMPTS))
+                .onRetry((attempt, error) -> log.warn("SnailRetryTemplate 场景 [{}] 第 {} 次尝试失败 (幂等键: {}): {}",
+                        scene, attempt, actualIdempotentId, error.getMessage()))
+                .build();
 
-        while (attempts < DEFAULT_MAX_ATTEMPTS) {
-            attempts++;
-            try {
-                T result = callback.doWithRetry();
-                // 成功执行则清理快照
-                SnailRetryContextRegistry.remove(contextKey);
-                return result;
-            } catch (Throwable t) {
-                lastThrowable = t;
-                log.warn("SnailRetryTemplate 场景 [{}] 第 {} 次尝试失败 (幂等键: {}): {}",
-                        scene, attempts, actualIdempotentId, t.getMessage());
-                if (attempts < DEFAULT_MAX_ATTEMPTS) {
-                    try {
-                        Thread.sleep(DEFAULT_BACKOFF_MS * attempts);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                                "重试退避等待被中断", ie);
-                    }
-                }
-            }
-        }
-
-        // 本地重试耗尽，尝试上报 SnailJob 服务端
         try {
-            reportManualRetry(scene, callback.getClass().getName(), new Object[]{actualIdempotentId}, actualIdempotentId, bizNo);
-        } catch (Throwable ex) {
-            log.error("本地重试耗尽后上报 SnailJob 服务端异常 [Scene: {}, IdempotentId: {}]", scene, actualIdempotentId, ex);
-        }
+            return RetryUtil.execute(() -> {
+                try {
+                    return callback.doWithRetry();
+                } catch (Throwable t) {
+                    if (t instanceof RuntimeException re) {
+                        throw re;
+                    }
+                    throw new RuntimeException(t);
+                }
+            }, retryConfig);
+        } catch (Throwable t) {
+            Throwable rootCause = (t instanceof RuntimeException && t.getCause() != null) ? t.getCause() : t;
+            // 本地重试耗尽，尝试上报 SnailJob 服务端
+            try {
+                reportManualRetry(scene, callback.getClass().getName(), new Object[]{actualIdempotentId}, actualIdempotentId, bizNo);
+            } catch (Throwable ex) {
+                log.error("本地重试耗尽后上报 SnailJob 服务端异常 [Scene: {}, IdempotentId: {}]", scene, actualIdempotentId, ex);
+            }
 
-        if (lastThrowable instanceof BusinessException be) {
-            throw be;
+            if (rootCause instanceof BusinessException be) {
+                throw be;
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "业务重试耗尽 (" + DEFAULT_MAX_ATTEMPTS + " 次): " + (rootCause != null ? rootCause.getMessage() : "未知异常"),
+                    rootCause);
+        } finally {
+            SnailRetryContextRegistry.remove(contextKey);
         }
-        throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
-                "业务重试耗尽 (" + DEFAULT_MAX_ATTEMPTS + " 次): " + (lastThrowable != null ? lastThrowable.getMessage() : "未知异常"),
-                lastThrowable);
     }
 
     /**
@@ -193,6 +194,15 @@ public class SnailRetryTemplate {
         if (!StringUtils.hasText(scene) || !StringUtils.hasText(targetClassName)) {
             log.warn("手动上报重试参数缺失: scene=[{}], targetClassName=[{}]", scene, targetClassName);
             return false;
+        }
+
+        // 若传入业务幂等标识，捕获并持久化当前四维上下文快照供远程重试消费
+        if (StringUtils.hasText(idempotentId)) {
+            String contextKey = scene + ":" + idempotentId;
+            if (SnailRetryContextRegistry.get(contextKey) == null) {
+                ensureTraceId();
+                SnailRetryContextRegistry.put(contextKey, AsyncContext.ContextSnapshot.capture());
+            }
         }
 
         Report report = reportProvider != null ? reportProvider.getIfAvailable() : null;

@@ -8,6 +8,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 
@@ -51,6 +52,7 @@ class AtengSnailJobAutoConfigurationTest {
             assertThat(props.getTimeout()).isEqualTo(Duration.ofSeconds(10));
             assertThat(props.getDrainTimeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(props.getDefaultJobTimeout()).isEqualTo(Duration.ofHours(1));
+            assertThat(props.getMaxPayloadSize()).isEqualTo(DataSize.ofMegabytes(1));
             assertThat(props.isLogMirrorEnabled()).isTrue();
             assertThat(props.isManagedPoolEnabled()).isTrue();
 
@@ -63,6 +65,9 @@ class AtengSnailJobAutoConfigurationTest {
             assertThat(props.getOpenapi().isEnabled()).isTrue();
             assertThat(props.getOpenapi().getPort()).isEqualTo(8080);
             assertThat(props.getOpenapi().getPrefix()).isEqualTo("snail-job");
+            assertThat(props.getOpenapi().getTimeout()).isEqualTo(Duration.ofSeconds(10));
+            assertThat(props.getOpenapi().getMaxRetries()).isEqualTo(3);
+            assertThat(props.getOpenapi().getRetryInterval()).isEqualTo(Duration.ofMillis(500));
 
             assertThat(props.getAlert().isEnabled()).isTrue();
             assertThat(props.getAlert().getSuppressDuration()).isEqualTo(Duration.ofMinutes(5));
@@ -98,6 +103,7 @@ class AtengSnailJobAutoConfigurationTest {
                         "ateng.boot.job.snail.timeout=15s",
                         "ateng.boot.job.snail.drain-timeout=45s",
                         "ateng.boot.job.snail.default-job-timeout=30m",
+                        "ateng.boot.job.snail.max-payload-size=5MB",
                         "ateng.boot.job.snail.job.enabled=false",
                         "ateng.boot.job.snail.retry.context-aspect-enabled=false",
                         "ateng.boot.job.snail.openapi.port=9090",
@@ -118,6 +124,7 @@ class AtengSnailJobAutoConfigurationTest {
                     assertThat(props.getTimeout()).isEqualTo(Duration.ofSeconds(15));
                     assertThat(props.getDrainTimeout()).isEqualTo(Duration.ofSeconds(45));
                     assertThat(props.getDefaultJobTimeout()).isEqualTo(Duration.ofMinutes(30));
+                    assertThat(props.getMaxPayloadSize()).isEqualTo(DataSize.ofMegabytes(5));
 
                     assertThat(props.getJob().isEnabled()).isFalse();
                     assertThat(props.getRetry().isContextAspectEnabled()).isFalse();
@@ -156,12 +163,12 @@ class AtengSnailJobAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("测试同步映射至 SnailJob 原生配置对象")
+    @DisplayName("测试同步映射至 SnailJob 原生配置对象 (支持逗号分隔集群地址)")
     void testSyncNativeProperties() {
         contextRunner
                 .withUserConfiguration(NativePropertiesConfiguration.class)
                 .withPropertyValues(
-                        "ateng.boot.job.snail.server=10.0.0.1:18888",
+                        "ateng.boot.job.snail.server=10.0.0.1:18888,10.0.0.2:18888",
                         "ateng.boot.job.snail.namespace=test-namespace",
                         "ateng.boot.job.snail.group=test-group",
                         "ateng.boot.job.snail.token=token-abc",

@@ -1,6 +1,6 @@
 # ateng-boot-job-snail 基础设施 Starter
 
-> 面向企业级分布式微服务环境的 SnailJob 调度与协同重试双擎生产加固基础设施 Starter，坚持纯原生、零臃肿依赖与显式强类型契约设计。提供方法级 `@AtengSnailJob` 调度生产增强注解、`@AtengSnailRetry` 协同重试增强注解、K8s 停机三阶平滑排空状态机（`GracefulDrainStateMachine`）、本地硬超时强中断看门狗（`SnailLocalWatchdog`）、SLF4J 动态日志双写镜像（`SnailJobLogbackAppender`）、四维全链路上下文透传与远程重试保真还原（MDC `traceId` / 操作人 / 租户模式 / 调度上下文）、大数据游标流式与广播分片防 OOM 模板（`SnailShardingBatchTemplate` / `SnailMyBatisStreamingTemplate`）、官方 OpenAPI 编程式管理门面（`SnailJobAdminTemplate`）、多租户隔离遍历模板（`TenantJobTemplate`）、编程式分布式重试门面（`SnailRetryTemplate`）、告警风暴抑制三阶状态机（首发告警 / 聚合摘要 / 故障自愈）、死信领域事件直通通道（`SnailRetryDeadLetterEvent`）、Spring Boot Actuator 运维管控端点（`/actuator/snailjobs`）、健康探针（`/actuator/health`）、Micrometer 监控度量（`ateng.job.snail.execution` / `ateng.job.snail.retry.execution`）及脱网极速调试门面（`SnailJobTestHelper`）。
+> 面向企业级分布式微服务环境的 SnailJob 调度与协同重试双擎生产加固基础设施 Starter，坚持纯原生、零臃肿依赖与显式强类型契约设计。提供方法级 `@AtengSnailJob` 调度生产增强注解、`@AtengSnailRetry` 协同重试增强注解、K8s 停机三阶平滑排空状态机（`GracefulDrainStateMachine`）、本地硬超时强中断看门狗（`SnailLocalWatchdog`）、SLF4J 动态日志双写镜像（`SnailJobLogbackAppender`）、四维全链路上下文透传与远程重试保真还原（MDC `traceId` / 操作人 / 租户模式 / 调度上下文）、大数据游标流式与广播分片防 OOM 模板（`SnailShardingBatchTemplate` / `SnailMyBatisStreamingTemplate`）、官方 OpenAPI 编程式管理门面（`SnailJobAdminTemplate`）、多租户隔离遍历模板（`TenantJobTemplate`）、编程式分布式重试门面（`SnailRetryTemplate`）、告警风暴抑制三阶状态机（首发告警 / 聚合摘要 / 故障自愈）、死信领域事件直通通道（`SnailRetryDeadLetterEvent`）、Spring Boot Actuator 运维管控端点（`/actuator/snailjobs`）、健康探针（`/actuator/health`）、Micrometer 监控度量（`ateng.job.snail.job.execution` / `ateng.job.snail.retry.execution` 及在途并发 Gauge 指标）及脱网极速调试门面（`SnailJobTestHelper`）。
 
 ---
 
@@ -41,14 +41,14 @@
 | **运维端点** | 单任务详情与反射元数据 | `SnailJobEndpoint` | `enabled` | `GET /actuator/snailjobs/{jobName}`，查询指定任务的反射元数据、目标类与方法签名 | `SnailJobEndpointTest` |
 | **运维端点** | 在线手动运维触发 | `SnailJobEndpoint` | `enabled` | `POST /actuator/snailjobs/{jobName}`，请求体传入 param 与分片参数，在线手动触发 | `SnailJobEndpointTest` |
 | **健康探针** | 执行器双擎健康检测 | `SnailJobHealthIndicator` | `enabled` | 暴露于 `/actuator/health`，动态探测 SnailJob 服务端通信活性、gRPC 通道与停机态 | `SnailJobHealthIndicatorTest` / `SampleJobSnailIntegrationTest` |
-| **监控度量** | Micrometer 核心指标 | `SnailJobMetricsBinder` | - | 发布 `ateng.job.snail.execution` 与 `ateng.job.snail.retry.execution` Timer 指标 | `SnailJobMetricsBinderTest` |
+| **监控度量** | Micrometer 核心指标 | `SnailJobMetricsBinder` | - | 发布 `ateng.job.snail.job.execution` 与 `ateng.job.snail.retry.execution` Timer 指标，及 `ateng.job.snail.job.inflight` 与 `ateng.job.snail.retry.inflight` 在途并发 Gauge 指标 | `SnailJobMetricsBinderTest` |
 | **告警自愈** | 告警风暴抑制器 | `SnailJobAlertAggregator` | `alert.enabled`<br>`alert.suppress-duration`<br>`alert.suppress-threshold` | 聚合失败异常，首发立即告警 -> 抑制窗口内静默聚合为摘要 -> 成功时自愈恢复 | `SnailJobAlertAggregatorTest` / `AlertDemoJobHandler` |
 | **告警自愈** | 调度告警领域事件 | `SnailJobAlertEvent` | - | Spring 标准领域事件，携带 `alertType` (`INITIAL_FAILURE`/`FAILURE_SUMMARY`/`RECOVERY`) | `SnailJobAlertAggregatorTest` / `SampleJobSnailIntegrationTest` |
 | **死信治理** | 重试死信领域事件 | `SnailRetryDeadLetterEvent` | - | Spring 标准领域事件，携带 `scene`、`bizNo`、`idempotentId`、`retries`、`throwable` | `SnailRetryDeadLetterCallbackTest` / `SampleJobSnailIntegrationTest` |
 | **死信治理** | 重试完成死信回调 SPI | `SnailRetryDeadLetterCallback` | - | 实现 SnailJob `RetryCompleteCallback`，在重试最大次数终态自动桥接死信告警卡片 | `SnailRetryDeadLetterCallbackTest` |
 | **看门狗机制** | 本地硬超时守护时间轮 | `SnailLocalWatchdog` | `default-job-timeout` | 基于 Netty `HashedWheelTimer` 与受管线程工厂，超限强行中断工作线程并广播事件 | `SnailLocalWatchdogTest` |
 | **停机排空** | 三阶平滑排空状态机 | `GracefulDrainStateMachine` | `drain-timeout` | 阶段一标记排空 -> 阶段二轮询在途排空 -> 阶段三物理断开 gRPC 通道，防御数据脏写 | `GracefulDrainStateMachineTest` |
-| **上下文传播** | 调度上下文异步全链路传播 | `SnailJobContextSnapshotProvider` | - | 实现 `AsyncContextSnapshotProvider` SPI，治理跨受管线程池异步透传与清理现场 | `SnailJobContextSnapshotProviderTest` |
+| **上下文传播** | 调度上下文与多租户隔离 | `SnailJobContextAspect` | `job.context-aspect-enabled` | 治理四维快照 (MDC/User/Tenant/SnailContext) 跨线程透传与确定性清理 | `SnailJobContextAspectTest` / `SimpleDemoJobHandler` |
 | **日志镜像** | SLF4J 动态双写镜像 | `SnailJobLogbackAppender` | `log-mirror-enabled` | 动态向 Logback Root Logger 注入 Appender，在调度与重试期间将日志镜像至服务端 | `SnailJobLogbackAppenderTest` / `SimpleDemoJobHandler` |
 | **自动装配** | 模块自动装配入口 | `AtengSnailJobAutoConfiguration` | `enabled` | Spring Boot 3 标准自动装配，平滑探测服务端配置，标配完整缺省 Bean 守卫 | `AtengSnailJobAutoConfigurationTest` |
 

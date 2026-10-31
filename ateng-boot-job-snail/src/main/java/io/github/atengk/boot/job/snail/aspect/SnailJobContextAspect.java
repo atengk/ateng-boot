@@ -174,7 +174,8 @@ public class SnailJobContextAspect {
                 TenantContextHolder.setTenantId(tenantId);
             }
         } else if (tenantMode == JobTenantMode.ITERATE) {
-            log.debug("SnailJob 任务处于多租户遍历模式 (ITERATE)");
+            TenantContextHolder.clear();
+            log.debug("SnailJob 任务处于多租户遍历模式 (ITERATE)，已清空外部租户，交由 TenantJobTemplate 执行");
         }
 
         // 5. 本地硬看门狗与执行元数据解析
@@ -405,7 +406,6 @@ public class SnailJobContextAspect {
                         resolved[i] = JsonUtil.getObjectMapper().readValue(rawParam, javaType);
                     } catch (Exception e) {
                         String errorMsg = "SnailJob 参数反序列化失败: 无法将入参 [" + rawParam + "] 转换为目标类型 [" + type.getName() + "]: " + e.getMessage();
-                        log.error(errorMsg, e);
                         throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), errorMsg, e);
                     }
                 } else if (rawArg != null && type.isInstance(rawArg)) {
@@ -444,14 +444,12 @@ public class SnailJobContextAspect {
                 Class<?>[] groups = resolveValidationGroups(param);
                 if (arg == null) {
                     String errorMsg = "JSR-303 参数校验失败: 任务参数 [" + param.getName() + "] 不能为空";
-                    log.error("SnailJob 任务 [{}] 参数校验失败: {}", jobName, errorMsg);
                     throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), errorMsg);
                 }
                 try {
                     ValidatorUtil.validate(arg, groups);
                 } catch (BusinessException be) {
                     String errorMsg = "JSR-303 参数校验失败: " + be.getMessage();
-                    log.error("SnailJob 任务 [{}] 参数校验失败: {}", jobName, errorMsg);
                     throw new BusinessException(be.getCode(), errorMsg, be);
                 }
             }
@@ -497,9 +495,13 @@ public class SnailJobContextAspect {
     }
 
     /**
-     * 从参数对象列表中反射抽取指定 Getter 属性值（按名称顺序优先匹配）
+     * 从参数对象列表中反射抽取指定 Getter 属性值（按名称顺序优先匹配，支持实体对象与 JSON 文本）
+     *
+     * @param args 参数对象列表
+     * @param getterNames getter 方法名候选列表（如 "getTenantId", "getUserId" 等）
+     * @return 提取出的属性文本值，未命中返回 null
      */
-    protected String extractPropertyFromArgs(Object[] args, String... getterNames) {
+    public static String extractPropertyFromArgs(Object[] args, String... getterNames) {
         if (args == null || args.length == 0 || getterNames == null || getterNames.length == 0) {
             return null;
         }
@@ -514,6 +516,21 @@ public class SnailJobContextAspect {
                         }
                     } catch (Exception ignored) {
                     }
+                }
+            } else if (arg instanceof String str && str.trim().startsWith("{") && str.trim().endsWith("}")) {
+                try {
+                    JsonNode node = JsonUtil.readTree(str);
+                    if (node != null) {
+                        for (String getterName : getterNames) {
+                            String prop = getterName.startsWith("get")
+                                    ? Character.toLowerCase(getterName.charAt(3)) + getterName.substring(4)
+                                    : getterName;
+                            if (node.hasNonNull(prop)) {
+                                return node.get(prop).asText();
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
                 }
             }
         }

@@ -193,13 +193,13 @@ class SnailShardingBatchTemplateTest {
     @Test
     @DisplayName("executeStepParallel: failFast=true 遇异常中断抛出")
     void testExecuteStepParallelFailFast() {
-        template.setFailFast(true);
         List<Long> mockDb = List.of(1L, 2L, 3L, 4L, 5L);
 
         assertThatThrownBy(() -> template.executeStepParallel(
                 0L,
                 2,
                 2,
+                true,
                 (lastId, batchSize) -> mockDb.stream().filter(id -> id > lastId).limit(batchSize).toList(),
                 id -> id,
                 batch -> {
@@ -208,6 +208,34 @@ class SnailShardingBatchTemplateTest {
                     }
                 }
         )).isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    @DisplayName("executeStepParallel: failFast=false 容错继续处理后续切片")
+    void testExecuteStepParallelTolerant() {
+        List<Long> mockDb = List.of(1L, 2L, 3L, 4L, 5L);
+        List<Long> successfullyConsumed = new CopyOnWriteArrayList<>();
+
+        BatchExecutionResult result = template.executeStepParallel(
+                0L,
+                2,
+                2,
+                false,
+                (lastId, batchSize) -> mockDb.stream().filter(id -> id > lastId).limit(batchSize).toList(),
+                id -> id,
+                batch -> {
+                    if (batch.contains(3L)) {
+                        throw new RuntimeException("模拟偶发批次消费异常");
+                    }
+                    successfullyConsumed.addAll(batch);
+                }
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(5);
+        assertThat(result.getFailCount()).isEqualTo(2); // 包含 3L 的批次有 2 条数据 (3L, 4L)
+        assertThat(result.getSuccessCount()).isEqualTo(3); // (1L, 2L) 和 (5L)
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(successfullyConsumed).containsExactlyInAnyOrder(1L, 2L, 5L);
     }
 
     @Test

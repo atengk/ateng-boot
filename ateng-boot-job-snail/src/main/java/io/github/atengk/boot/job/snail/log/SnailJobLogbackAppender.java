@@ -145,7 +145,7 @@ public class SnailJobLogbackAppender extends AppenderBase<ILoggingEvent> {
         } catch (Throwable t) {
             addError("Failed to mirror SLF4J log to SnailJob server", t);
         } finally {
-            IN_MIRROR.set(Boolean.FALSE);
+            IN_MIRROR.remove();
         }
     }
 

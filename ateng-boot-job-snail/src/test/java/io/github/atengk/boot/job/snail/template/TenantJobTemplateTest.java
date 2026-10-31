@@ -6,6 +6,11 @@ import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -13,6 +18,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 /**
  * {@link TenantJobTemplate} 单元测试
@@ -115,5 +122,31 @@ class TenantJobTemplateTest {
           .hasMessageContaining("FAIL_TENANT");
 
         assertThat(executed).containsExactly("T1", "FAIL_TENANT");
+    }
+
+    @Test
+    @DisplayName("executeForEachTenant: 存在事务管理器时自动挂载 REQUIRES_NEW 事务沙箱")
+    void testExecutionWithTransactionManager() {
+        PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
+        TransactionStatus status = mock(TransactionStatus.class);
+        when(txManager.getTransaction(any())).thenReturn(status);
+
+        @SuppressWarnings("unchecked")
+        ObjectProvider<PlatformTransactionManager> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(txManager);
+
+        TenantJobTemplate template = new TenantJobTemplate(null, provider);
+        List<String> executed = new ArrayList<>();
+
+        BatchExecutionResult result = template.executeForEachTenant(List.of("T1", "T2"), executed::add);
+
+        assertThat(result.getTotalCount()).isEqualTo(2);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(executed).containsExactly("T1", "T2");
+
+        ArgumentCaptor<TransactionDefinition> captor = ArgumentCaptor.forClass(TransactionDefinition.class);
+        verify(txManager, times(2)).getTransaction(captor.capture());
+        assertThat(captor.getAllValues()).allMatch(def -> def.getPropagationBehavior() == TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        verify(txManager, times(2)).commit(status);
     }
 }

@@ -101,6 +101,17 @@ public class SnailJobEndpointTest {
             }
         } catch (Throwable ignored) {
         }
+        try {
+            Field retryField = RetryerInfoCache.class.getDeclaredField("RETRY_HANDLER_REPOSITORY");
+            retryField.setAccessible(true);
+            Object tableObj = retryField.get(null);
+            if (tableObj != null) {
+                Method removeMethod = tableObj.getClass().getMethod("remove", Object.class, Object.class);
+                removeMethod.setAccessible(true);
+                removeMethod.invoke(tableObj, "testSampleScene", SampleJobService.class.getName());
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Test
