@@ -3,15 +3,18 @@ package io.github.atengk.boot.document.pdf;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
+import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
+import io.github.atengk.boot.document.pdf.model.PdfMetadata;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -35,6 +38,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Calendar;
 import java.util.Iterator;
 import java.util.List;
 
@@ -432,6 +436,157 @@ class PdfTemplateTest {
         assertThatThrownBy(() -> pdfTemplate.extractPages(simplePdf, new ByteArrayOutputStream(), 5, 2))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("页码范围无效");
+    }
+
+    @Test
+    @DisplayName("测试核心元数据自省 inspectMetadata 与按页码范围纯文本提取 extractText")
+    void testInspectMetadataAndExtractTextRange() throws Exception {
+        byte[] pdfBytes = createPdfWithMetadata("第一页：合同条款细则", "第二页：甲乙双方盖章确认处");
+
+        // 1. 核心元数据自省全真断言
+        PdfMetadata metadata = pdfTemplate.inspectMetadata(pdfBytes);
+        assertThat(metadata).isNotNull();
+        assertThat(metadata.getPageCount()).isEqualTo(2);
+        assertThat(metadata.getVersion()).isGreaterThan(0.0f);
+        assertThat(metadata.getTitle()).isEqualTo("合同条款与盖章确认文件");
+        assertThat(metadata.getAuthor()).isEqualTo("Ateng");
+        assertThat(metadata.getSubject()).isEqualTo("合同管理");
+        assertThat(metadata.getKeywords()).isEqualTo("合同, 条款, 盖章");
+        assertThat(metadata.getCreator()).isEqualTo("ateng-boot-document");
+        assertThat(metadata.getProducer()).isEqualTo("Apache PDFBox");
+        assertThat(metadata.getCreationDate()).isNotNull();
+        assertThat(metadata.getModificationDate()).isNotNull();
+        assertThat(metadata.isEncrypted()).isFalse();
+        assertThat(metadata.isCanPrint()).isTrue();
+        assertThat(metadata.isCanModify()).isTrue();
+        assertThat(metadata.isCanExtractContent()).isTrue();
+        assertThat(metadata.isCanCopy()).isTrue();
+        assertThat(metadata.isHasAcroForm()).isFalse();
+        assertThat(metadata.isHasXfa()).isFalse();
+
+        // 2. 全文文本提取
+        String fullText = pdfTemplate.extractText(pdfBytes);
+        assertThat(fullText).contains("第一页：合同条款细则");
+        assertThat(fullText).contains("第二页：甲乙双方盖章确认处");
+
+        // 3. 按页提取文本：仅第 1 页
+        String page1Only = pdfTemplate.extractText(pdfBytes, 1, 1);
+        assertThat(page1Only).contains("第一页：合同条款细则");
+        assertThat(page1Only).doesNotContain("第二页：甲乙双方盖章确认处");
+
+        // 4. 按页提取文本：仅第 2 页
+        String page2Only = pdfTemplate.extractText(pdfBytes, 2, 2);
+        assertThat(page2Only).contains("第二页：甲乙双方盖章确认处");
+        assertThat(page2Only).doesNotContain("第一页：合同条款细则");
+    }
+
+    @Test
+    @DisplayName("测试加密 PDF 的元数据自省与密码解密文本提取")
+    void testInspectMetadataEncryptedWithPassword() throws Exception {
+        byte[] originalPdf = createSamplePdf("绝密核心商业机密正文内容");
+        String userPass = "userPass123";
+        String ownerPass = "ownerPass456";
+
+        byte[] protectedPdf = pdfTemplate.protectToBytes(originalPdf, userPass, ownerPass);
+
+        // 1. 凭正确密码自省元数据
+        PdfMetadata metadata = pdfTemplate.inspectMetadata(protectedPdf, userPass);
+        assertThat(metadata).isNotNull();
+        assertThat(metadata.isEncrypted()).isTrue();
+        assertThat(metadata.getPageCount()).isEqualTo(1);
+
+        // 2. 凭正确密码提取纯文本
+        String extracted = pdfTemplate.extractText(protectedPdf, userPass);
+        assertThat(extracted).contains("绝密核心商业机密正文内容");
+
+        // 3. 错误密码拦截防卫
+        assertThatThrownBy(() -> pdfTemplate.extractText(protectedPdf, "wrongPass999"))
+                .isInstanceOf(PdfOperationException.class)
+                .satisfies(e -> {
+                    PdfOperationException poe = (PdfOperationException) e;
+                    assertThat(poe.getResultCode()).isEqualTo(DocumentResultCode.PASSWORD_ERROR);
+                });
+
+        assertThatThrownBy(() -> pdfTemplate.inspectMetadata(protectedPdf, "wrongPass999"))
+                .isInstanceOf(PdfOperationException.class)
+                .satisfies(e -> {
+                    PdfOperationException poe = (PdfOperationException) e;
+                    assertThat(poe.getResultCode()).isEqualTo(DocumentResultCode.PASSWORD_ERROR);
+                });
+    }
+
+    @Test
+    @DisplayName("测试 inspectMetadata 与 extractText 前置参数校验与卫语句拦截")
+    void testMetadataAndExtractTextDefensiveValidation() {
+        byte[] simplePdf = createSamplePdf("参数防卫测试");
+
+        // 1. source 为空拦截
+        assertThatThrownBy(() -> pdfTemplate.inspectMetadata(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source 不能为空");
+
+        assertThatThrownBy(() -> pdfTemplate.extractText(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source 不能为空");
+
+        // 2. 起始页小于 1
+        assertThatThrownBy(() -> pdfTemplate.extractText(simplePdf, 0, 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("startPage 必须大于等于 1");
+
+        // 3. 结束页小于起始页
+        assertThatThrownBy(() -> pdfTemplate.extractText(simplePdf, 2, 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能小于起始页码");
+    }
+
+    private static byte[] createPdfWithMetadata(String page1Text, String page2Text) {
+        try (PDDocument doc = new PDDocument();
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            DocumentProperties props = createTestProperties();
+            DocumentFontResolver resolver = new DocumentFontResolver(props.getPdf());
+            var font = resolver.loadFont(doc);
+
+            // 设置元数据
+            PDDocumentInformation info = new PDDocumentInformation();
+            info.setTitle("合同条款与盖章确认文件");
+            info.setAuthor("Ateng");
+            info.setSubject("合同管理");
+            info.setKeywords("合同, 条款, 盖章");
+            info.setCreator("ateng-boot-document");
+            info.setProducer("Apache PDFBox");
+            Calendar now = Calendar.getInstance();
+            info.setCreationDate(now);
+            info.setModificationDate(now);
+            doc.setDocumentInformation(info);
+
+            // Page 1
+            PDPage page1 = new PDPage(PDRectangle.A4);
+            doc.addPage(page1);
+            try (PDPageContentStream cs1 = new PDPageContentStream(doc, page1)) {
+                cs1.beginText();
+                cs1.setFont(font, 14);
+                cs1.newLineAtOffset(50, 750);
+                cs1.showText(page1Text);
+                cs1.endText();
+            }
+
+            // Page 2
+            PDPage page2 = new PDPage(PDRectangle.A4);
+            doc.addPage(page2);
+            try (PDPageContentStream cs2 = new PDPageContentStream(doc, page2)) {
+                cs2.beginText();
+                cs2.setFont(font, 14);
+                cs2.newLineAtOffset(50, 750);
+                cs2.showText(page2Text);
+                cs2.endText();
+            }
+
+            doc.save(baos);
+            return baos.toByteArray();
+        } catch (Exception e) {
+            throw new RuntimeException("生成带元数据测试 PDF 失败: " + e.getMessage(), e);
+        }
     }
 
     private static byte[] createSamplePdf(String content) {

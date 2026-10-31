@@ -9,6 +9,7 @@ import io.github.atengk.boot.document.pdf.model.FormOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
 import io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor;
+import io.github.atengk.boot.document.pdf.model.PdfMetadata;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentPdfProperties;
@@ -21,6 +22,7 @@ import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
 import org.apache.pdfbox.multipdf.PDFMergerUtility;
 import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.PDResources;
@@ -59,6 +61,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -427,14 +430,68 @@ public class PdfTemplate {
     /**
      * 从 PDF 文档中提取全文纯文本
      *
-     * @param source PDF 输入源
+     * @param source 原始 PDF 输入源
      * @return 全文文本内容
      */
     public String extractText(Object source) {
+        return extractText(source, 1, Integer.MAX_VALUE, null);
+    }
+
+    /**
+     * 从 PDF 文档中提取全文纯文本（支持密码解密访问）
+     *
+     * @param source   原始 PDF 输入源
+     * @param password 打开密码（若无密码传 null）
+     * @return 全文文本内容
+     */
+    public String extractText(Object source, String password) {
+        return extractText(source, 1, Integer.MAX_VALUE, password);
+    }
+
+    /**
+     * 提取 PDF 文档指定页码范围的纯文本内容（1-based 包含两端）
+     *
+     * @param source    原始 PDF 输入源
+     * @param startPage 起始页码（从 1 开始）
+     * @param endPage   结束页码（从 1 开始）
+     * @return 范围内的纯文本内容
+     */
+    public String extractText(Object source, int startPage, int endPage) {
+        return extractText(source, startPage, endPage, null);
+    }
+
+    /**
+     * 提取 PDF 文档指定页码范围的纯文本内容（支持密码解密访问，1-based 包含两端）
+     *
+     * @param source    原始 PDF 输入源
+     * @param startPage 起始页码（从 1 开始）
+     * @param endPage   结束页码（从 1 开始）
+     * @param password  打开密码（若无密码传 null）
+     * @return 范围内的纯文本内容
+     */
+    public String extractText(Object source, int startPage, int endPage, String password) {
         Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
-        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+        if (startPage < 1) {
+            throw new IllegalArgumentException("起始页码 startPage 必须大于等于 1");
+        }
+        if (endPage < startPage) {
+            throw new IllegalArgumentException(String.format("结束页码 endPage (%d) 不能小于起始页码 startPage (%d)", endPage, startPage));
+        }
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, password)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                AccessPermission ap = doc.getCurrentAccessPermission();
+                if (ap != null && !ap.canExtractContent()) {
+                    throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密且无内容提取权限，请先提供密码解密");
+                }
+            }
             PDFTextStripper stripper = new PDFTextStripper();
-            return stripper.getText(loadedPdf.getDocument());
+            stripper.setStartPage(startPage);
+            stripper.setEndPage(endPage);
+            return stripper.getText(doc);
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "提取 PDF 文本失败: " + e.getMessage(), e);
         }
@@ -450,8 +507,88 @@ public class PdfTemplate {
         Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
         try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
             return loadedPdf.getDocument().getNumberOfPages();
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "获取 PDF 页数失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 巡检并自省 PDF 文档核心元数据（页数、版本、摘要信息、创建修改时间及加密权限状态）
+     *
+     * @param source 原始 PDF 输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @return 填充完整的 PDF 核心元数据模型（绝不返回 null）
+     * @throws PdfOperationException 文档解析或 IO 失败时抛出
+     */
+    public PdfMetadata inspectMetadata(Object source) {
+        return inspectMetadata(source, null);
+    }
+
+    /**
+     * 巡检并自省 PDF 文档核心元数据（支持密码解密访问）
+     *
+     * @param source   原始 PDF 输入源
+     * @param password 打开密码或管理密码（为 null 表示未加密或使用默认空密码探测）
+     * @return 填充完整的 PDF 核心元数据模型（绝不返回 null）
+     * @throws PdfOperationException 密码错误或文档解析失败时抛出
+     */
+    public PdfMetadata inspectMetadata(Object source, String password) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, password)) {
+            PDDocument doc = loadedPdf.getDocument();
+            int totalPages = doc.getNumberOfPages();
+            float version = doc.getVersion();
+            boolean encrypted = doc.isEncrypted();
+
+            PDDocumentInformation info = doc.getDocumentInformation();
+            String title = info != null ? info.getTitle() : null;
+            String author = info != null ? info.getAuthor() : null;
+            String subject = info != null ? info.getSubject() : null;
+            String keywords = info != null ? info.getKeywords() : null;
+            String creator = info != null ? info.getCreator() : null;
+            String producer = info != null ? info.getProducer() : null;
+            Instant creationDate = info != null && info.getCreationDate() != null
+                    ? info.getCreationDate().toInstant() : null;
+            Instant modificationDate = info != null && info.getModificationDate() != null
+                    ? info.getModificationDate().toInstant() : null;
+
+            AccessPermission permission = doc.getCurrentAccessPermission();
+            boolean canPrint = permission == null || permission.canPrint();
+            boolean canModify = permission == null || permission.canModify();
+            boolean canExtract = permission == null || permission.canExtractContent();
+            boolean canAssemble = permission == null || permission.canAssembleDocument();
+            boolean canFill = permission == null || permission.canFillInForm();
+
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            boolean hasAcroForm = acroForm != null && !acroForm.getFields().isEmpty();
+            boolean hasXfa = acroForm != null && acroForm.hasXFA();
+
+            return PdfMetadata.builder()
+                    .pageCount(totalPages)
+                    .version(version)
+                    .title(title)
+                    .author(author)
+                    .subject(subject)
+                    .keywords(keywords)
+                    .creator(creator)
+                    .producer(producer)
+                    .creationDate(creationDate)
+                    .modificationDate(modificationDate)
+                    .encrypted(encrypted)
+                    .canPrint(canPrint)
+                    .canModify(canModify)
+                    .canExtractContent(canExtract)
+                    .canCopy(canExtract)
+                    .canAssembleDocument(canAssemble)
+                    .canFillInForm(canFill)
+                    .hasAcroForm(hasAcroForm)
+                    .hasXfa(hasXfa)
+                    .build();
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "自省 PDF 元数据失败: " + e.getMessage(), e);
         }
     }
 
@@ -1141,25 +1278,16 @@ public class PdfTemplate {
 
         String pass = password != null ? password : "";
 
-        try {
-            byte[] rawBytes = resolveImageBytes(source);
-            PDDocument doc;
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, pass)) {
+            PDDocument doc = loadedPdf.getDocument();
+            doc.setAllSecurityToBeRemoved(true);
+            OutputStream os = resolveOutputStream(target);
             try {
-                doc = Loader.loadPDF(rawBytes, pass);
-            } catch (IOException e) {
-                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档密码错误或解密失败: " + e.getMessage(), e);
-            }
-
-            try (doc) {
-                doc.setAllSecurityToBeRemoved(true);
-                OutputStream os = resolveOutputStream(target);
-                try {
-                    doc.save(os);
-                    os.flush();
-                } finally {
-                    if (!(target instanceof OutputStream)) {
-                        os.close();
-                    }
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
                 }
             }
         } catch (PdfOperationException | IllegalArgumentException e) {
@@ -1622,103 +1750,118 @@ public class PdfTemplate {
     // ==========================================
 
     private LoadedPdfDocument loadDocument(Object source) throws IOException {
+        return loadDocument(source, null);
+    }
+
+    private LoadedPdfDocument loadDocument(Object source, String password) throws IOException {
         long thresholdBytes = documentProperties.getInMemoryThreshold().toBytes();
 
-        // 1. 本地物理文件
-        if (source instanceof File file) {
-            if (!file.exists() || !file.isFile() || !file.canRead()) {
-                throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 文件不存在或不可读: " + file.getAbsolutePath());
+        try {
+            // 1. 本地物理文件
+            if (source instanceof File file) {
+                if (!file.exists() || !file.isFile() || !file.canRead()) {
+                    throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 文件不存在或不可读: " + file.getAbsolutePath());
+                }
+                if (file.length() > thresholdBytes) {
+                    // 超限直接使用 RandomAccessReadBufferedFile 缓冲文件模式
+                    RandomAccessReadBufferedFile rar = new RandomAccessReadBufferedFile(file);
+                    return new LoadedPdfDocument(password != null ? Loader.loadPDF(rar, password) : Loader.loadPDF(rar), null);
+                } else {
+                    return new LoadedPdfDocument(password != null ? Loader.loadPDF(file, password) : Loader.loadPDF(file), null);
+                }
             }
-            if (file.length() > thresholdBytes) {
-                // 超限直接使用 RandomAccessReadBufferedFile 缓冲文件模式
-                return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(file)), null);
-            } else {
-                return new LoadedPdfDocument(Loader.loadPDF(file), null);
+
+            // 2. 本地 Path 路径
+            if (source instanceof Path path) {
+                return loadDocument(path.toFile(), password);
             }
-        }
 
-        // 2. 本地 Path 路径
-        if (source instanceof Path path) {
-            return loadDocument(path.toFile());
-        }
-
-        // 3. 字节数组
-        if (source instanceof byte[] bytes) {
-            if (bytes.length > thresholdBytes) {
-                File tempFile = createTrackedTempFile("pdf-overflow-", ".pdf");
-                try {
-                    Files.write(tempFile.toPath(), bytes);
-                    return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
-                } catch (Throwable t) {
-                    if (tempFile.exists()) {
-                        try {
-                            tempFile.delete();
-                        } catch (Exception ignored) {
+            // 3. 字节数组
+            if (source instanceof byte[] bytes) {
+                if (bytes.length > thresholdBytes) {
+                    File tempFile = createTrackedTempFile("pdf-overflow-", ".pdf");
+                    try {
+                        Files.write(tempFile.toPath(), bytes);
+                        RandomAccessReadBufferedFile rar = new RandomAccessReadBufferedFile(tempFile);
+                        return new LoadedPdfDocument(password != null ? Loader.loadPDF(rar, password) : Loader.loadPDF(rar), tempFile);
+                    } catch (Throwable t) {
+                        if (tempFile.exists()) {
+                            try {
+                                tempFile.delete();
+                            } catch (Exception ignored) {
+                            }
                         }
+                        throw t;
                     }
-                    throw t;
+                } else {
+                    RandomAccessReadBuffer rar = new RandomAccessReadBuffer(bytes);
+                    return new LoadedPdfDocument(password != null ? Loader.loadPDF(rar, password) : Loader.loadPDF(rar), null);
                 }
-            } else {
-                return new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBuffer(bytes)), null);
             }
-        }
 
-        // 4. 输入流自适应读取与溢出防 OOM 控制
-        if (source instanceof InputStream is) {
-            return loadFromInputStream(is, thresholdBytes);
-        }
+            // 4. 输入流自适应读取与溢出防 OOM 控制
+            if (source instanceof InputStream is) {
+                return loadFromInputStream(is, thresholdBytes, password);
+            }
 
-        // 5. Spring Resource
-        if (source instanceof Resource resource) {
-            if (!resource.exists()) {
-                throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF Spring Resource 不存在: " + resource.getDescription());
-            }
-            try {
-                File f = resource.getFile();
-                if (f.exists()) {
-                    return loadDocument(f);
+            // 5. Spring Resource
+            if (source instanceof Resource resource) {
+                if (!resource.exists()) {
+                    throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF Spring Resource 不存在: " + resource.getDescription());
                 }
-            } catch (Exception ignored) {
-                // 不支持 getFile 时转为 InputStream 处理
+                try {
+                    File f = resource.getFile();
+                    if (f.exists()) {
+                        return loadDocument(f, password);
+                    }
+                } catch (Exception ignored) {
+                    // 不支持 getFile 时转为 InputStream 处理
+                }
+                try (InputStream ris = resource.getInputStream()) {
+                    return loadFromInputStream(ris, thresholdBytes, password);
+                }
             }
-            try (InputStream ris = resource.getInputStream()) {
-                return loadFromInputStream(ris, thresholdBytes);
-            }
-        }
 
-        // 6. 字符串路径自适应解析
-        if (source instanceof String str) {
-            String path = str.trim();
-            if (path.isEmpty()) {
-                throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 路径不能为空");
+            // 6. 字符串路径自适应解析
+            if (source instanceof String str) {
+                String path = str.trim();
+                if (path.isEmpty()) {
+                    throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "PDF 路径不能为空");
+                }
+                if (path.startsWith(CLASSPATH_PREFIX)) {
+                    String sub = path.substring(CLASSPATH_PREFIX.length());
+                    if (sub.startsWith("/")) {
+                        sub = sub.substring(1);
+                    }
+                    InputStream cis = getClass().getClassLoader().getResourceAsStream(sub);
+                    if (cis == null) {
+                        cis = Thread.currentThread().getContextClassLoader().getResourceAsStream(sub);
+                    }
+                    if (cis == null) {
+                        throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "未找到指定的类路径 PDF 资源: " + path);
+                    }
+                    try (InputStream finalCis = cis) {
+                        return loadFromInputStream(finalCis, thresholdBytes, password);
+                    }
+                }
+                File f = new File(path);
+                if (f.exists() && f.isFile() && f.canRead()) {
+                    return loadDocument(f, password);
+                }
+                throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "未定位到指定的 PDF 文件: " + path);
             }
-            if (path.startsWith(CLASSPATH_PREFIX)) {
-                String sub = path.substring(CLASSPATH_PREFIX.length());
-                if (sub.startsWith("/")) {
-                    sub = sub.substring(1);
-                }
-                InputStream cis = getClass().getClassLoader().getResourceAsStream(sub);
-                if (cis == null) {
-                    cis = Thread.currentThread().getContextClassLoader().getResourceAsStream(sub);
-                }
-                if (cis == null) {
-                    throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "未找到指定的类路径 PDF 资源: " + path);
-                }
-                try (InputStream finalCis = cis) {
-                    return loadFromInputStream(finalCis, thresholdBytes);
-                }
-            }
-            File f = new File(path);
-            if (f.exists() && f.isFile() && f.canRead()) {
-                return loadDocument(f);
-            }
-            throw new PdfOperationException(DocumentResultCode.TEMPLATE_NOT_FOUND, "未定位到指定的 PDF 文件: " + path);
-        }
 
-        throw new IllegalArgumentException("不支持的 PDF 输入源类型: " + source.getClass().getName());
+            throw new IllegalArgumentException("不支持的 PDF 输入源类型: " + source.getClass().getName());
+        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException e) {
+            throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档密码错误或未提供密码: " + e.getMessage(), e);
+        }
     }
 
     private LoadedPdfDocument loadFromInputStream(InputStream is, long thresholdBytes) throws IOException {
+        return loadFromInputStream(is, thresholdBytes, null);
+    }
+
+    private LoadedPdfDocument loadFromInputStream(InputStream is, long thresholdBytes, String password) throws IOException {
         ByteArrayOutputStream memoryBaos = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int bytesRead;
@@ -1748,12 +1891,16 @@ public class PdfTemplate {
                 fos.flush();
                 fos.close();
                 fos = null;
-                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBufferedFile(tempFile)), tempFile);
+                RandomAccessReadBufferedFile rar = new RandomAccessReadBufferedFile(tempFile);
+                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(
+                        password != null ? Loader.loadPDF(rar, password) : Loader.loadPDF(rar), tempFile);
                 documentLoaded = true;
                 return loadedDoc;
             } else {
                 byte[] inMemBytes = memoryBaos.toByteArray();
-                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(Loader.loadPDF(new RandomAccessReadBuffer(inMemBytes)), null);
+                RandomAccessReadBuffer rar = new RandomAccessReadBuffer(inMemBytes);
+                LoadedPdfDocument loadedDoc = new LoadedPdfDocument(
+                        password != null ? Loader.loadPDF(rar, password) : Loader.loadPDF(rar), null);
                 documentLoaded = true;
                 return loadedDoc;
             }
