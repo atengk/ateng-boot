@@ -92,13 +92,13 @@ public class ContractService {
         map.put("signDate", req.getSignDate());
         map.put("items", req.getItems());
 
-        // 注入浮动公章（使用 FloatingPicture 设定尺寸与居右浮动偏移）
+        // 注入浮动公章（基于字符锚定，实现标准骑字盖章压印效果）
         try {
             ClassPathResource sealRes = new ClassPathResource(SEAL_IMAGE_PATH);
             if (sealRes.exists()) {
                 try (InputStream is = sealRes.getInputStream()) {
                     byte[] sealBytes = is.readAllBytes();
-                    FloatingPicture seal = FloatingPicture.ofBytes(sealBytes, 120, 120, 20, -30);
+                    FloatingPicture seal = FloatingPicture.ofBytes(sealBytes, 120, 120, -80, -48);
                     map.put("seal", seal);
                 }
             } else {

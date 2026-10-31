@@ -40,19 +40,28 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
     private final int defaultDx;
     private final int defaultDy;
     private final boolean defaultAboveText;
+    private final STRelFromH.Enum defaultRelativeFromH;
+    private final STRelFromV.Enum defaultRelativeFromV;
 
     public FloatingPictureRenderPolicy() {
-        this(0, 0, true);
+        this(0, 0, true, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
     }
 
     public FloatingPictureRenderPolicy(int defaultDx, int defaultDy) {
-        this(defaultDx, defaultDy, true);
+        this(defaultDx, defaultDy, true, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
     }
 
     public FloatingPictureRenderPolicy(int defaultDx, int defaultDy, boolean defaultAboveText) {
+        this(defaultDx, defaultDy, defaultAboveText, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
+    }
+
+    public FloatingPictureRenderPolicy(int defaultDx, int defaultDy, boolean defaultAboveText,
+                                       STRelFromH.Enum defaultRelativeFromH, STRelFromV.Enum defaultRelativeFromV) {
         this.defaultDx = defaultDx;
         this.defaultDy = defaultDy;
         this.defaultAboveText = defaultAboveText;
+        this.defaultRelativeFromH = defaultRelativeFromH != null ? defaultRelativeFromH : STRelFromH.CHARACTER;
+        this.defaultRelativeFromV = defaultRelativeFromV != null ? defaultRelativeFromV : STRelFromV.PARAGRAPH;
     }
 
     @Override
@@ -114,21 +123,30 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
             int dx = defaultDx;
             int dy = defaultDy;
             boolean aboveText = defaultAboveText;
+            STRelFromH.Enum relativeFromH = defaultRelativeFromH;
+            STRelFromV.Enum relativeFromV = defaultRelativeFromV;
 
             FloatingPicture fp = currentFloating.get();
             if (fp != null) {
                 dx = fp.getDx();
                 dy = fp.getDy();
                 aboveText = fp.isAboveText();
+                if (fp.getRelativeFromH() != null) {
+                    relativeFromH = fp.getRelativeFromH();
+                }
+                if (fp.getRelativeFromV() != null) {
+                    relativeFromV = fp.getRelativeFromV();
+                }
             }
 
-            convertToAnchor(run, dx, dy, aboveText);
+            convertToAnchor(run, dx, dy, aboveText, relativeFromH, relativeFromV);
         } finally {
             currentFloating.remove();
         }
     }
 
-    private void convertToAnchor(XWPFRun run, int dx, int dy, boolean aboveText) {
+    private void convertToAnchor(XWPFRun run, int dx, int dy, boolean aboveText,
+                                 STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
         if (run.getCTR().sizeOfDrawingArray() == 0) {
             return;
         }
@@ -164,12 +182,12 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
 
         // ② positionH 水平相对定位
         CTPosH posH = anchor.addNewPositionH();
-        posH.setRelativeFrom(STRelFromH.COLUMN);
+        posH.setRelativeFrom(relativeFromH);
         posH.setPosOffset(Units.toEMU(dx));
 
         // ③ positionV 垂直相对定位
         CTPosV posV = anchor.addNewPositionV();
-        posV.setRelativeFrom(STRelFromV.PARAGRAPH);
+        posV.setRelativeFrom(relativeFromV);
         posV.setPosOffset(Units.toEMU(dy));
 
         // ④ extent 尺寸定义
