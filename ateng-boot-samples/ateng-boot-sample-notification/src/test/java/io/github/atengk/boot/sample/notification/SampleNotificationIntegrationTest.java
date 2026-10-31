@@ -79,6 +79,9 @@ class SampleNotificationIntegrationTest {
         if (alertStormSuppressor != null) {
             alertStormSuppressor.reset();
         }
+        if (channelRegistry != null) {
+            channelRegistry.unregister("sample-failover-primary");
+        }
         while (true) {
             try {
                 RecordedRequest req = mockServer.takeRequest(10, TimeUnit.MILLISECONDS);
@@ -504,7 +507,7 @@ class SampleNotificationIntegrationTest {
     }
 
     @Test
-    @DisplayName("端到端验证卡片消息横向排版与浅蓝色主题：校验 CardButtonOrientation 与 WATHET")
+    @DisplayName("端到端验证卡片消息横向多按钮排版与浅蓝色主题：校验 CardButtonOrientation 与 WATHET")
     void testSendCardMessageWithHorizontalOrientationEndpoint() throws Exception {
         enqueueSuccessResponse();
 
@@ -515,8 +518,18 @@ class SampleNotificationIntegrationTest {
                   "content": "员工申请年假 2 天",
                   "headerColor": "WATHET",
                   "btnOrientation": "HORIZONTAL",
-                  "buttonTitle": "立即处理",
-                  "buttonUrl": "https://oa.example.com/approve"
+                  "buttons": [
+                    {
+                      "title": "同意",
+                      "url": "https://oa.example.com/approve",
+                      "type": "PRIMARY"
+                    },
+                    {
+                      "title": "拒绝",
+                      "url": "https://oa.example.com/reject",
+                      "type": "DANGER"
+                    }
+                  ]
                 }
                 """;
 
@@ -533,7 +546,11 @@ class SampleNotificationIntegrationTest {
         String body = recorded.getBody().readUtf8();
         assertThat(body)
                 .contains("actionCard")
-                .contains("请假审批通知");
+                .contains("请假审批通知")
+                .contains("\"btnOrientation\":\"1\"")
+                .contains("\"btns\":")
+                .contains("同意")
+                .contains("拒绝");
     }
 
     @Test
@@ -547,34 +564,38 @@ class SampleNotificationIntegrationTest {
                 .build();
         channelRegistry.register(failoverPrimary);
 
-        // 主渠道返回 HTTP 500
-        mockServer.enqueue(new MockResponse().setResponseCode(500).setBody("Primary Server Error"));
-        // 备用渠道正常返回 200 OK
-        enqueueSuccessResponse();
+        try {
+            // 主渠道返回 HTTP 500
+            mockServer.enqueue(new MockResponse().setResponseCode(500).setBody("Primary Server Error"));
+            // 备用渠道正常返回 200 OK
+            enqueueSuccessResponse();
 
-        String payload = """
-                {
-                  "channel": "sample-failover-primary",
-                  "content": "验证主备顺延故障转移端到端流程"
-                }
-                """;
+            String payload = """
+                    {
+                      "channel": "sample-failover-primary",
+                      "content": "验证主备顺延故障转移端到端流程"
+                    }
+                    """;
 
-        mockMvc.perform(post("/api/v1/notification/text")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(payload))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.success").value(true))
-                .andExpect(jsonPath("$.data.channel").value("feishu-ops"))
-                .andExpect(jsonPath("$.data.platform").value("FEISHU"));
+            mockMvc.perform(post("/api/v1/notification/text")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(payload))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.success").value(true))
+                    .andExpect(jsonPath("$.data.channel").value("feishu-ops"))
+                    .andExpect(jsonPath("$.data.platform").value("FEISHU"));
 
-        // 验证主渠道与备用渠道依次收到请求
-        RecordedRequest req1 = mockServer.takeRequest(3, TimeUnit.SECONDS);
-        assertNotNull(req1);
-        assertEquals("/webhook/primary-failover", req1.getPath());
+            // 验证主渠道与备用渠道依次收到请求
+            RecordedRequest req1 = mockServer.takeRequest(3, TimeUnit.SECONDS);
+            assertNotNull(req1);
+            assertEquals("/webhook/primary-failover", req1.getPath());
 
-        RecordedRequest req2 = mockServer.takeRequest(3, TimeUnit.SECONDS);
-        assertNotNull(req2);
-        assertEquals("/webhook/feishu", req2.getPath());
+            RecordedRequest req2 = mockServer.takeRequest(3, TimeUnit.SECONDS);
+            assertNotNull(req2);
+            assertEquals("/webhook/feishu", req2.getPath());
+        } finally {
+            channelRegistry.unregister("sample-failover-primary");
+        }
     }
 }

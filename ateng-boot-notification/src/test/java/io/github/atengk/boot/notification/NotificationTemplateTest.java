@@ -29,7 +29,9 @@ import io.github.atengk.boot.notification.provider.NotificationProvider;
 import io.github.atengk.boot.notification.provider.WeComNotificationProvider;
 import io.github.atengk.boot.notification.renderer.SimpleNotificationTemplateRenderer;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -587,7 +589,54 @@ class NotificationTemplateTest extends BaseNotificationTest {
     }
 
     @Test
-    @DisplayName("验证所有备用渠道全部耗尽失败时抛出最终业务异常")
+    @DisplayName("验证主渠道遭遇网络超时或连接中断 (ResourceAccessException) 时自动平滑故障转移至备用渠道并成功发信")
+    void testFailoverOnNetworkTimeout() throws InterruptedException {
+        NotificationChannel backup = NotificationChannel.builder()
+                .name("backup-timeout")
+                .platform(Platform.WECOM)
+                .webhook(getWebhookUrl("backup/timeout"))
+                .build();
+        NotificationChannel primary = NotificationChannel.builder()
+                .name("primary-timeout")
+                .platform(Platform.DINGTALK)
+                .webhook(getWebhookUrl("primary/timeout"))
+                .backupChannels(List.of("backup-timeout"))
+                .build();
+        registry.register(backup);
+        registry.register(primary);
+
+        // 主渠道模拟底层网络断开/重置，抛出 ResourceAccessException
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST));
+        // 备用渠道正常返回 200 OK
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        NotificationSendResult result = template.send("primary-timeout", TextMessage.of("超时故障转移测试"));
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+        assertEquals("backup-timeout", result.getChannel());
+        assertEquals(Platform.WECOM, result.getPlatform());
+
+        RecordedRequest req1 = takeRequest();
+        assertNotNull(req1);
+        assertThat(req1.getPath()).contains("primary/timeout");
+
+        RecordedRequest req2 = takeRequest();
+        assertNotNull(req2);
+        assertThat(req2.getPath()).contains("backup/timeout");
+
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSendFailedEvent failed
+                        && failed.getChannel().getName().equals("primary-timeout"))
+                .hasSize(1);
+        assertThat(publishedEvents)
+                .filteredOn(event -> event instanceof NotificationSentEvent sent
+                        && sent.getChannel().getName().equals("backup-timeout"))
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("验证所有备用渠道全部耗尽失败时抛出最终业务异常并聚合完整渠道调用链")
     void testFailoverAllBackupsExhausted() throws InterruptedException {
         NotificationChannel backup = NotificationChannel.builder()
                 .name("backup-exhausted")
@@ -607,7 +656,14 @@ class NotificationTemplateTest extends BaseNotificationTest {
         enqueueResponse(503, "Backup 503");
 
         assertThatThrownBy(() -> template.send("primary-exhausted", TextMessage.of("全部熔断")))
-                .isInstanceOf(NotificationSendException.class);
+                .isInstanceOf(NotificationSendException.class)
+                .satisfies(ex -> {
+                    NotificationSendException sendEx = (NotificationSendException) ex;
+                    assertEquals("backup-exhausted", sendEx.getChannelName());
+                    assertEquals(Platform.WECOM.name(), sendEx.getPlatform());
+                    assertThat(sendEx.getMessage()).contains("primary-exhausted -> backup-exhausted");
+                    assertThat(sendEx.getMessage()).contains("通知多渠道故障转移耗尽");
+                });
 
         // 确认主备均已尝试
         RecordedRequest r1 = takeRequest();

@@ -48,6 +48,11 @@ public class NotificationChannelProperties {
     private Integer permitsPerMinute;
 
     /**
+     * 当前渠道专属每秒突发频控配额阈值（条/秒，可选，未设置时飞书等特定平台采用全局默认突发配置）
+     */
+    private Integer burstPermitsPerSecond;
+
+    /**
      * 备用通知渠道名称列表（当主渠道遭遇网络超时、HTTP 429 频控或 HTTP 5xx 故障等瞬态外部异常时，按序尝试备用渠道重试）
      */
     private List<String> backupChannels = new ArrayList<>();
@@ -61,6 +66,7 @@ public class NotificationChannelProperties {
                 ", connectTimeout=" + connectTimeout +
                 ", readTimeout=" + readTimeout +
                 ", permitsPerMinute=" + permitsPerMinute +
+                ", burstPermitsPerSecond=" + burstPermitsPerSecond +
                 ", backupChannels=" + backupChannels +
                 '}';
     }

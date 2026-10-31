@@ -200,6 +200,35 @@ class NotificationMessageTest {
     }
 
     @Test
+    @DisplayName("验证 ImageMessage 支持从 InputStream 流构造并自动计算 MD5 和 Base64")
+    void testImageMessageFromInputStream() throws IOException {
+        byte[] content = "sample-stream-image-binary-data".getBytes(StandardCharsets.UTF_8);
+
+        // 1. 验证 fromInputStream
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(content)) {
+            ImageMessage msg = ImageMessage.fromInputStream(in);
+            assertNotNull(msg.getBase64());
+            assertNotNull(msg.getMd5());
+            assertEquals(32, msg.getMd5().length());
+            assertDoesNotThrow(msg::validate);
+        }
+
+        // 2. 验证 fromStream 别名
+        try (java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(content)) {
+            ImageMessage msg = ImageMessage.fromStream(in);
+            assertNotNull(msg.getBase64());
+            assertNotNull(msg.getMd5());
+        }
+
+        // 3. 验证空流与 null 异常分支
+        assertThrows(NotificationException.class, () -> ImageMessage.fromInputStream(null));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromStream(null));
+        try (java.io.ByteArrayInputStream emptyIn = new java.io.ByteArrayInputStream(new byte[0])) {
+            assertThrows(NotificationException.class, () -> ImageMessage.fromInputStream(emptyIn));
+        }
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生特化逃生舱支持字符串与 Map 报文")
     void testRawMessage() {
         RawMessage jsonRaw = RawMessage.of("{\"msgtype\":\"text\",\"text\":{\"content\":\"raw\"}}");

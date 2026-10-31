@@ -97,17 +97,22 @@ class NotificationChannelTest {
                 .platform(Platform.DINGTALK)
                 .webhook("https://oapi.dingtalk.com/send")
                 .backupChannels(List.of("b1", "b2"))
+                .burstPermitsPerSecond(8)
                 .build();
         assertThat(channelWithBackups.getBackupChannels()).containsExactly("b1", "b2");
+        assertThat(channelWithBackups.getBurstPermitsPerSecond()).isEqualTo(8);
 
-        // 3. fromProperties 包含 backupChannels
+        // 3. fromProperties 包含 backupChannels 与 burstPermitsPerSecond
         NotificationChannelProperties props = new NotificationChannelProperties();
         props.setPlatform(Platform.FEISHU);
         props.setWebhook("https://open.feishu.cn/hook");
         props.setBackupChannels(List.of("feishu-backup"));
+        props.setBurstPermitsPerSecond(12);
 
         NotificationChannel fromProps = NotificationChannel.fromProperties("feishu-main", props);
         assertThat(fromProps.getBackupChannels()).containsExactly("feishu-backup");
+        assertThat(fromProps.getBurstPermitsPerSecond()).isEqualTo(12);
         assertThat(fromProps.toString()).contains("backupChannels=[feishu-backup]");
+        assertThat(fromProps.toString()).contains("burstPermitsPerSecond=12");
     }
 }

@@ -79,6 +79,9 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         if (channel == null || !properties.isEnabled()) {
             return 0;
         }
+        if (channel.getBurstPermitsPerSecond() != null && channel.getBurstPermitsPerSecond() > 0) {
+            return channel.getBurstPermitsPerSecond();
+        }
         Platform platform = channel.getPlatform();
         if (platform == Platform.FEISHU) {
             return properties.getDefaultFeishuBurstPermits();

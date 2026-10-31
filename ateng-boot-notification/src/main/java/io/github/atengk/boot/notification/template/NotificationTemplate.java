@@ -151,8 +151,12 @@ public class NotificationTemplate implements NotificationOperations, Application
         }
 
         Throwable lastException = null;
+        NotificationChannel lastAttemptedChannel = primaryChannel;
+        List<String> attemptedChannelNames = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
             NotificationChannel channel = candidates.get(i);
+            lastAttemptedChannel = channel;
+            attemptedChannelNames.add(channel.getName());
             boolean isFailover = (i > 0);
             if (isFailover) {
                 log.warn("通知发信触发主备故障转移 (Failover): 主渠道 [{}] 发生瞬态异常，正在切换至备用渠道 [{}] (平台={}) 进行重试...",
@@ -190,11 +194,23 @@ public class NotificationTemplate implements NotificationOperations, Application
             }
         }
 
+        if (attemptedChannelNames.size() > 1) {
+            String channelChain = String.join(" -> ", attemptedChannelNames);
+            String maskedUrl = NotificationDesensitizeUtil.maskWebhook(lastAttemptedChannel.getWebhook());
+            String errorMessage = String.format("通知多渠道故障转移耗尽 [已尝试渠道: %s, 最终渠道: %s (target=%s)]: %s",
+                    channelChain, lastAttemptedChannel.getName(), maskedUrl,
+                    (lastException != null ? lastException.getMessage() : "unknown"));
+            throw new NotificationSendException(lastAttemptedChannel.getName(), lastAttemptedChannel.getPlatform().name(), null,
+                    NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                    errorMessage,
+                    lastException);
+        }
+
         if (lastException instanceof NotificationException notificationException) {
             throw notificationException;
         }
-        String maskedUrl = NotificationDesensitizeUtil.maskWebhook(primaryChannel.getWebhook());
-        throw new NotificationSendException(primaryChannel.getName(), primaryChannel.getPlatform().name(), null,
+        String maskedUrl = NotificationDesensitizeUtil.maskWebhook(lastAttemptedChannel.getWebhook());
+        throw new NotificationSendException(lastAttemptedChannel.getName(), lastAttemptedChannel.getPlatform().name(), null,
                 NotificationResultCode.NOTIFICATION_SEND_ERROR,
                 "协同平台推送异常 [target=" + maskedUrl + "]: " + (lastException != null ? lastException.getMessage() : "unknown"),
                 lastException);
@@ -385,7 +401,7 @@ public class NotificationTemplate implements NotificationOperations, Application
 
     /**
      * 判定是否属于可进行主备故障转移的瞬态外部异常
-     * 涵盖底层网络超时 (ResourceAccessException)、HTTP 429 频控封控及 HTTP 5xx 服务端故障
+     * 涵盖底层网络超时 (ResourceAccessException/SocketTimeoutException)、连接重置与拒绝 (SocketException/ConnectException)、HTTP 429 频控封控及 HTTP 5xx 服务端故障
      *
      * @param ex 异常实例
      * @return true 若属于瞬态外部异常；false 若属于入参格式、权限配置等确定性业务异常
@@ -394,7 +410,13 @@ public class NotificationTemplate implements NotificationOperations, Application
         if (ex == null) {
             return false;
         }
-        if (ex instanceof ResourceAccessException) {
+        if (ex instanceof ResourceAccessException
+                || ex instanceof java.net.SocketException
+                || ex instanceof java.net.SocketTimeoutException
+                || ex instanceof java.net.ConnectException
+                || ex instanceof java.net.UnknownHostException
+                || ex instanceof java.io.EOFException
+                || ex instanceof java.util.concurrent.TimeoutException) {
             return true;
         }
         if (ex instanceof RestClientResponseException restEx) {

@@ -68,14 +68,25 @@ public class NotificationChannel implements Serializable {
      */
     private final List<String> backupChannels;
 
+    /**
+     * 当前渠道专属每秒突发频控配额阈值（可选，条/秒，未设置时遵循平台基线规则）
+     */
+    private final Integer burstPermitsPerSecond;
+
     public NotificationChannel(String name, Platform platform, String webhook, String secret,
                                Duration connectTimeout, Duration readTimeout, Integer permitsPerMinute) {
-        this(name, platform, webhook, secret, connectTimeout, readTimeout, permitsPerMinute, Collections.emptyList());
+        this(name, platform, webhook, secret, connectTimeout, readTimeout, permitsPerMinute, Collections.emptyList(), null);
     }
 
     public NotificationChannel(String name, Platform platform, String webhook, String secret,
                                Duration connectTimeout, Duration readTimeout, Integer permitsPerMinute,
                                List<String> backupChannels) {
+        this(name, platform, webhook, secret, connectTimeout, readTimeout, permitsPerMinute, backupChannels, null);
+    }
+
+    public NotificationChannel(String name, Platform platform, String webhook, String secret,
+                               Duration connectTimeout, Duration readTimeout, Integer permitsPerMinute,
+                               List<String> backupChannels, Integer burstPermitsPerSecond) {
         BusinessAssert.isTrue(name != null && !name.isBlank(), "渠道名称不能为空");
         BusinessAssert.notNull(platform, "协同平台类型不能为空");
         BusinessAssert.isTrue(webhook != null && !webhook.isBlank(), "Webhook 推送地址不能为空");
@@ -90,6 +101,7 @@ public class NotificationChannel implements Serializable {
         this.backupChannels = (backupChannels != null && !backupChannels.isEmpty())
                 ? List.copyOf(backupChannels)
                 : Collections.emptyList();
+        this.burstPermitsPerSecond = burstPermitsPerSecond;
     }
 
     public List<String> getBackupChannels() {
@@ -114,6 +126,7 @@ public class NotificationChannel implements Serializable {
                 .readTimeout(properties.getReadTimeout())
                 .permitsPerMinute(properties.getPermitsPerMinute())
                 .backupChannels(properties.getBackupChannels())
+                .burstPermitsPerSecond(properties.getBurstPermitsPerSecond())
                 .build();
     }
 
@@ -128,6 +141,7 @@ public class NotificationChannel implements Serializable {
                 ", readTimeout=" + readTimeout +
                 ", permitsPerMinute=" + permitsPerMinute +
                 ", backupChannels=" + backupChannels +
+                ", burstPermitsPerSecond=" + burstPermitsPerSecond +
                 '}';
     }
 }

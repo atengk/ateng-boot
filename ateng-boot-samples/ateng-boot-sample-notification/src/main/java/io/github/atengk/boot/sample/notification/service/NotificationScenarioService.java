@@ -77,7 +77,17 @@ public class NotificationScenarioService {
             message.btnOrientation(request.getBtnOrientation());
         }
 
-        if (StringUtils.hasText(request.getButtonTitle()) && StringUtils.hasText(request.getButtonUrl())) {
+        // 优先装配多按钮决策列表，其次兼容单按钮字段
+        if (request.getButtons() != null && !request.getButtons().isEmpty()) {
+            for (CardMessageRequest.CardButtonItemRequest btn : request.getButtons()) {
+                if (btn != null && StringUtils.hasText(btn.getTitle()) && StringUtils.hasText(btn.getUrl())) {
+                    CardButton cardButton = (btn.getType() != null)
+                            ? CardButton.of(btn.getTitle(), btn.getUrl(), btn.getType())
+                            : CardButton.of(btn.getTitle(), btn.getUrl());
+                    message.button(cardButton);
+                }
+            }
+        } else if (StringUtils.hasText(request.getButtonTitle()) && StringUtils.hasText(request.getButtonUrl())) {
             message.button(CardButton.of(request.getButtonTitle(), request.getButtonUrl()));
         }
 

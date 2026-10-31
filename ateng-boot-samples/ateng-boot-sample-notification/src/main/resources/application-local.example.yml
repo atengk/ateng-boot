@@ -1,0 +1,21 @@
+# ===================================================================
+# 本地真实联调配置模板（使用前复制并重命名为 application-local.yml）
+# 注意：application-local.yml 已被 .gitignore 忽略，严禁向 Git 仓库提交任何真实 Webhook 地址与私有 Secret！
+# ===================================================================
+ateng:
+  boot:
+    notification:
+      channels:
+        ops-alert:
+          webhook: YOUR_WECOM_WEBHOOK_URL
+        dingtalk-dev:
+          webhook: YOUR_DINGTALK_WEBHOOK_URL
+          secret: YOUR_DINGTALK_SECRET
+          backup-channels:
+            - feishu-ops
+        feishu-ops:
+          webhook: YOUR_FEISHU_WEBHOOK_URL
+          secret: YOUR_FEISHU_SECRET
+        generic-monitor:
+          webhook: YOUR_GENERIC_WEBHOOK_URL
+          secret: YOUR_GENERIC_SECRET
