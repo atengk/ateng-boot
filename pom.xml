@@ -62,6 +62,7 @@
         <module>ateng-boot-encrypt</module>
         <module>ateng-boot-statemachine</module>
         <module>ateng-boot-job-local</module>
+        <module>ateng-boot-job-xxl</module>
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-admin</module>
@@ -94,6 +95,7 @@
         <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
         <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
+        <xxl-job.version>3.5.0</xxl-job.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -360,6 +362,16 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-job-local</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-job-xxl</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.xuxueli</groupId>
+                <artifactId>xxl-job-core</artifactId>
+                <version>${xxl-job.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
