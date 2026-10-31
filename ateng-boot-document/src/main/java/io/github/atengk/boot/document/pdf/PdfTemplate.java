@@ -1,10 +1,12 @@
 package io.github.atengk.boot.document.pdf;
 
+import io.github.atengk.boot.document.enums.CrossPageSealEdge;
 import io.github.atengk.boot.document.enums.PageNumberPosition;
 import io.github.atengk.boot.document.enums.WatermarkLayer;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.font.DocumentFontResolver;
+import io.github.atengk.boot.document.pdf.model.CrossPageSealOptions;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageImageConsumer;
@@ -54,7 +56,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.WritableResource;
 
 import javax.imageio.ImageIO;
+import java.awt.AlphaComposite;
 import java.awt.Color;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -426,6 +430,264 @@ public class PdfTemplate {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         addImageStamp(source, baos, image, pageIndex, x, y, width, height);
         return baos.toByteArray();
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章 (Cross-Page Seal)
+     * <p>
+     * 将电子印章沿垂直或水平方向按目标页数进行无损等分切片（保留完整 Alpha 透明通道），
+     * 并按物理边缘（默认右侧边缘居中贴合）自动压印于各页边框，支持跳过封面、跳过封底或指定自定义页面集合。
+     * </p>
+     *
+     * @param source  PDF 输入源（支持 File, Path, InputStream, byte[], Resource, String 路径）
+     * @param target  目标输出（支持 File, Path, OutputStream, WritableResource）
+     * @param options 骑缝章配置选项
+     * @throws PdfOperationException 操作失败或文档已加密时抛出
+     */
+    public void stampCrossPageSeal(Object source, Object target, CrossPageSealOptions options) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        Objects.requireNonNull(target, "目标输出 target 不能为空");
+        Objects.requireNonNull(options, "骑缝章选项 options 不能为空");
+        Objects.requireNonNull(options.getSealImage(), "印章图片输入源 sealImage 不能为空");
+
+        byte[] sealBytes = resolveImageBytes(options.getSealImage());
+        BufferedImage originalSealImage;
+        try {
+            originalSealImage = ImageIO.read(new ByteArrayInputStream(sealBytes));
+        } catch (IOException e) {
+            throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "读取印章图片失败: " + e.getMessage(), e);
+        }
+        if (originalSealImage == null) {
+            throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "无法解析印章图片内容，请确认图片格式为合法图片 (如 PNG/JPG)");
+        }
+
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再盖骑缝章");
+            }
+
+            int totalPages = doc.getNumberOfPages();
+            if (totalPages <= 0) {
+                throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "PDF 文档页数为空");
+            }
+
+            List<Integer> targetPageIndices = resolveTargetPages(options, totalPages);
+            int n = targetPageIndices.size();
+            if (n <= 0) {
+                throw new IllegalArgumentException("计算后的有效盖章页数为空，无法施加跨页骑缝章");
+            }
+
+            int originalWidth = originalSealImage.getWidth();
+            int originalHeight = originalSealImage.getHeight();
+            CrossPageSealEdge edge = options.getEdge() != null ? options.getEdge() : CrossPageSealEdge.RIGHT;
+
+            for (int k = 0; k < n; k++) {
+                int pageIndex = targetPageIndices.get(k);
+                PDPage page = doc.getPage(pageIndex);
+                PDRectangle box = page.getCropBox() != null ? page.getCropBox() : page.getMediaBox();
+                float pageWidth = box.getWidth();
+                float pageHeight = box.getHeight();
+                float originX = box.getLowerLeftX();
+                float originY = box.getLowerLeftY();
+
+                BufferedImage slice;
+                float slicePdfWidth;
+                float slicePdfHeight;
+                float x;
+                float y;
+
+                if (edge == CrossPageSealEdge.TOP || edge == CrossPageSealEdge.BOTTOM) {
+                    int startY = (int) Math.round((double) k * originalHeight / n);
+                    int endY = (int) Math.round((double) (k + 1) * originalHeight / n);
+                    int stripHeight = Math.max(1, endY - startY);
+
+                    slice = new BufferedImage(originalWidth, stripHeight, BufferedImage.TYPE_INT_ARGB);
+                    Graphics2D g2d = slice.createGraphics();
+                    try {
+                        g2d.setComposite(AlphaComposite.Src);
+                        g2d.drawImage(originalSealImage, 0, 0, originalWidth, stripHeight, 0, startY, originalWidth, endY, null);
+                    } finally {
+                        g2d.dispose();
+                    }
+
+                    slicePdfWidth = options.getWidth();
+                    slicePdfHeight = options.getHeight() * ((float) stripHeight / originalHeight);
+
+                    x = originX + (pageWidth - slicePdfWidth) / 2.0f + options.getOffset();
+                    if (edge == CrossPageSealEdge.BOTTOM) {
+                        y = originY + options.getMargin();
+                    } else {
+                        y = originY + pageHeight - slicePdfHeight - options.getMargin();
+                    }
+                } else {
+                    int startX = (int) Math.round((double) k * originalWidth / n);
+                    int endX = (int) Math.round((double) (k + 1) * originalWidth / n);
+                    int stripWidth = Math.max(1, endX - startX);
+
+                    slice = new BufferedImage(stripWidth, originalHeight, BufferedImage.TYPE_INT_ARGB);
+                    Graphics2D g2d = slice.createGraphics();
+                    try {
+                        g2d.setComposite(AlphaComposite.Src);
+                        g2d.drawImage(originalSealImage, 0, 0, stripWidth, originalHeight, startX, 0, endX, originalHeight, null);
+                    } finally {
+                        g2d.dispose();
+                    }
+
+                    slicePdfWidth = options.getWidth() * ((float) stripWidth / originalWidth);
+                    slicePdfHeight = options.getHeight();
+
+                    y = originY + (pageHeight - slicePdfHeight) / 2.0f + options.getOffset();
+                    if (edge == CrossPageSealEdge.LEFT) {
+                        x = originX + options.getMargin();
+                    } else {
+                        x = originX + pageWidth - slicePdfWidth - options.getMargin();
+                    }
+                }
+
+                byte[] sliceBytes;
+                try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                    ImageIO.write(slice, "PNG", baos);
+                    sliceBytes = baos.toByteArray();
+                } finally {
+                    slice.flush();
+                }
+
+                PDImageXObject pdImage = PDImageXObject.createFromByteArray(doc, sliceBytes, "seal-slice-" + k);
+
+                PDPageContentStream.AppendMode mode = options.getLayer() == WatermarkLayer.UNDERLAY
+                        ? PDPageContentStream.AppendMode.PREPEND
+                        : PDPageContentStream.AppendMode.APPEND;
+
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page, mode, true, true)) {
+                    if (options.getOpacity() < 1.0f) {
+                        PDExtendedGraphicsState gs = new PDExtendedGraphicsState();
+                        float alpha = Math.max(0.0f, Math.min(1.0f, options.getOpacity()));
+                        gs.setNonStrokingAlphaConstant(alpha);
+                        cs.setGraphicsStateParameters(gs);
+                    }
+                    cs.drawImage(pdImage, x, y, slicePdfWidth, slicePdfHeight);
+                }
+            }
+
+            OutputStream os = resolveOutputStream(target);
+            try {
+                doc.save(os);
+                os.flush();
+            } finally {
+                if (!(target instanceof OutputStream)) {
+                    os.close();
+                }
+            }
+        } catch (PdfOperationException | IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "施加 PDF 跨页骑缝章失败: " + e.getMessage(), e);
+        } finally {
+            originalSealImage.flush();
+        }
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章（指定印章源与选项）
+     *
+     * @param source    PDF 输入源
+     * @param target    目标输出
+     * @param sealImage 印章图片输入源
+     * @param options   骑缝章配置选项
+     */
+    public void stampCrossPageSeal(Object source, Object target, Object sealImage, CrossPageSealOptions options) {
+        CrossPageSealOptions opt = options != null ? options : new CrossPageSealOptions();
+        if (sealImage != null) {
+            opt.setSealImage(sealImage);
+        }
+        stampCrossPageSeal(source, target, opt);
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章（使用默认选项：120pt * 120pt，右侧居中贴边）
+     *
+     * @param source    PDF 输入源
+     * @param target    目标输出
+     * @param sealImage 印章图片输入源
+     */
+    public void stampCrossPageSeal(Object source, Object target, Object sealImage) {
+        stampCrossPageSeal(source, target, CrossPageSealOptions.of(sealImage));
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章并返回二进制字节数组
+     *
+     * @param source  PDF 输入源
+     * @param options 骑缝章配置选项
+     * @return 施加骑缝章后的 PDF 二进制数据
+     */
+    public byte[] stampCrossPageSealToBytes(Object source, CrossPageSealOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        stampCrossPageSeal(source, baos, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章并返回二进制字节数组（指定印章源与选项）
+     *
+     * @param source    PDF 输入源
+     * @param sealImage 印章图片输入源
+     * @param options   骑缝章配置选项
+     * @return 施加骑缝章后的 PDF 二进制数据
+     */
+    public byte[] stampCrossPageSealToBytes(Object source, Object sealImage, CrossPageSealOptions options) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        stampCrossPageSeal(source, baos, sealImage, options);
+        return baos.toByteArray();
+    }
+
+    /**
+     * 为多页 PDF 文档施加跨页骑缝章并返回二进制字节数组（使用默认选项：120pt * 120pt，右侧居中贴边）
+     *
+     * @param source    PDF 输入源
+     * @param sealImage 印章图片输入源
+     * @return 施加骑缝章后的 PDF 二进制数据
+     */
+    public byte[] stampCrossPageSealToBytes(Object source, Object sealImage) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        stampCrossPageSeal(source, baos, sealImage);
+        return baos.toByteArray();
+    }
+
+    private List<Integer> resolveTargetPages(CrossPageSealOptions options, int totalPages) {
+        if (options.getTargetPages() != null && !options.getTargetPages().isEmpty()) {
+            List<Integer> resolved = new ArrayList<>();
+            for (Integer p : options.getTargetPages()) {
+                if (p == null) {
+                    continue;
+                }
+                int idx = p < 0 ? totalPages + p : p;
+                if (idx < 0 || idx >= totalPages) {
+                    throw new IllegalArgumentException(String.format("指定的骑缝章页面索引超出范围 (总页数: %d, 请求页码: %d)", totalPages, p));
+                }
+                resolved.add(idx);
+            }
+            if (resolved.isEmpty()) {
+                throw new IllegalArgumentException("自定义目标页面列表有效页数为空");
+            }
+            return resolved.stream().distinct().sorted().toList();
+        }
+
+        int start = options.isSkipCover() ? 1 : 0;
+        int end = options.isSkipBackCover() ? totalPages - 2 : totalPages - 1;
+
+        if (start > end) {
+            throw new IllegalArgumentException(String.format(
+                    "计算后的有效盖章页数为空，请检查总页数与跳过首页/末页配置 (总页数: %d, skipCover: %s, skipBackCover: %s)",
+                    totalPages, options.isSkipCover(), options.isSkipBackCover()));
+        }
+
+        List<Integer> pages = new ArrayList<>(end - start + 1);
+        for (int i = start; i <= end; i++) {
+            pages.add(i);
+        }
+        return pages;
     }
 
     // ==========================================
@@ -2240,6 +2502,14 @@ public class PdfTemplate {
     private byte[] resolveImageBytes(Object image) {
         if (image instanceof byte[] b) {
             return b;
+        }
+        if (image instanceof BufferedImage bi) {
+            try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                ImageIO.write(bi, "PNG", baos);
+                return baos.toByteArray();
+            } catch (IOException e) {
+                throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "转换 BufferedImage 为字节数组失败: " + e.getMessage(), e);
+            }
         }
         if (image instanceof File f) {
             try {
