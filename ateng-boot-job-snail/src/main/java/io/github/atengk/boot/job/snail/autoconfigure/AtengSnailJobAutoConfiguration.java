@@ -4,6 +4,10 @@ import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
+import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
+import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
+import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,6 +105,56 @@ public class AtengSnailJobAutoConfiguration {
             SnailLocalWatchdog watchdog,
             SnailJobProperties properties) {
         return new SnailJobContextAspect(watchdog, properties);
+    }
+
+    /**
+     * SnailJob SpEL 业务幂等键生成器
+     *
+     * @return SpelIdempotentIdGenerator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SpelIdempotentIdGenerator spelIdempotentIdGenerator() {
+        return new SpelIdempotentIdGenerator();
+    }
+
+    /**
+     * SnailJob 参数哈希摘要幂等键生成器
+     *
+     * @return ArgsHashIdempotentIdGenerator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator() {
+        return new ArgsHashIdempotentIdGenerator();
+    }
+
+    /**
+     * SnailJob 分布式重试四维现场快照与跨节点保真还原切面
+     *
+     * @return SnailRetryContextAspect 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
+    public SnailRetryContextAspect snailRetryContextAspect() {
+        return new SnailRetryContextAspect();
+    }
+
+    /**
+     * SnailJob 编程式分布式重试执行与对称手动上报门面
+     *
+     * @param reportProvider SnailJob 上报门面对象提供者
+     * @param properties SnailJob 配置属性
+     * @return SnailRetryTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SnailRetryTemplate snailRetryTemplate(
+            ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
+            SnailJobProperties properties) {
+        return new SnailRetryTemplate(reportProvider, properties);
     }
 
     /**
