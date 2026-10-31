@@ -13,6 +13,7 @@ import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -156,6 +157,13 @@ public class AtengMqttAutoConfiguration {
     @ConditionalOnMissingBean
     public MqttContainerManager mqttContainerManager(MqttListenerEndpointRegistry mqttListenerEndpointRegistry) {
         return new MqttContainerManager(mqttListenerEndpointRegistry);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttDeadLetterReplayTemplate mqttDeadLetterReplayTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
+                                                                    MqttTemplate mqttTemplate) {
+        return new MqttDeadLetterReplayTemplate(namedMqttClientRegistry, mqttTemplate);
     }
 
     @Bean

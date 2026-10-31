@@ -6,6 +6,7 @@ import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.SilentAckException;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
+import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
@@ -356,6 +357,14 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         if (actualTopic.endsWith("/DLT") || actualTopic.startsWith("sys/dlt")) {
             log.error("[MQTT] Poison pill occurred on dead-letter topic [{}] itself for endpoint [{}], dropping message to break infinite DLT self-loop: {}",
                     actualTopic, endpoint.getId(), cause.getMessage());
+            return;
+        }
+
+        // 防二次雪崩熔断防线：若报文已达到重放上限，丢弃并告警，彻底熔断业务主题与死信主题之间的死循环
+        int replayCount = MqttDeadLetterRecord.extractReplayCount(message);
+        if (replayCount >= 1) {
+            log.error("[MQTT] Poison pill message on topic [{}] has already been replayed [{}] time(s), dropping message to break secondary avalanche infinite loop: {}",
+                    actualTopic, replayCount, cause.getMessage());
             return;
         }
 

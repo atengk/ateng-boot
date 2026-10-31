@@ -10,6 +10,7 @@ import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -43,6 +44,7 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
             assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
             assertThat(context).hasSingleBean(MqttTemplate.class);
+            assertThat(context).hasSingleBean(MqttDeadLetterReplayTemplate.class);
             assertThat(context).hasSingleBean(MqttListenerEndpointRegistry.class);
             assertThat(context).hasSingleBean(MqttContainerManager.class);
             assertThat(context).hasSingleBean(MqttListenerAnnotationBeanPostProcessor.class);
@@ -60,6 +62,7 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttSendFailureHandler.class);
                     assertThat(context).doesNotHaveBean(MqttRequestReplyManager.class);
                     assertThat(context).doesNotHaveBean(MqttTemplate.class);
+                    assertThat(context).doesNotHaveBean(MqttDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(MqttListenerEndpointRegistry.class);
                     assertThat(context).doesNotHaveBean(MqttContainerManager.class);
                     assertThat(context).doesNotHaveBean(MqttListenerAnnotationBeanPostProcessor.class);
