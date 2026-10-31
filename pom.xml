@@ -63,6 +63,7 @@
         <module>ateng-boot-statemachine</module>
         <module>ateng-boot-job-local</module>
         <module>ateng-boot-job-xxl</module>
+        <module>ateng-boot-job-snail</module>
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-admin</module>
@@ -96,6 +97,7 @@
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
         <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
         <xxl-job.version>3.5.0</xxl-job.version>
+        <snail-job.version>2.0.2</snail-job.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -372,6 +374,31 @@
                 <groupId>com.xuxueli</groupId>
                 <artifactId>xxl-job-core</artifactId>
                 <version>${xxl-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-job-snail</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aizuda</groupId>
+                <artifactId>snail-job-client-starter</artifactId>
+                <version>${snail-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aizuda</groupId>
+                <artifactId>snail-job-client-job-core</artifactId>
+                <version>${snail-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aizuda</groupId>
+                <artifactId>snail-job-client-retry-core</artifactId>
+                <version>${snail-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aizuda</groupId>
+                <artifactId>snail-job-common</artifactId>
+                <version>${snail-job.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.github.atengk</groupId>
