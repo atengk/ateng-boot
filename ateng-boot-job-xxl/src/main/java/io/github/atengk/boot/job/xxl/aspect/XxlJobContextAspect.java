@@ -47,6 +47,9 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * XXL-Job 调度任务上下文、链路追踪、形参注入与受管超时看门狗切面
@@ -151,6 +154,8 @@ public class XxlJobContextAspect {
             if (StringUtils.hasText(tenantId)) {
                 TenantContextHolder.setTenantId(tenantId);
             }
+        } else if (tenantMode == JobTenantMode.ITERATE) {
+            log.debug("XXL-Job 任务 [{}] 处于多租户遍历模式 (ITERATE)，租户在独立沙箱上下文中流式执行", resolveJobName(specificMethod, atengXxlJob));
         }
 
         // 5. 本地硬看门狗与超时时限解析
@@ -159,7 +164,7 @@ public class XxlJobContextAspect {
         String jobName = resolveJobName(specificMethod, atengXxlJob);
         Duration timeout = resolveTimeout(atengXxlJob, logId);
 
-        LocalWatchdog.WatchdogSession session = LocalWatchdog.WatchdogSession.NOOP;
+        AtomicReference<LocalWatchdog.WatchdogSession> sessionRef = new AtomicReference<>(LocalWatchdog.WatchdogSession.NOOP);
         long startNs = System.nanoTime();
 
         // 6. 执行参数解析、防卫校验与业务逻辑 (确保终态严格清理上下文)
@@ -191,10 +196,11 @@ public class XxlJobContextAspect {
 
             Object result;
             if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
-                result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs);
+                result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs, sessionRef);
             } else {
                 if (hasWatchdog) {
-                    session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
+                    LocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
+                    sessionRef.set(session);
                 }
                 result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
             }
@@ -211,6 +217,7 @@ public class XxlJobContextAspect {
             return result;
         } catch (Throwable t) {
             long durationNs = System.nanoTime() - startNs;
+            LocalWatchdog.WatchdogSession session = sessionRef.get();
             if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
                 log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
             }
@@ -224,6 +231,7 @@ public class XxlJobContextAspect {
             }
             throw t;
         } finally {
+            LocalWatchdog.WatchdogSession session = sessionRef.get();
             session.cancel();
             if (session.isTimedOut()) {
                 Thread.interrupted(); // 清理当前线程残留的中断状态，防止污染下一轮执行
@@ -251,16 +259,20 @@ public class XxlJobContextAspect {
         }
     }
 
-    private Object executeInManagedPool(ProceedingJoinPoint pjp, Duration timeout, JobExecutionMetadata metadata, Object[] resolvedArgs) throws Throwable {
+    private Object executeInManagedPool(ProceedingJoinPoint pjp, Duration timeout, JobExecutionMetadata metadata,
+                                        Object[] resolvedArgs, AtomicReference<LocalWatchdog.WatchdogSession> sessionRef) throws Throwable {
         XxlJobContext xxlJobContext = XxlJobContext.getXxlJobContext();
         CompletableFuture<Object> future = new CompletableFuture<>();
+        AtomicReference<Thread> workerThreadRef = new AtomicReference<>();
 
         taskExecutor.execute(() -> {
             Thread workerThread = Thread.currentThread();
+            workerThreadRef.set(workerThread);
             LocalWatchdog.WatchdogSession session = LocalWatchdog.WatchdogSession.NOOP;
             if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
                 session = watchdog.startWatch(workerThread, timeout, metadata);
             }
+            sessionRef.set(session);
             if (xxlJobContext != null) {
                 XxlJobContext.setXxlJobContext(xxlJobContext);
             }
@@ -280,8 +292,32 @@ public class XxlJobContextAspect {
             }
         });
 
+        Duration waitTimeout;
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            waitTimeout = timeout.plusSeconds(1);
+        } else if (properties != null && properties.getDefaultJobTimeout() != null) {
+            waitTimeout = properties.getDefaultJobTimeout();
+        } else {
+            waitTimeout = Duration.ofHours(1);
+        }
+
         try {
-            return future.get();
+            return future.get(waitTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            Thread worker = workerThreadRef.get();
+            if (worker != null) {
+                try {
+                    worker.interrupt();
+                } catch (Throwable ignored) {
+                }
+            }
+            LocalWatchdog.WatchdogSession session = sessionRef.get();
+            if (session != null) {
+                session.markTimedOut();
+            }
+            throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
+                    "受管线程池任务执行超时 (时限: " + waitTimeout + ")", te);
         } catch (ExecutionException ee) {
             throw ee.getCause() != null ? ee.getCause() : ee;
         }
@@ -471,25 +507,34 @@ public class XxlJobContextAspect {
     }
 
     /**
-     * 从解析后的实参列表中提取 tenantId (反射探测 getTenantId)
+     * 从参数对象列表中反射抽取指定 Getter 属性值（按名称顺序优先匹配）
      */
-    protected String extractTenantIdFromArgs(Object[] args) {
-        if (args == null || args.length == 0) {
+    protected String extractPropertyFromArgs(Object[] args, String... getterNames) {
+        if (args == null || args.length == 0 || getterNames == null || getterNames.length == 0) {
             return null;
         }
         for (Object arg : args) {
             if (arg != null && !(arg instanceof String) && !(arg instanceof ShardingContext)) {
-                try {
-                    Method getTenantIdMethod = arg.getClass().getMethod("getTenantId");
-                    Object res = getTenantIdMethod.invoke(arg);
-                    if (res != null) {
-                        return String.valueOf(res);
+                for (String getterName : getterNames) {
+                    try {
+                        Method m = arg.getClass().getMethod(getterName);
+                        Object res = m.invoke(arg);
+                        if (res != null) {
+                            return String.valueOf(res);
+                        }
+                    } catch (Exception ignored) {
                     }
-                } catch (Exception ignored) {
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * 从解析后的实参列表中提取 tenantId (反射探测 getTenantId)
+     */
+    protected String extractTenantIdFromArgs(Object[] args) {
+        return extractPropertyFromArgs(args, "getTenantId");
     }
 
     /**
@@ -566,21 +611,7 @@ public class XxlJobContextAspect {
                 }
             }
         }
-        if (args != null && args.length > 0) {
-            for (Object arg : args) {
-                if (arg != null && !(arg instanceof String) && !(arg instanceof ShardingContext)) {
-                    try {
-                        Method m = arg.getClass().getMethod("getTraceId");
-                        Object res = m.invoke(arg);
-                        if (res != null) {
-                            return String.valueOf(res);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-        return null;
+        return extractPropertyFromArgs(args, "getTraceId");
     }
 
     /**
@@ -615,29 +646,7 @@ public class XxlJobContextAspect {
                 }
             }
         }
-        if (args != null && args.length > 0) {
-            for (Object arg : args) {
-                if (arg != null && !(arg instanceof String) && !(arg instanceof ShardingContext)) {
-                    try {
-                        Method m = arg.getClass().getMethod("getUserId");
-                        Object res = m.invoke(arg);
-                        if (res != null) {
-                            return String.valueOf(res);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                    try {
-                        Method m = arg.getClass().getMethod("getUser");
-                        Object res = m.invoke(arg);
-                        if (res != null) {
-                            return String.valueOf(res);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-        return null;
+        return extractPropertyFromArgs(args, "getUserId", "getUser");
     }
 
     /**

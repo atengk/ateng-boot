@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.xxl.autoconfigure;
 
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
+import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
 import io.github.atengk.boot.job.xxl.actuator.XxlJobEndpoint;
 import io.github.atengk.boot.job.xxl.actuator.XxlJobHealthIndicator;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
@@ -10,9 +11,11 @@ import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
+import io.github.atengk.boot.job.xxl.template.TenantJobTemplate;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
 import io.github.atengk.boot.job.xxl.template.XxlMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.xxl.template.XxlShardingBatchTemplate;
+import io.github.atengk.boot.job.xxl.tenant.TenantListProvider;
 import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -43,7 +46,7 @@ import java.util.concurrent.Executor;
  * @author Ateng
  * @since 2026-10-31
  */
-@AutoConfiguration
+@AutoConfiguration(after = AtengAsyncAutoConfiguration.class)
 @ConditionalOnClass(XxlJobSpringExecutor.class)
 @ConditionalOnProperty(prefix = "ateng.boot.job.xxl", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(XxlJobProperties.class)
@@ -66,6 +69,13 @@ public class AtengXxlJobAutoConfiguration {
             return null;
         }
 
+        if (properties.isRequireAccessToken() && !StringUtils.hasText(properties.getAccessToken())) {
+            throw new IllegalArgumentException("XXL-Job 启用了强制安全令牌校验 (requireAccessToken=true)，但未配置有效 AccessToken ('ateng.boot.job.xxl.access-token')！");
+        }
+        if (!StringUtils.hasText(properties.getAccessToken())) {
+            log.warn("安全告警：XXL-Job 执行器未配置 AccessToken ('ateng.boot.job.xxl.access-token')，Netty 入站通信处于未鉴权状态，生产环境强烈建议配置！");
+        }
+
         log.info("开始装配 XXL-Job 执行器 [AppName: {}, AdminAddresses: {}, Port: {}]",
                 properties.getAppname(), properties.getAdminAddresses(), properties.getPort());
 
@@ -75,8 +85,6 @@ public class AtengXxlJobAutoConfiguration {
 
         if (StringUtils.hasText(properties.getAccessToken())) {
             executor.setAccessToken(properties.getAccessToken());
-        } else {
-            executor.setAccessToken("default_token");
         }
 
         if (StringUtils.hasText(properties.getAddress())) {
@@ -274,6 +282,20 @@ public class AtengXxlJobAutoConfiguration {
     public XxlShardingBatchTemplate xxlShardingBatchTemplate(
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
         return new XxlShardingBatchTemplate(taskExecutorProvider.getIfAvailable());
+    }
+
+    /**
+     * 注册多租户隔离遍历执行模板
+     *
+     * <p>为分布式调度任务提供安全、沙箱化的租户级批量执行能力（对应 JobTenantMode.ITERATE 模式）。</p>
+     *
+     * @param tenantListProviderProvider 租户列表提供者 Provider
+     * @return 多租户遍历执行模板
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public TenantJobTemplate tenantJobTemplate(ObjectProvider<TenantListProvider> tenantListProviderProvider) {
+        return new TenantJobTemplate(tenantListProviderProvider.getIfAvailable());
     }
 
 }

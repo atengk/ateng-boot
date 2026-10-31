@@ -33,6 +33,11 @@ public class XxlJobProperties {
     private String accessToken;
 
     /**
+     * 是否强制要求配置有效 AccessToken (默认 false；若为 true 且未配置令牌，应用启动时将快速失败拦截)
+     */
+    private boolean requireAccessToken = false;
+
+    /**
      * 执行器应用名称 (AppName)，用于调度中心执行器管理与分组路由
      */
     private String appname = "xxl-job-executor-ateng";
@@ -78,9 +83,9 @@ public class XxlJobProperties {
     private boolean contextAspectEnabled = true;
 
     /**
-     * 默认任务本地硬看门狗超时时限 (如未在注解或 Admin 显式指定时生效，默认 null 表示不设全局超时)
+     * 默认任务本地硬看门狗超时时限 (如未在注解或 Admin 显式指定时生效，默认 1 小时，防御无界悬挂)
      */
-    private Duration defaultJobTimeout;
+    private Duration defaultJobTimeout = Duration.ofHours(1);
 
     /**
      * 是否启用受管线程池执行模式 (为 true 时将调度方法提交至 Core 受管异步线程池执行)

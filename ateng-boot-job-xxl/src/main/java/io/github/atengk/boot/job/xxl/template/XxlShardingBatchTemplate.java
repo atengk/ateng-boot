@@ -20,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -151,13 +152,13 @@ public class XxlShardingBatchTemplate {
                 successCount += chunkSize;
             } catch (Throwable t) {
                 failCount += chunkSize;
-                log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
                 if (failFast) {
                     if (t instanceof RuntimeException re) {
                         throw re;
                     }
                     throw new IllegalStateException("分片流式批处理发生未受检异常", t);
                 }
+                log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
             }
 
             lastId = idExtractor.apply(chunk.get(chunkSize - 1));
@@ -361,30 +362,40 @@ public class XxlShardingBatchTemplate {
             List<T> immutableBatch = Collections.unmodifiableList(new ArrayList<>(chunk));
 
             try {
-                semaphore.acquire();
+                if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                    throw new IllegalStateException("并行批处理获取背压信号量超时 (时限: 5分钟)");
+                }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("并行批处理在等待背压信号量时被中断", ie);
             }
 
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                try {
-                    snapshot.run(() -> batchConsumer.accept(immutableBatch));
-                    successCount.addAndGet(chunkSize);
-                } catch (Throwable t) {
-                    failCount.addAndGet(chunkSize);
-                    firstError.compareAndSet(null, t);
-                    log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
-                    if (failFast) {
-                        if (t instanceof RuntimeException re) {
-                            throw re;
+            CompletableFuture<Void> future;
+            try {
+                future = CompletableFuture.runAsync(() -> {
+                    try {
+                        snapshot.run(() -> batchConsumer.accept(immutableBatch));
+                        successCount.addAndGet(chunkSize);
+                    } catch (Throwable t) {
+                        failCount.addAndGet(chunkSize);
+                        firstError.compareAndSet(null, t);
+                        if (!failFast) {
+                            log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                         }
-                        throw new IllegalStateException("并发切片消费异常", t);
+                        if (failFast) {
+                            if (t instanceof RuntimeException re) {
+                                throw re;
+                            }
+                            throw new IllegalStateException("并发切片消费异常", t);
+                        }
+                    } finally {
+                        semaphore.release();
                     }
-                } finally {
-                    semaphore.release();
-                }
-            }, executor);
+                }, executor);
+            } catch (Throwable t) {
+                semaphore.release();
+                throw t;
+            }
             futures.add(future);
 
             if (chunkSize < effectiveBatchSize) {
@@ -470,30 +481,40 @@ public class XxlShardingBatchTemplate {
                 List<T> immutableBatch = Collections.unmodifiableList(matchedChunk);
 
                 try {
-                    semaphore.acquire();
+                    if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                        throw new IllegalStateException("并行分片批处理获取背压信号量超时 (时限: 5分钟)");
+                    }
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException("并行批处理在等待背压信号量时被中断", ie);
+                    throw new IllegalStateException("并行分片批处理在等待背压信号量时被中断", ie);
                 }
 
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    try {
-                        snapshot.run(() -> batchConsumer.accept(immutableBatch));
-                        successCount.addAndGet(matchedSize);
-                    } catch (Throwable t) {
-                        failCount.addAndGet(matchedSize);
-                        firstError.compareAndSet(null, t);
-                        log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
-                        if (failFast) {
-                            if (t instanceof RuntimeException re) {
-                                throw re;
+                CompletableFuture<Void> future;
+                try {
+                    future = CompletableFuture.runAsync(() -> {
+                        try {
+                            snapshot.run(() -> batchConsumer.accept(immutableBatch));
+                            successCount.addAndGet(matchedSize);
+                        } catch (Throwable t) {
+                            failCount.addAndGet(matchedSize);
+                            firstError.compareAndSet(null, t);
+                            if (!failFast) {
+                                log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                             }
-                            throw new IllegalStateException("并发切片消费异常", t);
+                            if (failFast) {
+                                if (t instanceof RuntimeException re) {
+                                    throw re;
+                                }
+                                throw new IllegalStateException("并发切片消费异常", t);
+                            }
+                        } finally {
+                            semaphore.release();
                         }
-                    } finally {
-                        semaphore.release();
-                    }
-                }, executor);
+                    }, executor);
+                } catch (Throwable t) {
+                    semaphore.release();
+                    throw t;
+                }
                 futures.add(future);
             }
 

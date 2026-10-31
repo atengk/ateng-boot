@@ -1,5 +1,7 @@
 package io.github.atengk.boot.job.xxl.actuator;
 
+import com.xxl.job.core.handler.IJobHandler;
+import com.xxl.job.core.handler.impl.MethodJobHandler;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
@@ -9,6 +11,8 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector;
 import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
 import org.springframework.lang.Nullable;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -50,6 +54,52 @@ public class XxlJobEndpoint {
         Set<String> handlers = XxlJobTestHelper.getLoadedHandlers().keySet();
         result.put("jobCount", handlers.size());
         result.put("handlers", handlers);
+        return result;
+    }
+
+    /**
+     * 查询指定调度任务处理器的详细元数据与配置
+     *
+     * @param handler 任务 Handler 名称
+     * @return 任务元数据详情
+     */
+    @ReadOperation
+    public Map<String, Object> jobDetail(@Selector String handler) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("handler", handler);
+
+        IJobHandler jobHandler = XxlJobTestHelper.getHandler(handler);
+        if (jobHandler == null) {
+            result.put("exists", false);
+            result.put("message", "任务处理器 [" + handler + "] 未找到或尚未装配");
+            return result;
+        }
+
+        result.put("exists", true);
+        result.put("handlerType", jobHandler.getClass().getSimpleName());
+
+        if (jobHandler instanceof MethodJobHandler methodJobHandler) {
+            try {
+                Field targetField = MethodJobHandler.class.getDeclaredField("target");
+                targetField.setAccessible(true);
+                Object target = targetField.get(methodJobHandler);
+
+                Field methodField = MethodJobHandler.class.getDeclaredField("method");
+                methodField.setAccessible(true);
+                Method method = (Method) methodField.get(methodJobHandler);
+
+                if (target != null) {
+                    result.put("targetClass", target.getClass().getName());
+                }
+                if (method != null) {
+                    result.put("methodName", method.getName());
+                    result.put("returnType", method.getReturnType().getSimpleName());
+                    result.put("parameterCount", method.getParameterCount());
+                }
+            } catch (Throwable ignored) {
+                // 忽略反射私有属性异常
+            }
+        }
         return result;
     }
 

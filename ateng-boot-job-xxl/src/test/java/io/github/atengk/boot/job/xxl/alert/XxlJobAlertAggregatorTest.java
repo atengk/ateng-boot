@@ -75,6 +75,26 @@ class XxlJobAlertAggregatorTest {
         XxlJobAlertEvent summaryEvent = publishedEvents.get(1);
         assertEquals(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, summaryEvent.getAlertType());
         assertEquals(3, summaryEvent.getFailureCount());
+
+        // 第四、五次失败：处于下一阶段静默抑制窗口内，必须被平滑静默抑制，绝不穿透发送！
+        aggregator.onJobFailure("orderSyncJob", "{id: 4}", "trace-004", 100, new RuntimeException("Err 4"));
+        assertEquals(2, publishedEvents.size(), "第四次失败应当继续被平滑静默抑制");
+        aggregator.onJobFailure("orderSyncJob", "{id: 5}", "trace-005", 100, new RuntimeException("Err 5"));
+        assertEquals(2, publishedEvents.size(), "第五次失败应当继续被平滑静默抑制");
+
+        // 第六次失败：累计再次达到步进阈值 (自上次摘要后又满 3 次，累计 6 次)，触发第二次聚合摘要卡片
+        aggregator.onJobFailure("orderSyncJob", "{id: 6}", "trace-006", 130, new RuntimeException("Err 6"));
+        assertEquals(3, publishedEvents.size(), "再次达到步进阈值时应当触发第二次聚合摘要卡片");
+        XxlJobAlertEvent secondSummaryEvent = publishedEvents.get(2);
+        assertEquals(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, secondSummaryEvent.getAlertType());
+        assertEquals(6, secondSummaryEvent.getFailureCount());
+
+        // 随后成功执行一次：触发自愈恢复，累计失败总数应为 6
+        aggregator.onJobSuccess("orderSyncJob", "{id: 7}", "trace-007", 50);
+        assertEquals(4, publishedEvents.size());
+        XxlJobAlertEvent recoveryEvent = publishedEvents.get(3);
+        assertEquals(XxlJobAlertEvent.AlertType.RECOVERY, recoveryEvent.getAlertType());
+        assertEquals(6, recoveryEvent.getFailureCount(), "自愈恢复应当携带期间累计发生的 6 次失败总数");
     }
 
     @Test

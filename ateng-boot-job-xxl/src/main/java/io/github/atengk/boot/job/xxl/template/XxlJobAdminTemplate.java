@@ -27,7 +27,8 @@ import java.util.List;
  *     <li><b>对称操作完备性</b>：提供 {@code addJob} / {@code removeJob}、{@code startJob} / {@code stopJob}、{@code updateJob} 与 {@code triggerJob} 全量对称方法；</li>
  *     <li><b>高可用集群容灾与故障转移</b>：支持配置多个调度中心地址，调用失败或网络超时自动故障转移 (Failover Retry) 探测下一个节点；</li>
  *     <li><b>强类型与便捷重载</b>：同时支持 DTO 原生参数与常用轻量入参 (如 {@code jobId}、{@code executorParam}) 便捷重载；</li>
- *     <li><b>因果异常解耦</b>：底层网络与调度中心业务报错统一转换为标准 {@link BusinessException}，杜绝异常泄露与调用方硬编码解析。</li>
+ *     <li><b>因果异常解耦</b>：底层网络与调度中心业务报错统一转换为标准 {@link BusinessException}，杜绝异常泄露与调用方硬编码解析；</li>
+ *     <li><b>能力边界说明</b>：基于 XXL-Job 3.x 官方 {@link AdminJobBiz} OpenAPI 契约，官方目前仅提供了任务的增删改、启停与手动触发，未开放通过 ID 查询单任务详情的查询 SPI；本地单任务元数据与内省由 {@code XxlJobEndpoint} / {@code XxlJobTestHelper} 负责。</li>
  * </ul></p>
  *
  * @author Ateng

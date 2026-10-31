@@ -127,12 +127,15 @@ public class AtengEmbedServer {
         try {
             boolean success = startLatch.await(5, TimeUnit.SECONDS);
             if (!success) {
+                stop();
                 throw new IllegalStateException("XXL-Job Netty 服务端启动超时");
             }
             if (startError.get() != null) {
+                stop();
                 throw new IllegalStateException("XXL-Job Netty 服务端启动失败", startError.get());
             }
         } catch (InterruptedException e) {
+            stop();
             Thread.currentThread().interrupt();
             throw new IllegalStateException("XXL-Job Netty 服务端启动等待被中断", e);
         }

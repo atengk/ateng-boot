@@ -355,6 +355,22 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
             }
         }
 
+        // 彻底停止并清理工作线程仓库中的所有常驻 JobThread 线程，防止线程泄漏挂起
+        ConcurrentMap<Integer, JobThread> repository = getJobThreadRepository();
+        if (repository != null && !repository.isEmpty()) {
+            for (Map.Entry<Integer, JobThread> entry : repository.entrySet()) {
+                JobThread jobThread = entry.getValue();
+                if (jobThread != null && jobThread.isAlive()) {
+                    try {
+                        jobThread.toStop("executor destroyed");
+                        jobThread.interrupt();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            repository.clear();
+        }
+
         log.info(">>>>> [阶段三/资源销毁] Netty 服务端及相关后台线程已彻底安全销毁。");
     }
 

@@ -5,6 +5,7 @@ import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
+import io.github.atengk.boot.job.xxl.template.TenantJobTemplate;
 import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -49,6 +50,7 @@ class AtengXxlJobAutoConfigurationTest {
             assertThat(context).hasSingleBean(LocalWatchdog.class);
             assertThat(context).hasSingleBean(XxlJobLogbackAppenderRegistrar.class);
             assertThat(context).hasSingleBean(XxlJobContextAspect.class);
+            assertThat(context).hasSingleBean(TenantJobTemplate.class);
         });
     }
 
@@ -100,6 +102,38 @@ class AtengXxlJobAutoConfigurationTest {
                     assertThat(executor.getAppname()).isEqualTo("order-service-executor");
                     assertThat(executor.getAccessToken()).isEqualTo("test-token-123");
                     assertThat(executor.getPort()).isEqualTo(9998);
+                });
+    }
+
+    @Test
+    @DisplayName("测试配置 admin-addresses 但未配置 access-token 时：Token 保持为 null，不私自硬编码默认值")
+    void testExecutorWithoutAccessTokenLeavesTokenNull() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.job.xxl.admin-addresses=http://127.0.0.1:8080/xxl-job-admin"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(XxlJobSpringExecutor.class);
+                    XxlJobSpringExecutor executor = context.getBean(XxlJobSpringExecutor.class);
+                    assertThat(executor.getAccessToken()).isNull();
+                    assertThat(context).hasSingleBean(TenantJobTemplate.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试开启 require-access-token=true 但未配置令牌时：容器启动快速失败拦截")
+    void testRequireAccessTokenFailFast() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.job.xxl.admin-addresses=http://127.0.0.1:8080/xxl-job-admin",
+                        "ateng.boot.job.xxl.require-access-token=true"
+                )
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                            .hasRootCauseMessage("XXL-Job 启用了强制安全令牌校验 (requireAccessToken=true)，但未配置有效 AccessToken ('ateng.boot.job.xxl.access-token')！");
                 });
     }
 

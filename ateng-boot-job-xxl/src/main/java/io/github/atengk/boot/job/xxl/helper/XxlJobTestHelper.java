@@ -47,7 +47,26 @@ public class XxlJobTestHelper implements ApplicationContextAware {
     @Override
     public void setApplicationContext(ApplicationContext context) throws BeansException {
         applicationContext = context;
+        FALLBACK_HANDLER_REPOSITORY.clear();
         scanAndRegisterSpringHandlers(context);
+    }
+
+    /**
+     * 清理所有缓存的 Handler 与上下文引用 (常用于单测结束重置环境)
+     */
+    public static synchronized void clear() {
+        FALLBACK_HANDLER_REPOSITORY.clear();
+        applicationContext = null;
+    }
+
+    /**
+     * 根据名称获取已加载的 JobHandler 实例
+     *
+     * @param jobHandler 任务 Handler 名称
+     * @return 对应的 Handler 实例，未找到返回 null
+     */
+    public static IJobHandler getHandler(String jobHandler) {
+        return loadHandler(jobHandler);
     }
 
     /**

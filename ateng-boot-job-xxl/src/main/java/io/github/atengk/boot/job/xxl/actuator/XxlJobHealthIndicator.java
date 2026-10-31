@@ -57,16 +57,25 @@ public class XxlJobHealthIndicator implements HealthIndicator {
                     .build();
         }
 
-        int port = properties.getPort();
+        int runtimePort = executor.getPort();
+        int port = runtimePort > 0 ? runtimePort : properties.getPort();
         boolean portListening = isPortListening("127.0.0.1", port);
+
+        String runtimeIp = (executor instanceof io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor atengExec)
+                ? atengExec.getIp()
+                : properties.getIp();
+        String ip = StringUtils.hasText(runtimeIp) ? runtimeIp : "auto-detected";
+
+        String runtimeAddress = executor.getAddress();
+        String address = StringUtils.hasText(runtimeAddress) ? runtimeAddress : (StringUtils.hasText(properties.getAddress()) ? properties.getAddress() : "auto-registered");
 
         Health.Builder builder = portListening ? Health.up() : Health.down();
         return builder
                 .withDetail("appname", properties.getAppname())
                 .withDetail("port", port)
                 .withDetail("portListening", portListening)
-                .withDetail("ip", StringUtils.hasText(properties.getIp()) ? properties.getIp() : "auto-detected")
-                .withDetail("address", StringUtils.hasText(properties.getAddress()) ? properties.getAddress() : "auto-registered")
+                .withDetail("ip", ip)
+                .withDetail("address", address)
                 .withDetail("adminAddresses", properties.getAdminAddresses())
                 .withDetail("logPath", properties.getLogPath())
                 .withDetail("managedPoolEnabled", properties.isManagedPoolEnabled())

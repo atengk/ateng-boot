@@ -14,6 +14,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -123,13 +124,13 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                 successCount.addAndGet(size);
             } catch (Throwable t) {
                 failCount.addAndGet(size);
-                log.error("流式游标批处理异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
                 if (isFailFast()) {
                     if (t instanceof RuntimeException re) {
                         throw re;
                     }
                     throw new IllegalStateException("流式游标消费异常", t);
                 }
+                log.error("流式游标批处理异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
             }
         };
 
@@ -209,30 +210,40 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
             List<T> immutableBatch = Collections.unmodifiableList(new ArrayList<>(chunk));
 
             try {
-                semaphore.acquire();
+                if (!semaphore.tryAcquire(5, TimeUnit.MINUTES)) {
+                    throw new IllegalStateException("并行流式调度获取背压信号量超时 (时限: 5分钟)");
+                }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("并行流式调度在获取背压信号量时被中断", ie);
             }
 
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                try {
-                    snapshot.run(() -> batchConsumer.accept(immutableBatch));
-                    successCount.addAndGet(chunkSize);
-                } catch (Throwable t) {
-                    failCount.addAndGet(chunkSize);
-                    firstError.compareAndSet(null, t);
-                    log.error("并行流式游标消费异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
-                    if (isFailFast()) {
-                        if (t instanceof RuntimeException re) {
-                            throw re;
+            CompletableFuture<Void> future;
+            try {
+                future = CompletableFuture.runAsync(() -> {
+                    try {
+                        snapshot.run(() -> batchConsumer.accept(immutableBatch));
+                        successCount.addAndGet(chunkSize);
+                    } catch (Throwable t) {
+                        failCount.addAndGet(chunkSize);
+                        firstError.compareAndSet(null, t);
+                        if (!isFailFast()) {
+                            log.error("并行流式游标消费异常 [批次: {}]: {}", batchIndex, t.getMessage(), t);
                         }
-                        throw new IllegalStateException("并发切片消费异常", t);
+                        if (isFailFast()) {
+                            if (t instanceof RuntimeException re) {
+                                throw re;
+                            }
+                            throw new IllegalStateException("并发切片消费异常", t);
+                        }
+                    } finally {
+                        semaphore.release();
                     }
-                } finally {
-                    semaphore.release();
-                }
-            }, executor);
+                }, executor);
+            } catch (Throwable t) {
+                semaphore.release();
+                throw t;
+            }
             futures.add(future);
         };
 

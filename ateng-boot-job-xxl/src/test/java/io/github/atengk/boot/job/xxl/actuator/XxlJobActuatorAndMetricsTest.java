@@ -8,6 +8,7 @@ import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
@@ -122,6 +123,35 @@ class XxlJobActuatorAndMetricsTest {
         assertEquals("Simulated offline error", failResult.throwable().getMessage());
     }
 
+    @AfterEach
+    void tearDown() {
+        XxlJobTestHelper.clear();
+    }
+
+    @Test
+    @DisplayName("测试健康探针：优先探测运行时 Executor 的实际自愈或动态端口")
+    void testHealthIndicatorRuntimePortDetection() {
+        XxlJobProperties properties = new XxlJobProperties();
+        properties.setEnabled(true);
+        properties.setAdminAddresses("http://127.0.0.1:8080/xxl-job-admin");
+        properties.setPort(9999);
+
+        // 创建 Mock/真实执行器实例，模拟自愈顺延到 10088 端口
+        io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor executor = new io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor();
+        executor.setPort(10088);
+        executor.setIp("192.168.1.100");
+
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("executor", executor);
+
+        XxlJobHealthIndicator indicator = new XxlJobHealthIndicator(properties, beanFactory.getBeanProvider(com.xxl.job.core.executor.impl.XxlJobSpringExecutor.class));
+        Health health = indicator.health();
+
+        // 探测未监听端口时为 DOWN，但 detail 中的端口必须是执行器的 10088，而不是 properties 的 9999
+        assertEquals(10088, health.getDetails().get("port"));
+        assertEquals("192.168.1.100", health.getDetails().get("ip"));
+    }
+
     @Test
     @DisplayName("测试 XxlJobEndpoint Actuator 运维端点交互")
     void testXxlJobEndpointOperations() {
@@ -138,13 +168,24 @@ class XxlJobActuatorAndMetricsTest {
 
         XxlJobEndpoint endpoint = new XxlJobEndpoint(properties);
 
-        // GET /actuator/xxljobs
+        // 1. GET /actuator/xxljobs (列表概览)
         Map<String, Object> listResult = endpoint.listJobs();
         assertEquals("test-actuator-app", listResult.get("appname"));
         assertEquals(9999, listResult.get("port"));
         assertTrue((Integer) listResult.get("jobCount") >= 2);
 
-        // POST /actuator/xxljobs/{handler}
+        // 2. GET /actuator/xxljobs/{handler} (单 Handler 详情查询)
+        Map<String, Object> detailResult = endpoint.jobDetail("simpleTestJob");
+        assertEquals("simpleTestJob", detailResult.get("handler"));
+        assertEquals(true, detailResult.get("exists"));
+        assertEquals("MethodJobHandler", detailResult.get("handlerType"));
+        assertEquals("simpleTestJob", detailResult.get("methodName"));
+
+        Map<String, Object> notFoundDetail = endpoint.jobDetail("nonExistentJob");
+        assertEquals("nonExistentJob", notFoundDetail.get("handler"));
+        assertEquals(false, notFoundDetail.get("exists"));
+
+        // 3. POST /actuator/xxljobs/{handler} (手动触发执行)
         Map<String, Object> triggerResponse = endpoint.triggerJob("simpleTestJob", "param123", 0, 1, null);
         assertEquals("simpleTestJob", triggerResponse.get("handler"));
         assertEquals(true, triggerResponse.get("success"));

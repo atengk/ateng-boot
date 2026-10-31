@@ -89,27 +89,24 @@ public class XxlJobAlertAggregator {
         JobAlertState state = stateMap.computeIfAbsent(key, k -> new JobAlertState());
 
         long now = System.currentTimeMillis();
-        boolean isFirstFailure = state.recordFailure(now, param, traceId, durationMs, throwable);
+        boolean isFirstFailure = state.recordFailure(now);
 
         if (isFirstFailure) {
             // 阶段一：首发失败立即推送
             dispatchAlert(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, key, param, traceId, durationMs, 1, Duration.ZERO, throwable);
         } else {
             // 阶段二：检查是否达到周期摘要或数量阈值
-            int count = state.failureCount.get();
-            long elapsedSinceLastAlert = now - state.lastAlertTimestamp;
             Duration suppressDuration = properties.getAlertSuppressDuration() != null
                     ? properties.getAlertSuppressDuration()
                     : Duration.ofMinutes(5);
             int threshold = properties.getAlertSuppressThreshold() > 0 ? properties.getAlertSuppressThreshold() : 10;
 
-            if (count >= threshold || elapsedSinceLastAlert >= suppressDuration.toMillis()) {
+            if (state.shouldTriggerSummary(now, threshold, suppressDuration)) {
+                int totalCount = state.getTotalFailures();
                 Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
-                state.lastAlertTimestamp = now;
-                // 重置阶段计次（保持总计），以便下一个周期重新计算
-                dispatchAlert(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, key, param, traceId, durationMs, count, totalFailureDuration, throwable);
+                dispatchAlert(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, key, param, traceId, durationMs, totalCount, totalFailureDuration, throwable);
             } else {
-                log.debug("XXL-Job 任务 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", key, count);
+                log.debug("XXL-Job 任务 [{}] 持续失败中，已平滑抑制第 {} 次重复告警", key, state.getTotalFailures());
             }
         }
     }
@@ -144,7 +141,7 @@ public class XxlJobAlertAggregator {
 
         // 阶段三：故障自愈恢复触发
         long now = System.currentTimeMillis();
-        int totalFailures = state.failureCount.get();
+        int totalFailures = state.getTotalFailures();
         Duration totalFailureDuration = Duration.ofMillis(now - state.firstFailureTimestamp);
 
         // 重置状态
@@ -264,21 +261,54 @@ public class XxlJobAlertAggregator {
      */
     private static class JobAlertState {
         private final AtomicBoolean inFailureState = new AtomicBoolean(false);
-        private final AtomicInteger failureCount = new AtomicInteger(0);
+        private final AtomicInteger totalFailureCount = new AtomicInteger(0);
+        private final AtomicInteger lastAlertCount = new AtomicInteger(0);
         private volatile long firstFailureTimestamp;
         private volatile long lastAlertTimestamp;
 
         /**
          * 记录一次失败
          *
+         * @param timestamp 发生时间戳
          * @return 是否为首发失败
          */
-        public boolean recordFailure(long timestamp, String param, String traceId, long durationMs, Throwable throwable) {
-            int current = failureCount.incrementAndGet();
+        public boolean recordFailure(long timestamp) {
+            int current = totalFailureCount.incrementAndGet();
             if (current == 1 || inFailureState.compareAndSet(false, true)) {
                 this.firstFailureTimestamp = timestamp;
                 this.lastAlertTimestamp = timestamp;
+                this.lastAlertCount.set(0);
                 this.inFailureState.set(true);
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * 获取故障期间累计失败总次数
+         */
+        public int getTotalFailures() {
+            return totalFailureCount.get();
+        }
+
+        /**
+         * 判定并更新阶段摘要触发决策
+         *
+         * @param now              当前时间戳
+         * @param threshold        连续失败步长阈值
+         * @param suppressDuration 抑制周期时限
+         * @return 是否触发摘要
+         */
+        public synchronized boolean shouldTriggerSummary(long now, int threshold, Duration suppressDuration) {
+            int current = totalFailureCount.get();
+            int last = lastAlertCount.get();
+            int diff = current - last;
+            long elapsed = now - lastAlertTimestamp;
+            long suppressMs = suppressDuration != null ? suppressDuration.toMillis() : Duration.ofMinutes(5).toMillis();
+
+            if (diff >= threshold || elapsed >= suppressMs) {
+                this.lastAlertCount.set(current);
+                this.lastAlertTimestamp = now;
                 return true;
             }
             return false;
@@ -286,7 +316,8 @@ public class XxlJobAlertAggregator {
 
         public void reset() {
             this.inFailureState.set(false);
-            this.failureCount.set(0);
+            this.totalFailureCount.set(0);
+            this.lastAlertCount.set(0);
             this.firstFailureTimestamp = 0;
             this.lastAlertTimestamp = 0;
         }

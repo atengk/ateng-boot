@@ -85,7 +85,7 @@ public class XxlJobFirewallInboundHandler extends ChannelInboundHandlerAdapter {
         // 3. AccessToken 快速失败防卫
         if (expectedAccessToken != null) {
             String token = req.headers().get(ACCESS_TOKEN_HEADER);
-            if (!expectedAccessToken.equals(token)) {
+            if (!StringUtils.hasText(token) || !expectedAccessToken.equals(token.trim())) {
                 log.warn("XXL-Job AccessToken 校验未通过，拦截非法入站请求: clientIp={}, uri={}", clientIp, uri);
                 sendResponse(ctx, HttpResponseStatus.FORBIDDEN,
                         "{\"code\":403,\"msg\":\"Forbidden: Invalid AccessToken\"}");
