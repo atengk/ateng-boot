@@ -375,8 +375,11 @@ private MqttContainerManager containerManager;
 // 暂停指定端点消费（拒绝接收新报文）
 containerManager.pause("deviceTelemetryScenarioService#onTelemetry");
 
-// 查询各端点状态
-Map<String, Boolean> statuses = containerManager.getEndpointStatuses();
+// 查询各端点运行状态快照列表
+List<MqttEndpointStatus> statuses = containerManager.getEndpointStatuses();
+
+// 查询指定端点是否暂停
+boolean paused = containerManager.isPaused("deviceTelemetryScenarioService#onTelemetry");
 
 // 恢复消费
 containerManager.resume("deviceTelemetryScenarioService#onTelemetry");

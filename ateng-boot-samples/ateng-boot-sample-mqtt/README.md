@@ -17,13 +17,13 @@
 
 | 序号 | 业务场景服务 | 覆盖核心机制 / API | 核心方法 / 特性 | 业务行为说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| **01** | `DeviceTelemetryScenarioService` | `MqttTemplate.publish`<br>`@MqttListener` + `@MqttVariable` + `@MqttHeader` | `sendTelemetry`<br>`sendClusterMetric` | 上报设备遥测数据，动态提取 `{deviceId}` 路径变量；透传并还原 TraceId、TenantId、UserId 上下文；字典注入全部 Header；`$share` 集群共享订阅多节点均衡轮询 |
+| **01** | `DeviceTelemetryScenarioService` | `MqttTemplate.publish`<br>`@MqttListener` + `@MqttVariable` + `@MqttHeader` | `publishTelemetry`<br>`publishClusterMetric` | 上报设备遥测数据，动态提取 `{deviceId}` 路径变量；透传并还原 TraceId、TenantId、UserId 上下文；字典注入全部 Header；`$share` 集群共享订阅多节点均衡轮询 |
 | **02** | `DeviceControlRpcScenarioService` | `MqttTemplate.sendAndReceive`<br>`MqttTemplate.sendAndReceiveAsync` | `sendControlSync`<br>`sendControlAsync` | 基于 MQTT 5.0 `ResponseTopic` 与 `CorrelationData` 实现微秒级响应路由；支持同步阻塞等待与 CompletableFuture 异步非阻塞响应 |
-| **03** | `IndustrialHexScenarioService` | `HexPayload`<br>`HexMqttMessageConverter` | `sendHexFrame` | 电力 DL/T 645、车联网 GB/T 32960 等十六进制定长报文双向无损互转，强类型解析与大写格式化 |
-| **04** | `BatchPublishScenarioService` | `MqttTemplate.publishBatch`<br>`MqttTemplate.clearRetained` | `publishBatch`<br>`clearRetainedStatus` | 批量原子下发多设备指令；对称发布与清空设备影子保留消息（Retained Message） |
+| **03** | `IndustrialHexScenarioService` | `HexPayload`<br>`HexMqttMessageConverter` | `publishHex` | 电力 DL/T 645、车联网 GB/T 32960 等十六进制定长报文双向无损互转，强类型解析与大写格式化 |
+| **04** | `BatchPublishScenarioService` | `MqttTemplate.publishBatch`<br>`MqttTemplate.clearRetained` | `publishBatch`<br>`publishRetainedStatus`<br>`clearRetainedStatus` | 批量原子下发多设备指令；对称发布与清空设备影子保留消息（Retained Message） |
 | **05** | `DeadLetterReplayScenarioService` | `MqttDeadLetterReplayTemplate`<br>`FatalExceptionClassifier` | `triggerPoisonPill`<br>`peekDeadLetters`<br>`replayDeadLetters`<br>`purgeDeadLetters` | 毒丸消息（Poison Pill）反序列化或业务不可恢复异常自动转入 DLT 死信主题；支持死信窥探、批量受控重放至目标恢复主题及全量清理 |
 | **06** | `MqttContainerGovernanceScenarioService` | `MqttContainerManager` | `pauseEndpoint`<br>`resumeEndpoint`<br>`getEndpointStatuses` | 动态启停指定 `@MqttListener` 消费端点，防止削峰填谷期间下游过载，实时感知各端点监听与运行状态 |
-| **07** | `TransactionalTelemetryScenarioService` | `MqttTemplate.sendAfterCommit`<br>`@Transactional` | `sendWithCommit`<br>`sendWithRollback` | 本地数据库事务与发信严格对齐：事务成功提交后触发投递；事务回滚自动丢弃撤销，绝对防御下游脏读 |
+| **07** | `TransactionalTelemetryScenarioService` | `MqttTemplate.sendAfterCommit`<br>`TransactionTemplate` | `recordTelemetryWithCommit`<br>`recordTelemetryWithRollback` | 本地数据库事务与发信严格对齐：事务成功提交后触发投递；事务回滚自动丢弃撤销，绝对防御下游脏读 |
 
 ---
 
@@ -38,19 +38,19 @@ public class DeviceTelemetryScenarioService {
     private final MqttTemplate mqttTemplate;
 
     // 发布设备遥测数据（自动透传 MDC TraceId 与租户/用户上下文）
-    public void sendTelemetry(String deviceId, double temp, double humidity) {
+    public void publishTelemetry(String deviceId, double temp, double humidity) {
         DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
-        mqttTemplate.publish("iot/devices/" + deviceId + "/telemetry", telemetry);
+        mqttTemplate.publish("iot/devices/" + deviceId + "/telemetry", telemetry, 1);
     }
 
     // 声明式监听：REST 风格路径变量提取 + 四维上下文还原 + Headers 字典全量注入
     @MqttListener(topics = "iot/devices/{deviceId}/telemetry", qos = 1)
-    public void onTelemetry(DeviceTelemetry telemetry,
-                            @MqttTopic String topic,
-                            @MqttVariable("deviceId") String deviceId,
-                            @MqttHeader("x-trace-id") String traceId,
-                            @MqttHeader Map<String, Object> allHeaders) {
-        // 业务处理：自动还原上下文，安全隔离
+    public void onDeviceTelemetry(DeviceTelemetry telemetry,
+                                  @MqttTopic String topic,
+                                  @MqttVariable("deviceId") String deviceId,
+                                  @MqttHeader(value = "x-trace-id", required = false) String traceId,
+                                  @MqttHeader Map<String, Object> allHeaders) {
+        // 业务处理：自动还原受管 4D 上下文（TraceId、TenantId、UserId），线程安全隔离
     }
 
     // 集群共享订阅：多节点负载均衡轮询消费
@@ -70,10 +70,10 @@ public class DeviceControlRpcScenarioService {
     private final MqttTemplate mqttTemplate;
 
     // 1. 同步阻塞 RPC：向设备下发指令并阻塞等待回执
-    public CommandResponse sendControlSync(String deviceId, String action, Duration timeout) {
-        DeviceCommand command = new DeviceCommand("cmd-" + UUID.randomUUID(), action, 0);
+    public CommandResponse sendControlSync(String action, int speed, Duration timeout) {
+        DeviceCommand command = new DeviceCommand("cmd-sync-" + System.currentTimeMillis(), action, Map.of("speed", speed));
         return mqttTemplate.sendAndReceive(
-                "iot/devices/" + deviceId + "/control",
+                "iot/rpc/device/control",
                 command,
                 CommandResponse.class,
                 timeout
@@ -81,10 +81,10 @@ public class DeviceControlRpcScenarioService {
     }
 
     // 2. 异步非阻塞 RPC：返回 CompletableFuture
-    public CompletableFuture<CommandResponse> sendControlAsync(String deviceId, String action, Duration timeout) {
-        DeviceCommand command = new DeviceCommand("cmd-" + UUID.randomUUID(), action, 0);
+    public CompletableFuture<CommandResponse> sendControlAsync(String action, int speed, Duration timeout) {
+        DeviceCommand command = new DeviceCommand("cmd-async-" + System.currentTimeMillis(), action, Map.of("speed", speed));
         return mqttTemplate.sendAndReceiveAsync(
-                "iot/devices/" + deviceId + "/control",
+                "iot/rpc/device/control",
                 command,
                 CommandResponse.class,
                 timeout
@@ -101,15 +101,18 @@ public class IndustrialHexScenarioService {
 
     private final MqttTemplate mqttTemplate;
 
-    public void sendHexFrame(String deviceId, String hexString) {
-        mqttTemplate.publish("iot/devices/" + deviceId + "/hex", HexPayload.of(hexString));
+    // 发布国标十六进制报文（自动规范化转译）
+    public void publishHex(String deviceId, String hexString) {
+        HexPayload payload = HexPayload.of(hexString);
+        mqttTemplate.publish("iot/devices/" + deviceId + "/hex", payload, 1);
     }
 
+    // 工业国标十六进制报文监听器（HexPayload 强类型绑定）
     @MqttListener(topics = "iot/devices/{deviceId}/hex", qos = 1)
-    public void onHexFrame(HexPayload payload,
-                           @MqttTopic String topic,
-                           @MqttVariable("deviceId") String deviceId) {
-        // payload.getHexString() 获得大写十六进制字符串
+    public void onHexMessage(HexPayload payload,
+                             @MqttTopic String topic,
+                             @MqttVariable("deviceId") String deviceId) {
+        // payload.getHexString() 获得规范化大写十六进制字符串
         // payload.getBytes() 获得底层原始字节数组
     }
 }
@@ -123,14 +126,19 @@ public class BatchPublishScenarioService {
 
     private final MqttTemplate mqttTemplate;
 
-    // 批量原子分发指令
+    // 批量并发聚合分发指令
     public void publishBatch(List<MqttPublishRecord> records) {
         mqttTemplate.publishBatch(records);
     }
 
-    // 清空 Broker 上的保留消息（Retained Message）
-    public void clearRetainedStatus(String topic) {
-        mqttTemplate.clearRetained(topic);
+    // 发布设备在线保留状态
+    public void publishRetainedStatus(String deviceId, String status) {
+        mqttTemplate.publish("iot/devices/" + deviceId + "/status", status, 1, true);
+    }
+
+    // 对称清理设备保留状态（发送 0 字节保留消息）
+    public void clearRetainedStatus(String deviceId) {
+        mqttTemplate.clearRetained("iot/devices/" + deviceId + "/status");
     }
 }
 ```
@@ -142,26 +150,26 @@ public class BatchPublishScenarioService {
 public class DeadLetterReplayScenarioService {
 
     private final MqttTemplate mqttTemplate;
-    private final MqttDeadLetterReplayTemplate replayTemplate;
+    private final MqttDeadLetterReplayTemplate deadLetterReplayTemplate;
 
-    // 触发毒丸测试
-    public void triggerPoisonPill(String topic, String payload) {
-        mqttTemplate.publish(topic, payload);
+    // 发送毒丸测试消息（触发不可恢复异常转入 DLT）
+    public void triggerPoisonPill(String payload) {
+        mqttTemplate.publish("iot/devices/poison-test", payload, 1);
     }
 
-    // 窥探死信队列
-    public List<MqttDeadLetterRecord> peekDeadLetters(String dltTopic, int limit, Duration timeout) {
-        return replayTemplate.peek(dltTopic, limit, timeout);
+    // 只读窥探死信队列
+    public List<MqttDeadLetterRecord> peekDeadLetters(String dltTopic, int maxRecords, Duration timeout) {
+        return deadLetterReplayTemplate.peek(dltTopic, maxRecords, timeout);
     }
 
-    // 受控重放死信报文至目标恢复主题
-    public int replayDeadLetters(String dltTopic, String targetTopic, int limit, Duration timeout) {
-        return replayTemplate.replay(dltTopic, targetTopic, limit, timeout);
+    // 受控重放死信报文至目标恢复主题（内置防二次雪崩熔断）
+    public int replayDeadLetters(String dltTopic, String targetTopic) {
+        return deadLetterReplayTemplate.replay(dltTopic, targetTopic, 10);
     }
 
-    // 清空死信队列
+    // 清空死信队列（对称抹除保留死信）
     public void purgeDeadLetters(String dltTopic) {
-        replayTemplate.purge(dltTopic);
+        deadLetterReplayTemplate.purge(dltTopic);
     }
 }
 ```
@@ -174,15 +182,20 @@ public class MqttContainerGovernanceScenarioService {
 
     private final MqttContainerManager containerManager;
 
-    public void pauseEndpoint(String endpointId) {
+    // 暂停指定端点消费调度
+    public boolean pauseEndpoint(String endpointId) {
         containerManager.pause(endpointId);
+        return true;
     }
 
-    public void resumeEndpoint(String endpointId) {
+    // 恢复指定端点消费调度
+    public boolean resumeEndpoint(String endpointId) {
         containerManager.resume(endpointId);
+        return true;
     }
 
-    public Map<String, Boolean> getEndpointStatuses() {
+    // 查询全量端点运行状态快照列表
+    public List<MqttEndpointStatus> getEndpointStatuses() {
         return containerManager.getEndpointStatuses();
     }
 }
@@ -195,19 +208,31 @@ public class MqttContainerGovernanceScenarioService {
 public class TransactionalTelemetryScenarioService {
 
     private final MqttTemplate mqttTemplate;
+    private final PlatformTransactionManager transactionManager;
 
-    // 事务成功提交后投递
-    @Transactional(rollbackFor = Exception.class)
-    public void sendWithCommit(String orderId, String deviceId) {
-        // 本地数据库持久化...
-        mqttTemplate.sendAfterCommit("iot/orders/" + orderId + "/created", new OrderEvent(orderId, deviceId));
+    // 本地事务成功提交后投递（commit 后触发投递，防脏读与反向竞态）
+    public void recordTelemetryWithCommit(String deviceId, double temp, double humidity) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.execute(status -> {
+            // 本地数据库持久化操作...
+            DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
+            mqttTemplate.sendAfterCommit("iot/devices/" + deviceId + "/tx", telemetry, 1);
+            return null;
+        });
     }
 
-    // 事务异常回滚，消息自动丢弃
-    @Transactional(rollbackFor = Exception.class)
-    public void sendWithRollback(String orderId, String deviceId) {
-        mqttTemplate.sendAfterCommit("iot/orders/" + orderId + "/created", new OrderEvent(orderId, deviceId));
-        throw new IllegalStateException("Simulate database rollback");
+    // 本地事务异常回滚，消息自动丢弃
+    public void recordTelemetryWithRollback(String deviceId, double temp, double humidity) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        try {
+            template.execute(status -> {
+                DeviceTelemetry telemetry = new DeviceTelemetry(deviceId, temp, humidity, System.currentTimeMillis());
+                mqttTemplate.sendAfterCommit("iot/devices/" + deviceId + "/tx", telemetry, 1);
+                throw new IllegalStateException("Simulated business error to trigger rollback");
+            });
+        } catch (IllegalStateException e) {
+            // 事务回滚，投递钩子被安全丢弃，Broker 零收到
+        }
     }
 }
 ```

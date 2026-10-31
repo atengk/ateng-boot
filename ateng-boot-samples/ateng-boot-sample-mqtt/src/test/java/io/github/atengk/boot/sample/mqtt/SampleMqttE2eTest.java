@@ -45,10 +45,21 @@ class SampleMqttE2eTest {
 
     private static EmbeddedMqttBroker broker;
 
+    private static boolean isLocalProfileActive() {
+        String activeProfiles = System.getProperty("spring.profiles.active");
+        if (activeProfiles != null && activeProfiles.contains("local")) {
+            return true;
+        }
+        String envProfiles = System.getenv("SPRING_PROFILES_ACTIVE");
+        return envProfiles != null && envProfiles.contains("local");
+    }
+
     @BeforeAll
     static void startBroker() {
-        broker = new EmbeddedMqttBroker(0);
-        broker.start();
+        if (!isLocalProfileActive()) {
+            broker = new EmbeddedMqttBroker(0);
+            broker.start();
+        }
     }
 
     @AfterAll
@@ -60,7 +71,9 @@ class SampleMqttE2eTest {
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("ateng.boot.mqtt.clients.primary.server-uri", () -> broker.getServerUri());
+        if (!isLocalProfileActive()) {
+            registry.add("ateng.boot.mqtt.clients.primary.server-uri", () -> broker.getServerUri());
+        }
     }
 
     @Autowired

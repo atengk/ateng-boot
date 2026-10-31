@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 /**
@@ -33,9 +34,19 @@ public class MqttDeadLetterReplayTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(MqttDeadLetterReplayTemplate.class);
 
+    /**
+     * 单次默认重放/采样数量上限
+     */
+    public static final int DEFAULT_LIMIT = 100;
+
+    /**
+     * 单次最大允许重放/采样数量硬上限
+     */
+    public static final int MAX_LIMIT = 1000;
+
     private final NamedMqttClientRegistry clientRegistry;
     private final MqttTemplate mqttTemplate;
-    private int maxReplayCount = 1;
+    private final AtomicInteger maxReplayCount;
 
     public MqttDeadLetterReplayTemplate(NamedMqttClientRegistry clientRegistry, MqttTemplate mqttTemplate) {
         this(clientRegistry, mqttTemplate, 1);
@@ -44,28 +55,28 @@ public class MqttDeadLetterReplayTemplate {
     public MqttDeadLetterReplayTemplate(NamedMqttClientRegistry clientRegistry, MqttTemplate mqttTemplate, int maxReplayCount) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "NamedMqttClientRegistry must not be null");
         this.mqttTemplate = Objects.requireNonNull(mqttTemplate, "MqttTemplate must not be null");
-        this.maxReplayCount = Math.max(1, maxReplayCount);
+        this.maxReplayCount = new AtomicInteger(Math.max(1, maxReplayCount));
     }
 
     public int getMaxReplayCount() {
-        return maxReplayCount;
+        return maxReplayCount.get();
     }
 
     public void setMaxReplayCount(int maxReplayCount) {
-        this.maxReplayCount = Math.max(1, maxReplayCount);
+        this.maxReplayCount.set(Math.max(1, maxReplayCount));
     }
 
     // ==================== 死信只读探查接口 (peek) ====================
 
     /**
-     * 只读探查指定死信主题的报文列表（默认客户端，采样上限 10 条，超时 2 秒）
+     * 只读探查指定死信主题的报文列表（默认客户端，采样上限 100 条，超时 2 秒）
      * 仅探查死信报文内容与异常元数据，不触发任何重放或投递
      *
      * @param dltTopic 死信主题
      * @return 死信记录列表
      */
     public List<MqttDeadLetterRecord> peek(String dltTopic) {
-        return peek(null, dltTopic, 10, Duration.ofSeconds(2));
+        return peek(null, dltTopic, DEFAULT_LIMIT, Duration.ofSeconds(2));
     }
 
     /**
@@ -103,6 +114,9 @@ public class MqttDeadLetterReplayTemplate {
     public List<MqttDeadLetterRecord> peek(String clientName, String dltTopic, int limit, Duration timeout) {
         Assert.hasText(dltTopic, "dltTopic must not be blank");
         Assert.isTrue(limit > 0, "limit must be greater than 0");
+        if (limit > MAX_LIMIT) {
+            throw new IllegalArgumentException("limit must not exceed maximum threshold of " + MAX_LIMIT + ": " + limit);
+        }
         Duration effectiveTimeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : Duration.ofSeconds(2);
 
         String effectiveClient = resolveEffectiveClientName(clientName);
@@ -139,13 +153,13 @@ public class MqttDeadLetterReplayTemplate {
     // ==================== 死信受控重放接口 (replay) ====================
 
     /**
-     * 受控重放死信报文回其原始业务主题（默认客户端，采样上限 10 条）
+     * 受控重放死信报文回其原始业务主题（默认客户端，采样上限 100 条）
      *
      * @param dltTopic 死信主题
      * @return 实际重放成功的报文数量
      */
     public int replay(String dltTopic) {
-        return replay(dltTopic, null, 10, null, Duration.ofSeconds(2));
+        return replay(dltTopic, null, DEFAULT_LIMIT, null, Duration.ofSeconds(2));
     }
 
     /**
@@ -247,9 +261,10 @@ public class MqttDeadLetterReplayTemplate {
         }
 
         // 1. 防二次雪崩熔断防线 (Secondary Avalanche Circuit Breaker)
-        if (record.replayCount() >= maxReplayCount) {
+        int currentMax = maxReplayCount.get();
+        if (record.replayCount() >= currentMax) {
             log.warn("[MQTT-DLT] Dropped message replay from DLT [{}], replayCount [{}] reached maxReplayCount threshold [{}], breaking secondary avalanche loop",
-                    record.dltTopic(), record.replayCount(), maxReplayCount);
+                    record.dltTopic(), record.replayCount(), currentMax);
             return false;
         }
 
@@ -290,12 +305,12 @@ public class MqttDeadLetterReplayTemplate {
     // ==================== 死信清空抹除接口 (purge) ====================
 
     /**
-     * 清空指定死信主题的死信报文（默认客户端，抹除保留消息并排空在途报文）
+     * 清空指定死信主题的死信报文（默认客户端，对称清理 Broker 保留消息）
      *
      * @param dltTopic 死信主题
      */
     public void purge(String dltTopic) {
-        purge(null, dltTopic, Duration.ofMillis(500));
+        purge(null, dltTopic);
     }
 
     /**
@@ -303,38 +318,25 @@ public class MqttDeadLetterReplayTemplate {
      *
      * @param clientName 客户端逻辑名称
      * @param dltTopic   死信主题
-     * @param timeout    排空等待超时
      */
-    public void purge(String clientName, String dltTopic, Duration timeout) {
+    public void purge(String clientName, String dltTopic) {
         Assert.hasText(dltTopic, "dltTopic must not be blank");
         String effectiveClient = resolveEffectiveClientName(clientName);
-        Duration effectiveTimeout = (timeout != null && !timeout.isNegative() && !timeout.isZero()) ? timeout : Duration.ofMillis(500);
 
-        // 1. 对称抹除 Broker 上的保留保留死信
+        // 对称抹除 Broker 上的保留死信 (byte[0] + retained=true)
         mqttTemplate.clearRetainedToClient(effectiveClient, dltTopic, 1);
-
-        // 2. 临时订阅排空在途瞬态死信报文
-        MqttClientHandle handle = clientRegistry.getClientHandle(effectiveClient);
-        IMqttMessageListener drainListener = (topic, message) -> {
-            log.debug("[MQTT-DLT] Purged discarded message from [{}]", topic);
-        };
-
-        try {
-            handle.subscribe(dltTopic, 1, drainListener);
-            Thread.sleep(effectiveTimeout.toMillis());
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            log.warn("[MQTT-DLT] Warning while draining dead letter topic [{}]: {}", dltTopic, e.getMessage());
-        } finally {
-            try {
-                handle.unsubscribe(dltTopic);
-            } catch (Exception e) {
-                log.debug("[MQTT-DLT] Error unsubscribing after purge on [{}]: {}", dltTopic, e.getMessage());
-            }
-        }
-
         log.info("[MQTT-DLT] Successfully purged dead letter topic [{}] on client [{}]", dltTopic, effectiveClient);
+    }
+
+    /**
+     * 指定客户端清空死信主题（兼容超时入参）
+     *
+     * @param clientName 客户端逻辑名称
+     * @param dltTopic   死信主题
+     * @param timeout    排空等待超时（保留消息清除为即时原子操作）
+     */
+    public void purge(String clientName, String dltTopic, Duration timeout) {
+        purge(clientName, dltTopic);
     }
 
     private String resolveEffectiveClientName(String clientName) {

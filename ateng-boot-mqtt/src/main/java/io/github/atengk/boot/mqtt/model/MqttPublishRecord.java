@@ -32,7 +32,9 @@ public record MqttPublishRecord(
         if (messageExpiry != null && messageExpiry.isNegative()) {
             throw new IllegalArgumentException("messageExpiry must not be negative");
         }
-        userProperties = userProperties != null ? Collections.unmodifiableMap(userProperties) : Collections.emptyMap();
+        userProperties = (userProperties != null && !userProperties.isEmpty())
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(userProperties))
+                : Collections.emptyMap();
     }
 
     public static MqttPublishRecord of(String topic, Object payload) {

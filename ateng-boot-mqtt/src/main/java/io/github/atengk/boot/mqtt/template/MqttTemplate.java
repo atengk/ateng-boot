@@ -542,26 +542,14 @@ public class MqttTemplate {
                         metrics.recordPublished(effectiveClient, topic, qos, System.nanoTime() - startTime);
                     }
                     // 消息发布后置拦截切面 (逆序执行)
-                    for (int i = interceptors.size() - 1; i >= 0; i--) {
-                        try {
-                            interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
-                        } catch (Throwable t) {
-                            log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                        }
-                    }
+                    triggerPostPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
                     future.complete(null);
                 }
 
                 @Override
                 public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
                     // 消息发布后置拦截切面 (异常逆序执行)
-                    for (int i = interceptors.size() - 1; i >= 0; i--) {
-                        try {
-                            interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, exception);
-                        } catch (Throwable t) {
-                            log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                        }
-                    }
+                    triggerPostPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, exception);
                     triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, exception);
                     future.completeExceptionally(createDeliveryException(effectiveClient, topic, exception));
                 }
@@ -575,13 +563,7 @@ public class MqttTemplate {
                 }
             }
         } catch (Throwable e) {
-            for (int i = interceptors.size() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
-                } catch (Throwable t) {
-                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                }
-            }
+            triggerPostPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
             triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, e);
             future.completeExceptionally(createDeliveryException(effectiveClient, topic, e));
         }
@@ -773,22 +755,10 @@ public class MqttTemplate {
             doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
 
             // 2. 消息发布后置拦截切面 (逆序执行)
-            for (int i = interceptors.size() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
-                } catch (Throwable t) {
-                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                }
-            }
+            triggerPostPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
         } catch (Throwable e) {
             // 2. 消息发布后置拦截切面 (异常逆序执行)
-            for (int i = interceptors.size() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
-                } catch (Throwable t) {
-                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                }
-            }
+            triggerPostPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
             triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, e);
             throw createDeliveryException(effectiveClient, topic, e);
         }
@@ -950,6 +920,20 @@ public class MqttTemplate {
             return str.getBytes(StandardCharsets.UTF_8);
         }
         return JsonUtil.toJsonBytes(payload);
+    }
+
+    private void triggerPostPublish(String effectiveClient, String topic, byte[] payloadBytes, int qos, boolean retained,
+                                    Map<String, String> mutableUserProps, Throwable ex) {
+        if (interceptors.isEmpty()) {
+            return;
+        }
+        for (int i = interceptors.size() - 1; i >= 0; i--) {
+            try {
+                interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, ex);
+            } catch (Throwable t) {
+                log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
     }
 
     private void validateTopic(String topic) {

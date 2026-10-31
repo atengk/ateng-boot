@@ -64,6 +64,15 @@ public class TransactionalTelemetryScenarioService {
     }
 
     /**
+     * 本地事务成功提交后发信（实体参数模型重载）
+     */
+    public void recordTelemetryWithCommit(DeviceTelemetry telemetry) {
+        if (telemetry != null) {
+            recordTelemetryWithCommit(telemetry.getDeviceId(), telemetry.getTemperature(), telemetry.getHumidity());
+        }
+    }
+
+    /**
      * 本地事务回滚，投递钩子被安全丢弃
      */
     public void recordTelemetryWithRollback(String deviceId, double temp, double humidity) {
@@ -83,6 +92,15 @@ public class TransactionalTelemetryScenarioService {
             });
         } catch (IllegalStateException e) {
             log.warn("[SCENARIO-TX] Handled simulated transaction rollback: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 本地事务回滚，投递钩子被安全丢弃（实体参数模型重载）
+     */
+    public void recordTelemetryWithRollback(DeviceTelemetry telemetry) {
+        if (telemetry != null) {
+            recordTelemetryWithRollback(telemetry.getDeviceId(), telemetry.getTemperature(), telemetry.getHumidity());
         }
     }
 

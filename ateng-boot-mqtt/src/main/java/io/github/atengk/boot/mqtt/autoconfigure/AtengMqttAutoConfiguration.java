@@ -145,13 +145,14 @@ public class AtengMqttAutoConfiguration {
     @ConditionalOnMissingBean
     public MqttListenerEndpointRegistry mqttListenerEndpointRegistry(NamedMqttClientRegistry namedMqttClientRegistry,
                                                                     PayloadGuard mqttPayloadGuard,
+                                                                    AtengMqttProperties properties,
                                                                     ObjectProvider<MqttMetrics> metricsProvider,
                                                                     ObjectProvider<MqttRequestReplyManager> requestReplyManagerProvider,
                                                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
                                                                     @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
                                                                     ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        return new MqttListenerEndpointRegistry(
+        MqttListenerEndpointRegistry registry = new MqttListenerEndpointRegistry(
                 namedMqttClientRegistry,
                 mqttPayloadGuard,
                 executor,
@@ -159,6 +160,10 @@ public class AtengMqttAutoConfiguration {
                 requestReplyManagerProvider.getIfAvailable(),
                 interceptorsProvider.getIfAvailable(Collections::emptyList)
         );
+        if (properties != null) {
+            registry.setMaxReplayCount(properties.getMaxReplayCount());
+        }
+        return registry;
     }
 
     @Bean
@@ -177,8 +182,10 @@ public class AtengMqttAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public MqttDeadLetterReplayTemplate mqttDeadLetterReplayTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
-                                                                    MqttTemplate mqttTemplate) {
-        return new MqttDeadLetterReplayTemplate(namedMqttClientRegistry, mqttTemplate);
+                                                                    MqttTemplate mqttTemplate,
+                                                                    AtengMqttProperties properties) {
+        int maxReplay = properties != null ? properties.getMaxReplayCount() : 1;
+        return new MqttDeadLetterReplayTemplate(namedMqttClientRegistry, mqttTemplate, maxReplay);
     }
 
     @Bean

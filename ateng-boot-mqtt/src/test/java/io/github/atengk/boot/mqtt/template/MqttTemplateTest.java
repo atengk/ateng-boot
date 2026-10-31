@@ -557,6 +557,14 @@ class MqttTemplateTest {
         // 6. userProperties 不可变性
         assertThatThrownBy(() -> defaultRecord.userProperties().put("k", "v"))
                 .isInstanceOf(UnsupportedOperationException.class);
+
+        // 7. userProperties 防御性拷贝 (外部修改不影响 Record 内部快照)
+        Map<String, String> externalMap = new HashMap<>();
+        externalMap.put("k1", "v1");
+        MqttPublishRecord defensiveRecord = MqttPublishRecord.of("def/topic", "def-payload", 1, false, externalMap, null);
+        externalMap.put("k2", "v2");
+        assertThat(defensiveRecord.userProperties()).containsKey("k1");
+        assertThat(defensiveRecord.userProperties()).doesNotContainKey("k2");
     }
 
     @Test

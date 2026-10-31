@@ -100,7 +100,8 @@ public class DeviceControlRpcScenarioService {
             replyMsg.setProperties(replyProps);
 
             try {
-                clientRegistry.getDefaultClientHandle().getAsyncClient().publish(responseTopic, replyMsg);
+                var defaultHandle = clientRegistry.getDefaultClientHandle();
+                defaultHandle.getAsyncClient().publish(responseTopic, replyMsg);
             } catch (Exception e) {
                 log.error("[SCENARIO-RPC] Failed to reply RPC command: {}", e.getMessage(), e);
             }

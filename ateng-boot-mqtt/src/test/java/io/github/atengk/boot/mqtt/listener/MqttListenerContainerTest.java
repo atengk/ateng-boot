@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 声明式 @MqttListener 容器、共享订阅与受管线程池隔离调度测试
@@ -296,6 +297,20 @@ class MqttListenerContainerTest {
         boolean completed = listenerBean.wildcardLatch.await(3, TimeUnit.SECONDS);
         assertThat(completed).isTrue();
         assertThat(listenerBean.receivedWildcard).contains("RESUMED_VALUE_100");
+
+        // 6. 验证非法入参与不存在端点的快速失败防卫 (Fail-Fast)
+        assertThatThrownBy(() -> containerManager.pause(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.pause("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
+        assertThatThrownBy(() -> containerManager.resume(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.resume("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
     }
 
     @Test

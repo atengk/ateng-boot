@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
 /**
@@ -33,6 +34,15 @@ public class MqttClientHandle {
     private final String responseTopic;
     private volatile IMqttMessageListener fallbackMessageListener;
     private final List<BiConsumer<Boolean, String>> connectCompleteListeners = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean disconnectedPublished = new AtomicBoolean(false);
+
+    public boolean markDisconnected() {
+        return disconnectedPublished.compareAndSet(false, true);
+    }
+
+    public void resetDisconnected() {
+        disconnectedPublished.set(false);
+    }
 
     public MqttClientHandle(String clientName,
                             String actualClientId,

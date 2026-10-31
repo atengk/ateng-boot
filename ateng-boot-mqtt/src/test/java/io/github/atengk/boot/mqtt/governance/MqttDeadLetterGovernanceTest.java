@@ -38,6 +38,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * MQTT 死信受控治理、只读探查 (peek)、受控重放 (replay)、清空 (purge) 与防二次雪崩熔断测试
@@ -218,6 +219,20 @@ class MqttDeadLetterGovernanceTest {
         // 默认 maxReplayCount = 1，达到上限后拒绝重放
         boolean success = dltReplayTemplate.replayRecord(alreadyReplayed, "test/original");
         assertThat(success).isFalse();
+
+        // 调整 maxReplayCount = 2，允许已重放 1 次的报文继续重放
+        dltReplayTemplate.setMaxReplayCount(2);
+        assertThat(dltReplayTemplate.getMaxReplayCount()).isEqualTo(2);
+        boolean successWith2 = dltReplayTemplate.replayRecord(alreadyReplayed, "test/original");
+        assertThat(successWith2).isTrue();
+        dltReplayTemplate.setMaxReplayCount(1); // 还原
+
+        // 验证 limit 分层防卫硬上限 (<= 1000)
+        assertThatThrownBy(() -> dltReplayTemplate.peek("test/dlt", 1001))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("limit must not exceed maximum threshold of 1000");
+        assertThatThrownBy(() -> dltReplayTemplate.peek("test/dlt", 0))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

@@ -91,4 +91,16 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttHealthIndicator.class);
                 });
     }
+
+    @Test
+    @DisplayName("测试自定义属性装配：max-replay-count 正确透传给 ReplayTemplate 与 EndpointRegistry")
+    void testCustomMaxReplayCountAutoConfiguration() {
+        contextRunner.withPropertyValues("ateng.boot.mqtt.max-replay-count=3")
+                .run(context -> {
+                    MqttDeadLetterReplayTemplate replayTemplate = context.getBean(MqttDeadLetterReplayTemplate.class);
+                    assertThat(replayTemplate.getMaxReplayCount()).isEqualTo(3);
+                    MqttListenerEndpointRegistry registry = context.getBean(MqttListenerEndpointRegistry.class);
+                    assertThat(registry.getMaxReplayCount()).isEqualTo(3);
+                });
+    }
 }

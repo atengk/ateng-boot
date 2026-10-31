@@ -372,12 +372,20 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     }
 
     public void publishConnectedEvent(String clientName, String serverUri, String clientId, boolean reconnect) {
+        MqttClientHandle handle = clientHandles.get(clientName);
+        if (handle != null) {
+            handle.resetDisconnected();
+        }
         if (applicationEventPublisher != null) {
             applicationEventPublisher.publishEvent(new MqttConnectedEvent(this, clientName, serverUri, clientId, reconnect));
         }
     }
 
     public void publishDisconnectedEvent(String clientName, String serverUri, String clientId) {
+        MqttClientHandle handle = clientHandles.get(clientName);
+        if (handle != null && !handle.markDisconnected()) {
+            return;
+        }
         if (applicationEventPublisher != null) {
             applicationEventPublisher.publishEvent(new MqttDisconnectedEvent(this, clientName, serverUri, clientId));
         }

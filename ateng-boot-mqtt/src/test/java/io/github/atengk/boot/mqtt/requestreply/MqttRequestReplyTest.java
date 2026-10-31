@@ -407,8 +407,18 @@ class MqttRequestReplyTest {
     void shouldSelfHealResponseTopicOnReconnect() throws Exception {
         assertThat(requestReplyManager.isSubscribed("primary")).isTrue();
 
-        // 模拟触发重连事件
+        // 模拟触发重连事件前构造一个已超期但定时扫描器尚未触发的挂起请求
+        CompletableFuture<String> expiredFuture = requestReplyManager.sendAndReceiveAsync(
+                "cmd/device/expired-before-reconnect",
+                "EXPIRE_TEST",
+                String.class,
+                Duration.ofMillis(50)
+        );
+        Thread.sleep(80); // 等待超过 50ms 超时时间，但未达到 500ms 定时扫描周期
+
+        // 模拟触发重连事件并验证主动清理过期请求
         requestReplyManager.handleReconnect("primary");
+        assertThat(expiredFuture.isCompletedExceptionally()).isTrue();
 
         assertThat(requestReplyManager.isSubscribed("primary")).isTrue();
 

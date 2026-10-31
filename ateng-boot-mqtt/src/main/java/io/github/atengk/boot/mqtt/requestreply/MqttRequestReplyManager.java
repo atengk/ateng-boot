@@ -106,10 +106,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
             // 启动定时超时安全扫描器（每 500ms 扫描一次），防范无界内存挂起
             this.timeoutScanner.scheduleWithFixedDelay(this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
 
-            // 预订阅所有已配置客户端的私有聚合响应主题
+            // 预订阅所有已配置客户端的私有聚合响应主题并绑定重连自愈监听
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
                 try {
                     ensureSubscribed(handle);
+                    handle.addConnectCompleteListener((reconnect, serverURI) -> {
+                        if (reconnect) {
+                            handleReconnect(handle.getClientName());
+                        }
+                    });
                 } catch (Exception e) {
                     log.error("[MQTT] Failed to pre-subscribe aggregated response topic for client [{}]: {}",
                             handle.getClientName(), e.getMessage(), e);
@@ -176,6 +181,8 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         }
         log.info("[MQTT] Triggering response topic self-healing for client [{}] on reconnect", clientName);
         subscribedClientNames.remove(clientName);
+        // 主动触发扫描清理已过期的挂起请求，避免网络闪断前超时的请求堆积
+        scanAndCleanExpiredRequests();
         if (clientRegistry.containsClient(clientName)) {
             MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
             if (handle.isConnected()) {

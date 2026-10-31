@@ -63,6 +63,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final Set<String> pausedEndpoints = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private volatile MqttRequestReplyManager requestReplyManager;
+    private volatile int maxReplayCount = 1;
 
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
                                         PayloadGuard payloadGuard,
@@ -103,6 +104,14 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         this.requestReplyManager = requestReplyManager;
     }
 
+    public int getMaxReplayCount() {
+        return maxReplayCount;
+    }
+
+    public void setMaxReplayCount(int maxReplayCount) {
+        this.maxReplayCount = Math.max(1, maxReplayCount);
+    }
+
     /**
      * 注册声明式监听器端点
      *
@@ -127,15 +136,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             if (metrics != null) {
                 metrics.bindClientRegistry(clientRegistry);
             }
-            // 为涉及的所有客户端绑定兜底回调，确保共享订阅（$share/...）等无本地 TopicFilter 命中的消息能被正确分发
-            Set<String> targetClients = endpoints.stream()
-                    .map(MqttListenerEndpoint::getClientName)
-                    .map(name -> StringUtils.hasText(name) ? name : clientRegistry.getDefaultClientName())
-                    .collect(Collectors.toSet());
-            for (String clientName : targetClients) {
-                if (clientRegistry.containsClient(clientName)) {
-                    bindFallbackCallback(clientRegistry.getClientHandle(clientName));
-                }
+            // 为所有已配置客户端绑定兜底回调与连接完成监听，确保共享订阅与断线重连自愈无遗漏
+            for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
+                bindFallbackCallback(handle);
             }
 
             for (MqttListenerEndpoint endpoint : endpoints) {
@@ -288,26 +291,14 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             endpoint.getAdapter().invoke(actualTopic, message, variables);
 
             // 消息消费后置拦截切面 (逆序执行)
-            for (int i = interceptors.size() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).postConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
-                } catch (Throwable t) {
-                    log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                }
-            }
+            triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
 
             if (metrics != null) {
                 metrics.recordConsume(endpoint.getId(), actualTopic, true, System.nanoTime() - startNanos);
             }
         } catch (Throwable e) {
             // 消息消费后置拦截切面 (异常逆序执行)
-            for (int i = interceptors.size() - 1; i >= 0; i--) {
-                try {
-                    interceptors.get(i).postConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
-                } catch (Throwable t) {
-                    log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
-                }
-            }
+            triggerPostConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
 
             if (metrics != null) {
                 metrics.recordConsume(endpoint.getId(), actualTopic, false, System.nanoTime() - startNanos);
@@ -389,9 +380,9 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
 
         // 防二次雪崩熔断防线：若报文已达到重放上限，丢弃并告警，彻底熔断业务主题与死信主题之间的死循环
         int replayCount = MqttDeadLetterRecord.extractReplayCount(message);
-        if (replayCount >= 1) {
-            log.error("[MQTT] Poison pill message on topic [{}] has already been replayed [{}] time(s), dropping message to break secondary avalanche infinite loop: {}",
-                    actualTopic, replayCount, cause.getMessage());
+        if (replayCount >= maxReplayCount) {
+            log.error("[MQTT] Poison pill message on topic [{}] has already been replayed [{}] time(s), reaching maxReplayCount threshold [{}], dropping message to break secondary avalanche infinite loop: {}",
+                    actualTopic, replayCount, maxReplayCount, cause.getMessage());
             return;
         }
 
@@ -531,6 +522,20 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
         return Collections.unmodifiableList(endpoints);
     }
 
+    private void triggerPostConsume(String clientName, String endpointId, String actualTopic,
+                                    MqttMessage message, Map<String, String> headers, Throwable ex) {
+        if (interceptors.isEmpty()) {
+            return;
+        }
+        for (int i = interceptors.size() - 1; i >= 0; i--) {
+            try {
+                interceptors.get(i).postConsume(clientName, endpointId, actualTopic, message, headers, ex);
+            } catch (Throwable t) {
+                log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
+    }
+
     // ==================== 容器动态运维接口 (MqttContainerManager 支撑) ====================
 
     /**
@@ -540,7 +545,10 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
      */
     public void pause(String endpointId) {
         if (!StringUtils.hasText(endpointId)) {
-            return;
+            throw new IllegalArgumentException("endpointId must not be blank");
+        }
+        if (!containsEndpoint(endpointId)) {
+            throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
         }
         pausedEndpoints.add(endpointId);
         log.info("[MQTT] Paused message dispatch for listener endpoint [{}]", endpointId);
@@ -553,7 +561,10 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
      */
     public void resume(String endpointId) {
         if (!StringUtils.hasText(endpointId)) {
-            return;
+            throw new IllegalArgumentException("endpointId must not be blank");
+        }
+        if (!containsEndpoint(endpointId)) {
+            throw new IllegalArgumentException("MQTT listener endpoint not found: " + endpointId);
         }
         pausedEndpoints.remove(endpointId);
         log.info("[MQTT] Resumed message dispatch for listener endpoint [{}]", endpointId);
