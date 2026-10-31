@@ -2,6 +2,7 @@ package io.github.atengk.boot.pay.core;
 
 import com.wechat.pay.java.core.AbstractRSAConfig;
 import com.wechat.pay.java.core.Config;
+import com.wechat.pay.java.core.RSAPublicKeyConfig;
 import com.wechat.pay.java.core.certificate.CertificateProvider;
 import com.wechat.pay.java.core.exception.HttpException;
 import com.wechat.pay.java.core.exception.MalformedMessageException;
@@ -2508,18 +2509,24 @@ public class WechatPayTemplate {
         PrivateKey privateKey = PayKeyLoader.loadPrivateKey(keySource);
 
         Config config;
-        if (props.getWechatPayPublicKey() != null && !props.getWechatPayPublicKey().isBlank()) {
-            String cleanPub = PayKeyLoader.cleanCertificatePem(props.getWechatPayPublicKey());
-            PublicKey pubKey;
-            try {
-                byte[] keyBytes = Base64.getDecoder().decode(cleanPub);
-                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
-                pubKey = keyFactory.generatePublic(keySpec);
-            } catch (Exception e) {
-                throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "解析微信平台静态公钥失败: " + e.getMessage(), e);
+        String pubKeySource = props.getWechatPayPublicKey() != null && !props.getWechatPayPublicKey().isBlank()
+                ? props.getWechatPayPublicKey()
+                : props.getWechatPayPublicKeyPath();
+        if (pubKeySource != null && !pubKeySource.isBlank()) {
+            PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
+            String pubKeyId = props.getWechatPayPublicKeyId() != null && !props.getWechatPayPublicKeyId().isBlank()
+                    ? props.getWechatPayPublicKeyId()
+                    : serialNumber;
+            RSAPublicKeyConfig.Builder builder = new RSAPublicKeyConfig.Builder()
+                    .merchantId(merchantId)
+                    .privateKey(privateKey)
+                    .merchantSerialNumber(serialNumber)
+                    .publicKey(pubKey)
+                    .publicKeyId(pubKeyId);
+            if (props.getApiV3Key() != null && !props.getApiV3Key().isBlank()) {
+                builder.apiV3Key(props.getApiV3Key());
             }
-            config = new AbstractRSAConfig(merchantId, privateKey, serialNumber, pubKey, props.getWechatPayPublicKeyId()) {};
+            config = builder.build();
         } else {
             CertificateProvider certProvider = new CertificateProvider() {
                 @Override

@@ -63,6 +63,7 @@ class PayPropertiesTest {
                 "ateng.boot.pay.wechat.merchants.store1.app-id=wx1234567890",
                 "ateng.boot.pay.wechat.merchants.store1.mch-id=1900000109",
                 "ateng.boot.pay.wechat.merchants.store1.api-v3-key=test_api_v3_key_32_bytes_long!!",
+                "ateng.boot.pay.wechat.merchants.store1.wechat-pay-public-key-path=classpath:certs/test_public_key.pem",
                 "ateng.boot.pay.wechat.merchants.store1.sub-mch-id=sub999",
                 "ateng.boot.pay.alipay.default-app=app1",
                 "ateng.boot.pay.alipay.apps.app1.app-id=2021000000000000",
@@ -84,6 +85,7 @@ class PayPropertiesTest {
             assertThat(store1.getAppId()).isEqualTo("wx1234567890");
             assertThat(store1.getMchId()).isEqualTo("1900000109");
             assertThat(store1.getApiV3Key()).isEqualTo("test_api_v3_key_32_bytes_long!!");
+            assertThat(store1.getWechatPayPublicKeyPath()).isEqualTo("classpath:certs/test_public_key.pem");
             assertThat(store1.getSubMchId()).isEqualTo("sub999");
 
             AlipayAppProperties app1 = properties.getAlipay().getApps().get("app1");

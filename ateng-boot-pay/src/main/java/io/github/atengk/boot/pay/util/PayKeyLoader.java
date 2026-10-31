@@ -14,14 +14,17 @@ import java.nio.file.Path;
 import java.security.KeyFactory;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -44,6 +47,7 @@ public final class PayKeyLoader {
     private static final String CLASSPATH_PREFIX = "classpath:";
     private static final String FILE_PREFIX = "file:";
     private static final List<PayCertificateProvider> REGISTERED_PROVIDERS = new CopyOnWriteArrayList<>();
+    private static final ConcurrentHashMap<String, PublicKey> PUBLIC_KEY_CACHE = new ConcurrentHashMap<>();
 
     private PayKeyLoader() {
     }
@@ -245,7 +249,59 @@ public final class PayKeyLoader {
      */
     public static String loadPublicKeyPem(String locationOrContent, PayCertificateProvider customProvider) {
         String keyString = loadString(locationOrContent, customProvider);
-        return cleanCertificatePem(keyString);
+        return cleanPublicKeyPem(keyString);
+    }
+
+    /**
+     * 自适应加载 RSA 公钥并缓存
+     *
+     * @param locationOrContent 资源路径、PEM 字符串或自定义标识符
+     * @return Java RSA PublicKey 实例
+     */
+    public static PublicKey loadPublicKey(String locationOrContent) {
+        return loadPublicKey(locationOrContent, null);
+    }
+
+    /**
+     * 自适应加载 RSA 公钥（支持指定自定义 SPI 提供者）并缓存
+     *
+     * @param locationOrContent 资源路径、PEM 字符串或自定义标识符
+     * @param customProvider    特定自定义 SPI 提供者（可为 null）
+     * @return Java RSA PublicKey 实例
+     */
+    public static PublicKey loadPublicKey(String locationOrContent, PayCertificateProvider customProvider) {
+        if (locationOrContent == null || locationOrContent.isBlank()) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "公钥定位符或内容不能为空");
+        }
+        if (customProvider == null) {
+            PublicKey cached = PUBLIC_KEY_CACHE.get(locationOrContent);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        String keyString = loadString(locationOrContent, customProvider);
+        String cleanBase64 = cleanPublicKeyPem(keyString);
+        try {
+            byte[] keyBytes = Base64.getDecoder().decode(cleanBase64);
+            X509EncodedKeySpec keySpec = new X509EncodedKeySpec(keyBytes);
+            KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+            PublicKey publicKey = keyFactory.generatePublic(keySpec);
+            if (customProvider == null) {
+                PUBLIC_KEY_CACHE.put(locationOrContent, publicKey);
+            }
+            return publicKey;
+        } catch (NoSuchAlgorithmException e) {
+            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "当前 JVM 环境不支持 RSA 算法", e);
+        } catch (IllegalArgumentException | InvalidKeySpecException e) {
+            throw new PaySignException(PayResultCode.PAY_PARAM_INVALID, "RSA 公钥格式非法或损坏: " + locationOrContent, e);
+        }
+    }
+
+    /**
+     * 清空公钥内存缓存（供单测与动态热更新调用）
+     */
+    public static void clearPublicKeyCache() {
+        PUBLIC_KEY_CACHE.clear();
     }
 
     /**
@@ -321,6 +377,24 @@ public final class PayKeyLoader {
                 .replace("-----END CERTIFICATE-----", "")
                 .replace("-----BEGIN PUBLIC KEY-----", "")
                 .replace("-----END PUBLIC KEY-----", "")
+                .replaceAll("\\s+", "");
+    }
+
+    /**
+     * 清洗公钥文本，去除常见的 PEM 标头、标尾与空白字符
+     *
+     * @param rawPem 原始公钥 PEM 文本
+     * @return 纯 Base64 内容
+     */
+    public static String cleanPublicKeyPem(String rawPem) {
+        if (rawPem == null) {
+            return "";
+        }
+        return rawPem
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replace("-----BEGIN RSA PUBLIC KEY-----", "")
+                .replace("-----END RSA PUBLIC KEY-----", "")
                 .replaceAll("\\s+", "");
     }
 }

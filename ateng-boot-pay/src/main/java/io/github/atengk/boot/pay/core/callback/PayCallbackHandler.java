@@ -36,6 +36,7 @@ import org.springframework.util.StreamUtils;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.PublicKey;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.*;
@@ -357,12 +358,16 @@ public class PayCallbackHandler {
      */
     private NotificationParser createWechatNotificationParser(WechatMerchantProperties merchant, String serialNumber) {
         // 1. 若配置了微信平台公钥（静态公钥模式）
-        if (merchant.getWechatPayPublicKey() != null && !merchant.getWechatPayPublicKey().isBlank()) {
+        String pubKeySource = merchant.getWechatPayPublicKey() != null && !merchant.getWechatPayPublicKey().isBlank()
+                ? merchant.getWechatPayPublicKey()
+                : merchant.getWechatPayPublicKeyPath();
+        if (pubKeySource != null && !pubKeySource.isBlank()) {
+            PublicKey pubKey = PayKeyLoader.loadPublicKey(pubKeySource);
             String publicKeyId = merchant.getWechatPayPublicKeyId() != null && !merchant.getWechatPayPublicKeyId().isBlank()
                     ? merchant.getWechatPayPublicKeyId()
                     : serialNumber;
             RSAPublicKeyNotificationConfig config = new RSAPublicKeyNotificationConfig.Builder()
-                    .publicKey(PayKeyLoader.cleanCertificatePem(merchant.getWechatPayPublicKey()))
+                    .publicKey(pubKey)
                     .publicKeyId(publicKeyId)
                     .apiV3Key(merchant.getApiV3Key())
                     .build();

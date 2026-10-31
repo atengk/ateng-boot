@@ -103,6 +103,16 @@ class PayCallbackHandlerTest {
         defaultMch.setPrivateKeyPath(CLASSPATH_KEY);
         wechat.getMerchants().put("default", defaultMch);
 
+        // 微信平台公钥商户
+        WechatMerchantProperties pubkeyMch = new WechatMerchantProperties();
+        pubkeyMch.setMchId("1900000002");
+        pubkeyMch.setAppId("wx_pubkey_app");
+        pubkeyMch.setApiV3Key(API_V3_KEY);
+        pubkeyMch.setWechatPayPublicKeyPath("classpath:certs/test_public_key.pem");
+        pubkeyMch.setWechatPayPublicKeyId("PUB_KEY_ID_CALLBACK_001");
+        pubkeyMch.setPrivateKeyPath(CLASSPATH_KEY);
+        wechat.getMerchants().put("pubkey_mch", pubkeyMch);
+
         // 支付宝默认应用
         AlipayPayProperties alipay = payProperties.getAlipay();
         alipay.setDefaultApp("default");
@@ -163,6 +173,30 @@ class PayCallbackHandlerTest {
         assertTrue(response.isSuccess());
         assertNotNull(response.getCallback());
         assertEquals("WX_ORDER_1001", response.getCallback().getOutTradeNo());
+    }
+
+    @Test
+    @DisplayName("微信回调: 平台公钥路径 (wechatPayPublicKeyPath) 验签解密并成功触发监听器")
+    void testWechatCallbackWithPublicKeyPathSuccess() throws Exception {
+        AtomicBoolean listenerInvoked = new AtomicBoolean(false);
+        listeners.add(callback -> {
+            listenerInvoked.set(true);
+            assertEquals(PayChannel.WECHAT_PAY, callback.getChannel());
+            assertEquals("WX_PUBKEY_ORDER_1001", callback.getOutTradeNo());
+            return PayCallbackResult.success();
+        });
+
+        String transactionJson = buildWechatTransactionJson("WX_PUBKEY_ORDER_1001", "WX_TX_PUBKEY_01", 8888, "openid_pub", null);
+        Map<String, String> headers = new HashMap<>();
+        String body = buildWechatNotificationBody(transactionJson, headers, "PUB_KEY_ID_CALLBACK_001");
+
+        PayCallbackResponse response = handler.handleWechat("pubkey_mch", headers, body);
+
+        assertTrue(listenerInvoked.get());
+        assertNotNull(response);
+        assertEquals(200, response.getHttpStatus());
+        assertTrue(response.isSuccess());
+        assertEquals("WX_PUBKEY_ORDER_1001", response.getCallback().getOutTradeNo());
     }
 
     @Test
@@ -621,6 +655,10 @@ class PayCallbackHandlerTest {
     }
 
     private String buildWechatNotificationBody(String transactionJson, Map<String, String> headers) throws Exception {
+        return buildWechatNotificationBody(transactionJson, headers, testCertSerial);
+    }
+
+    private String buildWechatNotificationBody(String transactionJson, Map<String, String> headers, String serialNumber) throws Exception {
         String nonce = "aes_gcm_nonce_" + System.currentTimeMillis();
         String associatedData = "transaction";
 
@@ -660,7 +698,7 @@ class PayCallbackHandlerTest {
         headers.put("Wechatpay-Timestamp", String.valueOf(timestamp));
         headers.put("Wechatpay-Nonce", headerNonce);
         headers.put("Wechatpay-Signature", signature);
-        headers.put("Wechatpay-Serial", testCertSerial);
+        headers.put("Wechatpay-Serial", serialNumber);
         headers.put("Wechatpay-Signature-Type", "WECHATPAY2-SHA256-RSA2048");
 
         return body;

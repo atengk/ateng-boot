@@ -61,6 +61,11 @@ public class WechatMerchantProperties implements Serializable {
     private String wechatPayPublicKey;
 
     /**
+     * 微信支付平台公钥文件路径，支持 file: 物理绝对路径或 classpath: 类路径资源（适合 Kubernetes Secret 挂载或集中配置文件）
+     */
+    private String wechatPayPublicKeyPath;
+
+    /**
      * 微信支付平台公钥 ID
      */
     private String wechatPayPublicKeyId;

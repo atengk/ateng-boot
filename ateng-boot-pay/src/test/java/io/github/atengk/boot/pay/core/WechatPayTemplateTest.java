@@ -145,6 +145,17 @@ class WechatPayTemplateTest {
         partnerMch.setNotifyUrl("https://example.com/pay/callback/partner");
         merchants.put("partner_tenant", partnerMch);
 
+        // 静态平台公钥直连商户
+        WechatMerchantProperties pubKeyMch = new WechatMerchantProperties();
+        pubKeyMch.setMchId("1900000003");
+        pubKeyMch.setAppId("wx_pubkey_app");
+        pubKeyMch.setMerchantSerialNumber(testCertSerial);
+        pubKeyMch.setPrivateKeyPath(CLASSPATH_KEY);
+        pubKeyMch.setWechatPayPublicKeyPath("classpath:certs/test_public_key.pem");
+        pubKeyMch.setWechatPayPublicKeyId("PUB_KEY_ID_TEST_001");
+        pubKeyMch.setNotifyUrl("https://example.com/pay/callback/wechat");
+        merchants.put("pubkey_mch", pubKeyMch);
+
         wechat.setMerchants(merchants);
         merchantRegistry = new NamedMerchantRegistry(payProperties);
 
@@ -1092,6 +1103,50 @@ class WechatPayTemplateTest {
         assertEquals(PayResultCode.PAY_PARAM_INVALID, ex3.getResultCode());
     }
 
+    @Test
+    @DisplayName("平台公钥模式：使用 wechatPayPublicKeyPath 加载公钥并初始化 RSAPublicKeyConfig 与 Native 扫码成功")
+    void testInitWithWechatPayPublicKeyPathAndPayNative() throws Exception {
+        com.wechat.pay.java.core.Config config = payTemplate.getWechatConfig("pubkey_mch");
+        assertNotNull(config, "获取配置对象不应为空");
+        assertInstanceOf(com.wechat.pay.java.core.RSAPublicKeyConfig.class, config,
+                "配置对象必须是官方 RSAPublicKeyConfig 实例");
+
+        // 为 pubkey_mch 注入对应的 MockHttpClient，使其使用 RSAPublicKeyConfig 进行响应验签
+        OkHttpClient redirectOkHttpClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    Request orig = chain.request();
+                    HttpUrl newUrl = orig.url().newBuilder()
+                            .scheme("http")
+                            .host(server.getHostName())
+                            .port(server.getPort())
+                            .build();
+                    return chain.proceed(orig.newBuilder().url(newUrl).build());
+                })
+                .build();
+        HttpClient pubKeyHttpClient = new DefaultHttpClientBuilder()
+                .config(config)
+                .okHttpClient(redirectOkHttpClient)
+                .build();
+        payTemplate.setCustomHttpClient(pubKeyHttpClient);
+
+        String mockResponseJson = "{\"code_url\":\"weixin://wxpay/bizpayurl?pr=mock_pubkey_qr\"}";
+        server.enqueue(mockResponse(200, mockResponseJson, "PUB_KEY_ID_TEST_001"));
+
+        WechatPayRequest request = WechatPayRequest.builder()
+                .merchantKey("pubkey_mch")
+                .outTradeNo("PUBKEY_20261023_001")
+                .description("测试平台公钥商品-Native")
+                .amount(new BigDecimal("88.88"))
+                .build();
+
+        PayResponse response = payTemplate.payNative(request);
+
+        assertNotNull(response);
+        assertTrue(response.isSuccess());
+        assertEquals("weixin://wxpay/bizpayurl?pr=mock_pubkey_qr", response.getQrCode());
+        assertEquals(new BigDecimal("88.88"), response.getAmount());
+    }
+
     // =========================================================================
     // 辅助工具方法
     // =========================================================================
@@ -1100,6 +1155,13 @@ class WechatPayTemplateTest {
      * 构造携带微信支付标准验签标头的 MockResponse
      */
     private MockResponse mockResponse(int statusCode, String body) throws Exception {
+        return mockResponse(statusCode, body, testCertSerial);
+    }
+
+    /**
+     * 构造携带指定证书/公钥序列号的 MockResponse
+     */
+    private MockResponse mockResponse(int statusCode, String body, String serialNumber) throws Exception {
         long timestamp = Instant.now().getEpochSecond();
         String nonce = "mock_nonce_" + System.currentTimeMillis();
         String signPayload = timestamp + "\n" + nonce + "\n" + (body != null ? body : "") + "\n";
@@ -1115,7 +1177,7 @@ class WechatPayTemplateTest {
                 .setHeader("Wechatpay-Timestamp", String.valueOf(timestamp))
                 .setHeader("Wechatpay-Nonce", nonce)
                 .setHeader("Wechatpay-Signature", signature)
-                .setHeader("Wechatpay-Serial", testCertSerial);
+                .setHeader("Wechatpay-Serial", serialNumber);
 
         if (body != null) {
             response.setBody(body);

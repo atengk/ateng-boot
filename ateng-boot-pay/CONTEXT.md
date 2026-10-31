@@ -123,3 +123,19 @@ _Avoid_: 平台转账单号, 支付流水, 提现凭据
 **Pay Refund State (退款状态机)**:
 抹平各渠道退款状态差异的标准统一生命周期枚举（PROCESSING, SUCCESS, CLOSED, ABNORMAL）。
 _Avoid_: 退款标记, 退款结果, 售后状态
+
+**Wechat Pay Public Key (微信支付平台公钥)**:
+微信支付 2024 年官方全面推行的用于逐步替代平台证书自动轮换的静态 RSA 公钥（公钥ID格式为 `PUB_KEY_ID_...`），在 `wechatpay-java` 中由 `RSAPublicKeyConfig` 纳管，用于回调验签与敏感信息加密。
+_Avoid_: 微信平台证书, 静态证书, 渠道公钥
+
+**Trade Reverse (交易撤销 / 冲正)**:
+针对线下付款码（条码付）支付在网络超时或用户输密超时未决时发起的终态安全处置操作（微信 `/reverse`、支付宝 `alipay.trade.cancel`）。官方定义为：若订单未支付则直接关单，若订单已支付则自动原路退还资金。
+_Avoid_: 订单关闭, 取消订单, 撤回交易
+
+**Alipay Trade Create (统一收单交易创建 / 小程序支付)**:
+支付宝小程序调起收银台（`my.tradePay`）所需的前置服务端收单创建接口（`alipay.trade.create`），通过传入买家标识换取支付宝交易流水号（`trade_no`）。
+_Avoid_: 网页支付, 预下单, 支付宝JSAPI
+
+**Buyer Identifier (买家身份标识)**:
+支付宝小程序收单场景下的付款人身份凭证，包含旧版 16 位数字 UID（`buyer_id`，以 2088 开头）与新版 16 位开放标识（`buyer_open_id`，以 0 开头）。
+_Avoid_: 买家账号, openid, 支付宝账号
