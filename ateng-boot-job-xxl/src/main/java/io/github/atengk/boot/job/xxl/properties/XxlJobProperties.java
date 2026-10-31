@@ -77,4 +77,14 @@ public class XxlJobProperties {
      */
     private boolean contextAspectEnabled = true;
 
+    /**
+     * 默认任务本地硬看门狗超时时限 (如未在注解或 Admin 显式指定时生效，默认 null 表示不设全局超时)
+     */
+    private Duration defaultJobTimeout;
+
+    /**
+     * 是否启用受管线程池执行模式 (为 true 时将调度方法提交至 Core 受管异步线程池执行)
+     */
+    private boolean managedPoolEnabled = false;
+
 }

@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.xxl.aspect;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.xxl.job.core.context.XxlJobContext;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -10,26 +11,39 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
+import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
+import io.github.atengk.boot.job.xxl.timeout.AdminTimeoutRegistry;
+import io.github.atengk.boot.job.xxl.watchdog.JobExecutionMetadata;
+import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.boot.convert.DurationStyle;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 
 /**
- * XXL-Job 调度任务上下文与链路追踪切面
+ * XXL-Job 调度任务上下文、链路追踪与受管超时看门狗切面
  *
  * <p>无感拦截由 {@link XxlJob} 或 {@link AtengXxlJob} 声明的调度任务执行方法，在任务执行前自动织入：
  * <ul>
  *     <li><b>MDC 链路追踪</b>：提取任务入参中的 traceId 或基于无锁算法生成 32 位唯一标识，写入 MDC；</li>
  *     <li><b>多租户隔离策略</b>：解析 {@link JobTenantMode}，按需标记 {@code IGNORE} 忽略租户过滤或从入参中提取 {@code tenantId}；</li>
- *     <li><b>操作人上下文</b>：自动绑定调度中心或系统身份标识（默认为 {@code SYSTEM}）。</li>
+ *     <li><b>操作人上下文</b>：自动绑定调度中心或系统身份标识（默认为 {@code SYSTEM}）；</li>
+ *     <li><b>本地硬超时看门狗</b>：解析方法级 {@link AtengXxlJob#timeout()} 或 Admin 超时，超时时强中断工作线程并广播事件。</li>
  * </ul>
  * 并在任务完成后无论成功或异常，严格执行现场恢复与现场清理，彻底杜绝线程池复用污染与上下文泄露。</p>
  *
@@ -40,8 +54,24 @@ import java.lang.reflect.Method;
 @Order(Ordered.HIGHEST_PRECEDENCE + 100)
 public class XxlJobContextAspect {
 
+    private static final Logger log = LoggerFactory.getLogger(XxlJobContextAspect.class);
+
     public static final String TRACE_ID_KEY = "traceId";
     public static final String DEFAULT_JOB_USER = "SYSTEM";
+
+    private final LocalWatchdog watchdog;
+    private final XxlJobProperties properties;
+    private final Executor taskExecutor;
+
+    public XxlJobContextAspect() {
+        this(null, null, null);
+    }
+
+    public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
+        this.watchdog = watchdog;
+        this.properties = properties;
+        this.taskExecutor = taskExecutor;
+    }
 
     @Around("@annotation(com.xxl.job.core.handler.annotation.XxlJob) || @annotation(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob) || @within(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob)")
     public Object aroundJob(ProceedingJoinPoint pjp) throws Throwable {
@@ -90,10 +120,47 @@ public class XxlJobContextAspect {
             }
         }
 
-        // 5. 执行目标任务并确保终态严格清理
+        // 5. 本地硬看门狗与超时时限解析
+        long logId = XxlJobHelper.getLogId();
+        long jobId = XxlJobHelper.getJobId();
+        String jobName = (atengXxlJob != null && StringUtils.hasText(atengXxlJob.value())) ? atengXxlJob.value() : method.getName();
+        Duration timeout = resolveTimeout(atengXxlJob, logId);
+
+        JobExecutionMetadata metadata = new JobExecutionMetadata(
+                jobId,
+                jobName,
+                logId,
+                MDC.get(TRACE_ID_KEY),
+                TenantContextHolder.getTenantId()
+        );
+
+        LocalWatchdog.WatchdogSession session = LocalWatchdog.WatchdogSession.NOOP;
+        boolean hasWatchdog = watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative();
+
+        // 6. 执行目标任务并确保终态严格清理
         try {
-            return pjp.proceed();
+            if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
+                return executeInManagedPool(pjp, timeout, metadata);
+            } else {
+                if (hasWatchdog) {
+                    session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
+                }
+                return pjp.proceed();
+            }
+        } catch (Throwable t) {
+            if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
+                log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+            }
+            throw t;
         } finally {
+            session.cancel();
+            if (session.isTimedOut()) {
+                Thread.interrupted(); // 清理当前线程残留的中断状态，防止污染下一轮执行
+            }
+            if (logId > 0) {
+                AdminTimeoutRegistry.remove(logId);
+            }
+
             // 还原多租户上下文
             TenantContextHolder.restore(previousTenantSnapshot);
 
@@ -109,6 +176,81 @@ public class XxlJobContextAspect {
                 MDC.put(TRACE_ID_KEY, previousTraceId);
             } else {
                 MDC.remove(TRACE_ID_KEY);
+            }
+        }
+    }
+
+    private Object executeInManagedPool(ProceedingJoinPoint pjp, Duration timeout, JobExecutionMetadata metadata) throws Throwable {
+        XxlJobContext xxlJobContext = XxlJobContext.getXxlJobContext();
+        CompletableFuture<Object> future = new CompletableFuture<>();
+
+        taskExecutor.execute(() -> {
+            Thread workerThread = Thread.currentThread();
+            LocalWatchdog.WatchdogSession session = LocalWatchdog.WatchdogSession.NOOP;
+            if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+                session = watchdog.startWatch(workerThread, timeout, metadata);
+            }
+            if (xxlJobContext != null) {
+                XxlJobContext.setXxlJobContext(xxlJobContext);
+            }
+            try {
+                Object result = pjp.proceed();
+                future.complete(result);
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            } finally {
+                session.cancel();
+                if (session.isTimedOut()) {
+                    Thread.interrupted();
+                }
+                XxlJobContext.setXxlJobContext(null);
+            }
+        });
+
+        try {
+            return future.get();
+        } catch (ExecutionException ee) {
+            throw ee.getCause() != null ? ee.getCause() : ee;
+        }
+    }
+
+    /**
+     * 解析任务超时时限 (优先方法级注解，其次 Admin 动态下发，最后全局默认配置)
+     */
+    protected Duration resolveTimeout(AtengXxlJob atengXxlJob, long logId) {
+        if (atengXxlJob != null && StringUtils.hasText(atengXxlJob.timeout())) {
+            Duration duration = parseDuration(atengXxlJob.timeout());
+            if (duration != null) {
+                return duration;
+            }
+        }
+        if (logId > 0) {
+            Integer adminTimeoutSeconds = AdminTimeoutRegistry.get(logId);
+            if (adminTimeoutSeconds != null && adminTimeoutSeconds > 0) {
+                return Duration.ofSeconds(adminTimeoutSeconds);
+            }
+        }
+        if (properties != null && properties.getDefaultJobTimeout() != null) {
+            return properties.getDefaultJobTimeout();
+        }
+        return null;
+    }
+
+    /**
+     * 解析 Duration 字符串 (支持 30s, 1m, 500ms, 2h 等标准格式)
+     */
+    public static Duration parseDuration(String text) {
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        String trimmed = text.trim();
+        try {
+            return DurationStyle.detectAndParse(trimmed, ChronoUnit.SECONDS);
+        } catch (Exception e) {
+            try {
+                return Duration.ofSeconds(Long.parseLong(trimmed));
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("无法将 [" + text + "] 解析为有效的 Duration 时间格式，示例: 30s, 1m, 500ms", e);
             }
         }
     }
