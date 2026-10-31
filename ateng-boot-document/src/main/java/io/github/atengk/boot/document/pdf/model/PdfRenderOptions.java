@@ -43,6 +43,46 @@ public class PdfRenderOptions {
     private int maxPages = 50;
 
     /**
+     * 校验渲染分辨率 DPI 是否在安全防爆范围 [72.0, 600.0] 内
+     *
+     * @param dpi 待校验的分辨率
+     * @throws IllegalArgumentException 当超出范围时抛出
+     */
+    public static void validateDpi(float dpi) {
+        if (dpi < 72.0f || dpi > 600.0f) {
+            throw new IllegalArgumentException(String.format("渲染 DPI 超出安全范围 [72.0, 600.0]: %.1f", dpi));
+        }
+    }
+
+    /**
+     * 设置分辨率 DPI 并执行前置校验
+     *
+     * @param dpi 分辨率 DPI
+     */
+    public void setDpi(float dpi) {
+        validateDpi(dpi);
+        this.dpi = dpi;
+    }
+
+    /**
+     * 获取输出图像格式（别名对齐）
+     *
+     * @return 图像格式字符串
+     */
+    public String getImageFormat() {
+        return format;
+    }
+
+    /**
+     * 设置输出图像格式（别名对齐）
+     *
+     * @param imageFormat 图像格式字符串
+     */
+    public void setImageFormat(String imageFormat) {
+        this.format = imageFormat;
+    }
+
+    /**
      * 创建默认渲染配置（150 DPI, RGB, PNG, 50 页上限）
      *
      * @return 默认配置实例
@@ -52,12 +92,13 @@ public class PdfRenderOptions {
     }
 
     /**
-     * 创建指定 DPI 的渲染配置
+     * 创建指定 DPI 的渲染配置（带前置 Fail-Fast 校验）
      *
      * @param dpi 分辨率 DPI
      * @return 配置实例
      */
     public static PdfRenderOptions ofDpi(float dpi) {
+        validateDpi(dpi);
         return PdfRenderOptions.builder().dpi(dpi).build();
     }
 

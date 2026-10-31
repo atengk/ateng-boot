@@ -14,13 +14,13 @@
 | **Word 物理拼装** | 多文档物理无缝拼装 | `WordTemplate` | - | `stitch(target, docxSources)` / `stitch(target, Object... docxSources)`；`stitchToBytes(docxSources)` / `stitchToBytes(Object... docxSources)`；基于 OpenXML 底层结构按序合并多份独立 Docx 文档，保持段落格式、表格与图片上下文连续无缝拼装 | `WordTemplateStitchAndProtectTest`<br>`DocumentSampleIntegrationTest` |
 | **Word 密码保护** | 只读保护锁与密码验证 | `WordTemplate` | - | `protect(source, target, password)` / `protect(source, target)`；`protectToBytes(source, password)` / `protectToBytes(source)`；`unprotect(source, target)` / `unprotectToBytes(source)`；`isEnforcedReadonlyProtection(source)` / `validateProtectionPassword(source, password)`；兼容无 `settings.xml` 极简文档自愈防御初始化 | `WordTemplateStitchAndProtectTest` |
 | **Word 单元格合并** | 动态表格跨行跨列合并工具 | `WordTemplate` | - | `mergeCellsHorizontal(table, row, fromCol, toCol)`（横向跨列合并）；`mergeCellsVertical(table, col, fromRow, toRow)`（纵向跨行合并）；直接基于 Apache POI `XWPFTable` 底层 XML 网格模型操作 | `WordTemplateTest` |
-| **Word 浮动印章** | 独立浮动公章签名图层 | `FloatingPicture`<br>`FloatingPictureRenderPolicy` | - | `FloatingPicture.of(pictureData, dx, dy)`；`ofBytes(bytes, width, height, dx, dy)`；`ofFile(file, width, height, dx, dy)`；`ofStream(stream, width, height, dx, dy)`；基于 OpenXML `CTAnchor` 浮动锚点渲染，彻底摆脱行内文字挤压变形，自动清理 ThreadLocal 防止图层泄漏 | `WordTemplateTest`<br>`DocumentSampleIntegrationTest` |
+| **Word 浮动印章** | 独立浮动公章签名图层 | `FloatingPicture`<br>`FloatingPictureRenderPolicy` | - | `FloatingPicture.of(pictureData, dx, dy[, relH, relV])`；`ofBytes(bytes, width, height, dx, dy[, relH, relV])`；`ofFile(file, width, height, dx, dy[, relH, relV])`；`ofStream(stream, width, height, dx, dy[, relH, relV])`；基于 OpenXML `CTAnchor` 浮动锚点渲染，支持字符（`CHARACTER`）与段落（`PARAGRAPH`）动态相对定位，彻底摆脱行内文字挤压变形，自动清理 ThreadLocal 防止图层泄漏 | `WordTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 防泄密水印** | 全场景平铺暗水印压印 | `PdfTemplate` | `ateng.boot.document.watermark.*` | `addWatermark(source, target, options)` / `addWatermark(source, target, watermarkText)` / `addWatermark(source, target)`；`addWatermarkToBytes(source, options)` / `addWatermarkToBytes(source, watermarkText)` / `addWatermarkToBytes(source)`；网格倾斜平铺矩阵覆盖，自动解析动态宏与手机号掩码脱敏 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 物理坐标盖章** | 绝对物理坐标电子公章压印 | `PdfTemplate` | - | `addImageStamp(source, target, options)` / `addImageStamp(source, target, image, pageIndex, x, y, width, height)`；`addImageStampToBytes(source, options)` / `addImageStampToBytes(source, image, pageIndex, x, y, width, height)`；支持指定任意页面（包含 `-1` 索引倒数盖章）与绝对物理坐标精准压印 | `PdfTemplateTest` |
 | **PDF 跨页骑缝章** | 多页合同跨页骑缝章无损切片压印 | `PdfTemplate`<br>`CrossPageSealOptions`<br>`CrossPageSealEdge` | - | `stampCrossPageSeal(source, target, options)` / `stampCrossPageSeal(source, target, sealImage, options)` / `stampCrossPageSeal(source, target, sealImage)`；`stampCrossPageSealToBytes(...)`；数学无损等分垂直/水平条带切片（保留 Alpha 透明通道），支持右侧/左侧/顶部边缘贴合、skipCover、skipBackCover 及自定义 targetPages | `PdfTemplateCrossPageSealTest`<br>`DocumentAuditExportTest` |
-| **PDF 页面高清预览** | 原生页面转高清预览图与防 OOM | `PdfTemplate`<br>`PdfRenderOptions`<br>`PageImageConsumer` | - | `renderPageToImage(source, pageIndex, options)` / `renderPageToPng(source, pageIndex, dpi)` / `renderPageToImageBytes(source, pageIndex, options)` / `renderAllPagesToPng(source, dpi)`；`renderPages(source, startPage, endPage, options, consumer)`；流式消费并在回调后确定性执行 `image.flush()` 释放显存，DPI 72~600 范围保护 | `PdfTemplateRenderTest`<br>`DocumentAuditExportTest` |
+| **PDF 页面高清预览** | 原生页面转高清预览图与防 OOM | `PdfTemplate`<br>`PdfRenderOptions`<br>`PageImageConsumer` | - | `renderPageToImage(source)` / `renderPageToImage(source, pageIndex, options)` / `renderPageToPng(source, pageIndex, dpi)` / `renderPageToImageBytes(source, pageIndex, options)` / `renderPageToBytes(source)` / `renderPageToBytes(source, pageIndex, options)` / `renderAllPagesToPng(source, dpi)`；`renderPages(source, startPage, endPage, options, consumer)`；流式消费并在回调后确定性执行 `image.flush()` 释放显存，DPI 72~600 范围保护 | `PdfTemplateRenderTest`<br>`DocumentAuditExportTest` |
 | **PDF 元数据自省** | 核心元数据结构化自省与文本抽取 | `PdfTemplate`<br>`PdfMetadata` | - | `inspectMetadata(source)` / `inspectMetadata(source, password)`：自省标题、作者、创建修改时间、总页数、加密状态、PDF 版本等 11 维元数据；`extractText(source, startPage, endPage, password)`：起止范围分页受管纯文本抽取 | `PdfTemplateMetadataTest`<br>`PdfTemplateTest` |
-| **PDF 动态表单** | AcroForm 表单填报与扁平化 | `PdfTemplate`<br>`PdfFormFieldDescriptor` | - | `fillForm(source, target, formData, options)` / `fillForm(source, target, formData)`；`fillFormToBytes(...)`；`listFormFields(source)`（枚举 8 维表单字段元数据）；`getFormFields(source)` / `hasAcroForm(source)`；动态 XFA 结构探测与快速失败熔断；自动识别文本框与复选框，默认执行矢量扁平化（Flatten）彻底销毁交互控件防二次篡改 | `PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
+| **PDF 动态表单** | AcroForm 表单填报与扁平化 | `PdfTemplate`<br>`PdfFormFieldDescriptor` | - | `fillForm(source, target, formData, options)` / `fillForm(source, target, formData)`；`fillFormToBytes(...)`；`listFormFields(source[, password])`（枚举 8 维表单字段元数据）；`getFormFields(source[, password])` / `hasAcroForm(source[, password])`；动态 XFA 结构探测与快速失败熔断；自动识别文本框与复选框，默认执行矢量扁平化（Flatten）彻底销毁交互控件防二次篡改 | `PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 物理编排** | 多文件物理合并与拆分 | `PdfTemplate` | - | `merge(target, pdfSources)` / `merge(target, Object... pdfSources)`；`mergeToBytes(pdfSources)` / `mergeToBytes(Object... pdfSources)`；`split(source, outputDir, prefix)`（逐页拆分为单页 PDF 文件）；`splitToBytes(source, pagesPerFile)`（按页数切分为内存列表） | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 页面重组** | 页面精准提取与角度旋转 | `PdfTemplate` | - | `extractPages(source, target, fromPage, toPage)` / `extractPageRange(source, target, fromPage, toPage)` / `extractPages(source, target, int... pageIndexes)`；`extractPagesToBytes(...)` / `extractPageRangeToBytes(...)`；`rotatePages(source, target, angle, int... pageIndexes)` / `rotatePagesToBytes(...)`（支持 90°、180°、270° 顺时针旋转） | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 页码压印** | 动态页码与跳过封面重算 | `PdfTemplate` | - | `addPageNumbers(source, target, options)` / `addPageNumbers(source, target)`；`addPageNumbersToBytes(source, options)` / `addPageNumbersToBytes(source)`；支持指定 6 种对齐方位、格式模板 `{page}` / `{total}`、跳过封面页码与有效总页数重新核算 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
@@ -405,9 +405,9 @@ PdfRenderOptions options = PdfRenderOptions.builder()
         .build();
 
 // 3. 流式逐页渲染并在回调后确定性执行 image.flush() 释放光栅显存
-pdfTemplate.renderPages(pdfBytes, 1, 5, options, (image, pageIndex) -> {
+pdfTemplate.renderPages(pdfBytes, 1, 5, options, (pageNumber, image) -> {
     // 业务消费每一页 BufferedImage（如上传到对象存储或生成缩略图）
-    processThumbnail(image, pageIndex);
+    processThumbnail(pageNumber, image);
     // 回调结束后底座自动调用 image.flush() 释放内存，杜绝 FullGC 与 OOM
 });
 ```
@@ -431,7 +431,6 @@ CrossPageSealOptions sealOptions = CrossPageSealOptions.builder()
 
 // 2. 执行压印并返回字节数组（纯 AWT 保留 Alpha 透明通道无损切片）
 byte[] sealedPdf = pdfTemplate.stampCrossPageSealToBytes(multiPagePdf, sealOptions);
-```
 ```
 
 ---

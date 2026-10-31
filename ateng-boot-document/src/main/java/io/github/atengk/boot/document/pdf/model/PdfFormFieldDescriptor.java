@@ -43,6 +43,11 @@ public class PdfFormFieldDescriptor {
     private String value;
 
     /**
+     * 字段默认值（若无默认值则为空字符串或 null）
+     */
+    private String defaultValue;
+
+    /**
      * 是否为只读锁定状态
      */
     private boolean readOnly;
@@ -51,6 +56,11 @@ public class PdfFormFieldDescriptor {
      * 是否为必填项
      */
     private boolean required;
+
+    /**
+     * 是否支持多选（主要针对 PDChoice / ListBox）
+     */
+    private boolean multiSelect;
 
     /**
      * 表单字段语义化分类枚举

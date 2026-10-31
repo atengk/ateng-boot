@@ -538,6 +538,12 @@ class PdfTemplateTest {
         assertThatThrownBy(() -> pdfTemplate.extractText(simplePdf, 2, 1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("不能小于起始页码");
+
+        // 4. 起始页超出总页数拦截
+        assertThatThrownBy(() -> pdfTemplate.extractText(simplePdf, 5, 5))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS)
+                .hasMessageContaining("超出文档总页数");
     }
 
     private static byte[] createPdfWithMetadata(String page1Text, String page2Text) {

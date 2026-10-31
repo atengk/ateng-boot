@@ -194,28 +194,26 @@ public class TemplateInitializer {
     }
 
     /**
-     * 确保高保真印章资产存在于所有资源目录中
+     * 确保高保真印章资产存在于构建输出目录中（仅补全缺失的 target 构建产物，严禁污染源码目录）
      */
     public static void ensureSealAssetsExist() {
         try {
-            byte[] sealBytes = generateSealImageBytes();
             File currentDir = new File(System.getProperty("user.dir"));
             List<File> targets = new ArrayList<>();
-            // 根目录寻址
-            targets.add(new File(currentDir, "ateng-boot-samples/ateng-boot-sample-document/src/main/resources/images/company-seal.png"));
+            // 仅对构建输出目录进行自洽补全
             targets.add(new File(currentDir, "ateng-boot-samples/ateng-boot-sample-document/target/classes/images/company-seal.png"));
-            targets.add(new File(currentDir, "ateng-boot-document/src/test/resources/images/seal.png"));
             targets.add(new File(currentDir, "ateng-boot-document/target/test-classes/images/seal.png"));
-            // sample 模块相对目录寻址
-            targets.add(new File(currentDir, "src/main/resources/images/company-seal.png"));
             targets.add(new File(currentDir, "target/classes/images/company-seal.png"));
-            targets.add(new File(currentDir, "../../ateng-boot-document/src/test/resources/images/seal.png"));
             targets.add(new File(currentDir, "../../ateng-boot-document/target/test-classes/images/seal.png"));
 
+            byte[] sealBytes = null;
             for (File target : targets) {
-                if (target.getParentFile() != null && target.getParentFile().exists()) {
+                if (target.getParentFile() != null && target.getParentFile().exists() && (!target.exists() || target.length() == 0)) {
+                    if (sealBytes == null) {
+                        sealBytes = generateSealImageBytes();
+                    }
                     Files.write(target.toPath(), sealBytes);
-                    log.info("【TemplateInitializer】成功同步高保真透明印章资产: {}", target.getAbsolutePath());
+                    log.info("【TemplateInitializer】成功按需生成高保真印章资产至构建目录: {}", target.getAbsolutePath());
                 }
             }
         } catch (Exception e) {
@@ -229,7 +227,10 @@ public class TemplateInitializer {
     public static synchronized void ensureTemplatesExist() {
         ensureSealAssetsExist();
 
-        ensureDirectoryAndFiles(new File(TARGET_TEMPLATES_DIR));
+        File targetTemplatesDir = new File(TARGET_TEMPLATES_DIR);
+        if (targetTemplatesDir.exists()) {
+            ensureDirectoryAndFiles(targetTemplatesDir);
+        }
         File targetClassesDir = new File("target/classes/templates");
         if (targetClassesDir.getParentFile() != null && targetClassesDir.getParentFile().exists()) {
             ensureDirectoryAndFiles(targetClassesDir);
@@ -242,7 +243,9 @@ public class TemplateInitializer {
         }
 
         File contractFile = new File(dir, "contract-template.docx");
-        generateContractTemplate(contractFile);
+        if (!contractFile.exists() || contractFile.length() == 0) {
+            generateContractTemplate(contractFile);
+        }
 
         File attachmentFile = new File(dir, "attachment-clause.docx");
         if (!attachmentFile.exists() || attachmentFile.length() == 0) {

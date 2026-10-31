@@ -20,7 +20,10 @@ import io.github.atengk.boot.document.properties.DocumentPdfProperties;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import io.github.atengk.boot.document.properties.DocumentWatermarkProperties;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSArray;
+import org.apache.pdfbox.cos.COSBase;
 import org.apache.pdfbox.cos.COSName;
+import org.apache.pdfbox.cos.COSString;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.io.RandomAccessReadBufferedFile;
 import org.apache.pdfbox.multipdf.PDFMergerUtility;
@@ -449,6 +452,7 @@ public class PdfTemplate {
         Objects.requireNonNull(target, "目标输出 target 不能为空");
         Objects.requireNonNull(options, "骑缝章选项 options 不能为空");
         Objects.requireNonNull(options.getSealImage(), "印章图片输入源 sealImage 不能为空");
+        CrossPageSealOptions.validateDimensions(options.getWidth(), options.getHeight());
 
         byte[] sealBytes = resolveImageBytes(options.getSealImage());
         BufferedImage originalSealImage;
@@ -459,6 +463,9 @@ public class PdfTemplate {
         }
         if (originalSealImage == null) {
             throw new PdfOperationException(DocumentResultCode.DOCUMENT_OPERATION_FAILED, "无法解析印章图片内容，请确认图片格式为合法图片 (如 PNG/JPG)");
+        }
+        if (originalSealImage.getWidth() <= 0 || originalSealImage.getHeight() <= 0) {
+            throw new IllegalArgumentException("印章图像像素尺寸必须大于 0");
         }
 
         try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
@@ -473,8 +480,8 @@ public class PdfTemplate {
             }
 
             List<Integer> targetPageIndices = resolveTargetPages(options, totalPages);
-            int n = targetPageIndices.size();
-            if (n <= 0) {
+            int pageCount = targetPageIndices.size();
+            if (pageCount <= 0) {
                 throw new IllegalArgumentException("计算后的有效盖章页数为空，无法施加跨页骑缝章");
             }
 
@@ -482,8 +489,8 @@ public class PdfTemplate {
             int originalHeight = originalSealImage.getHeight();
             CrossPageSealEdge edge = options.getEdge() != null ? options.getEdge() : CrossPageSealEdge.RIGHT;
 
-            for (int k = 0; k < n; k++) {
-                int pageIndex = targetPageIndices.get(k);
+            for (int sliceIndex = 0; sliceIndex < pageCount; sliceIndex++) {
+                int pageIndex = targetPageIndices.get(sliceIndex);
                 PDPage page = doc.getPage(pageIndex);
                 PDRectangle box = page.getCropBox() != null ? page.getCropBox() : page.getMediaBox();
                 float pageWidth = box.getWidth();
@@ -498,18 +505,10 @@ public class PdfTemplate {
                 float y;
 
                 if (edge == CrossPageSealEdge.TOP || edge == CrossPageSealEdge.BOTTOM) {
-                    int startY = (int) Math.round((double) k * originalHeight / n);
-                    int endY = (int) Math.round((double) (k + 1) * originalHeight / n);
-                    int stripHeight = Math.max(1, endY - startY);
-
-                    slice = new BufferedImage(originalWidth, stripHeight, BufferedImage.TYPE_INT_ARGB);
-                    Graphics2D g2d = slice.createGraphics();
-                    try {
-                        g2d.setComposite(AlphaComposite.Src);
-                        g2d.drawImage(originalSealImage, 0, 0, originalWidth, stripHeight, 0, startY, originalWidth, endY, null);
-                    } finally {
-                        g2d.dispose();
-                    }
+                    int startY = (int) Math.round((double) sliceIndex * originalHeight / pageCount);
+                    int endY = (int) Math.round((double) (sliceIndex + 1) * originalHeight / pageCount);
+                    slice = createSealSlice(originalSealImage, 0, startY, originalWidth, endY);
+                    int stripHeight = slice.getHeight();
 
                     slicePdfWidth = options.getWidth();
                     slicePdfHeight = options.getHeight() * ((float) stripHeight / originalHeight);
@@ -521,18 +520,10 @@ public class PdfTemplate {
                         y = originY + pageHeight - slicePdfHeight - options.getMargin();
                     }
                 } else {
-                    int startX = (int) Math.round((double) k * originalWidth / n);
-                    int endX = (int) Math.round((double) (k + 1) * originalWidth / n);
-                    int stripWidth = Math.max(1, endX - startX);
-
-                    slice = new BufferedImage(stripWidth, originalHeight, BufferedImage.TYPE_INT_ARGB);
-                    Graphics2D g2d = slice.createGraphics();
-                    try {
-                        g2d.setComposite(AlphaComposite.Src);
-                        g2d.drawImage(originalSealImage, 0, 0, stripWidth, originalHeight, startX, 0, endX, originalHeight, null);
-                    } finally {
-                        g2d.dispose();
-                    }
+                    int startX = (int) Math.round((double) sliceIndex * originalWidth / pageCount);
+                    int endX = (int) Math.round((double) (sliceIndex + 1) * originalWidth / pageCount);
+                    slice = createSealSlice(originalSealImage, startX, 0, endX, originalHeight);
+                    int stripWidth = slice.getWidth();
 
                     slicePdfWidth = options.getWidth() * ((float) stripWidth / originalWidth);
                     slicePdfHeight = options.getHeight();
@@ -553,7 +544,7 @@ public class PdfTemplate {
                     slice.flush();
                 }
 
-                PDImageXObject pdImage = PDImageXObject.createFromByteArray(doc, sliceBytes, "seal-slice-" + k);
+                PDImageXObject pdImage = PDImageXObject.createFromByteArray(doc, sliceBytes, "seal-slice-" + sliceIndex);
 
                 PDPageContentStream.AppendMode mode = options.getLayer() == WatermarkLayer.UNDERLAY
                         ? PDPageContentStream.AppendMode.PREPEND
@@ -588,6 +579,20 @@ public class PdfTemplate {
         }
     }
 
+    private static BufferedImage createSealSlice(BufferedImage sourceImage, int srcX1, int srcY1, int srcX2, int srcY2) {
+        int targetWidth = Math.max(1, srcX2 - srcX1);
+        int targetHeight = Math.max(1, srcY2 - srcY1);
+        BufferedImage slice = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g2d = slice.createGraphics();
+        try {
+            g2d.setComposite(AlphaComposite.Src);
+            g2d.drawImage(sourceImage, 0, 0, targetWidth, targetHeight, srcX1, srcY1, srcX2, srcY2, null);
+        } finally {
+            g2d.dispose();
+        }
+        return slice;
+    }
+
     /**
      * 为多页 PDF 文档施加跨页骑缝章（指定印章源与选项）
      *
@@ -597,9 +602,11 @@ public class PdfTemplate {
      * @param options   骑缝章配置选项
      */
     public void stampCrossPageSeal(Object source, Object target, Object sealImage, CrossPageSealOptions options) {
-        CrossPageSealOptions opt = options != null ? options : new CrossPageSealOptions();
-        if (sealImage != null) {
-            opt.setSealImage(sealImage);
+        CrossPageSealOptions opt;
+        if (options != null) {
+            opt = options.toBuilder().sealImage(sealImage != null ? sealImage : options.getSealImage()).build();
+        } else {
+            opt = CrossPageSealOptions.of(sealImage);
         }
         stampCrossPageSeal(source, target, opt);
     }
@@ -753,9 +760,14 @@ public class PdfTemplate {
                     throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密且无内容提取权限，请先提供密码解密");
                 }
             }
+            int totalPages = doc.getNumberOfPages();
+            if (startPage > totalPages) {
+                throw new PdfOperationException(DocumentResultCode.PDF_PAGE_INDEX_OUT_OF_BOUNDS,
+                        String.format("起始页码 startPage (%d) 超出文档总页数 (%d)", startPage, totalPages));
+            }
             PDFTextStripper stripper = new PDFTextStripper();
             stripper.setStartPage(startPage);
-            stripper.setEndPage(endPage);
+            stripper.setEndPage(Math.min(endPage, totalPages));
             return stripper.getText(doc);
         } catch (PdfOperationException | IllegalArgumentException e) {
             throw e;
@@ -1696,11 +1708,25 @@ public class PdfTemplate {
      * @return 字段名称与当前值的键值映射（若文档不含表单则返回空 Map，绝不返回 null）
      */
     public Map<String, String> getFormFields(Object source) {
+        return getFormFields(source, null);
+    }
+
+    /**
+     * 提取 PDF 文档中所有交互式表单域的名称及其当前值映射（支持密码解密访问）
+     *
+     * @param source   PDF 输入源
+     * @param password 打开密码（若无密码传 null）
+     * @return 字段名称与当前值的键值映射（若文档不含表单则返回空 Map，绝不返回 null）
+     */
+    public Map<String, String> getFormFields(Object source, String password) {
         Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
-        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, password)) {
             PDDocument doc = loadedPdf.getDocument();
             if (doc.isEncrypted()) {
-                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再获取表单字段");
+                AccessPermission ap = doc.getCurrentAccessPermission();
+                if (ap != null && !ap.canExtractContent() && !ap.canFillInForm()) {
+                    throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密且无表单访问权限，请先提供密码解密");
+                }
             }
             PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
             if (acroForm == null) {
@@ -1725,11 +1751,26 @@ public class PdfTemplate {
      * @throws PdfOperationException 表单读取异常或动态 XFA 拦截时抛出
      */
     public List<PdfFormFieldDescriptor> listFormFields(Object source) {
+        return listFormFields(source, null);
+    }
+
+    /**
+     * 巡检并自省 PDF 文档中所有 AcroForm 交互式表单域元数据描述列表（支持密码解密访问）
+     *
+     * @param source   原始 PDF 输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @param password 打开密码（若无密码传 null）
+     * @return 表单字段结构描述列表（若文档不含表单则返回空列表，绝不返回 null）
+     * @throws PdfOperationException 表单读取异常或动态 XFA 拦截时抛出
+     */
+    public List<PdfFormFieldDescriptor> listFormFields(Object source, String password) {
         Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
-        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, password)) {
             PDDocument doc = loadedPdf.getDocument();
             if (doc.isEncrypted()) {
-                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再获取表单字段元数据");
+                AccessPermission ap = doc.getCurrentAccessPermission();
+                if (ap != null && !ap.canExtractContent() && !ap.canFillInForm()) {
+                    throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密且无表单访问权限，请先提供密码解密");
+                }
             }
             PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
             if (acroForm == null) {
@@ -1756,8 +1797,19 @@ public class PdfTemplate {
      * @return 若包含交互式表单且至少存在一个表单域返回 true，否则返回 false
      */
     public boolean hasAcroForm(Object source) {
+        return hasAcroForm(source, null);
+    }
+
+    /**
+     * 探测指定的 PDF 文档是否包含 AcroForm 交互式表单（支持密码解密访问）
+     *
+     * @param source   PDF 输入源
+     * @param password 打开密码（若无密码传 null）
+     * @return 若包含交互式表单且至少存在一个表单域返回 true，否则返回 false
+     */
+    public boolean hasAcroForm(Object source, String password) {
         Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
-        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+        try (LoadedPdfDocument loadedPdf = loadDocument(source, password)) {
             PDDocument doc = loadedPdf.getDocument();
             PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
             return acroForm != null && !acroForm.getFields().isEmpty();
@@ -1766,9 +1818,13 @@ public class PdfTemplate {
         }
     }
 
+    private static class ChineseFontHolder {
+        private PDFont font;
+        private COSName fontName;
+    }
+
     private void fillAcroFormFields(PDDocument doc, PDAcroForm acroForm, Map<String, Object> data, FormOptions opts) throws IOException {
-        PDFont[] cachedChineseFont = new PDFont[1];
-        COSName[] cachedFontName = new COSName[1];
+        ChineseFontHolder fontHolder = new ChineseFontHolder();
 
         for (Map.Entry<String, Object> entry : data.entrySet()) {
             String fieldName = entry.getKey();
@@ -1781,25 +1837,25 @@ public class PdfTemplate {
                 continue;
             }
             Object value = entry.getValue();
-            setFieldValue(doc, acroForm, field, value, opts, cachedChineseFont, cachedFontName);
+            setFieldValue(doc, acroForm, field, value, opts, fontHolder);
         }
     }
 
     private void setFieldValue(PDDocument doc, PDAcroForm acroForm, PDField field, Object val,
-                               FormOptions opts, PDFont[] cachedChineseFont, COSName[] cachedFontName) throws IOException {
+                               FormOptions opts, ChineseFontHolder fontHolder) throws IOException {
         if (field instanceof PDTextField textField) {
             String strVal = val != null ? String.valueOf(val) : "";
             if (containsChinese(strVal)) {
-                ensureChineseFontConfigured(doc, acroForm, textField, opts, cachedChineseFont, cachedFontName);
+                ensureChineseFontConfigured(doc, acroForm, textField, opts, fontHolder);
             }
             try {
                 textField.setValue(strVal);
             } catch (IllegalArgumentException e) {
                 // 若因编码问题抛出异常，强制适配中文字体后重试
-                ensureChineseFontConfigured(doc, acroForm, textField, opts, cachedChineseFont, cachedFontName);
-                if (cachedFontName[0] != null) {
+                ensureChineseFontConfigured(doc, acroForm, textField, opts, fontHolder);
+                if (fontHolder.fontName != null) {
                     float size = parseFontSize(textField.getDefaultAppearance(), 10.0f);
-                    textField.setDefaultAppearance("/" + cachedFontName[0].getName() + " " + size + " Tf 0 g");
+                    textField.setDefaultAppearance("/" + fontHolder.fontName.getName() + " " + size + " Tf 0 g");
                     textField.setValue(strVal);
                 } else {
                     throw e;
@@ -1831,13 +1887,13 @@ public class PdfTemplate {
             if (val instanceof List<?> list) {
                 boolean hasCjk = list.stream().anyMatch(item -> containsChinese(String.valueOf(item)));
                 if (hasCjk) {
-                    ensureChineseFontConfigured(doc, acroForm, choice, opts, cachedChineseFont, cachedFontName);
+                    ensureChineseFontConfigured(doc, acroForm, choice, opts, fontHolder);
                 }
                 choice.setValue(list.stream().map(String::valueOf).toList());
             } else if (val != null) {
                 String strVal = String.valueOf(val);
                 if (containsChinese(strVal)) {
-                    ensureChineseFontConfigured(doc, acroForm, choice, opts, cachedChineseFont, cachedFontName);
+                    ensureChineseFontConfigured(doc, acroForm, choice, opts, fontHolder);
                 }
                 choice.setValue(strVal);
             }
@@ -1849,21 +1905,21 @@ public class PdfTemplate {
     }
 
     private void ensureChineseFontConfigured(PDDocument doc, PDAcroForm acroForm, PDVariableText variableText,
-                                             FormOptions opts, PDFont[] cachedChineseFont, COSName[] cachedFontName) {
-        if (cachedFontName[0] == null) {
+                                             FormOptions opts, ChineseFontHolder fontHolder) {
+        if (fontHolder.fontName == null) {
             PDResources resources = acroForm.getDefaultResources();
             if (resources == null) {
                 resources = new PDResources();
                 acroForm.setDefaultResources(resources);
             }
             PDFont font = resolveFormFont(doc, opts.getCustomFontPath());
-            cachedChineseFont[0] = font;
-            cachedFontName[0] = resources.add(font);
+            fontHolder.font = font;
+            fontHolder.fontName = resources.add(font);
         }
 
         String da = variableText.getDefaultAppearance();
         float size = parseFontSize(da, 10.0f);
-        variableText.setDefaultAppearance("/" + cachedFontName[0].getName() + " " + size + " Tf 0 g");
+        variableText.setDefaultAppearance("/" + fontHolder.fontName.getName() + " " + size + " Tf 0 g");
     }
 
     private float parseFontSize(String da, float defaultSize) {
@@ -1941,7 +1997,7 @@ public class PdfTemplate {
     }
 
     private void checkXfaSupport(PDAcroForm acroForm) {
-        if (acroForm != null && acroForm.hasXFA()) {
+        if (acroForm != null && (acroForm.hasXFA() || acroForm.getXFA() != null)) {
             throw new PdfOperationException(DocumentResultCode.PDF_XFA_UNSUPPORTED,
                     "检测到当前 PDF 包含动态 XFA (XML Forms Architecture) 表单，PDFBox 暂不支持动态 XFA 渲染与填报；"
                             + "请先在 Adobe Acrobat 中执行「打印为 PDF」或「转换为静态 AcroForm」后再行操作");
@@ -1958,18 +2014,50 @@ public class PdfTemplate {
             } else {
                 PdfFormFieldDescriptor.FieldCategory category = resolveFieldCategory(f);
                 String val = f.getValueAsString();
+                String defaultVal = resolveDefaultValue(f);
+                boolean multiSelect = (f instanceof PDChoice choice) && choice.isMultiSelect();
                 PdfFormFieldDescriptor descriptor = PdfFormFieldDescriptor.builder()
                         .name(f.getPartialName())
                         .fullyQualifiedName(f.getFullyQualifiedName())
                         .fieldType(f.getFieldType())
                         .fieldCategory(category)
                         .value(val != null ? val : "")
+                        .defaultValue(defaultVal != null ? defaultVal : "")
                         .readOnly(f.isReadOnly())
                         .required(f.isRequired())
+                        .multiSelect(multiSelect)
                         .build();
                 result.add(descriptor);
             }
         }
+    }
+
+    private String resolveDefaultValue(PDField field) {
+        if (field == null || field.getCOSObject() == null) {
+            return "";
+        }
+        COSBase dv = field.getCOSObject().getDictionaryObject(COSName.DV);
+        if (dv == null) {
+            return "";
+        }
+        if (dv instanceof COSString cosStr) {
+            return cosStr.getString();
+        } else if (dv instanceof COSName cosName) {
+            return cosName.getName();
+        } else if (dv instanceof COSArray cosArray) {
+            List<String> list = new ArrayList<>();
+            for (COSBase item : cosArray) {
+                if (item instanceof COSString s) {
+                    list.add(s.getString());
+                } else if (item instanceof COSName n) {
+                    list.add(n.getName());
+                } else if (item != null) {
+                    list.add(item.toString());
+                }
+            }
+            return String.join(", ", list);
+        }
+        return dv.toString();
     }
 
     private PdfFormFieldDescriptor.FieldCategory resolveFieldCategory(PDField field) {
@@ -2027,6 +2115,17 @@ public class PdfTemplate {
      */
     public BufferedImage renderPageToImage(Object source, int pageIndex, float dpi) {
         return renderPageToImage(source, pageIndex, PdfRenderOptions.ofDpi(dpi));
+    }
+
+    /**
+     * 将 PDF 文档首页渲染为默认高清图像（BufferedImage，默认 150 DPI RGB）
+     *
+     * @param source 原始 PDF 输入源
+     * @return 渲染出的 BufferedImage 对象
+     * @throws PdfOperationException 渲染失败或文档已加密时抛出
+     */
+    public BufferedImage renderPageToImage(Object source) {
+        return renderPageToImage(source, 0, PdfRenderOptions.defaults());
     }
 
     /**
@@ -2124,6 +2223,28 @@ public class PdfTemplate {
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED, "渲染 PDF 页面图像字节数组失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 将 PDF 文档首页渲染为默认高清图像字节数组（默认 150 DPI PNG）
+     *
+     * @param source 原始 PDF 输入源
+     * @return 图像二进制字节数组
+     */
+    public byte[] renderPageToBytes(Object source) {
+        return renderPageToBytes(source, 0, PdfRenderOptions.defaults());
+    }
+
+    /**
+     * 将 PDF 文档指定页面渲染为图像字节数组（别名对齐，等价于 renderPageToImageBytes）
+     *
+     * @param source    原始 PDF 输入源
+     * @param pageIndex 页面索引（0-based，支持负数索引）
+     * @param options   渲染配置选项
+     * @return 图像二进制字节数组
+     */
+    public byte[] renderPageToBytes(Object source, int pageIndex, PdfRenderOptions options) {
+        return renderPageToImageBytes(source, pageIndex, options);
     }
 
     /**
@@ -2272,9 +2393,7 @@ public class PdfTemplate {
     }
 
     private static void validateDpi(float dpi) {
-        if (dpi < 72.0f || dpi > 600.0f) {
-            throw new IllegalArgumentException(String.format("渲染 DPI 超出安全范围 [72.0, 600.0]: %.1f", dpi));
-        }
+        PdfRenderOptions.validateDpi(dpi);
     }
 
     private static byte[] toImageBytes(BufferedImage image, String format) throws IOException {

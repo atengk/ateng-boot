@@ -64,6 +64,22 @@ class PdfTemplateRenderTest {
         byte[] pngBytes = pdfTemplate.renderPageToPng(pdfBytes, -1);
         assertThat(pngBytes).isNotEmpty();
 
+        // 3. 测试首页面参数缺省重载与 renderPageToBytes 别名对齐
+        BufferedImage defaultFirstPage = pdfTemplate.renderPageToImage(pdfBytes);
+        assertThat(defaultFirstPage).isNotNull();
+        assertThat(defaultFirstPage.getWidth()).isEqualTo(image0.getWidth());
+
+        byte[] firstPageBytes = pdfTemplate.renderPageToBytes(pdfBytes);
+        assertThat(firstPageBytes).isNotEmpty();
+
+        // 4. 测试 DPI Fail-Fast 前置拦截
+        assertThatThrownBy(() -> PdfRenderOptions.ofDpi(60.0f))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出安全范围");
+        assertThatThrownBy(() -> PdfRenderOptions.ofDpi(700.0f))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("超出安全范围");
+
         // 校验生成的 PNG 二进制确实能够被 ImageIO 正常解码
         BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(pngBytes));
         assertThat(decoded).isNotNull();

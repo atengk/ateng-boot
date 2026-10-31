@@ -353,8 +353,7 @@ class DocumentAuditExportTest {
         sb.append("提示：以上文件均已成功落盘至项目 target 目录，支持在 IDEA/VS Code 终端或文档中 Ctrl+单击 (或直接在系统文件管理器中打开) 进行全真排版与视觉效果审核。\n");
         sb.append("========================================================================================================================\n");
 
-        System.out.println(sb);
-        log.info(sb.toString());
+        log.info("\n{}", sb);
     }
 
     private static String formatFileSize(long bytes) {

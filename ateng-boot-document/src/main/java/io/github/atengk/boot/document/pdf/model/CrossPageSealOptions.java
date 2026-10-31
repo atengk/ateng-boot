@@ -21,10 +21,23 @@ import java.util.Objects;
  * @since 2026-10-31
  */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @NoArgsConstructor
 @AllArgsConstructor
 public class CrossPageSealOptions {
+
+    /**
+     * 校验印章尺寸合法性（宽度和高度必须大于 0）
+     *
+     * @param width  印章宽度
+     * @param height 印章高度
+     * @throws IllegalArgumentException 当尺寸非正数时抛出
+     */
+    public static void validateDimensions(float width, float height) {
+        if (width <= 0.0f || height <= 0.0f) {
+            throw new IllegalArgumentException(String.format("印章尺寸必须大于 0 (width: %.1f, height: %.1f)", width, height));
+        }
+    }
 
     /**
      * 默认印章总宽度（单位：pt）
@@ -127,6 +140,7 @@ public class CrossPageSealOptions {
      */
     public static CrossPageSealOptions of(Object sealImage, float width, float height) {
         Objects.requireNonNull(sealImage, "印章图片输入源 sealImage 不能为空");
+        validateDimensions(width, height);
         return CrossPageSealOptions.builder()
                 .sealImage(sealImage)
                 .width(width)

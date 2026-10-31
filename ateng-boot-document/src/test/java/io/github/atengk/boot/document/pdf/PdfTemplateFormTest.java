@@ -353,6 +353,11 @@ class PdfTemplateFormTest {
         assertThat(countryDesc).isNotNull();
         assertThat(countryDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.CHOICE);
         assertThat(countryDesc.getFieldType()).isEqualTo("Ch");
+        assertThat(countryDesc.isMultiSelect()).isFalse();
+
+        // 验证默认值与多选状态覆盖
+        assertThat(usernameDesc.getDefaultValue()).isNotNull();
+        assertThat(usernameDesc.isMultiSelect()).isFalse();
 
         // 普通空白 PDF 巡检保底返回空列表
         byte[] plainPdf;
@@ -363,6 +368,31 @@ class PdfTemplateFormTest {
             plainPdf = baos.toByteArray();
         }
         assertThat(pdfTemplate.listFormFields(plainPdf)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试带密码保护的 PDF 表单字段获取与巡检 listFormFields/getFormFields/hasAcroForm")
+    void testEncryptedPdfFormInspection() throws Exception {
+        byte[] templatePdf = createSampleFormPdf();
+        String pass = "FormPass#2026";
+        byte[] encryptedPdf = pdfTemplate.protectToBytes(templatePdf, pass, pass);
+
+        // 1. 无密码或错误密码应被拦截
+        assertThatThrownBy(() -> pdfTemplate.listFormFields(encryptedPdf))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PASSWORD_ERROR);
+        assertThatThrownBy(() -> pdfTemplate.getFormFields(encryptedPdf))
+                .isInstanceOf(PdfOperationException.class)
+                .hasFieldOrPropertyWithValue("resultCode", DocumentResultCode.PASSWORD_ERROR);
+
+        // 2. 正确密码巡检成功
+        List<PdfFormFieldDescriptor> descriptors = pdfTemplate.listFormFields(encryptedPdf, pass);
+        assertThat(descriptors).hasSize(5);
+
+        Map<String, String> fields = pdfTemplate.getFormFields(encryptedPdf, pass);
+        assertThat(fields).containsKey("username");
+
+        assertThat(pdfTemplate.hasAcroForm(encryptedPdf, pass)).isTrue();
     }
 
     @Test

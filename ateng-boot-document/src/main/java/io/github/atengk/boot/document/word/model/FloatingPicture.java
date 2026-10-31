@@ -123,7 +123,7 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofBytes(byte[] bytes, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofBytes(bytes).size(width, height).create(), dx, dy, true);
+        return ofBytes(bytes, width, height, dx, dy, null, null);
     }
 
     /**
@@ -140,7 +140,7 @@ public class FloatingPicture {
      */
     public static FloatingPicture ofBytes(byte[] bytes, int width, int height, int dx, int dy,
                                           STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
-        return new FloatingPicture(Pictures.ofBytes(bytes).size(width, height).create(), dx, dy, true, relativeFromH, relativeFromV);
+        return of(Pictures.ofBytes(bytes).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 
     /**
@@ -154,7 +154,7 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofFile(File file, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofLocal(file.getAbsolutePath()).size(width, height).create(), dx, dy, true);
+        return ofFile(file, width, height, dx, dy, null, null);
     }
 
     /**
@@ -171,7 +171,7 @@ public class FloatingPicture {
      */
     public static FloatingPicture ofFile(File file, int width, int height, int dx, int dy,
                                          STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
-        return new FloatingPicture(Pictures.ofLocal(file.getAbsolutePath()).size(width, height).create(), dx, dy, true, relativeFromH, relativeFromV);
+        return of(Pictures.ofLocal(file.getAbsolutePath()).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 
     /**
@@ -185,7 +185,7 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofStream(InputStream stream, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofStream(stream).size(width, height).create(), dx, dy, true);
+        return ofStream(stream, width, height, dx, dy, null, null);
     }
 
     /**
@@ -202,6 +202,6 @@ public class FloatingPicture {
      */
     public static FloatingPicture ofStream(InputStream stream, int width, int height, int dx, int dy,
                                            STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
-        return new FloatingPicture(Pictures.ofStream(stream).size(width, height).create(), dx, dy, true, relativeFromH, relativeFromV);
+        return of(Pictures.ofStream(stream).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 }

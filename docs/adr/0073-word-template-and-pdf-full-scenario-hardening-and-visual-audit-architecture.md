@@ -98,7 +98,7 @@ flowchart TB
 - **表单域深度自省 (`listFormFields`)**：
   递归遍历 `PDAcroForm` 树，提取字段全限定名（`fullyQualifiedName`）、部分名称（`partialName`）、底层字段类型代码（`Tx`/`Btn`/`Ch`/`Sig`）、结构化枚举类型（`TEXT_FIELD`/`CHECK_BOX`/`RADIO_BUTTON`/`CHOICE_LIST`/`SIGNATURE`）、当前值、默认值以及只读/必填/多选等 8 维状态元数据。
 - **动态 XFA 快速失败防卫 (Fail-Fast)**：
-  在表单填报与巡检入口处，显式调用 `acroForm.hasXFA()` 与 `acroForm.getXFA() != null` 探测。若检测到模板包含动态 XFA 结构，立即抛出语义化 `PdfOperationException(DocumentResultCode.PDF_OPERATION_FAILED)` 并附带明确指引，拒绝静默产生空白损毁文件。
+  在表单填报与巡检入口处，显式调用 `acroForm.hasXFA()` 与 `acroForm.getXFA() != null` 探测。若检测到模板包含动态 XFA 结构，立即抛出语义化 `PdfOperationException(DocumentResultCode.PDF_XFA_UNSUPPORTED)` 并附带明确指引，拒绝静默产生空白损毁文件。
 - **多级中文字体装配与防崩保底**：
   集成 `DocumentFontResolver`，按照 `本地配置路径 -> classpath:fonts/ -> 操作系统系统字体 -> PDFBox 默认降级字体` 四级顺延装配中文字体，彻底防御容器化环境因缺失中文字体抛出的 `No glyph for U+xxxx` 崩溃。
 
@@ -114,7 +114,7 @@ flowchart TB
 - **强类型配置门面 (`PdfRenderOptions`)**：
   提供 `dpi`（生产建议 150.0f，硬防卫范围 72.0f ~ 600.0f，杜绝无界高 DPI 导致的内存膨胀）、`imageType`（RGB/ARGB/GRAY）、`imageFormat`（"PNG"）与 `maxPages`（默认 50，防止超大文档一次性打爆堆内存）。
 - **流式光栅释放机制 (`PageImageConsumer`)**：
-  引入流式页级消费接口 `void accept(BufferedImage image, int pageIndex)`。在内部循环遍历页面时光栅化单一页面，在执行用户回调之后，**在 `finally` 块中确定性调用 `image.flush()`**，强制底层 AWT/Graphics 清理 Display/DirectX/OpenGL 离屏显存与 Java 堆外光栅缓冲区，实现十万级并发或百页大文档极低堆内存恒定驻留。
+  引入流式页级消费接口 `void accept(int pageNumber, BufferedImage image)`。在内部循环遍历页面时光栅化单一页面，在执行用户回调之后，**在 `finally` 块中确定性调用 `image.flush()`**，强制底层 AWT/Graphics 清理 Display/DirectX/OpenGL 离屏显存与 Java 堆外光栅缓冲区，实现十万级并发或百页大文档极低堆内存恒定驻留。
 
 ### 5. 多页合同跨页骑缝章(Cross-Page Seal)无损切片与贴合压印
 

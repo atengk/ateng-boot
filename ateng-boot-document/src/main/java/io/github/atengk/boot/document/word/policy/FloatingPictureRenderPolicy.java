@@ -72,29 +72,36 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
         }
         if (data instanceof FloatingPicture fp) {
             currentFloating.set(fp);
-            try {
-                PictureRenderData picData = fp.getPictureData();
-                if (picData == null || picData.readPictureData() == null || picData.readPictureData().length == 0) {
-                    log.warn("FloatingPicture 图片数据为空或不可读，将优雅清空占位符");
-                    currentFloating.remove();
-                    return null;
-                }
-                return picData;
-            } catch (Exception e) {
-                log.warn("解析 FloatingPicture 图片数据异常，将优雅清空占位符: {}", e.getMessage());
+            PictureRenderData picData = fp.getPictureData();
+            if (!isPictureDataValid(picData)) {
+                log.warn("FloatingPicture 图片数据为空或不可读，将优雅清空占位符");
                 currentFloating.remove();
                 return null;
             }
+            return picData;
         }
         try {
             PictureRenderData picData = super.cast(data);
-            if (picData == null || picData.readPictureData() == null || picData.readPictureData().length == 0) {
+            if (!isPictureDataValid(picData)) {
                 return null;
             }
             return picData;
         } catch (Exception e) {
             log.warn("转换图片渲染数据异常，将优雅清空占位符: {}", e.getMessage());
             return null;
+        }
+    }
+
+    private static boolean isPictureDataValid(PictureRenderData picData) {
+        if (picData == null) {
+            return false;
+        }
+        try {
+            byte[] bytes = picData.readPictureData();
+            return bytes != null && bytes.length > 0;
+        } catch (Exception e) {
+            log.warn("读取图片数据异常: {}", e.getMessage());
+            return false;
         }
     }
 
@@ -108,6 +115,7 @@ public class FloatingPictureRenderPolicy extends PictureRenderPolicy {
     @Override
     public void doRender(RenderContext<PictureRenderData> context) throws Exception {
         if (context == null || context.getData() == null) {
+            currentFloating.remove();
             return;
         }
         try {

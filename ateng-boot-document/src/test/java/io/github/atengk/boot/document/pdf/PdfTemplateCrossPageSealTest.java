@@ -296,5 +296,20 @@ class PdfTemplateCrossPageSealTest {
         PdfOperationException ex = assertThrows(PdfOperationException.class, () ->
                 pdfTemplate.stampCrossPageSeal(encryptedPdf, new ByteArrayOutputStream(), sealOpt));
         assertEquals(DocumentResultCode.PASSWORD_ERROR.getCode(), ex.getCode());
+
+        // 6. 印章尺寸非正数前置防御
+        assertThrows(IllegalArgumentException.class, () ->
+                CrossPageSealOptions.of(sealPngBytes, -10.0f, 120.0f));
+        assertThrows(IllegalArgumentException.class, () ->
+                CrossPageSealOptions.of(sealPngBytes, 120.0f, 0.0f));
+
+        // 7. 配置对象不可变性防御：避免重载突变外部传入的 options
+        CrossPageSealOptions originalOptions = CrossPageSealOptions.builder()
+                .width(100.0f)
+                .height(100.0f)
+                .build();
+        assertNull(originalOptions.getSealImage());
+        pdfTemplate.stampCrossPageSeal(originalPdf, new ByteArrayOutputStream(), sealPngBytes, originalOptions);
+        assertNull(originalOptions.getSealImage(), "重载调用严禁突变外部传入的 options 对象");
     }
 }
