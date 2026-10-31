@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-ssh
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
