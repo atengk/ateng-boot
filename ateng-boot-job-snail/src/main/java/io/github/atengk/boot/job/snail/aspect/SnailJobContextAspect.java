@@ -15,10 +15,13 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
+import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
+import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
@@ -73,14 +76,29 @@ public class SnailJobContextAspect {
 
     private final SnailLocalWatchdog watchdog;
     private final SnailJobProperties properties;
+    private final GracefulDrainStateMachine drainStateMachine;
+    private final SnailJobMetricsBinder metricsBinder;
+    private final SnailJobAlertAggregator alertAggregator;
 
     public SnailJobContextAspect() {
-        this(null, null);
+        this(null, null, null, null, null);
     }
 
     public SnailJobContextAspect(SnailLocalWatchdog watchdog, SnailJobProperties properties) {
+        this(watchdog, properties, null, null, null);
+    }
+
+    public SnailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator) {
         this.watchdog = watchdog;
         this.properties = properties;
+        this.drainStateMachine = drainStateMachine;
+        this.metricsBinder = metricsBinder;
+        this.alertAggregator = alertAggregator;
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
@@ -99,6 +117,15 @@ public class SnailJobContextAspect {
             atengSnailJob = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailJob.class);
         }
         JobTenantMode tenantMode = (atengSnailJob != null) ? atengSnailJob.tenantMode() : JobTenantMode.IGNORE;
+
+        // 0. 平滑停机排空拦截与在途计数
+        if (drainStateMachine != null && drainStateMachine.isDraining()) {
+            throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE, "SnailJob 执行器正处于平滑停机排空阶段，拒绝接收新调度任务");
+        }
+        if (drainStateMachine != null) {
+            drainStateMachine.incrementInFlightJob();
+        }
+        long startTimeNanos = System.nanoTime();
 
         // 1. 尝试获取任务原始入参 (优先从 JobArgs/JobContext，回退至方法实参)
         JobArgs jobArgs = null;
@@ -238,15 +265,33 @@ public class SnailJobContextAspect {
             }
 
             // E. 执行调度逻辑
-            return (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+            Object executionResult = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+            long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
+            if (metricsBinder != null) {
+                metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+            }
+            if (alertAggregator != null) {
+                alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
+            }
+            return executionResult;
 
         } catch (Throwable t) {
+            long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
+            if (metricsBinder != null) {
+                metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+            }
+            if (alertAggregator != null) {
+                alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, t);
+            }
             SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
             if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
                 log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
             }
             throw t;
         } finally {
+            if (drainStateMachine != null) {
+                drainStateMachine.decrementInFlightJob();
+            }
             try {
                 if (jobArgs != null && !snailJobContext.getChangeWfContext().isEmpty()) {
                     for (java.util.Map.Entry<String, Object> entry : snailJobContext.getChangeWfContext().entrySet()) {

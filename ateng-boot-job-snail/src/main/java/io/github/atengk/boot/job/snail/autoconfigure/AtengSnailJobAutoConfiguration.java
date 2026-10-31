@@ -1,13 +1,20 @@
 package io.github.atengk.boot.job.snail.autoconfigure;
 
 import com.aizuda.snailjob.client.common.config.SnailJobProperties.ServerConfig;
+import com.aizuda.snailjob.client.core.callback.complete.RetryCompleteCallback;
 import com.aizuda.snailjob.client.core.openapi.RetryOpenApiClientV2;
 import com.aizuda.snailjob.client.job.core.openapi.JobOpenApiClientV2;
 import io.github.atengk.boot.core.autoconfigure.AtengAsyncAutoConfiguration;
+import io.github.atengk.boot.job.snail.actuator.SnailJobEndpoint;
+import io.github.atengk.boot.job.snail.actuator.SnailJobHealthIndicator;
+import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
+import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
+import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
+import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
@@ -17,10 +24,14 @@ import io.github.atengk.boot.job.snail.template.TenantJobTemplate;
 import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
+import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -103,10 +114,100 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
+     * SnailJob 执行器三阶平滑停机排空状态机
+     *
+     * @param properties SnailJob 配置属性
+     * @return GracefulDrainStateMachine 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public GracefulDrainStateMachine snailJobGracefulDrainStateMachine(SnailJobProperties properties) {
+        return new GracefulDrainStateMachine(properties);
+    }
+
+    /**
+     * SnailJob 三阶告警防风暴聚合与自愈引擎
+     *
+     * @param properties                   SnailJob 配置属性
+     * @param eventPublisher               Spring 领域事件发布器
+     * @param notificationTemplateProvider 协同通知组件提供者 (可选)
+     * @return SnailJobAlertAggregator 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.alert", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public SnailJobAlertAggregator snailJobAlertAggregator(
+            SnailJobProperties properties,
+            ApplicationEventPublisher eventPublisher,
+            ObjectProvider<NotificationTemplate> notificationTemplateProvider) {
+        return new SnailJobAlertAggregator(properties, eventPublisher, notificationTemplateProvider.getIfAvailable());
+    }
+
+    /**
+     * SnailJob 分布式重试死信沉降回调处理器
+     *
+     * @param alertAggregatorProvider 告警聚合器提供者
+     * @return SnailRetryDeadLetterCallback 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(RetryCompleteCallback.class)
+    public SnailRetryDeadLetterCallback snailRetryDeadLetterCallback(
+            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+        return new SnailRetryDeadLetterCallback(alertAggregatorProvider);
+    }
+
+    /**
+     * SnailJob 调度与重试 Micrometer 核心监控度量绑定器
+     *
+     * @return SnailJobMetricsBinder 实例
+     */
+    @Bean
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnMissingBean
+    public SnailJobMetricsBinder snailJobMetricsBinder() {
+        return new SnailJobMetricsBinder();
+    }
+
+    /**
+     * SnailJob 任务调度与分布式重试运维管控与本地手动触发 Actuator 端点
+     *
+     * @param properties                SnailJob 配置属性
+     * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
+     * @return SnailJobEndpoint 实例
+     */
+    @Bean
+    @ConditionalOnClass(Endpoint.class)
+    @ConditionalOnMissingBean
+    public SnailJobEndpoint snailJobEndpoint(
+            SnailJobProperties properties,
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider) {
+        return new SnailJobEndpoint(properties, drainStateMachineProvider.getIfAvailable());
+    }
+
+    /**
+     * SnailJob 分布式任务调度与分布式重试双擎健康探针
+     *
+     * @param properties                SnailJob 配置属性
+     * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
+     * @return SnailJobHealthIndicator 实例
+     */
+    @Bean
+    @ConditionalOnClass(HealthIndicator.class)
+    @ConditionalOnMissingBean(name = "snailJobHealthIndicator")
+    public SnailJobHealthIndicator snailJobHealthIndicator(
+            SnailJobProperties properties,
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider) {
+        return new SnailJobHealthIndicator(properties, drainStateMachineProvider.getIfAvailable());
+    }
+
+    /**
      * SnailJob 调度任务四维上下文与声明式增强切面
      *
-     * @param watchdog 本地硬看门狗
-     * @param properties SnailJob 配置属性
+     * @param watchdog                   本地硬看门狗
+     * @param properties                 SnailJob 配置属性
+     * @param drainStateMachineProvider  平滑排空状态机提供者 (可选)
+     * @param metricsBinderProvider      度量绑定器提供者 (可选)
+     * @param alertAggregatorProvider    告警聚合器提供者 (可选)
      * @return SnailJobContextAspect 实例
      */
     @Bean
@@ -114,8 +215,17 @@ public class AtengSnailJobAutoConfiguration {
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
     public SnailJobContextAspect snailJobContextAspect(
             SnailLocalWatchdog watchdog,
-            SnailJobProperties properties) {
-        return new SnailJobContextAspect(watchdog, properties);
+            SnailJobProperties properties,
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+            ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
+            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+        return new SnailJobContextAspect(
+                watchdog,
+                properties,
+                drainStateMachineProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable(),
+                alertAggregatorProvider.getIfAvailable()
+        );
     }
 
     /**
@@ -143,13 +253,23 @@ public class AtengSnailJobAutoConfiguration {
     /**
      * SnailJob 分布式重试四维现场快照与跨节点保真还原切面
      *
+     * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
+     * @param metricsBinderProvider     度量绑定器提供者 (可选)
+     * @param alertAggregatorProvider   告警聚合器提供者 (可选)
      * @return SnailRetryContextAspect 实例
      */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "ateng.boot.job.snail.retry", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
-    public SnailRetryContextAspect snailRetryContextAspect() {
-        return new SnailRetryContextAspect();
+    public SnailRetryContextAspect snailRetryContextAspect(
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+            ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
+            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+        return new SnailRetryContextAspect(
+                drainStateMachineProvider.getIfAvailable(),
+                metricsBinderProvider.getIfAvailable(),
+                alertAggregatorProvider.getIfAvailable()
+        );
     }
 
     /**

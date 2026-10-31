@@ -3,14 +3,19 @@ package io.github.atengk.boot.job.snail.retry.aspect;
 import com.aizuda.snailjob.client.core.annotation.Retryable;
 import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
+import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -25,6 +30,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 
 /**
  * SnailJob 分布式重试四维现场快照与跨时间/跨节点保真还原切面
@@ -49,6 +55,23 @@ public class SnailRetryContextAspect {
     public static final String TRACE_ID_KEY = "traceId";
     public static final String DEFAULT_USER = "SYSTEM";
 
+    private final GracefulDrainStateMachine drainStateMachine;
+    private final SnailJobMetricsBinder metricsBinder;
+    private final SnailJobAlertAggregator alertAggregator;
+
+    public SnailRetryContextAspect() {
+        this(null, null, null);
+    }
+
+    public SnailRetryContextAspect(
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator) {
+        this.drainStateMachine = drainStateMachine;
+        this.metricsBinder = metricsBinder;
+        this.alertAggregator = alertAggregator;
+    }
+
     @Around("@annotation(com.aizuda.snailjob.client.core.annotation.Retryable) || " +
             "@annotation(io.github.atengk.boot.job.snail.annotation.AtengSnailRetry)")
     public Object aroundRetry(ProceedingJoinPoint pjp) throws Throwable {
@@ -67,46 +90,81 @@ public class SnailRetryContextAspect {
         String contextKey = scene + ":" + executorClassName + ":" + specificMethod.getName();
         String classKey = scene + ":" + executorClassName;
 
-        boolean isRemoteRetry = (RetrySiteSnapshot.getStage() != null
-                && RetrySiteSnapshot.getStage() == RetrySiteSnapshot.EnumStage.REMOTE.getStage())
-                || RetrySiteSnapshot.isRetryFlow();
-
-        if (isRemoteRetry) {
-            // 远程重试阶段：保存当前工作线程初始现场，精准还原上报时的四维快照
-            AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-            AsyncContext.ContextSnapshot recorded = SnailRetryContextRegistry.get(contextKey);
-            if (recorded == null) {
-                recorded = SnailRetryContextRegistry.get(classKey);
-            }
-
-            if (recorded != null) {
-                recorded.apply();
-                log.debug("SnailJob 远程重试已成功还原四维上下文快照 [Key: {}]", contextKey);
-            } else {
-                // 若内存快照未命中（如重启或多节点），从方法实参中深度二次提取
-                restoreFromArgsFallback(pjp.getArgs(), atengRetry);
-            }
-
-            try {
-                return pjp.proceed();
-            } finally {
-                previous.restore();
-            }
+        // 0. 平滑停机排空拦截与在途计数
+        if (drainStateMachine != null && drainStateMachine.isDraining()) {
+            throw new BusinessException(CommonResultCode.SERVICE_UNAVAILABLE, "SnailJob 执行器正处于平滑停机排空阶段，拒绝接收新重试任务");
         }
-
-        // 首次业务执行或本地重试阶段：捕获并登记当前四维快照
-        ensureTraceIdPresent();
-        AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
-        SnailRetryContextRegistry.put(contextKey, currentSnapshot);
-        SnailRetryContextRegistry.put(classKey, currentSnapshot);
+        if (drainStateMachine != null) {
+            drainStateMachine.incrementInFlightRetry();
+        }
+        long startTimeNanos = System.nanoTime();
 
         try {
-            return pjp.proceed();
+            Object result;
+            boolean isRemoteRetry = (RetrySiteSnapshot.getStage() != null
+                    && RetrySiteSnapshot.getStage() == RetrySiteSnapshot.EnumStage.REMOTE.getStage())
+                    || RetrySiteSnapshot.isRetryFlow();
+
+            if (isRemoteRetry) {
+                // 远程重试阶段：保存当前工作线程初始现场，精准还原上报时的四维快照
+                AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
+                AsyncContext.ContextSnapshot recorded = SnailRetryContextRegistry.get(contextKey);
+                if (recorded == null) {
+                    recorded = SnailRetryContextRegistry.get(classKey);
+                }
+
+                if (recorded != null) {
+                    recorded.apply();
+                    log.debug("SnailJob 远程重试已成功还原四维上下文快照 [Key: {}]", contextKey);
+                } else {
+                    // 若内存快照未命中（如重启或多节点），从方法实参中深度二次提取
+                    restoreFromArgsFallback(pjp.getArgs(), atengRetry);
+                }
+
+                try {
+                    result = pjp.proceed();
+                } finally {
+                    previous.restore();
+                }
+            } else {
+                // 首次业务执行或本地重试阶段：捕获并登记当前四维快照
+                ensureTraceIdPresent();
+                AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
+                SnailRetryContextRegistry.put(contextKey, currentSnapshot);
+                SnailRetryContextRegistry.put(classKey, currentSnapshot);
+
+                try {
+                    result = pjp.proceed();
+                } catch (Throwable t) {
+                    // 发生异常即将上报，确保注册表中保持有效快照供远程重试消费
+                    SnailRetryContextRegistry.put(contextKey, currentSnapshot);
+                    SnailRetryContextRegistry.put(classKey, currentSnapshot);
+                    throw t;
+                }
+            }
+
+            long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
+            if (metricsBinder != null) {
+                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+            }
+            if (alertAggregator != null) {
+                alertAggregator.onRetrySuccess(scene, null, MDC.get(TRACE_ID_KEY), durationMs);
+            }
+            return result;
+
         } catch (Throwable t) {
-            // 发生异常即将上报，确保注册表中保持有效快照供远程重试消费
-            SnailRetryContextRegistry.put(contextKey, currentSnapshot);
-            SnailRetryContextRegistry.put(classKey, currentSnapshot);
+            long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
+            if (metricsBinder != null) {
+                metricsBinder.recordRetryExecution(scene, SnailJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
+            }
+            if (alertAggregator != null) {
+                alertAggregator.onRetryFailure(scene, null, MDC.get(TRACE_ID_KEY), durationMs, t);
+            }
             throw t;
+        } finally {
+            if (drainStateMachine != null) {
+                drainStateMachine.decrementInFlightRetry();
+            }
         }
     }
 
