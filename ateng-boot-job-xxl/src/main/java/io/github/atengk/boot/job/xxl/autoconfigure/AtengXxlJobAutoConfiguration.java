@@ -1,12 +1,15 @@
 package io.github.atengk.boot.job.xxl.autoconfigure;
 
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
+import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
 import io.github.atengk.boot.job.xxl.template.XxlShardingBatchTemplate;
 import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -115,13 +118,36 @@ public class AtengXxlJobAutoConfiguration {
     }
 
     /**
+     * 注册 XXL-Job 三阶告警防风暴聚合与自愈引擎
+     *
+     * @param properties 配置属性
+     * @param eventPublisherProvider 事件发布器 Provider
+     * @param notificationTemplateProvider 可选协同通知门面 Provider
+     * @return 告警防风暴聚合自愈引擎
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.xxl", name = "alert-enabled", havingValue = "true", matchIfMissing = true)
+    public XxlJobAlertAggregator xxlJobAlertAggregator(
+            XxlJobProperties properties,
+            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider,
+            ObjectProvider<NotificationTemplate> notificationTemplateProvider) {
+        return new XxlJobAlertAggregator(
+                properties,
+                eventPublisherProvider.getIfAvailable(),
+                notificationTemplateProvider.getIfAvailable()
+        );
+    }
+
+    /**
      * 注册任务执行四维上下文、链路追踪与受管超时看门狗切面
      *
      * <p>自动为由 @XxlJob 或 @AtengXxlJob 标注的方法织入 32 位无锁 MDC traceId、操作人、多租户隔离与看门狗超时中断守护。</p>
      *
-     * @param watchdogProvider     看门狗 Provider
-     * @param properties           配置属性
-     * @param taskExecutorProvider Core 受管异步线程池 Provider
+     * @param watchdogProvider        看门狗 Provider
+     * @param properties              配置属性
+     * @param taskExecutorProvider    Core 受管异步线程池 Provider
+     * @param alertAggregatorProvider 告警聚合引擎 Provider
      * @return 上下文切面实例
      */
     @Bean
@@ -130,12 +156,28 @@ public class AtengXxlJobAutoConfiguration {
     public XxlJobContextAspect xxlJobContextAspect(
             ObjectProvider<LocalWatchdog> watchdogProvider,
             XxlJobProperties properties,
-            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider) {
         return new XxlJobContextAspect(
                 watchdogProvider.getIfAvailable(),
                 properties,
-                taskExecutorProvider.getIfAvailable()
+                taskExecutorProvider.getIfAvailable(),
+                alertAggregatorProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 注册 XXL-Job 3.x OpenAPI 编程式管理门面
+     *
+     * <p>提供基于官方 AdminJobBiz OpenAPI 的强类型增删改查、启动停止与即时触发功能，并内置集群多调度中心容灾故障转移机制。</p>
+     *
+     * @param properties 配置属性
+     * @return OpenAPI 管理门面
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public XxlJobAdminTemplate xxlJobAdminTemplate(XxlJobProperties properties) {
+        return new XxlJobAdminTemplate(properties);
     }
 
     /**

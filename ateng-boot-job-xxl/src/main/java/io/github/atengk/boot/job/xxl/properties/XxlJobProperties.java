@@ -102,4 +102,19 @@ public class XxlJobProperties {
      */
     private int portDetectionMaxRetry = 100;
 
+    /**
+     * 是否启用任务三阶告警防风暴与自愈通知 (默认 true)
+     */
+    private boolean alertEnabled = true;
+
+    /**
+     * 告警防风暴聚合抑制周期时限 (在此周期内的连续重复失败将被聚合为摘要通知，默认 5 分钟)
+     */
+    private Duration alertSuppressDuration = Duration.ofMinutes(5);
+
+    /**
+     * 告警防风暴聚合连续失败次数阈值 (连续失败达到该阈值时触发摘要通知，默认 10 次)
+     */
+    private int alertSuppressThreshold = 10;
+
 }

@@ -13,6 +13,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
+import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
 import io.github.atengk.boot.job.xxl.model.ShardingContext;
@@ -75,15 +76,21 @@ public class XxlJobContextAspect {
     private final LocalWatchdog watchdog;
     private final XxlJobProperties properties;
     private final Executor taskExecutor;
+    private final XxlJobAlertAggregator alertAggregator;
 
     public XxlJobContextAspect() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
+        this(watchdog, properties, taskExecutor, null);
+    }
+
+    public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor, XxlJobAlertAggregator alertAggregator) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.taskExecutor = taskExecutor;
+        this.alertAggregator = alertAggregator;
     }
 
     @Around("@annotation(com.xxl.job.core.handler.annotation.XxlJob) || @annotation(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob) || @within(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob)")
@@ -91,8 +98,9 @@ public class XxlJobContextAspect {
         MethodSignature signature = (MethodSignature) pjp.getSignature();
         Method method = signature.getMethod();
         Class<?> targetClass = pjp.getTarget() != null ? pjp.getTarget().getClass() : method.getDeclaringClass();
+        Method specificMethod = org.springframework.aop.support.AopUtils.getMostSpecificMethod(method, targetClass);
 
-        AtengXxlJob atengXxlJob = AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class);
+        AtengXxlJob atengXxlJob = AnnotatedElementUtils.findMergedAnnotation(specificMethod, AtengXxlJob.class);
         if (atengXxlJob == null) {
             atengXxlJob = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengXxlJob.class);
         }
@@ -136,15 +144,16 @@ public class XxlJobContextAspect {
         // 5. 本地硬看门狗与超时时限解析
         long logId = XxlJobHelper.getLogId();
         long jobId = XxlJobHelper.getJobId();
-        String jobName = (atengXxlJob != null && StringUtils.hasText(atengXxlJob.value())) ? atengXxlJob.value() : method.getName();
+        String jobName = resolveJobName(specificMethod, atengXxlJob);
         Duration timeout = resolveTimeout(atengXxlJob, logId);
 
         LocalWatchdog.WatchdogSession session = LocalWatchdog.WatchdogSession.NOOP;
+        long startNs = System.nanoTime();
 
         // 6. 执行参数解析、防卫校验与业务逻辑 (确保终态严格清理上下文)
         try {
             // A. 解析方法形参并完成强类型绑定 (ShardingContext、DTO、String)
-            Object[] resolvedArgs = resolveArguments(method, pjp.getArgs(), rawParam);
+            Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam);
 
             // B. 若租户模式为 PARAM 且前面未提取到租户，从反序列化后的实参中二次探测
             if (tenantMode == JobTenantMode.PARAM && !StringUtils.hasText(TenantContextHolder.getTenantId())) {
@@ -155,7 +164,7 @@ public class XxlJobContextAspect {
             }
 
             // C. JSR-303 参数校验与 Fail-Fast 快速失败防卫
-            validateParameters(pjp.getTarget(), method, method.getParameters(), resolvedArgs, jobName);
+            validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
 
             // D. 挂载执行元数据与看门狗
             JobExecutionMetadata metadata = new JobExecutionMetadata(
@@ -168,17 +177,30 @@ public class XxlJobContextAspect {
 
             boolean hasWatchdog = watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative();
 
+            Object result;
             if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
-                return executeInManagedPool(pjp, timeout, metadata, resolvedArgs);
+                result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs);
             } else {
                 if (hasWatchdog) {
                     session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
                 }
-                return (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+                result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
             }
+
+            // 7. 任务执行成功：触发告警聚合自愈探测
+            if (alertAggregator != null) {
+                long costMs = (System.nanoTime() - startNs) / 1_000_000;
+                alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs);
+            }
+            return result;
         } catch (Throwable t) {
             if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
                 log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+            }
+            // 8. 任务执行异常：触发告警风暴聚合判定
+            if (alertAggregator != null) {
+                long costMs = (System.nanoTime() - startNs) / 1_000_000;
+                alertAggregator.onJobFailure(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, t);
             }
             throw t;
         } finally {
@@ -649,6 +671,22 @@ public class XxlJobContextAspect {
 
         // 4. 从非字符串方法参数对象中反射探测 (如自定义 DTO 包含 getTenantId)
         return extractTenantIdFromArgs(args);
+    }
+
+    /**
+     * 解析任务全局唯一标识名称
+     *
+     * <p>优先取 {@link AtengXxlJob#value()}，其次取原生 {@link XxlJob#value()}，保底取方法名称。</p>
+     */
+    protected String resolveJobName(Method method, AtengXxlJob atengXxlJob) {
+        if (atengXxlJob != null && StringUtils.hasText(atengXxlJob.value())) {
+            return atengXxlJob.value();
+        }
+        XxlJob xxlJob = AnnotatedElementUtils.findMergedAnnotation(method, XxlJob.class);
+        if (xxlJob != null && StringUtils.hasText(xxlJob.value())) {
+            return xxlJob.value();
+        }
+        return method.getName();
     }
 
 }
