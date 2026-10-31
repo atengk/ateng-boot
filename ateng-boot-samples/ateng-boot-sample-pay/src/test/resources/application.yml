@@ -1,0 +1,50 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-pay
+  config:
+    import: "optional:classpath:application-local.yml"
+
+ateng:
+  boot:
+    pay:
+      enabled: true
+      callback:
+        enabled: true
+        path-prefix: /ateng-pay/callback
+        idempotent-timeout: 10s
+      transfer:
+        enabled: true
+      profit-sharing:
+        enabled: true
+      barcode:
+        max-wait-time: 2s
+        poll-interval: 100ms
+        auto-cancel-on-timeout: true
+      wechat:
+        enabled: true
+        default-merchant: default
+        merchants:
+          default:
+            app-id: wx8888888888888888
+            mch-id: "1900000001"
+            api-v3-key: "32bytesMockApiV3KeyForTesting000"
+            merchant-serial-number: "5F1C72E2A8931B72A2E13AF8DEE92471EB397115"
+            private-key-path: classpath:certs/test_private_key.pem
+            wechat-pay-public-key-path: classpath:certs/test_public_key.pem
+            wechat-pay-public-key-id: "PUB_KEY_ID_TEST_001"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat"
+            auto-certificate: false
+      alipay:
+        enabled: true
+        default-app: default
+        apps:
+          default:
+            app-id: "2021000000000001"
+            private-key-path: classpath:certs/test_private_key.pem
+            alipay-public-key: classpath:certs/test_public_key.pem
+            server-url: "http://localhost:8888/gateway.do"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/alipay"
+            return-url: "http://127.0.0.1:8080/pay/return"

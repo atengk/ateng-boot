@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-pay
+  config:
+    import: "optional:classpath:application-local.yml"
 
 # ateng-boot 企业级多渠道支付配置
 ateng:

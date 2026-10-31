@@ -57,6 +57,16 @@ public class PayCheckoutDTO implements Serializable {
     private String openid;
 
     /**
+     * 买家支付宝用户 ID (以 2088 开头的 16 位纯数字，支付宝小程序与 buyerOpenId 二选一)
+     */
+    private String buyerId;
+
+    /**
+     * 买家支付宝用户唯一标识 (应用级 open_id，支付宝小程序与 buyerId 二选一)
+     */
+    private String buyerOpenId;
+
+    /**
      * 多商户/多应用别名键（缺省使用 default）
      */
     private String merchantKey;

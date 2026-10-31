@@ -1,0 +1,24 @@
+# 本地联调真实外部支付服务模板（按需重命名为 application-local.yml 并激活 local profile 生效）
+ateng:
+  boot:
+    pay:
+      wechat:
+        merchants:
+          default:
+            app-id: YOUR_WECHAT_APP_ID
+            mch-id: YOUR_WECHAT_MCH_ID
+            api-v3-key: YOUR_WECHAT_API_V3_KEY
+            merchant-serial-number: YOUR_MERCHANT_SERIAL_NUMBER
+            private-key-path: classpath:certs/wechat_apiclient_key.pem
+            wechat-pay-public-key-path: classpath:certs/wechat_pub_key.pem
+            wechat-pay-public-key-id: YOUR_WECHAT_PUBLIC_KEY_ID
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/wechat"
+      alipay:
+        apps:
+          default:
+            app-id: YOUR_ALIPAY_APP_ID
+            private-key: YOUR_ALIPAY_PRIVATE_KEY
+            alipay-public-key: YOUR_ALIPAY_PUBLIC_KEY
+            server-url: "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
+            notify-url: "http://127.0.0.1:8080/ateng-pay/callback/alipay"
+            return-url: "http://127.0.0.1:8080/pay/return"

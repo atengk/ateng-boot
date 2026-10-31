@@ -69,15 +69,15 @@ public class PayCheckoutController {
     }
 
     /**
-     * JSAPI 调起收单 (小程序 / 公众号支付，生成服务端二次加签 5 元素调起包)
+     * JSAPI 调起收单 (小程序 / 公众号支付，生成服务端二次加签 5 元素调起包或支付宝交易号 tradeNo)
      *
      * @param dto 下单请求参数
-     * @return 扁平统一出参（包含 wechatJsapi 调起包）
+     * @return 扁平统一出参（包含 wechatJsapi 调起包或 tradeNo）
      */
     @PostMapping("/checkout/jsapi")
     public Result<PayResponse> checkoutJsapi(@Valid @RequestBody PayCheckoutDTO dto) {
-        log.info("Processing JSAPI payment request: channel={}, outTradeNo={}, amount={}, openid={}",
-                dto.getChannel(), dto.getOutTradeNo(), dto.getAmount(), dto.getOpenid());
+        log.info("Processing JSAPI payment request: channel={}, outTradeNo={}, amount={}, openid={}, buyerId={}, buyerOpenId={}",
+                dto.getChannel(), dto.getOutTradeNo(), dto.getAmount(), dto.getOpenid(), dto.getBuyerId(), dto.getBuyerOpenId());
 
         UnifiedPayRequest request = UnifiedPayRequest.builder()
                 .channel(dto.getChannel())
@@ -86,6 +86,8 @@ public class PayCheckoutController {
                 .amount(dto.getAmount())
                 .subject(dto.getSubject())
                 .openid(dto.getOpenid())
+                .buyerId(dto.getBuyerId())
+                .buyerOpenId(dto.getBuyerOpenId())
                 .merchantKey(dto.getMerchantKey())
                 .notifyUrl(dto.getNotifyUrl())
                 .attach(dto.getAttach())
@@ -93,6 +95,20 @@ public class PayCheckoutController {
 
         PayResponse response = payTemplate.pay(request);
         return Result.success(response);
+    }
+
+    /**
+     * 支付宝小程序收单 (生成 tradeNo 供 my.tradePay 调起)
+     *
+     * @param dto 下单请求参数
+     * @return 扁平统一出参（包含 tradeNo 字段）
+     */
+    @PostMapping("/checkout/alipay-miniapp")
+    public Result<PayResponse> checkoutAlipayMiniApp(@Valid @RequestBody PayCheckoutDTO dto) {
+        log.info("Processing Alipay mini-program payment request: outTradeNo={}, amount={}, buyerId={}, buyerOpenId={}",
+                dto.getOutTradeNo(), dto.getAmount(), dto.getBuyerId(), dto.getBuyerOpenId());
+        dto.setChannel(io.github.atengk.boot.pay.enums.PayChannel.ALIPAY);
+        return checkoutJsapi(dto);
     }
 
     /**

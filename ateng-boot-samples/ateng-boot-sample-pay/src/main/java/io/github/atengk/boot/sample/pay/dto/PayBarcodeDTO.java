@@ -43,4 +43,19 @@ public class PayBarcodeDTO implements Serializable {
 
     @NotBlank(message = "订单标题不能为空")
     private String subject;
+
+    /**
+     * 自定义最长轮询等待时间 (可选，默认使用系统配置)
+     */
+    private java.time.Duration maxWaitTime;
+
+    /**
+     * 自定义轮询间隔时间 (可选，默认使用系统配置)
+     */
+    private java.time.Duration pollInterval;
+
+    /**
+     * 超时是否自动撤销冲正 (可选，默认使用系统配置)
+     */
+    private Boolean autoCancelOnTimeout;
 }
