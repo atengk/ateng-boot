@@ -1,6 +1,8 @@
 package io.github.atengk.boot.job.xxl.autoconfigure;
 
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
+import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,6 +75,35 @@ public class AtengXxlJobAutoConfiguration {
         }
 
         return executor;
+    }
+
+    /**
+     * 注册 Logback 日志动态镜像器
+     *
+     * <p>仅当引入 Logback 并启用日志镜像时生效，将业务 SLF4J 标准日志动态镜像至 XXL-Job 调度分片日志文件。</p>
+     *
+     * @return Logback 追加器注册器
+     */
+    @Bean
+    @ConditionalOnClass(name = "ch.qos.logback.classic.LoggerContext")
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.xxl", name = "log-mirror-enabled", havingValue = "true", matchIfMissing = true)
+    public XxlJobLogbackAppenderRegistrar xxlJobLogbackAppenderRegistrar() {
+        return new XxlJobLogbackAppenderRegistrar();
+    }
+
+    /**
+     * 注册任务执行四维上下文与链路追踪切面
+     *
+     * <p>自动为由 @XxlJob 或 @AtengXxlJob 标注的方法织入 32 位无锁 MDC traceId、操作人与多租户隔离上下文。</p>
+     *
+     * @return 上下文切面实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.xxl", name = "context-aspect-enabled", havingValue = "true", matchIfMissing = true)
+    public XxlJobContextAspect xxlJobContextAspect() {
+        return new XxlJobContextAspect();
     }
 
 }

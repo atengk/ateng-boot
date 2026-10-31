@@ -35,6 +35,12 @@
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
 
+        <!-- Spring Boot AOP (用于 @XxlJob 与 @AtengXxlJob 上下文切面拦截) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
         <!-- Spring Boot 配置处理器 (可选，编译期生成 IDE 配置元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -1,6 +1,8 @@
 package io.github.atengk.boot.job.xxl.autoconfigure;
 
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
+import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -40,7 +42,26 @@ class AtengXxlJobAutoConfigurationTest {
 
             // 未配置 admin-addresses，执行器 Bean 应当平滑缺省不装配
             assertThat(context).doesNotHaveBean(XxlJobSpringExecutor.class);
+
+            // 但日志镜像与四维上下文切面在启用状态下仍正常注册
+            assertThat(context).hasSingleBean(XxlJobLogbackAppenderRegistrar.class);
+            assertThat(context).hasSingleBean(XxlJobContextAspect.class);
         });
+    }
+
+    @Test
+    @DisplayName("测试按需关闭日志镜像与四维上下文切面配置")
+    void testDisableLogMirrorAndContextAspect() {
+        contextRunner
+                .withPropertyValues(
+                        "ateng.boot.job.xxl.log-mirror-enabled=false",
+                        "ateng.boot.job.xxl.context-aspect-enabled=false"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(XxlJobLogbackAppenderRegistrar.class);
+                    assertThat(context).doesNotHaveBean(XxlJobContextAspect.class);
+                });
     }
 
     @Test

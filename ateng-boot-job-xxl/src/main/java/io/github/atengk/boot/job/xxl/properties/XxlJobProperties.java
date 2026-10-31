@@ -67,4 +67,14 @@ public class XxlJobProperties {
      */
     private Duration timeout = Duration.ofSeconds(30);
 
+    /**
+     * 是否启用 SLF4J 日志自动镜像至 XXL-Job 调度执行日志文件
+     */
+    private boolean logMirrorEnabled = true;
+
+    /**
+     * 是否启用调度任务执行切面 (自动注入 MDC traceId 与多租户上下文)
+     */
+    private boolean contextAspectEnabled = true;
+
 }
