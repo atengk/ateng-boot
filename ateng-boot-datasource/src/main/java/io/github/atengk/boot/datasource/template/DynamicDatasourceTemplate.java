@@ -3,6 +3,7 @@ package io.github.atengk.boot.datasource.template;
 import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
 import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
 import com.baomidou.dynamic.datasource.creator.DefaultDataSourceCreator;
+import com.baomidou.dynamic.datasource.ds.GroupDataSource;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
@@ -13,6 +14,8 @@ import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.exception.TenantDataSourceNotFoundException;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.listener.DynamicDatasourceLifecycleListener;
+import io.github.atengk.boot.datasource.model.DataSourcePoolStats;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.routing.AtengDynamicRoutingDataSource;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
@@ -50,6 +53,7 @@ public class DynamicDatasourceTemplate {
     private final DynamicDatasourceGuard guard;
     private final DefaultDataSourceCreator defaultDataSourceCreator;
     private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private final List<DynamicDatasourceLifecycleListener> lifecycleListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
@@ -217,6 +221,135 @@ public class DynamicDatasourceTemplate {
      */
     public String getCurrentDataSourceKey() {
         return DynamicDataSourceContextHolder.peek();
+    }
+
+    /**
+     * 获取指定数据源连接池的实时运行指标快照
+     * <p>
+     * 具备零外部依赖与 NPE 防御能力，若数据源不存在或为未知 Key 则安全返回 null，杜绝抛出异常。
+     * </p>
+     *
+     * @param dsKey 数据源唯一标识
+     * @return 运行指标快照 DTO；若不存在则返回 null
+     */
+    public DataSourcePoolStats getPoolStats(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return null;
+        }
+        DataSource ds = resolveDataSource(dsKey);
+        if (ds == null) {
+            return null;
+        }
+        return buildPoolStats(dsKey, ds);
+    }
+
+    /**
+     * 获取所有已注册物理数据源连接池的实时运行指标快照映射表
+     * <p>
+     * 自动遍历所有注册的单物理库与从库分组内的物理节点，返回不可修改的只读集合。
+     * </p>
+     *
+     * @return 数据源标识与其运行指标快照的映射集合（永不为 null）
+     */
+    public Map<String, DataSourcePoolStats> getAllPoolStats() {
+        Map<String, DataSourcePoolStats> statsMap = new LinkedHashMap<>();
+        for (Map.Entry<String, DataSource> entry : dataSource.getDataSources().entrySet()) {
+            String key = entry.getKey();
+            DataSource ds = entry.getValue();
+            if (ds != null) {
+                statsMap.put(key, buildPoolStats(key, ds));
+            }
+        }
+        for (Map.Entry<String, GroupDataSource> groupEntry : dataSource.getGroupDataSources().entrySet()) {
+            GroupDataSource group = groupEntry.getValue();
+            if (group != null && group.getDataSourceMap() != null) {
+                for (Map.Entry<String, DataSource> nodeEntry : group.getDataSourceMap().entrySet()) {
+                    String nodeKey = nodeEntry.getKey();
+                    if (!statsMap.containsKey(nodeKey) && nodeEntry.getValue() != null) {
+                        statsMap.put(nodeKey, buildPoolStats(nodeKey, nodeEntry.getValue()));
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableMap(statsMap);
+    }
+
+    /**
+     * 注册动态数据源生命周期监听器
+     *
+     * @param listener 生命周期监听器
+     */
+    public void addLifecycleListener(DynamicDatasourceLifecycleListener listener) {
+        if (listener != null) {
+            lifecycleListeners.add(listener);
+        }
+    }
+
+    /**
+     * 注销动态数据源生命周期监听器
+     *
+     * @param listener 生命周期监听器
+     */
+    public void removeLifecycleListener(DynamicDatasourceLifecycleListener listener) {
+        if (listener != null) {
+            lifecycleListeners.remove(listener);
+        }
+    }
+
+    private void notifyDataSourceAdded(String dsKey, DataSource ds) {
+        for (DynamicDatasourceLifecycleListener listener : lifecycleListeners) {
+            try {
+                listener.onDataSourceAdded(dsKey, ds);
+            } catch (Exception e) {
+                log.warn("ateng-boot-datasource: 生命周期监听器处理 onDataSourceAdded 异常 [dsKey={}]: {}", dsKey, e.getMessage(), e);
+            }
+        }
+    }
+
+    private void notifyDataSourceRemoved(String dsKey) {
+        for (DynamicDatasourceLifecycleListener listener : lifecycleListeners) {
+            try {
+                listener.onDataSourceRemoved(dsKey);
+            } catch (Exception e) {
+                log.warn("ateng-boot-datasource: 生命周期监听器处理 onDataSourceRemoved 异常 [dsKey={}]: {}", dsKey, e.getMessage(), e);
+            }
+        }
+    }
+
+    private DataSourcePoolStats buildPoolStats(String dsKey, DataSource ds) {
+        if (ds instanceof HikariDataSource hikari) {
+            HikariPoolMXBean poolBean = hikari.getHikariPoolMXBean();
+            int active = 0;
+            int idle = 0;
+            int total = 0;
+            int threadsAwaiting = 0;
+            if (poolBean != null) {
+                active = poolBean.getActiveConnections();
+                idle = poolBean.getIdleConnections();
+                total = poolBean.getTotalConnections();
+                threadsAwaiting = poolBean.getThreadsAwaitingConnection();
+            }
+            return DataSourcePoolStats.builder()
+                    .dsKey(dsKey)
+                    .poolName(hikari.getPoolName())
+                    .activeConnections(active)
+                    .idleConnections(idle)
+                    .totalConnections(total)
+                    .threadsAwaitingConnection(threadsAwaiting)
+                    .maximumPoolSize(hikari.getMaximumPoolSize())
+                    .minimumIdle(hikari.getMinimumIdle())
+                    .build();
+        }
+        return DataSourcePoolStats.builder()
+                .dsKey(dsKey)
+                .poolName(ds.getClass().getSimpleName())
+                .activeConnections(0)
+                .idleConnections(0)
+                .totalConnections(0)
+                .threadsAwaitingConnection(0)
+                .maximumPoolSize(0)
+                .minimumIdle(0)
+                .build();
     }
 
     /**
@@ -471,6 +604,7 @@ public class DynamicDatasourceTemplate {
                         : 5;
                 preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
             }
+            notifyDataSourceAdded(dsKey, newDs);
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
                 lifecycleLock.unlock();
@@ -515,6 +649,7 @@ public class DynamicDatasourceTemplate {
                         : 5;
                 preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
             }
+            notifyDataSourceAdded(dsKey, newDs);
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
                 lifecycleLock.unlock();
@@ -660,6 +795,9 @@ public class DynamicDatasourceTemplate {
             // 3. 物理关闭底层连接池
             closeDataSource(targetDs);
             log.info("ateng-boot-datasource: 受管数据源已安全物理关闭 [dsKey={}]", dsKey);
+
+            // 4. 触发生命周期注销事件通知
+            notifyDataSourceRemoved(dsKey);
         } finally {
             if (lifecycleLock.isHeldByCurrentThread()) {
                 lifecycleLock.unlock();

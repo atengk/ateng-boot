@@ -17,6 +17,7 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.datasource.context.DataSourceAsyncContextSnapshotProvider;
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteFilter;
@@ -30,6 +31,7 @@ import io.github.atengk.boot.datasource.strategy.HealthAwareDynamicDataSourceStr
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.datasource.tenant.DefaultTenantDataSourceProvider;
 import io.github.atengk.boot.datasource.tenant.TenantDataSourceProvider;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.Filter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -266,6 +268,21 @@ public class AtengDatasourceAutoConfiguration {
         log.info("装配 DynamicDatasourceTemplate 编程式切源对称门面与批处理沙箱");
         return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider, guard,
                 creatorProvider != null ? creatorProvider.getIfAvailable() : null);
+    }
+
+    /**
+     * 注册动态多数据源 Micrometer 指标自动透视与生命周期绑定器
+     *
+     * @param dynamicDatasourceTemplate 动态数据源门面
+     * @return 度量绑定器实例
+     */
+    @Bean(destroyMethod = "destroy")
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.datasource.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
+    @ConditionalOnMissingBean(DynamicDatasourceMetricsBinder.class)
+    public DynamicDatasourceMetricsBinder dynamicDatasourceMetricsBinder(DynamicDatasourceTemplate dynamicDatasourceTemplate) {
+        log.info("装配 DynamicDatasourceMetricsBinder 动态多数据源 Micrometer 度量监控绑定器");
+        return new DynamicDatasourceMetricsBinder(dynamicDatasourceTemplate);
     }
 
     /**

@@ -60,6 +60,12 @@ public class DatasourceProperties {
     private SeataProperties seata = new SeataProperties();
 
     /**
+     * 动态多数据源连接池运行指标与度量透视配置
+     */
+    @NestedConfigurationProperty
+    private MetricsProperties metrics = new MetricsProperties();
+
+    /**
      * SaaS 物理多租户隔离配置
      */
     @Data
@@ -265,5 +271,17 @@ public class DatasourceProperties {
          * 是否启用 Seata 分布式事务透明代理包裹
          */
         private boolean enabled = false;
+    }
+
+    /**
+     * 动态多数据源 Micrometer 指标自动透视与生命周期配置
+     */
+    @Data
+    public static class MetricsProperties {
+
+        /**
+         * 是否启用动态多数据源 Micrometer 连接池指标自动透视与生命周期绑定
+         */
+        private boolean enabled = true;
     }
 }

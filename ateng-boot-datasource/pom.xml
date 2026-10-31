@@ -68,6 +68,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Micrometer 核心度量 (用于动态多数据源连接池监控，可选依赖) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 单元测试依赖 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
