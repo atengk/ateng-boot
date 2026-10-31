@@ -22,6 +22,7 @@
 | **`ateng-boot-sample-ftp`** | **专一 FTP 远程文件传输与切源 Demo**<br/>长连接池化复用、心跳保活断线自愈、双重工作目录复位防串目录、`FtpContextHolder` 线程级动态切源、表单原子上传守护（`.tmp` + `rename`）、流式下载、RFC 3659 MLSD 机器目录解析、跨目录移动、路径穿越防卫与原生逃逸舱 | FTP / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-ftp/README.md) |
 | **`ateng-boot-sample-mqtt`** | **专一物联网 MQTT 5.0 / 3.1.1 客户端 Demo**<br/>REST 风格主题通配提取、`X-Trace-Id` 标头全链路透传、集群 `$share` 共享订阅、MQTT 5.0 同步 RPC、本地事务对齐发信、工业国标/车联网 `HexPayload` 强类型转译、Actuator 探针与 Micrometer 黄金度量 | MQTT / Web / Actuator | **零 DB 依赖** | [查看](./ateng-boot-sample-mqtt/README.md) |
 | **`ateng-boot-sample-pay`** | **专一企业级多渠道支付 Demo**<br/>微信支付 V3 / 支付宝双规驱动、统一收单门面 `PayTemplate`、服务端二次加签、双模防重并发锁、业务回调监听器 SPI | Pay / Web | **零 DB 依赖** | [查看](./ateng-boot-sample-pay/README.md) |
+| **`ateng-boot-sample-job-snail`** | **SnailJob 调度与协同重试双擎 Demo**<br/>100% 离线脱网单测沙箱 `SnailJobTestHelper`、大数据流式游标切片、`TenantJobTemplate` 租户隔离遍历、`SnailRetryTemplate` 协同重试与手动上报、四维上下文快照穿透、三阶平滑停机排空与告警防风暴聚合 | SnailJob / Web / Actuator | **零 DB 依赖** | [查看](./ateng-boot-sample-job-snail/README.md) |
 | **`ateng-boot-sample-smoke-test`** | **全家桶 CI 冒烟准出门禁**<br/>全量 Starter 无冲突自动装配校验与端到端核心链路冒烟验收（耗时 ≤ 8s） | All / H2 / OpenAPI | H2 内存库 | [查看](./ateng-boot-sample-smoke-test/README.md) |
 
 ---
@@ -105,7 +106,10 @@ mvn test -pl ateng-boot-ftp,ateng-boot-samples/ateng-boot-sample-ftp -am -T 1C
 # 场景 K：修改了 ateng-boot-mqtt，定向联动自验
 mvn test -pl ateng-boot-mqtt,ateng-boot-samples/ateng-boot-sample-mqtt -am -T 1C
 
-# 场景 L：发版前或全反应堆构建时，全家桶极速冒烟准出
+# 场景 L：修改了 ateng-boot-job-snail，定向联动自验
+mvn test -pl ateng-boot-job-snail,ateng-boot-samples/ateng-boot-sample-job-snail -am -T 1C
+
+# 场景 M：发版前或全反应堆构建时，全家桶极速冒烟准出
 mvn test -pl ateng-boot-samples/ateng-boot-sample-smoke-test -am -T 1C
 ```
 
