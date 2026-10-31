@@ -41,6 +41,12 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
+        <!-- 参数校验 Starter (用于 XXL-Job 入参 JSR-303 防卫与 ValidatorUtil 支持) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
         <!-- Spring Boot 配置处理器 (可选，编译期生成 IDE 配置元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
