@@ -29,6 +29,11 @@ public enum MessageType {
     CARD("card", "统一交互卡片消息"),
 
     /**
+     * 轻量图文链接消息
+     */
+    LINK("link", "图文链接消息"),
+
+    /**
      * 图片消息
      */
     IMAGE("image", "图片消息"),

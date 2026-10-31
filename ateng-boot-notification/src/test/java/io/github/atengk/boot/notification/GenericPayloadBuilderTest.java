@@ -2,8 +2,10 @@ package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.GenericPayloadBuilder;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -44,6 +46,7 @@ class GenericPayloadBuilderTest {
     @DisplayName("验证 CardMessage 转译为通用 Webhook 标准结构")
     void testBuildCardPayload() {
         CardMessage card = CardMessage.of("卡片标题", "卡片内容")
+                .btnOrientation(CardButtonOrientation.HORIZONTAL)
                 .button(CardButton.of("查看", "https://example.com"))
                 .singleAction("跳转", "https://single.com");
 
@@ -52,8 +55,23 @@ class GenericPayloadBuilderTest {
         assertEquals("card", payload.get("msgType"));
         assertEquals("卡片标题", payload.get("title"));
         assertEquals("卡片内容", payload.get("content"));
+        assertEquals("HORIZONTAL", payload.get("btnOrientation"));
         assertEquals("跳转", payload.get("singleActionText"));
         assertEquals("https://single.com", payload.get("singleActionUrl"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为通用 Webhook 标准结构")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("链接标题", "链接描述文本", "https://example.com/link", "https://img.example.com/pic.png");
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("link", payload.get("msgType"));
+        assertEquals("链接标题", payload.get("title"));
+        assertEquals("链接描述文本", payload.get("text"));
+        assertEquals("https://example.com/link", payload.get("messageUrl"));
+        assertEquals("https://img.example.com/pic.png", payload.get("picUrl"));
     }
 
     @Test

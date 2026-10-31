@@ -13,6 +13,7 @@ import io.github.atengk.boot.notification.exception.NotificationSendException;
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.InMemoryNotificationRateLimiter;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.notification.model.Platform;
@@ -357,6 +358,34 @@ class NotificationTemplateTest extends BaseNotificationTest {
         String body = request.getBody().readUtf8();
         assertThat(body).contains("单号: ORD-20261023");
         assertThat(body).contains("用户 张三 于 09:30:00 支付完成");
+    }
+
+    @Test
+    @DisplayName("验证基于图文链接消息 LinkMessage 的 sendTemplate 复合动态插值与发送")
+    void testSendTemplateLinkMessage() throws InterruptedException {
+        enqueueOkJson("{\"errcode\":0,\"errmsg\":\"ok\"}");
+
+        LinkMessage linkTemplate = LinkMessage.of("项目 ${projectName} 构建通报", "版本 ${version} 已部署至 ${env}", "https://ci.example.com/job/${buildId}", "https://img.example.com/${env}.png");
+
+        Map<String, Object> variables = Map.of(
+                "projectName", "ateng-boot",
+                "version", "v1.2.0",
+                "env", "production",
+                "buildId", "1024"
+        );
+
+        NotificationSendResult result = template.sendTemplate("default-dingtalk", linkTemplate, variables);
+
+        assertNotNull(result);
+        assertTrue(result.isSuccess());
+
+        RecordedRequest request = takeRequest();
+        assertNotNull(request);
+        String body = request.getBody().readUtf8();
+        assertThat(body).contains("项目 ateng-boot 构建通报");
+        assertThat(body).contains("版本 v1.2.0 已部署至 production");
+        assertThat(body).contains("https://ci.example.com/job/1024");
+        assertThat(body).contains("https://img.example.com/production.png");
     }
 
     @Test

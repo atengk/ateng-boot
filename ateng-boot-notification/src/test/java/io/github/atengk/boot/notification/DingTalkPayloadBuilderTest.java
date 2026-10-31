@@ -2,7 +2,9 @@ package io.github.atengk.boot.notification;
 
 import io.github.atengk.boot.notification.adapter.DingTalkPayloadBuilder;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -172,5 +174,47 @@ class DingTalkPayloadBuilderTest {
 
         assertEquals("feedCard", payload.get("msgtype"));
         assertNotNull(payload.get("feedCard"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为钉钉原生 link 报文并携带 at 节点")
+    @SuppressWarnings("unchecked")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("版本的火车向前开", "这个即将发布的新版本...", "https://www.dingtalk.com/detail", "https://img.example.com/cover.png")
+                .atAll()
+                .atMobiles("13800000001");
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("link", payload.get("msgtype"));
+        Map<String, Object> linkObj = (Map<String, Object>) payload.get("link");
+        assertNotNull(linkObj);
+        assertEquals("版本的火车向前开", linkObj.get("title"));
+        assertEquals("这个即将发布的新版本...", linkObj.get("text"));
+        assertEquals("https://www.dingtalk.com/detail", linkObj.get("messageUrl"));
+        assertEquals("https://img.example.com/cover.png", linkObj.get("picUrl"));
+
+        Map<String, Object> atObj = (Map<String, Object>) payload.get("at");
+        assertNotNull(atObj);
+        assertEquals(true, atObj.get("isAtAll"));
+        assertEquals(List.of("13800000001"), atObj.get("atMobiles"));
+    }
+
+    @Test
+    @DisplayName("验证 CardMessage 设置 btnOrientation 为 HORIZONTAL 时钉钉 actionCard 正确下发 1")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithHorizontalOrientation() {
+        CardMessage card = CardMessage.of("请假审批", "员工张三申请年假 3 天")
+                .btnOrientation(CardButtonOrientation.HORIZONTAL)
+                .button("同意", "https://oa.example.com/agree")
+                .button("拒绝", "https://oa.example.com/reject");
+
+        Map<String, Object> payload = builder.buildPayload(card);
+
+        assertEquals("actionCard", payload.get("msgtype"));
+        Map<String, Object> actionCard = (Map<String, Object>) payload.get("actionCard");
+        assertEquals("1", actionCard.get("btnOrientation"));
+        List<Map<String, String>> btns = (List<Map<String, String>>) actionCard.get("btns");
+        assertEquals(2, btns.size());
     }
 }

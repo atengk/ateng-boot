@@ -2,6 +2,7 @@ package io.github.atengk.boot.notification.adapter;
 
 import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationMessage;
@@ -36,6 +37,7 @@ public class FeishuPayloadBuilder implements NotificationPayloadBuilder {
             case TEXT -> buildTextPayload(root, (TextMessage) message);
             case MARKDOWN -> buildMarkdownPayload(root, (MarkdownMessage) message);
             case CARD -> buildCardPayload(root, (CardMessage) message);
+            case LINK -> buildLinkPayload(root, (LinkMessage) message);
             case RAW -> buildRawPayload(root, (RawMessage) message);
             default -> throw new UnsupportedOperationException("飞书群机器人暂不支持消息类型: " + message.getMessageType());
         }
@@ -156,6 +158,63 @@ public class FeishuPayloadBuilder implements NotificationPayloadBuilder {
                 actions.add(buttonObj);
             }
             actionElement.put("actions", actions);
+            elements.add(actionElement);
+        }
+
+        card.put("elements", elements);
+        root.put("card", card);
+    }
+
+    private void buildLinkPayload(Map<String, Object> root, LinkMessage msg) {
+        root.put("msg_type", "interactive");
+
+        Map<String, Object> card = new LinkedHashMap<>();
+
+        // Header
+        Map<String, Object> header = new LinkedHashMap<>();
+        Map<String, String> titleNode = new LinkedHashMap<>();
+        titleNode.put("tag", "plain_text");
+        titleNode.put("content", msg.getTitle() != null ? msg.getTitle() : "图文链接");
+        header.put("title", titleNode);
+        header.put("template", "blue");
+        card.put("header", header);
+
+        // Elements
+        List<Map<String, Object>> elements = new ArrayList<>();
+
+        Map<String, Object> div = new LinkedHashMap<>();
+        div.put("tag", "div");
+
+        StringBuilder contentBuilder = new StringBuilder();
+        if (msg.getPicUrl() != null && !msg.getPicUrl().isBlank()) {
+            contentBuilder.append("![").append(msg.getTitle()).append("](").append(msg.getPicUrl()).append(")\n\n");
+        }
+        if (msg.getText() != null && !msg.getText().isBlank()) {
+            contentBuilder.append(msg.getText());
+        }
+        injectMentionTags(contentBuilder, msg.getMention());
+
+        Map<String, String> textObj = new LinkedHashMap<>();
+        textObj.put("tag", "lark_md");
+        textObj.put("content", contentBuilder.toString());
+        div.put("text", textObj);
+        elements.add(div);
+
+        if (msg.getMessageUrl() != null && !msg.getMessageUrl().isBlank()) {
+            Map<String, Object> actionElement = new LinkedHashMap<>();
+            actionElement.put("tag", "action");
+
+            Map<String, Object> buttonObj = new LinkedHashMap<>();
+            buttonObj.put("tag", "button");
+
+            Map<String, String> btnText = new LinkedHashMap<>();
+            btnText.put("tag", "plain_text");
+            btnText.put("content", "查看详情");
+            buttonObj.put("text", btnText);
+            buttonObj.put("type", "primary");
+            buttonObj.put("url", msg.getMessageUrl());
+
+            actionElement.put("actions", List.of(buttonObj));
             elements.add(actionElement);
         }
 

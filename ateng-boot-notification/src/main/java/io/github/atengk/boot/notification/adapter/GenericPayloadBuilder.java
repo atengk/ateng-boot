@@ -2,6 +2,7 @@ package io.github.atengk.boot.notification.adapter;
 
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
@@ -58,12 +59,18 @@ public class GenericPayloadBuilder implements NotificationPayloadBuilder {
             root.put("title", card.getTitle());
             root.put("content", card.getContent());
             root.put("headerColor", card.getHeaderColor().name());
+            root.put("btnOrientation", card.getBtnOrientation().name());
             root.put("mainImageUrl", card.getMainImageUrl());
             root.put("buttons", card.getButtons());
             if (card.isSingleAction()) {
                 root.put("singleActionText", card.getSingleActionText());
                 root.put("singleActionUrl", card.getSingleActionUrl());
             }
+        } else if (message instanceof LinkMessage link) {
+            root.put("title", link.getTitle());
+            root.put("text", link.getText());
+            root.put("picUrl", link.getPicUrl());
+            root.put("messageUrl", link.getMessageUrl());
         } else if (message instanceof ImageMessage img) {
             Map<String, String> imgNode = new LinkedHashMap<>();
             imgNode.put("base64", img.getBase64());

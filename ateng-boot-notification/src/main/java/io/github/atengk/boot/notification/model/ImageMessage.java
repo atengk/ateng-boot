@@ -7,6 +7,10 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
@@ -68,6 +72,42 @@ public class ImageMessage extends NotificationMessage {
             return new ImageMessage(b64, md5Hex);
         } catch (NoSuchAlgorithmException ex) {
             throw new NotificationException("系统缺少 MD5 摘要算法支持", ex);
+        }
+    }
+
+    /**
+     * 基于本地图片文件读取并自动计算 Base64 与 MD5
+     *
+     * @param file 图片文件
+     * @return 初始化的 ImageMessage 实例
+     */
+    public static ImageMessage fromFile(File file) {
+        if (file == null || !file.exists() || !file.isFile()) {
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY, "图片文件不存在或无效: " + file);
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(file.toPath());
+            return fromBytes(bytes);
+        } catch (IOException ex) {
+            throw new NotificationException("读取图片文件失败: " + file.getAbsolutePath(), ex);
+        }
+    }
+
+    /**
+     * 基于本地图片路径读取并自动计算 Base64 与 MD5
+     *
+     * @param path 图片文件路径
+     * @return 初始化的 ImageMessage 实例
+     */
+    public static ImageMessage fromPath(Path path) {
+        if (path == null || !Files.exists(path) || !Files.isRegularFile(path)) {
+            throw new NotificationException(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY, "图片路径不存在或无效: " + path);
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            return fromBytes(bytes);
+        } catch (IOException ex) {
+            throw new NotificationException("读取图片路径失败: " + path, ex);
         }
     }
 

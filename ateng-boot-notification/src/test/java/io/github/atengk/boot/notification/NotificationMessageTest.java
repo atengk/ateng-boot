@@ -3,10 +3,12 @@ package io.github.atengk.boot.notification;
 import io.github.atengk.boot.notification.exception.NotificationException;
 import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardButtonType;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.MessageType;
@@ -14,8 +16,13 @@ import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -102,6 +109,51 @@ class NotificationMessageTest {
     }
 
     @Test
+    @DisplayName("验证 CardMessage 按钮排版方向 btnOrientation 默认为 VERTICAL 且支持切换为 HORIZONTAL")
+    void testCardMessageButtonOrientation() {
+        CardMessage defaultCard = CardMessage.of("标题", "内容");
+        assertEquals(CardButtonOrientation.VERTICAL, defaultCard.getBtnOrientation());
+
+        CardMessage horizontalCard = CardMessage.of("审批", "请审批")
+                .btnOrientation(CardButtonOrientation.HORIZONTAL);
+        assertEquals(CardButtonOrientation.HORIZONTAL, horizontalCard.getBtnOrientation());
+
+        // 空安全保底
+        horizontalCard.btnOrientation(null);
+        assertEquals(CardButtonOrientation.VERTICAL, horizontalCard.getBtnOrientation());
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 图文链接消息模型构建、校验与 @人 扩展")
+    void testLinkMessage() {
+        LinkMessage link = LinkMessage.of("版本发布", "v1.2.0 已上线", "https://example.com/v1.2.0", "https://img.example.com/cover.png")
+                .channel("ops-link")
+                .atAll()
+                .atMobiles("13800000001");
+
+        assertEquals(MessageType.LINK, link.getMessageType());
+        assertEquals("版本发布", link.getTitle());
+        assertEquals("v1.2.0 已上线", link.getText());
+        assertEquals("https://example.com/v1.2.0", link.getMessageUrl());
+        assertEquals("https://img.example.com/cover.png", link.getPicUrl());
+        assertEquals("ops-link", link.getChannel());
+        assertTrue(link.getMention().isAtAll());
+        assertTrue(link.getMention().getAtMobiles().contains("13800000001"));
+
+        assertDoesNotThrow(link::validate);
+
+        // 校验异常分支：title 为空
+        LinkMessage noTitle = LinkMessage.of("   ", "https://example.com");
+        NotificationException ex1 = assertThrows(NotificationException.class, noTitle::validate);
+        assertEquals(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY.getCode(), ex1.getCode());
+
+        // 校验异常分支：messageUrl 为空
+        LinkMessage noUrl = LinkMessage.of("标题", "   ");
+        NotificationException ex2 = assertThrows(NotificationException.class, noUrl::validate);
+        assertEquals(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY.getCode(), ex2.getCode());
+    }
+
+    @Test
     @DisplayName("验证 ImageMessage 字节数组自动计算 Base64 与 MD5 校验和")
     void testImageMessage() {
         byte[] dummyData = "fake-png-binary-stream-123456".getBytes(StandardCharsets.UTF_8);
@@ -117,6 +169,34 @@ class NotificationMessageTest {
         ImageMessage emptyImg = new ImageMessage();
         NotificationException ex = assertThrows(NotificationException.class, emptyImg::validate);
         assertEquals(NotificationResultCode.NOTIFICATION_MESSAGE_EMPTY.getCode(), ex.getCode());
+    }
+
+    @Test
+    @DisplayName("验证 ImageMessage 支持从本地 File 和 Path 自动计算 MD5 和 Base64")
+    void testImageMessageFromFileAndFromPath(@TempDir Path tempDir) throws IOException {
+        Path imagePath = tempDir.resolve("test-image.png");
+        byte[] content = "sample-image-binary-data-for-test".getBytes(StandardCharsets.UTF_8);
+        Files.write(imagePath, content);
+
+        // 1. 验证 fromFile
+        File imageFile = imagePath.toFile();
+        ImageMessage imgFromFile = ImageMessage.fromFile(imageFile);
+        assertNotNull(imgFromFile.getBase64());
+        assertNotNull(imgFromFile.getMd5());
+        assertEquals(32, imgFromFile.getMd5().length());
+        assertDoesNotThrow(imgFromFile::validate);
+
+        // 2. 验证 fromPath
+        ImageMessage imgFromPath = ImageMessage.fromPath(imagePath);
+        assertEquals(imgFromFile.getBase64(), imgFromPath.getBase64());
+        assertEquals(imgFromFile.getMd5(), imgFromPath.getMd5());
+
+        // 3. 验证异常分支：文件不存在
+        File nonExistentFile = tempDir.resolve("non-existent.png").toFile();
+        assertThrows(NotificationException.class, () -> ImageMessage.fromFile(nonExistentFile));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromPath(nonExistentFile.toPath()));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromFile(null));
+        assertThrows(NotificationException.class, () -> ImageMessage.fromPath(null));
     }
 
     @Test

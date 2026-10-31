@@ -5,6 +5,7 @@ import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardButtonType;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -166,5 +167,46 @@ class FeishuPayloadBuilderTest {
 
         assertEquals("image", payload.get("msg_type"));
         assertNotNull(payload.get("content"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为飞书标准 interactive 交互卡片报文")
+    @SuppressWarnings("unchecked")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("版本发布通知", "v1.2.0 已顺利发布", "https://feishu.cn/doc/123", "https://img.example.com/banner.png")
+                .atAll();
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("interactive", payload.get("msg_type"));
+        Map<String, Object> card = (Map<String, Object>) payload.get("card");
+        assertNotNull(card);
+
+        Map<String, Object> header = (Map<String, Object>) card.get("header");
+        assertEquals("blue", header.get("template"));
+        Map<String, String> titleNode = (Map<String, String>) header.get("title");
+        assertEquals("版本发布通知", titleNode.get("content"));
+
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) card.get("elements");
+        assertEquals(2, elements.size());
+
+        // div lark_md element
+        Map<String, Object> div = elements.get(0);
+        assertEquals("div", div.get("tag"));
+        Map<String, String> textObj = (Map<String, String>) div.get("text");
+        String content = textObj.get("content");
+        assertTrue(content.contains("![版本发布通知](https://img.example.com/banner.png)"));
+        assertTrue(content.contains("v1.2.0 已顺利发布"));
+        assertTrue(content.contains("<at id=\"all\"></at>"));
+
+        // action button element
+        Map<String, Object> action = elements.get(1);
+        assertEquals("action", action.get("tag"));
+        List<Map<String, Object>> actions = (List<Map<String, Object>>) action.get("actions");
+        assertEquals(1, actions.size());
+        Map<String, Object> btn = actions.get(0);
+        assertEquals("button", btn.get("tag"));
+        assertEquals("primary", btn.get("type"));
+        assertEquals("https://feishu.cn/doc/123", btn.get("url"));
     }
 }

@@ -16,6 +16,7 @@ import io.github.atengk.boot.notification.handler.LoggingNotificationSendFailure
 import io.github.atengk.boot.notification.handler.NotificationSendFailureHandler;
 import io.github.atengk.boot.notification.limiter.NotificationRateLimiter;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.NotificationMessage;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
@@ -323,11 +324,21 @@ public class NotificationTemplate implements NotificationOperations, Application
             String renderedContent = templateRenderer.render(card.getContent(), variables);
             CardMessage result = new CardMessage(renderedTitle, renderedContent);
             result.setHeaderColor(card.getHeaderColor());
+            result.setBtnOrientation(card.getBtnOrientation());
             result.setMainImageUrl(card.getMainImageUrl());
             result.setButtons(card.getButtons());
             result.setSingleActionText(card.getSingleActionText());
             result.setSingleActionUrl(card.getSingleActionUrl());
             result.setMention(card.getMention());
+            return result;
+        }
+        if (template instanceof LinkMessage link) {
+            String renderedTitle = templateRenderer.render(link.getTitle(), variables);
+            String renderedText = templateRenderer.render(link.getText(), variables);
+            String renderedPicUrl = templateRenderer.render(link.getPicUrl(), variables);
+            String renderedMessageUrl = templateRenderer.render(link.getMessageUrl(), variables);
+            LinkMessage result = new LinkMessage(renderedTitle, renderedText, renderedMessageUrl, renderedPicUrl);
+            result.setMention(link.getMention());
             return result;
         }
         return template;
