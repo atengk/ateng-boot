@@ -43,3 +43,23 @@ _Avoid_: 故障转移策略, 探针策略, CircuitBreakerStrategy
 **Zero-Secret Decryption (零明文凭据安全解密)**:
 在动态数据源初始化与连接池创建前，对配置中的国密 SM4（`enc:sm4:`）或国际 AES（`enc:aes:`）密文密码进行内存瞬态解密，杜绝配置中心与日志泄露明文密码的安全机制。
 _Avoid_: 密码脱敏, 动态密码, 密钥还原, PasswordDecrypt
+
+**Tenant Read-Write Splitting (租户级读写分离)**:
+大租户独享物理数据库集群时，租户库内部结合事务只读状态透明路由至租户主库或租户从库集群的机制。
+_Avoid_: 租户从库路由, 多租户读写分流, TenantSlaveRouter
+
+**Active Probing Strategy (主动探活自愈策略)**:
+从库发生网络或物理异常被熔断后，由后台受管任务定期执行轻量物理探测，确认完全自愈后再安全恢复放行流量的防御机制。
+_Avoid_: 定时检查, 自动恢复, BackgroundHealthCheck
+
+**DataSource Pre-Warming (数据源连接池预热)**:
+在动态数据源挂载至路由表并对外开放流量前，并发预先建立并验证指定数量的物理连接以消除冷启动延迟抖动的机制。
+_Avoid_: 连接池初始化, 预加载, PoolPreload
+
+**Dynamic DataSource Metrics (动态数据源指标度量)**:
+对运行时动态挂载与注销的连接池活跃、空闲、等待连接数等实时状态进行指标采集与监控暴露的机制。
+_Avoid_: 连接池统计, 数据源监控, PoolMonitor
+
+**Dynamic DataSource Loader (动态数据源外部同步加载器)**:
+从业务数据库表或分布式配置中心拉取外部数据源配置，并在运行时执行差量增减与平滑同步的 SPI 扩展契约。
+_Avoid_: 数据源同步器, 租户库同步, DataSourceSync

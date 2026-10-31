@@ -26,4 +26,18 @@ public class DefaultTenantDataSourceProvider implements TenantDataSourceProvider
         String prefix = properties.getDataSourcePrefix();
         return (prefix != null ? prefix : "") + tenantId;
     }
+
+    @Override
+    public String resolveMasterDataSourceKey(String tenantId) {
+        return resolveDataSourceKey(tenantId);
+    }
+
+    @Override
+    public String resolveSlaveDataSourceKey(String tenantId) {
+        if (!StringUtils.hasText(tenantId)) {
+            return null;
+        }
+        String prefix = properties.getDataSourcePrefix();
+        return (prefix != null ? prefix : "") + tenantId + "_slave";
+    }
 }
