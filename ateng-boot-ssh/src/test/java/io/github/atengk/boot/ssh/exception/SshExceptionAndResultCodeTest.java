@@ -33,6 +33,8 @@ class SshExceptionAndResultCodeTest {
         assertThat(SshResultCode.OPERATION_FAILED.getCode()).isEqualTo(56012);
         assertThat(SshResultCode.SHELL_OPEN_FAILED.getCode()).isEqualTo(56013);
         assertThat(SshResultCode.SHELL_OPERATION_FAILED.getCode()).isEqualTo(56014);
+        assertThat(SshResultCode.BATCH_EXEC_FAILED.getCode()).isEqualTo(56015);
+        assertThat(SshResultCode.PROBE_FAILED.getCode()).isEqualTo(56016);
     }
 
     @Test

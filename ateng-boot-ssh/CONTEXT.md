@@ -79,3 +79,19 @@ _Avoid_: 本地映射, 端口穿透, 内部代理
 **ProxyJump (跳板机穿透)**:
 经由中间堡垒机/跳板机建立级联 SSH 会话并直达隔离内网目标主机的多跳代理机制。
 _Avoid_: 堡垒机代理, 多跳中继, 级联转发
+
+**SshBatchExecResult (批量巡检聚合回执)**:
+封装集群批量命令执行结果强类型聚合载荷，提供节点成功/失败计数、明细映射、整体耗时与快速判断断言。
+_Avoid_: BatchResult, CommandBatchResponse, SshClusterOutput
+
+**SshBatchOptions (批量执行控制选项)**:
+封装批量巡检并发度限制、快速失败策略及节点超时行为的选项模型。
+_Avoid_: BatchConfig, SshBatchParam
+
+**SftpProgressThrottler (流式传输进度节流防抖器)**:
+基于传输百分比步长与最小时间间隔进行防抖节流的传输进度监听装饰器。
+_Avoid_: ProgressFilter, SftpRateLimiter
+
+**Connectivity Probe (连通性探针)**:
+仅完成 TCP 建连与 SSH 凭据身份验证协商而不开启业务通道的无副作用健康探测机制。
+_Avoid_: Ping, SshCheck, HeartbeatChannel

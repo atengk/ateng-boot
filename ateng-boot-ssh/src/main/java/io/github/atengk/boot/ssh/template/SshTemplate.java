@@ -43,12 +43,13 @@ import java.util.function.Supplier;
  * SSH 核心操作门面 (SshTemplate)
  * <p>
  * 1. 深度融通四位一体路由：透明支持缺省节点、YAML 命名注册表、线程上下文 (SshContextHolder) 与 CMDB 动态直连描述符 (SshServerInfo)；<br>
- * 2. 对称涵盖同步短命令 (exec)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript) 与瞬态单次任务隔离 (execOnce)；<br>
+ * 2. 对称涵盖同步短命令 (exec)、异步非阻塞命令 (execAsync)、长任务实时按行流式消费 (execStream)、多行复杂脚本管道 (execScript/execScriptAsync) 与瞬态单次任务隔离 (execOnce)；<br>
  * 3. 创新落地原生 Sudo 提权安全管道 (execSudo) 与密码即时内存擦除抹零 (In-Memory Scrubbing)；<br>
  * 4. 深度联动 Core 受管线程池 (ThreadPoolTaskExecutor) 与四维上下文快照 (MDC/User/Tenant) 实现集群多节点高并发批量巡检 (execBatch)；<br>
  * 5. 开箱即用支持本地端口转发受管隧道 (openLocalTunnel) 与跳板机中继穿透；<br>
  * 6. 深度支持交互式 PTY 伪终端受管句柄 (openShell)，与 WebSSH / xterm.js 协同并联动生命周期自动停机排空；<br>
- * 7. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放。
+ * 7. 底层依托受管会话池 (SshSessionPool) 与孤儿进程信号主动防卫机制，保障高并发生产环境下的极致性能与资源确定性释放；<br>
+ * 8. 提供轻量无害连通性自验健康探针 (testConnection/testConnectionOrThrow)，仅完成 TCP 三次握手与 SSH 凭据身份验证，100% 绝不开辟任何业务 Channel，安全无副作用。
  * </p>
  *
  * @author Ateng
@@ -172,6 +173,81 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         Duration timeout = resolveDefaultTimeout(target);
         return sessionPool.execute(target, session ->
                 SshCommandExecutor.executeSync(session, command, options, timeout));
+    }
+
+    // ==========================================
+    // 1.1 异步非阻塞命令执行契约 (execAsync)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上异步非阻塞执行命令（默认选项，全链路透传四维上下文）
+     *
+     * @param command 待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String command) {
+        return execAsync(command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在上下文解析的目标服务器上异步非阻塞执行命令（携带扩展配置）
+     *
+     * @param command 待执行命令
+     * @param options 参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String command, SshExecOptions options) {
+        return execAsync((SshServerInfo) null, command, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上异步非阻塞执行命令
+     *
+     * @param serverName 节点名称
+     * @param command    待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String serverName, String command) {
+        return execAsync(serverName, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上异步非阻塞执行命令（携带扩展配置）
+     *
+     * @param serverName 节点名称
+     * @param command    待执行命令
+     * @param options    参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(String serverName, String command, SshExecOptions options) {
+        return execAsync(resolveServerInfo(serverName), command, options);
+    }
+
+    /**
+     * 在指定目标服务器描述符上异步非阻塞执行命令
+     *
+     * @param serverInfo 目标描述符
+     * @param command    待执行命令
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(SshServerInfo serverInfo, String command) {
+        return execAsync(serverInfo, command, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标服务器描述符上异步非阻塞执行命令（携带扩展配置，联动 Core 受管线程池）
+     *
+     * @param serverInfo 目标描述符
+     * @param command    待执行命令
+     * @param options    参数配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execAsync(SshServerInfo serverInfo, String command, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        Executor targetExecutor = getEffectiveExecutor();
+        Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> exec(target, command, effectiveOptions));
+        return CompletableFuture.supplyAsync(task, targetExecutor);
     }
 
     // ==========================================
@@ -328,6 +404,81 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
         // 标准化多行脚本换行符：统一将 Windows \r\n 转换为 Unix \n，防御远端 Shell 报 $'\r': command not found
         String normalizedScript = script.replace("\r\n", "\n").replace("\r", "\n");
         return exec(serverInfo, normalizedScript, options);
+    }
+
+    // ==========================================
+    // 3.1 异步多行脚本执行契约 (execScriptAsync)
+    // ==========================================
+
+    /**
+     * 在上下文解析的目标服务器上异步执行多行脚本
+     *
+     * @param script 多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String script) {
+        return execScriptAsync(script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在上下文解析的目标服务器上异步执行多行脚本（携带扩展配置）
+     *
+     * @param script  多行 Shell 脚本
+     * @param options 扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String script, SshExecOptions options) {
+        return execScriptAsync((SshServerInfo) null, script, options);
+    }
+
+    /**
+     * 在指定具名服务器节点上异步执行多行脚本
+     *
+     * @param serverName 节点名称
+     * @param script     多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String serverName, String script) {
+        return execScriptAsync(serverName, script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定具名服务器节点上异步执行多行脚本（携带扩展配置）
+     *
+     * @param serverName 节点名称
+     * @param script     多行 Shell 脚本
+     * @param options    扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(String serverName, String script, SshExecOptions options) {
+        return execScriptAsync(resolveServerInfo(serverName), script, options);
+    }
+
+    /**
+     * 在指定目标描述符服务器上异步执行多行脚本
+     *
+     * @param serverInfo 目标描述符
+     * @param script     多行 Shell 脚本
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(SshServerInfo serverInfo, String script) {
+        return execScriptAsync(serverInfo, script, SshExecOptions.defaults());
+    }
+
+    /**
+     * 在指定目标描述符服务器上异步执行多行脚本（携带扩展配置，联动 Core 受管线程池）
+     *
+     * @param serverInfo 目标描述符
+     * @param script     多行 Shell 脚本
+     * @param options    扩展配置选项
+     * @return 强类型命令执行结果异步凭据 (CompletableFuture)
+     */
+    public CompletableFuture<SshExecResult> execScriptAsync(SshServerInfo serverInfo, String script, SshExecOptions options) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        SshExecOptions effectiveOptions = options != null ? options : SshExecOptions.defaults();
+        Executor targetExecutor = getEffectiveExecutor();
+        Supplier<SshExecResult> task = AsyncContext.wrapSupplier(() -> execScript(target, script, effectiveOptions));
+        return CompletableFuture.supplyAsync(task, targetExecutor);
     }
 
     // ==========================================
@@ -1008,6 +1159,161 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
             }
             throw new SshOperationException(SshResultCode.SHELL_OPEN_FAILED,
                     "开启 SSH 交互式终端失败 [" + target.toSessionKey() + "]: " + e.getMessage(), e);
+        }
+    }
+
+    // ==========================================
+    // 10. 轻量无害连通性健康探测契约 (testConnection)
+    // ==========================================
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性
+     * <p>
+     * 仅在底层完成 TCP 三次握手与 SSH 凭据身份鉴权握手，100% 绝不开辟任何 Exec/Shell/SFTP 业务通道。
+     * 瞬态验证完毕后立即确定性释放底层网络连接，安全无副作用。
+     * </p>
+     *
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection() {
+        return testConnection((SshServerInfo) null, (Duration) null);
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param timeout 探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(Duration timeout) {
+        return testConnection((SshServerInfo) null, timeout);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性
+     *
+     * @param serverName 节点名称
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(String serverName) {
+        return testConnection(serverName, (Duration) null);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param serverName 节点名称
+     * @param timeout    探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(String serverName, Duration timeout) {
+        return testConnection(resolveServerInfo(serverName), timeout);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性
+     *
+     * @param serverInfo 目标描述符
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(SshServerInfo serverInfo) {
+        return testConnection(serverInfo, (Duration) null);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性（指定超时阈值）
+     *
+     * @param serverInfo 目标描述符
+     * @param timeout    探测超时时间
+     * @return 节点是否连通可用
+     */
+    public boolean testConnection(SshServerInfo serverInfo, Duration timeout) {
+        try {
+            testConnectionOrThrow(serverInfo, timeout);
+            return true;
+        } catch (Exception e) {
+            log.debug("ateng-boot-ssh: 连通性健康探测失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow() {
+        testConnectionOrThrow((SshServerInfo) null, (Duration) null);
+    }
+
+    /**
+     * 探测当前上下文或缺省服务器节点的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param timeout 探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(Duration timeout) {
+        testConnectionOrThrow((SshServerInfo) null, timeout);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @param serverName 节点名称
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(String serverName) {
+        testConnectionOrThrow(serverName, (Duration) null);
+    }
+
+    /**
+     * 探测指定具名服务器节点的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param serverName 节点名称
+     * @param timeout    探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(String serverName, Duration timeout) {
+        testConnectionOrThrow(resolveServerInfo(serverName), timeout);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性，不可达时抛出异常
+     *
+     * @param serverInfo 目标描述符
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(SshServerInfo serverInfo) {
+        testConnectionOrThrow(serverInfo, (Duration) null);
+    }
+
+    /**
+     * 探测指定目标服务器描述符的网络与身份认证连通性（指定超时阈值），不可达时抛出异常
+     *
+     * @param serverInfo 目标描述符
+     * @param timeout    探测超时时间
+     * @throws SshOperationException 节点不可达或凭据认证失败
+     */
+    public void testConnectionOrThrow(SshServerInfo serverInfo, Duration timeout) {
+        SshServerInfo target = resolveServerInfo(serverInfo);
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {
+            target = target.toBuilder().connectTimeout(timeout).authTimeout(timeout).build();
+        }
+        SshServerInfo effectiveTarget = target;
+        try {
+            sessionPool.executeOnce(effectiveTarget, session -> {
+                if (!session.isOpen()) {
+                    throw new SshOperationException(SshResultCode.PROBE_FAILED,
+                            "SSH 探测会话未能开启就绪 [" + effectiveTarget.toSessionKey() + "]");
+                }
+                return true;
+            });
+        } catch (SshOperationException e) {
+            throw new SshOperationException(SshResultCode.PROBE_FAILED,
+                    "SSH 节点连通性探测失败 [" + effectiveTarget.toSessionKey() + "]: " + e.getMessage(), e);
+        } catch (Exception e) {
+            throw new SshOperationException(SshResultCode.PROBE_FAILED,
+                    "SSH 节点连通性探测失败 [" + effectiveTarget.toSessionKey() + "]: " + e.getMessage(), e);
         }
     }
 
