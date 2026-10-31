@@ -31,6 +31,8 @@ class AtengSnailJobAutoConfigurationTest {
             assertThat(context).hasSingleBean(AtengSnailJobAutoConfiguration.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.properties.SnailJobProperties.class);
             assertThat(context).hasSingleBean(SnailJobPropertiesBridge.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate.class);
+            assertThat(context).hasSingleBean(io.github.atengk.boot.job.snail.template.TenantJobTemplate.class);
 
             io.github.atengk.boot.job.snail.properties.SnailJobProperties props =
                     context.getBean(io.github.atengk.boot.job.snail.properties.SnailJobProperties.class);

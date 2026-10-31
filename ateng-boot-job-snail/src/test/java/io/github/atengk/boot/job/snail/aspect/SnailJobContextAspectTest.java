@@ -2,14 +2,17 @@ package io.github.atengk.boot.job.snail.aspect;
 
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
+import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
 import io.github.atengk.boot.job.snail.autoconfigure.AtengSnailJobAutoConfiguration;
+import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.event.SnailJobTimeoutEvent;
+import io.github.atengk.boot.job.snail.model.ShardingContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -185,6 +188,36 @@ class SnailJobContextAspectTest {
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
 
+    @Test
+    @DisplayName("测试 SnailJobContext 门面自动注入形参并双向写回 JobArgs")
+    void testSnailJobContextInjectionAndSync() {
+        JobArgs args = new JobArgs();
+        args.setJobId(5001L);
+        args.setWorkflowTaskBatchId(6001L);
+        args.setJobParams("{\"orderId\":12345}");
+
+        ExecuteResult result = mockJobService.executeWithContext(args, null);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("Context executed");
+
+        // 验证切面退出后，在方法中 append 的变更上下文已成功同步至底层 JobArgs
+        assertThat(args.getChangeWfContext()).containsEntry("workflowStatus", "STEP_1_DONE");
+        assertThat(args.getChangeWfContext()).containsEntry("retryCount", 3);
+    }
+
+    @Test
+    @DisplayName("测试 ShardingContext 自动注入形参并正确承载分片参数")
+    void testShardingContextInjection() {
+        ShardingJobArgs shardingArgs = new ShardingJobArgs();
+        shardingArgs.setJobId(8001L);
+        shardingArgs.setShardingIndex(2);
+        shardingArgs.setShardingTotal(5);
+
+        ExecuteResult result = mockJobService.executeWithSharding(shardingArgs, null);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("index: 2, total: 5");
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestJobConfig {
@@ -251,6 +284,22 @@ class SnailJobContextAspectTest {
                 return ExecuteResult.failure(null, "interrupted");
             }
             return ExecuteResult.success();
+        }
+
+        @JobExecutor(name = "testContextJob")
+        public ExecuteResult executeWithContext(JobArgs args, SnailJobContext ctx) {
+            assertThat(ctx).isNotNull();
+            assertThat(ctx.getJobId()).isEqualTo(5001L);
+            assertThat(ctx.getWorkflowTaskBatchId()).isEqualTo(6001L);
+            ctx.appendWfContext("workflowStatus", "STEP_1_DONE");
+            ctx.appendWfContext("retryCount", 3);
+            return ExecuteResult.success("Context executed");
+        }
+
+        @JobExecutor(name = "testShardingJob")
+        public ExecuteResult executeWithSharding(JobArgs args, ShardingContext sharding) {
+            assertThat(sharding).isNotNull();
+            return ExecuteResult.success("index: " + sharding.getShardIndex() + ", total: " + sharding.getShardTotal());
         }
     }
 

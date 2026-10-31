@@ -8,10 +8,15 @@ import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
+import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
+import io.github.atengk.boot.job.snail.template.TenantJobTemplate;
+import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
+import io.github.atengk.boot.mybatisplus.util.StreamingQueryTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -21,6 +26,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
+
+import java.util.concurrent.Executor;
 
 /**
  * SnailJob 分布式任务调度与分布式重试双擎自动装配入口
@@ -155,6 +162,43 @@ public class AtengSnailJobAutoConfiguration {
             ObjectProvider<com.aizuda.snailjob.client.core.Report> reportProvider,
             SnailJobProperties properties) {
         return new SnailRetryTemplate(reportProvider, properties);
+    }
+
+    /**
+     * SnailJob 大数据游标批处理与流式分片执行门面
+     *
+     * @param taskExecutorProvider 异步受管线程池提供者 (优先注入 atengTaskExecutor)
+     * @param streamingQueryTemplateProvider MyBatis-Plus 游标流式模板提供者 (可选)
+     * @return SnailShardingBatchTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "batch-template-enabled", havingValue = "true", matchIfMissing = true)
+    public SnailShardingBatchTemplate snailShardingBatchTemplate(
+            @Qualifier("atengTaskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+            ObjectProvider<StreamingQueryTemplate> streamingQueryTemplateProvider) {
+        Executor executor = taskExecutorProvider.getIfAvailable();
+        StreamingQueryTemplate streamingTemplate = streamingQueryTemplateProvider.getIfAvailable();
+        return new SnailShardingBatchTemplate(
+                executor,
+                SnailShardingBatchTemplate.DEFAULT_BATCH_SIZE,
+                SnailShardingBatchTemplate.DEFAULT_MAX_CONCURRENCY,
+                streamingTemplate
+        );
+    }
+
+    /**
+     * SnailJob 多租户隔离遍历执行门面
+     *
+     * @param tenantListProvider 多租户列表提供者 SPI (可选)
+     * @return TenantJobTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.job.snail.job", name = "tenant-template-enabled", havingValue = "true", matchIfMissing = true)
+    public TenantJobTemplate tenantJobTemplate(
+            ObjectProvider<TenantListProvider> tenantListProvider) {
+        return new TenantJobTemplate(tenantListProvider.getIfAvailable());
     }
 
     /**

@@ -2,6 +2,8 @@ package io.github.atengk.boot.job.snail.aspect;
 
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
+import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
+import com.aizuda.snailjob.client.job.core.executor.JobContextManager;
 import com.aizuda.snailjob.common.core.model.JobContext;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -14,7 +16,10 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.snail.annotation.AtengSnailJob;
+import io.github.atengk.boot.job.snail.context.SnailJobContext;
+import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
@@ -162,9 +167,58 @@ public class SnailJobContextAspect {
         AtomicReference<SnailLocalWatchdog.WatchdogSession> sessionRef =
                 new AtomicReference<>(SnailLocalWatchdog.WatchdogSession.NOOP);
 
+        // 构建 SnailJobContext 并绑定当前线程
+        SnailJobContext snailJobContext = new SnailJobContext();
+        snailJobContext.setJobId(jobId);
+        snailJobContext.setJobName(jobName);
+        snailJobContext.setTaskBatchId(taskBatchId);
+        snailJobContext.setJobArgs(jobArgs);
+        snailJobContext.setRawJobParams(rawParam);
+
+        JobContext nativeJobContext = null;
+        try {
+            nativeJobContext = JobContextManager.getJobContext();
+        } catch (Throwable ignored) {
+        }
+        snailJobContext.setNativeJobContext(nativeJobContext);
+
+        if (jobArgs instanceof ShardingJobArgs sja) {
+            snailJobContext.setShardingTotal(sja.getShardingTotal());
+            snailJobContext.setShardingIndex(sja.getShardingIndex());
+        } else if (nativeJobContext != null && nativeJobContext.getShardingTotal() != null) {
+            snailJobContext.setShardingTotal(nativeJobContext.getShardingTotal());
+            snailJobContext.setShardingIndex(nativeJobContext.getShardingIndex());
+        }
+
+        if (jobArgs != null) {
+            snailJobContext.setWorkflowTaskBatchId(jobArgs.getWorkflowTaskBatchId());
+            snailJobContext.setWorkflowNodeId(jobArgs.getWorkflowNodeId());
+            snailJobContext.setJobBizId(jobArgs.getJobBizId());
+            if (jobArgs.getWfContext() != null) {
+                snailJobContext.appendWfContext(jobArgs.getWfContext());
+            }
+            if (jobArgs.getChangeWfContext() != null) {
+                snailJobContext.appendWfContext(jobArgs.getChangeWfContext());
+            }
+        } else if (nativeJobContext != null) {
+            snailJobContext.setWorkflowTaskBatchId(nativeJobContext.getWorkflowTaskBatchId());
+            snailJobContext.setWorkflowNodeId(nativeJobContext.getWorkflowNodeId());
+            snailJobContext.setJobBizId(nativeJobContext.getJobBizId());
+            snailJobContext.setTaskId(nativeJobContext.getTaskId());
+            snailJobContext.setTaskName(nativeJobContext.getTaskName());
+            snailJobContext.setMrStage(nativeJobContext.getMrStage());
+            if (nativeJobContext.getWfContext() != null) {
+                snailJobContext.appendWfContext(nativeJobContext.getWfContext());
+            }
+            if (nativeJobContext.getChangeWfContext() != null) {
+                snailJobContext.appendWfContext(nativeJobContext.getChangeWfContext());
+            }
+        }
+        SnailJobContextHolder.set(snailJobContext);
+
         try {
             // A. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
-            Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs);
+            Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
 
             // B. 若租户模式为 PARAM 且前面未提取到租户，从反序列化后的实参中二次探测
             if (tenantMode == JobTenantMode.PARAM && !StringUtils.hasText(TenantContextHolder.getTenantId())) {
@@ -193,6 +247,16 @@ public class SnailJobContextAspect {
             }
             throw t;
         } finally {
+            try {
+                if (jobArgs != null && !snailJobContext.getChangeWfContext().isEmpty()) {
+                    for (java.util.Map.Entry<String, Object> entry : snailJobContext.getChangeWfContext().entrySet()) {
+                        jobArgs.appendContext(entry.getKey(), entry.getValue());
+                    }
+                }
+            } finally {
+                SnailJobContextHolder.remove();
+            }
+
             SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
             session.cancel();
             if (session.isTimedOut()) {
@@ -228,6 +292,20 @@ public class SnailJobContextAspect {
      * @return 解析并转换后的强类型实参列表
      */
     protected Object[] resolveArguments(Method method, Object[] rawArgs, String rawParam, JobArgs jobArgs) {
+        return resolveArguments(method, rawArgs, rawParam, jobArgs, SnailJobContextHolder.get());
+    }
+
+    /**
+     * 根据方法形参声明，解析并完成强类型参数绑定（支持 SnailJobContext 与 ShardingContext 注入）
+     *
+     * @param method          被调度的业务方法
+     * @param rawArgs         AOP 原始实参列表
+     * @param rawParam        原始文本任务参数
+     * @param jobArgs         JobArgs 实例
+     * @param snailJobContext 当前线程持有的增强上下文
+     * @return 解析并转换后的强类型实参列表
+     */
+    protected Object[] resolveArguments(Method method, Object[] rawArgs, String rawParam, JobArgs jobArgs, SnailJobContext snailJobContext) {
         Parameter[] parameters = method.getParameters();
         if (parameters == null || parameters.length == 0) {
             return new Object[0];
@@ -255,10 +333,16 @@ public class SnailJobContextAspect {
                 if (rawArg instanceof JobContext jc) {
                     resolved[i] = jc;
                 } else {
-                    resolved[i] = null;
+                    resolved[i] = (snailJobContext != null) ? snailJobContext.getNativeJobContext() : null;
                 }
+            } else if (SnailJobContext.class.isAssignableFrom(type)) {
+                // 3. SnailJobContext 增强门面参数注入
+                resolved[i] = (snailJobContext != null) ? snailJobContext : SnailJobContext.current();
+            } else if (ShardingContext.class.isAssignableFrom(type)) {
+                // 4. ShardingContext 分片上下文参数注入
+                resolved[i] = (snailJobContext != null) ? snailJobContext.getSharding() : ShardingContext.current();
             } else if (String.class.isAssignableFrom(type)) {
-                // 3. 原生字符串参数注入
+                // 5. 原生字符串参数注入
                 if (StringUtils.hasText(rawParam)) {
                     resolved[i] = rawParam;
                 } else if (rawArg instanceof String str) {

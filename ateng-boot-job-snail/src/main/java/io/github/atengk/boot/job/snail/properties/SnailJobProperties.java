@@ -114,6 +114,16 @@ public class SnailJobProperties {
          * 是否启用调度切面拦截（四维上下文 MDC traceId 注入、JSR-303 参数反序列化防卫与看门狗）
          */
         private boolean contextAspectEnabled = true;
+
+        /**
+         * 是否启用 SnailShardingBatchTemplate 大数据游标批处理门面
+         */
+        private boolean batchTemplateEnabled = true;
+
+        /**
+         * 是否启用 TenantJobTemplate 多租户隔离遍历执行门面
+         */
+        private boolean tenantTemplateEnabled = true;
     }
 
     /**
