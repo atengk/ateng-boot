@@ -8,6 +8,7 @@ import io.github.atengk.boot.document.font.DocumentFontResolver;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
 import io.github.atengk.boot.document.pdf.model.ImageStampOptions;
 import io.github.atengk.boot.document.pdf.model.PageNumberOptions;
+import io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor;
 import io.github.atengk.boot.document.pdf.model.SecurityOptions;
 import io.github.atengk.boot.document.pdf.model.WatermarkOptions;
 import io.github.atengk.boot.document.properties.DocumentPdfProperties;
@@ -37,6 +38,7 @@ import org.apache.pdfbox.pdmodel.interactive.form.PDChoice;
 import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDNonTerminalField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDRadioButton;
+import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDVariableText;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -1225,6 +1227,7 @@ public class PdfTemplate {
             if (acroForm == null) {
                 throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "PDF 文档不包含 AcroForm 交互式表单");
             }
+            checkXfaSupport(acroForm);
 
             // 填充表单字段
             fillAcroFormFields(doc, acroForm, data, opts);
@@ -1308,6 +1311,7 @@ public class PdfTemplate {
             if (acroForm == null) {
                 return Collections.emptyMap();
             }
+            checkXfaSupport(acroForm);
             Map<String, String> result = new LinkedHashMap<>();
             collectFields(acroForm.getFields(), result);
             return result;
@@ -1315,6 +1319,38 @@ public class PdfTemplate {
             throw e;
         } catch (Exception e) {
             throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "获取 PDF 表单字段失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 巡检并自省 PDF 文档中所有 AcroForm 交互式表单域元数据描述列表
+     *
+     * @param source 原始 PDF 输入源（支持 Resource, InputStream, File, Path, byte[], String）
+     * @return 表单字段结构描述列表（若文档不含表单则返回空列表，绝不返回 null）
+     * @throws PdfOperationException 表单读取异常或动态 XFA 拦截时抛出
+     */
+    public List<PdfFormFieldDescriptor> listFormFields(Object source) {
+        Objects.requireNonNull(source, "PDF 输入源 source 不能为空");
+        try (LoadedPdfDocument loadedPdf = loadDocument(source)) {
+            PDDocument doc = loadedPdf.getDocument();
+            if (doc.isEncrypted()) {
+                throw new PdfOperationException(DocumentResultCode.PASSWORD_ERROR, "PDF 文档已加密，请先解密后再获取表单字段元数据");
+            }
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            if (acroForm == null) {
+                return Collections.emptyList();
+            }
+            checkXfaSupport(acroForm);
+            if (acroForm.getFields().isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<PdfFormFieldDescriptor> result = new ArrayList<>();
+            collectFormFieldDescriptors(acroForm.getFields(), result);
+            return Collections.unmodifiableList(result);
+        } catch (PdfOperationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PdfOperationException(DocumentResultCode.FORM_ERROR, "自省巡检 PDF 表单字段失败: " + e.getMessage(), e);
         }
     }
 
@@ -1398,9 +1434,17 @@ public class PdfTemplate {
             }
         } else if (field instanceof PDChoice choice) {
             if (val instanceof List<?> list) {
+                boolean hasCjk = list.stream().anyMatch(item -> containsChinese(String.valueOf(item)));
+                if (hasCjk) {
+                    ensureChineseFontConfigured(doc, acroForm, choice, opts, cachedChineseFont, cachedFontName);
+                }
                 choice.setValue(list.stream().map(String::valueOf).toList());
             } else if (val != null) {
-                choice.setValue(String.valueOf(val));
+                String strVal = String.valueOf(val);
+                if (containsChinese(strVal)) {
+                    ensureChineseFontConfigured(doc, acroForm, choice, opts, cachedChineseFont, cachedFontName);
+                }
+                choice.setValue(strVal);
             }
         } else {
             if (val != null) {
@@ -1501,6 +1545,54 @@ public class PdfTemplate {
         }
     }
 
+    private void checkXfaSupport(PDAcroForm acroForm) {
+        if (acroForm != null && acroForm.hasXFA()) {
+            throw new PdfOperationException(DocumentResultCode.PDF_XFA_UNSUPPORTED,
+                    "检测到当前 PDF 包含动态 XFA (XML Forms Architecture) 表单，PDFBox 暂不支持动态 XFA 渲染与填报；"
+                            + "请先在 Adobe Acrobat 中执行「打印为 PDF」或「转换为静态 AcroForm」后再行操作");
+        }
+    }
+
+    private void collectFormFieldDescriptors(List<PDField> fields, List<PdfFormFieldDescriptor> result) {
+        if (fields == null) {
+            return;
+        }
+        for (PDField f : fields) {
+            if (f instanceof PDNonTerminalField ntf) {
+                collectFormFieldDescriptors(ntf.getChildren(), result);
+            } else {
+                PdfFormFieldDescriptor.FieldCategory category = resolveFieldCategory(f);
+                String val = f.getValueAsString();
+                PdfFormFieldDescriptor descriptor = PdfFormFieldDescriptor.builder()
+                        .name(f.getPartialName())
+                        .fullyQualifiedName(f.getFullyQualifiedName())
+                        .fieldType(f.getFieldType())
+                        .fieldCategory(category)
+                        .value(val != null ? val : "")
+                        .readOnly(f.isReadOnly())
+                        .required(f.isRequired())
+                        .build();
+                result.add(descriptor);
+            }
+        }
+    }
+
+    private PdfFormFieldDescriptor.FieldCategory resolveFieldCategory(PDField field) {
+        if (field instanceof PDTextField) {
+            return PdfFormFieldDescriptor.FieldCategory.TEXT;
+        } else if (field instanceof PDCheckBox) {
+            return PdfFormFieldDescriptor.FieldCategory.CHECKBOX;
+        } else if (field instanceof PDRadioButton) {
+            return PdfFormFieldDescriptor.FieldCategory.RADIO_BUTTON;
+        } else if (field instanceof PDChoice) {
+            return PdfFormFieldDescriptor.FieldCategory.CHOICE;
+        } else if (field instanceof PDSignatureField) {
+            return PdfFormFieldDescriptor.FieldCategory.SIGNATURE;
+        } else {
+            return PdfFormFieldDescriptor.FieldCategory.OTHER;
+        }
+    }
+
     private static boolean containsChinese(String text) {
         if (text == null || text.isEmpty()) {
             return false;
@@ -1509,6 +1601,15 @@ public class PdfTemplate {
             int codePoint = text.codePointAt(i);
             Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
             if (script == Character.UnicodeScript.HAN) {
+                return true;
+            }
+            Character.UnicodeBlock block = Character.UnicodeBlock.of(codePoint);
+            if (block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                    || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
+                    || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+                    || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
+                    || block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
+                    || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS) {
                 return true;
             }
             i += Character.charCount(codePoint);

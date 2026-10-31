@@ -4,8 +4,10 @@ import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.document.exception.DocumentResultCode;
 import io.github.atengk.boot.document.exception.PdfOperationException;
 import io.github.atengk.boot.document.pdf.model.FormOptions;
+import io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor;
 import io.github.atengk.boot.document.properties.DocumentProperties;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSArray;
 import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -20,6 +22,7 @@ import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceDictionary;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDCheckBox;
+import org.apache.pdfbox.pdmodel.interactive.form.PDComboBox;
 import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDRadioButton;
 import org.apache.pdfbox.pdmodel.interactive.form.PDTextField;
@@ -34,6 +37,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -308,6 +312,127 @@ class PdfTemplateFormTest {
         }
     }
 
+    @Test
+    @DisplayName("测试表单域元数据自省巡检 listFormFields：验证字段分类、标识与只读状态")
+    void testListFormFields() throws Exception {
+        byte[] templatePdf = createSampleFormPdf();
+
+        List<PdfFormFieldDescriptor> descriptors = pdfTemplate.listFormFields(templatePdf);
+        assertThat(descriptors).isNotEmpty();
+        assertThat(descriptors).hasSize(5);
+
+        Map<String, PdfFormFieldDescriptor> map = descriptors.stream()
+                .collect(java.util.stream.Collectors.toMap(PdfFormFieldDescriptor::getName, d -> d));
+
+        // 1. username 文本域
+        PdfFormFieldDescriptor usernameDesc = map.get("username");
+        assertThat(usernameDesc).isNotNull();
+        assertThat(usernameDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.TEXT);
+        assertThat(usernameDesc.getFieldType()).isEqualTo("Tx");
+        assertThat(usernameDesc.isReadOnly()).isFalse();
+
+        // 2. role 文本域
+        PdfFormFieldDescriptor roleDesc = map.get("role");
+        assertThat(roleDesc).isNotNull();
+        assertThat(roleDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.TEXT);
+
+        // 3. agreeTerms 复选框
+        PdfFormFieldDescriptor agreeDesc = map.get("agreeTerms");
+        assertThat(agreeDesc).isNotNull();
+        assertThat(agreeDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.CHECKBOX);
+        assertThat(agreeDesc.getFieldType()).isEqualTo("Btn");
+
+        // 4. gender 单选按钮
+        PdfFormFieldDescriptor genderDesc = map.get("gender");
+        assertThat(genderDesc).isNotNull();
+        assertThat(genderDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.RADIO_BUTTON);
+        assertThat(genderDesc.getFieldType()).isEqualTo("Btn");
+
+        // 5. country 下拉选择
+        PdfFormFieldDescriptor countryDesc = map.get("country");
+        assertThat(countryDesc).isNotNull();
+        assertThat(countryDesc.getFieldCategory()).isEqualTo(PdfFormFieldDescriptor.FieldCategory.CHOICE);
+        assertThat(countryDesc.getFieldType()).isEqualTo("Ch");
+
+        // 普通空白 PDF 巡检保底返回空列表
+        byte[] plainPdf;
+        try (PDDocument doc = new PDDocument()) {
+            doc.addPage(new PDPage(PDRectangle.A4));
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            plainPdf = baos.toByteArray();
+        }
+        assertThat(pdfTemplate.listFormFields(plainPdf)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试动态 XFA 表单快速失败防卫：各入口均准确拦截并抛出 PDF_XFA_UNSUPPORTED")
+    void testXfaDetectionAndFailFast(@TempDir Path tempDir) throws Exception {
+        byte[] xfaPdf = createSampleXfaPdf();
+
+        // 1. 自省 listFormFields 拦截
+        assertThatThrownBy(() -> pdfTemplate.listFormFields(xfaPdf))
+                .isInstanceOf(PdfOperationException.class)
+                .satisfies(e -> {
+                    PdfOperationException poe = (PdfOperationException) e;
+                    assertThat(poe.getResultCode()).isEqualTo(DocumentResultCode.PDF_XFA_UNSUPPORTED);
+                    assertThat(poe.getMessage()).contains("动态 XFA");
+                });
+
+        // 2. 数据填报 fillForm 拦截
+        Path out = tempDir.resolve("xfa_out.pdf");
+        assertThatThrownBy(() -> pdfTemplate.fillForm(xfaPdf, out, Map.of("username", "test")))
+                .isInstanceOf(PdfOperationException.class)
+                .satisfies(e -> {
+                    PdfOperationException poe = (PdfOperationException) e;
+                    assertThat(poe.getResultCode()).isEqualTo(DocumentResultCode.PDF_XFA_UNSUPPORTED);
+                    assertThat(poe.getMessage()).contains("动态 XFA");
+                });
+
+        // 3. 键值获取 getFormFields 拦截
+        assertThatThrownBy(() -> pdfTemplate.getFormFields(xfaPdf))
+                .isInstanceOf(PdfOperationException.class)
+                .satisfies(e -> {
+                    PdfOperationException poe = (PdfOperationException) e;
+                    assertThat(poe.getResultCode()).isEqualTo(DocumentResultCode.PDF_XFA_UNSUPPORTED);
+                });
+    }
+
+    @Test
+    @DisplayName("测试中文标点与全角字符弹性适配：验证 Western 字体字段动态装配 CJK 字体不崩溃")
+    void testFillFormWithChineseAndPunctuation(@TempDir Path tempDir) throws Exception {
+        byte[] templatePdf = createSampleFormPdf();
+
+        Map<String, Object> formData = new LinkedHashMap<>();
+        formData.put("username", "张三丰：武当");
+        formData.put("role", "架构师：绝密");
+        formData.put("country", "China");
+
+        FormOptions options = FormOptions.builder().flatten(false).build();
+        Path outPath = tempDir.resolve("form_cjk_punct.pdf");
+        pdfTemplate.fillForm(templatePdf, outPath, formData, options);
+
+        assertThat(Files.exists(outPath)).isTrue();
+        Map<String, String> fields = pdfTemplate.getFormFields(outPath);
+        assertThat(fields.get("username")).isEqualTo("张三丰：武当");
+        assertThat(fields.get("role")).isEqualTo("架构师：绝密");
+    }
+
+    /**
+     * 编程式动态构造包含 XFA 声明的离线自洽测试 PDF
+     */
+    private static byte[] createSampleXfaPdf() throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            doc.addPage(new PDPage(PDRectangle.A4));
+            PDAcroForm acroForm = new PDAcroForm(doc);
+            doc.getDocumentCatalog().setAcroForm(acroForm);
+            acroForm.getCOSObject().setItem(COSName.XFA, new COSArray());
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            return baos.toByteArray();
+        }
+    }
+
     /**
      * 编程式动态构造包含交互式表单（AcroForm）的离线自洽测试 PDF 模板
      */
@@ -408,6 +533,16 @@ class PdfTemplateFormTest {
             page.getAnnotations().add(rbWidget2);
 
             radioButton.setWidgets(java.util.List.of(rbWidget1, rbWidget2));
+
+            // 5. 下拉列表 country
+            PDComboBox comboBox = new PDComboBox(acroForm);
+            comboBox.setPartialName("country");
+            comboBox.setOptions(java.util.List.of("China", "USA", "Japan"));
+            acroForm.getFields().add(comboBox);
+            PDAnnotationWidget cbComboWidget = comboBox.getWidgets().get(0);
+            cbComboWidget.setRectangle(new PDRectangle(50, 500, 150, 25));
+            cbComboWidget.setPage(page);
+            page.getAnnotations().add(cbComboWidget);
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.save(baos);

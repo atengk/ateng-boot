@@ -52,7 +52,22 @@ public enum DocumentResultCode implements IResultCode {
     /**
      * PDF 表单域处理异常
      */
-    FORM_ERROR(57007, "PDF表单域处理异常");
+    FORM_ERROR(57007, "PDF表单域处理异常"),
+
+    /**
+     * 不支持动态 XFA 格式表单
+     */
+    PDF_XFA_UNSUPPORTED(57008, "不支持动态 XFA 格式表单，请先在 Adobe Acrobat 中转换为标准静态 AcroForm 格式"),
+
+    /**
+     * PDF 页面索引越界
+     */
+    PDF_PAGE_INDEX_OUT_OF_BOUNDS(57009, "PDF 页面索引越界"),
+
+    /**
+     * PDF 页面渲染超出最大页数安全上限
+     */
+    PDF_RENDER_EXCEEDED_MAX_PAGES(57010, "PDF 页面渲染超出最大页数安全上限");
 
     private final Integer code;
     private final String msg;
