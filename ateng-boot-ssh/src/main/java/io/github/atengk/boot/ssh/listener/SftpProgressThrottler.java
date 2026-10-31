@@ -162,8 +162,9 @@ public class SftpProgressThrottler implements SftpProgressListener, AutoCloseabl
         if (!terminalNotified && delegate != null) {
             if (lastTotalBytes >= 0 && lastTransferredBytes >= lastTotalBytes) {
                 notifyDelegate(lastTotalBytes, lastTotalBytes, 100.0);
-            } else if (lastTotalBytes < 0 && lastTransferredBytes > 0 && lastTransferredBytes != lastNotifiedBytes) {
-                notifyDelegate(lastTransferredBytes, lastTotalBytes, -1.0);
+            } else if (lastTransferredBytes != lastNotifiedBytes) {
+                double percentage = (lastTotalBytes > 0) ? (lastTransferredBytes * 100.0 / lastTotalBytes) : -1.0;
+                notifyDelegate(lastTransferredBytes, lastTotalBytes, percentage);
             }
             this.terminalNotified = true;
         }

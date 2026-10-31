@@ -199,6 +199,9 @@ class SampleSshIntegrationTest {
         if (jump1Server != null) jump1Server.stop(true);
         if (jump2Server != null) jump2Server.stop(true);
         if (targetServer != null) targetServer.stop(true);
+        if (sharedTempDir != null && Files.exists(sharedTempDir)) {
+            org.springframework.util.FileSystemUtils.deleteRecursively(sharedTempDir);
+        }
     }
 
     @DynamicPropertySource

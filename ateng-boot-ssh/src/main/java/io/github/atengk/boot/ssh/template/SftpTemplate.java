@@ -1016,8 +1016,8 @@ public class SftpTemplate {
     public void move(SshServerInfo serverInfo, String sourcePath, String targetPath) {
         Assert.hasText(sourcePath, "Source path must not be null or blank");
         Assert.hasText(targetPath, "Target path must not be null or blank");
-        String normalizedSource = cleanAndValidatePath(sourcePath);
-        String normalizedTarget = cleanAndValidatePath(targetPath);
+        String normalizedSource = normalizeRemotePath(sourcePath);
+        String normalizedTarget = normalizeRemotePath(targetPath);
         SshServerInfo target = resolveServerInfo(serverInfo);
 
         sessionPool.execute(target, session -> {
@@ -1297,6 +1297,13 @@ public class SftpTemplate {
                     }
                 }
             }
+            if (transferred == 0L && listener != null) {
+                try {
+                    listener.onProgress(0L, totalBytes);
+                } catch (Throwable t) {
+                    log.debug("ateng-boot-ssh: SftpProgressListener 0字节进度回调异常: {}", t.getMessage());
+                }
+            }
         } finally {
             if (listener instanceof AutoCloseable closeable) {
                 try {
@@ -1482,7 +1489,7 @@ public class SftpTemplate {
      * @return 经过净化后的路径
      */
     public static String cleanAndValidatePath(String remotePath) {
-        return normalizeRemotePath(remotePath);
+        return FileUtil.cleanPath(remotePath);
     }
 
     /**

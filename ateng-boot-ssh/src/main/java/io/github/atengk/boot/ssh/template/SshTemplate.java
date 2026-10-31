@@ -1099,12 +1099,19 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                         }
                     }
                 }
-            } catch (Exception ignore) {
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                aborted.set(true);
+                cancelUnfinishedFutures(futures.values());
+                log.warn("ateng-boot-ssh: SSH集群批量命令执行等待被中断", ie);
+            } catch (Exception e) {
+                log.debug("ateng-boot-ssh: 批量等待任务完成时捕获异常: {}", e.getMessage());
             }
         } else {
             try {
                 allFutures.join();
-            } catch (Exception ignore) {
+            } catch (Exception e) {
+                log.debug("ateng-boot-ssh: 批量巡检并发等待完成: {}", e.getMessage());
             }
         }
 
@@ -1527,9 +1534,6 @@ public class SshTemplate implements AutoCloseable, DisposableBean {
                 }
                 return true;
             });
-        } catch (SshOperationException e) {
-            throw new SshOperationException(SshResultCode.PROBE_FAILED,
-                    "SSH 节点连通性探测失败 [" + effectiveTarget.toSessionKey() + "]: " + e.getMessage(), e);
         } catch (Exception e) {
             throw new SshOperationException(SshResultCode.PROBE_FAILED,
                     "SSH 节点连通性探测失败 [" + effectiveTarget.toSessionKey() + "]: " + e.getMessage(), e);

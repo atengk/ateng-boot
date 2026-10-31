@@ -205,4 +205,54 @@ class SftpProgressThrottlerTest {
         assertThat(throttler.getNotificationCount()).isEqualTo(0);
         assertThat(throttler.getLastNotifiedBytes()).isEqualTo(-1L);
     }
+
+    @Test
+    @DisplayName("测试零字节流传输与直接关闭时的终态保底")
+    void testZeroByteStreamGuarantee() {
+        AtomicLong finalTransferred = new AtomicLong(-1);
+        AtomicLong finalTotal = new AtomicLong(-1);
+
+        SftpProgressListener listener = (transferred, total) -> {
+            finalTransferred.set(transferred);
+            finalTotal.set(total);
+        };
+
+        // 1. 直接 close()，未调用过 onProgress，保底触发
+        try (SftpProgressThrottler throttler = SftpProgressThrottler.of(listener)) {
+            // 不调用 onProgress，模拟 0 字节未知长度流
+        }
+        assertThat(finalTransferred.get()).isEqualTo(0);
+        assertThat(finalTotal.get()).isEqualTo(-1);
+
+        // 2. 0 字节已知总大小流 (0, 0)
+        finalTransferred.set(-1);
+        finalTotal.set(-1);
+        try (SftpProgressThrottler throttler = SftpProgressThrottler.of(listener)) {
+            throttler.onProgress(0, 0);
+        }
+        assertThat(finalTransferred.get()).isEqualTo(0);
+        assertThat(finalTotal.get()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试已知总长度流提前中断或截断时的终态保底")
+    void testPartialStreamFinishGuarantee() {
+        AtomicLong finalTransferred = new AtomicLong(-1);
+        AtomicLong finalTotal = new AtomicLong(-1);
+
+        SftpProgressListener listener = (transferred, total) -> {
+            finalTransferred.set(transferred);
+            finalTotal.set(total);
+        };
+
+        // 总大小 1000 字节，在 180 字节时异常截断且未达步长与时间窗口
+        try (SftpProgressThrottler throttler = SftpProgressThrottler.of(listener, 10.0, Duration.ofSeconds(10))) {
+            throttler.onProgress(100, 1000); // 首次触发 100
+            throttler.onProgress(150, 1000); // 步长未达 10%，未触发
+            throttler.onProgress(180, 1000); // 步长未达 10%，未触发
+        }
+        // 闭合流时应保底通知最后推进的 180 字节
+        assertThat(finalTransferred.get()).isEqualTo(180);
+        assertThat(finalTotal.get()).isEqualTo(1000);
+    }
 }

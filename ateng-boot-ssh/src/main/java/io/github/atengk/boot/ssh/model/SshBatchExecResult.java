@@ -66,8 +66,7 @@ public final class SshBatchExecResult {
     /**
      * 以注册节点名称为 Key 的执行结果字典（当通过具名节点批量执行时自动填充）
      */
-    @Builder.Default
-    private final Map<String, SshExecResult> namedResults = null;
+    private final Map<String, SshExecResult> namedResults;
 
     /**
      * 是否所有节点全部执行成功

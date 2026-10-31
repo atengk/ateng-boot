@@ -11,7 +11,9 @@ import org.springframework.stereotype.Service;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
@@ -48,11 +50,10 @@ public class SftpScenarioService {
      */
     public void upload(String remotePath, byte[] data) {
         log.info("ateng-boot-ssh-sample: 正在上传文件至 [remotePath={}, size={} bytes]", remotePath, data != null ? data.length : 0);
-        try (InputStream in = new ByteArrayInputStream(data != null ? data : new byte[0])) {
+        try (InputStream in = toInputStream(data)) {
             sftpTemplate.upload(remotePath, in);
-        } catch (Exception e) {
-            log.error("ateng-boot-ssh-sample: 上传文件失败 [remotePath={}]", remotePath, e);
-            throw (e instanceof RuntimeException re) ? re : new RuntimeException(e);
+        } catch (IOException e) {
+            throw new UncheckedIOException("上传文件流读取失败 [remotePath=" + remotePath + "]", e);
         }
     }
 
@@ -77,12 +78,7 @@ public class SftpScenarioService {
      */
     public void append(String remotePath, byte[] data) {
         log.info("ateng-boot-ssh-sample: 正在向文件尾部追加数据 [remotePath={}, appendSize={} bytes]", remotePath, data != null ? data.length : 0);
-        try (InputStream in = new ByteArrayInputStream(data != null ? data : new byte[0])) {
-            sftpTemplate.append(remotePath, in);
-        } catch (Exception e) {
-            log.error("ateng-boot-ssh-sample: 追加写文件失败 [remotePath={}]", remotePath, e);
-            throw (e instanceof RuntimeException re) ? re : new RuntimeException(e);
-        }
+        sftpTemplate.append(remotePath, data != null ? data : new byte[0]);
     }
 
     /**
@@ -140,11 +136,10 @@ public class SftpScenarioService {
     public void uploadWithThrottledProgress(String remotePath, byte[] data, Duration interval, SftpProgressListener listener) {
         log.info("ateng-boot-ssh-sample: 正在执行带节流防抖的流式上传 [remotePath={}, interval={}]", remotePath, interval);
         SftpProgressListener throttledListener = SftpProgressThrottler.of(listener, interval);
-        try (InputStream in = new ByteArrayInputStream(data != null ? data : new byte[0])) {
+        try (InputStream in = toInputStream(data)) {
             sftpTemplate.upload(remotePath, in, throttledListener);
-        } catch (Exception e) {
-            log.error("ateng-boot-ssh-sample: 节流上传文件失败 [remotePath={}]", remotePath, e);
-            throw (e instanceof RuntimeException re) ? re : new RuntimeException(e);
+        } catch (IOException e) {
+            throw new UncheckedIOException("节流上传文件流读取失败 [remotePath=" + remotePath + "]", e);
         }
     }
 
@@ -200,5 +195,9 @@ public class SftpScenarioService {
      */
     public boolean exists(String remotePath) {
         return sftpTemplate.exists(remotePath);
+    }
+
+    private InputStream toInputStream(byte[] data) {
+        return new ByteArrayInputStream(data != null ? data : new byte[0]);
     }
 }
