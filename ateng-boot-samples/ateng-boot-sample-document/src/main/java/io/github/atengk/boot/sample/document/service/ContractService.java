@@ -53,6 +53,17 @@ public class ContractService {
     }
 
     /**
+     * 仅渲染主合同（不拼装附件），用于单文档模板审核与验真
+     *
+     * @param request 劳动合同填报参数
+     * @return 渲染后的 Word 二进制数据
+     */
+    public byte[] renderMainContract(ContractRenderRequest request) {
+        Map<String, Object> dataModel = buildDataModel(request);
+        return wordTemplate.renderToBytes(CONTRACT_TEMPLATE_PATH, dataModel);
+    }
+
+    /**
      * 生成劳动合同二进制文档（别名方法）
      */
     public byte[] generateContractDocument(ContractRenderRequest request) {

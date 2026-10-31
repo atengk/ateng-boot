@@ -9,25 +9,31 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.document.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Word 核心渲染** | 统一模板编译与多源渲染门面 | `WordTemplate` | `ateng.boot.document.word.template-base-dir` | `render(source, data, target)` / `render(source, data, target, configure)`；`renderToBytes(source, data)` / `renderToBytes(source, data, configure)`；`compile(source)` / `compile(source, configure)`；`configureBuilder()` / `createDefaultConfigure()`；`bindLoopRow(builder, tagNames)` / `bindFloatingPicture(builder, tagNames)`；输入源自适应支持 `Resource`、`InputStream`、`File`、`Path`、`byte[]`、`String` | `WordTemplateTest`<br>`DocumentSampleIntegrationTest` |
+| **Word 变量与抽取** | 模板语法自省与正文纯文本抽取 | `WordTemplate` | - | `listVariableNames(source)`：逆向解析 AST 变量占位符清单（去重且保序）；`extractText(source)`：提取正文段落与多维表格纯文本 | `WordTemplateTest` |
+| **Word 表格折叠** | 空数据安全折叠与图元清理 | `WordTemplate`<br>`LoopRowTableRenderPolicy`<br>`FloatingPictureRenderPolicy` | - | 动态表格列表为空（`items = []`）时自动折叠模板行无语法残留；可选图元（`seal = null`）优雅清空占位符且不阻断渲染 | `WordTemplateTest`<br>`DocumentAuditExportTest` |
 | **Word 物理拼装** | 多文档物理无缝拼装 | `WordTemplate` | - | `stitch(target, docxSources)` / `stitch(target, Object... docxSources)`；`stitchToBytes(docxSources)` / `stitchToBytes(Object... docxSources)`；基于 OpenXML 底层结构按序合并多份独立 Docx 文档，保持段落格式、表格与图片上下文连续无缝拼装 | `WordTemplateStitchAndProtectTest`<br>`DocumentSampleIntegrationTest` |
 | **Word 密码保护** | 只读保护锁与密码验证 | `WordTemplate` | - | `protect(source, target, password)` / `protect(source, target)`；`protectToBytes(source, password)` / `protectToBytes(source)`；`unprotect(source, target)` / `unprotectToBytes(source)`；`isEnforcedReadonlyProtection(source)` / `validateProtectionPassword(source, password)`；兼容无 `settings.xml` 极简文档自愈防御初始化 | `WordTemplateStitchAndProtectTest` |
 | **Word 单元格合并** | 动态表格跨行跨列合并工具 | `WordTemplate` | - | `mergeCellsHorizontal(table, row, fromCol, toCol)`（横向跨列合并）；`mergeCellsVertical(table, col, fromRow, toRow)`（纵向跨行合并）；直接基于 Apache POI `XWPFTable` 底层 XML 网格模型操作 | `WordTemplateTest` |
 | **Word 浮动印章** | 独立浮动公章签名图层 | `FloatingPicture`<br>`FloatingPictureRenderPolicy` | - | `FloatingPicture.of(pictureData, dx, dy)`；`ofBytes(bytes, width, height, dx, dy)`；`ofFile(file, width, height, dx, dy)`；`ofStream(stream, width, height, dx, dy)`；基于 OpenXML `CTAnchor` 浮动锚点渲染，彻底摆脱行内文字挤压变形，自动清理 ThreadLocal 防止图层泄漏 | `WordTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 防泄密水印** | 全场景平铺暗水印压印 | `PdfTemplate` | `ateng.boot.document.watermark.*` | `addWatermark(source, target, options)` / `addWatermark(source, target, watermarkText)` / `addWatermark(source, target)`；`addWatermarkToBytes(source, options)` / `addWatermarkToBytes(source, watermarkText)` / `addWatermarkToBytes(source)`；网格倾斜平铺矩阵覆盖，自动解析动态宏与手机号掩码脱敏 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 物理坐标盖章** | 绝对物理坐标电子公章压印 | `PdfTemplate` | - | `addImageStamp(source, target, options)` / `addImageStamp(source, target, image, pageIndex, x, y, width, height)`；`addImageStampToBytes(source, options)` / `addImageStampToBytes(source, image, pageIndex, x, y, width, height)`；支持指定任意页面（包含 `-1` 索引倒数盖章）与绝对物理坐标精准压印 | `PdfTemplateTest` |
-| **PDF 文本与信息** | 文本内容抽取与页数探测 | `PdfTemplate` | - | `extractText(source)`：提取 PDF 全文文本；`getPageCount(source)`：获取有效物理总页数 | `PdfTemplateTest` |
-| **PDF 物理编排** | 多文件物理合并与拆分 | `PdfTemplate` | - | `merge(target, pdfSources)` / `merge(target, Object... pdfSources)`；`mergeToBytes(pdfSources)` / `mergeToBytes(Object... pdfSources)`；`split(source, outputDir, prefix)`（逐页拆分为单页 PDF 文件） | `PdfTemplateTest` |
-| **PDF 页面重组** | 页面精准提取与角度旋转 | `PdfTemplate` | - | `extractPages(source, target, fromPage, toPage)` / `extractPageRange(source, target, fromPage, toPage)` / `extractPages(source, target, int... pageIndexes)`；`extractPagesToBytes(...)` / `extractPageRangeToBytes(...)`；`rotatePages(source, target, angle, int... pageIndexes)` / `rotatePagesToBytes(...)`（支持 90°、180°、270° 顺时针旋转） | `PdfTemplateTest` |
+| **PDF 跨页骑缝章** | 多页合同跨页骑缝章无损切片压印 | `PdfTemplate`<br>`CrossPageSealOptions`<br>`CrossPageSealEdge` | - | `stampCrossPageSeal(source, target, options)` / `stampCrossPageSeal(source, target, sealImage, options)` / `stampCrossPageSeal(source, target, sealImage)`；`stampCrossPageSealToBytes(...)`；数学无损等分垂直/水平条带切片（保留 Alpha 透明通道），支持右侧/左侧/顶部边缘贴合、skipCover、skipBackCover 及自定义 targetPages | `PdfTemplateCrossPageSealTest`<br>`DocumentAuditExportTest` |
+| **PDF 页面高清预览** | 原生页面转高清预览图与防 OOM | `PdfTemplate`<br>`PdfRenderOptions`<br>`PageImageConsumer` | - | `renderPageToImage(source, pageIndex, options)` / `renderPageToPng(source, pageIndex, dpi)` / `renderPageToImageBytes(source, pageIndex, options)` / `renderAllPagesToPng(source, dpi)`；`renderPages(source, startPage, endPage, options, consumer)`；流式消费并在回调后确定性执行 `image.flush()` 释放显存，DPI 72~600 范围保护 | `PdfTemplateRenderTest`<br>`DocumentAuditExportTest` |
+| **PDF 元数据自省** | 核心元数据结构化自省与文本抽取 | `PdfTemplate`<br>`PdfMetadata` | - | `inspectMetadata(source)` / `inspectMetadata(source, password)`：自省标题、作者、创建修改时间、总页数、加密状态、PDF 版本等 11 维元数据；`extractText(source, startPage, endPage, password)`：起止范围分页受管纯文本抽取 | `PdfTemplateMetadataTest`<br>`PdfTemplateTest` |
+| **PDF 动态表单** | AcroForm 表单填报与扁平化 | `PdfTemplate`<br>`PdfFormFieldDescriptor` | - | `fillForm(source, target, formData, options)` / `fillForm(source, target, formData)`；`fillFormToBytes(...)`；`listFormFields(source)`（枚举 8 维表单字段元数据）；`getFormFields(source)` / `hasAcroForm(source)`；动态 XFA 结构探测与快速失败熔断；自动识别文本框与复选框，默认执行矢量扁平化（Flatten）彻底销毁交互控件防二次篡改 | `PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
+| **PDF 物理编排** | 多文件物理合并与拆分 | `PdfTemplate` | - | `merge(target, pdfSources)` / `merge(target, Object... pdfSources)`；`mergeToBytes(pdfSources)` / `mergeToBytes(Object... pdfSources)`；`split(source, outputDir, prefix)`（逐页拆分为单页 PDF 文件）；`splitToBytes(source, pagesPerFile)`（按页数切分为内存列表） | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
+| **PDF 页面重组** | 页面精准提取与角度旋转 | `PdfTemplate` | - | `extractPages(source, target, fromPage, toPage)` / `extractPageRange(source, target, fromPage, toPage)` / `extractPages(source, target, int... pageIndexes)`；`extractPagesToBytes(...)` / `extractPageRangeToBytes(...)`；`rotatePages(source, target, angle, int... pageIndexes)` / `rotatePagesToBytes(...)`（支持 90°、180°、270° 顺时针旋转） | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 页码压印** | 动态页码与跳过封面重算 | `PdfTemplate` | - | `addPageNumbers(source, target, options)` / `addPageNumbers(source, target)`；`addPageNumbersToBytes(source, options)` / `addPageNumbersToBytes(source)`；支持指定 6 种对齐方位、格式模板 `{page}` / `{total}`、跳过封面页码与有效总页数重新核算 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 权限加密** | 256 位 AES 权限锁与解密 | `PdfTemplate` | - | `protect(source, target, options)` / `protect(source, target, userPassword, ownerPassword)`；`protectToBytes(...)`；`unprotect(source, target, password)` / `unprotectToBytes(source, password)`；`isEncrypted(source)`；精细化控制打印、修改、文本复制、表单填报权限 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
-| **PDF 动态表单** | AcroForm 表单填报与扁平化 | `PdfTemplate` | - | `fillForm(source, target, formData, options)` / `fillForm(source, target, formData)`；`fillFormToBytes(...)`；`getFormFields(source)` / `hasAcroForm(source)`；自动识别文本框与复选框，默认执行矢量扁平化（Flatten）彻底销毁交互控件防二次篡改 | `PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
 | **防泄密水印模型** | 水印领域参数与动态宏模型 | `WatermarkOptions`<br>`WatermarkMacroParser`<br>`WatermarkLayer` | `ateng.boot.document.watermark.default-text`<br>`ateng.boot.document.watermark.opacity`<br>`ateng.boot.document.watermark.rotation`<br>`ateng.boot.document.watermark.font-size`<br>`ateng.boot.document.watermark.color`<br>`ateng.boot.document.watermark.layer`<br>`ateng.boot.document.watermark.row-spacing`<br>`ateng.boot.document.watermark.col-spacing` | `WatermarkOptions.ofDefault()` / `ofText(text)`；链式构建 `opacity(float)`、`rotation(float)`、`fontSize(float)`、`color(hex)`、`layer(WatermarkLayer)`、`rowSpacing(float)`、`colSpacing(float)`；`addVariable(key, value)` / `setUser(nickname, username, phone)`；`WatermarkMacroParser.parse(text, vars)` 支持 `#{user.*}`、`#{traceId}`、`#{now('pattern')}` | `WatermarkMacroParserTest`<br>`PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
-| **盖章与页码模型** | 盖章参数与页码排版模型 | `ImageStampOptions`<br>`PageNumberOptions`<br>`PageNumberPosition` | - | `ImageStampOptions.of(image, pageIndex, x, y, width, height)`；`PageNumberOptions.skipCover(skipPages)` / `ofFormat(format)`；参数含 `skipPages(int)`、`recalculateTotal(boolean)`、`position(PageNumberPosition)`、`fontSize(float)`、`color(hex)`、`fontPath(String)`；方位枚举支持顶部/底部左中右 6 种位置 | `PdfTemplateTest`<br>`DocumentSampleIntegrationTest` |
-| **安全锁与表单模型** | PDF 权限策略与表单填报模型 | `SecurityOptions`<br>`FormOptions` | - | `SecurityOptions.noPrintAndNoCopy(ownerPassword)` / `withPasswords(userPassword, ownerPassword)`；细粒度控制 `canPrint`、`canModify`、`canCopy`、`canFillInForm` 等 8 项权限标志；`FormOptions.defaults()`（默认扁平化）、`readOnlyInteractive()`、`interactive()`；支持 `flatten`、`readOnly`、`readOnlyFields`、`refreshAppearances` | `PdfTemplateTest`<br>`PdfTemplateFormTest`<br>`DocumentSampleIntegrationTest` |
-| **中文字体探测器** | CJK 云原生三级弹性自适应探测 | `DocumentFontResolver`<br>`ResolvedFont`<br>`FontResolutionTier` | `ateng.boot.document.pdf.font-path`<br>`ateng.boot.document.pdf.preferred-font-names` | `resolveFont()` / `loadFont(document)` / `loadFont(document, customPath)` / `isFontAvailable()` / `clearCache()` / `getCachedFont()`；按“1. 显式配置路径 -> 2. 宿主机 OS 目录扫描 -> 3. 缺失时快速失败输出 Dockerfile 修复指引”三级解析，线程安全缓存避免重复扫描 | `DocumentFontResolverTest` |
+| **盖章与骑缝章模型** | 盖章参数与跨页骑缝章模型 | `ImageStampOptions`<br>`CrossPageSealOptions`<br>`CrossPageSealEdge` | - | `ImageStampOptions.of(image, pageIndex, x, y, width, height)`；`CrossPageSealOptions.of(sealImage)` / `of(sealImage, width, height)` / `of(sealImage, edge)`；配置贴合边缘（`RIGHT`/`LEFT`/`TOP`/`BOTTOM`）、`margin`、`offset`、`skipCover`、`skipBackCover`、`targetPages`、`opacity`、`layer` | `PdfTemplateTest`<br>`PdfTemplateCrossPageSealTest` |
+| **页码与渲染模型** | 页码排版与高清渲染配置 | `PageNumberOptions`<br>`PageNumberPosition`<br>`PdfRenderOptions`<br>`PageImageConsumer` | - | `PageNumberOptions.skipCover(skipPages)` / `ofFormat(format)`；`PdfRenderOptions.of(dpi)` / `of(dpi, maxPages)` / `ofThumbnail(dpi)`；控制 `imageType`、`imageFormat`、`maxPages` 与流式消费回调 | `PdfTemplateTest`<br>`PdfTemplateRenderTest` |
+| **元数据与表单模型** | 自省元数据与表单填报模型 | `PdfMetadata`<br>`PdfFormFieldDescriptor`<br>`SecurityOptions`<br>`FormOptions` | - | `PdfMetadata` 结构化自省实体；`PdfFormFieldDescriptor` 8 维字段自省；`SecurityOptions.noPrintAndNoCopy(ownerPassword)` / `withPasswords(userPassword, ownerPassword)`；`FormOptions.defaults()` / `interactive()` | `PdfTemplateMetadataTest`<br>`PdfTemplateFormTest` |
+| **中文字体探测器** | CJK 云原生多级弹性自适应探测 | `DocumentFontResolver`<br>`ResolvedFont`<br>`FontResolutionTier` | `ateng.boot.document.pdf.font-path`<br>`ateng.boot.document.pdf.preferred-font-names` | `resolveFont()` / `loadFont(document)` / `loadFont(document, customPath)` / `isFontAvailable()` / `clearCache()` / `getCachedFont()`；按“1. 显式配置路径 -> 2. classpath 寻址 -> 3. 宿主机 OS 目录扫描 -> 4. 缺失时快速失败输出 Dockerfile 修复指引”多级解析 | `DocumentFontResolverTest` |
 | **格式转换逃生舱** | 文档跨格式转换统一 SPI 契约 | `DocumentConverter`<br>`DefaultDocumentConverter` | - | `docxToPdf(InputStream)` / `htmlToPdf(InputStream)`；底座内置 `DefaultDocumentConverter` 优雅快速失败并提示扩展指引，应用层可无缝注册自定义 Bean 接管 Gotenberg / LibreOffice 集群 | `DocumentConverterTest` |
 | **Word 浏览器直出** | Word 浏览器流式安全响应工具 | `WordWebUtil` | - | `prepareResponse(response, filename)`；`write(response, filename, ...)` / `download(response, filename, ...)`；`writeToResponse(response, filename, templateSource, data)` / `writeToResponse(response, filename, docxSource)` / `writeToResponse(response, filename, writer)`；RFC 6266 / RFC 5987 中文文件名标准化转码，自动补齐 `Content-Type`、`Content-Disposition` 与防页面缓存标头 (`Cache-Control: no-cache, no-store, must-revalidate`) | `WordWebUtilTest`<br>`DocumentSampleIntegrationTest` |
 | **PDF 浏览器直出** | PDF 浏览器安全流式预览与下载 | `PdfWebUtil` | - | `prepareResponse(response, filename)` / `prepareResponse(response, filename, inline)`；`write(response, filename, ...)` / `download(response, filename, ...)` / `preview(response, filename, ...)`；`writeToResponse(response, filename, source, inline)`；函数式写入器 `PdfWebWriter` 零缓冲写出，自动补齐 `Cache-Control` 防缓存标头 | `PdfWebUtilTest`<br>`DocumentSampleIntegrationTest` |
+| **可视化点检体系** | 9 大场景真实落盘与验真清单 | `DocumentAuditExportTest`<br>`audit-manifest.json` | - | 真实落盘 9 大场景交付物至 `target/test-output/`，伴生生成 SHA-256 结构化 JSON 清单与控制台 ASCII 点检表直达链接 | `DocumentAuditExportTest` |
 | **自动装配与主配置** | 底座自动装配与强类型属性模型 | `AtengDocumentAutoConfiguration`<br>`DocumentProperties`<br>`DocumentWordProperties`<br>`DocumentPdfProperties`<br>`DocumentWatermarkProperties` | `ateng.boot.document.enabled`<br>`ateng.boot.document.in-memory-threshold`<br>`ateng.boot.document.temp-dir` | 装配类统配 `@AutoConfiguration` 并挂载缺省 Bean 守卫；统管内存防 OOM 阈值（默认 `10MB`，基于 `DataSize` 强类型）、受管临时交换目录、Word 模板基准路径、PDF 字体偏好与水印默认参数 | `AtengDocumentAutoConfigurationTest`<br>`DocumentPropertiesTest` |
 | **因果异常体系** | 语义化异常与专用业务错误码 | `DocumentException`<br>`WordRenderException`<br>`PdfOperationException`<br>`DocumentFontException`<br>`UnsupportedConversionException`<br>`DocumentResultCode` | - | 继承 `BusinessException`，严禁吞咽异常，转译时 100% 传递原始 `cause`；统一状态码 `57000` 至 `57007`（包含 `WORD_RENDER_FAILED`、`PDF_OPERATION_FAILED`、`FONT_NOT_FOUND`、`UNSUPPORTED_CONVERSION`、`TEMPLATE_NOT_FOUND`、`PASSWORD_ERROR`、`FORM_ERROR`） | `DocumentExceptionAndResultCodeTest` |
 
@@ -350,6 +356,86 @@ public void previewStatementWeb(HttpServletResponse response, String operatorNam
 
 ---
 
+#### 第六斧：Word 模板变量反查、正文抽取与空数据安全折叠
+
+```java
+// 1. 逆向自省模板声明的所有占位符变量（有序且去重）
+List<String> variables = wordTemplate.listVariableNames("classpath:templates/contract-template.docx");
+// 输出: ["employeeName", "idCard", "department", "postName", "salary", "signDate", "items", "seal"]
+
+// 2. 从已生成的 Word 文档流式抽取正文与表格纯文本
+String fullText = wordTemplate.extractText(docxBytes);
+
+// 3. 动态表格空数据安全折叠（当列表为空时自动折叠模板行，保留表头，零语法残留）
+Map<String, Object> emptyDataModel = Map.of(
+    "employeeName", "赵刚",
+    "items", Collections.emptyList()
+);
+byte[] safeDocx = wordTemplate.renderToBytes("classpath:templates/contract-template.docx", emptyDataModel);
+```
+
+---
+
+#### 第七斧：PDF 核心元数据自省与受管纯文本抽取
+
+```java
+// 1. 结构化自省 PDF 核心元数据（支持带口令密文自省）
+PdfMetadata metadata = pdfTemplate.inspectMetadata("classpath:templates/sample-statement.pdf");
+System.out.printf("标题: %s, 作者: %s, 总页数: %d, 加密状态: %s, PDF版本: %.1f%n",
+        metadata.getTitle(), metadata.getAuthor(), metadata.getNumberOfPages(),
+        metadata.isEncrypted(), metadata.getPdfVersion());
+
+// 2. 受管起止页码范围抽取纯文本（1-based 起止页码）
+String pageText = pdfTemplate.extractText(pdfBytes, 1, 2, "optionalPassword");
+```
+
+---
+
+#### 第八斧：PDFBox 原生页面转高清预览图与防 OOM 流式光栅释放
+
+```java
+// 1. 极简将指定页面转为 150 DPI 高清 PNG 字节数组（支持负数索引，-1 为尾页）
+byte[] pagePngBytes = pdfTemplate.renderPageToPng(pdfBytes, 0, 150.0f);
+
+// 2. 强类型配置渲染参数（DPI 防爆范围 72.0f ~ 600.0f，防无界内存膨胀）
+PdfRenderOptions options = PdfRenderOptions.builder()
+        .dpi(150.0f)
+        .imageType(ImageType.RGB)
+        .maxPages(50)
+        .build();
+
+// 3. 流式逐页渲染并在回调后确定性执行 image.flush() 释放光栅显存
+pdfTemplate.renderPages(pdfBytes, 1, 5, options, (image, pageIndex) -> {
+    // 业务消费每一页 BufferedImage（如上传到对象存储或生成缩略图）
+    processThumbnail(image, pageIndex);
+    // 回调结束后底座自动调用 image.flush() 释放内存，杜绝 FullGC 与 OOM
+});
+```
+
+---
+
+#### 第九斧：多页合同跨页骑缝章(Cross-Page Seal)自动垂直等分切片与贴合压印
+
+```java
+// 1. 配置跨页骑缝章参数（默认右侧边缘居中贴合，120pt * 120pt）
+CrossPageSealOptions sealOptions = CrossPageSealOptions.builder()
+        .sealImage("classpath:images/company-seal.png") // 支持 byte[], File, InputStream, BufferedImage 等
+        .width(120.0f)
+        .height(120.0f)
+        .edge(CrossPageSealEdge.RIGHT) // 贴合右边缘（也支持 LEFT / TOP / BOTTOM）
+        .margin(0.0f)                 // 0 间距紧密贴边
+        .skipCover(true)              // 跳过首页封面
+        .skipBackCover(true)          // 跳过末页封底
+        .opacity(0.85f)               // 85% 不透明度
+        .build();
+
+// 2. 执行压印并返回字节数组（纯 AWT 保留 Alpha 透明通道无损切片）
+byte[] sealedPdf = pdfTemplate.stampCrossPageSealToBytes(multiPagePdf, sealOptions);
+```
+```
+
+---
+
 ## 3. 生产扩展接管 (Customization & Extensibility)
 
 ### 3.1 跨格式转换逃生舱：接入 Gotenberg / LibreOffice 集群
@@ -531,9 +617,10 @@ wordTemplate.render(templateSource, dataModel, targetOutput, configure);
 3. **供应商准入表单填报与扁平化**：[`SupplierFormService.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/service/SupplierFormService.java)
 4. **统一 Web 浏览器流式直出控制器**：[`DocumentExportController.java`](../ateng-boot-samples/ateng-boot-sample-document/src/main/java/io/github/atengk/boot/sample/document/controller/DocumentExportController.java)
 5. **端到端集成测试套件**：[`DocumentSampleIntegrationTest.java`](../ateng-boot-samples/ateng-boot-sample-document/src/test/java/io/github/atengk/boot/sample/document/DocumentSampleIntegrationTest.java)
+6. **9 大企业场景端到端真实落盘与 SHA-256 验真**：[`DocumentAuditExportTest.java`](../ateng-boot-samples/ateng-boot-sample-document/src/test/java/io/github/atengk/boot/sample/document/DocumentAuditExportTest.java)（落盘至 `target/test-output/`，伴生生成 `audit-manifest.json` 与控制台 ASCII 直达链接）
 
 ### 本地极速自验验证
 ```bash
-# 执行场景工程端到端集成测试验证（6 项真实场景 100% 绿灯）
+# 执行场景工程端到端集成测试与 9 大场景可视化落盘验证（100% 全绿）
 mvn test -pl ateng-boot-samples/ateng-boot-sample-document -am -T 1C -nsu -B
 ```

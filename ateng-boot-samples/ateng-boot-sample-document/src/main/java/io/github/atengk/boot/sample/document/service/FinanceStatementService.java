@@ -133,6 +133,29 @@ public class FinanceStatementService {
     }
 
     /**
+     * 场景编排：为多页对账单施加跨页骑缝章
+     *
+     * @param sourcePdf  对账单 PDF 源
+     * @param sealSource 印章图片输入源
+     * @return 施加骑缝章后的 PDF 二进制数据
+     */
+    public byte[] stampCrossPageSeal(Object sourcePdf, Object sealSource) {
+        return pdfTemplate.stampCrossPageSealToBytes(sourcePdf, sealSource);
+    }
+
+    /**
+     * 场景编排：将对账单指定页面渲染为高清 PNG 预览图
+     *
+     * @param sourcePdf 对账单 PDF 源
+     * @param pageIndex 页面索引（从 0 开始）
+     * @param dpi       渲染分辨率
+     * @return PNG 图片二进制字节数组
+     */
+    public byte[] renderStatementPageToPng(Object sourcePdf, int pageIndex, float dpi) {
+        return pdfTemplate.renderPageToPng(sourcePdf, pageIndex, dpi);
+    }
+
+    /**
      * 场景编排：多对账单物理合并（Merge）
      *
      * @param statements 多份对账单输入源
