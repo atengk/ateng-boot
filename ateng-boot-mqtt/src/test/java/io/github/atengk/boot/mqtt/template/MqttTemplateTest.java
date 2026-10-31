@@ -377,7 +377,7 @@ class MqttTemplateTest {
         broker.stop();
         broker = null; // 标记已关闭，防御 tearDown 重复停止触发 Netty 线程拒绝
 
-        assertThatThrownBy(() -> mqttTemplate.publish("test/failure", "fail-payload"))
+        assertThatThrownBy(() -> mqttTemplate.publish("test/failure", "fail-payload", 1))
                 .isInstanceOf(RuntimeException.class);
 
         assertThat(failureRecords).hasSize(1);
