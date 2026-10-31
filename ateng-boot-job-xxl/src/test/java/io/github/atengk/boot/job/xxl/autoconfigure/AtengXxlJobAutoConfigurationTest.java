@@ -160,6 +160,7 @@ class AtengXxlJobAutoConfigurationTest {
             executor.setAppname("custom-user-executor");
             executor.setAdminAddresses("http://127.0.0.1:8080/custom");
             executor.setAccessToken("custom-token");
+            executor.setLogPath(System.getProperty("java.io.tmpdir"));
             return executor;
         }
     }

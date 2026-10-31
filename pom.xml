@@ -97,7 +97,7 @@
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
         <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
         <xxl-job.version>3.5.0</xxl-job.version>
-        <snail-job.version>2.0.2</snail-job.version>
+        <snail-job.version>1.10.0</snail-job.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
