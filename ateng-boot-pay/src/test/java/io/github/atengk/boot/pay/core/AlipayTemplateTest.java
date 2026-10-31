@@ -306,6 +306,109 @@ class AlipayTemplateTest {
     }
 
     // =========================================================================
+    // 4.1 小程序统一收单创建 (payJsapi)
+    // =========================================================================
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 成功: 携带 buyerId 成功返回 tradeNo 与 JSAPI 场景")
+    void testPayJsapi_success_withBuyerId() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202610232200140099\",\"out_trade_no\":\"JSAPI_ORDER_1001\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1001")
+                .subject("支付宝小程序商品")
+                .amount(new BigDecimal("199.00"))
+                .buyerId("2088102123456789")
+                .build();
+
+        PayResponse response = payTemplate.payJsapi(request);
+
+        assertNotNull(response);
+        assertEquals(PayChannel.ALIPAY, response.getChannel());
+        assertEquals(PayTradeType.JSAPI, response.getTradeType());
+        assertEquals("JSAPI_ORDER_1001", response.getOutTradeNo());
+        assertEquals("202610232200140099", response.getTradeNo());
+        assertEquals("202610232200140099", response.getTransactionId());
+        assertEquals(new BigDecimal("199.00"), response.getAmount());
+        assertEquals(PayTradeState.NOTPAY, response.getTradeState());
+        assertTrue(response.isSuccess());
+
+        RecordedRequest recorded = server.takeRequest();
+        assertEquals("POST", recorded.getMethod());
+        String requestBody = java.net.URLDecoder.decode(recorded.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertTrue(recorded.getPath().contains("alipay.trade.create") || requestBody.contains("alipay.trade.create"));
+        assertTrue(requestBody.contains("buyer_id") && requestBody.contains("2088102123456789"));
+        assertTrue(requestBody.contains("JSAPI_ORDER_1001"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 成功: 携带 buyerOpenId 成功上送 open_id")
+    void testPayJsapi_success_withBuyerOpenId() throws Exception {
+        String nodeJson = "{\"code\":\"10000\",\"msg\":\"Success\",\"trade_no\":\"202610232200140088\",\"out_trade_no\":\"JSAPI_ORDER_1002\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1002")
+                .subject("小程序会员续费")
+                .amount(new BigDecimal("29.90"))
+                .buyerOpenId("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111")
+                .build();
+
+        PayResponse response = payTemplate.payJsapi(request);
+
+        assertNotNull(response);
+        assertEquals("202610232200140088", response.getTradeNo());
+        assertEquals("202610232200140088", response.getTransactionId());
+
+        RecordedRequest recorded = server.takeRequest();
+        String requestBody = java.net.URLDecoder.decode(recorded.getBody().readUtf8(), StandardCharsets.UTF_8);
+        assertTrue(requestBody.contains("buyer_open_id") && requestBody.contains("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 校验: 缺失 buyerId 与 buyerOpenId 立即 Fail-Fast 拦截")
+    void testPayJsapi_missingBuyerInfo_throwsException() {
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1003")
+                .subject("缺少买家标识")
+                .amount(new BigDecimal("10.00"))
+                .build();
+
+        PayException ex = assertThrows(PayException.class, () -> payTemplate.payJsapi(request));
+        assertEquals(PayResultCode.PAY_PARAM_INVALID, ex.getResultCode());
+        assertTrue(ex.getMessage().contains("buyerId 与 buyerOpenId 必须二选一填入其一"));
+    }
+
+    @Test
+    @DisplayName("小程序收单 payJsapi 失败: 渠道错误码精确转译为 PayTradeException")
+    void testPayJsapi_channelError_throwsTradeException() throws Exception {
+        String nodeJson = "{\"code\":\"40004\",\"msg\":\"Business Failed\",\"sub_code\":\"ACQ.BUYER_NOT_EXIST\",\"sub_msg\":\"买家用户不存在\"}";
+        server.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json;charset=utf-8")
+                .setBody(buildSignedResponse("alipay_trade_create_response", nodeJson, alipayPrivateKey)));
+
+        AlipayPayRequest request = AlipayPayRequest.builder()
+                .outTradeNo("JSAPI_ORDER_1004")
+                .subject("异常买家测试")
+                .amount(new BigDecimal("50.00"))
+                .buyerId("2088000000000000")
+                .build();
+
+        PayTradeException ex = assertThrows(PayTradeException.class, () -> payTemplate.payJsapi(request));
+        assertEquals(PayResultCode.PAY_TRADE_STATE_INVALID, ex.getResultCode());
+        assertEquals("ACQ.BUYER_NOT_EXIST", ex.getRawErrorCode());
+        assertEquals("买家用户不存在", ex.getRawErrorMessage());
+    }
+
+    // =========================================================================
     // 5. 订单状态主动查询 (queryOrder)
     // =========================================================================
 

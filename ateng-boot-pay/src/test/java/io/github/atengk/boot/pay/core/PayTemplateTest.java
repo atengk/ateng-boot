@@ -411,6 +411,88 @@ class PayTemplateTest {
         assertEquals("202610232200140088", barResp.getTransactionId());
     }
 
+    @Test
+    @DisplayName("支付宝小程序收单 payJsapi: 智能推导与买家参数透传验证")
+    void testPay_alipay_jsapi_smartDeduction() {
+        PayResponse expected = PayResponse.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3001")
+                .transactionId("202610232200140099")
+                .tradeNo("202610232200140099")
+                .tradeState(PayTradeState.NOTPAY)
+                .success(true)
+                .build();
+        when(alipayTemplate.payJsapi(any(AlipayPayRequest.class))).thenReturn(expected);
+
+        // 1. 显式传递 buyerId
+        UnifiedPayRequest reqBuyerId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3001")
+                .subject("支付宝小程序订单")
+                .amount(new BigDecimal("99.00"))
+                .buyerId("2088102123456789")
+                .build();
+        PayResponse resp1 = payTemplate.pay(reqBuyerId);
+        assertNotNull(resp1);
+        assertEquals("202610232200140099", resp1.getTradeNo());
+
+        ArgumentCaptor<AlipayPayRequest> captor1 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate).payJsapi(captor1.capture());
+        assertEquals("2088102123456789", captor1.getValue().getBuyerId());
+        assertNull(captor1.getValue().getBuyerOpenId());
+
+        // 2. openid 智能推导为 buyerId (2088 开头且 16 位数字)
+        UnifiedPayRequest reqDeduceBuyerId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3002")
+                .subject("支付宝小程序订单推导")
+                .amount(new BigDecimal("19.90"))
+                .openid("2088555566667777")
+                .build();
+        payTemplate.pay(reqDeduceBuyerId);
+
+        ArgumentCaptor<AlipayPayRequest> captor2 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(2)).payJsapi(captor2.capture());
+        assertEquals("2088555566667777", captor2.getValue().getBuyerId());
+        assertNull(captor2.getValue().getBuyerOpenId());
+
+        // 3. openid 智能推导为 buyerOpenId (非 2088 或非 16 位)
+        UnifiedPayRequest reqDeduceOpenId = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3003")
+                .subject("支付宝小程序订单OpenID")
+                .amount(new BigDecimal("39.90"))
+                .openid("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111")
+                .build();
+        payTemplate.pay(reqDeduceOpenId);
+
+        ArgumentCaptor<AlipayPayRequest> captor3 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(3)).payJsapi(captor3.capture());
+        assertNull(captor3.getValue().getBuyerId());
+        assertEquals("074nrx277A50ak9LDg7gKaqzQ0WPt0HnoXqTnoYkn5i1111", captor3.getValue().getBuyerOpenId());
+
+        // 4. 显式 buyerId 优先于 openid
+        UnifiedPayRequest reqPrecedence = UnifiedPayRequest.builder()
+                .channel(PayChannel.ALIPAY)
+                .tradeType(PayTradeType.JSAPI)
+                .outTradeNo("ALI_JSAPI_3004")
+                .subject("显式优先级")
+                .amount(new BigDecimal("59.90"))
+                .buyerId("2088999988887777")
+                .openid("074otherOpenId")
+                .build();
+        payTemplate.pay(reqPrecedence);
+
+        ArgumentCaptor<AlipayPayRequest> captor4 = ArgumentCaptor.forClass(AlipayPayRequest.class);
+        verify(alipayTemplate, times(4)).payJsapi(captor4.capture());
+        assertEquals("2088999988887777", captor4.getValue().getBuyerId());
+        assertNull(captor4.getValue().getBuyerOpenId());
+    }
+
     // =========================================================================
     // 3. 统一查单 (queryOrder) 与 统一关单 (closeOrder)
     // =========================================================================

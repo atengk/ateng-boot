@@ -47,7 +47,7 @@ import java.util.function.Supplier;
  * <p>
  * 基于蚂蚁官方权威 {@code alipay-sdk-java:4.40.1044.ALL} SDK 驱动，具备以下核心工业级特性：
  * <ol>
- *     <li><b>全场景收单覆盖</b>：原生支持电脑网站支付（Page）、手机网站支付（Wap）、App 客户端支付、当面付条码付（Barcode）与扫码预下单（Qr）；</li>
+ *     <li><b>全场景收单覆盖</b>：原生支持电脑网站支付（Page）、手机网站支付（Wap）、App 客户端支付、当面付条码付（Barcode）、扫码预下单（Qr）与小程序统一收单（JSAPI）；</li>
  *     <li><b>全自动凭据封包</b>：Page/Wap 自动生成自提交 HTML 表单脚本（{@code formHtml}），App 自动生成调起签名参数串（{@code orderString}）；</li>
  *     <li><b>双模证书架构自适应</b>：原生无缝支持普通公钥模式与三公钥证书模式（应用公钥证书、支付宝公钥证书、支付宝根证书）；</li>
  *     <li><b>多应用与动态切源</b>：协同 {@link NamedMerchantRegistry} 实现多应用无缝级联与服务商（ISV）{@code app_auth_token} 原生穿透；</li>
@@ -330,6 +330,7 @@ public class AlipayTemplate {
                         .tradeType(PayTradeType.BARCODE)
                         .outTradeNo(request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(request.getAmount())
                         .tradeState(PayTradeState.USERPAYING)
                         .rawTradeState(rawResp.getCode())
@@ -343,6 +344,7 @@ public class AlipayTemplate {
                         .tradeType(PayTradeType.BARCODE)
                         .outTradeNo(request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(request.getAmount())
                         .tradeState(PayTradeState.SUCCESS)
                         .rawTradeState(rawResp.getCode())
@@ -412,6 +414,84 @@ public class AlipayTemplate {
     }
 
     // =========================================================================
+    // 5.1 小程序统一收单创建 (payJsapi，生成 tradeNo 供 my.tradePay 调起)
+    // =========================================================================
+
+    /**
+     * 发起支付宝小程序统一收单创建（生成支付宝交易流水号 tradeNo）
+     * <p>
+     * 官方对应接口：{@code alipay.trade.create}。
+     * 买家身份标识 {@code buyerId}（2088 开头 16 位数字）与 {@code buyerOpenId} 必须二选一填入其一。
+     * 前端小程序获取响应后，直接传入客户端收银台 API：
+     * <pre>{@code
+     * my.tradePay({
+     *     tradeNO: res.data.tradeNo,
+     *     success: (res) => { ... },
+     *     fail: (res) => { ... }
+     * });
+     * }</pre>
+     * </p>
+     *
+     * @param request 支付宝收单请求参数（必须携带 buyerId 或 buyerOpenId）
+     * @return 统一收单响应对象（tradeNo 与 transactionId 挂载支付宝交易号）
+     */
+    public PayResponse payJsapi(AlipayPayRequest request) {
+        validateCheckoutRequest(request);
+        boolean hasBuyerId = request.getBuyerId() != null && !request.getBuyerId().isBlank();
+        boolean hasBuyerOpenId = request.getBuyerOpenId() != null && !request.getBuyerOpenId().isBlank();
+        if (!hasBuyerId && !hasBuyerOpenId) {
+            throw new PayException(PayResultCode.PAY_PARAM_INVALID, "支付宝小程序下单 buyerId 与 buyerOpenId 必须二选一填入其一");
+        }
+        AlipayAppProperties appProps = resolveApp(request);
+        AlipayClientHolder holder = getClientHolder(appProps);
+        String notifyUrl = resolveNotifyUrl(appProps, request);
+        String appAuthToken = resolveAppAuthToken(appProps, request);
+
+        return executeWithExceptionTranslation("payJsapi", () -> {
+            AlipayTradeCreateRequest alipayRequest = new AlipayTradeCreateRequest();
+            alipayRequest.setNotifyUrl(notifyUrl);
+
+            AlipayTradeCreateModel model = new AlipayTradeCreateModel();
+            model.setOutTradeNo(request.getOutTradeNo());
+            model.setTotalAmount(formatAmount(request.getAmount()));
+            model.setSubject(request.getSubject());
+            model.setBody(request.getBody());
+            model.setTimeExpire(request.getTimeExpire());
+            model.setTimeoutExpress(request.getTimeoutExpress());
+            model.setPassbackParams(request.getPassbackParams());
+            if (hasBuyerId) {
+                model.setBuyerId(request.getBuyerId());
+            }
+            if (hasBuyerOpenId) {
+                model.setBuyerOpenId(request.getBuyerOpenId());
+            }
+            alipayRequest.setBizModel(model);
+
+            AlipayTradeCreateResponse rawResp = executeApi(holder, alipayRequest, appAuthToken);
+
+            if (rawResp.isSuccess()) {
+                return PayResponse.builder()
+                        .channel(PayChannel.ALIPAY)
+                        .tradeType(PayTradeType.JSAPI)
+                        .outTradeNo(request.getOutTradeNo())
+                        .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
+                        .amount(request.getAmount())
+                        .tradeState(PayTradeState.NOTPAY)
+                        .rawTradeState(PayTradeState.NOTPAY.getCode())
+                        .tradeStateDesc("等待用户在支付宝小程序收银台完成支付")
+                        .success(true)
+                        .rawResponse(rawResp)
+                        .build();
+            } else {
+                throw new PayTradeException(PayResultCode.PAY_TRADE_STATE_INVALID,
+                        rawResp.getSubCode() != null ? rawResp.getSubCode() : rawResp.getCode(),
+                        rawResp.getSubMsg() != null ? rawResp.getSubMsg() : rawResp.getMsg());
+            }
+        });
+    }
+
+    // =========================================================================
     // 6. 订单状态查询 (queryOrder)
     // =========================================================================
 
@@ -454,6 +534,7 @@ public class AlipayTemplate {
                         .channel(PayChannel.ALIPAY)
                         .outTradeNo(rawResp.getOutTradeNo() != null ? rawResp.getOutTradeNo() : request.getOutTradeNo())
                         .transactionId(rawResp.getTradeNo())
+                        .tradeNo(rawResp.getTradeNo())
                         .amount(amount != null ? amount : request.getAmount())
                         .tradeState(state)
                         .rawTradeState(rawResp.getTradeStatus())

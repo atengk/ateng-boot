@@ -42,7 +42,7 @@ import java.util.Objects;
  * 抹平微信支付与支付宝渠道底层协议差异，提供高直觉统一收单入口（{@link #pay}、{@link #queryOrder}、{@link #closeOrder}、{@link #cancelOrder}）：
  * <ol>
  *     <li><b>双渠道智能路由</b>：依据入参 {@code channel} 或上下文 {@link PayContextHolder#getChannel()} 自动分发至专有底层门面；</li>
- *     <li><b>扁平直达凭据出参</b>：统一返回扁平化 {@link PayResponse}，场景凭据（{@code qrCode}、{@code payUrl}、{@code formHtml}、{@code wechatJsapi}、{@code orderString}）直接消费，杜绝 {@code instanceof} 强转；</li>
+ *     <li><b>扁平直达凭据出参</b>：统一返回扁平化 {@link PayResponse}，场景凭据（{@code qrCode}、{@code payUrl}、{@code formHtml}、{@code wechatJsapi}、{@code orderString}、{@code tradeNo}）直接消费，杜绝 {@code instanceof} 强转；</li>
  *     <li><b>严格货币与元精度治理</b>：全域强制校验 {@link BigDecimal}（元）精度（小数位严禁超过 2 位），确保分/元转换数学绝对精确；</li>
  *     <li><b>官方专有门面与客户端逃生舱</b>：随时可通过 {@link #getWechatPayTemplate()}、{@link #getAlipayTemplate()} 或直接通过 {@link #getWechatClient()}、{@link #getAlipayClient()} 下沉至专有渠道执行深度定制能力。</li>
  * </ol>
@@ -128,6 +128,8 @@ public class PayTemplate {
                         .notifyUrl(request.getNotifyUrl())
                         .returnUrl(request.getReturnUrl())
                         .authCode(request.getAuthCode())
+                        .buyerId(request.getBuyerId())
+                        .buyerOpenId(request.getBuyerOpenId())
                         .body(request.getBody() != null ? request.getBody() : request.getAttach())
                         .timeExpire(request.getTimeExpire())
                         .timeoutExpress(request.getTimeoutExpress())
@@ -141,8 +143,22 @@ public class PayTemplate {
                     case APP -> alipayTemplate.payApp(alipayReq);
                     case BARCODE -> alipayTemplate.payBarcode(alipayReq);
                     case NATIVE -> alipayTemplate.payQr(alipayReq);
-                    case JSAPI -> throw new PayException(PayResultCode.PAY_PARAM_INVALID,
-                            "支付宝 JSAPI 小程序收单暂请使用专有接口或选用当面付扫码/条码场景");
+                    case JSAPI -> {
+                        String buyerId = alipayReq.getBuyerId();
+                        String buyerOpenId = alipayReq.getBuyerOpenId();
+                        if ((buyerId == null || buyerId.isBlank()) && (buyerOpenId == null || buyerOpenId.isBlank())
+                                && request.getOpenid() != null && !request.getOpenid().isBlank()) {
+                            String openid = request.getOpenid().trim();
+                            if (openid.startsWith("2088") && openid.length() == 16) {
+                                buyerId = openid;
+                            } else {
+                                buyerOpenId = openid;
+                            }
+                        }
+                        alipayReq.setBuyerId(buyerId);
+                        alipayReq.setBuyerOpenId(buyerOpenId);
+                        yield alipayTemplate.payJsapi(alipayReq);
+                    }
                 };
             }
         };

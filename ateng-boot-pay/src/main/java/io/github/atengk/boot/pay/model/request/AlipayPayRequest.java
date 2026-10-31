@@ -47,6 +47,16 @@ public class AlipayPayRequest implements Serializable {
     private String tradeNo;
 
     /**
+     * 买家支付宝用户 ID (以 2088 开头的 16 位纯数字，支付宝小程序与 buyerOpenId 二选一必填)
+     */
+    private String buyerId;
+
+    /**
+     * 买家支付宝用户唯一标识 (应用级 open_id，支付宝小程序与 buyerId 二选一必填)
+     */
+    private String buyerOpenId;
+
+    /**
      * 订单标题 / 商品标题 (收单场景必填，如 "iPhone 16 Pro 256G")
      */
     private String subject;
