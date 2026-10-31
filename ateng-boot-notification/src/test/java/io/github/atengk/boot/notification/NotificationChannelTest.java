@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -77,5 +78,36 @@ class NotificationChannelTest {
         // Webhook 为空
         assertThatThrownBy(() -> new NotificationChannel("c1", Platform.WECOM, "   ", null, null, null, null))
                 .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    @DisplayName("测试渠道配置 backupChannels 默认值及属性转换")
+    void testBackupChannelsConfig() {
+        // 1. 默认空列表
+        NotificationChannel channel = NotificationChannel.builder()
+                .name("c-main")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/send")
+                .build();
+        assertThat(channel.getBackupChannels()).isNotNull().isEmpty();
+
+        // 2. 显式配置 backupChannels
+        NotificationChannel channelWithBackups = NotificationChannel.builder()
+                .name("c-main")
+                .platform(Platform.DINGTALK)
+                .webhook("https://oapi.dingtalk.com/send")
+                .backupChannels(List.of("b1", "b2"))
+                .build();
+        assertThat(channelWithBackups.getBackupChannels()).containsExactly("b1", "b2");
+
+        // 3. fromProperties 包含 backupChannels
+        NotificationChannelProperties props = new NotificationChannelProperties();
+        props.setPlatform(Platform.FEISHU);
+        props.setWebhook("https://open.feishu.cn/hook");
+        props.setBackupChannels(List.of("feishu-backup"));
+
+        NotificationChannel fromProps = NotificationChannel.fromProperties("feishu-main", props);
+        assertThat(fromProps.getBackupChannels()).containsExactly("feishu-backup");
+        assertThat(fromProps.toString()).contains("backupChannels=[feishu-backup]");
     }
 }

@@ -68,14 +68,15 @@ ateng:
       enabled: true
       default-channel: ops-alert
       channels:
-        # 企业微信机器人配置
+        # 企业微信机器人配置（企业微信官方 Webhook 机器人仅依赖 URL 中的 key 参数鉴权，无 secret 加签机制）
         ops-alert:
           platform: wecom
           webhook: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_WECOM_KEY
-          secret: SEC_SAMPLE_KEY
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 20
+          backup-channels:
+            - dingtalk-dev
         # 钉钉机器人配置（支持安全密钥加签）
         dingtalk-dev:
           platform: dingtalk

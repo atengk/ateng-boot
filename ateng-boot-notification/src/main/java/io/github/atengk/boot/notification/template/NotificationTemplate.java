@@ -10,6 +10,7 @@ import io.github.atengk.boot.notification.event.NotificationSendFailedEvent;
 import io.github.atengk.boot.notification.event.NotificationSendingEvent;
 import io.github.atengk.boot.notification.event.NotificationSentEvent;
 import io.github.atengk.boot.notification.exception.NotificationException;
+import io.github.atengk.boot.notification.exception.NotificationRateLimitException;
 import io.github.atengk.boot.notification.exception.NotificationResultCode;
 import io.github.atengk.boot.notification.exception.NotificationSendException;
 import io.github.atengk.boot.notification.handler.LoggingNotificationSendFailureHandler;
@@ -33,9 +34,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEvent;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationEventPublisherAware;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -123,42 +127,77 @@ public class NotificationTemplate implements NotificationOperations, Application
     @Override
     public NotificationSendResult send(String channelName, NotificationMessage message) {
         BusinessAssert.notNull(message, "通知消息不能为空");
-        long startTime = System.nanoTime();
+        message.validate();
 
         String resolvedChannelName = resolveChannelName(channelName);
-        NotificationChannel channel = channelRegistry.get(resolvedChannelName);
-        BusinessAssert.notNull(channel, "未找到目标通知渠道: " + resolvedChannelName);
+        NotificationChannel primaryChannel = channelRegistry.get(resolvedChannelName);
+        BusinessAssert.notNull(primaryChannel, "未找到目标通知渠道: " + resolvedChannelName);
 
-        NotificationProvider provider = getProvider(channel.getPlatform());
-        BusinessAssert.notNull(provider, "未找到支持平台 [" + channel.getPlatform() + "] 的通知驱动");
-
-        publishEvent(new NotificationSendingEvent(this, channel, message));
-
-        try {
-            // 客户端主动滑动窗口频控与微退避排队（超时将直接抛出 NotificationRateLimitException）
-            if (rateLimiter != null) {
-                rateLimiter.acquire(channel);
+        // 收集候选执行渠道链：主渠道 -> backupChannels
+        List<NotificationChannel> candidates = new ArrayList<>();
+        candidates.add(primaryChannel);
+        List<String> backupNames = primaryChannel.getBackupChannels();
+        if (backupNames != null && !backupNames.isEmpty()) {
+            for (String backupName : backupNames) {
+                if (backupName != null && !backupName.isBlank()) {
+                    NotificationChannel backup = channelRegistry.get(backupName.trim());
+                    if (backup != null && !candidates.contains(backup)) {
+                        candidates.add(backup);
+                    } else if (backup == null) {
+                        log.warn("渠道 [{}] 配置的备用渠道 [{}] 不存在，自动跳过", primaryChannel.getName(), backupName);
+                    }
+                }
             }
-
-            // 执行驱动底层物理网络推送
-            NotificationSendResult result = provider.send(channel, message, restClient);
-
-            // 发布发送成功事件
-            publishEvent(new NotificationSentEvent(this, channel, message, result));
-
-            return result;
-        } catch (Throwable ex) {
-            Duration cost = Duration.ofNanos(System.nanoTime() - startTime);
-            publishEvent(new NotificationSendFailedEvent(this, channel, message, ex, cost));
-
-            if (ex instanceof NotificationException notificationException) {
-                throw notificationException;
-            }
-            String maskedUrl = NotificationDesensitizeUtil.maskWebhook(channel.getWebhook());
-            throw new NotificationSendException(channel.getName(), channel.getPlatform().name(), null,
-                    NotificationResultCode.NOTIFICATION_SEND_ERROR,
-                    "协同平台推送异常 [target=" + maskedUrl + "]: " + ex.getMessage(), ex);
         }
+
+        Throwable lastException = null;
+        for (int i = 0; i < candidates.size(); i++) {
+            NotificationChannel channel = candidates.get(i);
+            boolean isFailover = (i > 0);
+            if (isFailover) {
+                log.warn("通知发信触发主备故障转移 (Failover): 主渠道 [{}] 发生瞬态异常，正在切换至备用渠道 [{}] (平台={}) 进行重试...",
+                        primaryChannel.getName(), channel.getName(), channel.getPlatform());
+            }
+
+            long startTime = System.nanoTime();
+            publishEvent(new NotificationSendingEvent(this, channel, message));
+
+            try {
+                // 客户端主动滑动窗口频控与微退避排队（超时将直接抛出 NotificationRateLimitException）
+                if (rateLimiter != null) {
+                    rateLimiter.acquire(channel);
+                }
+
+                NotificationProvider provider = getProvider(channel.getPlatform());
+                BusinessAssert.notNull(provider, "未找到支持平台 [" + channel.getPlatform() + "] 的通知驱动");
+
+                // 执行驱动底层物理网络推送
+                NotificationSendResult result = provider.send(channel, message, restClient);
+
+                // 发布发送成功事件
+                publishEvent(new NotificationSentEvent(this, channel, message, result));
+
+                return result;
+            } catch (Throwable ex) {
+                Duration cost = Duration.ofNanos(System.nanoTime() - startTime);
+                publishEvent(new NotificationSendFailedEvent(this, channel, message, ex, cost));
+                lastException = ex;
+
+                // 仅当遭遇瞬态外部异常（网络超时、HTTP 429 频控、HTTP 5xx 故障等）且仍有备用渠道时继续故障转移
+                if (!isTransientException(ex) || i == candidates.size() - 1) {
+                    break;
+                }
+            }
+        }
+
+        if (lastException instanceof NotificationException notificationException) {
+            throw notificationException;
+        }
+        String maskedUrl = NotificationDesensitizeUtil.maskWebhook(primaryChannel.getWebhook());
+        throw new NotificationSendException(primaryChannel.getName(), primaryChannel.getPlatform().name(), null,
+                NotificationResultCode.NOTIFICATION_SEND_ERROR,
+                "协同平台推送异常 [target=" + maskedUrl + "]: " + (lastException != null ? lastException.getMessage() : "unknown"),
+                lastException);
     }
 
     @Override
@@ -342,5 +381,41 @@ public class NotificationTemplate implements NotificationOperations, Application
             return result;
         }
         return template;
+    }
+
+    /**
+     * 判定是否属于可进行主备故障转移的瞬态外部异常
+     * 涵盖底层网络超时 (ResourceAccessException)、HTTP 429 频控封控及 HTTP 5xx 服务端故障
+     *
+     * @param ex 异常实例
+     * @return true 若属于瞬态外部异常；false 若属于入参格式、权限配置等确定性业务异常
+     */
+    private boolean isTransientException(Throwable ex) {
+        if (ex == null) {
+            return false;
+        }
+        if (ex instanceof ResourceAccessException) {
+            return true;
+        }
+        if (ex instanceof RestClientResponseException restEx) {
+            int status = restEx.getStatusCode().value();
+            return status == 429 || (status >= 500 && status < 600);
+        }
+        if (ex instanceof NotificationRateLimitException) {
+            return true;
+        }
+        if (ex instanceof NotificationSendException sendEx) {
+            if (sendEx.getResultCode() == NotificationResultCode.NOTIFICATION_RATE_LIMIT_EXCEEDED
+                    || sendEx.getResultCode() == NotificationResultCode.NOTIFICATION_CONNECT_TIMEOUT) {
+                return true;
+            }
+            if (sendEx.getCause() != null && isTransientException(sendEx.getCause())) {
+                return true;
+            }
+        }
+        if (ex.getCause() != null && ex.getCause() != ex) {
+            return isTransientException(ex.getCause());
+        }
+        return false;
     }
 }

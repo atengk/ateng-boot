@@ -14,7 +14,7 @@ ateng:
         ops-alert:
           platform: wecom
           webhook: http://localhost:18080/webhook/wecom
-          secret: SEC_SAMPLE_KEY_123456
+          # 企微 Webhook 官方仅使用 URL 中的 key 鉴权，无 secret 加签机制
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 20
