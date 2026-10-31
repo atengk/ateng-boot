@@ -10,6 +10,7 @@ import org.eclipse.paho.mqttv5.common.MqttSubscription;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -202,8 +203,23 @@ public class MqttClientHandle {
                 ? clientProperties.getConnectionTimeout().toMillis() : 5000L;
         for (String topic : topicFilters) {
             if (StringUtils.hasText(topic)) {
-                IMqttToken token = asyncClient.unsubscribe(topic);
-                token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+                try {
+                    IMqttToken token = asyncClient.unsubscribe(topic);
+                    token.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+                } catch (MqttException e) {
+                    // 防御 Paho 内部 CommsCallback 遍历回调时的瞬态 ConcurrentModificationException 竞态
+                    if (e.getCause() instanceof ConcurrentModificationException || (e.getMessage() != null && e.getMessage().contains("ConcurrentModificationException"))) {
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                        IMqttToken retryToken = asyncClient.unsubscribe(topic);
+                        retryToken.waitForCompletion(timeoutMs > 0 ? timeoutMs : 5000L);
+                    } else {
+                        throw e;
+                    }
+                }
             }
         }
     }
