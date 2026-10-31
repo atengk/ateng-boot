@@ -80,6 +80,18 @@ public class MqttDeadLetterReplayTemplate {
     }
 
     /**
+     * 只读探查指定死信主题的报文列表（指定采样上限与等待超时）
+     *
+     * @param dltTopic 死信主题
+     * @param limit    采样报文上限
+     * @param timeout  等待超时阈值
+     * @return 死信记录列表
+     */
+    public List<MqttDeadLetterRecord> peek(String dltTopic, int limit, Duration timeout) {
+        return peek(null, dltTopic, limit, timeout);
+    }
+
+    /**
      * 指定客户端只读探查死信主题报文列表
      *
      * @param clientName 客户端逻辑名称

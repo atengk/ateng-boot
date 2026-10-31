@@ -1,9 +1,8 @@
-server:
-  port: 8080
-
 spring:
   application:
     name: ateng-boot-sample-mqtt
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
@@ -23,10 +22,6 @@ ateng:
           publish-timeout: 5s
 
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always

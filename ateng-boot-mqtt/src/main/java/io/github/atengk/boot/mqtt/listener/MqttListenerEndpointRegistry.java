@@ -404,7 +404,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             byte[] payload = message != null && message.getPayload() != null ? message.getPayload() : new byte[0];
             MqttMessage dltMessage = new MqttMessage(payload);
             dltMessage.setQos(endpoint.getQos());
-            dltMessage.setRetained(false);
+            dltMessage.setRetained(true);
 
             // 构建死信出站 MqttProperties，附加原始上下文与异常堆栈标头
             Throwable fatalCause = findRootFatalCause(cause);

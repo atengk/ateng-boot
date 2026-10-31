@@ -17,12 +17,6 @@
     <description>ateng-boot MQTT 工业物联网与车联网双向轻量通信集成样例（多客户端拓扑、声明式@MqttListener、共享订阅、$share负载均衡、RPC双向请求响应、HexPayload国标十六进制转译、sendAfterCommit本地事务协同、Actuator探针与Micrometer指标暴露）</description>
 
     <dependencies>
-        <!-- Web 依赖 (提供场景 Controller 接口与 HTTP 体验) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-
         <!-- MQTT 核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>
