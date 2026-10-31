@@ -17,6 +17,8 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.datasource.context.DataSourceAsyncContextSnapshotProvider;
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceSyncManager;
 import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
@@ -283,6 +285,40 @@ public class AtengDatasourceAutoConfiguration {
     public DynamicDatasourceMetricsBinder dynamicDatasourceMetricsBinder(DynamicDatasourceTemplate dynamicDatasourceTemplate) {
         log.info("装配 DynamicDatasourceMetricsBinder 动态多数据源 Micrometer 度量监控绑定器");
         return new DynamicDatasourceMetricsBinder(dynamicDatasourceTemplate);
+    }
+
+    /**
+     * 注册外部动态数据源差量同步协调管理器
+     *
+     * @param dynamicDatasourceTemplate 动态数据源门面
+     * @param datasourceProperties      数据源配置属性
+     * @param loaderProvider            数据源加载器 SPI Provider (可选)
+     * @param scheduledExecutorProvider 调度执行器 Provider (可选)
+     * @param taskSchedulerProvider     Spring 任务调度器 Provider (可选)
+     * @return 差量同步协调管理器实例
+     */
+    @Bean(destroyMethod = "destroy")
+    @ConditionalOnMissingBean(DynamicDataSourceSyncManager.class)
+    public DynamicDataSourceSyncManager dynamicDataSourceSyncManager(
+            DynamicDatasourceTemplate dynamicDatasourceTemplate,
+            DatasourceProperties datasourceProperties,
+            ObjectProvider<DynamicDataSourceLoader> loaderProvider,
+            ObjectProvider<ScheduledExecutorService> scheduledExecutorProvider,
+            ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+        log.info("装配 DynamicDataSourceSyncManager 外部数据源差量同步协调管理器");
+        ScheduledExecutorService scheduler = scheduledExecutorProvider != null ? scheduledExecutorProvider.getIfAvailable() : null;
+        if (scheduler == null && taskSchedulerProvider != null) {
+            TaskScheduler taskScheduler = taskSchedulerProvider.getIfAvailable();
+            if (taskScheduler instanceof ThreadPoolTaskScheduler tpts) {
+                scheduler = tpts.getScheduledExecutor();
+            }
+        }
+        return new DynamicDataSourceSyncManager(
+                dynamicDatasourceTemplate,
+                datasourceProperties,
+                loaderProvider != null ? loaderProvider.getIfAvailable() : null,
+                scheduler
+        );
     }
 
     /**

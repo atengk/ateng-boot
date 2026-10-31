@@ -805,6 +805,91 @@ public class DynamicDatasourceTemplate {
         }
     }
 
+    /**
+     * 热重载已存在的数据源配置（平滑挂载新连接池、原子切流、优雅排空并物理关闭旧连接池）
+     * 依据 ateng.boot.datasource.dynamic-load.pre-warm 配置决定是否预热新连接池
+     *
+     * @param dsKey       数据源唯一标识
+     * @param newProperty 新的数据源创建配置属性
+     */
+    public void reloadDataSource(String dsKey, DataSourceProperty newProperty) {
+        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
+        reloadDataSource(dsKey, newProperty, preWarm, true);
+    }
+
+    /**
+     * 热重载已存在的数据源配置（支持显式指定是否预热与优雅排空）
+     *
+     * @param dsKey       数据源唯一标识
+     * @param newProperty 新的数据源创建配置属性
+     * @param preWarm     是否预热新连接池
+     * @param graceful    是否优雅排空旧连接池在途连接
+     */
+    public void reloadDataSource(String dsKey, DataSourceProperty newProperty, boolean preWarm, boolean graceful) {
+        Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
+        Objects.requireNonNull(newProperty, "新数据源属性配置 (newProperty) 不能为空");
+        if (defaultDataSourceCreator == null) {
+            throw new IllegalStateException("DefaultDataSourceCreator 未初始化，无法热重载创建数据源");
+        }
+        String primary = resolvePrimaryDataSourceKey();
+        if (dsKey.equals(primary) || "master".equals(dsKey)) {
+            throw new DataSourceSwitchException("受管主数据源严禁动态重载或替换: " + dsKey);
+        }
+
+        // 1. 创建新数据源实例并执行连通性预检 (探活失败直接快速失败抛出异常，绝不触碰原有正常运行的数据源)
+        DataSource newDs;
+        try {
+            newDs = defaultDataSourceCreator.createDataSource(newProperty);
+        } catch (Exception e) {
+            log.error("ateng-boot-datasource: 热重载创建新物理数据源失败 [dsKey={}]", dsKey, e);
+            throw new DataSourceSwitchException("热重载创建新物理数据源失败 [dsKey=" + dsKey + "]: " + e.getMessage(), e,
+                    DatasourceResultCode.DATASOURCE_INIT_ERROR);
+        }
+        validateConnection(dsKey, newDs);
+
+        if (preWarm) {
+            int preWarmCount = datasourceProperties.getDynamicLoad() != null
+                    ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
+                    : 5;
+            preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+        }
+
+        // 2. 互斥切流与替换
+        lifecycleLock.lock();
+        DataSource oldDs = null;
+        try {
+            oldDs = dataSource.getDataSources().get(dsKey);
+            // 切换路由
+            dataSource.addDataSource(dsKey, newDs);
+            log.info("ateng-boot-datasource: 已原子切换新数据源路由流量 [dsKey={}]", dsKey);
+
+            // 通知生命周期监听器（例如 Micrometer 重新绑定新池）
+            notifyDataSourceAdded(dsKey, newDs);
+        } finally {
+            if (lifecycleLock.isHeldByCurrentThread()) {
+                lifecycleLock.unlock();
+            }
+        }
+
+        // 3. 优雅排空并物理关闭旧连接池
+        if (oldDs != null) {
+            if (graceful) {
+                drainDataSource(dsKey, oldDs);
+            }
+            closeDataSource(oldDs);
+            log.info("ateng-boot-datasource: 热重载旧数据源已安全物理关闭 [dsKey={}]", dsKey);
+        }
+    }
+
+    /**
+     * 获取受管主数据源标识（Primary Key）
+     *
+     * @return 主数据源标识
+     */
+    public String getPrimaryDataSourceKey() {
+        return resolvePrimaryDataSourceKey();
+    }
+
     private void validateConnection(String dsKey, DataSource ds) {
         Duration probeTimeout = datasourceProperties.getDynamicLoad() != null
                 ? datasourceProperties.getDynamicLoad().getProbeTimeout()

@@ -4,6 +4,7 @@ import com.baomidou.dynamic.datasource.spring.boot.autoconfigure.DynamicDataSour
 import io.github.atengk.boot.datasource.enums.MultiTenancyMode;
 import io.github.atengk.boot.datasource.enums.ReadAfterWriteScope;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.loader.DynamicDataSourceSyncManager;
 import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.readwrite.DefaultWriteOccurredResolver;
@@ -55,6 +56,7 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(context).hasSingleBean(HealthAwareDynamicDataSourceStrategy.class);
             assertThat(context).hasSingleBean(io.github.atengk.boot.datasource.security.DataSourcePasswordDecryptor.class);
             assertThat(context).hasSingleBean(com.baomidou.dynamic.datasource.event.DataSourceInitEvent.class);
+            assertThat(context).hasSingleBean(DynamicDataSourceSyncManager.class);
 
             DatasourceProperties properties = context.getBean(DatasourceProperties.class);
             assertThat(properties.isEnabled()).isTrue();
@@ -85,6 +87,9 @@ class AtengDatasourceAutoConfigurationTest {
             assertThat(properties.getSecurity().isPasswordDecryptionEnabled()).isTrue();
             assertThat(properties.getSeata().isEnabled()).isFalse();
             assertThat(properties.getMetrics().isEnabled()).isTrue();
+            assertThat(properties.getDynamicLoad().getCoreWhitelist()).contains("master", "slave");
+            assertThat(properties.getDynamicLoad().getAutoSync().isEnabled()).isFalse();
+            assertThat(properties.getDynamicLoad().getAutoSync().getInterval()).isEqualTo(Duration.ofMinutes(1));
         });
     }
 
@@ -119,6 +124,8 @@ class AtengDatasourceAutoConfigurationTest {
                         "ateng.boot.datasource.read-write-split.failover.cooldown-window=1m",
                         "ateng.boot.datasource.dynamic-load.probe-timeout=4s",
                         "ateng.boot.datasource.dynamic-load.drain-timeout=10s",
+                        "ateng.boot.datasource.dynamic-load.auto-sync.enabled=true",
+                        "ateng.boot.datasource.dynamic-load.auto-sync.interval=30s",
                         "ateng.boot.datasource.seata.enabled=true"
                 )
                 .run(context -> {
@@ -131,6 +138,8 @@ class AtengDatasourceAutoConfigurationTest {
                     assertThat(properties.getReadWriteSplit().getFailover().getCooldownWindow()).isEqualTo(Duration.ofMinutes(1));
                     assertThat(properties.getDynamicLoad().getProbeTimeout()).isEqualTo(Duration.ofSeconds(4));
                     assertThat(properties.getDynamicLoad().getDrainTimeout()).isEqualTo(Duration.ofSeconds(10));
+                    assertThat(properties.getDynamicLoad().getAutoSync().isEnabled()).isTrue();
+                    assertThat(properties.getDynamicLoad().getAutoSync().getInterval()).isEqualTo(Duration.ofSeconds(30));
                     assertThat(properties.getSeata().isEnabled()).isTrue();
                 });
     }

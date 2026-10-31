@@ -7,6 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * 动态多数据源与物理隔离核心配置属性
@@ -237,6 +240,34 @@ public class DatasourceProperties {
          * 动态挂载数据源时预热的物理连接数量（默认 5）
          */
         private int preWarmConnections = 5;
+
+        /**
+         * 核心受保护不可删除数据源白名单（默认包含 master, slave 及系统 primary）
+         */
+        private Set<String> coreWhitelist = new LinkedHashSet<>(Arrays.asList("master", "slave"));
+
+        /**
+         * 外部数据源定时自动差量同步配置
+         */
+        @NestedConfigurationProperty
+        private AutoSyncProperties autoSync = new AutoSyncProperties();
+    }
+
+    /**
+     * 外部数据源定时自动差量同步配置
+     */
+    @Data
+    public static class AutoSyncProperties {
+
+        /**
+         * 是否启用外部数据源定时自动差量同步 (Smart Diff)
+         */
+        private boolean enabled = false;
+
+        /**
+         * 自动差量同步轮询执行间隔（默认 1 分钟）
+         */
+        private Duration interval = Duration.ofMinutes(1);
     }
 
     /**
