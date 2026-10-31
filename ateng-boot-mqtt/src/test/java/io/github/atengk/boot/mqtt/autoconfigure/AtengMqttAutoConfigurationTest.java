@@ -4,6 +4,7 @@ import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
 import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
@@ -47,6 +48,7 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(MqttDeadLetterReplayTemplate.class);
             assertThat(context).hasSingleBean(MqttListenerEndpointRegistry.class);
             assertThat(context).hasSingleBean(MqttContainerManager.class);
+            assertThat(context).hasSingleBean(MqttConnectionEventDispatcher.class);
             assertThat(context).hasSingleBean(MqttListenerAnnotationBeanPostProcessor.class);
             assertThat(context).hasSingleBean(MqttHealthIndicator.class);
         });
@@ -65,6 +67,7 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(MqttListenerEndpointRegistry.class);
                     assertThat(context).doesNotHaveBean(MqttContainerManager.class);
+                    assertThat(context).doesNotHaveBean(MqttConnectionEventDispatcher.class);
                     assertThat(context).doesNotHaveBean(MqttListenerAnnotationBeanPostProcessor.class);
                 });
     }

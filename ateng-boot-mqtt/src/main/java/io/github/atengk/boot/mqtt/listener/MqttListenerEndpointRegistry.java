@@ -5,12 +5,14 @@ import io.github.atengk.boot.core.exception.IdempotentException;
 import io.github.atengk.boot.core.helper.FatalExceptionClassifier;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.SilentAckException;
+import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.model.MqttDeadLetterRecord;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
 import io.github.atengk.boot.mqtt.routing.MqttTopicPattern;
+import io.github.atengk.boot.mqtt.util.MqttHeaderUtils;
 import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttCallback;
 import org.eclipse.paho.mqttv5.client.MqttDisconnectResponse;
@@ -54,6 +56,7 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     private final PayloadGuard payloadGuard;
     private final Executor executor;
     private final MqttMetrics metrics;
+    private final List<MqttMessageInterceptor> interceptors;
 
     private final List<MqttListenerEndpoint> endpoints = new CopyOnWriteArrayList<>();
     private final Map<String, List<String>> subscribedTopicsByClient = new ConcurrentHashMap<>();
@@ -64,14 +67,14 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
                                         PayloadGuard payloadGuard,
                                         Executor executor) {
-        this(clientRegistry, payloadGuard, executor, null, null);
+        this(clientRegistry, payloadGuard, executor, null, null, Collections.emptyList());
     }
 
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
                                         PayloadGuard payloadGuard,
                                         Executor executor,
                                         MqttMetrics metrics) {
-        this(clientRegistry, payloadGuard, executor, metrics, null);
+        this(clientRegistry, payloadGuard, executor, metrics, null, Collections.emptyList());
     }
 
     public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
@@ -79,11 +82,21 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
                                         Executor executor,
                                         MqttMetrics metrics,
                                         MqttRequestReplyManager requestReplyManager) {
+        this(clientRegistry, payloadGuard, executor, metrics, requestReplyManager, Collections.emptyList());
+    }
+
+    public MqttListenerEndpointRegistry(NamedMqttClientRegistry clientRegistry,
+                                        PayloadGuard payloadGuard,
+                                        Executor executor,
+                                        MqttMetrics metrics,
+                                        MqttRequestReplyManager requestReplyManager,
+                                        List<MqttMessageInterceptor> interceptors) {
         this.clientRegistry = clientRegistry;
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.executor = executor;
         this.metrics = metrics;
         this.requestReplyManager = requestReplyManager;
+        this.interceptors = interceptors != null ? new ArrayList<>(interceptors) : Collections.emptyList();
     }
 
     public void setRequestReplyManager(MqttRequestReplyManager requestReplyManager) {
@@ -136,45 +149,24 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     }
 
     private void bindFallbackCallback(MqttClientHandle handle) {
-        handle.getAsyncClient().setCallback(new MqttCallback() {
-            @Override
-            public void disconnected(MqttDisconnectResponse disconnectResponse) {
-                log.debug("[MQTT] Client [{}] disconnected", handle.getClientName());
-            }
-
-            @Override
-            public void mqttErrorOccurred(MqttException exception) {
-                log.warn("[MQTT] Client [{}] error occurred: {}", handle.getClientName(), exception.getMessage());
-            }
-
-            @Override
-            public void messageArrived(String topic, MqttMessage message) {
-                // 仅针对共享订阅端点（因 $share 前缀导致 Paho 内部 TopicFilter 无法直接匹配 listener）执行兜底分发，彻底防御普通端点重复分发
-                for (MqttListenerEndpoint endpoint : endpoints) {
-                    if (isPaused(endpoint.getId())) {
-                        continue;
-                    }
-                    if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
-                        for (MqttTopicPattern pattern : endpoint.getPatterns()) {
-                            if (pattern.matchAndExtract(topic) != null) {
-                                executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
-                                break;
-                            }
+        handle.setFallbackMessageListener((topic, message) -> {
+            // 仅针对共享订阅端点（因 $share 前缀导致 Paho 内部 TopicFilter 无法直接匹配 listener）执行兜底分发，彻底防御普通端点重复分发
+            for (MqttListenerEndpoint endpoint : endpoints) {
+                if (isPaused(endpoint.getId())) {
+                    continue;
+                }
+                if (StringUtils.hasText(endpoint.getSharedGroup()) && isEndpointAssignedToClient(endpoint, handle.getClientName())) {
+                    for (MqttTopicPattern pattern : endpoint.getPatterns()) {
+                        if (pattern.matchAndExtract(topic) != null) {
+                            executor.execute(() -> dispatchMessage(endpoint, pattern, topic, message, handle));
+                            break;
                         }
                     }
                 }
             }
-
-            @Override
-            public void deliveryComplete(IMqttToken token) {}
-
-            @Override
-            public void connectComplete(boolean reconnect, String serverURI) {
-                handleConnectComplete(handle, reconnect, serverURI);
-            }
-
-            @Override
-            public void authPacketArrived(int reasonCode, MqttProperties properties) {}
+        });
+        handle.addConnectCompleteListener((reconnect, serverURI) -> {
+            handleConnectComplete(handle, reconnect, serverURI);
         });
     }
 
@@ -267,7 +259,23 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             }
         }
         long startNanos = System.nanoTime();
+        Map<String, String> headers = MqttHeaderUtils.extractHeaders(message);
+
         try {
+            // 消息消费前置拦截切面
+            for (MqttMessageInterceptor interceptor : interceptors) {
+                try {
+                    if (!interceptor.preConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers)) {
+                        log.debug("[MQTT] Message on topic [{}] for endpoint [{}] was intercepted and dropped by [{}]",
+                                actualTopic, endpoint.getId(), interceptor.getClass().getSimpleName());
+                        return;
+                    }
+                } catch (Throwable t) {
+                    log.error("[MQTT] Error in interceptor [{}] preConsume: {}", interceptor.getClass().getSimpleName(), t.getMessage(), t);
+                    throw t;
+                }
+            }
+
             Map<String, String> variables = pattern.matchAndExtract(actualTopic);
             if (variables == null) {
                 return;
@@ -278,10 +286,29 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
             }
             // 反射调用适配器
             endpoint.getAdapter().invoke(actualTopic, message, variables);
+
+            // 消息消费后置拦截切面 (逆序执行)
+            for (int i = interceptors.size() - 1; i >= 0; i--) {
+                try {
+                    interceptors.get(i).postConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, null);
+                } catch (Throwable t) {
+                    log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                }
+            }
+
             if (metrics != null) {
                 metrics.recordConsume(endpoint.getId(), actualTopic, true, System.nanoTime() - startNanos);
             }
         } catch (Throwable e) {
+            // 消息消费后置拦截切面 (异常逆序执行)
+            for (int i = interceptors.size() - 1; i >= 0; i--) {
+                try {
+                    interceptors.get(i).postConsume(handle.getClientName(), endpoint.getId(), actualTopic, message, headers, e);
+                } catch (Throwable t) {
+                    log.warn("[MQTT] Error in interceptor [{}] postConsume: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                }
+            }
+
             if (metrics != null) {
                 metrics.recordConsume(endpoint.getId(), actualTopic, false, System.nanoTime() - startNanos);
             }
@@ -489,6 +516,10 @@ public class MqttListenerEndpointRegistry implements SmartLifecycle {
     @Override
     public boolean isRunning() {
         return running.get();
+    }
+
+    public List<MqttMessageInterceptor> getInterceptors() {
+        return Collections.unmodifiableList(interceptors);
     }
 
     @Override

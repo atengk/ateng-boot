@@ -18,6 +18,7 @@ import org.springframework.core.MethodParameter;
 import org.springframework.core.convert.ConversionService;
 import org.springframework.core.convert.support.DefaultConversionService;
 import org.springframework.util.ReflectionUtils;
+import org.springframework.util.StringUtils;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -25,6 +26,7 @@ import java.lang.reflect.Parameter;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -104,11 +106,15 @@ public class MqttListenerMethodAdapter {
                 args[i] = convertType(rawVal, paramType);
             } else if (param.isAnnotationPresent(MqttHeader.class)) {
                 MqttHeader headerAnno = param.getAnnotation(MqttHeader.class);
-                Object val = findHeader(headers, headerAnno.value());
-                if (val == null && headerAnno.required()) {
-                    throw new BusinessException("Required MQTT header [" + headerAnno.value() + "] is missing");
+                if (Map.class.isAssignableFrom(paramType) && !StringUtils.hasText(headerAnno.value())) {
+                    args[i] = headers != null ? Collections.unmodifiableMap(new LinkedHashMap<>(headers)) : Collections.emptyMap();
+                } else {
+                    Object val = findHeader(headers, headerAnno.value());
+                    if (val == null && headerAnno.required()) {
+                        throw new BusinessException("Required MQTT header [" + headerAnno.value() + "] is missing");
+                    }
+                    args[i] = convertType(val != null ? String.valueOf(val) : null, paramType);
                 }
-                args[i] = convertType(val != null ? String.valueOf(val) : null, paramType);
             } else if (MqttMessage.class.isAssignableFrom(paramType)) {
                 args[i] = message;
             } else {

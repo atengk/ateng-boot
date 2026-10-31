@@ -19,9 +19,9 @@ import java.lang.annotation.Target;
 public @interface MqttHeader {
 
     /**
-     * 绑定的 User Property 标头键名（如 {@code X-Trace-Id}）
+     * 绑定的 User Property 标头键名（如 {@code X-Trace-Id}）；当标注于 Map 且未指定 key 时注入全量标头字典
      */
-    String value();
+    String value() default "";
 
     /**
      * 是否必须存在，默认为 false

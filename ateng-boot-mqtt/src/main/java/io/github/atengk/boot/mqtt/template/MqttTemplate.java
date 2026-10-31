@@ -15,6 +15,7 @@ import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.exception.MqttTimeoutException;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.model.MqttPublishRecord;
 import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
@@ -74,22 +75,23 @@ public class MqttTemplate {
     private final MqttRequestReplyManager requestReplyManager;
     private final MqttMessageConverter messageConverter;
     private final MqttMetrics metrics;
+    private final List<MqttMessageInterceptor> interceptors;
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry, PayloadGuard payloadGuard) {
-        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null, null, null);
+        this(clientRegistry, payloadGuard, new DefaultMqttSendFailureHandler(), null, null, null, null, Collections.emptyList());
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler) {
-        this(clientRegistry, payloadGuard, failureHandler, null, null, null, null);
+        this(clientRegistry, payloadGuard, failureHandler, null, null, null, null, Collections.emptyList());
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
                         PayloadGuard payloadGuard,
                         MqttSendFailureHandler failureHandler,
                         Executor executor) {
-        this(clientRegistry, payloadGuard, failureHandler, executor, null, null, null);
+        this(clientRegistry, payloadGuard, failureHandler, executor, null, null, null, Collections.emptyList());
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
@@ -97,7 +99,7 @@ public class MqttTemplate {
                         MqttSendFailureHandler failureHandler,
                         Executor executor,
                         MqttRequestReplyManager requestReplyManager) {
-        this(clientRegistry, payloadGuard, failureHandler, executor, requestReplyManager, null, null);
+        this(clientRegistry, payloadGuard, failureHandler, executor, requestReplyManager, null, null, Collections.emptyList());
     }
 
     public MqttTemplate(NamedMqttClientRegistry clientRegistry,
@@ -107,6 +109,17 @@ public class MqttTemplate {
                         MqttRequestReplyManager requestReplyManager,
                         MqttMessageConverter messageConverter,
                         MqttMetrics metrics) {
+        this(clientRegistry, payloadGuard, failureHandler, executor, requestReplyManager, messageConverter, metrics, Collections.emptyList());
+    }
+
+    public MqttTemplate(NamedMqttClientRegistry clientRegistry,
+                        PayloadGuard payloadGuard,
+                        MqttSendFailureHandler failureHandler,
+                        Executor executor,
+                        MqttRequestReplyManager requestReplyManager,
+                        MqttMessageConverter messageConverter,
+                        MqttMetrics metrics,
+                        List<MqttMessageInterceptor> interceptors) {
         this.clientRegistry = Objects.requireNonNull(clientRegistry, "clientRegistry must not be null");
         this.payloadGuard = payloadGuard != null ? payloadGuard : new PayloadGuard();
         this.failureHandler = failureHandler != null ? failureHandler : new DefaultMqttSendFailureHandler();
@@ -114,6 +127,7 @@ public class MqttTemplate {
         this.requestReplyManager = requestReplyManager;
         this.messageConverter = messageConverter;
         this.metrics = metrics;
+        this.interceptors = interceptors != null ? new ArrayList<>(interceptors) : Collections.emptyList();
     }
 
     // ==================== 默认客户端同步发信接口 ====================
@@ -495,6 +509,24 @@ public class MqttTemplate {
         validateTopic(topic);
         byte[] payloadBytes = toPayloadBytes(payload);
         String effectiveClient = resolveEffectiveClientName(clientName);
+        Map<String, String> mutableUserProps = userProperties != null ? new HashMap<>(userProperties) : new HashMap<>();
+
+        // 1. 消息发布前置拦截切面
+        for (MqttMessageInterceptor interceptor : interceptors) {
+            try {
+                if (!interceptor.prePublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps)) {
+                    log.info("[MQTT] Async publish to topic [{}] on client [{}] was intercepted and aborted by [{}]",
+                            topic, effectiveClient, interceptor.getClass().getSimpleName());
+                    return CompletableFuture.completedFuture(null);
+                }
+            } catch (Throwable t) {
+                log.error("[MQTT] Error in interceptor [{}] prePublish: {}", interceptor.getClass().getSimpleName(), t.getMessage(), t);
+                CompletableFuture<Void> failedFuture = new CompletableFuture<>();
+                failedFuture.completeExceptionally(createDeliveryException(effectiveClient, topic, t));
+                return failedFuture;
+            }
+        }
+
         CompletableFuture<Void> future = new CompletableFuture<>();
         long startTime = System.nanoTime();
 
@@ -502,18 +534,34 @@ public class MqttTemplate {
             MqttClientHandle handle = resolveClientHandle(effectiveClient);
             payloadGuard.validate(payloadBytes, handle.getClientProperties().getMaxPayloadSize(), topic);
 
-            MqttMessage message = buildMqttMessage(handle, payloadBytes, qos, retained, userProperties, messageExpiry);
+            MqttMessage message = buildMqttMessage(handle, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
             MqttActionListener listener = new MqttActionListener() {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
                     if (metrics != null) {
                         metrics.recordPublished(effectiveClient, topic, qos, System.nanoTime() - startTime);
                     }
+                    // 消息发布后置拦截切面 (逆序执行)
+                    for (int i = interceptors.size() - 1; i >= 0; i--) {
+                        try {
+                            interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
+                        } catch (Throwable t) {
+                            log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                        }
+                    }
                     future.complete(null);
                 }
 
                 @Override
                 public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    // 消息发布后置拦截切面 (异常逆序执行)
+                    for (int i = interceptors.size() - 1; i >= 0; i--) {
+                        try {
+                            interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, exception);
+                        } catch (Throwable t) {
+                            log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                        }
+                    }
                     triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, exception);
                     future.completeExceptionally(createDeliveryException(effectiveClient, topic, exception));
                 }
@@ -527,6 +575,13 @@ public class MqttTemplate {
                 }
             }
         } catch (Throwable e) {
+            for (int i = interceptors.size() - 1; i >= 0; i--) {
+                try {
+                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
+                } catch (Throwable t) {
+                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                }
+            }
             triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, e);
             future.completeExceptionally(createDeliveryException(effectiveClient, topic, e));
         }
@@ -696,11 +751,44 @@ public class MqttTemplate {
         validateQos(qos);
         validateTopic(topic);
         String effectiveClient = resolveEffectiveClientName(clientName);
+        Map<String, String> mutableUserProps = userProperties != null ? new HashMap<>(userProperties) : new HashMap<>();
+
+        // 1. 消息发布前置拦截切面
+        for (MqttMessageInterceptor interceptor : interceptors) {
+            try {
+                if (!interceptor.prePublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps)) {
+                    log.info("[MQTT] Publish to topic [{}] on client [{}] was intercepted and aborted by [{}]",
+                            topic, effectiveClient, interceptor.getClass().getSimpleName());
+                    return;
+                }
+            } catch (Throwable t) {
+                log.error("[MQTT] Error in interceptor [{}] prePublish: {}", interceptor.getClass().getSimpleName(), t.getMessage(), t);
+                throw createDeliveryException(effectiveClient, topic, t);
+            }
+        }
+
         try {
             MqttClientHandle handle = resolveClientHandle(effectiveClient);
             payloadGuard.validate(payloadBytes, handle.getClientProperties().getMaxPayloadSize(), topic);
-            doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained, userProperties, messageExpiry);
+            doPublishWithResolvedHandle(handle, topic, payloadBytes, qos, retained, mutableUserProps, messageExpiry);
+
+            // 2. 消息发布后置拦截切面 (逆序执行)
+            for (int i = interceptors.size() - 1; i >= 0; i--) {
+                try {
+                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, null);
+                } catch (Throwable t) {
+                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                }
+            }
         } catch (Throwable e) {
+            // 2. 消息发布后置拦截切面 (异常逆序执行)
+            for (int i = interceptors.size() - 1; i >= 0; i--) {
+                try {
+                    interceptors.get(i).postPublish(effectiveClient, topic, payloadBytes, qos, retained, mutableUserProps, e);
+                } catch (Throwable t) {
+                    log.warn("[MQTT] Error in interceptor [{}] postPublish: {}", interceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+                }
+            }
             triggerFailureHandler(effectiveClient, topic, payloadBytes, qos, retained, e);
             throw createDeliveryException(effectiveClient, topic, e);
         }
@@ -1309,5 +1397,9 @@ public class MqttTemplate {
 
     private Map<String, Object> extractHeaders(MqttMessage message) {
         return new HashMap<>(MqttHeaderUtils.extractHeaders(message));
+    }
+
+    public List<MqttMessageInterceptor> getInterceptors() {
+        return Collections.unmodifiableList(interceptors);
     }
 }

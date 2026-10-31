@@ -6,6 +6,9 @@ import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventListener;
 import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
@@ -34,6 +37,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Role;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -122,7 +126,8 @@ public class AtengMqttAutoConfiguration {
                                     ObjectProvider<MqttMessageConverter> messageConverterProvider,
                                     ObjectProvider<MqttMetrics> metricsProvider,
                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
+                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
         return new MqttTemplate(
                 namedMqttClientRegistry,
@@ -131,7 +136,8 @@ public class AtengMqttAutoConfiguration {
                 executor,
                 mqttRequestReplyManager,
                 messageConverterProvider.getIfAvailable(),
-                metricsProvider.getIfAvailable()
+                metricsProvider.getIfAvailable(),
+                interceptorsProvider.getIfAvailable(Collections::emptyList)
         );
     }
 
@@ -142,15 +148,24 @@ public class AtengMqttAutoConfiguration {
                                                                     ObjectProvider<MqttMetrics> metricsProvider,
                                                                     ObjectProvider<MqttRequestReplyManager> requestReplyManagerProvider,
                                                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+                                                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
+                                                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
         return new MqttListenerEndpointRegistry(
                 namedMqttClientRegistry,
                 mqttPayloadGuard,
                 executor,
                 metricsProvider.getIfAvailable(),
-                requestReplyManagerProvider.getIfAvailable()
+                requestReplyManagerProvider.getIfAvailable(),
+                interceptorsProvider.getIfAvailable(Collections::emptyList)
         );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttConnectionEventDispatcher mqttConnectionEventDispatcher(
+            ObjectProvider<List<MqttConnectionEventListener>> listenersProvider) {
+        return new MqttConnectionEventDispatcher(listenersProvider.getIfAvailable(Collections::emptyList));
     }
 
     @Bean

@@ -11,7 +11,10 @@ import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 
 /**
  * 单个受管 MQTT 客户端句柄实体
@@ -28,6 +31,8 @@ public class MqttClientHandle {
     private final MqttConnectionOptions connectionOptions;
     private final MqttClientProperties clientProperties;
     private final String responseTopic;
+    private volatile IMqttMessageListener fallbackMessageListener;
+    private final List<BiConsumer<Boolean, String>> connectCompleteListeners = new CopyOnWriteArrayList<>();
 
     public MqttClientHandle(String clientName,
                             String actualClientId,
@@ -68,6 +73,29 @@ public class MqttClientHandle {
 
     public boolean isConnected() {
         return asyncClient != null && asyncClient.isConnected();
+    }
+
+    public IMqttMessageListener getFallbackMessageListener() {
+        return fallbackMessageListener;
+    }
+
+    public void setFallbackMessageListener(IMqttMessageListener fallbackMessageListener) {
+        this.fallbackMessageListener = fallbackMessageListener;
+    }
+
+    public void addConnectCompleteListener(BiConsumer<Boolean, String> listener) {
+        if (listener != null) {
+            this.connectCompleteListeners.add(listener);
+        }
+    }
+
+    public void notifyConnectComplete(boolean reconnect, String serverURI) {
+        for (BiConsumer<Boolean, String> listener : connectCompleteListeners) {
+            try {
+                listener.accept(reconnect, serverURI);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /**
