@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.notification.dto;
 
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardColor;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
@@ -41,6 +42,11 @@ public class CardMessageRequest implements Serializable {
      * 卡片顶部色条主题枚举
      */
     private CardColor headerColor;
+
+    /**
+     * 按钮排版方向（默认 VERTICAL 竖向；HORIZONTAL 横向）
+     */
+    private CardButtonOrientation btnOrientation;
 
     /**
      * 跳转操作按钮文本

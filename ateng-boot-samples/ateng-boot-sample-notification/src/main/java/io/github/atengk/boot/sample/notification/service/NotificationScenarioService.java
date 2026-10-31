@@ -5,6 +5,7 @@ import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
@@ -12,6 +13,7 @@ import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.LinkMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.TextMessageRequest;
 import lombok.RequiredArgsConstructor;
@@ -71,6 +73,10 @@ public class NotificationScenarioService {
         message.setContent(request.getContent());
         message.setHeaderColor(color);
 
+        if (request.getBtnOrientation() != null) {
+            message.btnOrientation(request.getBtnOrientation());
+        }
+
         if (StringUtils.hasText(request.getButtonTitle()) && StringUtils.hasText(request.getButtonUrl())) {
             message.button(CardButton.of(request.getButtonTitle(), request.getButtonUrl()));
         }
@@ -79,6 +85,18 @@ public class NotificationScenarioService {
             message.setMention(MentionTarget.ofUserIds(request.getAtUserIds().toArray(new String[0])));
         }
 
+        return notificationTemplate.send(request.getChannel(), message);
+    }
+
+    /**
+     * 同步发送图文链接通知（跨端自适应转译为钉钉 Link、企微 News 单图文与飞书 Interactive 卡片）
+     */
+    public NotificationSendResult sendLink(LinkMessageRequest request) {
+        LinkMessage message = LinkMessage.of(request.getTitle(), request.getText(), request.getMessageUrl(), request.getPicUrl());
+        MentionTarget mentionTarget = buildMentionTarget(request.getAtAll(), request.getAtMobiles(), request.getAtUserIds());
+        if (mentionTarget != null) {
+            message.setMention(mentionTarget);
+        }
         return notificationTemplate.send(request.getChannel(), message);
     }
 
