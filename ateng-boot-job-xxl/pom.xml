@@ -74,6 +74,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：MyBatis-Plus 流式游标支持 (用于 XxlShardingBatchTemplate 大数据流式游标对接) -->
+        <dependency>
+            <groupId>io.github.atengk</groupId>
+            <artifactId>ateng-boot-mybatis-plus</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Lombok (编译期使用，不传递) -->
         <dependency>
             <groupId>org.projectlombok</groupId>

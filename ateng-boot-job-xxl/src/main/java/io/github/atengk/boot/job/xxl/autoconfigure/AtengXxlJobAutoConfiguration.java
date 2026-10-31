@@ -5,6 +5,7 @@ import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
+import io.github.atengk.boot.job.xxl.template.XxlShardingBatchTemplate;
 import io.github.atengk.boot.job.xxl.watchdog.LocalWatchdog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -135,6 +136,21 @@ public class AtengXxlJobAutoConfiguration {
                 properties,
                 taskExecutorProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 注册分片流式批处理模板
+     *
+     * <p>提供大数据分片流式步长游标拉取、防 OOM 并发切片消费，并自动向子线程透传四维上下文与 XXL-Job 日志镜像句柄。</p>
+     *
+     * @param taskExecutorProvider Core 受管异步线程池 Provider
+     * @return 分片流式批处理模板实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public XxlShardingBatchTemplate xxlShardingBatchTemplate(
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new XxlShardingBatchTemplate(taskExecutorProvider.getIfAvailable());
     }
 
 }
