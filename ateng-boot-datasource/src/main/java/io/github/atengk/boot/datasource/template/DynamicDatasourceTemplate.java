@@ -4,6 +4,7 @@ import com.baomidou.dynamic.datasource.DynamicRoutingDataSource;
 import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
 import com.baomidou.dynamic.datasource.creator.DefaultDataSourceCreator;
 import com.baomidou.dynamic.datasource.ds.GroupDataSource;
+import com.baomidou.dynamic.datasource.ds.ItemDataSource;
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
@@ -317,7 +318,8 @@ public class DynamicDatasourceTemplate {
     }
 
     private DataSourcePoolStats buildPoolStats(String dsKey, DataSource ds) {
-        if (ds instanceof HikariDataSource hikari) {
+        DataSource actualDs = unwrapDataSource(ds);
+        if (actualDs instanceof HikariDataSource hikari) {
             HikariPoolMXBean poolBean = hikari.getHikariPoolMXBean();
             int active = 0;
             int idle = 0;
@@ -342,7 +344,7 @@ public class DynamicDatasourceTemplate {
         }
         return DataSourcePoolStats.builder()
                 .dsKey(dsKey)
-                .poolName(ds.getClass().getSimpleName())
+                .poolName(actualDs != null ? actualDs.getClass().getSimpleName() : ds.getClass().getSimpleName())
                 .activeConnections(0)
                 .idleConnections(0)
                 .totalConnections(0)
@@ -350,6 +352,36 @@ public class DynamicDatasourceTemplate {
                 .maximumPoolSize(0)
                 .minimumIdle(0)
                 .build();
+    }
+
+    /**
+     * 安全解包数据源获取底层真实物理数据源（防御 ItemDataSource 包装与 Proxy 封装）
+     *
+     * @param ds 原始数据源
+     * @return 真实物理底层数据源
+     */
+    private DataSource unwrapDataSource(DataSource ds) {
+        if (ds == null) {
+            return null;
+        }
+        if (ds instanceof ItemDataSource itemDs) {
+            DataSource real = itemDs.getRealDataSource();
+            if (real != null) {
+                return unwrapDataSource(real);
+            }
+            DataSource inner = itemDs.getDataSource();
+            if (inner != null) {
+                return unwrapDataSource(inner);
+            }
+        }
+        try {
+            if (ds.isWrapperFor(HikariDataSource.class)) {
+                return ds.unwrap(HikariDataSource.class);
+            }
+        } catch (Exception ignored) {
+            // Fail-safe 降级，返回原始数据源
+        }
+        return ds;
     }
 
     /**
@@ -699,7 +731,8 @@ public class DynamicDatasourceTemplate {
             targetCount = 5;
         }
 
-        if (ds instanceof HikariDataSource hikari && hikari.getMaximumPoolSize() > 0) {
+        DataSource actualDs = unwrapDataSource(ds);
+        if (actualDs instanceof HikariDataSource hikari && hikari.getMaximumPoolSize() > 0) {
             targetCount = Math.min(targetCount, hikari.getMaximumPoolSize());
         }
 
@@ -911,7 +944,8 @@ public class DynamicDatasourceTemplate {
     }
 
     private void drainDataSource(String dsKey, DataSource ds) {
-        if (ds instanceof HikariDataSource hikari) {
+        DataSource actualDs = unwrapDataSource(ds);
+        if (actualDs instanceof HikariDataSource hikari) {
             Duration drainTimeout = datasourceProperties.getDynamicLoad() != null
                     ? datasourceProperties.getDynamicLoad().getDrainTimeout()
                     : Duration.ofSeconds(5);
