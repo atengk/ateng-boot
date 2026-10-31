@@ -47,10 +47,11 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         }
 
         int permits = resolvePermitsPerMinute(channel);
+        int burstPermits = resolveBurstPermitsPerSecond(channel);
         ChannelWindowLimiter limiter = limiters.computeIfAbsent(channel.getName(),
                 name -> new ChannelWindowLimiter(windowDuration.toNanos()));
 
-        return limiter.tryAcquire(permits, maxWaitDuration);
+        return limiter.tryAcquire(permits, burstPermits, maxWaitDuration);
     }
 
     @Override
@@ -71,6 +72,18 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             case FEISHU -> properties.getDefaultFeishuPermits();
             case GENERIC -> properties.getDefaultGenericPermits();
         };
+    }
+
+    @Override
+    public int resolveBurstPermitsPerSecond(NotificationChannel channel) {
+        if (channel == null || !properties.isEnabled()) {
+            return 0;
+        }
+        Platform platform = channel.getPlatform();
+        if (platform == Platform.FEISHU) {
+            return properties.getDefaultFeishuBurstPermits();
+        }
+        return 0;
     }
 
     @Override
@@ -105,11 +118,12 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             return Integer.MAX_VALUE;
         }
         int permits = resolvePermitsPerMinute(channel);
+        int burstPermits = resolveBurstPermitsPerSecond(channel);
         ChannelWindowLimiter limiter = limiters.get(channel.getName());
         if (limiter == null) {
-            return permits;
+            return burstPermits > 0 ? Math.min(permits, burstPermits) : permits;
         }
-        return limiter.getAvailablePermits(permits);
+        return limiter.getAvailablePermits(permits, burstPermits);
     }
 
     /**
@@ -127,9 +141,11 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
     private static class ChannelWindowLimiter {
 
         private final long windowNanos;
+        private final long burstWindowNanos = TimeUnit.SECONDS.toNanos(1);
         private final ReentrantLock lock = new ReentrantLock(true);
         private final Condition condition = lock.newCondition();
         private final Deque<Long> timestamps = new ArrayDeque<>();
+        private final Deque<Long> secondTimestamps = new ArrayDeque<>();
         private int waitingCount = 0;
 
         ChannelWindowLimiter(long windowNanos) {
@@ -137,6 +153,10 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         }
 
         boolean tryAcquire(int permits, Duration maxWaitDuration) {
+            return tryAcquire(permits, 0, maxWaitDuration);
+        }
+
+        boolean tryAcquire(int permits, int burstPermits, Duration maxWaitDuration) {
             if (permits <= 0) {
                 return false;
             }
@@ -152,9 +172,14 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
                 }
                 try {
                     long now = System.nanoTime();
-                    cleanExpired(now);
-                    if (timestamps.size() < permits) {
+                    cleanExpired(now, burstPermits);
+                    boolean minuteAvailable = timestamps.size() < permits;
+                    boolean burstAvailable = burstPermits <= 0 || secondTimestamps.size() < burstPermits;
+                    if (minuteAvailable && burstAvailable) {
                         timestamps.addLast(now);
+                        if (burstPermits > 0) {
+                            secondTimestamps.addLast(now);
+                        }
                         return true;
                     }
                     return false;
@@ -175,11 +200,17 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             try {
                 while (true) {
                     long now = System.nanoTime();
-                    cleanExpired(now);
+                    cleanExpired(now, burstPermits);
 
-                    // 场景一：当前窗口尚有可用配额，直接占用并发放许可
-                    if (timestamps.size() < permits) {
+                    boolean minuteAvailable = timestamps.size() < permits;
+                    boolean burstAvailable = burstPermits <= 0 || secondTimestamps.size() < burstPermits;
+
+                    // 场景一：双阶窗口均有可用配额，直接占用并发放许可
+                    if (minuteAvailable && burstAvailable) {
                         timestamps.addLast(now);
+                        if (burstPermits > 0) {
+                            secondTimestamps.addLast(now);
+                        }
                         return true;
                     }
 
@@ -190,12 +221,20 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
                         return false;
                     }
 
-                    // 场景二：配额已满，等待队首（最早占用的元素）过期释放
-                    Long oldestTimestamp = timestamps.peekFirst();
-                    if (oldestTimestamp == null) {
-                        continue;
+                    // 场景二：配额已满，计算需要等待的时长
+                    long waitNanos = 0L;
+                    if (!minuteAvailable) {
+                        Long oldestTimestamp = timestamps.peekFirst();
+                        if (oldestTimestamp != null) {
+                            waitNanos = Math.max(waitNanos, windowNanos - (now - oldestTimestamp));
+                        }
                     }
-                    long waitNanos = windowNanos - (now - oldestTimestamp);
+                    if (!burstAvailable) {
+                        Long oldestSecond = secondTimestamps.peekFirst();
+                        if (oldestSecond != null) {
+                            waitNanos = Math.max(waitNanos, burstWindowNanos - (now - oldestSecond));
+                        }
+                    }
 
                     if (waitNanos <= 0L) {
                         continue;
@@ -221,11 +260,20 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
         }
 
         int getAvailablePermits(int permits) {
+            return getAvailablePermits(permits, 0);
+        }
+
+        int getAvailablePermits(int permits, int burstPermits) {
             lock.lock();
             try {
                 long now = System.nanoTime();
-                cleanExpired(now);
-                return Math.max(0, permits - timestamps.size());
+                cleanExpired(now, burstPermits);
+                int minuteAvail = Math.max(0, permits - timestamps.size());
+                if (burstPermits > 0) {
+                    int burstAvail = Math.max(0, burstPermits - secondTimestamps.size());
+                    return Math.min(minuteAvail, burstAvail);
+                }
+                return minuteAvail;
             } finally {
                 lock.unlock();
             }
@@ -235,15 +283,21 @@ public class InMemoryNotificationRateLimiter implements NotificationRateLimiter 
             lock.lock();
             try {
                 timestamps.clear();
+                secondTimestamps.clear();
                 condition.signalAll();
             } finally {
                 lock.unlock();
             }
         }
 
-        private void cleanExpired(long now) {
+        private void cleanExpired(long now, int burstPermits) {
             while (!timestamps.isEmpty() && (now - timestamps.peekFirst()) >= windowNanos) {
                 timestamps.pollFirst();
+            }
+            if (burstPermits > 0) {
+                while (!secondTimestamps.isEmpty() && (now - secondTimestamps.peekFirst()) >= burstWindowNanos) {
+                    secondTimestamps.pollFirst();
+                }
             }
         }
     }

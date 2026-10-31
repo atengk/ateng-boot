@@ -55,6 +55,12 @@ class InMemoryNotificationRateLimiterTest {
         assertEquals(100, limiter.resolvePermitsPerMinute(feishu));
         assertEquals(60, limiter.resolvePermitsPerMinute(generic));
 
+        // 验证单秒突发防卫配额解析
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(dingTalk));
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(weCom));
+        assertEquals(5, limiter.resolveBurstPermitsPerSecond(feishu));
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(generic));
+
         // 通道专属配额优先覆盖
         NotificationChannel customDingTalk = createChannel("custom-dingtalk", Platform.DINGTALK, 5);
         assertEquals(5, limiter.resolvePermitsPerMinute(customDingTalk));
@@ -303,5 +309,24 @@ class InMemoryNotificationRateLimiterTest {
 
         // 所有 10 个请求在微退避窗口内依次顺畅排队发放，全部成功
         assertEquals(totalRequests, successCount.get());
+    }
+
+    @Test
+    @DisplayName("验证飞书渠道双阶频控：每秒最高 5 次突发防卫与毫秒级微退避排队")
+    void testFeishuDualTierBurstRateLimiting() {
+        NotificationRateLimitProperties props = new NotificationRateLimitProperties();
+        InMemoryNotificationRateLimiter limiter = new InMemoryNotificationRateLimiter(props);
+        NotificationChannel feishu = createChannel("feishu-burst-bot", Platform.FEISHU, 100);
+
+        // 飞书渠道前 5 次请求立即成功（单秒突发上限为 5 次）
+        for (int i = 0; i < 5; i++) {
+            assertTrue(limiter.tryAcquire(feishu, Duration.ZERO), "第 " + (i + 1) + " 次应立即成功");
+        }
+
+        // 第 6 次在同一秒内非阻塞获取应被突发防卫拦截
+        assertFalse(limiter.tryAcquire(feishu, Duration.ZERO), "第 6 次突发请求应被单秒 5 次上限拦截");
+
+        // 带有充裕等待时长的第 6 次请求，应通过毫秒级微退避排队等待后成功放行
+        assertTrue(limiter.tryAcquire(feishu, Duration.ofMillis(1500)), "等待单秒窗口滑动后应成功获取许可");
     }
 }

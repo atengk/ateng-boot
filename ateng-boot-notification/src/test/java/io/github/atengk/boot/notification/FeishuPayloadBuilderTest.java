@@ -137,6 +137,28 @@ class FeishuPayloadBuilderTest {
     }
 
     @Test
+    @DisplayName("验证 CardMessage 使用 WATHET 浅天蓝及历史 WATSON 均合规映射为飞书官方 wathet 模板")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithWathetAndLegacyWatson() {
+        // 1. 验证新标准色 WATHET
+        CardMessage wathetCard = CardMessage.of("新版本发布", "v1.2.0 已上线")
+                .headerColor(CardColor.WATHET);
+        Map<String, Object> wathetPayload = builder.buildPayload(wathetCard);
+        Map<String, Object> wathetCardObj = (Map<String, Object>) wathetPayload.get("card");
+        Map<String, Object> wathetHeader = (Map<String, Object>) wathetCardObj.get("header");
+        assertEquals("wathet", wathetHeader.get("template"));
+
+        // 2. 验证历史别名 WATSON 向后兼容映射
+        @SuppressWarnings("deprecation")
+        CardMessage watsonCard = CardMessage.of("历史版本发布", "兼容测试")
+                .headerColor(CardColor.WATSON);
+        Map<String, Object> watsonPayload = builder.buildPayload(watsonCard);
+        Map<String, Object> watsonCardObj = (Map<String, Object>) watsonPayload.get("card");
+        Map<String, Object> watsonHeader = (Map<String, Object>) watsonCardObj.get("header");
+        assertEquals("wathet", watsonHeader.get("template"));
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生透传飞书特化报文")
     void testBuildRawPayload() {
         RawMessage raw = RawMessage.of(Map.of("msg_type", "image", "content", Map.of("image_key", "img_xxx")));
