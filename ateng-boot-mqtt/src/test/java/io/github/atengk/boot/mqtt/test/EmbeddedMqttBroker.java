@@ -36,10 +36,12 @@ public class EmbeddedMqttBroker {
     private final Map<Channel, Set<String>> channelSubscriptions = new ConcurrentHashMap<>();
     private final Map<Channel, String> clientIds = new ConcurrentHashMap<>();
     private final Map<Channel, WillRecord> willMessages = new ConcurrentHashMap<>();
+    private final Map<String, RetainedRecord> retainedMessages = new ConcurrentHashMap<>();
     private final AtomicInteger messageIdCounter = new AtomicInteger(1);
     private final List<ReceivedMessage> receivedMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private record WillRecord(String topic, byte[] payload, MqttQoS qos, boolean retained) {}
+    private record RetainedRecord(String topic, byte[] payload, MqttQoS qos, io.netty.handler.codec.mqtt.MqttProperties properties) {}
 
     public static class ReceivedMessage {
         private final String clientId;
@@ -171,6 +173,7 @@ public class EmbeddedMqttBroker {
         channelSubscriptions.clear();
         clientIds.clear();
         willMessages.clear();
+        retainedMessages.clear();
         receivedMessages.clear();
         log.info("[EmbeddedMqttBroker] Stopped In-Memory MQTT Broker successfully");
     }
@@ -256,6 +259,42 @@ public class EmbeddedMqttBroker {
                     .addGrantedQoses(grantedQosList.toArray(new MqttQoS[0]))
                     .build();
             ctx.writeAndFlush(subAck);
+
+            // 依据 MQTT 规范向新订阅者派发匹配的 Broker 保留消息
+            for (MqttTopicSubscription sub : topicSubscriptions) {
+                String subFilter = sub.topicName();
+                if (subFilter.startsWith("$share/")) {
+                    int thirdSlash = subFilter.indexOf('/', 7);
+                    if (thirdSlash > 0) {
+                        subFilter = subFilter.substring(thirdSlash + 1);
+                    }
+                }
+                for (Map.Entry<String, RetainedRecord> entry : retainedMessages.entrySet()) {
+                    String retainedTopic = entry.getKey();
+                    if (isTopicMatch(subFilter, retainedTopic)) {
+                        RetainedRecord rr = entry.getValue();
+                        MqttQoS grantedQos = sub.qualityOfService();
+                        MqttQoS deliverQos = rr.qos().value() < grantedQos.value() ? rr.qos() : grantedQos;
+                        MqttMessageBuilders.PublishBuilder builder = MqttMessageBuilders.publish()
+                                .topicName(retainedTopic)
+                                .qos(deliverQos)
+                                .retained(true)
+                                .payload(Unpooled.copiedBuffer(rr.payload()));
+                        if (deliverQos != MqttQoS.AT_MOST_ONCE) {
+                            int nextId = messageIdCounter.getAndIncrement();
+                            if (nextId > 65535) {
+                                messageIdCounter.set(1);
+                                nextId = 1;
+                            }
+                            builder.messageId(nextId);
+                        }
+                        if (rr.properties() != null) {
+                            builder.properties(rr.properties());
+                        }
+                        ctx.writeAndFlush(builder.build());
+                    }
+                }
+            }
         }
 
         private void handleUnsubscribe(ChannelHandlerContext ctx, MqttUnsubscribeMessage msg) {
@@ -283,6 +322,16 @@ public class EmbeddedMqttBroker {
             io.netty.handler.codec.mqtt.MqttProperties props = msg.variableHeader().properties();
             String clientId = clientIds.get(ctx.channel());
             receivedMessages.add(new ReceivedMessage(clientId, topic, payloadBytes, qos, retained, props));
+
+            if (retained) {
+                if (payloadBytes.length == 0) {
+                    retainedMessages.remove(topic);
+                    log.debug("[EmbeddedMqttBroker] Cleared retained message for topic [{}]", topic);
+                } else {
+                    retainedMessages.put(topic, new RetainedRecord(topic, payloadBytes, qos, props));
+                    log.debug("[EmbeddedMqttBroker] Stored retained message for topic [{}]", topic);
+                }
+            }
 
             if (qos == MqttQoS.AT_LEAST_ONCE) {
                 MqttMessage pubAck = MqttMessageBuilders.pubAck().packetId(packetId).build();

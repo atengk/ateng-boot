@@ -3,6 +3,8 @@ package io.github.atengk.boot.document.word.model;
 import com.deepoove.poi.data.PictureRenderData;
 import com.deepoove.poi.data.Pictures;
 import lombok.Getter;
+import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromH;
+import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromV;
 
 import java.io.File;
 import java.io.InputStream;
@@ -37,11 +39,28 @@ public class FloatingPicture {
      */
     private final boolean aboveText;
 
+    /**
+     * 水平相对锚定基准（默认 STRelFromH.CHARACTER，相对于字符/文本 Run 锚定）
+     */
+    private final STRelFromH.Enum relativeFromH;
+
+    /**
+     * 垂直相对锚定基准（默认 STRelFromV.PARAGRAPH，相对于段落锚定）
+     */
+    private final STRelFromV.Enum relativeFromV;
+
     public FloatingPicture(PictureRenderData pictureData, int dx, int dy, boolean aboveText) {
+        this(pictureData, dx, dy, aboveText, STRelFromH.CHARACTER, STRelFromV.PARAGRAPH);
+    }
+
+    public FloatingPicture(PictureRenderData pictureData, int dx, int dy, boolean aboveText,
+                           STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
         this.pictureData = Objects.requireNonNull(pictureData, "pictureData 不能为空");
         this.dx = dx;
         this.dy = dy;
         this.aboveText = aboveText;
+        this.relativeFromH = relativeFromH != null ? relativeFromH : STRelFromH.CHARACTER;
+        this.relativeFromV = relativeFromV != null ? relativeFromV : STRelFromV.PARAGRAPH;
     }
 
     /**
@@ -67,6 +86,21 @@ public class FloatingPicture {
     }
 
     /**
+     * 基于已有 PictureRenderData 创建带坐标偏移与自定义锚定基准的浮动印章
+     *
+     * @param pictureData   图片渲染数据
+     * @param dx            X 偏移
+     * @param dy            Y 偏移
+     * @param relativeFromH 水平锚定基准
+     * @param relativeFromV 垂直锚定基准
+     * @return FloatingPicture 实例
+     */
+    public static FloatingPicture of(PictureRenderData pictureData, int dx, int dy,
+                                     STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
+        return new FloatingPicture(pictureData, dx, dy, true, relativeFromH, relativeFromV);
+    }
+
+    /**
      * 从二进制字节数组构建浮动印章
      *
      * @param bytes  图片字节
@@ -89,7 +123,24 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofBytes(byte[] bytes, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofBytes(bytes).size(width, height).create(), dx, dy, true);
+        return ofBytes(bytes, width, height, dx, dy, null, null);
+    }
+
+    /**
+     * 从二进制字节数组构建带指定坐标偏移与自定义锚定基准的浮动印章
+     *
+     * @param bytes         图片字节
+     * @param width         显示宽度
+     * @param height        显示高度
+     * @param dx            X 偏移
+     * @param dy            Y 偏移
+     * @param relativeFromH 水平锚定基准
+     * @param relativeFromV 垂直锚定基准
+     * @return FloatingPicture 实例
+     */
+    public static FloatingPicture ofBytes(byte[] bytes, int width, int height, int dx, int dy,
+                                          STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
+        return of(Pictures.ofBytes(bytes).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 
     /**
@@ -103,7 +154,24 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofFile(File file, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofLocal(file.getAbsolutePath()).size(width, height).create(), dx, dy, true);
+        return ofFile(file, width, height, dx, dy, null, null);
+    }
+
+    /**
+     * 从本地物理文件构建带指定坐标偏移与自定义锚定基准的浮动印章
+     *
+     * @param file          本地图片文件
+     * @param width         显示宽度
+     * @param height        显示高度
+     * @param dx            X 偏移
+     * @param dy            Y 偏移
+     * @param relativeFromH 水平锚定基准
+     * @param relativeFromV 垂直锚定基准
+     * @return FloatingPicture 实例
+     */
+    public static FloatingPicture ofFile(File file, int width, int height, int dx, int dy,
+                                         STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
+        return of(Pictures.ofLocal(file.getAbsolutePath()).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 
     /**
@@ -117,6 +185,23 @@ public class FloatingPicture {
      * @return FloatingPicture 实例
      */
     public static FloatingPicture ofStream(InputStream stream, int width, int height, int dx, int dy) {
-        return new FloatingPicture(Pictures.ofStream(stream).size(width, height).create(), dx, dy, true);
+        return ofStream(stream, width, height, dx, dy, null, null);
+    }
+
+    /**
+     * 从输入流构建带指定坐标偏移与自定义锚定基准的浮动印章
+     *
+     * @param stream        图片输入流
+     * @param width         显示宽度
+     * @param height        显示高度
+     * @param dx            X 偏移
+     * @param dy            Y 偏移
+     * @param relativeFromH 水平锚定基准
+     * @param relativeFromV 垂直锚定基准
+     * @return FloatingPicture 实例
+     */
+    public static FloatingPicture ofStream(InputStream stream, int width, int height, int dx, int dy,
+                                           STRelFromH.Enum relativeFromH, STRelFromV.Enum relativeFromV) {
+        return of(Pictures.ofStream(stream).size(width, height).create(), dx, dy, relativeFromH, relativeFromV);
     }
 }

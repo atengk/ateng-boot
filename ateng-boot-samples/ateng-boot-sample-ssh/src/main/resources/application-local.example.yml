@@ -1,0 +1,41 @@
+# ==============================================================================
+# ateng-boot-sample-ssh 本地真实环境联调配置样例模板
+# ==============================================================================
+# 使用说明：
+# 1. 复制本文件为同目录下的 application-local.yml（该文件已被 .gitignore 严格忽略，避免凭据泄漏）；
+# 2. 将以下 YOUR_* 占位符替换为本地或测试环境真实可用的 SSH/SFTP 服务器连接信息；
+# 3. 运行测试或启动应用时激活 local Profile：-Dspring.profiles.active=local
+# ==============================================================================
+spring:
+  config:
+    activate:
+      on-profile: "local"
+
+ateng:
+  boot:
+    ssh:
+      enabled: true
+      host: YOUR_SSH_HOST
+      port: 22
+      username: YOUR_SSH_USERNAME
+      password: YOUR_SSH_PASSWORD
+      host-key-policy: ignore
+      connect-timeout: 10s
+      auth-timeout: 15s
+      command-timeout: 60s
+      servers:
+        node1:
+          host: YOUR_NODE1_HOST
+          port: 22
+          username: YOUR_NODE1_USERNAME
+          password: YOUR_NODE1_PASSWORD
+        node2:
+          host: YOUR_NODE2_HOST
+          port: 22
+          username: YOUR_NODE2_USERNAME
+          password: YOUR_NODE2_PASSWORD
+        bastion:
+          host: YOUR_BASTION_HOST
+          port: 22
+          username: YOUR_BASTION_USERNAME
+          password: YOUR_BASTION_PASSWORD

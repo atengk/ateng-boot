@@ -1,6 +1,9 @@
 package io.github.atengk.boot.mqtt.registry;
 
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.mqtt.event.MqttConnectedEvent;
+import io.github.atengk.boot.mqtt.event.MqttConnectionLostEvent;
+import io.github.atengk.boot.mqtt.event.MqttDisconnectedEvent;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
@@ -9,17 +12,24 @@ import io.github.atengk.boot.mqtt.ssl.MqttSslSocketFactoryBuilder;
 import io.github.atengk.boot.mqtt.will.MqttWill;
 import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import org.eclipse.paho.mqttv5.client.DisconnectedBufferOptions;
+import org.eclipse.paho.mqttv5.client.IMqttMessageListener;
+import org.eclipse.paho.mqttv5.client.IMqttToken;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
+import org.eclipse.paho.mqttv5.client.MqttCallback;
 import org.eclipse.paho.mqttv5.client.MqttClientPersistence;
 import org.eclipse.paho.mqttv5.client.MqttConnectionOptions;
+import org.eclipse.paho.mqttv5.client.MqttDisconnectResponse;
 import org.eclipse.paho.mqttv5.client.persist.MemoryPersistence;
 import org.eclipse.paho.mqttv5.client.persist.MqttDefaultFilePersistence;
 import org.eclipse.paho.mqttv5.common.MqttException;
 import org.eclipse.paho.mqttv5.common.MqttMessage;
+import org.eclipse.paho.mqttv5.common.packet.MqttProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.util.StringUtils;
 
@@ -36,7 +46,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @author Ateng
  * @since 2026-10-23
  */
-public class NamedMqttClientRegistry implements InitializingBean, DisposableBean, SmartLifecycle {
+public class NamedMqttClientRegistry implements InitializingBean, DisposableBean, SmartLifecycle, ApplicationEventPublisherAware {
 
     private static final Logger log = LoggerFactory.getLogger(NamedMqttClientRegistry.class);
 
@@ -44,6 +54,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     private final MqttWillProvider willProvider;
     private final Map<String, MqttClientHandle> clientHandles = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private ApplicationEventPublisher applicationEventPublisher;
 
     public NamedMqttClientRegistry(AtengMqttProperties properties) {
         this(properties, null);
@@ -98,6 +109,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
             try {
                 MqttClientHandle handle = createAndConnectClient(clientName, clientProps);
                 clientHandles.put(clientName, handle);
+                publishConnectedEvent(clientName, clientProps.getServerUri(), handle.getActualClientId(), false);
                 log.info("[MQTT] Successfully initialized and connected client [{}] with actual clientId [{}] to [{}]",
                         clientName, handle.getActualClientId(), clientProps.getServerUri());
             } catch (Exception e) {
@@ -150,10 +162,53 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         bufferOpts.setPersistBuffer(clientProps.getPersistenceType() == PersistenceType.FILE);
         asyncClient.setBufferOpts(bufferOpts);
 
+        MqttClientHandle handle = new MqttClientHandle(clientName, actualClientId, asyncClient, connOpts, clientProps);
+
+        // 安装权威生命周期与消息转译回调
+        asyncClient.setCallback(new MqttCallback() {
+            @Override
+            public void disconnected(MqttDisconnectResponse disconnectResponse) {
+                log.debug("[MQTT] Client [{}] disconnected callback received", clientName);
+                if (disconnectResponse != null && disconnectResponse.getException() != null) {
+                    publishConnectionLostEvent(clientName, clientProps.getServerUri(), actualClientId, disconnectResponse.getException());
+                } else {
+                    publishDisconnectedEvent(clientName, clientProps.getServerUri(), actualClientId);
+                }
+            }
+
+            @Override
+            public void mqttErrorOccurred(MqttException exception) {
+                log.warn("[MQTT] Client [{}] error occurred: {}", clientName, exception.getMessage());
+            }
+
+            @Override
+            public void messageArrived(String topic, MqttMessage message) throws Exception {
+                IMqttMessageListener fallback = handle.getFallbackMessageListener();
+                if (fallback != null) {
+                    fallback.messageArrived(topic, message);
+                }
+            }
+
+            @Override
+            public void deliveryComplete(IMqttToken token) {}
+
+            @Override
+            public void connectComplete(boolean reconnect, String serverURI) {
+                log.info("[MQTT] Client [{}] connectComplete callback received (reconnect={}) to {}", clientName, reconnect, serverURI);
+                if (reconnect) {
+                    publishConnectedEvent(clientName, serverURI, actualClientId, true);
+                }
+                handle.notifyConnectComplete(reconnect, serverURI);
+            }
+
+            @Override
+            public void authPacketArrived(int reasonCode, MqttProperties properties) {}
+        });
+
         // 7. 发起异步连接并等待连接建立（受管连接超时）
         asyncClient.connect(connOpts).waitForCompletion(clientProps.getConnectionTimeout().toMillis());
 
-        return new MqttClientHandle(clientName, actualClientId, asyncClient, connOpts, clientProps);
+        return handle;
     }
 
     private MqttClientPersistence createPersistence(MqttClientProperties clientProps, String actualClientId) {
@@ -209,6 +264,10 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
         if ("3.1.1".equalsIgnoreCase(protocolVersion) || "3.1".equalsIgnoreCase(protocolVersion)) {
             log.info("[MQTT] Client [{}] configured for MQTT 3.1.1 legacy compatibility mode", clientName);
             connOpts.setSessionExpiryInterval(0L);
+            connOpts.setTopicAliasMaximum(0);
+        } else if (clientProps.getTopicAliasMaximum() > 0) {
+            connOpts.setTopicAliasMaximum(clientProps.getTopicAliasMaximum());
+            log.info("[MQTT] Configured topicAliasMaximum [{}] for client [{}]", clientProps.getTopicAliasMaximum(), clientName);
         }
 
         // TLS / SSL 安全套接字配置
@@ -290,6 +349,7 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
                         long shutdownMs = handle.getClientProperties().getShutdownTimeout().toMillis();
                         // 显式发送 MQTT 规范 DISCONNECT 报文，告知 Broker 正常下线并依法销毁 LWT 遗嘱消息（防误报）
                         handle.getAsyncClient().disconnect().waitForCompletion(shutdownMs > 0 ? shutdownMs : 5000L);
+                        publishDisconnectedEvent(name, handle.getClientProperties().getServerUri(), handle.getActualClientId());
                     }
                     handle.getAsyncClient().close();
                     log.info("[MQTT] Client [{}] disconnected and closed cleanly with DISCONNECT", name);
@@ -304,5 +364,36 @@ public class NamedMqttClientRegistry implements InitializingBean, DisposableBean
     @Override
     public void destroy() {
         stop();
+    }
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+        this.applicationEventPublisher = applicationEventPublisher;
+    }
+
+    public void publishConnectedEvent(String clientName, String serverUri, String clientId, boolean reconnect) {
+        MqttClientHandle handle = clientHandles.get(clientName);
+        if (handle != null) {
+            handle.resetDisconnected();
+        }
+        if (applicationEventPublisher != null) {
+            applicationEventPublisher.publishEvent(new MqttConnectedEvent(this, clientName, serverUri, clientId, reconnect));
+        }
+    }
+
+    public void publishDisconnectedEvent(String clientName, String serverUri, String clientId) {
+        MqttClientHandle handle = clientHandles.get(clientName);
+        if (handle != null && !handle.markDisconnected()) {
+            return;
+        }
+        if (applicationEventPublisher != null) {
+            applicationEventPublisher.publishEvent(new MqttDisconnectedEvent(this, clientName, serverUri, clientId));
+        }
+    }
+
+    public void publishConnectionLostEvent(String clientName, String serverUri, String clientId, Throwable cause) {
+        if (applicationEventPublisher != null) {
+            applicationEventPublisher.publishEvent(new MqttConnectionLostEvent(this, clientName, serverUri, clientId, cause));
+        }
     }
 }

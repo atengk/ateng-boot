@@ -6,18 +6,24 @@ import io.github.atengk.boot.mqtt.codec.MqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.DefaultMqttSendFailureHandler;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.interceptor.MqttMessageInterceptor;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventListener;
+import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.github.atengk.boot.mqtt.will.MqttWillProvider;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.eclipse.paho.mqttv5.client.MqttAsyncClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -28,8 +34,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Role;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -118,7 +126,8 @@ public class AtengMqttAutoConfiguration {
                                     ObjectProvider<MqttMessageConverter> messageConverterProvider,
                                     ObjectProvider<MqttMetrics> metricsProvider,
                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
+                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
         return new MqttTemplate(
                 namedMqttClientRegistry,
@@ -127,7 +136,8 @@ public class AtengMqttAutoConfiguration {
                 executor,
                 mqttRequestReplyManager,
                 messageConverterProvider.getIfAvailable(),
-                metricsProvider.getIfAvailable()
+                metricsProvider.getIfAvailable(),
+                interceptorsProvider.getIfAvailable(Collections::emptyList)
         );
     }
 
@@ -135,19 +145,54 @@ public class AtengMqttAutoConfiguration {
     @ConditionalOnMissingBean
     public MqttListenerEndpointRegistry mqttListenerEndpointRegistry(NamedMqttClientRegistry namedMqttClientRegistry,
                                                                     PayloadGuard mqttPayloadGuard,
+                                                                    AtengMqttProperties properties,
                                                                     ObjectProvider<MqttMetrics> metricsProvider,
+                                                                    ObjectProvider<MqttRequestReplyManager> requestReplyManagerProvider,
                                                                     @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
-                                                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider) {
+                                                                    @Qualifier("mqttTaskExecutor") ObjectProvider<Executor> mqttExecutorProvider,
+                                                                    ObjectProvider<List<MqttMessageInterceptor>> interceptorsProvider) {
         Executor executor = taskExecutorProvider.getIfAvailable(mqttExecutorProvider::getIfAvailable);
-        return new MqttListenerEndpointRegistry(namedMqttClientRegistry, mqttPayloadGuard, executor, metricsProvider.getIfAvailable());
+        MqttListenerEndpointRegistry registry = new MqttListenerEndpointRegistry(
+                namedMqttClientRegistry,
+                mqttPayloadGuard,
+                executor,
+                metricsProvider.getIfAvailable(),
+                requestReplyManagerProvider.getIfAvailable(),
+                interceptorsProvider.getIfAvailable(Collections::emptyList)
+        );
+        if (properties != null) {
+            registry.setMaxReplayCount(properties.getMaxReplayCount());
+        }
+        return registry;
     }
 
     @Bean
     @ConditionalOnMissingBean
-    public static MqttListenerAnnotationBeanPostProcessor mqttListenerAnnotationBeanPostProcessor(
-            MqttListenerEndpointRegistry mqttListenerEndpointRegistry,
-            ObjectProvider<MqttMessageConverter> messageConverterProvider) {
-        return new MqttListenerAnnotationBeanPostProcessor(mqttListenerEndpointRegistry, messageConverterProvider.getIfAvailable());
+    public MqttConnectionEventDispatcher mqttConnectionEventDispatcher(
+            ObjectProvider<List<MqttConnectionEventListener>> listenersProvider) {
+        return new MqttConnectionEventDispatcher(listenersProvider.getIfAvailable(Collections::emptyList));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttContainerManager mqttContainerManager(MqttListenerEndpointRegistry mqttListenerEndpointRegistry) {
+        return new MqttContainerManager(mqttListenerEndpointRegistry);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MqttDeadLetterReplayTemplate mqttDeadLetterReplayTemplate(NamedMqttClientRegistry namedMqttClientRegistry,
+                                                                    MqttTemplate mqttTemplate,
+                                                                    AtengMqttProperties properties) {
+        int maxReplay = properties != null ? properties.getMaxReplayCount() : 1;
+        return new MqttDeadLetterReplayTemplate(namedMqttClientRegistry, mqttTemplate, maxReplay);
+    }
+
+    @Bean
+    @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
+    @ConditionalOnMissingBean
+    public static MqttListenerAnnotationBeanPostProcessor mqttListenerAnnotationBeanPostProcessor() {
+        return new MqttListenerAnnotationBeanPostProcessor();
     }
 
     @Configuration(proxyBeanMethods = false)

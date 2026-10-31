@@ -55,12 +55,27 @@ class InMemoryNotificationRateLimiterTest {
         assertEquals(100, limiter.resolvePermitsPerMinute(feishu));
         assertEquals(60, limiter.resolvePermitsPerMinute(generic));
 
+        // 验证单秒突发防卫配额解析
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(dingTalk));
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(weCom));
+        assertEquals(5, limiter.resolveBurstPermitsPerSecond(feishu));
+        assertEquals(0, limiter.resolveBurstPermitsPerSecond(generic));
+
         // 通道专属配额优先覆盖
         NotificationChannel customDingTalk = createChannel("custom-dingtalk", Platform.DINGTALK, 5);
         assertEquals(5, limiter.resolvePermitsPerMinute(customDingTalk));
 
         NotificationChannel customFeishu = createChannel("custom-feishu", Platform.FEISHU, 300);
         assertEquals(300, limiter.resolvePermitsPerMinute(customFeishu));
+
+        // 通道专属单秒突发配额覆盖
+        NotificationChannel customBurstChannel = NotificationChannel.builder()
+                .name("custom-burst")
+                .platform(Platform.DINGTALK)
+                .webhook("https://example.com/burst")
+                .burstPermitsPerSecond(15)
+                .build();
+        assertEquals(15, limiter.resolveBurstPermitsPerSecond(customBurstChannel));
     }
 
     @Test
@@ -303,5 +318,86 @@ class InMemoryNotificationRateLimiterTest {
 
         // 所有 10 个请求在微退避窗口内依次顺畅排队发放，全部成功
         assertEquals(totalRequests, successCount.get());
+    }
+
+    @Test
+    @DisplayName("验证飞书渠道双阶频控：每秒最高 5 次突发防卫与毫秒级微退避排队")
+    void testFeishuDualTierBurstRateLimiting() {
+        NotificationRateLimitProperties props = new NotificationRateLimitProperties();
+        InMemoryNotificationRateLimiter limiter = new InMemoryNotificationRateLimiter(props);
+        NotificationChannel feishu = createChannel("feishu-burst-bot", Platform.FEISHU, 100);
+
+        // 飞书渠道前 5 次请求立即成功（单秒突发上限为 5 次）
+        for (int i = 0; i < 5; i++) {
+            assertTrue(limiter.tryAcquire(feishu, Duration.ZERO), "第 " + (i + 1) + " 次应立即成功");
+        }
+
+        // 第 6 次在同一秒内非阻塞获取应被突发防卫拦截
+        assertFalse(limiter.tryAcquire(feishu, Duration.ZERO), "第 6 次突发请求应被单秒 5 次上限拦截");
+
+        // 带有充裕等待时长的第 6 次请求，应通过毫秒级微退避排队等待后成功放行
+        assertTrue(limiter.tryAcquire(feishu, Duration.ofMillis(1500)), "等待单秒窗口滑动后应成功获取许可");
+    }
+
+    @Test
+    @DisplayName("高并发对抗性测试：飞书双阶突发限流多线程瞬时并发竞争与排队")
+    void testFeishuDualTierBurstRateLimitingConcurrent() throws InterruptedException {
+        int burstPermits = 5;
+        int threadCount = 20;
+        NotificationRateLimitProperties props = new NotificationRateLimitProperties();
+        InMemoryNotificationRateLimiter limiter = new InMemoryNotificationRateLimiter(props);
+        NotificationChannel feishu = createChannel("feishu-concurrent-bot", Platform.FEISHU, 100);
+
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch endGate = new CountDownLatch(threadCount);
+
+        AtomicInteger instantSuccess = new AtomicInteger();
+        AtomicInteger instantFail = new AtomicInteger();
+
+        // 1. 20 个线程瞬时非阻塞竞争飞书渠道的单秒 5 次突发配额
+        for (int i = 0; i < threadCount; i++) {
+            executor.submit(() -> {
+                try {
+                    startGate.await();
+                    boolean acquired = limiter.tryAcquire(feishu, Duration.ZERO);
+                    if (acquired) {
+                        instantSuccess.incrementAndGet();
+                    } else {
+                        instantFail.incrementAndGet();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    endGate.countDown();
+                }
+            });
+        }
+
+        startGate.countDown();
+        assertTrue(endGate.await(5, TimeUnit.SECONDS));
+
+        // 强断言：瞬时并发下，严格仅有 5 个线程成功抢占单秒突发许可，其余 15 个线程被突发限流拦截
+        assertEquals(burstPermits, instantSuccess.get());
+        assertEquals(threadCount - burstPermits, instantFail.get());
+
+        // 2. 验证多线程微退避排队：新发起 3 个线程，给予 1500ms 超时，等待单秒突发窗口滑动后应平滑放行
+        CountDownLatch queueGate = new CountDownLatch(3);
+        AtomicInteger queueSuccess = new AtomicInteger();
+        for (int i = 0; i < 3; i++) {
+            executor.submit(() -> {
+                try {
+                    if (limiter.tryAcquire(feishu, Duration.ofMillis(1500))) {
+                        queueSuccess.incrementAndGet();
+                    }
+                } finally {
+                    queueGate.countDown();
+                }
+            });
+        }
+
+        assertTrue(queueGate.await(5, TimeUnit.SECONDS));
+        assertEquals(3, queueSuccess.get());
+        executor.shutdown();
     }
 }

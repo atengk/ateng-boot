@@ -12,6 +12,7 @@ import io.github.atengk.boot.mqtt.properties.AtengMqttProperties;
 import io.github.atengk.boot.mqtt.properties.ClientIdStrategy;
 import io.github.atengk.boot.mqtt.properties.MqttClientProperties;
 import io.github.atengk.boot.mqtt.properties.PersistenceType;
+import io.github.atengk.boot.mqtt.registry.MqttClientHandle;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.github.atengk.boot.mqtt.test.EmbeddedMqttBroker;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 声明式 @MqttListener 容器、共享订阅与受管线程池隔离调度测试
@@ -53,6 +55,7 @@ class MqttListenerContainerTest {
     private MqttTemplate mqttTemplate;
     private MqttListenerEndpointRegistry endpointRegistry;
     private MqttListenerAnnotationBeanPostProcessor postProcessor;
+    private MqttContainerManager containerManager;
 
     public record DeviceMetricPayload(double value, String unit) {}
 
@@ -145,8 +148,9 @@ class MqttListenerContainerTest {
         payloadGuard = new PayloadGuard();
         mqttTemplate = new MqttTemplate(clientRegistry, payloadGuard, null, taskExecutor);
 
-        // 5. 初始化 EndpointRegistry 与 BeanPostProcessor
+        // 5. 初始化 EndpointRegistry、ContainerManager 与 BeanPostProcessor
         endpointRegistry = new MqttListenerEndpointRegistry(clientRegistry, payloadGuard, taskExecutor);
+        containerManager = new MqttContainerManager(endpointRegistry);
         postProcessor = new MqttListenerAnnotationBeanPostProcessor(endpointRegistry);
 
         // 6. 注册业务监听器 Bean
@@ -265,5 +269,97 @@ class MqttListenerContainerTest {
         mqttTemplate.publish("dynamic/sensor/temp", "dynamic-temp-2");
         Thread.sleep(250);
         assertThat(dynamicMessages).hasSize(1); // 仍旧只有 1 条
+    }
+
+    @Test
+    @DisplayName("动态流控运维：MqttContainerManager 暂停与恢复指定端点消费调度")
+    void shouldPauseAndResumeEndpointViaContainerManager() throws Exception {
+        String endpointId = "sampleListenerBean#onWildcardMessage";
+
+        // 1. 验证初始状态为未暂停
+        assertThat(containerManager.isPaused(endpointId)).isFalse();
+
+        // 2. 暂停端点消费
+        containerManager.pause(endpointId);
+        assertThat(containerManager.isPaused(endpointId)).isTrue();
+
+        // 3. 发送消息，验证被暂停忽略，未进入接收列表
+        mqttTemplate.publish("sensor/living-room/temperature", "PAUSED_VALUE_99");
+        Thread.sleep(300);
+        assertThat(listenerBean.receivedWildcard).doesNotContain("PAUSED_VALUE_99");
+
+        // 4. 恢复端点消费
+        containerManager.resume(endpointId);
+        assertThat(containerManager.isPaused(endpointId)).isFalse();
+
+        // 5. 再次发送消息，验证正常恢复消费
+        mqttTemplate.publish("sensor/living-room/temperature", "RESUMED_VALUE_100");
+        boolean completed = listenerBean.wildcardLatch.await(3, TimeUnit.SECONDS);
+        assertThat(completed).isTrue();
+        assertThat(listenerBean.receivedWildcard).contains("RESUMED_VALUE_100");
+
+        // 6. 验证非法入参与不存在端点的快速失败防卫 (Fail-Fast)
+        assertThatThrownBy(() -> containerManager.pause(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.pause("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
+        assertThatThrownBy(() -> containerManager.resume(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endpointId must not be blank");
+        assertThatThrownBy(() -> containerManager.resume("nonExistingEndpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MQTT listener endpoint not found");
+    }
+
+    @Test
+    @DisplayName("端点运行态巡检：MqttContainerManager 查询订阅主题拓扑与端点健康状态")
+    void shouldInspectEndpointsAndSubscribedTopicsViaContainerManager() {
+        // 1. 查询端点状态快照
+        List<MqttEndpointStatus> statuses = containerManager.getEndpointStatuses();
+        assertThat(statuses).isNotEmpty();
+
+        MqttEndpointStatus wildcardStatus = containerManager.getEndpointStatus("sampleListenerBean#onWildcardMessage");
+        assertThat(wildcardStatus).isNotNull();
+        assertThat(wildcardStatus.endpointId()).isEqualTo("sampleListenerBean#onWildcardMessage");
+        assertThat(wildcardStatus.clientName()).isEqualTo("primary");
+        assertThat(wildcardStatus.topics()).containsExactly("sensor/+/temperature");
+        assertThat(wildcardStatus.qos()).isEqualTo(1);
+        assertThat(wildcardStatus.paused()).isFalse();
+        assertThat(wildcardStatus.running()).isTrue();
+        assertThat(wildcardStatus.targetMethod()).contains("SampleListenerBean#onWildcardMessage");
+
+        // 2. 查询客户端订阅主题列表
+        List<String> primaryTopics = containerManager.getSubscribedTopics("primary");
+        assertThat(primaryTopics).contains("sensor/+/temperature");
+
+        Map<String, List<String>> allTopics = containerManager.getAllSubscribedTopics();
+        assertThat(allTopics).containsKey("primary");
+        assertThat(allTopics.get("primary")).contains("sensor/+/temperature");
+
+        assertThat(containerManager.containsEndpoint("sampleListenerBean#onWildcardMessage")).isTrue();
+        assertThat(containerManager.containsEndpoint("nonExistingEndpoint")).isFalse();
+    }
+
+    @Test
+    @DisplayName("断网重连全自愈：MqttListenerEndpointRegistry 自动恢复 Broker 订阅拓扑")
+    void shouldResubscribeEndpointsOnClientReconnect() throws Exception {
+        // 1. 验证重连自愈能够正常被触发且订阅不丢失
+        List<String> topicsBefore = containerManager.getSubscribedTopics("primary");
+        assertThat(topicsBefore).isNotEmpty();
+
+        // 2. 模拟断网重连通知 (reconnect = true)
+        MqttClientHandle handle = clientRegistry.getClientHandle("primary");
+        endpointRegistry.handleConnectComplete(handle, true, broker.getServerUri());
+
+        // 3. 验证重连后订阅列表自愈且不重复膨胀
+        List<String> topicsAfter = containerManager.getSubscribedTopics("primary");
+        assertThat(topicsAfter).containsExactlyInAnyOrderElementsOf(topicsBefore);
+
+        // 4. 验证重连后消息依然能够顺利推入端点
+        mqttTemplate.publish("sensor/balcony/temperature", "HEALED_TEMP_28");
+        Thread.sleep(300);
+        assertThat(listenerBean.receivedWildcard).contains("HEALED_TEMP_28");
     }
 }

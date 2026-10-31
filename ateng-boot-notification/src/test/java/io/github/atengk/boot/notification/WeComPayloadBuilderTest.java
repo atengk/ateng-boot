@@ -5,6 +5,7 @@ import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -169,5 +170,25 @@ class WeComPayloadBuilderTest {
 
         assertEquals("news", payload.get("msgtype"));
         assertNotNull(payload.get("news"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为企业微信原生 news 单图文报文格式")
+    @SuppressWarnings("unchecked")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("中秋节礼品领取", "今年中秋节公司有豪礼相送", "https://work.weixin.qq.com/gift", "https://img.example.com/gift.png");
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("news", payload.get("msgtype"));
+        Map<String, Object> newsObj = (Map<String, Object>) payload.get("news");
+        assertNotNull(newsObj);
+        List<Map<String, Object>> articles = (List<Map<String, Object>>) newsObj.get("articles");
+        assertEquals(1, articles.size());
+        Map<String, Object> article = articles.get(0);
+        assertEquals("中秋节礼品领取", article.get("title"));
+        assertEquals("今年中秋节公司有豪礼相送", article.get("description"));
+        assertEquals("https://work.weixin.qq.com/gift", article.get("url"));
+        assertEquals("https://img.example.com/gift.png", article.get("picurl"));
     }
 }

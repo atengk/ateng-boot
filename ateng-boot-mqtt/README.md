@@ -9,20 +9,27 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.mqtt.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **消息发布** | 同步/异步可靠发布 | `MqttTemplate` | `ateng.boot.mqtt.enabled`<br>`ateng.boot.mqtt.clients.<name>.publish-timeout` | `publish(String, Object)` / `publish(String, Object, int)` / `publish(String, Object, int, boolean)` / `publishAsync(...)`，自动适配 POJO / String / byte[] / HexPayload，透明透传 MDC TraceId 标头 | `MqttTemplateTest` / `SampleMqttE2eTest` |
+| **批量发布** | 批量消息可靠下发 | `MqttTemplate`<br>`MqttPublishRecord` | `ateng.boot.mqtt.clients.<name>.publish-timeout` | `publishBatch(List<MqttPublishRecord>)` / `publishBatchAsync(...)` / `publishBatch(String, List<MqttPublishRecord>)`，批量原子下发多设备指令，支持混合 QoS 与 Retained 配置 | `MqttTemplateTest` / `SampleMqttE2eTest` |
+| **保留消息** | 保留消息对称清理 | `MqttTemplate` | - | `clearRetained(String topic)` / `clearRetainedToClient(String clientName, String topic)`，发送空载荷与 retained=true 报文，彻底抹除 Broker 保留状态 | `MqttTemplateTest` / `SampleMqttE2eTest` |
 | **事务发信** | 本地事务提交后发信 | `MqttTemplate` | `ateng.boot.mqtt.clients.<name>.publish-timeout` | `sendAfterCommit(String, Object)` / `sendAfterCommit(String, Object, int, boolean)`，严格绑定 Spring 本地事务提交阶段触发投递，回滚自动撤销，具备 spring-tx 缺失时的反射隔离安全 | `MqttTemplateTest` / `SampleMqttE2eTest` |
 | **同步 RPC** | 请求-响应阻塞交互 | `MqttTemplate`<br>`MqttRequestReplyManager` | `ateng.boot.mqtt.clients.<name>.response-topic-prefix` | `sendAndReceive(String, Object, Class<T>)` / `sendAndReceive(String, Object, Class<T>, Duration)`，基于 MQTT 5.0 `ResponseTopic` 与 `CorrelationData` 实现高并发独立响应路由与超时扫描 | `MqttRequestReplyTest` / `SampleMqttE2eTest` |
+| **异步 RPC** | 请求-响应非阻塞交互 | `MqttTemplate`<br>`MqttRequestReplyManager` | `ateng.boot.mqtt.clients.<name>.response-topic-prefix` | `sendAndReceiveAsync(String, Object, Class<T>)` / `sendAndReceiveAsync(String, Object, Class<T>, Duration)`，返回 `CompletableFuture<T>`，微秒级异步响应匹配 | `MqttRequestReplyTest` / `SampleMqttE2eTest` |
+| **死信治理** | 毒丸死信窥探与重放 | `MqttDeadLetterReplayTemplate`<br>`MqttDeadLetterRecord` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | `peek(String, int, Duration)` 离线拉取窥探、`replay(String, String, int, Duration)` 受控重放至目标主题、`purge(String)` 彻底清空死信队列 | `MqttDeadLetterReplayTemplateTest` / `SampleMqttE2eTest` |
+| **容器治理** | 监听端点动态生命周期 | `MqttContainerManager` | - | `pause(String)` / `resume(String)` / `pauseAll()` / `resumeAll()` / `isPaused(String)` / `getEndpointStatuses()` / `getSubscribedTopics(String)`，动态启停监听端点与感知状态 | `MqttContainerManagerTest` / `SampleMqttE2eTest` |
 | **动态路由** | 多客户端路由门面 | `MqttTemplate`<br>`NamedMqttClientRegistry` | `ateng.boot.mqtt.default-client`<br>`ateng.boot.mqtt.clients.*` | `use(String clientName)`，返回绑定目标 Broker 连接的独立不可变操作门面；`getClientRegistry()` 反查受管客户端实体 | `NamedMqttClientRegistryTest` / `SampleMqttE2eTest` |
 | **声明式监听** | 声明式消息监听器 | `@MqttListener` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | 声明于 Spring Bean 方法上，支持 `topics`、`client`、`qos`、`sharedGroup`、`concurrency`、`autoStartup`，自动纳管生命周期 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
 | **主题通配提取** | REST 风格路径变量提取 | `@MqttVariable`<br>`MqttTopicPattern` | - | 形如 `iot/devices/{deviceId}/telemetry` 声明式通配，自动编译为标准 MQTT `+` 过滤器，并将占位值强类型绑定至 `@MqttVariable("deviceId")` 形参 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
 | **物理主题注入** | 实际推送主题注入 | `@MqttTopic` | - | 方法参数标注 `@MqttTopic String topic`，直接注入 Broker 实际下发的完整物理主题 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
-| **标头透传** | 标头提取与四维还原 | `@MqttHeader`<br>`MessageContextPropagator` | - | 提取 MQTT 5.0 User Properties（大小写不敏感匹配），在沙箱内自动还原 MDC `traceId` 与租户上下文，并在执行完毕后彻底清理现场 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
+| **标头透传** | 标头提取与四维还原 | `@MqttHeader`<br>`MessageContextPropagator` | - | 提取 MQTT 5.0 User Properties（大小写不敏感匹配，支持单个键值或注入 `Map<String, Object>` 全量标头），在沙箱内自动还原 MDC `traceId` 与租户/用户上下文，并在执行完毕后彻底清理现场 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
 | **共享订阅** | 集群分组均衡消费 | `@MqttListener(sharedGroup = "...")` | - | 声明 `sharedGroup` 自动编译为 `$share/<group>/<topic>` 共享订阅过滤器，实现分布式集群节点间无锁均衡轮询消费 | `MqttListenerContainerTest` / `SampleMqttE2eTest` |
 | **十六进制转译** | 工业国标/车联网 Hex 载荷 | `HexPayload`<br>`HexMqttMessageConverter` | - | 强类型承载十六进制报文字符串与裸字节数组双向无损互转，内置自动补零与大写格式化规范 | `MqttCodecAndObservabilityTest` / `SampleMqttE2eTest` |
 | **消息转换器 SPI** | 复合可插拔消息转换器 | `MqttMessageConverter`<br>`CompositeMqttMessageConverter` | - | 编解码 SPI 接口，内置 String、ByteArray、HexPayload 与 Jackson POJO 转换器，支持自定义 `@Bean` 自动接管 | `MqttCodecAndObservabilityTest` / `SampleMqttE2eTest` |
+| **链路拦截器 SPI** | 消息出入站拦截审计 | `MqttMessageInterceptor` | - | 出入站全生命周期拦截 SPI（`prePublish` / `postPublish` / `preConsume` / `postConsume`），支持对报文实施安全审计、加解密或自定义标头改写 | `MqttInterceptorTest` |
+| **连接事件 SPI** | 连接事件分发与拓扑感知 | `MqttConnectionEventListener`<br>`MqttConnectionEventDispatcher` | `ateng.boot.mqtt.clients.<name>.automatic-reconnect` | 统一监听 `MqttConnectedEvent`、`MqttDisconnectedEvent`、`MqttConnectionLostEvent`，感知物理连接全生命周期震荡与拓扑变化 | `MqttConnectionEventTest` |
 | **动态遗嘱 SPI** | 动态遗嘱消息生成器 | `MqttWillProvider` | `ateng.boot.mqtt.clients.<name>.lwt.*` | 客户端连接建立阶段动态提供遗嘱主题、载荷、QoS 与保留标志，支持自定义 `@Bean` 覆写默认配置 | `MqttClientConnectionTest` |
 | **发信降级 SPI** | 发布失败降级处理器 | `MqttSendFailureHandler` | - | 发布超时或异常中断时的降级补偿回调接口，支持入库重试或警报，默认记录详细因果异常日志 | `MqttTemplateTest` |
 | **幂等静默确认** | 消费重复静默确认 | `SilentAckException` | - | 监听方法遇到幂等重复报文时抛出 `SilentAckException`，框架自动执行静默提交（Silent ACK），平滑终结 QoS 1/2 重投死循环 | `MqttListenerContainerTest` |
-| **毒丸死信隔离** | 毒丸死信转移机制 | `FatalExceptionClassifier` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | 反序列化错误等不可恢复的毒丸异常自动隔离并转发至死信主题 `sys/dlt/<client>/<topic>`，防止 Poison Pill 阻断队列 | `MqttListenerContainerTest` |
+| **毒丸死信隔离** | 毒丸死信转移机制 | `FatalExceptionClassifier` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | 反序列化错误等不可恢复的毒丸异常自动隔离并转发至死信主题 `${topic}/DLT`，防止 Poison Pill 阻断队列 | `MqttListenerContainerTest` |
 | **大报文熔断** | 入站大报文超限守卫 | `MqttPayloadGuard` | `ateng.boot.mqtt.clients.<name>.max-payload-size` | 毫秒级探测报文字节大小，超过阈值立即 Fail-Fast 熔断，记录度量指标并触发 DLT 隔离，捍卫 JVM 堆内存安全 | `MqttPayloadGuardTest` |
 | **双向 mTLS** | TLS 加密与双向证书认证 | `MqttSslSocketFactoryBuilder` | `ateng.boot.mqtt.clients.<name>.ssl.*` | 支持 CA 根证书、客户端双向 PEM 证书与私钥解析，无缝构建标准 `SSLSocketFactory`，严守 TLSv1.2 / TLSv1.3 安全基线 | `MqttSslSocketFactoryBuilderTest` |
 | **健康状态探针** | Actuator 生产健康感知 | `MqttHealthIndicator` | `management.health.mqtt.enabled` | 深度集成 Spring Boot Actuator `/actuator/health`，实时上报所有受管客户端连接状态、Broker 地址与协议版本 | `MqttHealthIndicatorTest` / `SampleMqttE2eTest` |
@@ -293,6 +300,91 @@ ateng:
             client-key: "classpath:certs/client.key"
 ```
 
+### 3.8 批量消息下发与保留消息对称清理 (`publishBatch` / `clearRetained`)
+
+针对大规模设备群控或告警广播，`MqttTemplate` 提供批量消息投递与保留状态（Retained）彻底抹除门面：
+
+```java
+// 1. 批量下发不同主题与 QoS 的控制指令
+List<MqttPublishRecord> records = List.of(
+        MqttPublishRecord.of("iot/devices/device-01/command", new DeviceCommand("cmd-1", "RESTART", 0), 1),
+        MqttPublishRecord.of("iot/devices/device-02/command", new DeviceCommand("cmd-2", "CALIBRATE", 1), 1)
+);
+mqttTemplate.publishBatch(records);
+
+// 2. 清理 Broker 上的保留消息（设备离线或状态归零时发送空载荷且 retained=true 的报文）
+mqttTemplate.clearRetained("iot/devices/device-01/status");
+```
+
+### 3.9 MQTT 5.0 异步非阻塞 RPC (`sendAndReceiveAsync`)
+
+对于高并发微服务调用边缘设备场景，使用 `sendAndReceiveAsync` 避免线程阻塞：
+
+```java
+CompletableFuture<CommandResponse> future = mqttTemplate.sendAndReceiveAsync(
+        "iot/devices/device-01/control",
+        new DeviceCommand("cmd-async", "PING", 0),
+        CommandResponse.class,
+        Duration.ofSeconds(5)
+);
+
+future.thenAccept(response -> {
+    log.info("异步收到设备回执: {}", response.getMessage());
+}).exceptionally(ex -> {
+    log.error("指令执行超时或异常: {}", ex.getMessage());
+    return null;
+});
+```
+
+### 3.10 毒丸死信窥探、重放与清理门面 (`MqttDeadLetterReplayTemplate`)
+
+当入站报文触发不可恢复异常（如反序列化失败）并被转入死信主题 `${topic}/DLT` 后，可通过 `MqttDeadLetterReplayTemplate` 进行生产运维治理：
+
+```java
+@Autowired
+private MqttDeadLetterReplayTemplate dltTemplate;
+
+// 1. 窥探死信队列报文（拉取前 10 条，不破坏队列）
+List<MqttDeadLetterRecord> records = dltTemplate.peek("iot/devices/poison-test/DLT", 10, Duration.ofSeconds(2));
+for (MqttDeadLetterRecord record : records) {
+    log.warn("发现死信: 原始主题={}, 异常类型={}, 发生时间={}",
+            record.getOriginalTopic(), record.getExceptionClass(), record.getDltTimestamp());
+}
+
+// 2. 批量受控重放至业务恢复主题
+int replayedCount = dltTemplate.replay(
+        "iot/devices/poison-test/DLT",
+        "iot/devices/poison-recovered",
+        10,
+        Duration.ofSeconds(5)
+);
+log.info("成功重放 [{}] 条死信至恢复主题", replayedCount);
+
+// 3. 彻底清空 Broker 上的死信主题保留报文
+dltTemplate.purge("iot/devices/poison-test/DLT");
+```
+
+### 3.11 监听容器动态生命周期治理 (`MqttContainerManager`)
+
+在生产削峰填谷或服务降级维护期间，可动态启停指定 `@MqttListener` 消费端点：
+
+```java
+@Autowired
+private MqttContainerManager containerManager;
+
+// 暂停指定端点消费（拒绝接收新报文）
+containerManager.pause("deviceTelemetryScenarioService#onTelemetry");
+
+// 查询各端点运行状态快照列表
+List<MqttEndpointStatus> statuses = containerManager.getEndpointStatuses();
+
+// 查询指定端点是否暂停
+boolean paused = containerManager.isPaused("deviceTelemetryScenarioService#onTelemetry");
+
+// 恢复消费
+containerManager.resume("deviceTelemetryScenarioService#onTelemetry");
+```
+
 ---
 
 ## 4. 生产扩展与 SPI 自定义接管
@@ -366,6 +458,67 @@ public class DatabaseFallbackMqttSendFailureHandler implements MqttSendFailureHa
     public void handle(String clientName, String topic, Object payload, Throwable cause) {
         log.error("[MQTT] 发信失败触发降级补偿: client={}, topic={}, 异常={}", clientName, topic, cause.getMessage());
         // 补偿动作：写入本地待重试消息表 (Outbox Pattern)，由后台调度任务重发
+    }
+}
+```
+
+### 4.4 全链路消息出入站拦截器 SPI (`MqttMessageInterceptor`)
+
+实现 `MqttMessageInterceptor` 并注册为 Spring `@Bean`，即可在消息发布前、发布后、消费前、消费后实施审计、加解密或自定义标头改写：
+
+```java
+@Component
+public class SecurityAuditMqttInterceptor implements MqttMessageInterceptor {
+
+    private static final Logger log = LoggerFactory.getLogger(SecurityAuditMqttInterceptor.class);
+
+    @Override
+    public MqttMessage prePublish(String clientName, String topic, MqttMessage message) {
+        log.info("[MQTT-AUDIT] 发信前置拦截: client={}, topic={}", clientName, topic);
+        return message;
+    }
+
+    @Override
+    public void postPublish(String clientName, String topic, MqttMessage message, Throwable failure) {
+        if (failure != null) {
+            log.error("[MQTT-AUDIT] 发信失败告警: topic={}, 异常={}", topic, failure.getMessage());
+        }
+    }
+
+    @Override
+    public boolean preConsume(String endpointId, String topic, MqttMessage message) {
+        // 返回 false 可中断消息分发
+        return true;
+    }
+
+    @Override
+    public void postConsume(String endpointId, String topic, MqttMessage message, Throwable failure) {
+        if (failure != null) {
+            log.warn("[MQTT-AUDIT] 消费异常: endpoint={}, topic={}", endpointId, topic);
+        }
+    }
+}
+```
+
+### 4.5 连接事件监听与网络拓扑感知 SPI (`MqttConnectionEventListener`)
+
+实现 `MqttConnectionEventListener` 并注册为 Spring `@Bean`，即可统一监听连接建立、主动断开与异常掉线事件：
+
+```java
+@Component
+public class NetworkTopologyMqttEventListener implements MqttConnectionEventListener {
+
+    private static final Logger log = LoggerFactory.getLogger(NetworkTopologyMqttEventListener.class);
+
+    @Override
+    public void onEvent(MqttConnectionEvent event) {
+        if (event instanceof MqttConnectedEvent connected) {
+            log.info("[MQTT-EVENT] 连接成功: client={}, reconnect={}", connected.getClientName(), connected.isReconnect());
+        } else if (event instanceof MqttConnectionLostEvent lost) {
+            log.warn("[MQTT-EVENT] 连接异常丢失: client={}, 原因={}", lost.getClientName(), lost.getCause().getMessage());
+        } else if (event instanceof MqttDisconnectedEvent disconnected) {
+            log.info("[MQTT-EVENT] 连接正常断开: client={}", disconnected.getClientName());
+        }
     }
 }
 ```
@@ -448,8 +601,12 @@ public class DatabaseFallbackMqttSendFailureHandler implements MqttSendFailureHa
 
 ## 7. 真实场景样例工程 (ateng-boot-sample-mqtt)
 
-完整、自洽、开箱即用的端到端演示代码收录于 `ateng-boot-samples/ateng-boot-sample-mqtt`：
-- **REST 控制器**：[MqttScenarioController.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/controller/MqttScenarioController.java)
-- **多模式监听器**：[DeviceTelemetryListener.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/listener/DeviceTelemetryListener.java)
-- **事务发信服务**：[MqttTransactionalOrderService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/MqttTransactionalOrderService.java)
+完整、自洽、开箱即用的端到端演示代码收录于 `ateng-boot-samples/ateng-boot-sample-mqtt`（纯业务场景服务驱动，Zero-Controller Invariant）：
+- **设备遥测与通配服务**：[DeviceTelemetryScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/DeviceTelemetryScenarioService.java)
+- **指令下发与 RPC 服务**：[DeviceControlRpcScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/DeviceControlRpcScenarioService.java)
+- **工业十六进制报文服务**：[IndustrialHexScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/IndustrialHexScenarioService.java)
+- **批量下发与保留消息服务**：[BatchPublishScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/BatchPublishScenarioService.java)
+- **毒丸死信治理与重放服务**：[DeadLetterReplayScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/DeadLetterReplayScenarioService.java)
+- **监听容器动态治理服务**：[MqttContainerGovernanceScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/MqttContainerGovernanceScenarioService.java)
+- **本地事务协同发信服务**：[TransactionalTelemetryScenarioService.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/main/java/io/github/atengk/boot/sample/mqtt/service/TransactionalTelemetryScenarioService.java)
 - **100% 离线自洽集成测试**：[SampleMqttE2eTest.java](../ateng-boot-samples/ateng-boot-sample-mqtt/src/test/java/io/github/atengk/boot/sample/mqtt/SampleMqttE2eTest.java)

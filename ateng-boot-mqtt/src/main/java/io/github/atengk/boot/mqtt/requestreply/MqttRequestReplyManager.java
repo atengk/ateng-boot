@@ -106,10 +106,15 @@ public class MqttRequestReplyManager implements SmartLifecycle {
             // 启动定时超时安全扫描器（每 500ms 扫描一次），防范无界内存挂起
             this.timeoutScanner.scheduleWithFixedDelay(this::scanAndCleanExpiredRequests, 500, 500, TimeUnit.MILLISECONDS);
 
-            // 预订阅所有已配置客户端的私有聚合响应主题
+            // 预订阅所有已配置客户端的私有聚合响应主题并绑定重连自愈监听
             for (MqttClientHandle handle : clientRegistry.getClientHandles().values()) {
                 try {
                     ensureSubscribed(handle);
+                    handle.addConnectCompleteListener((reconnect, serverURI) -> {
+                        if (reconnect) {
+                            handleReconnect(handle.getClientName());
+                        }
+                    });
                 } catch (Exception e) {
                     log.error("[MQTT] Failed to pre-subscribe aggregated response topic for client [{}]: {}",
                             handle.getClientName(), e.getMessage(), e);
@@ -163,6 +168,153 @@ public class MqttRequestReplyManager implements SmartLifecycle {
         } catch (MqttException e) {
             throw new BusinessException("Failed to subscribe response topic [" + responseTopic + "] on client [" + handle.getClientName() + "]: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 重连响应主题自愈：清除已缓存的订阅标记并重新预订阅私有响应主题
+     *
+     * @param clientName 客户端逻辑名称
+     */
+    public synchronized void handleReconnect(String clientName) {
+        if (!StringUtils.hasText(clientName)) {
+            clientName = clientRegistry.getDefaultClientName();
+        }
+        log.info("[MQTT] Triggering response topic self-healing for client [{}] on reconnect", clientName);
+        subscribedClientNames.remove(clientName);
+        // 主动触发扫描清理已过期的挂起请求，避免网络闪断前超时的请求堆积
+        scanAndCleanExpiredRequests();
+        if (clientRegistry.containsClient(clientName)) {
+            MqttClientHandle handle = clientRegistry.getClientHandle(clientName);
+            if (handle.isConnected()) {
+                ensureSubscribed(handle);
+            }
+        }
+    }
+
+    /**
+     * 判断指定客户端是否已完成私有聚合响应主题预订阅
+     *
+     * @param clientName 客户端逻辑名称
+     * @return true 若已预订阅
+     */
+    public boolean isSubscribed(String clientName) {
+        if (!StringUtils.hasText(clientName)) {
+            clientName = clientRegistry.getDefaultClientName();
+        }
+        return subscribedClientNames.contains(clientName);
+    }
+
+    /**
+     * 发起请求并等待响应（默认客户端，QoS 1，异步非阻塞）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param timeout 等待超时阈值
+     * @return 响应报文 CompletableFuture
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, timeout);
+    }
+
+    /**
+     * 发起请求并等待响应（默认客户端，异步非阻塞）
+     *
+     * @param topic   目标请求主题
+     * @param payload 请求载荷
+     * @param qos     QoS 等级
+     * @param timeout 等待超时阈值
+     * @return 响应报文 CompletableFuture
+     */
+    public CompletableFuture<MqttMessage> sendAndReceiveAsync(String topic, Object payload, int qos, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, timeout);
+    }
+
+    /**
+     * 发起请求并等待强类型响应（默认客户端，QoS 1，异步非阻塞）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 发起请求并等待强类型响应（默认客户端，异步非阻塞）
+     *
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String topic, Object payload, int qos, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(null, topic, payload, qos, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发起请求并等待强类型响应（QoS 1，异步非阻塞）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName, String topic, Object payload, Class<T> responseType, Duration timeout) {
+        return sendAndReceiveAsync(clientName, topic, payload, 1, responseType, timeout);
+    }
+
+    /**
+     * 指定客户端发起请求并等待强类型响应（异步非阻塞）
+     *
+     * @param clientName   客户端逻辑名称
+     * @param topic        目标请求主题
+     * @param payload      请求载荷
+     * @param qos          QoS 等级
+     * @param responseType 期望返回的目标对象类型
+     * @param timeout      等待超时阈值
+     * @param <T>          泛型类型
+     * @return 响应对象 CompletableFuture
+     */
+    public <T> CompletableFuture<T> sendAndReceiveAsync(String clientName,
+                                                        String topic,
+                                                        Object payload,
+                                                        int qos,
+                                                        Class<T> responseType,
+                                                        Duration timeout) {
+        Objects.requireNonNull(responseType, "responseType must not be null");
+        return sendAndReceiveAsync(clientName, topic, payload, qos, timeout)
+                .thenApply(msg -> convertResponse(msg, responseType));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T convertResponse(MqttMessage message, Class<T> responseType) {
+        if (message == null || responseType == null) {
+            return null;
+        }
+        if (responseType.isAssignableFrom(MqttMessage.class)) {
+            return (T) message;
+        }
+        byte[] payload = message.getPayload();
+        if (responseType == byte[].class) {
+            return (T) (payload != null ? payload : new byte[0]);
+        }
+        if (responseType == String.class) {
+            return (T) (payload != null ? new String(payload, StandardCharsets.UTF_8) : "");
+        }
+        if (payload == null || payload.length == 0) {
+            return null;
+        }
+        return JsonUtil.parseObject(payload, responseType);
     }
 
     /**

@@ -4,11 +4,14 @@ import io.github.atengk.boot.mqtt.actuator.MqttHealthIndicator;
 import io.github.atengk.boot.mqtt.codec.CompositeMqttMessageConverter;
 import io.github.atengk.boot.mqtt.defense.PayloadGuard;
 import io.github.atengk.boot.mqtt.handler.MqttSendFailureHandler;
+import io.github.atengk.boot.mqtt.listener.MqttConnectionEventDispatcher;
+import io.github.atengk.boot.mqtt.listener.MqttContainerManager;
 import io.github.atengk.boot.mqtt.listener.MqttListenerAnnotationBeanPostProcessor;
 import io.github.atengk.boot.mqtt.listener.MqttListenerEndpointRegistry;
 import io.github.atengk.boot.mqtt.metrics.MqttMetrics;
 import io.github.atengk.boot.mqtt.registry.NamedMqttClientRegistry;
 import io.github.atengk.boot.mqtt.requestreply.MqttRequestReplyManager;
+import io.github.atengk.boot.mqtt.template.MqttDeadLetterReplayTemplate;
 import io.github.atengk.boot.mqtt.template.MqttTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -42,7 +45,10 @@ class AtengMqttAutoConfigurationTest {
             assertThat(context).hasSingleBean(ThreadPoolTaskExecutor.class);
             assertThat(context).hasSingleBean(MqttRequestReplyManager.class);
             assertThat(context).hasSingleBean(MqttTemplate.class);
+            assertThat(context).hasSingleBean(MqttDeadLetterReplayTemplate.class);
             assertThat(context).hasSingleBean(MqttListenerEndpointRegistry.class);
+            assertThat(context).hasSingleBean(MqttContainerManager.class);
+            assertThat(context).hasSingleBean(MqttConnectionEventDispatcher.class);
             assertThat(context).hasSingleBean(MqttListenerAnnotationBeanPostProcessor.class);
             assertThat(context).hasSingleBean(MqttHealthIndicator.class);
         });
@@ -58,7 +64,10 @@ class AtengMqttAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MqttSendFailureHandler.class);
                     assertThat(context).doesNotHaveBean(MqttRequestReplyManager.class);
                     assertThat(context).doesNotHaveBean(MqttTemplate.class);
+                    assertThat(context).doesNotHaveBean(MqttDeadLetterReplayTemplate.class);
                     assertThat(context).doesNotHaveBean(MqttListenerEndpointRegistry.class);
+                    assertThat(context).doesNotHaveBean(MqttContainerManager.class);
+                    assertThat(context).doesNotHaveBean(MqttConnectionEventDispatcher.class);
                     assertThat(context).doesNotHaveBean(MqttListenerAnnotationBeanPostProcessor.class);
                 });
     }
@@ -80,6 +89,18 @@ class AtengMqttAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(MqttMetrics.class);
                     assertThat(context).doesNotHaveBean(MqttHealthIndicator.class);
+                });
+    }
+
+    @Test
+    @DisplayName("测试自定义属性装配：max-replay-count 正确透传给 ReplayTemplate 与 EndpointRegistry")
+    void testCustomMaxReplayCountAutoConfiguration() {
+        contextRunner.withPropertyValues("ateng.boot.mqtt.max-replay-count=3")
+                .run(context -> {
+                    MqttDeadLetterReplayTemplate replayTemplate = context.getBean(MqttDeadLetterReplayTemplate.class);
+                    assertThat(replayTemplate.getMaxReplayCount()).isEqualTo(3);
+                    MqttListenerEndpointRegistry registry = context.getBean(MqttListenerEndpointRegistry.class);
+                    assertThat(registry.getMaxReplayCount()).isEqualTo(3);
                 });
     }
 }

@@ -44,6 +44,11 @@ public class NotificationRateLimitProperties {
     private int defaultFeishuPermits = 100;
 
     /**
+     * 飞书群机器人默认单秒突发防卫配额（条/秒），默认 5 条/秒（对齐飞书官方 5次/秒 限制）
+     */
+    private int defaultFeishuBurstPermits = 5;
+
+    /**
      * 通用 Webhook 机器人默认基准频控配额（条/分钟），默认 60 条/分钟
      */
     private int defaultGenericPermits = 60;

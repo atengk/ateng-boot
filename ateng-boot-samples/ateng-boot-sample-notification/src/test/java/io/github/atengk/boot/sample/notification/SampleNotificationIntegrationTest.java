@@ -1,8 +1,11 @@
 package io.github.atengk.boot.sample.notification;
 
+import io.github.atengk.boot.notification.alert.AlertStormSuppressor;
 import io.github.atengk.boot.notification.channel.NotificationChannel;
 import io.github.atengk.boot.notification.channel.NotificationChannelRegistry;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardColor;
+import io.github.atengk.boot.notification.model.Platform;
 import io.github.atengk.boot.sample.notification.dto.AlertTriggerRequest;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
@@ -12,6 +15,7 @@ import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -54,6 +58,9 @@ class SampleNotificationIntegrationTest {
     @Autowired
     private NotificationChannelRegistry channelRegistry;
 
+    @Autowired(required = false)
+    private AlertStormSuppressor alertStormSuppressor;
+
     @BeforeAll
     static void startServer() throws IOException {
         mockServer = new MockWebServer();
@@ -64,6 +71,27 @@ class SampleNotificationIntegrationTest {
     static void stopServer() throws IOException {
         if (mockServer != null) {
             mockServer.shutdown();
+        }
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (alertStormSuppressor != null) {
+            alertStormSuppressor.reset();
+        }
+        if (channelRegistry != null) {
+            channelRegistry.unregister("sample-failover-primary");
+        }
+        while (true) {
+            try {
+                RecordedRequest req = mockServer.takeRequest(10, TimeUnit.MILLISECONDS);
+                if (req == null) {
+                    break;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
         }
     }
 
@@ -440,5 +468,134 @@ class SampleNotificationIntegrationTest {
 
         RecordedRequest duplicate = mockServer.takeRequest(500, TimeUnit.MILLISECONDS);
         assertNull(duplicate, "窗口期内相同异常指纹应被静默拦截，杜绝刷屏！");
+    }
+
+    @Test
+    @DisplayName("端到端验证图文链接通知发信接口：校验 LinkMessage 跨端自适应转译")
+    void testSendLinkMessageEndpoint() throws Exception {
+        enqueueSuccessResponse();
+
+        String payload = """
+                {
+                  "channel": "dingtalk-dev",
+                  "title": "项目里程碑通报",
+                  "text": "v1.2.0 已完成端到端测试与五维文档闭环",
+                  "messageUrl": "https://github.com/atengk/ateng-boot/releases/v1.2.0",
+                  "picUrl": "https://img.example.com/banner.png",
+                  "atAll": false,
+                  "atMobiles": ["13800138000"]
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/notification/link")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true))
+                .andExpect(jsonPath("$.data.channel").value("dingtalk-dev"));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        assertThat(recorded.getPath()).startsWith("/webhook/dingtalk");
+        String body = recorded.getBody().readUtf8();
+        assertThat(body)
+                .contains("\"msgtype\":\"link\"")
+                .contains("项目里程碑通报")
+                .contains("https://github.com/atengk/ateng-boot/releases/v1.2.0")
+                .contains("https://img.example.com/banner.png");
+    }
+
+    @Test
+    @DisplayName("端到端验证卡片消息横向多按钮排版与浅蓝色主题：校验 CardButtonOrientation 与 WATHET")
+    void testSendCardMessageWithHorizontalOrientationEndpoint() throws Exception {
+        enqueueSuccessResponse();
+
+        String payload = """
+                {
+                  "channel": "dingtalk-dev",
+                  "title": "请假审批通知",
+                  "content": "员工申请年假 2 天",
+                  "headerColor": "WATHET",
+                  "btnOrientation": "HORIZONTAL",
+                  "buttons": [
+                    {
+                      "title": "同意",
+                      "url": "https://oa.example.com/approve",
+                      "type": "PRIMARY"
+                    },
+                    {
+                      "title": "拒绝",
+                      "url": "https://oa.example.com/reject",
+                      "type": "DANGER"
+                    }
+                  ]
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/notification/card")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.success").value(true));
+
+        RecordedRequest recorded = mockServer.takeRequest(3, TimeUnit.SECONDS);
+        assertNotNull(recorded);
+        assertThat(recorded.getPath()).startsWith("/webhook/dingtalk");
+        String body = recorded.getBody().readUtf8();
+        assertThat(body)
+                .contains("actionCard")
+                .contains("请假审批通知")
+                .contains("\"btnOrientation\":\"1\"")
+                .contains("\"btns\":")
+                .contains("同意")
+                .contains("拒绝");
+    }
+
+    @Test
+    @DisplayName("端到端验证主备渠道故障转移 (Failover)：主渠道 500 异常时顺延降级至备用渠道成功")
+    void testSendChannelFailoverEndpoint() throws Exception {
+        NotificationChannel failoverPrimary = NotificationChannel.builder()
+                .name("sample-failover-primary")
+                .platform(Platform.DINGTALK)
+                .webhook(mockServer.url("webhook/primary-failover").toString())
+                .backupChannels(List.of("feishu-ops"))
+                .build();
+        channelRegistry.register(failoverPrimary);
+
+        try {
+            // 主渠道返回 HTTP 500
+            mockServer.enqueue(new MockResponse().setResponseCode(500).setBody("Primary Server Error"));
+            // 备用渠道正常返回 200 OK
+            enqueueSuccessResponse();
+
+            String payload = """
+                    {
+                      "channel": "sample-failover-primary",
+                      "content": "验证主备顺延故障转移端到端流程"
+                    }
+                    """;
+
+            mockMvc.perform(post("/api/v1/notification/text")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(payload))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.success").value(true))
+                    .andExpect(jsonPath("$.data.channel").value("feishu-ops"))
+                    .andExpect(jsonPath("$.data.platform").value("FEISHU"));
+
+            // 验证主渠道与备用渠道依次收到请求
+            RecordedRequest req1 = mockServer.takeRequest(3, TimeUnit.SECONDS);
+            assertNotNull(req1);
+            assertEquals("/webhook/primary-failover", req1.getPath());
+
+            RecordedRequest req2 = mockServer.takeRequest(3, TimeUnit.SECONDS);
+            assertNotNull(req2);
+            assertEquals("/webhook/feishu", req2.getPath());
+        } finally {
+            channelRegistry.unregister("sample-failover-primary");
+        }
     }
 }

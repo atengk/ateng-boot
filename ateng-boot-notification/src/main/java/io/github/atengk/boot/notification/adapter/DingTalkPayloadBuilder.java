@@ -1,7 +1,9 @@
 package io.github.atengk.boot.notification.adapter;
 
 import io.github.atengk.boot.notification.model.CardButton;
+import io.github.atengk.boot.notification.model.CardButtonOrientation;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationMessage;
@@ -36,6 +38,7 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
             case TEXT -> buildTextPayload(root, (TextMessage) message);
             case MARKDOWN -> buildMarkdownPayload(root, (MarkdownMessage) message);
             case CARD -> buildCardPayload(root, (CardMessage) message);
+            case LINK -> buildLinkPayload(root, (LinkMessage) message);
             case RAW -> buildRawPayload(root, (RawMessage) message);
             default -> throw new UnsupportedOperationException("钉钉群机器人暂不支持消息类型: " + message.getMessageType());
         }
@@ -56,7 +59,31 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         root.put("msgtype", "markdown");
         Map<String, Object> mdNode = new LinkedHashMap<>();
         mdNode.put("title", msg.getTitle() != null ? msg.getTitle() : "系统通知");
-        mdNode.put("text", msg.getContent());
+
+        String text = msg.getContent() != null ? msg.getContent() : "";
+        MentionTarget mention = msg.getMention();
+        if (mention != null && mention.hasMentions()) {
+            StringBuilder appendBuilder = new StringBuilder();
+            if (mention.isAtAll() && !text.contains("@所有人") && !text.contains("@all")) {
+                appendBuilder.append("@所有人 ");
+            }
+            for (String mobile : mention.getAtMobiles()) {
+                if (!text.contains("@" + mobile)) {
+                    appendBuilder.append("@").append(mobile).append(" ");
+                }
+            }
+            for (String userId : mention.getAtUserIds()) {
+                if (!text.contains("@" + userId)) {
+                    appendBuilder.append("@").append(userId).append(" ");
+                }
+            }
+            String toAppend = appendBuilder.toString().trim();
+            if (!toAppend.isEmpty()) {
+                text = text.isEmpty() ? toAppend : text + "\n\n" + toAppend;
+            }
+        }
+
+        mdNode.put("text", text);
         root.put("markdown", mdNode);
 
         attachAt(root, msg.getMention());
@@ -89,7 +116,10 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
             cardNode.put("singleTitle", singleTitle != null ? singleTitle : "查看详情");
             cardNode.put("singleURL", singleUrl != null ? singleUrl : "");
         } else if (!msg.getButtons().isEmpty()) {
-            cardNode.put("btnOrientation", "0"); // 默认竖直排列
+            String orientation = (msg.getBtnOrientation() != null)
+                    ? msg.getBtnOrientation().getCode()
+                    : CardButtonOrientation.VERTICAL.getCode();
+            cardNode.put("btnOrientation", orientation);
             List<Map<String, String>> btnList = new ArrayList<>();
             for (CardButton btn : msg.getButtons()) {
                 Map<String, String> b = new LinkedHashMap<>();
@@ -105,6 +135,18 @@ public class DingTalkPayloadBuilder implements NotificationPayloadBuilder {
         }
 
         root.put("actionCard", cardNode);
+        attachAt(root, msg.getMention());
+    }
+
+    private void buildLinkPayload(Map<String, Object> root, LinkMessage msg) {
+        root.put("msgtype", "link");
+        Map<String, Object> linkNode = new LinkedHashMap<>();
+        linkNode.put("title", msg.getTitle());
+        linkNode.put("text", msg.getText() != null ? msg.getText() : "");
+        linkNode.put("messageUrl", msg.getMessageUrl());
+        linkNode.put("picUrl", msg.getPicUrl() != null ? msg.getPicUrl() : "");
+        root.put("link", linkNode);
+
         attachAt(root, msg.getMention());
     }
 

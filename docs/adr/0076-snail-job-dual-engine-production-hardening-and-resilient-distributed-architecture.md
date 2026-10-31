@@ -1,4 +1,4 @@
-# 72. SnailJob 分布式调度与分布式重试双擎生产级加固架构决策 (SnailJob Dual-Engine Production Hardening and Resilient Distributed Architecture)
+# 76. SnailJob 分布式调度与分布式重试双擎生产级加固架构决策 (SnailJob Dual-Engine Production Hardening and Resilient Distributed Architecture)
 
 ## 背景与痛点
 

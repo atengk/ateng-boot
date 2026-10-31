@@ -48,6 +48,15 @@ public class SupplierFormService {
     }
 
     /**
+     * 巡检供应商准入表单所有预定义交互式字段元数据
+     *
+     * @return 表单字段描述符列表
+     */
+    public java.util.List<io.github.atengk.boot.document.pdf.model.PdfFormFieldDescriptor> listFormFields() {
+        return pdfTemplate.listFormFields(SUPPLIER_FORM_TEMPLATE_PATH);
+    }
+
+    /**
      * Web 环境下流式导出已扁平化防篡改的供应商准入表
      *
      * @param response HTTP 响应对象

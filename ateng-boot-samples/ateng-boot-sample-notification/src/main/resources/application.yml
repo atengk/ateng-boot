@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-notification
+  config:
+    import: "optional:classpath:application-local.yml"
 
 ateng:
   boot:
@@ -14,7 +16,7 @@ ateng:
         ops-alert:
           platform: wecom
           webhook: http://localhost:18080/webhook/wecom
-          secret: SEC_SAMPLE_KEY_123456
+          # 企微 Webhook 官方仅使用 URL 中的 key 鉴权，无 secret 加签机制
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 20
@@ -25,6 +27,9 @@ ateng:
           connect-timeout: 3s
           read-timeout: 5s
           permits-per-minute: 20
+          # 备用渠道列表：当主渠道遭遇瞬态网络超时或 5xx 服务端故障时，按序故障转移至备用渠道
+          backup-channels:
+            - feishu-ops
         feishu-ops:
           platform: feishu
           webhook: http://localhost:18080/webhook/feishu

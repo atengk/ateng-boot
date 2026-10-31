@@ -4,6 +4,7 @@ import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.model.ImageMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.MentionTarget;
 import io.github.atengk.boot.notification.model.NotificationMessage;
@@ -39,6 +40,7 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
             case MARKDOWN -> buildMarkdownPayload(root, (MarkdownMessage) message);
             case CARD -> buildCardPayload(root, (CardMessage) message);
             case IMAGE -> buildImagePayload(root, (ImageMessage) message);
+            case LINK -> buildLinkPayload(root, (LinkMessage) message);
             case RAW -> buildRawPayload(root, (RawMessage) message);
             default -> throw new UnsupportedOperationException("企业微信群机器人暂不支持消息类型: " + message.getMessageType());
         }
@@ -164,5 +166,17 @@ public class WeComPayloadBuilder implements NotificationPayloadBuilder {
         imageNode.put("base64", msg.getBase64());
         imageNode.put("md5", msg.getMd5());
         root.put("image", imageNode);
+    }
+
+    private void buildLinkPayload(Map<String, Object> root, LinkMessage msg) {
+        root.put("msgtype", "news");
+        Map<String, Object> newsNode = new LinkedHashMap<>();
+        Map<String, Object> article = new LinkedHashMap<>();
+        article.put("title", msg.getTitle());
+        article.put("description", msg.getText() != null ? msg.getText() : "");
+        article.put("url", msg.getMessageUrl());
+        article.put("picurl", msg.getPicUrl() != null ? msg.getPicUrl() : "");
+        newsNode.put("articles", List.of(article));
+        root.put("news", newsNode);
     }
 }

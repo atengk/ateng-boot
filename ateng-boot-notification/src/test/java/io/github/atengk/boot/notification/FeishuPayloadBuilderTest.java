@@ -5,6 +5,7 @@ import io.github.atengk.boot.notification.model.CardButton;
 import io.github.atengk.boot.notification.model.CardButtonType;
 import io.github.atengk.boot.notification.model.CardColor;
 import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.model.LinkMessage;
 import io.github.atengk.boot.notification.model.MarkdownMessage;
 import io.github.atengk.boot.notification.model.RawMessage;
 import io.github.atengk.boot.notification.model.TextMessage;
@@ -137,6 +138,28 @@ class FeishuPayloadBuilderTest {
     }
 
     @Test
+    @DisplayName("验证 CardMessage 使用 WATHET 浅天蓝及历史 WATSON 均合规映射为飞书官方 wathet 模板")
+    @SuppressWarnings("unchecked")
+    void testBuildCardPayloadWithWathetAndLegacyWatson() {
+        // 1. 验证新标准色 WATHET
+        CardMessage wathetCard = CardMessage.of("新版本发布", "v1.2.0 已上线")
+                .headerColor(CardColor.WATHET);
+        Map<String, Object> wathetPayload = builder.buildPayload(wathetCard);
+        Map<String, Object> wathetCardObj = (Map<String, Object>) wathetPayload.get("card");
+        Map<String, Object> wathetHeader = (Map<String, Object>) wathetCardObj.get("header");
+        assertEquals("wathet", wathetHeader.get("template"));
+
+        // 2. 验证历史别名 WATSON 向后兼容映射
+        @SuppressWarnings("deprecation")
+        CardMessage watsonCard = CardMessage.of("历史版本发布", "兼容测试")
+                .headerColor(CardColor.WATSON);
+        Map<String, Object> watsonPayload = builder.buildPayload(watsonCard);
+        Map<String, Object> watsonCardObj = (Map<String, Object>) watsonPayload.get("card");
+        Map<String, Object> watsonHeader = (Map<String, Object>) watsonCardObj.get("header");
+        assertEquals("wathet", watsonHeader.get("template"));
+    }
+
+    @Test
     @DisplayName("验证 RawMessage 原生透传飞书特化报文")
     void testBuildRawPayload() {
         RawMessage raw = RawMessage.of(Map.of("msg_type", "image", "content", Map.of("image_key", "img_xxx")));
@@ -144,5 +167,46 @@ class FeishuPayloadBuilderTest {
 
         assertEquals("image", payload.get("msg_type"));
         assertNotNull(payload.get("content"));
+    }
+
+    @Test
+    @DisplayName("验证 LinkMessage 转译为飞书标准 interactive 交互卡片报文")
+    @SuppressWarnings("unchecked")
+    void testBuildLinkPayload() {
+        LinkMessage link = LinkMessage.of("版本发布通知", "v1.2.0 已顺利发布", "https://feishu.cn/doc/123", "https://img.example.com/banner.png")
+                .atAll();
+
+        Map<String, Object> payload = builder.buildPayload(link);
+
+        assertEquals("interactive", payload.get("msg_type"));
+        Map<String, Object> card = (Map<String, Object>) payload.get("card");
+        assertNotNull(card);
+
+        Map<String, Object> header = (Map<String, Object>) card.get("header");
+        assertEquals("blue", header.get("template"));
+        Map<String, String> titleNode = (Map<String, String>) header.get("title");
+        assertEquals("版本发布通知", titleNode.get("content"));
+
+        List<Map<String, Object>> elements = (List<Map<String, Object>>) card.get("elements");
+        assertEquals(2, elements.size());
+
+        // div lark_md element
+        Map<String, Object> div = elements.get(0);
+        assertEquals("div", div.get("tag"));
+        Map<String, String> textObj = (Map<String, String>) div.get("text");
+        String content = textObj.get("content");
+        assertTrue(content.contains("![版本发布通知](https://img.example.com/banner.png)"));
+        assertTrue(content.contains("v1.2.0 已顺利发布"));
+        assertTrue(content.contains("<at id=\"all\"></at>"));
+
+        // action button element
+        Map<String, Object> action = elements.get(1);
+        assertEquals("action", action.get("tag"));
+        List<Map<String, Object>> actions = (List<Map<String, Object>>) action.get("actions");
+        assertEquals(1, actions.size());
+        Map<String, Object> btn = actions.get(0);
+        assertEquals("button", btn.get("tag"));
+        assertEquals("primary", btn.get("type"));
+        assertEquals("https://feishu.cn/doc/123", btn.get("url"));
     }
 }

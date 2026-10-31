@@ -26,6 +26,11 @@ public class AtengMqttProperties {
     private String defaultClient = "primary";
 
     /**
+     * 死信受控重放最大重试上限（默认 1 次，防止毒丸报文在业务主题与死信主题之间无限死循环）
+     */
+    private int maxReplayCount = 1;
+
+    /**
      * 命名多客户端配置注册表（支持多 Broker 或多园区隔离）
      */
     @NestedConfigurationProperty
@@ -45,6 +50,14 @@ public class AtengMqttProperties {
 
     public void setDefaultClient(String defaultClient) {
         this.defaultClient = defaultClient;
+    }
+
+    public int getMaxReplayCount() {
+        return maxReplayCount;
+    }
+
+    public void setMaxReplayCount(int maxReplayCount) {
+        this.maxReplayCount = Math.max(1, maxReplayCount);
     }
 
     public Map<String, MqttClientProperties> getClients() {

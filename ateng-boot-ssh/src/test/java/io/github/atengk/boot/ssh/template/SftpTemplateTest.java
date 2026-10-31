@@ -3,6 +3,7 @@ package io.github.atengk.boot.ssh.template;
 import io.github.atengk.boot.ssh.exception.SshOperationException;
 import io.github.atengk.boot.ssh.exception.SshResultCode;
 import io.github.atengk.boot.ssh.listener.SftpProgressListener;
+import io.github.atengk.boot.ssh.listener.SftpProgressThrottler;
 import io.github.atengk.boot.ssh.model.SftpFileInfo;
 import io.github.atengk.boot.ssh.model.SshServerInfo;
 import io.github.atengk.boot.ssh.pool.SshSessionPool;
@@ -26,6 +27,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -437,5 +439,137 @@ class SftpTemplateTest {
         assertThat(Files.isDirectory(destLocal.resolve("empty-child"))).isTrue();
         assertThat(Files.exists(destLocal.resolve("desktop.ini"))).isFalse();
         assertThat(Files.exists(destLocal.resolve(".DS_Store"))).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 append 契约：文件追加与不存在文件/缺失父目录递归自动创建")
+    void testAppend() {
+        String appendPath = "/test-append/deep/log.txt";
+
+        // 1. 目标文件及父级目录不存在时，自动创建并写入首次数据
+        sftpTemplate.append(appendPath, "Line 1\n".getBytes(StandardCharsets.UTF_8));
+        assertThat(sftpTemplate.exists(appendPath)).isTrue();
+        assertThat(sftpTemplate.readString(appendPath)).isEqualTo("Line 1\n");
+
+        // 2. 目标文件存在时，InputStream 追加写入
+        sftpTemplate.append(appendPath, new ByteArrayInputStream("Line 2\n".getBytes(StandardCharsets.UTF_8)));
+        assertThat(sftpTemplate.readString(appendPath)).isEqualTo("Line 1\nLine 2\n");
+
+        // 3. 目标文件存在时，byte[] 追加写入
+        sftpTemplate.append(appendPath, "Line 3\n".getBytes(StandardCharsets.UTF_8));
+        assertThat(sftpTemplate.readString(appendPath)).isEqualTo("Line 1\nLine 2\nLine 3\n");
+
+        // 4. 防御性校验：null 入参快速失败
+        assertThatThrownBy(() -> sftpTemplate.append(appendPath, (byte[]) null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> sftpTemplate.append(appendPath, (InputStream) null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试 rename 与 move 契约：同级重命名、跨目录移动、自动建目录与穿越防御")
+    void testRenameAndMove() {
+        String originalFile = "/test-move/original.txt";
+        sftpTemplate.writeString(originalFile, "Hello Move");
+
+        // 1. 同级重命名 rename
+        String renamedFile = "/test-move/renamed.txt";
+        sftpTemplate.rename(originalFile, renamedFile);
+        assertThat(sftpTemplate.exists(originalFile)).isFalse();
+        assertThat(sftpTemplate.exists(renamedFile)).isTrue();
+        assertThat(sftpTemplate.readString(renamedFile)).isEqualTo("Hello Move");
+
+        // 2. 跨目录移动 move（目标目录不存在时自动创建父级目录）
+        String movedFile = "/test-move/nested/subdir/moved.txt";
+        sftpTemplate.move(renamedFile, movedFile);
+        assertThat(sftpTemplate.exists(renamedFile)).isFalse();
+        assertThat(sftpTemplate.exists(movedFile)).isTrue();
+        assertThat(sftpTemplate.readString(movedFile)).isEqualTo("Hello Move");
+
+        // 3. 移动至以 / 结尾的目标目录
+        String targetDir = "/test-move/dest-folder/";
+        sftpTemplate.move(movedFile, targetDir);
+        assertThat(sftpTemplate.exists(movedFile)).isFalse();
+        assertThat(sftpTemplate.exists(targetDir + "moved.txt")).isTrue();
+        assertThat(sftpTemplate.readString(targetDir + "moved.txt")).isEqualTo("Hello Move");
+
+        // 4. 防御性测试：路径穿越与空路径拦截
+        assertThatThrownBy(() -> sftpTemplate.move("/test-move/safe.txt", "/test-move/../../etc/passwd"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> sftpTemplate.move("", "/test-move/safe.txt"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> sftpTemplate.move("/test-move/safe.txt", "   "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("测试 readString 与 writeString 契约：默认 UTF-8、指定编码、覆盖写与异常拦截")
+    void testReadStringAndWriteString() {
+        String utf8File = "/test-text/utf8.txt";
+        String content = "Hello ateng-boot! 优雅且强大的 Spring Boot 3 中间件底座";
+
+        // 1. 默认 UTF-8 写入与读取
+        sftpTemplate.writeString(utf8File, content);
+        assertThat(sftpTemplate.exists(utf8File)).isTrue();
+        assertThat(sftpTemplate.readString(utf8File)).isEqualTo(content);
+
+        // 2. 覆盖写入
+        sftpTemplate.writeString(utf8File, "New overwritten content");
+        assertThat(sftpTemplate.readString(utf8File)).isEqualTo("New overwritten content");
+
+        // 3. 指定 Charset 编码写入与读取 (GBK)
+        Charset gbkCharset = Charset.forName("GBK");
+        String gbkFile = "/test-text/gbk.txt";
+        String gbkContent = "GBK 编码中文字符串测试";
+        sftpTemplate.writeString(gbkFile, gbkContent, gbkCharset);
+        assertThat(sftpTemplate.readString(gbkFile, gbkCharset)).isEqualTo(gbkContent);
+
+        // 4. 防御性测试：null 文本快速失败
+        assertThatThrownBy(() -> sftpTemplate.writeString(utf8File, null))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // 5. 防御性测试：读取不存在的文件抛出受控业务异常
+        assertThatThrownBy(() -> sftpTemplate.readString("/non-existent/file.txt"))
+                .isInstanceOf(SshOperationException.class)
+                .extracting("resultCode")
+                .isEqualTo(SshResultCode.SFTP_FILE_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("测试 SftpTemplate 真实流式上传与下载挂载 SftpProgressThrottler 节流防抖协同工作")
+    void testUploadAndDownloadWithProgressThrottler() {
+        String testFile = "/test-throttle/big-payload.bin";
+        // 准备 256KB 测试数据（约 8 个 32KB buffer 块）
+        byte[] payload = new byte[256 * 1024];
+        for (int i = 0; i < payload.length; i++) {
+            payload[i] = (byte) (i % 127);
+        }
+
+        AtomicBoolean uploadTerminalTriggered = new AtomicBoolean(false);
+        SftpProgressThrottler uploadThrottler = SftpProgressThrottler.of((transferred, total) -> {
+            if (transferred == total) {
+                uploadTerminalTriggered.set(true);
+            }
+        }, 10.0); // 步长 10%
+
+        // 1. 上传挂载节流器
+        sftpTemplate.upload(testFile, payload, uploadThrottler);
+        assertThat(uploadTerminalTriggered.get()).isTrue();
+        assertThat(uploadThrottler.isTerminalNotified()).isTrue();
+        assertThat(sftpTemplate.exists(testFile)).isTrue();
+
+        // 2. 下载挂载节流器
+        AtomicBoolean downloadTerminalTriggered = new AtomicBoolean(false);
+        SftpProgressThrottler downloadThrottler = SftpProgressThrottler.of((transferred, total) -> {
+            if (transferred == total) {
+                downloadTerminalTriggered.set(true);
+            }
+        }, 10.0);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        sftpTemplate.download(testFile, baos, downloadThrottler);
+        assertThat(downloadTerminalTriggered.get()).isTrue();
+        assertThat(downloadThrottler.isTerminalNotified()).isTrue();
+        assertThat(baos.toByteArray()).isEqualTo(payload);
     }
 }

@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.notification.controller;
 import io.github.atengk.boot.core.model.Result;
 import io.github.atengk.boot.notification.model.NotificationSendResult;
 import io.github.atengk.boot.sample.notification.dto.CardMessageRequest;
+import io.github.atengk.boot.sample.notification.dto.LinkMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.MarkdownMessageRequest;
 import io.github.atengk.boot.sample.notification.dto.TextMessageRequest;
 import io.github.atengk.boot.sample.notification.service.NotificationScenarioService;
@@ -56,6 +57,15 @@ public class NotificationController {
     @PostMapping("/card")
     public Result<NotificationSendResult> sendCard(@Valid @RequestBody CardMessageRequest request) {
         NotificationSendResult result = notificationService.sendCard(request);
+        return Result.success(result);
+    }
+
+    /**
+     * 发送轻量图文链接通知（自适应转译为钉钉 Link、企微 News 单图文与飞书 Interactive 卡片）
+     */
+    @PostMapping("/link")
+    public Result<NotificationSendResult> sendLink(@Valid @RequestBody LinkMessageRequest request) {
+        NotificationSendResult result = notificationService.sendLink(request);
         return Result.success(result);
     }
 

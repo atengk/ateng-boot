@@ -125,6 +125,11 @@ public class MqttClientProperties {
     @NestedConfigurationProperty
     private MqttSslProperties ssl = new MqttSslProperties();
 
+    /**
+     * MQTT 5.0 主题别名最大数量上限（0 表示禁用，建议蜂窝物联场景按需配置，如 100）
+     */
+    private int topicAliasMaximum = 0;
+
     public String getServerUri() {
         return serverUri;
     }
@@ -299,6 +304,14 @@ public class MqttClientProperties {
 
     public void setResponseTopicPrefix(String responseTopicPrefix) {
         this.responseTopicPrefix = responseTopicPrefix;
+    }
+
+    public int getTopicAliasMaximum() {
+        return topicAliasMaximum;
+    }
+
+    public void setTopicAliasMaximum(int topicAliasMaximum) {
+        this.topicAliasMaximum = topicAliasMaximum;
     }
 
     /**

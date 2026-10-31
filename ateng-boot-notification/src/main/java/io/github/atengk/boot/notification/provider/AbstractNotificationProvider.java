@@ -76,10 +76,32 @@ public abstract class AbstractNotificationProvider implements NotificationProvid
                     "协同平台网络连接或读取超时 [target=" + maskedUrl + "]: " + ex.getMessage(), ex);
         } catch (Throwable ex) {
             String maskedUrl = NotificationDesensitizeUtil.maskWebhook(channel.getWebhook());
+            if (isNetworkException(ex)) {
+                throw new NotificationSendException(channel.getName(), channel.getPlatform().name(), null,
+                        NotificationResultCode.NOTIFICATION_CONNECT_TIMEOUT,
+                        "协同平台网络连接或通讯异常 [target=" + maskedUrl + "]: " + ex.getMessage(), ex);
+            }
             throw new NotificationSendException(channel.getName(), channel.getPlatform().name(), null,
                     NotificationResultCode.NOTIFICATION_SEND_ERROR,
                     "协同平台推送未知异常 [target=" + maskedUrl + "]: " + ex.getMessage(), ex);
         }
+    }
+
+    private boolean isNetworkException(Throwable ex) {
+        Throwable current = ex;
+        while (current != null) {
+            if (current instanceof java.net.SocketException
+                    || current instanceof java.net.SocketTimeoutException
+                    || current instanceof java.net.ConnectException
+                    || current instanceof java.net.UnknownHostException
+                    || current instanceof java.io.EOFException
+                    || current instanceof org.springframework.web.client.ResourceAccessException
+                    || current instanceof java.util.concurrent.TimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /**

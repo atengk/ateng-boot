@@ -60,9 +60,17 @@ public enum CardColor {
     YELLOW("yellow", "#FADB14", "warning"),
 
     /**
-     * 沃森蓝（深蓝）
+     * 浅天蓝（飞书官方标准 Header Template 颜色标识符 wathet）
      */
-    WATSON("watson", "#2F54EB", "info");
+    WATHET("wathet", "#2F54EB", "info"),
+
+    /**
+     * 沃森蓝（历史遗留拼写，已过时，请使用官方标准色 {@link #WATHET}）
+     *
+     * @deprecated 请使用 {@link #WATHET}，底层映射已纠正为官方标准色 "wathet"
+     */
+    @Deprecated(since = "1.2.0")
+    WATSON("wathet", "#2F54EB", "info");
 
     /**
      * 飞书交互卡片 Header Template 官方颜色标识符
