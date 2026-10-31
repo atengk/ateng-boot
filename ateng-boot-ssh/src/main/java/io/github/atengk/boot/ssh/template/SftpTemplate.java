@@ -28,6 +28,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -50,7 +52,8 @@ import java.util.function.Consumer;
  * 3. 严格践行原子上传铁律（.uploading.tmp 写入 + 原子覆盖 rename），配合 catch 异常补偿主动删除临时文件碎片；<br>
  * 4. 强力防范路径穿越提权（Path Traversal），上传多级嵌套路径自动递归创建父目录 (mkdir -p)；<br>
  * 5. 全面提供流式上传下载、传输进度实时监听 (SftpProgressListener)、深度优先非空目录递归删除 (deleteRecursively)、
- * 目录树整包双向同步 (uploadDirectory / downloadDirectory)、文件元数据 (SftpFileInfo)、目录项检索 (list) 与 POSIX 权限 chmod 治理。
+ * 目录树整包双向同步 (uploadDirectory / downloadDirectory)、文件元数据 (SftpFileInfo)、目录项检索 (list) 与 POSIX 权限 chmod 治理；<br>
+ * 6. 对称补齐增量追加写 (append)、远程重命名与跨目录移动 (rename/move)、快捷纯文本直读直写 (readString/writeString)。
  * </p>
  *
  * @author Ateng
@@ -260,6 +263,90 @@ public class SftpTemplate {
     }
 
     // ==========================================
+    // 1.1 增量追加写契约 (append)
+    // ==========================================
+
+    /**
+     * 向远程文件末尾追加输入流数据（走当前上下文/缺省路由）
+     * <p>
+     * 遵循 POSIX {@code O_CREAT | O_APPEND} 标准语义；若远程文件不存在，则自动递归创建缺失的父级目录并新建文件写入。
+     * </p>
+     *
+     * @param remotePath  远程目标文件路径
+     * @param inputStream 本地输入流
+     */
+    public void append(String remotePath, InputStream inputStream) {
+        append((SshServerInfo) null, remotePath, inputStream);
+    }
+
+    /**
+     * 向远程文件末尾追加字节数组数据（走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @param data       数据字节数组
+     */
+    public void append(String remotePath, byte[] data) {
+        append((SshServerInfo) null, remotePath, data);
+    }
+
+    /**
+     * 在指定具名服务器节点上向远程文件末尾追加输入流数据
+     *
+     * @param serverName  节点名称
+     * @param remotePath  远程目标文件路径
+     * @param inputStream 本地输入流
+     */
+    public void append(String serverName, String remotePath, InputStream inputStream) {
+        append(resolveServerInfo(serverName), remotePath, inputStream);
+    }
+
+    /**
+     * 在指定具名服务器节点上向远程文件末尾追加字节数组数据
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param data       数据字节数组
+     */
+    public void append(String serverName, String remotePath, byte[] data) {
+        append(resolveServerInfo(serverName), remotePath, data);
+    }
+
+    /**
+     * 在指定目标描述符服务器上向远程文件末尾追加字节数组数据
+     *
+     * @param serverInfo 动态目标描述符
+     * @param remotePath 远程目标文件路径
+     * @param data       数据字节数组
+     */
+    public void append(SshServerInfo serverInfo, String remotePath, byte[] data) {
+        Assert.notNull(data, "byte[] data must not be null");
+        append(serverInfo, remotePath, new ByteArrayInputStream(data));
+    }
+
+    /**
+     * 在指定目标描述符服务器上向远程文件末尾追加输入流数据
+     *
+     * @param serverInfo  动态目标描述符
+     * @param remotePath  远程目标文件路径
+     * @param inputStream 本地输入流
+     */
+    public void append(SshServerInfo serverInfo, String remotePath, InputStream inputStream) {
+        Assert.notNull(inputStream, "InputStream must not be null");
+        String normalizedPath = normalizeRemotePath(remotePath);
+        SshServerInfo target = resolveServerInfo(serverInfo);
+
+        sessionPool.execute(target, session -> {
+            try (SftpClient sftp = createSftpClient(session)) {
+                ensureParentDirectoryExists(sftp, normalizedPath);
+                doAppendStream(sftp, normalizedPath, inputStream);
+                return null;
+            } catch (Exception e) {
+                throw translateException(e, normalizedPath);
+            }
+        });
+    }
+
+    // ==========================================
     // 2. 流式文件下载契约 (download)
     // ==========================================
 
@@ -437,6 +524,148 @@ public class SftpTemplate {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         download(serverInfo, remotePath, baos, null);
         return baos.toByteArray();
+    }
+
+    // ==========================================
+    // 2.1 文本读写契约 (readString, writeString)
+    // ==========================================
+
+    /**
+     * 读取远程文本文件全部内容（缺省 UTF-8 编码，走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @return 文本内容
+     */
+    public String readString(String remotePath) {
+        return readString(remotePath, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 读取远程文本文件全部内容（指定字符编码，走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @param charset    字符集编码（为 null 则缺省 UTF-8）
+     * @return 文本内容
+     */
+    public String readString(String remotePath, Charset charset) {
+        return readString((SshServerInfo) null, remotePath, charset);
+    }
+
+    /**
+     * 在指定具名服务器节点上读取远程文本文件全部内容（缺省 UTF-8 编码）
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @return 文本内容
+     */
+    public String readString(String serverName, String remotePath) {
+        return readString(serverName, remotePath, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 在指定具名服务器节点上读取远程文本文件全部内容（指定字符编码）
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param charset    字符集编码
+     * @return 文本内容
+     */
+    public String readString(String serverName, String remotePath, Charset charset) {
+        return readString(resolveServerInfo(serverName), remotePath, charset);
+    }
+
+    /**
+     * 在指定目标描述符服务器上读取远程文本文件全部内容（缺省 UTF-8 编码）
+     *
+     * @param serverInfo 动态目标描述符
+     * @param remotePath 远程目标文件路径
+     * @return 文本内容
+     */
+    public String readString(SshServerInfo serverInfo, String remotePath) {
+        return readString(serverInfo, remotePath, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 在指定目标描述符服务器上读取远程文本文件全部内容（指定字符编码）
+     *
+     * @param serverInfo 动态目标描述符
+     * @param remotePath 远程目标文件路径
+     * @param charset    字符集编码（为 null 则缺省 UTF-8）
+     * @return 文本内容
+     */
+    public String readString(SshServerInfo serverInfo, String remotePath, Charset charset) {
+        byte[] bytes = downloadToBytes(serverInfo, remotePath);
+        Charset effectiveCharset = (charset != null) ? charset : StandardCharsets.UTF_8;
+        return new String(bytes, effectiveCharset);
+    }
+
+    /**
+     * 写入字符串文本内容至远程文件（缺省覆盖模式，缺省 UTF-8 编码，走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容（严禁为 null）
+     */
+    public void writeString(String remotePath, String content) {
+        writeString(remotePath, content, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 写入字符串文本内容至远程文件（指定字符编码，走当前上下文/缺省路由）
+     *
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容（严禁为 null）
+     * @param charset    字符集编码（为 null 则缺省 UTF-8）
+     */
+    public void writeString(String remotePath, String content, Charset charset) {
+        writeString((SshServerInfo) null, remotePath, content, charset);
+    }
+
+    /**
+     * 在指定具名服务器节点上写入字符串文本内容至远程文件（缺省 UTF-8 编码）
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容
+     */
+    public void writeString(String serverName, String remotePath, String content) {
+        writeString(serverName, remotePath, content, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 在指定具名服务器节点上写入字符串文本内容至远程文件（指定字符编码）
+     *
+     * @param serverName 节点名称
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容
+     * @param charset    字符集编码
+     */
+    public void writeString(String serverName, String remotePath, String content, Charset charset) {
+        writeString(resolveServerInfo(serverName), remotePath, content, charset);
+    }
+
+    /**
+     * 在指定目标描述符服务器上写入字符串文本内容至远程文件（缺省 UTF-8 编码）
+     *
+     * @param serverInfo 动态目标描述符
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容
+     */
+    public void writeString(SshServerInfo serverInfo, String remotePath, String content) {
+        writeString(serverInfo, remotePath, content, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 在指定目标描述符服务器上写入字符串文本内容至远程文件（指定字符编码）
+     *
+     * @param serverInfo 动态目标描述符
+     * @param remotePath 远程目标文件路径
+     * @param content    文本内容
+     * @param charset    字符集编码
+     */
+    public void writeString(SshServerInfo serverInfo, String remotePath, String content, Charset charset) {
+        Assert.notNull(content, "Content string must not be null");
+        Charset effectiveCharset = (charset != null) ? charset : StandardCharsets.UTF_8;
+        upload(serverInfo, remotePath, content.getBytes(effectiveCharset));
     }
 
     // ==========================================
@@ -721,6 +950,107 @@ public class SftpTemplate {
     }
 
     // ==========================================
+    // 3.1 文件移动与重命名契约 (rename, move)
+    // ==========================================
+
+    /**
+     * 重命名远程文件或目录（走当前上下文/缺省路由）
+     *
+     * @param oldPath 原始路径
+     * @param newPath 新路径
+     */
+    public void rename(String oldPath, String newPath) {
+        rename((SshServerInfo) null, oldPath, newPath);
+    }
+
+    /**
+     * 在指定具名服务器节点上重命名远程文件或目录
+     *
+     * @param serverName 节点名称
+     * @param oldPath    原始路径
+     * @param newPath    新路径
+     */
+    public void rename(String serverName, String oldPath, String newPath) {
+        rename(resolveServerInfo(serverName), oldPath, newPath);
+    }
+
+    /**
+     * 在指定目标描述符服务器上重命名远程文件或目录
+     *
+     * @param serverInfo 动态目标描述符
+     * @param oldPath    原始路径
+     * @param newPath    新路径
+     */
+    public void rename(SshServerInfo serverInfo, String oldPath, String newPath) {
+        move(serverInfo, oldPath, newPath);
+    }
+
+    /**
+     * 移动远程文件或目录至目标路径（支持跨目录移动且自动创建目标父级目录，走当前上下文/缺省路由）
+     *
+     * @param sourcePath 原始源路径
+     * @param targetPath 目标路径（可为新文件路径或目标目录路径）
+     */
+    public void move(String sourcePath, String targetPath) {
+        move((SshServerInfo) null, sourcePath, targetPath);
+    }
+
+    /**
+     * 在指定具名服务器节点上移动远程文件或目录
+     *
+     * @param serverName 节点名称
+     * @param sourcePath 原始源路径
+     * @param targetPath 目标路径
+     */
+    public void move(String serverName, String sourcePath, String targetPath) {
+        move(resolveServerInfo(serverName), sourcePath, targetPath);
+    }
+
+    /**
+     * 在指定目标描述符服务器上移动远程文件或目录
+     *
+     * @param serverInfo 动态目标描述符
+     * @param sourcePath 原始源路径
+     * @param targetPath 目标路径
+     */
+    public void move(SshServerInfo serverInfo, String sourcePath, String targetPath) {
+        Assert.hasText(sourcePath, "Source path must not be null or blank");
+        Assert.hasText(targetPath, "Target path must not be null or blank");
+        String normalizedSource = cleanAndValidatePath(sourcePath);
+        String normalizedTarget = cleanAndValidatePath(targetPath);
+        SshServerInfo target = resolveServerInfo(serverInfo);
+
+        sessionPool.execute(target, session -> {
+            try (SftpClient sftp = createSftpClient(session)) {
+                String destination = normalizedTarget;
+                boolean isDir = targetPath.endsWith("/") || targetPath.endsWith("\\");
+                if (!isDir) {
+                    try {
+                        SftpClient.Attributes attrs = sftp.stat(normalizedTarget);
+                        if (attrs.isDirectory()) {
+                            isDir = true;
+                        }
+                    } catch (Exception ignore) {
+                        // 目标尚不存在
+                    }
+                }
+                if (isDir) {
+                    String cleanSource = normalizedSource.endsWith("/")
+                            ? normalizedSource.substring(0, normalizedSource.length() - 1)
+                            : normalizedSource;
+                    String filename = cleanSource.substring(cleanSource.lastIndexOf('/') + 1);
+                    destination = destination.endsWith("/") ? destination + filename : destination + "/" + filename;
+                }
+                ensureParentDirectoryExists(sftp, destination);
+                sftp.rename(normalizedSource, destination, SftpClient.CopyMode.Overwrite);
+                return null;
+            } catch (Exception e) {
+                throw translateException(e, normalizedSource + " -> " + normalizedTarget);
+            }
+        });
+    }
+
+    // ==========================================
     // 4. 目录树整包双向同步契约 (uploadDirectory / downloadDirectory)
     // ==========================================
 
@@ -914,6 +1244,13 @@ public class SftpTemplate {
         }
     }
 
+    private void doAppendStream(SftpClient sftp, String remotePath, InputStream in) throws IOException {
+        try (OutputStream out = sftp.write(remotePath, SftpClient.OpenMode.Write, SftpClient.OpenMode.Create, SftpClient.OpenMode.Append)) {
+            copyStream(in, out, null, -1L);
+            out.flush();
+        }
+    }
+
     private void copyStream(InputStream in, OutputStream out, SftpProgressListener listener, long totalBytes) throws IOException {
         int bufferSize = (int) properties.getSftp().getBufferSize().toBytes();
         if (bufferSize <= 0) {
@@ -1100,6 +1437,16 @@ public class SftpTemplate {
                 }
             }
         }
+    }
+
+    /**
+     * 规范化并清洗远程文件路径，严防路径穿越攻击 (Path Traversal)
+     *
+     * @param remotePath 原始路径
+     * @return 经过净化后的路径
+     */
+    public static String cleanAndValidatePath(String remotePath) {
+        return normalizeRemotePath(remotePath);
     }
 
     /**
