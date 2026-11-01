@@ -54,6 +54,14 @@ public interface StateMachineBuilder<S, E, C> {
     ChoiceTransitionBuilder.From<S, E, C> choiceTransition();
 
     /**
+     * 声明状态节点生命周期装配入口 (Entry / Exit)
+     *
+     * @param state 目标业务状态节点
+     * @return 状态生命周期构建器
+     */
+    StateLifecycleBuilder<S, E, C> state(S state);
+
+    /**
      * 挂载状态机切面拦截器
      *
      * @param interceptor 拦截器

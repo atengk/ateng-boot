@@ -2,6 +2,7 @@ package io.github.atengk.boot.statemachine.core;
 
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.StateLifecycle;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.springframework.util.ClassUtils;
 
@@ -30,10 +31,12 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap;
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors;
     private final Map<S, Set<E>> idempotentTargets;
+    private final Map<S, StateLifecycle<S, E, C>> stateLifecycleMap;
 
     public DefaultStateMachine(String machineId,
                                Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
-                               List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors) {
+                               List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors,
+                               Map<S, StateLifecycle<S, E, C>> stateLifecycleMap) {
         if (machineId == null || machineId.trim().isEmpty()) {
             throw new IllegalArgumentException("machineId must not be blank");
         }
@@ -80,10 +83,27 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             immutableIdempMap.put(entry.getKey(), Collections.unmodifiableSet(entry.getValue()));
         }
         this.idempotentTargets = Collections.unmodifiableMap(immutableIdempMap);
+        this.stateLifecycleMap = stateLifecycleMap != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(stateLifecycleMap))
+                : Collections.emptyMap();
+    }
+
+    public DefaultStateMachine(String machineId,
+                               Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
+                               List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors) {
+        this(machineId, transitionMap, interceptors, Collections.emptyMap());
     }
 
     public DefaultStateMachine(String machineId, Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap) {
-        this(machineId, transitionMap, Collections.emptyList());
+        this(machineId, transitionMap, Collections.emptyList(), Collections.emptyMap());
+    }
+
+    public Map<S, StateLifecycle<S, E, C>> getStateLifecycleMap() {
+        return stateLifecycleMap;
+    }
+
+    public StateLifecycle<S, E, C> getStateLifecycle(S state) {
+        return stateLifecycleMap.get(state);
     }
 
     public List<StateMachineInterceptor<? super S, ? super E, ? super C>> getInterceptors() {
@@ -175,6 +195,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 );
             }
 
+            boolean isInternal = matched.getType() == TransitionType.INTERNAL
+                    || (matched.getType() == TransitionType.CHOICE && Objects.equals(sourceState, targetState));
+
+            if (!isInternal) {
+                executeExitActions(sourceState, targetState, event, context);
+            }
+
             // 有序执行动作链
             for (Action<S, E, C> action : matched.getActions()) {
                 try {
@@ -189,6 +216,10 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                             ex
                     );
                 }
+            }
+
+            if (!isInternal) {
+                executeEntryActions(sourceState, targetState, event, context);
             }
 
             // 调度事务提交后动作（若处于 Spring 事务中则注册 afterCommit，否则就地同步执行）
@@ -358,6 +389,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             }
         }
         if (matched != null) {
+            boolean isInternal = matched.getType() == TransitionType.INTERNAL
+                    || (matched.getType() == TransitionType.CHOICE && Objects.equals(sourceState, targetState));
+
+            if (!isInternal) {
+                executeExitActions(sourceState, targetState, event, context);
+            }
+
             for (Action<S, E, C> action : matched.getActions()) {
                 try {
                     action.execute(sourceState, targetState, event, context);
@@ -372,6 +410,11 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     );
                 }
             }
+
+            if (!isInternal) {
+                executeEntryActions(sourceState, targetState, event, context);
+            }
+
             // 调度事务提交后动作
             schedulePostCommitActions(matched.getPostCommitActions(), sourceState, targetState, event, context);
         }
@@ -476,6 +519,30 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             );
         }
 
+        boolean isInternal = matched.getType() == TransitionType.INTERNAL
+                || (matched.getType() == TransitionType.CHOICE && Objects.equals(sourceState, targetState));
+
+        if (!isInternal) {
+            try {
+                executeExitActions(sourceState, targetState, event, context);
+            } catch (StateMachineException smEx) {
+                notifyInterceptorsException(sourceState, event, context, smEx);
+                return TransitionResult.failure(sourceState, event, smEx.getMessage(), smEx.getCause());
+            } catch (Exception ex) {
+                StateMachineException smEx = new StateMachineException(
+                        StateMachineResultCode.STATE_LIFECYCLE_FAILED,
+                        sourceState,
+                        targetState,
+                        event,
+                        String.format("状态机 [%s] 退出状态 [%s] 生命周期动作执行失败 [target=%s, event=%s]: %s",
+                                machineId, sourceState, targetState, event, ex.getMessage()),
+                        ex
+                );
+                notifyInterceptorsException(sourceState, event, context, smEx);
+                return TransitionResult.failure(sourceState, event, smEx.getMessage(), ex);
+            }
+        }
+
         for (Action<S, E, C> action : matched.getActions()) {
             try {
                 action.execute(sourceState, targetState, event, context);
@@ -495,6 +562,27 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                         String.format("状态机 [%s] 跃迁动作执行失败 [%s -> %s on %s]: %s", machineId, sourceState, targetState, event, ex.getMessage()),
                         ex
                 );
+            }
+        }
+
+        if (!isInternal) {
+            try {
+                executeEntryActions(sourceState, targetState, event, context);
+            } catch (StateMachineException smEx) {
+                notifyInterceptorsException(sourceState, event, context, smEx);
+                return TransitionResult.failure(sourceState, event, smEx.getMessage(), smEx.getCause());
+            } catch (Exception ex) {
+                StateMachineException smEx = new StateMachineException(
+                        StateMachineResultCode.STATE_LIFECYCLE_FAILED,
+                        sourceState,
+                        targetState,
+                        event,
+                        String.format("状态机 [%s] 进入状态 [%s] 生命周期动作执行失败 [source=%s, event=%s]: %s",
+                                machineId, targetState, sourceState, event, ex.getMessage()),
+                        ex
+                );
+                notifyInterceptorsException(sourceState, event, context, smEx);
+                return TransitionResult.failure(sourceState, event, smEx.getMessage(), ex);
             }
         }
 
@@ -571,6 +659,50 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 log.error("状态机 [{}] 事务提交后动作 (postCommitAction) 执行异常 [{} -> {} on {}]: {}",
                         machineId, sourceState, targetState, event, ex.getMessage(), ex);
                 notifyInterceptorsException(sourceState, event, context, ex);
+            }
+        }
+    }
+
+    private void executeExitActions(S sourceState, S targetState, E event, C context) {
+        StateLifecycle<S, E, C> lifecycle = stateLifecycleMap.get(sourceState);
+        if (lifecycle == null || !lifecycle.hasExitActions()) {
+            return;
+        }
+        for (Action<S, E, C> action : lifecycle.getExitActions()) {
+            try {
+                action.execute(sourceState, targetState, event, context);
+            } catch (Exception ex) {
+                throw new StateMachineException(
+                        StateMachineResultCode.STATE_LIFECYCLE_FAILED,
+                        sourceState,
+                        targetState,
+                        event,
+                        String.format("状态机 [%s] 退出状态 [%s] 生命周期动作执行失败 [target=%s, event=%s]: %s",
+                                machineId, sourceState, targetState, event, ex.getMessage()),
+                        ex
+                );
+            }
+        }
+    }
+
+    private void executeEntryActions(S sourceState, S targetState, E event, C context) {
+        StateLifecycle<S, E, C> lifecycle = stateLifecycleMap.get(targetState);
+        if (lifecycle == null || !lifecycle.hasEntryActions()) {
+            return;
+        }
+        for (Action<S, E, C> action : lifecycle.getEntryActions()) {
+            try {
+                action.execute(sourceState, targetState, event, context);
+            } catch (Exception ex) {
+                throw new StateMachineException(
+                        StateMachineResultCode.STATE_LIFECYCLE_FAILED,
+                        sourceState,
+                        targetState,
+                        event,
+                        String.format("状态机 [%s] 进入状态 [%s] 生命周期动作执行失败 [source=%s, event=%s]: %s",
+                                machineId, targetState, sourceState, event, ex.getMessage()),
+                        ex
+                );
             }
         }
     }

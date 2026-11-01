@@ -1,6 +1,7 @@
 package io.github.atengk.boot.statemachine.builder;
 
 import io.github.atengk.boot.statemachine.core.*;
+import io.github.atengk.boot.statemachine.model.StateLifecycle;
 
 import java.util.*;
 
@@ -16,6 +17,7 @@ import java.util.*;
 public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<S, E, C> {
 
     private final List<TransitionHolder<S, E, C>> transitionHolders = new ArrayList<>();
+    private final Map<S, StateLifecycleHolder<S, E, C>> stateLifecycleHolders = new LinkedHashMap<>();
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors = new ArrayList<>();
     private boolean defaultIdempotent = false;
 
@@ -62,6 +64,14 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     }
 
     @Override
+    public StateLifecycleBuilder<S, E, C> state(S state) {
+        if (state == null) {
+            throw new IllegalArgumentException("state must not be null");
+        }
+        return stateLifecycleHolders.computeIfAbsent(state, k -> new StateLifecycleHolder<>(this, state));
+    }
+
+    @Override
     public StateMachine<S, E, C> build(String machineId) {
         if (machineId == null || machineId.trim().isEmpty()) {
             throw new IllegalArgumentException("machineId must not be blank");
@@ -85,7 +95,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             }
         }
 
-        return new DefaultStateMachine<>(machineId, transitionMap, interceptors);
+        Map<S, StateLifecycle<S, E, C>> stateLifecycleMap = new LinkedHashMap<>();
+        for (Map.Entry<S, StateLifecycleHolder<S, E, C>> entry : stateLifecycleHolders.entrySet()) {
+            stateLifecycleMap.put(entry.getKey(), entry.getValue().buildStateLifecycle());
+        }
+
+        return new DefaultStateMachine<>(machineId, transitionMap, interceptors, stateLifecycleMap);
     }
 
     private interface TransitionHolder<S, E, C> {
@@ -452,6 +467,45 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
                 throw new IllegalStateException("Incomplete choice transition configuration: sourceState, event, at least one branch, and defaultTargetState must all be set");
             }
             return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions, postCommitActions, idempotent));
+        }
+    }
+
+    private static class StateLifecycleHolder<S, E, C> implements StateLifecycleBuilder<S, E, C> {
+        private final StateMachineBuilder<S, E, C> builder;
+        private final S state;
+        private final List<Action<S, E, C>> entryActions = new ArrayList<>();
+        private final List<Action<S, E, C>> exitActions = new ArrayList<>();
+
+        public StateLifecycleHolder(StateMachineBuilder<S, E, C> builder, S state) {
+            this.builder = builder;
+            this.state = state;
+        }
+
+        @Override
+        public StateLifecycleBuilder<S, E, C> onEntry(Action<S, E, C> action) {
+            if (action == null) {
+                throw new IllegalArgumentException("Entry action must not be null");
+            }
+            this.entryActions.add(action);
+            return this;
+        }
+
+        @Override
+        public StateLifecycleBuilder<S, E, C> onExit(Action<S, E, C> action) {
+            if (action == null) {
+                throw new IllegalArgumentException("Exit action must not be null");
+            }
+            this.exitActions.add(action);
+            return this;
+        }
+
+        @Override
+        public StateMachineBuilder<S, E, C> and() {
+            return builder;
+        }
+
+        public StateLifecycle<S, E, C> buildStateLifecycle() {
+            return new StateLifecycle<>(state, entryActions, exitActions);
         }
     }
 }
