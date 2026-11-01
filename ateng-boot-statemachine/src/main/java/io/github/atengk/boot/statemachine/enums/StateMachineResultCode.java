@@ -47,7 +47,12 @@ public enum StateMachineResultCode implements IResultCode {
     /**
      * 状态生命周期动作执行失败
      */
-    STATE_LIFECYCLE_FAILED(59007, "状态生命周期动作执行失败");
+    STATE_LIFECYCLE_FAILED(59007, "状态生命周期动作执行失败"),
+
+    /**
+     * 大批量状态跃迁执行中断失败
+     */
+    BATCH_TRANSITION_FAILED(59008, "大批量状态跃迁执行中断失败");
 
     private final Integer code;
     private final String msg;

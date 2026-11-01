@@ -1,10 +1,16 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.util.BatchSliceUtil;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
+import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.BatchOptions;
+import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 
-import java.util.Set;
+import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -60,6 +66,155 @@ public interface StateMachine<S, E, C> {
         S targetState = fireEvent(currentState, event, context);
         setter.accept(entity, targetState);
         return targetState;
+    }
+
+    /**
+     * 大批量切片状态流转门面
+     * <p>原生复用 Core 模块 BatchSliceUtil 进行分批切片，按批次执行状态流转</p>
+     * <p>支持 Fail-Safe（记录失败持续推进）与 Fail-Fast（遭遇首个异常立即熔断中断）</p>
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param context  业务上下文
+     * @param options  分批配置选项
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            BatchOptions options
+    ) {
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        if (event == null) {
+            throw new IllegalArgumentException("Event must not be null");
+        }
+        BatchOptions opts = options != null ? options : BatchOptions.defaults();
+        if (CollectionUtil.isEmpty(entities)) {
+            return BatchTransitionResult.empty();
+        }
+
+        List<List<T>> slices = BatchSliceUtil.slice(entities, opts.getBatchSize());
+        List<T> successEntities = new ArrayList<>(entities.size());
+        Map<T, StateMachineException> failures = new LinkedHashMap<>();
+
+        for (List<T> slice : slices) {
+            for (T entity : slice) {
+                if (entity == null) {
+                    continue;
+                }
+                S sourceState = getter.apply(entity);
+                try {
+                    S targetState = fireEvent(sourceState, event, context);
+                    setter.accept(entity, targetState);
+                    successEntities.add(entity);
+                } catch (StateMachineException smEx) {
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                sourceState,
+                                smEx.getTargetState(),
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        getMachineId(), entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                } catch (Exception ex) {
+                    StateMachineException smEx = new StateMachineException(
+                            StateMachineResultCode.ACTION_EXECUTION_FAILED,
+                            sourceState,
+                            event,
+                            String.format("状态机 [%s] 实体批量跃迁异常 [entity=%s]: %s",
+                                    getMachineId(), entity, ex.getMessage()),
+                            ex
+                    );
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                sourceState,
+                                null,
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        getMachineId(), entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                }
+            }
+        }
+
+        return BatchTransitionResult.of(entities.size(), successEntities, failures);
+    }
+
+    /**
+     * 大批量切片状态流转门面（默认分批配置：批次 200，Fail-Safe 模式）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param context  业务上下文
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context
+    ) {
+        return fireEventBatch(entities, getter, setter, event, context, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片状态流转门面（免上下文重载）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event
+    ) {
+        return fireEventBatch(entities, getter, setter, event, (C) null, BatchOptions.defaults());
+    }
+
+    /**
+     * 大批量切片状态流转门面（带分批配置免上下文重载）
+     *
+     * @param entities 实体集合
+     * @param getter   源状态提取函数
+     * @param setter   新状态回写消费器
+     * @param event    触发事件
+     * @param options  分批配置选项
+     * @param <T>      实体类型
+     * @return 批量流转聚合结果
+     */
+    default <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            BatchOptions options
+    ) {
+        return fireEventBatch(entities, getter, setter, event, (C) null, options);
     }
 
     /**

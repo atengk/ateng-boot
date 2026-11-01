@@ -1,7 +1,11 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.util.BatchSliceUtil;
+import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.BatchOptions;
+import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.StateLifecycle;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.springframework.util.ClassUtils;
@@ -9,6 +13,8 @@ import org.springframework.util.ClassUtils;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 /**
  * 默认纯内存高性能无状态业务状态机实现
@@ -233,6 +239,81 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             notifyInterceptorsException(sourceState, event, context, ex);
             throw ex;
         }
+    }
+
+    @Override
+    public <T> BatchTransitionResult<S, T> fireEventBatch(
+            List<T> entities,
+            Function<T, S> getter,
+            BiConsumer<T, S> setter,
+            E event,
+            C context,
+            BatchOptions options
+    ) {
+        if (getter == null || setter == null) {
+            throw new IllegalArgumentException("Getter and setter must not be null");
+        }
+        if (event == null) {
+            throw new IllegalArgumentException("Event must not be null");
+        }
+        BatchOptions opts = options != null ? options : BatchOptions.defaults();
+        if (CollectionUtil.isEmpty(entities)) {
+            return BatchTransitionResult.empty();
+        }
+
+        List<List<T>> slices = BatchSliceUtil.slice(entities, opts.getBatchSize());
+        List<T> successEntities = new ArrayList<>(entities.size());
+        Map<T, StateMachineException> failures = new LinkedHashMap<>();
+
+        for (List<T> slice : slices) {
+            for (T entity : slice) {
+                if (entity == null) {
+                    continue;
+                }
+                S sourceState = getter.apply(entity);
+                try {
+                    S targetState = fireEvent(sourceState, event, context);
+                    setter.accept(entity, targetState);
+                    successEntities.add(entity);
+                } catch (StateMachineException smEx) {
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                sourceState,
+                                smEx.getTargetState(),
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        machineId, entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                } catch (Exception ex) {
+                    StateMachineException smEx = new StateMachineException(
+                            StateMachineResultCode.ACTION_EXECUTION_FAILED,
+                            sourceState,
+                            event,
+                            String.format("状态机 [%s] 实体批量跃迁异常 [entity=%s]: %s",
+                                    machineId, entity, ex.getMessage()),
+                            ex
+                    );
+                    if (opts.isFailFast()) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.BATCH_TRANSITION_FAILED,
+                                sourceState,
+                                null,
+                                event,
+                                String.format("状态机 [%s] 大批量流转触发 Fail-Fast 熔断中断 [entity=%s]: %s",
+                                        machineId, entity, smEx.getMessage()),
+                                smEx
+                        );
+                    }
+                    failures.put(entity, smEx);
+                }
+            }
+        }
+
+        return BatchTransitionResult.of(entities.size(), successEntities, failures);
     }
 
     @Override
