@@ -23,12 +23,6 @@
             <artifactId>ateng-boot-encrypt</artifactId>
         </dependency>
 
-        <!-- Web 运行时增强 Starter (Result 强类型契约、异常转译、Trace MDC) -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
-        </dependency>
-
         <!-- Spring Boot Actuator (端点运行时物理脱敏自验) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
