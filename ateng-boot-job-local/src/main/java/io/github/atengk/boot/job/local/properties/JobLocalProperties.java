@@ -75,6 +75,12 @@ public class JobLocalProperties {
     private ClusterLockProperties clusterLock = new ClusterLockProperties();
 
     /**
+     * Micrometer 监控指标度量配置
+     */
+    @NestedConfigurationProperty
+    private MetricsProperties metrics = new MetricsProperties();
+
+    /**
      * Actuator 端点嵌套配置类
      */
     @Getter
@@ -160,5 +166,18 @@ public class JobLocalProperties {
          * 默认互斥锁防死锁租约超时时长（默认 5m，当任务未显式指定或指定 0 时生效）
          */
         private Duration defaultLeaseTime = Duration.ofMinutes(5);
+    }
+
+    /**
+     * Micrometer 监控指标度量配置类
+     */
+    @Getter
+    @Setter
+    public static class MetricsProperties {
+
+        /**
+         * 是否启用 Micrometer 监控指标采集与度量导出（默认 true，当类路径存在 MeterRegistry 时生效）
+         */
+        private boolean enabled = true;
     }
 }

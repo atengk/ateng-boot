@@ -62,6 +62,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- 可选依赖：Micrometer Core (用于云原生监控度量指标与 Prometheus/Grafana 导出) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- 可选依赖：协同通知组件 (用于任务失败与超时群告警桥接) -->
         <dependency>
             <groupId>io.github.atengk</groupId>

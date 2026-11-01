@@ -11,6 +11,8 @@ import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.RedisJobClusterLockProvider;
+import io.github.atengk.boot.job.local.metrics.LocalJobMetricsBinder;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
@@ -306,6 +308,22 @@ public class AtengJobLocalAutoConfiguration {
         public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler,
                                                            ObjectProvider<AntiStormJobAlertAggregator> antiStormAggregatorProvider) {
             return new LocalJobAlertListener(jobAlertHandler, antiStormAggregatorProvider.getIfAvailable());
+        }
+    }
+
+    /**
+     * Micrometer 云原生监控指标度量导出自动装配（当类路径存在 MeterRegistry 且 metrics.enabled=true 时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.metrics", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class LocalJobMetricsAutoConfiguration {
+
+        @Bean
+        @ConditionalOnBean(MeterRegistry.class)
+        @ConditionalOnMissingBean
+        public LocalJobMetricsBinder localJobMetricsBinder(LocalJobRegistry localJobRegistry, MeterRegistry meterRegistry) {
+            return new LocalJobMetricsBinder(localJobRegistry, meterRegistry);
         }
     }
 }

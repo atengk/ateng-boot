@@ -181,6 +181,15 @@ public class ScheduledJobTask implements Runnable {
     }
 
     /**
+     * 获取当前任务正在并发执行的活跃 Worker 实例数
+     *
+     * @return 活跃并发数
+     */
+    public int getActiveCount() {
+        return activeExecutions.get();
+    }
+
+    /**
      * 触发定时周期执行
      */
     @Override

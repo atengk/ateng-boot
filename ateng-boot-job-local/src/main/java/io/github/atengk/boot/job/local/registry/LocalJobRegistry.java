@@ -443,6 +443,19 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     }
 
     /**
+     * 获取全局所有本地任务正在运行中的活跃并发执行总数
+     *
+     * @return 活跃并发执行总数
+     */
+    public int getActiveExecutionCount() {
+        int count = 0;
+        for (ScheduledJobTask task : taskMap.values()) {
+            count += task.getActiveCount();
+        }
+        return count;
+    }
+
+    /**
      * 获取单个任务信息视图
      *
      * @param jobName 任务名称
