@@ -43,16 +43,28 @@ public class InPlaceRewriter {
     public static final String DEFAULT_SENSITIVE_KEY_PATTERN = ".*password.*|.*secret.*|.*token.*|.*private-key.*";
 
     /**
-     * 显式标记正则匹配模式：匹配 # @encrypt, # @encrypt[keyId], # @encrypt(ALGO), # @encrypt[keyId](ALGO)
+     * 显式标记正则匹配模式：匹配 # @encrypt, ! @encrypt, [#!] @encrypt[keyId], [#!] @encrypt(ALGO), [#!] @encrypt[keyId](ALGO)
      */
     private static final Pattern ENCRYPT_DIRECTIVE_PATTERN = Pattern.compile(
-            "#\\s*@encrypt(?:\\[([^\\]]+)\\])?(?:\\(([^\\)]+)\\))?", Pattern.CASE_INSENSITIVE);
+            "[#!]\\s*@encrypt(?:\\[([^\\]]+)\\])?(?:\\(([^\\)]+)\\))?", Pattern.CASE_INSENSITIVE);
 
     /**
-     * YAML 键值行基础正则：提取前导缩进、键名、分隔符、值以及行尾注释
+     * 带引号值的 YAML / Properties 键值行正则：提取前导缩进、键名、分隔符、带引号值以及行尾注释
      */
-    private static final Pattern YAML_LINE_PATTERN = Pattern.compile(
-            "^(\\s*)([a-zA-Z0-9_.-]+)(\\s*:\\s*)([^#\\r\\n]+?)?(\\s*#.*)?$");
+    private static final Pattern QUOTED_LINE_PATTERN = Pattern.compile(
+            "^(\\s*)([a-zA-Z0-9_.\\[\\]-]+)(\\s*[:=]\\s*)(\"[^\"]*\"|'[^']*')(\\s*[#!].*)?$");
+
+    /**
+     * 标准无引号 YAML / Properties 键值行正则：提取前导缩进、键名、分隔符、无引号值以及行尾注释
+     */
+    private static final Pattern STANDARD_LINE_PATTERN = Pattern.compile(
+            "^(\\s*)([a-zA-Z0-9_.\\[\\]-]+)(\\s*[:=]\\s*)([^#!\\r\\n]+?)?(\\s*[#!].*)?$");
+
+    /**
+     * 动态占位符正则：匹配 ${...} 环境变量与 #{...} SpEL 表达式
+     */
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile(
+            "(\\$\\{[^\\r\\n]*?\\}|#\\{[^\\r\\n]*?\\})");
 
     private final MultiKeyRegistry keyRegistry;
     private final EncryptAlgorithm defaultAlgorithm;
@@ -110,8 +122,16 @@ public class InPlaceRewriter {
         for (String line : lines) {
             String trimmed = line.trim();
 
-            // 处理独立一行的指令注释，如 "# @encrypt[key1]"
-            if (trimmed.startsWith("#")) {
+            // 1. 处理 YAML 多文档分隔符 "---" 或 "..."
+            if (trimmed.equals("---") || trimmed.startsWith("--- ") || trimmed.startsWith("---#")
+                    || trimmed.equals("...") || trimmed.startsWith("... ") || trimmed.startsWith("...#")) {
+                previousDirective = null;
+                rewrittenLines.add(line);
+                continue;
+            }
+
+            // 2. 处理独立一行的指令注释或全行注释（以 # 或 ! 开头）
+            if (trimmed.startsWith("#") || trimmed.startsWith("!")) {
                 Matcher directiveMatcher = ENCRYPT_DIRECTIVE_PATTERN.matcher(trimmed);
                 if (directiveMatcher.find()) {
                     previousDirective = new Directive(directiveMatcher.group(1), directiveMatcher.group(2));
@@ -120,8 +140,21 @@ public class InPlaceRewriter {
                 continue;
             }
 
-            Matcher matcher = YAML_LINE_PATTERN.matcher(line);
-            if (matcher.matches()) {
+            // 3. 空白行直接保留
+            if (trimmed.isEmpty()) {
+                rewrittenLines.add(line);
+                previousDirective = null;
+                continue;
+            }
+
+            // 4. 解析 YAML / Properties 键值行
+            Matcher matcher = QUOTED_LINE_PATTERN.matcher(line);
+            boolean isQuoted = matcher.matches();
+            if (!isQuoted) {
+                matcher = STANDARD_LINE_PATTERN.matcher(line);
+            }
+
+            if (isQuoted || matcher.matches()) {
                 String indent = matcher.group(1);
                 String key = matcher.group(2);
                 String separator = matcher.group(3);
@@ -144,7 +177,7 @@ public class InPlaceRewriter {
                     continue;
                 }
 
-                // 检查行尾是否存在显式指令
+                // 检查行尾是否存在显式指令（支持 # 或 ! 开头的注释）
                 Directive inlineDirective = null;
                 if (!comment.isEmpty()) {
                     Matcher inlineMatcher = ENCRYPT_DIRECTIVE_PATTERN.matcher(comment);
@@ -154,8 +187,18 @@ public class InPlaceRewriter {
                 }
 
                 Directive effectiveDirective = (inlineDirective != null) ? inlineDirective : previousDirective;
-                boolean shouldEncrypt = (effectiveDirective != null)
-                        || (autoDetectSensitiveKeys && sensitivePattern.matcher(key).matches());
+                boolean hasPlaceholder = isPlaceholder(cleanValue);
+                boolean isBlockScalar = isYamlBlockScalarIndicator(cleanValue);
+
+                boolean shouldEncrypt;
+                if (effectiveDirective != null) {
+                    shouldEncrypt = !isBlockScalar;
+                } else if (hasPlaceholder || isBlockScalar) {
+                    // 占位符绝对免疫与多行块标量保护：检测到 ${...}、#{...} 或 |/> 标量头时，无显式指令严格豁免就地加密
+                    shouldEncrypt = false;
+                } else {
+                    shouldEncrypt = autoDetectSensitiveKeys && sensitivePattern.matcher(key).matches();
+                }
 
                 if (shouldEncrypt) {
                     String plainValue = unquote(cleanValue);
@@ -172,7 +215,7 @@ public class InPlaceRewriter {
                     String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
                     String encToken = buildEncToken(keyId, algorithm, ciphertext);
 
-                    // 保持前导缩进、冒号后空格、行尾注释完全一致
+                    // 保持前导缩进、键名、原始分隔符、行尾注释完全一致
                     String reconstructed = indent + key + separator + encToken + comment;
                     rewrittenLines.add(reconstructed);
                     encryptedCount++;
@@ -291,6 +334,36 @@ public class InPlaceRewriter {
             return str.substring(1, str.length() - 1);
         }
         return str;
+    }
+
+    /**
+     * 判断值是否包含 ${...} 环境变量占位符或 #{...} SpEL 表达式
+     *
+     * @param value 原始文本值
+     * @return 若包含占位符返回 true
+     */
+    public static boolean isPlaceholder(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String unquoted = unquote(value.trim());
+        return PLACEHOLDER_PATTERN.matcher(unquoted).find();
+    }
+
+    /**
+     * 判断值是否为 YAML 多行块标量符号（如 |、>、|-、|+ 等）
+     *
+     * @param value 原始文本值
+     * @return 若为多行块标量指示符返回 true
+     */
+    public static boolean isYamlBlockScalarIndicator(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.equals("|") || trimmed.equals(">")
+                || trimmed.equals("|-") || trimmed.equals("|+")
+                || trimmed.equals(">-") || trimmed.equals(">+");
     }
 
     private EncryptAlgorithm resolveAlgorithm(String algoCode) {
