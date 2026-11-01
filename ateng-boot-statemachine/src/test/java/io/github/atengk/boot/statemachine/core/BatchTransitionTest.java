@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -285,5 +286,41 @@ class BatchTransitionTest {
         assertThat(result.hasFailures()).isTrue();
         assertThat(result.getFailureEntities()).containsExactly(o2);
         assertThat(result.toString()).contains("totalCount=2", "successCount=1", "failureCount=1");
+    }
+
+    @Test
+    @DisplayName("测试批量流转入参含 null 元素时前置安全过滤与计数精确性")
+    void testBatchTransitionWithNullEntities() {
+        AtomicInteger counter = new AtomicInteger();
+        StateMachine<OrderState, OrderEvent, Void> machine = createOrderStateMachine(counter);
+
+        Order o1 = new Order(1, OrderState.WAIT_PAY);
+        Order o2 = new Order(2, OrderState.WAIT_PAY);
+        List<Order> listWithNull = Arrays.asList(o1, null, o2);
+
+        BatchTransitionResult<OrderState, Order> result = machine.fireEventBatch(
+                listWithNull,
+                Order::getState,
+                Order::setState,
+                OrderEvent.PAY
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(2);
+        assertThat(result.getSuccessCount()).isEqualTo(2);
+        assertThat(result.getFailureCount()).isEqualTo(0);
+        assertThat(result.isAllSuccess()).isTrue();
+        assertThat(result.getSuccessEntities()).containsExactly(o1, o2);
+
+        // 全 null 列表测试
+        List<Order> allNullList = Arrays.asList(null, null);
+        BatchTransitionResult<OrderState, Order> emptyResult = machine.fireEventBatch(
+                allNullList,
+                Order::getState,
+                Order::setState,
+                OrderEvent.PAY
+        );
+        assertThat(emptyResult.getTotalCount()).isEqualTo(0);
+        assertThat(emptyResult.hasFailures()).isFalse();
+        assertThat(emptyResult.isAllSuccess()).isFalse();
     }
 }

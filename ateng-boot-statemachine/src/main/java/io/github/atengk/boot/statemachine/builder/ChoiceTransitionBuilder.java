@@ -126,12 +126,22 @@ public interface ChoiceTransitionBuilder<S, E, C> {
         }
 
         /**
+         * 声明当前 Choice 跃迁终态幂等放行策略模型
+         *
+         * @param strategy 幂等策略
+         * @return 当前阶段
+         */
+        PerformOrEnd<S, E, C> idempotent(io.github.atengk.boot.statemachine.enums.IdempotentStrategy strategy);
+
+        /**
          * 声明当前 Choice 跃迁各分支目标状态具备终态幂等放行能力
          *
          * @param idempotent 是否开启幂等放行
          * @return 当前阶段
          */
-        PerformOrEnd<S, E, C> idempotent(boolean idempotent);
+        default PerformOrEnd<S, E, C> idempotent(boolean idempotent) {
+            return idempotent(idempotent ? io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT : io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+        }
 
         /**
          * 声明当前 Choice 跃迁开启终态幂等放行能力

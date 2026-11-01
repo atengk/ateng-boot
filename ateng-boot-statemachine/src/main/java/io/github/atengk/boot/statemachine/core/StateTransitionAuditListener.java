@@ -21,4 +21,15 @@ public interface StateTransitionAuditListener<S, E, C> {
      * @param event 结构化状态跃迁审计事件对象
      */
     void onTransitionCompleted(TransitionAuditEvent<S, E, C> event);
+
+    /**
+     * 判断当前审计监听器是否支持指定的状态机标识
+     * <p>默认返回 true，表示监听所有状态机实例；业务方可按需重写以实现针对特定状态机的定向审计与类型隔离</p>
+     *
+     * @param machineId 状态机唯一标识
+     * @return true 代表支持
+     */
+    default boolean supports(String machineId) {
+        return true;
+    }
 }

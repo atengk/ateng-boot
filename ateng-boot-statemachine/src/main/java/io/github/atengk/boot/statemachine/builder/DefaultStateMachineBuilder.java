@@ -1,6 +1,7 @@
 package io.github.atengk.boot.statemachine.builder;
 
 import io.github.atengk.boot.statemachine.core.*;
+import io.github.atengk.boot.statemachine.enums.IdempotentStrategy;
 import io.github.atengk.boot.statemachine.model.StateLifecycle;
 
 import java.util.*;
@@ -23,8 +24,8 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     private boolean defaultIdempotent = false;
 
     @Override
-    public StateMachineBuilder<S, E, C> idempotent(boolean idempotent) {
-        this.defaultIdempotent = idempotent;
+    public StateMachineBuilder<S, E, C> idempotentStrategy(IdempotentStrategy strategy) {
+        this.defaultIdempotent = (strategy == IdempotentStrategy.ACCEPT);
         return this;
     }
 
@@ -130,6 +131,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             this.idempotent = idempotent;
         }
 
+        protected void setIdempotent(IdempotentStrategy strategy) {
+            this.idempotent = (strategy == IdempotentStrategy.ACCEPT);
+        }
+
         protected void addCondition(Condition<C> condition) {
             if (condition != null) {
                 this.conditions.add(condition);
@@ -209,6 +214,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
+            return this;
+        }
+
+        @Override
         public ExternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
             setIdempotent(idempotent);
             return this;
@@ -268,6 +279,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         @Override
         public InternalTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
             addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
             return this;
         }
 
@@ -362,6 +379,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         @Override
         public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
             addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
             return this;
         }
 
@@ -461,6 +484,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         @Override
         public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> performAfterCommit(Action<S, E, C> action) {
             addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> idempotent(IdempotentStrategy strategy) {
+            setIdempotent(strategy);
             return this;
         }
 

@@ -19,20 +19,26 @@ public class TransitionAuditEvent<S, E, C> {
     private final E event;
     private final C context;
     private final String traceId;
+    private final String operator;
     private final Duration elapsed;
     private final boolean success;
     private final Throwable cause;
 
-    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, Duration elapsed, boolean success, Throwable cause) {
+    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, String operator, Duration elapsed, boolean success, Throwable cause) {
         this.machineId = machineId;
         this.fromState = fromState;
         this.toState = toState;
         this.event = event;
         this.context = context;
         this.traceId = traceId;
+        this.operator = operator;
         this.elapsed = elapsed != null ? elapsed : Duration.ZERO;
         this.success = success;
         this.cause = cause;
+    }
+
+    public TransitionAuditEvent(String machineId, S fromState, S toState, E event, C context, String traceId, Duration elapsed, boolean success, Throwable cause) {
+        this(machineId, fromState, toState, event, context, traceId, null, elapsed, success, cause);
     }
 
     public static <S, E, C> Builder<S, E, C> builder() {
@@ -63,6 +69,10 @@ public class TransitionAuditEvent<S, E, C> {
         return traceId;
     }
 
+    public String getOperator() {
+        return operator;
+    }
+
     public Duration getElapsed() {
         return elapsed;
     }
@@ -83,6 +93,7 @@ public class TransitionAuditEvent<S, E, C> {
                 ", toState=" + toState +
                 ", event=" + event +
                 ", traceId='" + traceId + '\'' +
+                ", operator='" + operator + '\'' +
                 ", elapsed=" + elapsed.toMillis() + "ms" +
                 ", success=" + success +
                 ", cause=" + (cause != null ? cause.getMessage() : "null") +
@@ -96,6 +107,7 @@ public class TransitionAuditEvent<S, E, C> {
         private E event;
         private C context;
         private String traceId;
+        private String operator;
         private Duration elapsed;
         private boolean success;
         private Throwable cause;
@@ -130,6 +142,11 @@ public class TransitionAuditEvent<S, E, C> {
             return this;
         }
 
+        public Builder<S, E, C> operator(String operator) {
+            this.operator = operator;
+            return this;
+        }
+
         public Builder<S, E, C> elapsed(Duration elapsed) {
             this.elapsed = elapsed;
             return this;
@@ -146,7 +163,7 @@ public class TransitionAuditEvent<S, E, C> {
         }
 
         public TransitionAuditEvent<S, E, C> build() {
-            return new TransitionAuditEvent<>(machineId, fromState, toState, event, context, traceId, elapsed, success, cause);
+            return new TransitionAuditEvent<>(machineId, fromState, toState, event, context, traceId, operator, elapsed, success, cause);
         }
     }
 }

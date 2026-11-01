@@ -13,6 +13,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -59,6 +60,18 @@ public class StateMachineInitializer implements SmartInitializingSingleton, Appl
         Map<String, StateMachine> stateMachineBeans = applicationContext.getBeansOfType(StateMachine.class);
         Set<String> seenIds = new HashSet<>();
 
+        // 统一解析受管审计监听器（合并构造器参数与 Spring 容器定义，杜绝循环内重复扫描）
+        List<StateTransitionAuditListener<?, ?, ?>> combinedAuditListeners = new ArrayList<>();
+        if (this.auditListeners != null) {
+            combinedAuditListeners.addAll(this.auditListeners);
+        }
+        Map<String, StateTransitionAuditListener> ctxAuditListeners = applicationContext.getBeansOfType(StateTransitionAuditListener.class);
+        for (StateTransitionAuditListener listener : ctxAuditListeners.values()) {
+            if (!combinedAuditListeners.contains(listener)) {
+                combinedAuditListeners.add(listener);
+            }
+        }
+
         for (StateMachine machine : stateMachineBeans.values()) {
             String machineId = machine.getMachineId();
             if (!seenIds.add(machineId)) {
@@ -68,21 +81,15 @@ public class StateMachineInitializer implements SmartInitializingSingleton, Appl
                 );
             }
 
-            // 1. 若为 DefaultStateMachine，注入受管切面拦截器与轨迹审计监听器
-            if (machine instanceof DefaultStateMachine defaultStateMachine) {
-                if (interceptors != null) {
-                    for (StateMachineInterceptor interceptor : interceptors) {
-                        defaultStateMachine.addInterceptor(interceptor);
-                    }
+            // 1. 注入受管切面拦截器与轨迹审计监听器（受 supports(machineId) 隔离守护，杜绝泛型污染）
+            if (interceptors != null) {
+                for (StateMachineInterceptor interceptor : interceptors) {
+                    machine.addInterceptor(interceptor);
                 }
-                if (auditListeners != null) {
-                    for (StateTransitionAuditListener auditListener : auditListeners) {
-                        defaultStateMachine.addAuditListener(auditListener);
-                    }
-                }
-                Map<String, StateTransitionAuditListener> ctxAuditListeners = applicationContext.getBeansOfType(StateTransitionAuditListener.class);
-                for (StateTransitionAuditListener listener : ctxAuditListeners.values()) {
-                    defaultStateMachine.addAuditListener(listener);
+            }
+            for (StateTransitionAuditListener auditListener : combinedAuditListeners) {
+                if (auditListener != null && auditListener.supports(machineId)) {
+                    machine.addAuditListener(auditListener);
                 }
             }
 

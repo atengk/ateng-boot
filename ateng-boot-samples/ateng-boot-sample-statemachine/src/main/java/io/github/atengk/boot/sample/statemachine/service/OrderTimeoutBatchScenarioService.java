@@ -6,6 +6,8 @@ import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
 import io.github.atengk.boot.statemachine.core.StateMachine;
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
+import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.BatchOptions;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import org.slf4j.Logger;
@@ -67,17 +69,31 @@ public class OrderTimeoutBatchScenarioService {
         BatchTransitionResult<OrderState, OrderDO> result = orderStateMachine.fireEventBatch(
                 orders,
                 OrderDO::getStatus,
-                OrderDO::setStatus,
+                (order, targetState) -> {
+                    OrderState currentSource = order.getStatus();
+                    int updated = orderMapper.updateStatusWithCas(
+                            order.getId(),
+                            currentSource.name(),
+                            targetState.name(),
+                            order.getVersion()
+                    );
+                    if (updated == 0) {
+                        throw new StateMachineException(
+                                StateMachineResultCode.CONCURRENT_CAS_CONFLICT,
+                                currentSource,
+                                targetState,
+                                OrderEvent.CANCEL,
+                                String.format("批量关单 CAS 冲突，更新失败 [orderId=%d, source=%s, version=%d]",
+                                        order.getId(), currentSource, order.getVersion())
+                        );
+                    }
+                    order.setStatus(targetState);
+                    order.setVersion(order.getVersion() + 1);
+                },
                 OrderEvent.CANCEL,
                 context,
                 options
         );
-
-        // 持久化成功批量流转的订单状态
-        for (OrderDO order : result.getSuccessEntities()) {
-            orderMapper.updateStatusWithCas(order.getId(), OrderState.WAIT_PAY.name(), OrderState.CLOSED.name(), order.getVersion());
-            order.setVersion(order.getVersion() + 1);
-        }
 
         log.info("[BatchCancel] 批量关单执行完成: 总数={}, 成功={}, 失败={}",
                 result.getTotalCount(), result.getSuccessCount(), result.getFailureCount());

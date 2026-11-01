@@ -3,6 +3,7 @@ package io.github.atengk.boot.statemachine.core;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 状态机跃迁路由规则实体
@@ -79,6 +80,18 @@ public class Transition<S, E, C> {
 
     public boolean isIdempotent() {
         return idempotent;
+    }
+
+    /**
+     * 获取当前跃迁可能涉及的所有目标状态候选集合（多态收敛，消除下转型）
+     *
+     * @return 可能的目标状态集合
+     */
+    public Set<S> getPossibleTargetStates() {
+        if (type == TransitionType.INTERNAL) {
+            return Collections.singleton(sourceState);
+        }
+        return targetState != null ? Collections.singleton(targetState) : Collections.emptySet();
     }
 
     /**

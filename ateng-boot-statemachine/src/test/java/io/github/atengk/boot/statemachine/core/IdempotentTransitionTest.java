@@ -252,4 +252,37 @@ class IdempotentTransitionTest {
 
         assertThat(eventsList).containsExactly("BEFORE:PAID", "AFTER:PAID->PAID");
     }
+
+    @Test
+    @DisplayName("测试显式 IdempotentStrategy 策略模型（ACCEPT 与 NONE 对照）")
+    void testIdempotentStrategyModel() {
+        StateMachineBuilder<OrderState, OrderEvent, String> builder = StateMachineBuilderFactory.create();
+        builder.idempotentStrategy(io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT);
+
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY);
+
+        builder.externalTransition()
+                .from(OrderState.PAID)
+                .to(OrderState.CLOSED)
+                .on(OrderEvent.CANCEL)
+                .idempotent(io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+
+        StateMachine<OrderState, OrderEvent, String> machine = builder.build("STRATEGY_ENUM_MACHINE");
+
+        // 默认 ACCEPT 策略生效
+        assertThat(machine.canFire(OrderState.PAID, OrderEvent.PAY)).isTrue();
+        assertThat(machine.fireEvent(OrderState.PAID, OrderEvent.PAY, "TEST")).isEqualTo(OrderState.PAID);
+
+        // 显式 NONE 策略生效：抛出 TRANSITION_NOT_FOUND
+        assertThat(machine.canFire(OrderState.CLOSED, OrderEvent.CANCEL)).isFalse();
+        assertThatThrownBy(() -> machine.fireEvent(OrderState.CLOSED, OrderEvent.CANCEL, "TEST"))
+                .isInstanceOf(StateMachineException.class)
+                .satisfies(ex -> {
+                    StateMachineException smEx = (StateMachineException) ex;
+                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode());
+                });
+    }
 }

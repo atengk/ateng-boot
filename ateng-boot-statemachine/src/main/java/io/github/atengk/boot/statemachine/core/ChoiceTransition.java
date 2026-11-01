@@ -2,7 +2,9 @@ package io.github.atengk.boot.statemachine.core;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Choice 动态条件分支路由跃迁规则实体
@@ -50,6 +52,18 @@ public class ChoiceTransition<S, E, C> extends Transition<S, E, C> {
 
     public S getDefaultTargetState() {
         return defaultTargetState;
+    }
+
+    @Override
+    public Set<S> getPossibleTargetStates() {
+        Set<S> targets = new LinkedHashSet<>();
+        for (ChoiceBranch<S, C> branch : branches) {
+            targets.add(branch.getTargetState());
+        }
+        if (defaultTargetState != null) {
+            targets.add(defaultTargetState);
+        }
+        return Collections.unmodifiableSet(targets);
     }
 
     @Override

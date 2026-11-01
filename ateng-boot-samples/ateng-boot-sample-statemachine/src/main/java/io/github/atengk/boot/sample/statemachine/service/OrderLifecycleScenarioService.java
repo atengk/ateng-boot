@@ -8,6 +8,7 @@ import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
+import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.slf4j.Logger;
@@ -32,11 +33,14 @@ public class OrderLifecycleScenarioService {
 
     private final OrderMapper orderMapper;
     private final StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
+    private final CasUpdater<OrderDO, OrderState> orderCasUpdater;
 
     public OrderLifecycleScenarioService(OrderMapper orderMapper,
                                          StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine) {
         this.orderMapper = orderMapper;
         this.orderStateMachine = orderStateMachine;
+        this.orderCasUpdater = (ent, from, to) ->
+                orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion());
     }
 
     /**
@@ -101,7 +105,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.PAY,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -136,7 +140,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.RISK_AUDIT,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -171,7 +175,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.SHIP,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -237,7 +241,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.CONFIRM_DELIVERY,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -267,7 +271,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.FINISH,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -299,7 +303,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.CANCEL,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);
@@ -331,7 +335,7 @@ public class OrderLifecycleScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.APPLY_REFUND,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         order.setVersion(order.getVersion() + 1);

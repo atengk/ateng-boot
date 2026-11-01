@@ -114,6 +114,29 @@ public class OrderProbeScenarioService {
     }
 
     /**
+     * 校验并推演状态跃迁可行性与目标状态（verifyTransition 显式契约门面）
+     *
+     * @param orderId 订单 ID
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @return 结构化预检结果
+     */
+    public TransitionResult<OrderState> verifyTransition(Long orderId, OrderEvent event, OrderContext context) {
+        return previewNextState(orderId, event, context);
+    }
+
+    /**
+     * 校验并推演状态跃迁可行性与目标状态（免上下文重载）
+     *
+     * @param orderId 订单 ID
+     * @param event   触发事件
+     * @return 结构化预检结果
+     */
+    public TransitionResult<OrderState> verifyTransition(Long orderId, OrderEvent event) {
+        return verifyTransition(orderId, event, null);
+    }
+
+    /**
      * 获取当前订单状态下所有允许触发的事件列表
      *
      * @param orderId 订单 ID

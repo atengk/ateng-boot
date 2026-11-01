@@ -18,6 +18,7 @@ import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.TransitionAuditEvent;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -72,6 +73,12 @@ class OrderLifecycleIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        machineConfig.clearRecords();
+        auditLogger.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
         machineConfig.clearRecords();
         auditLogger.clear();
     }
@@ -258,11 +265,16 @@ class OrderLifecycleIntegrationTest {
         assertThat(probeService.canCancel(id)).isTrue();
         assertThat(probeService.canShip(id, "SF123")).isFalse(); // 待支付不能发货
 
-        // 2. 预测下一状态
+        // 2. 预测下一状态与显式 verifyTransition 契约验证
         OrderContext payCtx = OrderContext.builder().orderId(id).amount(order.getAmount()).build();
         TransitionResult<OrderState> previewResult = probeService.previewNextState(id, OrderEvent.PAY, payCtx);
         assertThat(previewResult.isAccepted()).isTrue();
         assertThat(previewResult.getTargetState()).isEqualTo(OrderState.PAID);
+
+        TransitionResult<OrderState> verifyResult = probeService.verifyTransition(id, OrderEvent.PAY, payCtx);
+        assertThat(verifyResult.isAccepted()).isTrue();
+        assertThat(verifyResult.getTargetState()).isEqualTo(OrderState.PAID);
+        assertThat(verifyResult.getSourceState()).isEqualTo(OrderState.WAIT_PAY);
 
         // 3. 获取可用事件列表
         List<OrderEvent> availableEvents = probeService.getAvailableEvents(id, payCtx);
@@ -372,6 +384,35 @@ class OrderLifecycleIntegrationTest {
 
         // 验证数据库中 25 笔订单状态均已变更为 CLOSED
         List<OrderDO> closedOrders = orderMapper.selectBatchIds(orderIds);
+        assertThat(closedOrders).allMatch(o -> o.getStatus() == OrderState.CLOSED);
+    }
+
+    @Test
+    @DisplayName("场景四：多源混合状态订单 (WAIT_PAY / PAID / WAIT_DELIVER) 批量取消与精准 CAS 更新")
+    void testBatchCancelMultiFromStatusOrders() {
+        // 创建 3 笔不同状态的前置订单
+        OrderDO o1 = lifecycleService.createOrder("ORD-MULTI-1-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.TEN);
+        OrderDO o2 = lifecycleService.createOrder("ORD-MULTI-2-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.TEN);
+        OrderDO o3 = lifecycleService.createOrder("ORD-MULTI-3-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.TEN);
+
+        // o1: 处于 WAIT_PAY
+        // o2: 流转至 PAID
+        lifecycleService.pay(o2.getId());
+        // o3: 流转至 WAIT_DELIVER
+        lifecycleService.pay(o3.getId());
+        lifecycleService.auditRisk(o3.getId(), 10, false);
+
+        List<Long> batchIds = List.of(o1.getId(), o2.getId(), o3.getId());
+        BatchTransitionResult<OrderState, OrderDO> batchResult = batchScenarioService.batchCancelExpiredOrders(
+                batchIds, "多源混合状态批量关单", 5);
+
+        assertThat(batchResult.getTotalCount()).isEqualTo(3);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(3);
+        assertThat(batchResult.isAllSuccess()).isTrue();
+
+        // 验证数据库中 3 笔订单无论原状态是什么，均原子 CAS 更新为 CLOSED
+        List<OrderDO> closedOrders = orderMapper.selectBatchIds(batchIds);
+        assertThat(closedOrders).hasSize(3);
         assertThat(closedOrders).allMatch(o -> o.getStatus() == OrderState.CLOSED);
     }
 

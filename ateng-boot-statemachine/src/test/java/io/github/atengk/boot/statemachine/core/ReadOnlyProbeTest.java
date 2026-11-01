@@ -286,4 +286,36 @@ class ReadOnlyProbeTest {
         assertThat(machine.getAvailableEvents(null, OrderEntity::getState)).isEmpty();
         assertThat(machine.getAvailableEvents(order, null)).isEmpty();
     }
+
+    @Test
+    @DisplayName("测试多候选分支下 Guard 异常容错与 canFire/verifyTransition 一致性")
+    void testMultipleCandidatesGuardExceptionConsistency() {
+        StateMachineBuilder<State, Event, OrderContext> builder = StateMachineBuilderFactory.create();
+        // 候选 1：Guard 抛出异常
+        builder.externalTransition()
+                .from(State.WAIT_PAY)
+                .to(State.DELIVERING)
+                .on(Event.PAY)
+                .when(ctx -> {
+                    throw new RuntimeException("Candidate 1 failed with error");
+                });
+
+        // 候选 2：合法满足条件跃迁至 PAID
+        builder.externalTransition()
+                .from(State.WAIT_PAY)
+                .to(State.PAID)
+                .on(Event.PAY)
+                .when(ctx -> ctx != null && ctx.getAmount() > 0);
+
+        StateMachine<State, Event, OrderContext> machine = builder.build("MULTI_CANDIDATE_GUARD_CONSISTENCY");
+
+        OrderContext validContext = new OrderContext(100, false, false);
+
+        // 断言二者在候选 1 异常时均能平滑容错并由候选 2 成功匹配
+        assertThat(machine.canFire(State.WAIT_PAY, Event.PAY, validContext)).isTrue();
+
+        TransitionResult<State> probe = machine.verifyTransition(State.WAIT_PAY, Event.PAY, validContext);
+        assertThat(probe.isAccepted()).isTrue();
+        assertThat(probe.getTargetState()).isEqualTo(State.PAID);
+    }
 }

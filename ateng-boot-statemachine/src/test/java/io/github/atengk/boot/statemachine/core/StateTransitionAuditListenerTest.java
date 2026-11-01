@@ -1,5 +1,6 @@
 package io.github.atengk.boot.statemachine.core;
 
+import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilder;
 import io.github.atengk.boot.statemachine.builder.StateMachineBuilderFactory;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
@@ -36,6 +37,7 @@ class StateTransitionAuditListenerTest {
     @AfterEach
     void tearDown() {
         MDC.clear();
+        UserContextHolder.clear();
     }
 
     @Test
@@ -200,5 +202,107 @@ class StateTransitionAuditListenerTest {
 
         machine.fireEvent(OrderState.WAIT_PAY, OrderEvent.PAY, null);
         assertThat(list).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("测试动态注销审计监听器对称性与空安全")
+    void testDynamicRemoveAuditListener() {
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY);
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("DYNAMIC_REMOVE_AUDIT_MACHINE");
+
+        List<TransitionAuditEvent<OrderState, OrderEvent, Void>> list = new ArrayList<>();
+        StateTransitionAuditListener<OrderState, OrderEvent, Void> listener = list::add;
+
+        machine.addAuditListener(listener);
+        assertThat(machine.getAuditListeners()).hasSize(1);
+
+        assertThat(machine.removeAuditListener(null)).isFalse();
+        boolean removed = machine.removeAuditListener(listener);
+        assertThat(removed).isTrue();
+        assertThat(machine.getAuditListeners()).isEmpty();
+
+        // 再次移除返回 false
+        assertThat(machine.removeAuditListener(listener)).isFalse();
+
+        machine.fireEvent(OrderState.WAIT_PAY, OrderEvent.PAY, null);
+        assertThat(list).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试用户上下文存在时审计事件自动捕获操作人 operator")
+    void testAuditListenerWithOperatorContext() {
+        UserContextHolder.set("operator-admin-888");
+
+        List<TransitionAuditEvent<OrderState, OrderEvent, Void>> capturedEvents = new ArrayList<>();
+        StateTransitionAuditListener<OrderState, OrderEvent, Void> listener = capturedEvents::add;
+
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.auditListener(listener);
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY);
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("AUDIT_OPERATOR_MACHINE");
+        machine.fireEvent(OrderState.WAIT_PAY, OrderEvent.PAY, null);
+
+        assertThat(capturedEvents).hasSize(1);
+        TransitionAuditEvent<OrderState, OrderEvent, Void> event = capturedEvents.get(0);
+        assertThat(event.getOperator()).isEqualTo("operator-admin-888");
+        assertThat(event.isSuccess()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试 Action 执行异常时审计事件依然能保留已解析的预定目标状态 toState")
+    void testAuditListenerFailedTransitionPreservesTargetState() {
+        List<TransitionAuditEvent<OrderState, OrderEvent, Void>> capturedEvents = new ArrayList<>();
+        StateTransitionAuditListener<OrderState, OrderEvent, Void> listener = capturedEvents::add;
+
+        StateMachineBuilder<OrderState, OrderEvent, Void> builder = StateMachineBuilderFactory.create();
+        builder.auditListener(listener);
+        builder.externalTransition()
+                .from(OrderState.WAIT_PAY)
+                .to(OrderState.PAID)
+                .on(OrderEvent.PAY)
+                .perform((from, to, event, ctx) -> {
+                    throw new RuntimeException("扣款下游网关异常熔断");
+                });
+
+        StateMachine<OrderState, OrderEvent, Void> machine = builder.build("AUDIT_TARGET_PRESERVED_MACHINE");
+
+        assertThatThrownBy(() -> machine.fireEvent(OrderState.WAIT_PAY, OrderEvent.PAY, null))
+                .isInstanceOf(StateMachineException.class);
+
+        assertThat(capturedEvents).hasSize(1);
+        TransitionAuditEvent<OrderState, OrderEvent, Void> event = capturedEvents.get(0);
+        assertThat(event.isSuccess()).isFalse();
+        assertThat(event.getFromState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(event.getToState()).isEqualTo(OrderState.PAID);
+        assertThat(event.getCause()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("测试 supports(machineId) 隔离守卫")
+    void testAuditListenerSupportsMachineIdIsolation() {
+        List<TransitionAuditEvent<OrderState, OrderEvent, Void>> capturedEvents = new ArrayList<>();
+        StateTransitionAuditListener<OrderState, OrderEvent, Void> selectiveListener = new StateTransitionAuditListener<>() {
+            @Override
+            public void onTransitionCompleted(TransitionAuditEvent<OrderState, OrderEvent, Void> event) {
+                capturedEvents.add(event);
+            }
+
+            @Override
+            public boolean supports(String machineId) {
+                return "SUPPORTED_MACHINE".equals(machineId);
+            }
+        };
+
+        assertThat(selectiveListener.supports("SUPPORTED_MACHINE")).isTrue();
+        assertThat(selectiveListener.supports("OTHER_MACHINE")).isFalse();
     }
 }

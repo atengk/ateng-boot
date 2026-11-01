@@ -7,6 +7,7 @@ import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
+import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.slf4j.Logger;
@@ -30,11 +31,14 @@ public class PaymentCallbackScenarioService {
 
     private final OrderMapper orderMapper;
     private final StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
+    private final CasUpdater<OrderDO, OrderState> orderCasUpdater;
 
     public PaymentCallbackScenarioService(OrderMapper orderMapper,
                                           StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine) {
         this.orderMapper = orderMapper;
         this.orderStateMachine = orderStateMachine;
+        this.orderCasUpdater = (ent, from, to) ->
+                orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion());
     }
 
     /**
@@ -68,7 +72,7 @@ public class PaymentCallbackScenarioService {
                 OrderDO::setStatus,
                 OrderEvent.PAY,
                 context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
+                this.orderCasUpdater
         );
 
         if (sourceState != targetState) {
@@ -80,6 +84,33 @@ public class PaymentCallbackScenarioService {
         }
 
         return TransitionResult.success(sourceState, targetState, OrderEvent.PAY);
+    }
+
+    /**
+     * 静默模式处理支付回调（异常不抛出，包装为结构化 TransitionResult 返回）
+     *
+     * @param orderId     订单 ID
+     * @param paidAmount  支付实付金额
+     * @param channelTxNo 渠道交易流水号
+     * @return 结构化跃迁结果
+     */
+    public TransitionResult<OrderState> handlePaymentCallbackQuietly(Long orderId, BigDecimal paidAmount, String channelTxNo) {
+        OrderDO order = getOrderOrThrow(orderId);
+        OrderContext context = OrderContext.builder()
+                .orderId(order.getId())
+                .orderSn(order.getOrderSn())
+                .amount(paidAmount != null ? paidAmount : order.getAmount())
+                .operator("PAY_CALLBACK_QUIETLY:" + (channelTxNo != null ? channelTxNo : "UNKNOWN"))
+                .build();
+
+        return orderStateMachine.fireEventWithCasQuietly(
+                order,
+                OrderDO::getStatus,
+                OrderDO::setStatus,
+                OrderEvent.PAY,
+                context,
+                this.orderCasUpdater
+        );
     }
 
     private OrderDO getOrderOrThrow(Long orderId) {

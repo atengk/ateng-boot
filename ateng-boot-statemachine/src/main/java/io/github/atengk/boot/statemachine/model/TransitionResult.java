@@ -1,5 +1,6 @@
 package io.github.atengk.boot.statemachine.model;
 
+import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -65,6 +66,11 @@ public class TransitionResult<S> implements Serializable {
     private final boolean idempotent;
 
     /**
+     * 强类型状态机错误码（失败时有值，成功时为 null）
+     */
+    private final StateMachineResultCode resultCode;
+
+    /**
      * 是否为终态幂等放行
      *
      * @return true 代表为幂等放行
@@ -73,11 +79,24 @@ public class TransitionResult<S> implements Serializable {
         return idempotent;
     }
 
+    /**
+     * 获取强类型状态机错误码
+     *
+     * @return 错误码，成功时为 null
+     */
+    public StateMachineResultCode getResultCode() {
+        return resultCode;
+    }
+
     private TransitionResult(boolean accepted, S sourceState, S targetState, Object event, String failureReason, Throwable cause) {
-        this(accepted, sourceState, targetState, event, failureReason, cause, false);
+        this(accepted, sourceState, targetState, event, failureReason, cause, false, null);
     }
 
     private TransitionResult(boolean accepted, S sourceState, S targetState, Object event, String failureReason, Throwable cause, boolean idempotent) {
+        this(accepted, sourceState, targetState, event, failureReason, cause, idempotent, null);
+    }
+
+    private TransitionResult(boolean accepted, S sourceState, S targetState, Object event, String failureReason, Throwable cause, boolean idempotent, StateMachineResultCode resultCode) {
         this.accepted = accepted;
         this.sourceState = sourceState;
         this.targetState = targetState;
@@ -85,6 +104,7 @@ public class TransitionResult<S> implements Serializable {
         this.failureReason = failureReason;
         this.cause = cause;
         this.idempotent = idempotent;
+        this.resultCode = resultCode;
     }
 
     /**
@@ -97,7 +117,7 @@ public class TransitionResult<S> implements Serializable {
      * @return 成功结果
      */
     public static <S> TransitionResult<S> success(S sourceState, S targetState, Object event) {
-        return new TransitionResult<>(true, sourceState, targetState, event, null, null, false);
+        return new TransitionResult<>(true, sourceState, targetState, event, null, null, false, null);
     }
 
     /**
@@ -109,7 +129,36 @@ public class TransitionResult<S> implements Serializable {
      * @return 幂等成功结果
      */
     public static <S> TransitionResult<S> idempotent(S state, Object event) {
-        return new TransitionResult<>(true, state, state, event, null, null, true);
+        return new TransitionResult<>(true, state, state, event, null, null, true, null);
+    }
+
+    /**
+     * 构建失败跃迁结果（含错误码）
+     *
+     * @param resultCode    错误码
+     * @param sourceState   源状态
+     * @param event         触发事件
+     * @param failureReason 失败原因
+     * @param <S>           状态类型
+     * @return 失败结果
+     */
+    public static <S> TransitionResult<S> failure(StateMachineResultCode resultCode, S sourceState, Object event, String failureReason) {
+        return new TransitionResult<>(false, sourceState, sourceState, event, failureReason, null, false, resultCode);
+    }
+
+    /**
+     * 构建失败跃迁结果（含错误码与异常因果链）
+     *
+     * @param resultCode    错误码
+     * @param sourceState   源状态
+     * @param event         触发事件
+     * @param failureReason 失败原因
+     * @param cause         原始异常
+     * @param <S>           状态类型
+     * @return 失败结果
+     */
+    public static <S> TransitionResult<S> failure(StateMachineResultCode resultCode, S sourceState, Object event, String failureReason, Throwable cause) {
+        return new TransitionResult<>(false, sourceState, sourceState, event, failureReason, cause, false, resultCode);
     }
 
     /**
@@ -122,7 +171,7 @@ public class TransitionResult<S> implements Serializable {
      * @return 失败结果
      */
     public static <S> TransitionResult<S> failure(S sourceState, Object event, String failureReason) {
-        return new TransitionResult<>(false, sourceState, sourceState, event, failureReason, null);
+        return failure(null, sourceState, event, failureReason, null);
     }
 
     /**
@@ -136,6 +185,6 @@ public class TransitionResult<S> implements Serializable {
      * @return 失败结果
      */
     public static <S> TransitionResult<S> failure(S sourceState, Object event, String failureReason, Throwable cause) {
-        return new TransitionResult<>(false, sourceState, sourceState, event, failureReason, cause);
+        return failure(null, sourceState, event, failureReason, cause);
     }
 }

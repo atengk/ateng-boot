@@ -88,12 +88,22 @@ public interface InternalTransitionBuilder<S, E, C> {
         }
 
         /**
+         * 声明当前跃迁终态幂等放行策略模型
+         *
+         * @param strategy 幂等策略
+         * @return 当前构建阶段
+         */
+        WhenOrPerform<S, E, C> idempotent(io.github.atengk.boot.statemachine.enums.IdempotentStrategy strategy);
+
+        /**
          * 声明当前跃迁具备终态幂等放行能力
          *
          * @param idempotent 是否开启幂等放行
          * @return 当前构建阶段
          */
-        WhenOrPerform<S, E, C> idempotent(boolean idempotent);
+        default WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            return idempotent(idempotent ? io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT : io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+        }
 
         /**
          * 声明当前跃迁开启终态幂等放行能力

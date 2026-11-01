@@ -78,12 +78,22 @@ public interface StateMachineBuilder<S, E, C> {
     StateMachineBuilder<S, E, C> auditListener(io.github.atengk.boot.statemachine.core.StateTransitionAuditListener<? super S, ? super E, ? super C> auditListener);
 
     /**
+     * 配置状态机全局默认终态幂等放行策略模型
+     *
+     * @param strategy 幂等策略
+     * @return 当前构建器
+     */
+    StateMachineBuilder<S, E, C> idempotentStrategy(io.github.atengk.boot.statemachine.enums.IdempotentStrategy strategy);
+
+    /**
      * 配置状态机全局默认终态幂等放行策略
      *
      * @param idempotent 是否全局默认开启终态幂等放行
      * @return 当前构建器
      */
-    StateMachineBuilder<S, E, C> idempotent(boolean idempotent);
+    default StateMachineBuilder<S, E, C> idempotent(boolean idempotent) {
+        return idempotentStrategy(idempotent ? io.github.atengk.boot.statemachine.enums.IdempotentStrategy.ACCEPT : io.github.atengk.boot.statemachine.enums.IdempotentStrategy.NONE);
+    }
 
     /**
      * 开启状态机全局默认终态幂等放行策略

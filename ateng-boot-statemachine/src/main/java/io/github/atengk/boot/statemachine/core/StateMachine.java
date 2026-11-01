@@ -101,15 +101,17 @@ public interface StateMachine<S, E, C> {
             return BatchTransitionResult.empty();
         }
 
-        List<List<T>> slices = BatchSliceUtil.slice(entities, opts.getBatchSize());
-        List<T> successEntities = new ArrayList<>(entities.size());
+        List<T> nonNullEntities = entities.stream().filter(Objects::nonNull).toList();
+        if (nonNullEntities.isEmpty()) {
+            return BatchTransitionResult.empty();
+        }
+
+        List<List<T>> slices = BatchSliceUtil.slice(nonNullEntities, opts.getBatchSize());
+        List<T> successEntities = new ArrayList<>(nonNullEntities.size());
         Map<T, StateMachineException> failures = new LinkedHashMap<>();
 
         for (List<T> slice : slices) {
             for (T entity : slice) {
-                if (entity == null) {
-                    continue;
-                }
                 S sourceState = getter.apply(entity);
                 try {
                     S targetState = fireEvent(sourceState, event, context);
@@ -153,7 +155,7 @@ public interface StateMachine<S, E, C> {
             }
         }
 
-        return BatchTransitionResult.of(entities.size(), successEntities, failures);
+        return BatchTransitionResult.of(nonNullEntities.size(), successEntities, failures);
     }
 
     /**
@@ -410,29 +412,6 @@ public interface StateMachine<S, E, C> {
     }
 
     /**
-     * 执行指定源状态、目标状态及事件匹配的动作链（供两阶段流转组件如 CAS 乐观锁防重执行）
-     *
-     * @param sourceState 当前源状态
-     * @param targetState 目标状态
-     * @param event       触发事件
-     * @param context     业务上下文
-     */
-    default void executeActions(S sourceState, S targetState, E event, C context) {
-        // 默认空实现，保证向下兼容
-    }
-
-    /**
-     * 执行指定源状态、目标状态及事件匹配的动作链（免上下文重载）
-     *
-     * @param sourceState 当前源状态
-     * @param targetState 目标状态
-     * @param event       触发事件
-     */
-    default void executeActions(S sourceState, S targetState, E event) {
-        executeActions(sourceState, targetState, event, (C) null);
-    }
-
-    /**
      * 实体状态 CAS 乐观锁防重流转门面（Fail-Fast 模式）
      * <p>按序执行生命周期：试算目标状态与卫语句 -> 执行持久化 CAS 条件更新 -> 校验影响行数 -> 回写实体状态 -> 执行动作链</p>
      * <p>受影响行数为 0 时判定为并发冲突并阻断动作执行</p>
@@ -447,7 +426,22 @@ public interface StateMachine<S, E, C> {
      * @return 跃迁并成功持久化后的目标状态
      */
     default <T> S fireEventWithCas(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
-        return StateMachineCasTemplate.execute(this, entity, getter, setter, event, context, casUpdater);
+        throw new UnsupportedOperationException("CAS-based transition is not supported by this StateMachine implementation");
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重流转门面（免上下文重载）
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 跃迁并成功持久化后的目标状态
+     */
+    default <T> S fireEventWithCas(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, CasUpdater<T, S> casUpdater) {
+        return fireEventWithCas(entity, getter, setter, event, (C) null, casUpdater);
     }
 
     /**
@@ -464,7 +458,22 @@ public interface StateMachine<S, E, C> {
      * @return 结构化跃迁结果
      */
     default <T> TransitionResult<S> fireEventWithCasQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, C context, CasUpdater<T, S> casUpdater) {
-        return StateMachineCasTemplate.executeQuietly(this, entity, getter, setter, event, context, casUpdater);
+        throw new UnsupportedOperationException("CAS-based transition is not supported by this StateMachine implementation");
+    }
+
+    /**
+     * 实体状态 CAS 乐观锁防重安全探测门面（免上下文静默模式重载）
+     *
+     * @param entity     业务实体
+     * @param getter     状态提取函数
+     * @param setter     状态回写消费器
+     * @param event      触发事件
+     * @param casUpdater 数据库 CAS 乐观锁持久化更新函数
+     * @param <T>        业务实体类型
+     * @return 结构化跃迁结果
+     */
+    default <T> TransitionResult<S> fireEventWithCasQuietly(T entity, Function<T, S> getter, BiConsumer<T, S> setter, E event, CasUpdater<T, S> casUpdater) {
+        return fireEventWithCasQuietly(entity, getter, setter, event, (C) null, casUpdater);
     }
 
     /**
@@ -489,4 +498,58 @@ public interface StateMachine<S, E, C> {
      * @return PlantUML 状态机图例定义文本
      */
     String generatePlantUML();
+
+    /**
+     * 注册切面拦截器
+     *
+     * @param interceptor 状态机拦截器
+     */
+    default void addInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
+    }
+
+    /**
+     * 注销切面拦截器
+     *
+     * @param interceptor 状态机拦截器
+     * @return 若注销成功返回 true，否则返回 false
+     */
+    default boolean removeInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
+        return false;
+    }
+
+    /**
+     * 获取已注册的切面拦截器只读视图
+     *
+     * @return 拦截器列表
+     */
+    default List<StateMachineInterceptor<? super S, ? super E, ? super C>> getInterceptors() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * 注册状态跃迁轨迹审计监听器
+     *
+     * @param listener 审计监听器
+     */
+    default void addAuditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> listener) {
+    }
+
+    /**
+     * 注销状态跃迁轨迹审计监听器
+     *
+     * @param listener 审计监听器
+     * @return 若注销成功返回 true，否则返回 false
+     */
+    default boolean removeAuditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> listener) {
+        return false;
+    }
+
+    /**
+     * 获取已注册的状态跃迁轨迹审计监听器只读视图
+     *
+     * @return 审计监听器列表
+     */
+    default List<StateTransitionAuditListener<? super S, ? super E, ? super C>> getAuditListeners() {
+        return Collections.emptyList();
+    }
 }
