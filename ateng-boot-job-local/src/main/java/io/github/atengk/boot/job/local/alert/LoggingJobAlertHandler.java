@@ -18,6 +18,15 @@ public class LoggingJobAlertHandler implements JobAlertHandler {
         if (context == null) {
             return;
         }
+        if (JobAlertContext.ALERT_TYPE_RECOVERY.equalsIgnoreCase(context.getAlertType())) {
+            log.info("[JOB_ALERT_RECOVERY] Local Job [{}] RECOVERED! Trigger: [{}], TraceId: [{}], Duration: [{}ms], Detail: [{}]",
+                    context.getJobName(),
+                    context.getTriggerType(),
+                    context.getTraceId(),
+                    context.getDurationMs(),
+                    context.getErrorMsg());
+            return;
+        }
         log.error("[JOB_ALERT] [{}] Local Job [{}] {}! Trigger: [{}], TraceId: [{}], Duration: [{}ms], Retries: [{}], Error: [{}]",
                 context.getAlertType(),
                 context.getJobName(),

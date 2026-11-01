@@ -97,5 +97,34 @@ public class JobLocalProperties {
          * 协同通知通道名称（可选，缺省由协同通知组件选用默认通道）
          */
         private String channel;
+
+        /**
+         * 三阶防风暴告警聚合器配置
+         */
+        @NestedConfigurationProperty
+        private AntiStormProperties antiStorm = new AntiStormProperties();
+    }
+
+    /**
+     * 三阶防风暴告警聚合配置类
+     */
+    @Getter
+    @Setter
+    public static class AntiStormProperties {
+
+        /**
+         * 是否启用告警防风暴聚合器（默认 true，当 alert.enabled=true 时生效，防止高频失败打爆机器人）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 告警抑制滑动静默窗口时长（默认 5m，静默期间抑制重复告警并累计错误计数）
+         */
+        private Duration silenceWindow = Duration.ofMinutes(5);
+
+        /**
+         * 任务自愈成功后是否发送恢复通知（默认 true）
+         */
+        private boolean recoveryNotice = true;
     }
 }

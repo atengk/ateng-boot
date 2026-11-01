@@ -2,6 +2,7 @@ package io.github.atengk.boot.job.local.config;
 
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
+import io.github.atengk.boot.job.local.alert.AntiStormJobAlertAggregator;
 import io.github.atengk.boot.job.local.alert.JobAlertHandler;
 import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
 import io.github.atengk.boot.job.local.alert.LoggingJobAlertHandler;
@@ -256,8 +257,24 @@ public class AtengJobLocalAutoConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler) {
-            return new LocalJobAlertListener(jobAlertHandler);
+        public AntiStormJobAlertAggregator antiStormJobAlertAggregator(JobAlertHandler jobAlertHandler, JobLocalProperties properties) {
+            JobLocalProperties.AntiStormProperties antiStorm = properties.getAlert() != null ? properties.getAlert().getAntiStorm() : null;
+            if (antiStorm == null) {
+                antiStorm = new JobLocalProperties.AntiStormProperties();
+            }
+            return new AntiStormJobAlertAggregator(
+                    jobAlertHandler,
+                    antiStorm.isEnabled(),
+                    antiStorm.getSilenceWindow(),
+                    antiStorm.isRecoveryNotice()
+            );
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public LocalJobAlertListener localJobAlertListener(JobAlertHandler jobAlertHandler,
+                                                           ObjectProvider<AntiStormJobAlertAggregator> antiStormAggregatorProvider) {
+            return new LocalJobAlertListener(jobAlertHandler, antiStormAggregatorProvider.getIfAvailable());
         }
     }
 }

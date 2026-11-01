@@ -1,11 +1,15 @@
 package io.github.atengk.boot.job.local.alert;
 
+import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.event.JobFailedEvent;
+import io.github.atengk.boot.job.local.event.JobSuccessEvent;
 import io.github.atengk.boot.job.local.event.JobTimeoutEvent;
 import org.springframework.context.event.EventListener;
 
+import java.time.Instant;
+
 /**
- * 任务异常事件告警监听分发器
+ * 任务异常事件与自愈恢复告警监听分发器
  *
  * @author Ateng
  * @since 2026-10-25
@@ -13,9 +17,15 @@ import org.springframework.context.event.EventListener;
 public class LocalJobAlertListener {
 
     private final JobAlertHandler alertHandler;
+    private final AntiStormJobAlertAggregator antiStormAggregator;
 
     public LocalJobAlertListener(JobAlertHandler alertHandler) {
+        this(alertHandler, null);
+    }
+
+    public LocalJobAlertListener(JobAlertHandler alertHandler, AntiStormJobAlertAggregator antiStormAggregator) {
         this.alertHandler = alertHandler;
+        this.antiStormAggregator = antiStormAggregator;
     }
 
     /**
@@ -25,7 +35,7 @@ public class LocalJobAlertListener {
      */
     @EventListener
     public void onJobFailed(JobFailedEvent event) {
-        if (alertHandler == null || event == null) {
+        if (event == null) {
             return;
         }
         JobAlertContext context = buildAlertContext(
@@ -39,7 +49,7 @@ public class LocalJobAlertListener {
                 event.getThrowable(),
                 event.getEventTime()
         );
-        alertHandler.handleAlert(context);
+        dispatchAlert(context);
     }
 
     /**
@@ -49,7 +59,7 @@ public class LocalJobAlertListener {
      */
     @EventListener
     public void onJobTimeout(JobTimeoutEvent event) {
-        if (alertHandler == null || event == null) {
+        if (event == null) {
             return;
         }
         JobAlertContext context = buildAlertContext(
@@ -63,18 +73,46 @@ public class LocalJobAlertListener {
                 null,
                 event.getEventTime()
         );
-        alertHandler.handleAlert(context);
+        dispatchAlert(context);
+    }
+
+    /**
+     * 监听任务执行成功事件（检测并触发故障自愈闭环通知）
+     *
+     * @param event 成功事件
+     */
+    @EventListener
+    public void onJobSuccess(JobSuccessEvent event) {
+        if (event == null) {
+            return;
+        }
+        if (antiStormAggregator != null) {
+            antiStormAggregator.handleSuccess(
+                    event.getJobName(),
+                    event.getTriggerType(),
+                    event.getTraceId(),
+                    event.getDurationMs()
+            );
+        }
+    }
+
+    private void dispatchAlert(JobAlertContext context) {
+        if (antiStormAggregator != null) {
+            antiStormAggregator.handleAlert(context);
+        } else if (alertHandler != null) {
+            alertHandler.handleAlert(context);
+        }
     }
 
     private JobAlertContext buildAlertContext(String jobName,
-                                              io.github.atengk.boot.job.local.enums.TriggerType triggerType,
+                                              TriggerType triggerType,
                                               String traceId,
                                               String alertType,
                                               long durationMs,
                                               int retryCount,
                                               String errorMsg,
                                               Throwable throwable,
-                                              java.time.Instant timestamp) {
+                                              Instant timestamp) {
         return JobAlertContext.builder()
                 .jobName(jobName)
                 .triggerType(triggerType)
