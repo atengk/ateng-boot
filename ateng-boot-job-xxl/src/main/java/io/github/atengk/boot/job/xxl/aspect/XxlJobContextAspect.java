@@ -16,6 +16,8 @@ import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
+import io.github.atengk.boot.job.xxl.interceptor.XxlJobExecutionContext;
+import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
 import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.model.ShardingContext;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
@@ -35,6 +37,7 @@ import org.slf4j.MDC;
 import org.springframework.boot.convert.DurationStyle;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
@@ -43,6 +46,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -82,17 +88,18 @@ public class XxlJobContextAspect {
     private final Executor taskExecutor;
     private final XxlJobAlertAggregator alertAggregator;
     private final XxlJobMetricsBinder metricsBinder;
+    private final List<XxlJobInterceptor> interceptors;
 
     public XxlJobContextAspect() {
-        this(null, null, null, null, null);
+        this(null, null, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
-        this(watchdog, properties, taskExecutor, null, null);
+        this(watchdog, properties, taskExecutor, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor, XxlJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, taskExecutor, alertAggregator, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, null, null);
     }
 
     public XxlJobContextAspect(
@@ -101,11 +108,28 @@ public class XxlJobContextAspect {
             Executor taskExecutor,
             XxlJobAlertAggregator alertAggregator,
             XxlJobMetricsBinder metricsBinder) {
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, null);
+    }
+
+    public XxlJobContextAspect(
+            LocalWatchdog watchdog,
+            XxlJobProperties properties,
+            Executor taskExecutor,
+            XxlJobAlertAggregator alertAggregator,
+            XxlJobMetricsBinder metricsBinder,
+            List<XxlJobInterceptor> interceptors) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.taskExecutor = taskExecutor;
         this.alertAggregator = alertAggregator;
         this.metricsBinder = metricsBinder;
+        if (interceptors != null && !interceptors.isEmpty()) {
+            List<XxlJobInterceptor> sorted = new ArrayList<>(interceptors);
+            AnnotationAwareOrderComparator.sort(sorted);
+            this.interceptors = Collections.unmodifiableList(sorted);
+        } else {
+            this.interceptors = Collections.emptyList();
+        }
     }
 
     @Around("@annotation(com.xxl.job.core.handler.annotation.XxlJob) || @annotation(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob) || @within(io.github.atengk.boot.job.xxl.annotation.AtengXxlJob)")
@@ -194,15 +218,65 @@ public class XxlJobContextAspect {
 
             boolean hasWatchdog = watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative();
 
-            Object result;
-            if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
-                result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs, sessionRef);
-            } else {
-                if (hasWatchdog) {
-                    LocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
-                    sessionRef.set(session);
+            // E. 构建任务执行上下文并执行切面拦截器 preHandle
+            XxlJobExecutionContext executionContext = new XxlJobExecutionContext(
+                    jobName,
+                    specificMethod,
+                    pjp.getTarget(),
+                    resolvedArgs,
+                    rawParam,
+                    ShardingContext.current(),
+                    MDC.get(TRACE_ID_KEY),
+                    TenantContextHolder.getTenantId()
+            );
+
+            int interceptorIndex = -1;
+            if (!this.interceptors.isEmpty()) {
+                try {
+                    for (int i = 0; i < this.interceptors.size(); i++) {
+                        XxlJobInterceptor interceptor = this.interceptors.get(i);
+                        boolean proceed = interceptor.preHandle(executionContext);
+                        if (!proceed) {
+                            // 优雅拦截并终止后续执行：触发此前已通过拦截器的 afterCompletion，向调度中心返回 200 SUCCESS
+                            triggerAfterCompletion(interceptorIndex, executionContext, null);
+                            String interceptMsg = String.format("[INTERCEPTED] 任务 [%s] 已被拦截器 [%s] 拦截，终止执行并报告成功",
+                                    jobName, interceptor.getClass().getSimpleName());
+                            log.info(interceptMsg);
+                            XxlJobHelper.log(interceptMsg);
+                            XxlJobHelper.handleSuccess(interceptMsg);
+                            return getDefaultReturnValue(specificMethod);
+                        }
+                        interceptorIndex = i;
+                    }
+                } catch (Throwable t) {
+                    triggerAfterCompletion(interceptorIndex, executionContext, t);
+                    throw t;
                 }
-                result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+            }
+
+            // F. 执行目标任务业务逻辑，并在 finally 中确定性触发 afterCompletion
+            Object result;
+            Throwable executionThrowable = null;
+            try {
+                if (properties != null && properties.isManagedPoolEnabled() && taskExecutor != null) {
+                    result = executeInManagedPool(pjp, timeout, metadata, resolvedArgs, sessionRef);
+                } else {
+                    if (hasWatchdog) {
+                        LocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
+                        sessionRef.set(session);
+                    }
+                    result = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+                }
+
+                // G. 目标任务成功执行：逆序触发 postHandle
+                triggerPostHandle(interceptorIndex, executionContext, result);
+
+            } catch (Throwable t) {
+                executionThrowable = t;
+                throw t;
+            } finally {
+                // H. 确定性逆序触发 afterCompletion (无论执行成功还是抛出异常)
+                triggerAfterCompletion(interceptorIndex, executionContext, executionThrowable);
             }
 
             // 7. 任务执行成功：触发告警聚合自愈探测与 Micrometer 度量采集
@@ -716,6 +790,73 @@ public class XxlJobContextAspect {
             return xxlJob.value();
         }
         return method.getName();
+    }
+
+    /**
+     * 逆序触发切面拦截器 postHandle 回调
+     */
+    private void triggerPostHandle(int maxIndex, XxlJobExecutionContext context, Object result) throws Exception {
+        if (this.interceptors.isEmpty() || maxIndex < 0) {
+            return;
+        }
+        for (int i = maxIndex; i >= 0; i--) {
+            this.interceptors.get(i).postHandle(context, result);
+        }
+    }
+
+    /**
+     * 逆序触发切面拦截器 afterCompletion 终态清理回调
+     *
+     * <p>捕获单个拦截器抛出的异常并记录日志，确保后续拦截器正常执行且不掩盖原始业务异常。</p>
+     */
+    private void triggerAfterCompletion(int maxIndex, XxlJobExecutionContext context, Throwable throwable) {
+        if (this.interceptors.isEmpty() || maxIndex < 0) {
+            return;
+        }
+        for (int i = maxIndex; i >= 0; i--) {
+            try {
+                this.interceptors.get(i).afterCompletion(context, throwable);
+            } catch (Throwable t) {
+                log.error("执行 XXL-Job 拦截器 [{}] afterCompletion 发生异常", this.interceptors.get(i).getClass().getName(), t);
+            }
+        }
+    }
+
+    /**
+     * 根据方法返回类型获取默认保底返回值
+     */
+    private Object getDefaultReturnValue(Method method) {
+        Class<?> returnType = method.getReturnType();
+        if (returnType.equals(Void.TYPE)) {
+            return null;
+        }
+        if (returnType.isPrimitive()) {
+            if (returnType.equals(boolean.class)) {
+                return false;
+            }
+            if (returnType.equals(byte.class)) {
+                return (byte) 0;
+            }
+            if (returnType.equals(short.class)) {
+                return (short) 0;
+            }
+            if (returnType.equals(int.class)) {
+                return 0;
+            }
+            if (returnType.equals(long.class)) {
+                return 0L;
+            }
+            if (returnType.equals(float.class)) {
+                return 0.0f;
+            }
+            if (returnType.equals(double.class)) {
+                return 0.0d;
+            }
+            if (returnType.equals(char.class)) {
+                return '\0';
+            }
+        }
+        return null;
     }
 
 }

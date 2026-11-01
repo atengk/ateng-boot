@@ -8,6 +8,7 @@ import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
+import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
@@ -35,6 +36,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.util.StringUtils;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
@@ -159,13 +162,14 @@ public class AtengXxlJobAutoConfiguration {
     /**
      * 注册任务执行四维上下文、链路追踪与受管超时看门狗切面
      *
-     * <p>自动为由 @XxlJob 或 @AtengXxlJob 标注的方法织入 32 位无锁 MDC traceId、操作人、多租户隔离与看门狗超时中断守护。</p>
+     * <p>自动为由 @XxlJob 或 @AtengXxlJob 标注的方法织入 32 位无锁 MDC traceId、操作人、多租户隔离、拦截器执行链与看门狗超时中断守护。</p>
      *
      * @param watchdogProvider        看门狗 Provider
      * @param properties              配置属性
      * @param taskExecutorProvider    Core 受管异步线程池 Provider
      * @param alertAggregatorProvider 告警聚合引擎 Provider
      * @param metricsBinderProvider   Micrometer 监控度量绑定器 Provider
+     * @param interceptorsProvider    任务执行切面拦截器 Provider
      * @return 上下文切面实例
      */
     @Bean
@@ -176,13 +180,18 @@ public class AtengXxlJobAutoConfiguration {
             XxlJobProperties properties,
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
             ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider,
-            ObjectProvider<XxlJobMetricsBinder> metricsBinderProvider) {
+            ObjectProvider<XxlJobMetricsBinder> metricsBinderProvider,
+            ObjectProvider<XxlJobInterceptor> interceptorsProvider) {
+        List<XxlJobInterceptor> interceptors = interceptorsProvider != null
+                ? interceptorsProvider.orderedStream().toList()
+                : Collections.emptyList();
         return new XxlJobContextAspect(
                 watchdogProvider.getIfAvailable(),
                 properties,
                 taskExecutorProvider.getIfAvailable(),
                 alertAggregatorProvider.getIfAvailable(),
-                metricsBinderProvider.getIfAvailable()
+                metricsBinderProvider.getIfAvailable(),
+                interceptors
         );
     }
 
