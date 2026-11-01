@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.RetryUtil.RetryConfig;
+import io.github.atengk.boot.job.local.enums.DiscardReason;
 import io.github.atengk.boot.job.local.enums.JobStatus;
 import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
@@ -266,7 +267,8 @@ public class ScheduledJobTask implements Runnable {
                         this.lastResultMsg = "Skipped due to overlapping DISCARD policy";
                         saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "DISCARDED",
                                 "Skipped due to overlapping DISCARD policy", null, null, 0, Collections.emptyList());
-                        publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId, "Skipped due to overlapping DISCARD policy"));
+                        publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId,
+                                DiscardReason.OVERLAPPING_DISCARD, "Skipped due to overlapping DISCARD policy"));
                         return JobResult.builder().success(false).message("Skipped due to overlapping DISCARD policy").build();
                     }
                     return executeUnderLock(triggerType, params, traceId);
@@ -348,7 +350,8 @@ public class ScheduledJobTask implements Runnable {
                 this.lastResultMsg = "Skipped: cluster lock held by another node";
                 saveExecutionRecord(traceId, triggerType, Instant.now(), Instant.now(), 0L, "SKIPPED_CLUSTER_LOCKED",
                         "Skipped: cluster lock held by another node", null, null, 0, Collections.emptyList());
-                publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId, "Skipped: cluster lock held by another node"));
+                publishEvent(new JobDiscardedEvent(this, jobName, triggerType, traceId,
+                        DiscardReason.CLUSTER_LOCKED, "Skipped: cluster lock held by another node"));
                 return JobResult.builder().success(true).message("Skipped: cluster lock held by another node").build();
             }
             try {

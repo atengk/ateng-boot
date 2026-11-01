@@ -1,5 +1,7 @@
 package io.github.atengk.boot.job.local.metrics;
 
+import io.github.atengk.boot.job.local.enums.DiscardReason;
+import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.event.JobDiscardedEvent;
 import io.github.atengk.boot.job.local.event.JobFailedEvent;
 import io.github.atengk.boot.job.local.event.JobSuccessEvent;
@@ -76,12 +78,9 @@ public class LocalJobMetricsBinder implements MeterBinder {
      */
     @EventListener
     public void onJobSuccess(JobSuccessEvent event) {
-        if (meterRegistry == null || event == null) {
-            return;
+        if (event != null) {
+            recordExecution(event.getJobName(), STATUS_SUCCESS, event.getTriggerType(), event.getDurationMs());
         }
-        recordExecution(event.getJobName(), STATUS_SUCCESS,
-                event.getTriggerType() != null ? event.getTriggerType().name() : "UNKNOWN",
-                event.getDurationMs());
     }
 
     /**
@@ -91,12 +90,9 @@ public class LocalJobMetricsBinder implements MeterBinder {
      */
     @EventListener
     public void onJobFailed(JobFailedEvent event) {
-        if (meterRegistry == null || event == null) {
-            return;
+        if (event != null) {
+            recordExecution(event.getJobName(), STATUS_FAILED, event.getTriggerType(), event.getDurationMs());
         }
-        recordExecution(event.getJobName(), STATUS_FAILED,
-                event.getTriggerType() != null ? event.getTriggerType().name() : "UNKNOWN",
-                event.getDurationMs());
     }
 
     /**
@@ -106,12 +102,9 @@ public class LocalJobMetricsBinder implements MeterBinder {
      */
     @EventListener
     public void onJobTimeout(JobTimeoutEvent event) {
-        if (meterRegistry == null || event == null) {
-            return;
+        if (event != null) {
+            recordExecution(event.getJobName(), STATUS_TIMEOUT, event.getTriggerType(), event.getDurationMs());
         }
-        recordExecution(event.getJobName(), STATUS_TIMEOUT,
-                event.getTriggerType() != null ? event.getTriggerType().name() : "UNKNOWN",
-                event.getDurationMs());
     }
 
     /**
@@ -126,7 +119,9 @@ public class LocalJobMetricsBinder implements MeterBinder {
         }
         String jobName = event.getJobName() != null ? event.getJobName() : "UNKNOWN";
         String triggerType = event.getTriggerType() != null ? event.getTriggerType().name() : "UNKNOWN";
-        String reason = resolveDiscardReason(event.getReason());
+        String reason = event.getDiscardReason() != null
+                ? event.getDiscardReason().name()
+                : resolveDiscardReason(event.getReason());
 
         Counter.builder(METRIC_DISCARDED)
                 .tag("jobName", jobName)
@@ -137,11 +132,15 @@ public class LocalJobMetricsBinder implements MeterBinder {
                 .increment();
     }
 
-    private void recordExecution(String jobName, String status, String triggerType, long durationMs) {
+    private void recordExecution(String jobName, String status, TriggerType triggerType, long durationMs) {
+        if (meterRegistry == null) {
+            return;
+        }
+        String triggerName = triggerType != null ? triggerType.name() : "UNKNOWN";
         Timer.builder(METRIC_EXECUTION)
                 .tag("jobName", jobName != null ? jobName : "UNKNOWN")
                 .tag("status", status)
-                .tag("triggerType", triggerType)
+                .tag("triggerType", triggerName)
                 .description("Local job execution duration and counts")
                 .register(meterRegistry)
                 .record(Math.max(0, durationMs), TimeUnit.MILLISECONDS);
