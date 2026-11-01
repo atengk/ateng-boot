@@ -1,5 +1,6 @@
 package io.github.atengk.boot.job.local.properties;
 
+import io.github.atengk.boot.job.local.enums.ClusterLockType;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -155,7 +156,7 @@ public class JobLocalProperties {
         /**
          * 集群锁存储类型（AUTO: 自动探测 Redis，有 Redis 用 Redis，无 Redis 自动降级为 local 单机内存；REDIS: 强制 Redis；LOCAL: 强制单机内存）
          */
-        private String type = "AUTO";
+        private ClusterLockType type = ClusterLockType.AUTO;
 
         /**
          * 集群互斥锁在 Redis 中的键名前缀（默认 ateng:job:lock:）

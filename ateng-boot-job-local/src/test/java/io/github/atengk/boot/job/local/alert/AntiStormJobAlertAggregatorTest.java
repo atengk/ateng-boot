@@ -293,6 +293,34 @@ class AntiStormJobAlertAggregatorTest {
         assertThat(recordingHandler.getAlerts().get(1).getErrorMsg()).contains("自愈恢复");
     }
 
+    @Test
+    @DisplayName("测试空值与空白 jobName 防卫：防御性保底不抛出 NPE")
+    void testNullAndBlankInputsSafety() {
+        AntiStormJobAlertAggregator aggregator = new AntiStormJobAlertAggregator(
+                recordingHandler, true, Duration.ofMinutes(5), true);
+
+        // 1. 测试 null context 与 jobName 为空
+        aggregator.handleAlert(null);
+        aggregator.handleAlert(JobAlertContext.builder().jobName(null).build());
+        aggregator.handleAlert(JobAlertContext.builder().jobName("   ").build());
+        assertThat(recordingHandler.getAlerts()).isEmpty();
+
+        // 2. 测试查询与操作 API 空防御
+        assertThat(aggregator.isSuppressed(null)).isFalse();
+        assertThat(aggregator.isSuppressed("")).isFalse();
+        assertThat(aggregator.getSuppressedFailureCount(null)).isEqualTo(0);
+        assertThat(aggregator.getSuppressedFailureCount("   ")).isEqualTo(0);
+        assertThat(aggregator.getState(null)).isNull();
+        assertThat(aggregator.getState("")).isNull();
+
+        // 3. 测试 handleSuccess 与 reset 空防御
+        aggregator.handleSuccess(null, TriggerType.MANUAL, "trace-x", 10);
+        aggregator.handleSuccess("   ", TriggerType.MANUAL, "trace-x", 10);
+        aggregator.reset(null);
+        aggregator.reset("");
+        assertThat(recordingHandler.getAlerts()).isEmpty();
+    }
+
     private static class RecordingJobAlertHandler implements JobAlertHandler {
         private final List<JobAlertContext> alerts = new CopyOnWriteArrayList<>();
 

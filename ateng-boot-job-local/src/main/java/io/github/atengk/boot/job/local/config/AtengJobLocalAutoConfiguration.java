@@ -3,6 +3,7 @@ package io.github.atengk.boot.job.local.config;
 import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
 import io.github.atengk.boot.job.local.actuator.LocalJobEndpoint;
 import io.github.atengk.boot.job.local.alert.AntiStormJobAlertAggregator;
+import io.github.atengk.boot.job.local.enums.ClusterLockType;
 import io.github.atengk.boot.job.local.alert.JobAlertHandler;
 import io.github.atengk.boot.job.local.alert.LocalJobAlertListener;
 import io.github.atengk.boot.job.local.alert.LoggingJobAlertHandler;
@@ -144,7 +145,7 @@ public class AtengJobLocalAutoConfiguration {
             JobLocalProperties.ClusterLockProperties clusterLock = properties.getClusterLock() != null
                     ? properties.getClusterLock()
                     : new JobLocalProperties.ClusterLockProperties();
-            if ("local".equalsIgnoreCase(clusterLock.getType())) {
+            if (ClusterLockType.LOCAL == clusterLock.getType()) {
                 return new LocalJobClusterLockProvider();
             }
             return new RedisJobClusterLockProvider(

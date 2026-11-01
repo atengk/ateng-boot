@@ -53,7 +53,7 @@ public class AntiStormJobAlertAggregator {
      * @param context 原始告警上下文
      */
     public void handleAlert(JobAlertContext context) {
-        if (context == null) {
+        if (context == null || context.getJobName() == null || context.getJobName().isBlank()) {
             return;
         }
         if (!enabled) {
@@ -84,14 +84,9 @@ public class AntiStormJobAlertAggregator {
             return;
         }
 
-        // 后续故障：判断是否超过静默窗口期
-        Instant lastAlertTime = state.getLastAlertTime();
-        if (Duration.between(lastAlertTime, now).compareTo(silenceWindow) >= 0) {
-            // 静默期满且持续故障：发送阶段聚合提醒
-            state.setLastAlertTime(now);
-            Duration totalOutage = Duration.between(state.getFirstFailureTime(), now);
-            String periodicSummary = String.format("【持续故障提醒】故障已持续 %s，期间累计异常 %d 次。最新错误: %s",
-                    formatDuration(totalOutage), state.getFailureCount(), context.getErrorMsg());
+        // 后续故障：通过状态机原子跃迁判断是否跨越静默期并触发阶段提醒
+        if (state.tryTriggerPeriodicAlert(now, silenceWindow)) {
+            String periodicSummary = state.buildPeriodicSummary(now, context.getErrorMsg());
             log.warn("Job [{}] still failing after silence window (total failures: {}), dispatching periodic summary alert",
                     jobName, state.getFailureCount());
 
@@ -119,7 +114,7 @@ public class AntiStormJobAlertAggregator {
      * @param durationMs  执行耗时
      */
     public void handleSuccess(String jobName, TriggerType triggerType, String traceId, long durationMs) {
-        if (jobName == null || !enabled) {
+        if (jobName == null || jobName.isBlank() || !enabled) {
             return;
         }
 
@@ -133,8 +128,7 @@ public class AntiStormJobAlertAggregator {
                     jobName, formatDuration(outageDuration), totalFailures);
 
             if (recoveryNotice && delegate != null) {
-                String recoverySummary = String.format("故障已自愈恢复。持续故障时长: %s，期间累计发生 %d 次异常后成功自愈",
-                        formatDuration(outageDuration), totalFailures);
+                String recoverySummary = state.buildRecoverySummary(now);
 
                 JobAlertContext recoveryContext = JobAlertContext.builder()
                         .jobName(jobName)
@@ -163,6 +157,9 @@ public class AntiStormJobAlertAggregator {
      * @return 是否处于抑制中
      */
     public boolean isSuppressed(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
         JobAlertState state = stateMap.get(jobName);
         return state != null && state.getFailureCount() > 1;
     }
@@ -174,6 +171,9 @@ public class AntiStormJobAlertAggregator {
      * @return 累计失败次数
      */
     public int getSuppressedFailureCount(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return 0;
+        }
         JobAlertState state = stateMap.get(jobName);
         return state != null ? state.getFailureCount() : 0;
     }
@@ -185,6 +185,9 @@ public class AntiStormJobAlertAggregator {
      * @return 状态快照
      */
     public JobAlertState getState(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return null;
+        }
         return stateMap.get(jobName);
     }
 
@@ -194,7 +197,7 @@ public class AntiStormJobAlertAggregator {
      * @param jobName 任务名称
      */
     public void reset(String jobName) {
-        if (jobName != null) {
+        if (jobName != null && !jobName.isBlank()) {
             stateMap.remove(jobName);
         }
     }
@@ -263,6 +266,46 @@ public class AntiStormJobAlertAggregator {
             this.latestThrowable = throwable;
             this.latestTraceId = traceId;
             return this.failureCount.incrementAndGet();
+        }
+
+        /**
+         * 尝试触发周期性持续故障阶段聚合提醒（原子 Check-Then-Act 状态跃迁）
+         *
+         * @param now           当前时间戳
+         * @param silenceWindow 静默窗口时长
+         * @return true 表示成功跨越静默窗口并原子更新 lastAlertTime；false 表示处于静默期内应抑制
+         */
+        public synchronized boolean tryTriggerPeriodicAlert(Instant now, Duration silenceWindow) {
+            if (Duration.between(lastAlertTime, now).compareTo(silenceWindow) >= 0) {
+                this.lastAlertTime = now;
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * 生成持续故障聚合提醒文案
+         *
+         * @param now           当前时间戳
+         * @param errorMsg      当前最新错误信息
+         * @return 格式化摘要文案
+         */
+        public String buildPeriodicSummary(Instant now, String errorMsg) {
+            Duration totalOutage = Duration.between(firstFailureTime, now);
+            return String.format("【持续故障提醒】故障已持续 %s，期间累计异常 %d 次。最新错误: %s",
+                    formatDuration(totalOutage), failureCount.get(), errorMsg);
+        }
+
+        /**
+         * 生成故障自愈恢复通知文案
+         *
+         * @param now 当前自愈时间戳
+         * @return 格式化自愈文案
+         */
+        public String buildRecoverySummary(Instant now) {
+            Duration outageDuration = Duration.between(firstFailureTime, now);
+            return String.format("故障已自愈恢复。持续故障时长: %s，期间累计发生 %d 次异常后成功自愈",
+                    formatDuration(outageDuration), failureCount.get());
         }
 
         public int getFailureCount() {
