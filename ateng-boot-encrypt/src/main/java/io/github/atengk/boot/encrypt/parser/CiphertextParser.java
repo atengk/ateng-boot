@@ -18,14 +18,18 @@ import java.util.regex.Pattern;
  */
 public class CiphertextParser {
 
+    private static final Pattern CIPHER_TOKEN_PATTERN = Pattern.compile("\\{cipher\\}([^\"',;&\\s]+)");
+
     private final String prefix;
     private final String suffix;
+    private final boolean compatibleCipherPrefix;
     private final Pattern defaultPattern;
     private final Pattern customPattern;
 
-    public CiphertextParser(String prefix, String suffix) {
+    public CiphertextParser(String prefix, String suffix, boolean compatibleCipherPrefix) {
         this.prefix = (prefix != null && !prefix.trim().isEmpty()) ? prefix.trim() : "ENC(";
         this.suffix = (suffix != null && !suffix.trim().isEmpty()) ? suffix.trim() : ")";
+        this.compatibleCipherPrefix = compatibleCipherPrefix;
         // 通用多模式：支持 ENC[keyId](content) 以及 ENC(content)
         this.defaultPattern = Pattern.compile("ENC(?:\\[([^\\]]+)\\])?\\((.*?)\\)", Pattern.DOTALL);
         if ("ENC(".equals(this.prefix) && ")".equals(this.suffix)) {
@@ -35,8 +39,20 @@ public class CiphertextParser {
         }
     }
 
+    public CiphertextParser(String prefix, String suffix) {
+        this(prefix, suffix, false);
+    }
+
+    public CiphertextParser(boolean compatibleCipherPrefix) {
+        this("ENC(", ")", compatibleCipherPrefix);
+    }
+
     public CiphertextParser() {
-        this("ENC(", ")");
+        this("ENC(", ")", false);
+    }
+
+    public boolean isCompatibleCipherPrefix() {
+        return compatibleCipherPrefix;
     }
 
     /**
@@ -49,7 +65,10 @@ public class CiphertextParser {
         if (defaultPattern.matcher(value).find()) {
             return true;
         }
-        return customPattern != null && customPattern.matcher(value).find();
+        if (customPattern != null && customPattern.matcher(value).find()) {
+            return true;
+        }
+        return compatibleCipherPrefix && value.contains("{cipher}");
     }
 
     /**
@@ -72,8 +91,44 @@ public class CiphertextParser {
         }
 
         // 2. 处理标准 ENC 模式
-        return applyRegexReplacement(result, defaultPattern,
+        result = applyRegexReplacement(result, defaultPattern,
                 m -> parseContent(m.group(0), m.group(1), m.group(2)), decryptorTokenFunction);
+
+        // 3. 处理兼容的 Spring Cloud {cipher} 模式
+        if (compatibleCipherPrefix && result.contains("{cipher}")) {
+            result = replaceCipherTokens(result, decryptorTokenFunction);
+        }
+
+        return result;
+    }
+
+    private String replaceCipherTokens(String text, Function<ParsedToken, String> decryptor) {
+        if (isSingleFullCipherValue(text)) {
+            int cipherIdx = text.indexOf("{cipher}");
+            String prefixStr = text.substring(0, cipherIdx);
+            String content = text.substring(cipherIdx + 8);
+            ParsedToken token = parseContent(text.trim(), null, content);
+            String replacement = decryptor.apply(token);
+            return prefixStr + replacement;
+        }
+        return applyRegexReplacement(text, CIPHER_TOKEN_PATTERN,
+                m -> parseContent(m.group(0), null, m.group(1)), decryptor);
+    }
+
+    private boolean isSingleFullCipherValue(String text) {
+        if (text == null) {
+            return false;
+        }
+        String trimmed = text.trim();
+        if (!trimmed.startsWith("{cipher}")) {
+            return false;
+        }
+        int first = text.indexOf("{cipher}");
+        if (text.indexOf("{cipher}", first + 8) != -1) {
+            return false;
+        }
+        String after = trimmed.substring(8);
+        return !after.contains("&") && !after.contains(",") && !after.contains(";");
     }
 
     private String applyRegexReplacement(String text, Pattern pattern,

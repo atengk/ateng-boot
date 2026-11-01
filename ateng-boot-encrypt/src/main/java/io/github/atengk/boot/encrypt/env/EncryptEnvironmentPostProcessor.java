@@ -58,10 +58,12 @@ public class EncryptEnvironmentPostProcessor implements EnvironmentPostProcessor
         EncryptAlgorithm configuredAlgorithm = EncryptAlgorithm.fromCode(algoCode);
         EncryptAlgorithm defaultAlgorithm = configuredAlgorithm != null ? configuredAlgorithm : EncryptAlgorithm.AES_GCM;
 
-        // 3. 动态读取密文前后缀配置，支持自定义前后缀
+        // 3. 动态读取密文前后缀配置，支持自定义前后缀与 Spring Cloud {cipher} 兼容
         String prefix = environment.getProperty("ateng.boot.encrypt.prefix");
         String suffix = environment.getProperty("ateng.boot.encrypt.suffix");
-        CiphertextParser parser = new CiphertextParser(prefix, suffix);
+        boolean compatibleCipher = Boolean.parseBoolean(
+                environment.getProperty("ateng.boot.encrypt.compatible-cipher-prefix", "false"));
+        CiphertextParser parser = new CiphertextParser(prefix, suffix, compatibleCipher);
 
         // 4. 扫描并无差别装饰所有尚未被包装的属性源，并同步更新早期包装器的最新 keyDetector
         MutablePropertySources propertySources = environment.getPropertySources();

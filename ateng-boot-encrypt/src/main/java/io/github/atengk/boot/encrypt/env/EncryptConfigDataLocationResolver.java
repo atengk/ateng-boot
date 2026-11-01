@@ -117,8 +117,9 @@ public class EncryptConfigDataLocationResolver implements ConfigDataLocationReso
                     }
                     String prefix = context.getBinder().bind("ateng.boot.encrypt.prefix", String.class).orElse(null);
                     String suffix = context.getBinder().bind("ateng.boot.encrypt.suffix", String.class).orElse(null);
-                    if (prefix != null || suffix != null) {
-                        parser = new CiphertextParser(prefix, suffix);
+                    boolean compatibleCipher = context.getBinder().bind("ateng.boot.encrypt.compatible-cipher-prefix", Boolean.class).orElse(false);
+                    if (prefix != null || suffix != null || compatibleCipher) {
+                        parser = new CiphertextParser(prefix, suffix, compatibleCipher);
                     }
                 } catch (Exception ignored) {
                 }

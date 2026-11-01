@@ -43,7 +43,7 @@ public class AtengEncryptAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public CiphertextParser ciphertextParser(EncryptProperties properties) {
-        return new CiphertextParser(properties.getPrefix(), properties.getSuffix());
+        return new CiphertextParser(properties.getPrefix(), properties.getSuffix(), properties.isCompatibleCipherPrefix());
     }
 
     @Bean

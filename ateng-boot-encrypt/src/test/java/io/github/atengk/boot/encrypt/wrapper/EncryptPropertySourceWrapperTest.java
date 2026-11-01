@@ -168,4 +168,44 @@ class EncryptPropertySourceWrapperTest {
         assertEquals(rsaPlain, wrapper.getProperty("custom.rsa.password"));
         assertEquals(sm2Plain, wrapper.getProperty("custom.sm2.password"));
     }
+
+    @Test
+    @DisplayName("测试 Spring Cloud {cipher} 模式受控兼容解密")
+    void testSpringCloudCipherCompatibility() {
+        String secretPlain = "spring_cloud_legacy_secret";
+        String cipher = ConfigEncryptor.encrypt(secretPlain, masterPassword, EncryptAlgorithm.AES_GCM);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("legacy.cloud.secret", "{cipher}" + cipher);
+        map.put("legacy.cloud.url", "jdbc:mysql://host:3306/db?password={cipher}" + cipher + "&ssl=false");
+
+        MapPropertySource rawSource = new MapPropertySource("cloudSource", map);
+        KeyDetector detector = new KeyDetector(masterPassword, Map.of());
+
+        // 1. 当 compatibleCipherPrefix = false 时，视作普通字符串保真放行
+        EncryptPropertySourceWrapper defaultWrapper = new EncryptPropertySourceWrapper(
+                rawSource,
+                new CiphertextParser(false),
+                detector,
+                null,
+                EncryptAlgorithm.AES_GCM,
+                true
+        );
+        assertEquals("{cipher}" + cipher, defaultWrapper.getProperty("legacy.cloud.secret"));
+        assertEquals("jdbc:mysql://host:3306/db?password={cipher}" + cipher + "&ssl=false",
+                defaultWrapper.getProperty("legacy.cloud.url"));
+
+        // 2. 当 compatibleCipherPrefix = true 时，识别并成功解密
+        EncryptPropertySourceWrapper compatibleWrapper = new EncryptPropertySourceWrapper(
+                rawSource,
+                new CiphertextParser(true),
+                detector,
+                null,
+                EncryptAlgorithm.AES_GCM,
+                true
+        );
+        assertEquals(secretPlain, compatibleWrapper.getProperty("legacy.cloud.secret"));
+        assertEquals("jdbc:mysql://host:3306/db?password=" + secretPlain + "&ssl=false",
+                compatibleWrapper.getProperty("legacy.cloud.url"));
+    }
 }

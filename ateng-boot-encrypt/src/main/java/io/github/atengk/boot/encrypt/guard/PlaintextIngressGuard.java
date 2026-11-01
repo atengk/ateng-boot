@@ -134,13 +134,13 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
                     }
                 }
             } else {
-                EnforceEncryptionPolicy.enforce(env, patternStr, parser);
+                EnforceEncryptionPolicy.enforce(env, patternStr, properties.getIgnoredKeys(), parser);
             }
         }
     }
 
     private void validateKey(String key, ConfigurableEnvironment env) {
-        if (EnforceEncryptionPolicy.isIgnoredKey(key)) {
+        if (EnforceEncryptionPolicy.isIgnoredKey(key, properties.getIgnoredKeys())) {
             return;
         }
         for (PropertySource<?> source : env.getPropertySources()) {
@@ -153,6 +153,9 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
                         : source.getProperty(key);
 
                 if (raw instanceof String strVal && !strVal.trim().isEmpty()) {
+                    if (EnforceEncryptionPolicy.isExemptedValue(strVal)) {
+                        break;
+                    }
                     if (!parser.hasEncrypted(strVal)) {
                         throw new ConfigSecurityException(String.format(
                                 "配置中心热更新防倒灌拦截 (enforce-encrypted=true)！检测到敏感配置字段被动态推送为裸明文: '%s'，已拒绝更新",
