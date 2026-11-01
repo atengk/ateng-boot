@@ -596,6 +596,7 @@ public class ScheduledJobTask implements Runnable {
                 .lastStatus(this.lastStatus)
                 .lastResultMsg(this.lastResultMsg)
                 .lastTraceId(this.lastTraceId)
+                .executing(isExecuting())
                 .build();
     }
 

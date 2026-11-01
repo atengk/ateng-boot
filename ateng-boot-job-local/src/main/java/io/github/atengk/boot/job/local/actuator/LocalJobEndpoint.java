@@ -34,19 +34,44 @@ public class LocalJobEndpoint {
     }
 
     /**
-     * 巡检所有受管定时任务清单
+     * 巡检所有受管定时任务清单或预演校验 Cron 触发时序
      * <p>GET /actuator/localjobs</p>
+     * <p>GET /actuator/localjobs?cron=0+0+2+*+*+?&count=5</p>
      *
-     * @return 任务清单摘要
+     * @param cron  可选待校验预演的 Cron 表达式
+     * @param count 可选预演未来触发时钟点次数（默认 5）
+     * @return 任务清单摘要或 Cron 预演结果
      */
     @ReadOperation
-    public Map<String, Object> listJobs() {
-        List<JobInfo> jobs = jobTemplate.listJobs();
+    public Map<String, Object> listJobs(@Nullable String cron, @Nullable Integer count) {
         Map<String, Object> response = new LinkedHashMap<>();
+        if (cron != null && !cron.isBlank()) {
+            boolean valid = jobTemplate.isValidCron(cron.trim());
+            response.put("cron", cron.trim());
+            response.put("valid", valid);
+            if (valid) {
+                int targetCount = (count != null && count > 0) ? count : 5;
+                response.put("nextExecutionTimes", jobTemplate.getNextExecutionTimes(cron.trim(), targetCount));
+            } else {
+                response.put("message", "Invalid 6-part Cron expression: " + cron);
+            }
+            return response;
+        }
+
+        List<JobInfo> jobs = jobTemplate.listJobs();
         response.put("status", "UP");
         response.put("total", jobs.size());
         response.put("jobs", jobs);
         return response;
+    }
+
+    /**
+     * 巡检所有受管定时任务清单便捷无参重载
+     *
+     * @return 任务清单摘要
+     */
+    public Map<String, Object> listJobs() {
+        return listJobs(null, null);
     }
 
     /**
@@ -74,6 +99,10 @@ public class LocalJobEndpoint {
 
         response.put("status", "OK");
         response.put("job", info);
+        response.put("isExecuting", jobTemplate.isExecuting(jobName.trim()));
+        if (info.getCron() != null && !info.getCron().isBlank() && jobTemplate.isValidCron(info.getCron())) {
+            response.put("nextExecutionTimes", jobTemplate.getNextExecutionTimes(info.getCron(), 5));
+        }
         response.put("recentLogs", jobTemplate.listRecentLogs(jobName.trim(), 10));
         return response;
     }

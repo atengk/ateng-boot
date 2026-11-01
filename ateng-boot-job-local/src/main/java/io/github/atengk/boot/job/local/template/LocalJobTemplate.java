@@ -7,6 +7,7 @@ import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -164,6 +165,51 @@ public interface LocalJobTemplate {
     default List<JobExecutionRecord> listRecentLogs(String jobName) {
         return listRecentLogs(jobName, 100);
     }
+
+    /**
+     * 判断指定任务是否存在于调度注册表中
+     *
+     * @param jobName 任务名称
+     * @return 是否存在
+     */
+    boolean exists(String jobName);
+
+    /**
+     * 判断指定任务当前是否正在 Worker 线程池中处于活跃执行状态
+     *
+     * @param jobName 任务名称
+     * @return 是否正在执行中
+     */
+    boolean isExecuting(String jobName);
+
+    /**
+     * 校验 Cron 表达式语法是否合法（标准 Spring 6 位 Cron 格式）
+     *
+     * @param cronExpression Cron 表达式文本
+     * @return 是否合法
+     */
+    boolean isValidCron(String cronExpression);
+
+    /**
+     * 计算并预演指定 Cron 表达式从当前时间开始的未来 N 次触发时间列表
+     *
+     * @param cronExpression Cron 表达式文本
+     * @param count          计算预演的未来触发次数（必须大于 0）
+     * @return 按时间正序排列的未来触发时间列表（保证非 null，非法 Cron 或 count <= 0 时保底返回空列表）
+     */
+    default List<Instant> getNextExecutionTimes(String cronExpression, int count) {
+        return getNextExecutionTimes(cronExpression, count, Instant.now());
+    }
+
+    /**
+     * 计算并预演指定 Cron 表达式从指定起始时钟点开始的未来 N 次触发时间列表
+     *
+     * @param cronExpression Cron 表达式文本
+     * @param count          计算预演的未来触发次数（必须大于 0）
+     * @param fromTime       计算起始时钟点（若为 null 自动使用当前时间）
+     * @return 按时间正序排列的未来触发时间列表（保证非 null，非法 Cron 或 count <= 0 时保底返回空列表）
+     */
+    List<Instant> getNextExecutionTimes(String cronExpression, int count, Instant fromTime);
 
     /**
      * 滚动清理超出指定保留时长的历史执行记录

@@ -63,3 +63,23 @@ _Avoid_: 告警机, 报错监听, AlertSender, ErrorDispatcher
 **LocalJobEndpoint (Actuator 运维管控端点)**:
 暴露于 `/actuator/localjobs` 的 Spring Boot Actuator 运维端点，提供标准化 HTTP 接口进行全量巡检、单任务详情查询、手动即时触发、暂停与恢复。
 _Avoid_: 运维接口, 控制台API, OpsController, AdminAPI
+
+**JobTenantMode (多租户调度隔离模态)**:
+定义受管定时任务在 SaaS 多租户架构下的执行隔离策略：`IGNORE`（忽略租户全局运行）、`PARAM`（指定入参租户运行）、`ITERATE`（全租户轮询隔离运行）。
+_Avoid_: 租户类型, 隔离级别, TenantType, TenantLevel
+
+**TenantProvider (有效租户发现 SPI)**:
+当任务配置为 `ITERATE` 全租户轮询模式时，向调度引擎提供当前系统全部有效租户 ID 列表的扩展点接口。
+_Avoid_: 租户仓储, 租户服务, TenantService, TenantRepository
+
+**AntiStormJobAlertAggregator (三阶告警防风暴聚合器)**:
+高频任务持续失败时，实施“首次即刻通知、滑动静默窗口期内聚合错误计数、自愈闭环发送恢复通知”的三阶告警抑制与自愈管理设施。
+_Avoid_: 告警拦截器, 限流器, AlertFilter, AlertLimiter
+
+**RedisJobClusterLockProvider (Redis 轻量集群互斥锁提供者)**:
+基于 Spring 原生 `StringRedisTemplate` 与原子 Lua 脚本实现的低延迟轻量集群互斥锁，支持租约超时自动防死锁与属主防误删防卫。
+_Avoid_: Redisson锁, Redis加锁器, RedisLocker, LockService
+
+**LocalJobMetricsBinder (Micrometer 云原生指标采集器)**:
+将受管定时任务的执行次数、成功失败状态、耗时直方图（P95/P99）、并发丢弃与活跃执行等指标桥接导出至 Micrometer 与 Prometheus 的监控采集设施。
+_Avoid_: 监控打点器, 指标统计, MetricsCollector, JobTracker

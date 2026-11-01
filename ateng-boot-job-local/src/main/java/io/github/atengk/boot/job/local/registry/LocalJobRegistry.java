@@ -402,6 +402,33 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     }
 
     /**
+     * 判断指定任务是否存在于注册表中
+     *
+     * @param jobName 任务名称
+     * @return 是否存在
+     */
+    public boolean exists(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        return taskMap.containsKey(jobName.trim());
+    }
+
+    /**
+     * 判断指定任务当前是否正在 Worker 线程池中处于活跃执行状态
+     *
+     * @param jobName 任务名称
+     * @return 是否正在执行中
+     */
+    public boolean isExecuting(String jobName) {
+        if (jobName == null || jobName.isBlank()) {
+            return false;
+        }
+        ScheduledJobTask task = taskMap.get(jobName.trim());
+        return task != null && task.isExecuting();
+    }
+
+    /**
      * 获取单个任务信息视图
      *
      * @param jobName 任务名称

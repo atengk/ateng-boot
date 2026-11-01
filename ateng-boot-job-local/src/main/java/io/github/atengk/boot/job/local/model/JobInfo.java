@@ -112,4 +112,9 @@ public class JobInfo {
      * 上次执行返回成果摘要
      */
     private String lastResultMsg;
+
+    /**
+     * 当前是否正在 Worker 线程池中处于活跃执行状态
+     */
+    private boolean executing;
 }
