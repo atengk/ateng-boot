@@ -11,6 +11,7 @@ import java.util.function.Function;
 /**
  * 状态机 CAS (Compare-And-Swap) 乐观锁防重执行模板
  * <p>协同数据库条件更新 {@code UPDATE table SET status = ? WHERE id = ? AND status = ?}，受影响行数为 0 时判定为并发冲突</p>
+ * <p>严格保证 CAS-First 安全时序：试算目标状态与卫语句 -> 执行数据库 CAS 更新 -> 冲突熔断/回写实体 -> 执行 Action 动作链，杜绝并发冲突下的虚假副作用</p>
  *
  * @author Ateng
  * @since 2026-10-25
@@ -22,6 +23,7 @@ public final class StateMachineCasTemplate {
 
     /**
      * 执行带 CAS 乐观锁防重的状态跃迁（Fail-Fast 模式）
+     * <p>按序执行生命周期：1. 试算目标状态与卫语句校验 -> 2. 执行数据库 CAS 乐观锁更新 -> 3. 校验影响行数（0 则并发冲突熔断） -> 4. 同步实体状态 -> 5. 执行动作链</p>
      *
      * @param stateMachine 状态机实例
      * @param entity       业务实体
@@ -60,8 +62,22 @@ public final class StateMachineCasTemplate {
         }
 
         S sourceState = getter.apply(entity);
-        // 1. 触发状态机跃迁（若路由不存在或卫语句校验不通过，此处直接抛出异常）
-        S targetState = stateMachine.fireEvent(sourceState, event, context);
+        // 1. 试算目标状态与校验卫语句（纯只读无副作用预检，不触发任何 Action 与持久层操作）
+        TransitionResult<S> probe = stateMachine.verifyTransition(sourceState, event, context);
+        if (!probe.isAccepted()) {
+            StateMachineResultCode resultCode = (probe.getFailureReason() != null && probe.getFailureReason().contains("未找到"))
+                    ? StateMachineResultCode.TRANSITION_NOT_FOUND
+                    : StateMachineResultCode.CONDITION_FAILED;
+            throw new StateMachineException(
+                    resultCode,
+                    sourceState,
+                    event,
+                    probe.getFailureReason(),
+                    probe.getCause()
+            );
+        }
+
+        S targetState = probe.getTargetState();
 
         // 2. 执行数据库 CAS 乐观锁条件更新
         int rowsAffected = casUpdater.updateWithCas(entity, sourceState, targetState);
@@ -78,11 +94,16 @@ public final class StateMachineCasTemplate {
 
         // 3. CAS 成功后回写实体内存状态
         setter.accept(entity, targetState);
+
+        // 4. CAS 成功后有序执行 Action 动作链
+        stateMachine.executeActions(sourceState, targetState, event, context);
+
         return targetState;
     }
 
     /**
      * 执行带 CAS 乐观锁防重的状态跃迁（静默探测模式）
+     * <p>按序执行生命周期：1. 试算目标状态与卫语句校验 -> 2. 执行数据库 CAS 乐观锁更新 -> 3. 校验影响行数（0 则并发冲突返回失败结果） -> 4. 同步实体状态 -> 5. 执行动作链</p>
      *
      * @param stateMachine 状态机实例
      * @param entity       业务实体
@@ -120,12 +141,12 @@ public final class StateMachineCasTemplate {
         }
 
         S sourceState = getter.apply(entity);
-        TransitionResult<S> result = stateMachine.fireEventQuietly(sourceState, event, context);
-        if (!result.isAccepted()) {
-            return result;
+        TransitionResult<S> probe = stateMachine.verifyTransition(sourceState, event, context);
+        if (!probe.isAccepted()) {
+            return probe;
         }
 
-        S targetState = result.getTargetState();
+        S targetState = probe.getTargetState();
         try {
             int rowsAffected = casUpdater.updateWithCas(entity, sourceState, targetState);
             if (rowsAffected <= 0) {
@@ -146,6 +167,20 @@ public final class StateMachineCasTemplate {
         }
 
         setter.accept(entity, targetState);
-        return result;
+
+        try {
+            stateMachine.executeActions(sourceState, targetState, event, context);
+        } catch (Exception ex) {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            return TransitionResult.failure(
+                    sourceState,
+                    event,
+                    String.format("状态机 [%s] 跃迁动作执行失败 [%s -> %s on %s]: %s",
+                            stateMachine.getMachineId(), sourceState, targetState, event, ex.getMessage()),
+                    cause
+            );
+        }
+
+        return TransitionResult.success(sourceState, targetState, event);
     }
 }

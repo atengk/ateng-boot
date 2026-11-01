@@ -255,8 +255,32 @@ public interface StateMachine<S, E, C> {
     }
 
     /**
+     * 执行指定源状态、目标状态及事件匹配的动作链（供两阶段流转组件如 CAS 乐观锁防重执行）
+     *
+     * @param sourceState 当前源状态
+     * @param targetState 目标状态
+     * @param event       触发事件
+     * @param context     业务上下文
+     */
+    default void executeActions(S sourceState, S targetState, E event, C context) {
+        // 默认空实现，保证向下兼容
+    }
+
+    /**
+     * 执行指定源状态、目标状态及事件匹配的动作链（免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @param targetState 目标状态
+     * @param event       触发事件
+     */
+    default void executeActions(S sourceState, S targetState, E event) {
+        executeActions(sourceState, targetState, event, (C) null);
+    }
+
+    /**
      * 实体状态 CAS 乐观锁防重流转门面（Fail-Fast 模式）
-     * <p>触发跃迁后执行持久化 CAS 条件更新，受影响行数为 0 时判定为并发冲突并抛出异常</p>
+     * <p>按序执行生命周期：试算目标状态与卫语句 -> 执行持久化 CAS 条件更新 -> 校验影响行数 -> 回写实体状态 -> 执行动作链</p>
+     * <p>受影响行数为 0 时判定为并发冲突并阻断动作执行</p>
      *
      * @param entity     业务实体
      * @param getter     状态提取函数

@@ -277,6 +277,59 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     }
 
     @Override
+    public void executeActions(S sourceState, S targetState, E event, C context) {
+        if (sourceState == null || targetState == null || event == null) {
+            return;
+        }
+        Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
+        List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
+        if (candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        Transition<S, E, C> matched = null;
+        for (Transition<S, E, C> candidate : candidates) {
+            try {
+                if (candidate.isSatisfied(context)) {
+                    S resolved = candidate.resolveTargetState(context);
+                    if (Objects.equals(resolved, targetState)) {
+                        matched = candidate;
+                        break;
+                    }
+                }
+            } catch (Exception ignored) {
+                // 忽略非目标分支求值异常
+            }
+        }
+        if (matched == null) {
+            for (Transition<S, E, C> candidate : candidates) {
+                try {
+                    if (candidate.isSatisfied(context)) {
+                        matched = candidate;
+                        break;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (matched != null) {
+            for (Action<S, E, C> action : matched.getActions()) {
+                try {
+                    action.execute(sourceState, targetState, event, context);
+                } catch (Exception ex) {
+                    throw new StateMachineException(
+                            StateMachineResultCode.ACTION_EXECUTION_FAILED,
+                            sourceState,
+                            targetState,
+                            event,
+                            String.format("状态机 [%s] 跃迁动作执行失败 [%s -> %s on %s]: %s", machineId, sourceState, targetState, event, ex.getMessage()),
+                            ex
+                    );
+                }
+            }
+        }
+    }
+
+    @Override
     public TransitionResult<S> fireEventQuietly(S sourceState, E event, C context) {
         if (sourceState == null) {
             return TransitionResult.failure(null, event, "源状态不可为空");
