@@ -1,6 +1,9 @@
 package io.github.atengk.boot.datasource.loader;
 
 import com.baomidou.dynamic.datasource.creator.DataSourceProperty;
+import io.github.atengk.boot.core.context.ContextCopyingTaskDecorator;
+import io.github.atengk.boot.datasource.enums.DatasourceResultCode;
+import io.github.atengk.boot.datasource.exception.DataSourceSwitchException;
 import io.github.atengk.boot.datasource.properties.DatasourceProperties;
 import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import org.slf4j.Logger;
@@ -104,8 +107,8 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
             try {
                 incomingMap = loader.loadDataSources();
             } catch (Exception e) {
-                log.error("ateng-boot-datasource: DynamicDataSourceLoader 加载外部数据源配置异常: {}", e.getMessage(), e);
-                throw e;
+                throw new DataSourceSwitchException("加载外部数据源配置失败: " + e.getMessage(), e,
+                        DatasourceResultCode.DATASOURCE_INIT_ERROR);
             }
             if (incomingMap == null) {
                 incomingMap = Collections.emptyMap();
@@ -177,12 +180,15 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
                         try {
                             template.removeDataSource(trackedKey, true);
                             removedKeys.add(trackedKey);
+                            loadedProperties.remove(trackedKey);
                             log.info("ateng-boot-datasource: 差量同步优雅注销数据源成功 [dsKey={}]", trackedKey);
                         } catch (Exception e) {
                             log.error("ateng-boot-datasource: 差量同步优雅注销数据源失败 [dsKey={}]: {}", trackedKey, e.getMessage(), e);
                         }
+                    } else {
+                        // 运行注册表中已不存在，直接同步清理追踪状态
+                        loadedProperties.remove(trackedKey);
                     }
-                    loadedProperties.remove(trackedKey);
                 }
             }
 
@@ -197,7 +203,9 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
                     result.getAddedCount(), result.getRemovedCount(), result.getReloadedCount(), result.getSkippedCount());
             return result;
         } finally {
-            syncLock.unlock();
+            if (syncLock.isHeldByCurrentThread()) {
+                syncLock.unlock();
+            }
         }
     }
 
@@ -211,25 +219,7 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
         if (!StringUtils.hasText(dsKey)) {
             return false;
         }
-        String normalized = dsKey.trim().toLowerCase();
-        if ("master".equals(normalized) || "slave".equals(normalized)) {
-            return true;
-        }
-        String primary = template.getPrimaryDataSourceKey();
-        if (StringUtils.hasText(primary) && primary.equalsIgnoreCase(dsKey.trim())) {
-            return true;
-        }
-        if (datasourceProperties != null && datasourceProperties.getDynamicLoad() != null) {
-            Set<String> whitelist = datasourceProperties.getDynamicLoad().getCoreWhitelist();
-            if (whitelist != null) {
-                for (String item : whitelist) {
-                    if (item != null && item.equalsIgnoreCase(dsKey.trim())) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
+        return template.isProtectedCoreKey(dsKey);
     }
 
     /**
@@ -239,6 +229,25 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
      */
     public Map<String, DataSourceProperty> getLoadedProperties() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(loadedProperties));
+    }
+
+    /**
+     * 重置或清除指定被纳管数据源的追踪记录
+     *
+     * @param dsKey 数据源标识
+     */
+    public void unregisterTrackedProperty(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return;
+        }
+        syncLock.lock();
+        try {
+            loadedProperties.remove(dsKey);
+        } finally {
+            if (syncLock.isHeldByCurrentThread()) {
+                syncLock.unlock();
+            }
+        }
     }
 
     /**
@@ -264,7 +273,9 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
             }
             log.info("ateng-boot-datasource: DynamicDataSourceSyncManager 已安全销毁并停止同步轮询");
         } finally {
-            syncLock.unlock();
+            if (syncLock.isHeldByCurrentThread()) {
+                syncLock.unlock();
+            }
         }
     }
 
@@ -275,8 +286,9 @@ public class DynamicDataSourceSyncManager implements DisposableBean {
         if (autoSync != null && autoSync.isEnabled() && loader != null && scheduler != null) {
             Duration interval = autoSync.getInterval() != null ? autoSync.getInterval() : Duration.ofMinutes(1);
             long intervalMillis = Math.max(100, interval.toMillis());
+            Runnable decoratedTask = new ContextCopyingTaskDecorator().decorate(this::syncSafe);
             this.autoSyncFuture = scheduler.scheduleWithFixedDelay(
-                    this::syncSafe,
+                    decoratedTask,
                     intervalMillis,
                     intervalMillis,
                     TimeUnit.MILLISECONDS

@@ -6,6 +6,7 @@ import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
 import io.github.atengk.boot.datasource.loader.SyncResult;
 import io.github.atengk.boot.datasource.model.DataSourcePoolStats;
 import io.github.atengk.boot.datasource.readwrite.ReadAfterWriteManager;
+import io.github.atengk.boot.datasource.template.DynamicDatasourceTemplate;
 import io.github.atengk.boot.sample.datasource.entity.OrderEntity;
 import io.github.atengk.boot.sample.datasource.service.*;
 import org.junit.jupiter.api.AfterEach;
@@ -60,6 +61,9 @@ class DatasourceHardenedScenariosIntegrationTest {
     @Autowired
     private ReadAfterWriteManager readAfterWriteManager;
 
+    @Autowired
+    private DynamicDatasourceTemplate dynamicDatasourceTemplate;
+
     @AfterEach
     void tearDown() {
         TenantContextHolder.clear();
@@ -67,6 +71,15 @@ class DatasourceHardenedScenariosIntegrationTest {
             readAfterWriteManager.clear();
         }
         activeProbingScenarioService.recoverReplica("slave");
+
+        // 场景 1 现场清理：注销租户读从库分组
+        tenantReadWriteScenarioService.cleanTenantSlaveGroup("tenant_1001_slave");
+
+        // 场景 5 现场清理：注销差量同步挂载的外部数据源并重置属性记录
+        if (dynamicDatasourceTemplate.containsDataSource("tenant_sync_sample")) {
+            dynamicDatasourceTemplate.removeDataSource("tenant_sync_sample", true);
+        }
+        dynamicLoaderScenarioService.unregisterTrackedProperty("tenant_sync_sample");
     }
 
     @Test

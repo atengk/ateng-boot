@@ -205,4 +205,57 @@ class DynamicDatasourcePreWarmTest {
         assertThat(template.getDataSourceKeys()).contains("mock_warm_fail_ds");
         verify(checkConn, times(1)).close();
     }
+
+    @Test
+    @DisplayName("测试 isValid 抛出异常时物理连接绝对确定性关闭防泄漏")
+    void testPreWarmDataSource_ConnectionLeakDefense_WhenIsValidThrows() throws Exception {
+        DataSource mockDs = mock(DataSource.class);
+        Connection leakyConn = mock(Connection.class);
+        when(mockDs.getConnection()).thenReturn(leakyConn);
+        when(leakyConn.isValid(anyInt())).thenThrow(new SQLException("Network timeout during validation"));
+
+        routingDataSource.addDataSource("leak_defense_ds", mockDs);
+
+        int count = template.preWarmDataSource("leak_defense_ds", 3);
+        assertThat(count).isZero();
+
+        // 校验异常退出时连接必定被 close()，彻底杜绝连接逃逸与池泄漏
+        verify(leakyConn, atLeastOnce()).close();
+    }
+
+    @Test
+    @DisplayName("测试结合 TaskExecutor 执行并发连接池预热")
+    void testPreWarmDataSource_ConcurrentExecution_WithTaskExecutor() throws Exception {
+        org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor executor =
+                new org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setThreadNamePrefix("test-prewarm-");
+        executor.initialize();
+
+        try {
+            DefaultDataSourceCreator creator = new DefaultDataSourceCreator();
+            HikariDataSourceCreator hikariCreator = new HikariDataSourceCreator(new HikariCpConfig());
+            creator.setCreators(List.of(hikariCreator));
+
+            DynamicDatasourceTemplate concurrentTemplate = new DynamicDatasourceTemplate(
+                    routingDataSource,
+                    properties,
+                    null,
+                    null,
+                    creator,
+                    executor
+            );
+
+            DataSourceProperty property = createH2Property("concurrent_prewarm_pool", "concurrent_prewarm_db");
+            concurrentTemplate.addDataSource("concurrent_ds", property, true);
+
+            assertThat(concurrentTemplate.getDataSourceKeys()).contains("concurrent_ds");
+
+            int warmed = concurrentTemplate.preWarmDataSource("concurrent_ds", 4);
+            assertThat(warmed).isEqualTo(4);
+        } finally {
+            executor.destroy();
+        }
+    }
 }

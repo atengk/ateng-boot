@@ -17,6 +17,7 @@ import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.datasource.context.DataSourceAsyncContextSnapshotProvider;
 import io.github.atengk.boot.datasource.guard.AtengDynamicDataSourceAnnotationInterceptor;
 import io.github.atengk.boot.datasource.guard.DynamicDatasourceGuard;
+import io.github.atengk.boot.datasource.listener.DynamicDatasourceLifecycleListener;
 import io.github.atengk.boot.datasource.loader.DynamicDataSourceLoader;
 import io.github.atengk.boot.datasource.loader.DynamicDataSourceSyncManager;
 import io.github.atengk.boot.datasource.metrics.DynamicDatasourceMetricsBinder;
@@ -40,6 +41,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.aop.Advisor;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -58,6 +60,7 @@ import org.springframework.util.ClassUtils;
 import javax.sql.DataSource;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
@@ -258,6 +261,7 @@ public class AtengDatasourceAutoConfiguration {
      * @param tenantDataSourceProvider 租户数据源解析器
      * @param guard                    事务切源安全守卫
      * @param creatorProvider          动态数据源创建器 Provider
+     * @param executorProvider         异步任务执行器 Provider (用于并发连接预热)
      * @return 编程式切源门面实例
      */
     @Bean
@@ -266,10 +270,39 @@ public class AtengDatasourceAutoConfiguration {
                                                                DatasourceProperties datasourceProperties,
                                                                TenantDataSourceProvider tenantDataSourceProvider,
                                                                DynamicDatasourceGuard guard,
-                                                               ObjectProvider<DefaultDataSourceCreator> creatorProvider) {
+                                                               ObjectProvider<DefaultDataSourceCreator> creatorProvider,
+                                                               ObjectProvider<Executor> executorProvider) {
         log.info("装配 DynamicDatasourceTemplate 编程式切源对称门面与批处理沙箱");
         return new DynamicDatasourceTemplate(dataSource, datasourceProperties, tenantDataSourceProvider, guard,
-                creatorProvider != null ? creatorProvider.getIfAvailable() : null);
+                creatorProvider != null ? creatorProvider.getIfAvailable() : null,
+                executorProvider != null ? executorProvider.getIfAvailable() : null);
+    }
+
+    /**
+     * 注册动态数据源生命周期监听器自动探测绑定初始化器
+     * 通过 SmartInitializingSingleton 在全部单例就绪后绑定，彻底规避循环依赖
+     *
+     * @param dynamicDatasourceTemplate  动态数据源门面
+     * @param lifecycleListenersProvider 生命周期监听器 Provider (可选)
+     * @return 监听器初始化器
+     */
+    @Bean
+    @ConditionalOnMissingBean(name = "dynamicDatasourceLifecycleListenersInitializer")
+    public SmartInitializingSingleton dynamicDatasourceLifecycleListenersInitializer(
+            DynamicDatasourceTemplate dynamicDatasourceTemplate,
+            ObjectProvider<List<DynamicDatasourceLifecycleListener>> lifecycleListenersProvider) {
+        return () -> {
+            if (lifecycleListenersProvider != null) {
+                List<DynamicDatasourceLifecycleListener> listeners = lifecycleListenersProvider.getIfAvailable();
+                if (listeners != null) {
+                    for (DynamicDatasourceLifecycleListener listener : listeners) {
+                        if (listener != null) {
+                            dynamicDatasourceTemplate.addLifecycleListener(listener);
+                        }
+                    }
+                }
+            }
+        };
     }
 
     /**

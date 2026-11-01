@@ -24,6 +24,7 @@ import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 物理多租户独立主从读写分离、从库自愈与写后读主防延迟测试
@@ -254,5 +255,59 @@ class AtengDynamicRoutingTenantReadWriteTest {
         // 2. 写事务
         TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
         assertThat(customRoutingDs.determineDataSource()).isSameAs(customMaster);
+    }
+
+    @Test
+    @DisplayName("测试租户从库为 GroupDataSource 且主库为 _master 后缀时的透明解析与分流")
+    void testTenantGroupDataSource_MasterSuffixAndGroupReplicaResolution() {
+        DataSource tenant2001Master = mock(DataSource.class);
+        DataSource tenant2001Slave1 = mock(DataSource.class);
+        DataSource tenant2001Slave2 = mock(DataSource.class);
+
+        routingDataSource.addDataSource("tenant_2001_master", tenant2001Master);
+        routingDataSource.addDataSource("tenant_2001_s1", tenant2001Slave1);
+        routingDataSource.addDataSource("tenant_2001_s2", tenant2001Slave2);
+
+        GroupDataSource groupDs = new GroupDataSource("tenant_2001", healthAwareStrategy);
+        groupDs.addDatasource("tenant_2001_s1", tenant2001Slave1);
+        groupDs.addDatasource("tenant_2001_s2", tenant2001Slave2);
+        routingDataSource.getGroupDataSources().put("tenant_2001", groupDs);
+
+        TenantContextHolder.setTenantId("2001");
+
+        // 1. 验证主从 Key 解析
+        String masterKey = routingDataSource.resolveTenantMasterKey("2001");
+        String slaveKey = routingDataSource.resolveTenantSlaveKey("2001", masterKey);
+        assertThat(masterKey).isEqualTo("tenant_2001_master");
+        assertThat(slaveKey).isEqualTo("tenant_2001");
+
+        // 2. 读事务分发至 GroupDataSource (tenant_2001 从库集群)
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(true);
+        DataSource readDs = routingDataSource.determineDataSource();
+        assertThat(readDs).isIn(tenant2001Slave1, tenant2001Slave2);
+
+        // 3. 写事务分发至主库 (tenant_2001_master)
+        TransactionSynchronizationManager.setCurrentTransactionReadOnly(false);
+        DataSource writeDs = routingDataSource.determineDataSource();
+        assertThat(writeDs).isSameAs(tenant2001Master);
+    }
+
+    @Test
+    @DisplayName("测试具备对称语义的 getConnection(username, password) 在从库异常时执行自愈降级")
+    void testSymmetricGetConnectionWithCredentials_FailsOverToMaster() throws Exception {
+        java.sql.Connection masterConn = mock(java.sql.Connection.class);
+        when(globalMasterDs.getConnection("test_user", "test_pwd")).thenReturn(masterConn);
+        when(globalSlaveDs.getConnection("test_user", "test_pwd")).thenThrow(new java.sql.SQLException("Slave conn refused"));
+
+        // 模拟路由指向 slave
+        DynamicDataSourceContextHolder.push("slave");
+        try {
+            java.sql.Connection conn = routingDataSource.getConnection("test_user", "test_pwd");
+            assertThat(conn).isSameAs(masterConn);
+            assertThat(healthAwareStrategy.isBlacklisted("slave")).isTrue();
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
     }
 }

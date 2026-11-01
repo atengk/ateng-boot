@@ -52,4 +52,14 @@ public class DatasourceDynamicLoaderScenarioService {
     public Map<String, DataSourceProperty> getLoadedProperties() {
         return syncManager.getLoadedProperties();
     }
+
+    /**
+     * 清理指定被纳管数据源追踪记录
+     *
+     * @param dsKey 数据源键名
+     */
+    public void unregisterTrackedProperty(String dsKey) {
+        log.info("[DynamicLoaderScenario] 清除数据源纳管追踪快照: {}", dsKey);
+        syncManager.unregisterTrackedProperty(dsKey);
+    }
 }

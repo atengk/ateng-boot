@@ -257,6 +257,29 @@ class DynamicDataSourceSyncManagerTest {
         syncManager.destroy();
     }
 
+    @Test
+    @DisplayName("测试 Template 门面层对 master 与 slave 核心白名单的直接刚性保护")
+    void testTemplateDirectProtectionOnMasterAndSlave() {
+        // 1. 直接通过 template.removeDataSource 试图删除 master 或 slave 必须被拦截抛出异常
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.removeDataSource("master", true))
+                .isInstanceOf(io.github.atengk.boot.datasource.exception.DataSourceSwitchException.class)
+                .hasMessageContaining("受管主数据源严禁动态注销");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.removeDataSource("slave", true))
+                .isInstanceOf(io.github.atengk.boot.datasource.exception.DataSourceSwitchException.class)
+                .hasMessageContaining("受管核心数据源严禁动态注销");
+
+        // 2. 直接通过 template.reloadDataSource 试图热重载 master 或 slave 必须被拦截抛出异常
+        DataSourceProperty prop = createProperty("fake", "jdbc:h2:mem:fake;DB_CLOSE_DELAY=-1");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.reloadDataSource("master", prop))
+                .isInstanceOf(io.github.atengk.boot.datasource.exception.DataSourceSwitchException.class)
+                .hasMessageContaining("受管主数据源严禁动态重载或替换");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> template.reloadDataSource("slave", prop))
+                .isInstanceOf(io.github.atengk.boot.datasource.exception.DataSourceSwitchException.class)
+                .hasMessageContaining("受管核心数据源严禁动态重载或替换");
+    }
+
     private DataSourceProperty createProperty(String poolName, String url) {
         DataSourceProperty property = new DataSourceProperty();
         property.setPoolName(poolName);

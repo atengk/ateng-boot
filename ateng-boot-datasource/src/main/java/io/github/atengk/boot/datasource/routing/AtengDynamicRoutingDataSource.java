@@ -78,27 +78,30 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         String currentTenantId = TenantContextHolder.getTenantId();
         boolean hasTenant = StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant();
 
+        boolean writeOccurred = readWrite.isEnabled() && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred();
+        String tenantMasterKey = null;
+        String tenantSlaveKey = null;
+        if (hasTenant) {
+            tenantMasterKey = resolveTenantMasterKey(currentTenantId);
+            tenantSlaveKey = resolveTenantSlaveKey(currentTenantId, tenantMasterKey);
+        }
+
         // 1. 显式指定通用从库或当前目标为从库时的写后读主防延迟检查
-        if (readWrite.isEnabled() && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
+        if (writeOccurred) {
             if (Objects.equals(explicitKey, slaveKey)) {
                 if (hasTenant) {
-                    String tenantMaster = resolveTenantMasterKey(currentTenantId);
                     log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 显式切源 @DS('{}') 强制只读查询路由至主库: [{}]",
-                            currentTenantId, explicitKey, tenantMaster);
-                    return resolveWithFailover(tenantMaster);
+                            currentTenantId, explicitKey, tenantMasterKey);
+                    return resolveWithFailover(tenantMasterKey);
                 } else {
                     log.debug("写后读主 (Read-After-Write) 防延迟生效，强制只读查询路由至主库: [{}] (原路由: [{}])", masterKey, explicitKey);
                     return resolveWithFailover(masterKey);
                 }
             }
-            if (hasTenant && StringUtils.hasText(explicitKey)) {
-                String tenantMaster = resolveTenantMasterKey(currentTenantId);
-                String tenantSlave = resolveTenantSlaveKey(currentTenantId, tenantMaster);
-                if (Objects.equals(explicitKey, tenantSlave)) {
-                    log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 显式切源 @DS('{}') 强制只读查询路由至主库: [{}]",
-                            currentTenantId, explicitKey, tenantMaster);
-                    return resolveWithFailover(tenantMaster);
-                }
+            if (hasTenant && StringUtils.hasText(explicitKey) && Objects.equals(explicitKey, tenantSlaveKey)) {
+                log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 显式切源 @DS('{}') 强制只读查询路由至主库: [{}]",
+                        currentTenantId, explicitKey, tenantMasterKey);
+                return resolveWithFailover(tenantMasterKey);
             }
         }
 
@@ -106,14 +109,12 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         if (StringUtils.hasText(explicitKey)) {
             // 如果显式指定了通用从库标识 (例如 "slave") 且当前处于租户上下文中，优先尝试路由至租户专属从库
             if (hasTenant && Objects.equals(explicitKey, slaveKey)) {
-                String tenantMaster = resolveTenantMasterKey(currentTenantId);
-                String tenantSlave = resolveTenantSlaveKey(currentTenantId, tenantMaster);
-                if (StringUtils.hasText(tenantSlave) && containsDataSource(tenantSlave)) {
-                    log.debug("租户 [{}] 显式切源 @DS('{}') 自动分流至租户专属从库: [{}]", currentTenantId, explicitKey, tenantSlave);
-                    return resolveWithFailover(tenantSlave, tenantMaster);
-                } else if (StringUtils.hasText(tenantMaster) && containsDataSource(tenantMaster)) {
-                    log.debug("租户 [{}] 显式切源 @DS('{}') 未配置专属从库，安全保底路由至租户主库: [{}]", currentTenantId, explicitKey, tenantMaster);
-                    return resolveWithFailover(tenantMaster);
+                if (StringUtils.hasText(tenantSlaveKey) && containsDataSource(tenantSlaveKey)) {
+                    log.debug("租户 [{}] 显式切源 @DS('{}') 自动分流至租户专属从库: [{}]", currentTenantId, explicitKey, tenantSlaveKey);
+                    return resolveWithFailover(tenantSlaveKey, tenantMasterKey);
+                } else if (StringUtils.hasText(tenantMasterKey) && containsDataSource(tenantMasterKey)) {
+                    log.debug("租户 [{}] 显式切源 @DS('{}') 未配置专属从库，安全保底路由至租户主库: [{}]", currentTenantId, explicitKey, tenantMasterKey);
+                    return resolveWithFailover(tenantMasterKey);
                 }
             }
             return resolveWithFailover(explicitKey);
@@ -122,9 +123,6 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         // 3. 物理多租户全自动透明切源与租户读写分离
         DatasourceProperties.MultiTenancyProperties multiTenancy = datasourceProperties.getMultiTenancy();
         if (multiTenancy.isEnabled() && hasTenant && multiTenancy.getMode() != MultiTenancyMode.IGNORE) {
-            String tenantMasterKey = resolveTenantMasterKey(currentTenantId);
-            String tenantSlaveKey = resolveTenantSlaveKey(currentTenantId, tenantMasterKey);
-
             if (containsDataSource(tenantMasterKey)) {
                 // 3.1 租户写事务 (@Transactional)
                 if (readWrite.isEnabled() && TransactionSynchronizationManager.isActualTransactionActive()
@@ -138,7 +136,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
                 // 3.2 租户只读事务 (@Transactional(readOnly = true))
                 if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
-                    if (readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
+                    if (writeOccurred) {
                         log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 只读事务强制回退主库: [{}]", currentTenantId, tenantMasterKey);
                         return resolveWithFailover(tenantMasterKey);
                     }
@@ -151,7 +149,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
                 }
 
                 // 3.3 租户非事务/自动提交语句
-                if (readWrite.isEnabled() && readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
+                if (writeOccurred) {
                     log.debug("写后读主 (Read-After-Write) 防延迟生效，租户 [{}] 非事务查询强制路由至主库: [{}]", currentTenantId, tenantMasterKey);
                     return resolveWithFailover(tenantMasterKey);
                 }
@@ -174,7 +172,7 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
 
         // 4. 全局读写分离：只读事务 (@Transactional(readOnly = true))
         if (readWrite.isEnabled() && TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
-            if (readAfterWriteManager != null && readAfterWriteManager.isWriteOccurred()) {
+            if (writeOccurred) {
                 log.debug("写后读主 (Read-After-Write) 防延迟生效，只读事务强制回退全局主库: [{}]", masterKey);
                 return resolveWithFailover(masterKey);
             }
@@ -211,29 +209,55 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         try {
             return resolvedDataSource.getConnection();
         } catch (SQLException e) {
-            // 捕获物理连接异常并执行自愈熔断与故障转移
-            if (healthAwareStrategy != null && datasourceProperties.getReadWriteSplit().getFailover().isEnabled()) {
-                String failedKey = findDataSourceKey(resolvedDataSource);
-                if (StringUtils.hasText(failedKey)) {
-                    healthAwareStrategy.recordFailure(failedKey);
-                    if (datasourceProperties.getReadWriteSplit().getFailover().isFallbackToMaster()) {
-                        String currentTenantId = TenantContextHolder.getTenantId();
-                        String fallbackKey = null;
-                        if (StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant()) {
-                            fallbackKey = resolveTenantMasterKey(currentTenantId);
-                        }
-                        if (!StringUtils.hasText(fallbackKey)) {
-                            fallbackKey = datasourceProperties.getReadWriteSplit().getMasterDataSource();
-                        }
-                        if (!Objects.equals(failedKey, fallbackKey) && containsDataSource(fallbackKey)) {
-                            log.warn("从库节点 [{}] 获取连接失败，高可用自愈降级获取主库 [{}] 连接", failedKey, fallbackKey, e);
-                            return getDataSource(fallbackKey).getConnection();
-                        }
+            return handleConnectionFailure(resolvedDataSource, e, DataSource::getConnection);
+        }
+    }
+
+    @Override
+    public Connection getConnection(String username, String password) throws SQLException {
+        String xid = TransactionContext.getXID();
+        if (StringUtils.hasText(xid)) {
+            return super.getConnection(username, password);
+        }
+
+        DataSource resolvedDataSource = determineDataSource();
+        try {
+            return resolvedDataSource.getConnection(username, password);
+        } catch (SQLException e) {
+            return handleConnectionFailure(resolvedDataSource, e, ds -> ds.getConnection(username, password));
+        }
+    }
+
+    @FunctionalInterface
+    private interface ConnectionFunction {
+        Connection get(DataSource ds) throws SQLException;
+    }
+
+    private Connection handleConnectionFailure(DataSource resolvedDataSource,
+                                               SQLException e,
+                                               ConnectionFunction function) throws SQLException {
+        // 捕获物理连接异常并执行自愈熔断与故障转移
+        if (healthAwareStrategy != null && datasourceProperties.getReadWriteSplit().getFailover().isEnabled()) {
+            String failedKey = findDataSourceKey(resolvedDataSource);
+            if (StringUtils.hasText(failedKey)) {
+                healthAwareStrategy.recordFailure(failedKey);
+                if (datasourceProperties.getReadWriteSplit().getFailover().isFallbackToMaster()) {
+                    String currentTenantId = TenantContextHolder.getTenantId();
+                    String fallbackKey = null;
+                    if (StringUtils.hasText(currentTenantId) && !TenantContextHolder.isIgnoreTenant()) {
+                        fallbackKey = resolveTenantMasterKey(currentTenantId);
+                    }
+                    if (!StringUtils.hasText(fallbackKey)) {
+                        fallbackKey = datasourceProperties.getReadWriteSplit().getMasterDataSource();
+                    }
+                    if (!Objects.equals(failedKey, fallbackKey) && containsDataSource(fallbackKey)) {
+                        log.warn("从库节点 [{}] 获取连接失败，高可用自愈降级获取主库 [{}] 连接", failedKey, fallbackKey, e);
+                        return function.get(getDataSource(fallbackKey));
                     }
                 }
             }
-            throw e;
         }
+        throw e;
     }
 
     /**
@@ -312,11 +336,11 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             String prefix = datasourceProperties.getMultiTenancy().getDataSourcePrefix();
             key = (prefix != null ? prefix : "") + tenantId;
         }
-        if (containsDataSource(key)) {
-            return key;
-        }
         if (containsDataSource(key + "_master")) {
             return key + "_master";
+        }
+        if (containsDataSource(key)) {
+            return key;
         }
         return key;
     }
@@ -348,6 +372,11 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
         String defaultPrefixKey = (prefix != null ? prefix : "") + tenantId + "_slave";
         if (containsDataSource(defaultPrefixKey)) {
             return defaultPrefixKey;
+        }
+        // 约定探测 3: 如果 prefix + tenantId 本身注册为 GroupDataSource (从库集群)
+        String rawKey = (prefix != null ? prefix : "") + tenantId;
+        if (getGroupDataSources().containsKey(rawKey)) {
+            return rawKey;
         }
         return slaveKey;
     }
@@ -414,6 +443,37 @@ public class AtengDynamicRoutingDataSource extends DynamicRoutingDataSource {
             }
         }
         return null;
+    }
+
+    /**
+     * 注册分组数据源 (GroupDataSource)
+     *
+     * @param groupKey        分组标识
+     * @param groupDataSource 分组数据源实例
+     */
+    public void addGroupDataSource(String groupKey, GroupDataSource groupDataSource) {
+        if (!StringUtils.hasText(groupKey) || groupDataSource == null) {
+            return;
+        }
+        getGroupDataSources().put(groupKey, groupDataSource);
+        log.info("ateng-boot-datasource: 成功注册分组数据源: [{}]", groupKey);
+    }
+
+    /**
+     * 注销分组数据源 (GroupDataSource)
+     *
+     * @param groupKey 分组标识
+     * @return 被移除的分组数据源，若不存在返回 null
+     */
+    public GroupDataSource removeGroupDataSource(String groupKey) {
+        if (!StringUtils.hasText(groupKey)) {
+            return null;
+        }
+        GroupDataSource removed = getGroupDataSources().remove(groupKey);
+        if (removed != null) {
+            log.info("ateng-boot-datasource: 成功注销分组数据源: [{}]", groupKey);
+        }
+        return removed;
     }
 
     @Override

@@ -70,7 +70,9 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
             }
             log.info("ateng-boot-datasource: 成功完成初始动态数据源 Micrometer 度量指标绑定 (数据源数: {})", allStats.size());
         } finally {
-            bindLock.unlock();
+            if (bindLock.isHeldByCurrentThread()) {
+                bindLock.unlock();
+            }
         }
     }
 
@@ -106,7 +108,9 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
             }
             bindDataSourceInternal(dsKey);
         } finally {
-            bindLock.unlock();
+            if (bindLock.isHeldByCurrentThread()) {
+                bindLock.unlock();
+            }
         }
     }
 
@@ -123,7 +127,9 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
         try {
             unbindInternal(dsKey);
         } finally {
-            bindLock.unlock();
+            if (bindLock.isHeldByCurrentThread()) {
+                bindLock.unlock();
+            }
         }
     }
 
@@ -159,9 +165,25 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
             }
             log.info("ateng-boot-datasource: DynamicDatasourceMetricsBinder 已安全销毁并释放所有指标");
         } finally {
-            bindLock.unlock();
+            if (bindLock.isHeldByCurrentThread()) {
+                bindLock.unlock();
+            }
         }
     }
+
+    @FunctionalInterface
+    private interface MetricValueExtractor {
+        double extract(DataSourceGaugeTarget target);
+    }
+
+    private record MetricDescriptor(String name, String description, MetricValueExtractor extractor) {}
+
+    private static final List<MetricDescriptor> METRIC_DESCRIPTORS = List.of(
+            new MetricDescriptor(METRIC_ACTIVE, "当前物理连接池活跃连接数 (Active Connections)", DataSourceGaugeTarget::getActiveConnections),
+            new MetricDescriptor(METRIC_IDLE, "当前物理连接池空闲连接数 (Idle Connections)", DataSourceGaugeTarget::getIdleConnections),
+            new MetricDescriptor(METRIC_TOTAL, "当前物理连接池总连接数 (Total Connections)", DataSourceGaugeTarget::getTotalConnections),
+            new MetricDescriptor(METRIC_PENDING_THREADS, "当前等待获取连接的排队线程数 (Threads Awaiting Connection)", DataSourceGaugeTarget::getThreadsAwaitingConnection)
+    );
 
     private void bindDataSourceInternal(String dsKey) {
         if (registry == null || !StringUtils.hasText(dsKey)) {
@@ -170,35 +192,15 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
         DataSourceGaugeTarget target = new DataSourceGaugeTarget(dsKey, template);
         monitoredTargets.put(dsKey, target);
 
-        List<Meter.Id> meterIds = new ArrayList<>(4);
-
-        Meter.Id activeId = Gauge.builder(METRIC_ACTIVE, target, DataSourceGaugeTarget::getActiveConnections)
-                .tag(TAG_NAME, dsKey)
-                .description("当前物理连接池活跃连接数 (Active Connections)")
-                .register(registry)
-                .getId();
-        meterIds.add(activeId);
-
-        Meter.Id idleId = Gauge.builder(METRIC_IDLE, target, DataSourceGaugeTarget::getIdleConnections)
-                .tag(TAG_NAME, dsKey)
-                .description("当前物理连接池空闲连接数 (Idle Connections)")
-                .register(registry)
-                .getId();
-        meterIds.add(idleId);
-
-        Meter.Id totalId = Gauge.builder(METRIC_TOTAL, target, DataSourceGaugeTarget::getTotalConnections)
-                .tag(TAG_NAME, dsKey)
-                .description("当前物理连接池总连接数 (Total Connections)")
-                .register(registry)
-                .getId();
-        meterIds.add(totalId);
-
-        Meter.Id pendingId = Gauge.builder(METRIC_PENDING_THREADS, target, DataSourceGaugeTarget::getThreadsAwaitingConnection)
-                .tag(TAG_NAME, dsKey)
-                .description("当前等待获取连接的排队线程数 (Threads Awaiting Connection)")
-                .register(registry)
-                .getId();
-        meterIds.add(pendingId);
+        List<Meter.Id> meterIds = new ArrayList<>(METRIC_DESCRIPTORS.size());
+        for (MetricDescriptor descriptor : METRIC_DESCRIPTORS) {
+            Meter.Id meterId = Gauge.builder(descriptor.name(), target, descriptor.extractor()::extract)
+                    .tag(TAG_NAME, dsKey)
+                    .description(descriptor.description())
+                    .register(registry)
+                    .getId();
+            meterIds.add(meterId);
+        }
 
         registeredMeterIds.put(dsKey, meterIds);
         log.info("ateng-boot-datasource: 成功注册数据源 Micrometer 度量指标 [dsKey={}]", dsKey);
@@ -214,10 +216,9 @@ public class DynamicDatasourceMetricsBinder implements MeterBinder, DynamicDatas
                 }
             }
             // 防御性二次清理，彻底清理残余 Gauge
-            registry.find(METRIC_ACTIVE).tag(TAG_NAME, dsKey).gauges().forEach(registry::remove);
-            registry.find(METRIC_IDLE).tag(TAG_NAME, dsKey).gauges().forEach(registry::remove);
-            registry.find(METRIC_TOTAL).tag(TAG_NAME, dsKey).gauges().forEach(registry::remove);
-            registry.find(METRIC_PENDING_THREADS).tag(TAG_NAME, dsKey).gauges().forEach(registry::remove);
+            for (MetricDescriptor descriptor : METRIC_DESCRIPTORS) {
+                registry.find(descriptor.name()).tag(TAG_NAME, dsKey).gauges().forEach(registry::remove);
+            }
         }
         log.info("ateng-boot-datasource: 已注销并清理数据源 Micrometer 度量指标 [dsKey={}]", dsKey);
     }

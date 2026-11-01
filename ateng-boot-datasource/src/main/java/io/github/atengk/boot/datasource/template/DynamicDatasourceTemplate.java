@@ -28,8 +28,13 @@ import org.springframework.util.StringUtils;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -53,6 +58,7 @@ public class DynamicDatasourceTemplate {
     private final TenantDataSourceProvider tenantDataSourceProvider;
     private final DynamicDatasourceGuard guard;
     private final DefaultDataSourceCreator defaultDataSourceCreator;
+    private final Executor taskExecutor;
     private final ReentrantLock lifecycleLock = new ReentrantLock();
     private final List<DynamicDatasourceLifecycleListener> lifecycleListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
@@ -60,7 +66,8 @@ public class DynamicDatasourceTemplate {
                                      DatasourceProperties datasourceProperties,
                                      TenantDataSourceProvider tenantDataSourceProvider,
                                      DynamicDatasourceGuard guard,
-                                     DefaultDataSourceCreator defaultDataSourceCreator) {
+                                     DefaultDataSourceCreator defaultDataSourceCreator,
+                                     Executor taskExecutor) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource 不能为空");
         this.datasourceProperties = datasourceProperties != null ? datasourceProperties : new DatasourceProperties();
         this.tenantDataSourceProvider = tenantDataSourceProvider != null
@@ -68,19 +75,28 @@ public class DynamicDatasourceTemplate {
                 : new DefaultTenantDataSourceProvider(this.datasourceProperties);
         this.guard = guard != null ? guard : new DynamicDatasourceGuard(this.datasourceProperties);
         this.defaultDataSourceCreator = defaultDataSourceCreator;
+        this.taskExecutor = taskExecutor;
+    }
+
+    public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
+                                     DatasourceProperties datasourceProperties,
+                                     TenantDataSourceProvider tenantDataSourceProvider,
+                                     DynamicDatasourceGuard guard,
+                                     DefaultDataSourceCreator defaultDataSourceCreator) {
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, guard, defaultDataSourceCreator, null);
     }
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
                                      TenantDataSourceProvider tenantDataSourceProvider,
                                      DynamicDatasourceGuard guard) {
-        this(dataSource, datasourceProperties, tenantDataSourceProvider, guard, null);
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, guard, null, null);
     }
 
     public DynamicDatasourceTemplate(DynamicRoutingDataSource dataSource,
                                      DatasourceProperties datasourceProperties,
                                      TenantDataSourceProvider tenantDataSourceProvider) {
-        this(dataSource, datasourceProperties, tenantDataSourceProvider, new DynamicDatasourceGuard(datasourceProperties), null);
+        this(dataSource, datasourceProperties, tenantDataSourceProvider, new DynamicDatasourceGuard(datasourceProperties), null, null);
     }
 
     /**
@@ -202,6 +218,69 @@ public class DynamicDatasourceTemplate {
     }
 
     /**
+     * 注册分组数据源 (GroupDataSource)
+     *
+     * @param groupKey        分组标识
+     * @param groupDataSource 分组数据源实例
+     */
+    public void registerGroupDataSource(String groupKey, GroupDataSource groupDataSource) {
+        Assert.hasText(groupKey, "groupKey 不能为空");
+        Assert.notNull(groupDataSource, "groupDataSource 不能为空");
+        if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+            atengDs.addGroupDataSource(groupKey, groupDataSource);
+        } else {
+            dataSource.getGroupDataSources().put(groupKey, groupDataSource);
+        }
+    }
+
+    /**
+     * 注销分组数据源 (GroupDataSource)
+     *
+     * @param groupKey 分组标识
+     * @return 被移除的分组数据源，若不存在返回 null
+     */
+    public GroupDataSource removeGroupDataSource(String groupKey) {
+        if (!StringUtils.hasText(groupKey)) {
+            return null;
+        }
+        if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+            return atengDs.removeGroupDataSource(groupKey);
+        } else {
+            return dataSource.getGroupDataSources().remove(groupKey);
+        }
+    }
+
+    /**
+     * 快捷向指定分组中添加或追加物理数据源节点
+     *
+     * @param groupKey  分组标识
+     * @param memberKey 物理成员数据源标识
+     */
+    public void addGroupMember(String groupKey, String memberKey) {
+        Assert.hasText(groupKey, "groupKey 不能为空");
+        Assert.hasText(memberKey, "memberKey 不能为空");
+        DataSource memberDs = getDataSource(memberKey);
+        if (memberDs == null && dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+            memberDs = atengDs.findDataSource(memberKey);
+        }
+        if (memberDs == null) {
+            throw new DataSourceSwitchException("物理数据源节点不存在: " + memberKey);
+        }
+
+        GroupDataSource groupDataSource = dataSource.getGroupDataSources().get(groupKey);
+        if (groupDataSource == null) {
+            if (dataSource instanceof AtengDynamicRoutingDataSource atengDs) {
+                groupDataSource = new GroupDataSource(groupKey, atengDs.getHealthAwareStrategy());
+                registerGroupDataSource(groupKey, groupDataSource);
+            } else {
+                throw new IllegalStateException("当前底层数据源不支持自动创建 GroupDataSource，请使用 registerGroupDataSource 显式注入");
+            }
+        }
+        groupDataSource.addDatasource(memberKey, memberDs);
+        log.info("ateng-boot-datasource: 分组 [{}] 成功挂载节点 [{}]", groupKey, memberKey);
+    }
+
+    /**
      * 判断指定数据源 Key 是否已注册（支持单物理库与分组库）
      *
      * @param dsKey 数据源 Key
@@ -287,6 +366,15 @@ public class DynamicDatasourceTemplate {
     }
 
     /**
+     * 注册动态数据源生命周期监听器（与 addLifecycleListener 保持对称命名别名）
+     *
+     * @param listener 生命周期监听器
+     */
+    public void registerLifecycleListener(DynamicDatasourceLifecycleListener listener) {
+        addLifecycleListener(listener);
+    }
+
+    /**
      * 注销动态数据源生命周期监听器
      *
      * @param listener 生命周期监听器
@@ -360,7 +448,7 @@ public class DynamicDatasourceTemplate {
      * @param ds 原始数据源
      * @return 真实物理底层数据源
      */
-    private DataSource unwrapDataSource(DataSource ds) {
+    public DataSource unwrapDataSource(DataSource ds) {
         if (ds == null) {
             return null;
         }
@@ -378,8 +466,10 @@ public class DynamicDatasourceTemplate {
             if (ds.isWrapperFor(HikariDataSource.class)) {
                 return ds.unwrap(HikariDataSource.class);
             }
-        } catch (Exception ignored) {
-            // Fail-safe 降级，返回原始数据源
+        } catch (SQLException e) {
+            log.trace("ateng-boot-datasource: 解包 HikariDataSource [{}] 发生 SQL 异常，降级使用原始数据源: {}", ds.getClass().getName(), e.getMessage());
+        } catch (Exception e) {
+            log.trace("ateng-boot-datasource: 数据源 [{}] isWrapperFor 探测异常，降级使用原始数据源: {}", ds.getClass().getName(), e.getMessage());
         }
         return ds;
     }
@@ -595,9 +685,15 @@ public class DynamicDatasourceTemplate {
      * @param dsKey    数据源唯一标识
      * @param property 数据源创建配置属性
      */
+    /**
+     * 动态注册受管数据源配置属性并创建物理连接池（带并发互斥与 2 秒连通性 Fail-Fast 预检）
+     * 依据 ateng.boot.datasource.dynamic-load.pre-warm 配置决定是否预热连接池
+     *
+     * @param dsKey    数据源唯一标识
+     * @param property 数据源创建配置属性
+     */
     public void addDataSource(String dsKey, DataSourceProperty property) {
-        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
-        addDataSource(dsKey, property, preWarm);
+        addDataSource(dsKey, property, isPreWarmEnabled());
     }
 
     /**
@@ -622,7 +718,6 @@ public class DynamicDatasourceTemplate {
             try {
                 newDs = defaultDataSourceCreator.createDataSource(property);
             } catch (Exception e) {
-                log.error("ateng-boot-datasource: 创建物理数据源实例失败 [dsKey={}]", dsKey, e);
                 throw new DataSourceSwitchException("创建物理数据源实例失败 [dsKey=" + dsKey + "]: " + e.getMessage(), e,
                         DatasourceResultCode.DATASOURCE_INIT_ERROR);
             }
@@ -631,10 +726,7 @@ public class DynamicDatasourceTemplate {
             log.info("ateng-boot-datasource: 动态注册受管数据源成功 [dsKey={}]", dsKey);
 
             if (preWarm) {
-                int preWarmCount = datasourceProperties.getDynamicLoad() != null
-                        ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
-                        : 5;
-                preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+                preWarmDataSourceInternal(dsKey, newDs, resolvePreWarmCount());
             }
             notifyDataSourceAdded(dsKey, newDs);
         } finally {
@@ -652,8 +744,7 @@ public class DynamicDatasourceTemplate {
      * @param newDs 待注册的物理数据源实例
      */
     public void addDataSource(String dsKey, DataSource newDs) {
-        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
-        addDataSource(dsKey, newDs, preWarm);
+        addDataSource(dsKey, newDs, isPreWarmEnabled());
     }
 
     /**
@@ -676,10 +767,7 @@ public class DynamicDatasourceTemplate {
             log.info("ateng-boot-datasource: 动态注册受管物理数据源成功 [dsKey={}]", dsKey);
 
             if (preWarm) {
-                int preWarmCount = datasourceProperties.getDynamicLoad() != null
-                        ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
-                        : 5;
-                preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+                preWarmDataSourceInternal(dsKey, newDs, resolvePreWarmCount());
             }
             notifyDataSourceAdded(dsKey, newDs);
         } finally {
@@ -696,10 +784,7 @@ public class DynamicDatasourceTemplate {
      * @return 实际成功预热并放回池中的物理连接数
      */
     public int preWarmDataSource(String dsKey) {
-        int preWarmCount = datasourceProperties.getDynamicLoad() != null
-                ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
-        : 5;
-        return preWarmDataSource(dsKey, preWarmCount);
+        return preWarmDataSource(dsKey, resolvePreWarmCount());
     }
 
     /**
@@ -722,11 +807,19 @@ public class DynamicDatasourceTemplate {
 
     /**
      * 内部并发预热物理连接池实现
+     * <p>
+     * 并发获取并验证物理连接以填充连接池最小容量，防止冷启动网络握手与队列抖动。
+     * 遵循 Fail-Safe 容错原则：建立或校验连接异常时记录警告并降级，绝不阻塞或破坏数据源正常挂载。
+     * 所有成功获取的物理连接最终将在 finally 块中确定性安全归还连接池，严防句柄与连接泄漏。
+     * </p>
+     *
+     * @param dsKey 目标数据源唯一标识
+     * @param ds    目标数据源实例
+     * @param count 目标预热连接数
+     * @return 实际成功建立并放回池中的物理连接数
      */
     private int preWarmDataSourceInternal(String dsKey, DataSource ds, int count) {
-        int targetCount = count > 0
-                ? count
-                : (datasourceProperties.getDynamicLoad() != null ? datasourceProperties.getDynamicLoad().getPreWarmConnections() : 5);
+        int targetCount = count > 0 ? count : resolvePreWarmCount();
         if (targetCount <= 0) {
             targetCount = 5;
         }
@@ -735,35 +828,81 @@ public class DynamicDatasourceTemplate {
         if (actualDs instanceof HikariDataSource hikari && hikari.getMaximumPoolSize() > 0) {
             targetCount = Math.min(targetCount, hikari.getMaximumPoolSize());
         }
+        final int finalTargetCount = targetCount;
 
         Duration probeTimeout = datasourceProperties.getDynamicLoad() != null
                 ? datasourceProperties.getDynamicLoad().getProbeTimeout()
                 : Duration.ofSeconds(2);
         int timeoutSeconds = Math.max(1, (int) probeTimeout.toSeconds());
 
-        List<Connection> openedConnections = new ArrayList<>(targetCount);
+        Queue<Connection> openedConnections = new ConcurrentLinkedQueue<>();
+        AtomicInteger successCount = new AtomicInteger(0);
+
         try {
-            for (int i = 0; i < targetCount; i++) {
-                try {
-                    Connection conn = ds.getConnection();
-                    if (conn != null) {
-                        if (conn.isValid(timeoutSeconds)) {
-                            openedConnections.add(conn);
-                        } else {
-                            conn.close();
-                            log.warn("ateng-boot-datasource: 预热数据源 [{}] 物理连接有效性校验失败 (isValid=false)", dsKey);
-                            break;
+            if (taskExecutor != null && finalTargetCount > 1) {
+                // 并发预热：通过受管线程池并发拉取连接并验证，缩短冷启动挂起时延
+                List<CompletableFuture<Void>> futures = new ArrayList<>(finalTargetCount);
+                for (int i = 0; i < finalTargetCount; i++) {
+                    final int index = i + 1;
+                    CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                        Connection conn = null;
+                        try {
+                            conn = ds.getConnection();
+                            if (conn != null) {
+                                if (conn.isValid(timeoutSeconds)) {
+                                    openedConnections.add(conn);
+                                    successCount.incrementAndGet();
+                                } else {
+                                    conn.close();
+                                    log.warn("ateng-boot-datasource: 预热数据源 [{}] 物理连接有效性校验失败 (isValid=false)", dsKey);
+                                }
+                            }
+                        } catch (Exception e) {
+                            if (conn != null) {
+                                try {
+                                    conn.close();
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            log.warn("ateng-boot-datasource: 预热数据源 [{}] 建立第 {}/{} 个物理连接异常 (Fail-Safe 降级): {}",
+                                    dsKey, index, finalTargetCount, e.getMessage());
                         }
+                    }, taskExecutor);
+                    futures.add(future);
+                }
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } else {
+                // 串行保底（未注入 TaskExecutor 或单连接场景）
+                for (int i = 0; i < finalTargetCount; i++) {
+                    Connection conn = null;
+                    try {
+                        conn = ds.getConnection();
+                        if (conn != null) {
+                            if (conn.isValid(timeoutSeconds)) {
+                                openedConnections.add(conn);
+                                successCount.incrementAndGet();
+                            } else {
+                                conn.close();
+                                log.warn("ateng-boot-datasource: 预热数据源 [{}] 物理连接有效性校验失败 (isValid=false)", dsKey);
+                                break;
+                            }
+                        }
+                    } catch (Exception e) {
+                        if (conn != null) {
+                            try {
+                                conn.close();
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        log.warn("ateng-boot-datasource: 预热数据源 [{}] 建立第 {}/{} 个物理连接异常 (Fail-Safe 降级): {}",
+                                dsKey, i + 1, finalTargetCount, e.getMessage());
+                        break;
                     }
-                } catch (Exception e) {
-                    log.warn("ateng-boot-datasource: 预热数据源 [{}] 建立第 {}/{} 个物理连接异常 (Fail-Safe 降级): {}",
-                            dsKey, i + 1, targetCount, e.getMessage());
-                    break;
                 }
             }
             log.info("ateng-boot-datasource: 预热数据源 [{}] 连接池完成，成功建立并释放 {}/{} 个物理连接",
-                    dsKey, openedConnections.size(), targetCount);
-            return openedConnections.size();
+                    dsKey, successCount.get(), finalTargetCount);
+            return successCount.get();
         } finally {
             for (Connection conn : openedConnections) {
                 if (conn != null) {
@@ -775,6 +914,26 @@ public class DynamicDatasourceTemplate {
                 }
             }
         }
+    }
+
+    private boolean isPreWarmEnabled() {
+        return datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
+    }
+
+    private int resolvePreWarmCount() {
+        return datasourceProperties.getDynamicLoad() != null
+                ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
+                : 5;
+    }
+
+    /**
+     * 获取指定已注册的数据源实例（支持单物理库与从库分组节点寻址）
+     *
+     * @param dsKey 数据源标识
+     * @return 匹配的 DataSource 实例，若不存在返回 null
+     */
+    public DataSource getDataSource(String dsKey) {
+        return resolveDataSource(dsKey);
     }
 
     /**
@@ -806,8 +965,11 @@ public class DynamicDatasourceTemplate {
     public void removeDataSource(String dsKey, boolean graceful) {
         Assert.hasText(dsKey, "数据源标识 (dsKey) 不能为空");
         String primary = resolvePrimaryDataSourceKey();
-        if (dsKey.equals(primary) || "master".equals(dsKey)) {
+        if (dsKey.equals(primary) || "master".equalsIgnoreCase(dsKey)) {
             throw new DataSourceSwitchException("受管主数据源严禁动态注销: " + dsKey);
+        }
+        if (isProtectedCoreKey(dsKey)) {
+            throw new DataSourceSwitchException("受管核心数据源严禁动态注销: " + dsKey);
         }
         lifecycleLock.lock();
         try {
@@ -839,6 +1001,47 @@ public class DynamicDatasourceTemplate {
     }
 
     /**
+     * 判断指定数据源是否受核心白名单保护（严禁外部动态注销或擅自热重载）
+     *
+     * @param dsKey 数据源标识
+     * @return true 表示受保护；false 表示允许受管同步
+     */
+    public boolean isProtectedCoreKey(String dsKey) {
+        if (!StringUtils.hasText(dsKey)) {
+            return false;
+        }
+        String normalized = dsKey.trim().toLowerCase();
+        if ("master".equals(normalized) || "slave".equals(normalized)) {
+            return true;
+        }
+        String primary = resolvePrimaryDataSourceKey();
+        if (StringUtils.hasText(primary) && primary.equalsIgnoreCase(dsKey.trim())) {
+            return true;
+        }
+        if (datasourceProperties != null && datasourceProperties.getReadWriteSplit() != null) {
+            String master = datasourceProperties.getReadWriteSplit().getMasterDataSource();
+            if (StringUtils.hasText(master) && master.equalsIgnoreCase(dsKey.trim())) {
+                return true;
+            }
+            String slave = datasourceProperties.getReadWriteSplit().getSlaveDataSource();
+            if (StringUtils.hasText(slave) && slave.equalsIgnoreCase(dsKey.trim())) {
+                return true;
+            }
+        }
+        if (datasourceProperties != null && datasourceProperties.getDynamicLoad() != null) {
+            Set<String> whitelist = datasourceProperties.getDynamicLoad().getCoreWhitelist();
+            if (whitelist != null) {
+                for (String item : whitelist) {
+                    if (item != null && item.equalsIgnoreCase(dsKey.trim())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * 热重载已存在的数据源配置（平滑挂载新连接池、原子切流、优雅排空并物理关闭旧连接池）
      * 依据 ateng.boot.datasource.dynamic-load.pre-warm 配置决定是否预热新连接池
      *
@@ -846,8 +1049,7 @@ public class DynamicDatasourceTemplate {
      * @param newProperty 新的数据源创建配置属性
      */
     public void reloadDataSource(String dsKey, DataSourceProperty newProperty) {
-        boolean preWarm = datasourceProperties.getDynamicLoad() != null && datasourceProperties.getDynamicLoad().isPreWarm();
-        reloadDataSource(dsKey, newProperty, preWarm, true);
+        reloadDataSource(dsKey, newProperty, isPreWarmEnabled(), true);
     }
 
     /**
@@ -865,8 +1067,11 @@ public class DynamicDatasourceTemplate {
             throw new IllegalStateException("DefaultDataSourceCreator 未初始化，无法热重载创建数据源");
         }
         String primary = resolvePrimaryDataSourceKey();
-        if (dsKey.equals(primary) || "master".equals(dsKey)) {
+        if (dsKey.equals(primary) || "master".equalsIgnoreCase(dsKey)) {
             throw new DataSourceSwitchException("受管主数据源严禁动态重载或替换: " + dsKey);
+        }
+        if (isProtectedCoreKey(dsKey)) {
+            throw new DataSourceSwitchException("受管核心数据源严禁动态重载或替换: " + dsKey);
         }
 
         // 1. 创建新数据源实例并执行连通性预检 (探活失败直接快速失败抛出异常，绝不触碰原有正常运行的数据源)
@@ -874,17 +1079,13 @@ public class DynamicDatasourceTemplate {
         try {
             newDs = defaultDataSourceCreator.createDataSource(newProperty);
         } catch (Exception e) {
-            log.error("ateng-boot-datasource: 热重载创建新物理数据源失败 [dsKey={}]", dsKey, e);
             throw new DataSourceSwitchException("热重载创建新物理数据源失败 [dsKey=" + dsKey + "]: " + e.getMessage(), e,
                     DatasourceResultCode.DATASOURCE_INIT_ERROR);
         }
         validateConnection(dsKey, newDs);
 
         if (preWarm) {
-            int preWarmCount = datasourceProperties.getDynamicLoad() != null
-                    ? datasourceProperties.getDynamicLoad().getPreWarmConnections()
-                    : 5;
-            preWarmDataSourceInternal(dsKey, newDs, preWarmCount);
+            preWarmDataSourceInternal(dsKey, newDs, resolvePreWarmCount());
         }
 
         // 2. 互斥切流与替换

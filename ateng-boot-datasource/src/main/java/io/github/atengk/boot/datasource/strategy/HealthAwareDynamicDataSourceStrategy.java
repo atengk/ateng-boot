@@ -166,6 +166,10 @@ public class HealthAwareDynamicDataSourceStrategy implements DynamicDataSourceSt
             scheduleProbe(holder, initialInterval, failover);
             return holder;
         });
+        ProbeTaskHolder scheduled = activeProbes.get(dsKey);
+        if (scheduled != null && scheduled.scheduledFuture == null && !closed.get()) {
+            activeProbes.remove(dsKey);
+        }
     }
 
     /**
@@ -179,7 +183,8 @@ public class HealthAwareDynamicDataSourceStrategy implements DynamicDataSourceSt
             holder.scheduledFuture = scheduler.schedule(() -> executeProbe(holder, failover),
                     delay.toMillis(), TimeUnit.MILLISECONDS);
         } catch (Exception e) {
-            log.error("调度从库节点 [{}] 主动探活任务异常", holder.dsKey, e);
+            log.error("调度从库节点 [{}] 主动探活任务异常，清理探活句柄以防死锁", holder.dsKey, e);
+            activeProbes.remove(holder.dsKey);
         }
     }
 
