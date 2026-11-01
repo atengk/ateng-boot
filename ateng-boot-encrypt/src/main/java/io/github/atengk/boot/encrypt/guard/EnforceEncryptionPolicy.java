@@ -3,6 +3,8 @@ package io.github.atengk.boot.encrypt.guard;
 import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
 import io.github.atengk.boot.encrypt.wrapper.EncryptPropertySourceWrapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -26,14 +28,16 @@ import java.util.regex.Pattern;
  */
 public final class EnforceEncryptionPolicy {
 
+    private static final Logger log = LoggerFactory.getLogger(EnforceEncryptionPolicy.class);
+
     public static final String DEFAULT_SENSITIVE_KEY_PATTERN = ".*password.*|.*secret.*|.*token.*|.*private-key.*";
 
-    private static final String[] EXEMPTED_PROTOCOL_PREFIXES = {
-            "http://", "https://", "classpath:", "/"
+    private static final String[] EXEMPTED_URI_SCHEMES = {
+            "http://", "https://", "classpath:", "file:", "ws://", "wss://"
     };
 
     private static final Set<String> EXEMPTED_LOG_LEVELS = Set.of(
-            "DEBUG", "INFO", "WARN", "ERROR", "TRACE", "FATAL", "OFF"
+            "DEBUG", "INFO", "WARN", "ERROR", "TRACE"
     );
 
     private EnforceEncryptionPolicy() {
@@ -92,7 +96,8 @@ public final class EnforceEncryptionPolicy {
                         .bind("ateng.boot.encrypt.ignored-keys", Bindable.setOf(String.class))
                         .orElse(Collections.emptySet());
                 result.addAll(bound);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.debug("[ateng-boot-encrypt] 读取自定义豁免键列表失败或环境属性源尚未就绪: {}", e.getMessage());
             }
         }
         return result;
@@ -109,7 +114,13 @@ public final class EnforceEncryptionPolicy {
                 }
                 if (pattern.matcher(key).matches()) {
                     Object rawValue = getRawProperty(source, key);
-                    if (rawValue instanceof String strVal && !strVal.trim().isEmpty()) {
+                    String strVal = null;
+                    if (rawValue instanceof CharSequence cs) {
+                        strVal = cs.toString();
+                    } else if (rawValue instanceof Number num) {
+                        strVal = num.toString();
+                    }
+                    if (strVal != null && !strVal.trim().isEmpty()) {
                         // 协议与日志级别等特征防误伤豁免
                         if (isExemptedValue(strVal)) {
                             continue;
@@ -140,17 +151,34 @@ public final class EnforceEncryptionPolicy {
         if (trimmed.isEmpty()) {
             return false;
         }
-        // 1. 协议与路径特征豁免（http://, https://, classpath:, /）
-        for (String prefix : EXEMPTED_PROTOCOL_PREFIXES) {
+        // 1. URI 协议特征豁免（http://, https://, classpath:, file:, ws://, wss://）
+        for (String prefix : EXEMPTED_URI_SCHEMES) {
             if (trimmed.regionMatches(true, 0, prefix, 0, prefix.length())) {
                 return true;
             }
         }
-        // 2. 日志级别特征豁免（DEBUG, INFO, WARN, ERROR, TRACE 等）
+        // 2. 真实多级绝对文件路径特征豁免
+        if (isPathLike(trimmed)) {
+            return true;
+        }
+        // 3. 标准日志级别特征豁免（DEBUG, INFO, WARN, ERROR, TRACE）
         return EXEMPTED_LOG_LEVELS.contains(trimmed.toUpperCase(Locale.ROOT));
     }
 
-    private static Object getRawProperty(PropertySource<?> source, String key) {
+    private static boolean isPathLike(String val) {
+        // Unix 绝对路径：以 / 开头且至少存在二级目录，如 /etc/ssl/cert.pem，防止 /Secret2026 单层明文逃逸
+        if (val.startsWith("/") && val.indexOf('/', 1) > 0) {
+            return true;
+        }
+        // Windows 绝对路径：以盘符开头，如 C:/certs/app.p12 或 C:\certs\app.p12
+        if (val.length() >= 3 && Character.isLetter(val.charAt(0)) && val.charAt(1) == ':'
+                && (val.charAt(2) == '/' || val.charAt(2) == '\\')) {
+            return true;
+        }
+        return false;
+    }
+
+    public static Object getRawProperty(PropertySource<?> source, String key) {
         if (source instanceof EncryptPropertySourceWrapper wrapper) {
             return wrapper.getDelegate().getProperty(key);
         }

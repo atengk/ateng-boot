@@ -159,11 +159,46 @@ class EnforceEncryptionPolicyTest {
         assertThat(EnforceEncryptionPolicy.isExemptedValue("HTTP://localhost:8080")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("classpath:certs/key.pem")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("/var/data/secret")).isTrue();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("/etc/ssl/cert.pem")).isTrue();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("C:/certs/app.p12")).isTrue();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("C:\\certs\\app.p12")).isTrue();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("/root123456")).isFalse();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("/SecretPassword")).isFalse();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("DEBUG")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("info")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("warn")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("ERROR")).isTrue();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("trace")).isTrue();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("FATAL")).isFalse();
+        assertThat(EnforceEncryptionPolicy.isExemptedValue("OFF")).isFalse();
         assertThat(EnforceEncryptionPolicy.isExemptedValue("mySecretPassword123")).isFalse();
+    }
+
+    @Test
+    @DisplayName("enforce: YAML 中未加引号的纯数字敏感密码（解析为 Integer）必须被安全策略刚性拦截")
+    void testEnforceFailsOnNumericPassword() {
+        StandardEnvironment env = new StandardEnvironment();
+        env.getPropertySources().addFirst(new MapPropertySource("prodConfig", Map.of(
+                "spring.datasource.password", 123456,
+                "server.port", 8080
+        )));
+
+        assertThatThrownBy(() -> EnforceEncryptionPolicy.enforce(env, pattern, parser))
+                .isInstanceOf(ConfigSecurityException.class)
+                .hasMessageContaining("spring.datasource.password");
+    }
+
+    @Test
+    @DisplayName("enforce: 敏感属性为单层斜杠开头明文密码（如 /root123）时必须拦截，不可误判为文件路径")
+    void testEnforceFailsOnSingleSlashPassword() {
+        StandardEnvironment env = new StandardEnvironment();
+        env.getPropertySources().addFirst(new MapPropertySource("prodConfig", Map.of(
+                "spring.datasource.password", "/root123",
+                "server.port", 8080
+        )));
+
+        assertThatThrownBy(() -> EnforceEncryptionPolicy.enforce(env, pattern, parser))
+                .isInstanceOf(ConfigSecurityException.class)
+                .hasMessageContaining("spring.datasource.password");
     }
 }

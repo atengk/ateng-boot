@@ -383,6 +383,31 @@ class InPlaceRewriterTest {
     }
 
     @Test
+    @DisplayName("测试 YAML 块标量 '|' 携带显式 # @encrypt 指令时被提取并打平加密为标准单行密文")
+    void testYamlBlockScalarEncryptedWithDirective() throws IOException {
+        String yamlWithDirective = """
+                rsa:
+                  # @encrypt
+                  private-key: |
+                    -----BEGIN PRIVATE KEY-----
+                    MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7
+                    -----END PRIVATE KEY-----
+                  password: secretRsaPassword
+                """;
+        Path blockFile = tempDir.resolve("block-scalar-directive.yml");
+        Files.writeString(blockFile, yamlWithDirective, StandardCharsets.UTF_8);
+
+        InPlaceRewriter rewriter = new InPlaceRewriter("MasterKey!");
+        int encCount = rewriter.rewriteEncrypt(blockFile);
+        assertEquals(2, encCount, "带 @encrypt 指令的多行块标量与 password 均被就地加密");
+
+        String encContent = Files.readString(blockFile, StandardCharsets.UTF_8);
+        assertTrue(encContent.contains("  private-key: ENC("), "多行块标量已转换为单行 ENC 密文");
+        assertFalse(encContent.contains("-----BEGIN PRIVATE KEY-----"), "原始明文块已被完全移除");
+        assertTrue(encContent.contains("  password: ENC("));
+    }
+
+    @Test
     @DisplayName("测试带双引号且内含冒号、等号与注释字符的复杂密码加解密")
     void testQuotedValuesWithSpecialChars() throws IOException {
         String quotedConfig = """

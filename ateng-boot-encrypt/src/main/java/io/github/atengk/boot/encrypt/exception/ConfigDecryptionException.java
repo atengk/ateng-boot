@@ -38,4 +38,18 @@ public class ConfigDecryptionException extends BusinessException {
         this.keyId = null;
         this.algorithm = null;
     }
+
+    public ConfigDecryptionException(String message) {
+        super(CommonResultCode.INTERNAL_SERVER_ERROR, message);
+        this.propertyKey = null;
+        this.keyId = null;
+        this.algorithm = null;
+    }
+
+    public ConfigDecryptionException(String message, Throwable cause) {
+        super(CommonResultCode.INTERNAL_SERVER_ERROR, message, cause);
+        this.propertyKey = null;
+        this.keyId = null;
+        this.algorithm = null;
+    }
 }
