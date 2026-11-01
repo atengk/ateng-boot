@@ -1,12 +1,8 @@
 package io.github.atengk.boot.encrypt.wrapper;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
-import io.github.atengk.boot.encrypt.decryptor.AesCbcConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptorFactory;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
@@ -21,10 +17,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * 加密属性源动态装饰器
@@ -44,6 +40,9 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
     private final List<ConfigDecryptor> decryptors;
     private final EncryptAlgorithm defaultAlgorithm;
     private final boolean failOnError;
+
+    private Consumer<String> registeredListener;
+    private MultiKeyRegistry registeredRegistry;
 
     private final AtomicReference<ConcurrentHashMap<String, Object>> decryptedCacheRef =
             new AtomicReference<>(new ConcurrentHashMap<>());
@@ -67,7 +66,7 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         this.delegate = delegate;
         this.parser = parser != null ? parser : new CiphertextParser();
         this.keyDetector = keyDetector != null ? keyDetector : new KeyDetector();
-        this.decryptors = initDecryptors(decryptors);
+        this.decryptors = ConfigDecryptorFactory.createDefaultDecryptors(decryptors);
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
         this.failOnError = failOnError;
         registerCacheClearingListener(this.keyDetector);
@@ -92,37 +91,6 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
 
     public EncryptPropertySourceWrapper(PropertySource<?> delegate, io.github.atengk.boot.encrypt.key.MultiKeyRegistry keyRegistry) {
         this(delegate, new CiphertextParser(), new KeyDetector(keyRegistry), null, EncryptAlgorithm.AES_GCM, true);
-    }
-
-    private static List<ConfigDecryptor> initDecryptors(List<ConfigDecryptor> customDecryptors) {
-        List<ConfigDecryptor> list = new ArrayList<>();
-        if (customDecryptors != null) {
-            list.addAll(customDecryptors);
-        }
-        // 通过 Java ServiceLoader 发现外部 SPI 扩展解密器（如外部云 KMS、硬件加密机扩展）
-        ServiceLoader<ConfigDecryptor> serviceLoader = ServiceLoader.load(ConfigDecryptor.class);
-        for (ConfigDecryptor spiDecryptor : serviceLoader) {
-            if (list.stream().noneMatch(d -> d.getClass().equals(spiDecryptor.getClass()))) {
-                list.add(spiDecryptor);
-            }
-        }
-        // 注册默认纯 JDK 原生解密器
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_GCM))) {
-            list.add(new AesGcmConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_CBC))) {
-            list.add(new AesCbcConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM4_CBC))) {
-            list.add(new Sm4ConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.RSA))) {
-            list.add(new RsaConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM2))) {
-            list.add(new Sm2ConfigDecryptor());
-        }
-        return list;
     }
 
     @Override
@@ -233,14 +201,24 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         }
     }
 
-    private void registerCacheClearingListener(KeyDetector detector) {
-        if (detector != null && detector.getRegistry() != null) {
-            detector.getRegistry().addChangeListener(keyId -> {
-                log.info("[ateng-boot-encrypt] 检测到密钥变更或轮换 [KeyId: {}]，立即原子清空属性源解密缓存: {}",
-                        keyId, delegate.getName());
-                clearCache();
-            });
+    private synchronized void registerCacheClearingListener(KeyDetector detector) {
+        if (detector == null || detector.getRegistry() == null) {
+            return;
         }
+        MultiKeyRegistry targetRegistry = detector.getRegistry();
+        if (this.registeredRegistry == targetRegistry && this.registeredListener != null) {
+            return;
+        }
+        if (this.registeredRegistry != null && this.registeredListener != null) {
+            this.registeredRegistry.removeChangeListener(this.registeredListener);
+        }
+        this.registeredRegistry = targetRegistry;
+        this.registeredListener = keyId -> {
+            log.info("[ateng-boot-encrypt] 检测到密钥变更或轮换 [KeyId: {}]，立即原子清空属性源解密缓存: {}",
+                    keyId, delegate.getName());
+            clearCache();
+        };
+        this.registeredRegistry.addChangeListener(this.registeredListener);
     }
 
     /**

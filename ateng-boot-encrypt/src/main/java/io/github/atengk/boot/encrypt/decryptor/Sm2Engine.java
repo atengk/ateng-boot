@@ -248,7 +248,7 @@ public final class Sm2Engine {
      * @return 还原后的明文字节流
      */
     public static byte[] decrypt(byte[] ciphertext, BigInteger privKey) {
-        if (ciphertext == null || privKey == null || privKey.signum() <= 0) {
+        if (ciphertext == null || ciphertext.length == 0 || privKey == null || privKey.signum() <= 0) {
             throw new IllegalArgumentException("SM2 解密入参密文或私钥非法");
         }
 
@@ -352,56 +352,11 @@ public final class Sm2Engine {
                 throw new IllegalArgumentException("ASN.1 SEQUENCE 声明长度 (" + seqLen + ") 超出实际数据流长度 (" + (der.length - idx) + ")");
             }
 
-            // x1 (INTEGER 0x02)
-            if (idx >= der.length || der[idx++] != 0x02) {
-                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 x1 INTEGER 标记 (0x02)");
-            }
-            int xLen = readDerLength(der, idx);
-            idx += getLengthBytesCount(der, idx);
-            if (idx + xLen > der.length) {
-                throw new IllegalArgumentException("ASN.1 x1 字段长度溢出");
-            }
-            byte[] x1 = new byte[xLen];
-            System.arraycopy(der, idx, x1, 0, xLen);
-            idx += xLen;
-
-            // y1 (INTEGER 0x02)
-            if (idx >= der.length || der[idx++] != 0x02) {
-                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 y1 INTEGER 标记 (0x02)");
-            }
-            int yLen = readDerLength(der, idx);
-            idx += getLengthBytesCount(der, idx);
-            if (idx + yLen > der.length) {
-                throw new IllegalArgumentException("ASN.1 y1 字段长度溢出");
-            }
-            byte[] y1 = new byte[yLen];
-            System.arraycopy(der, idx, y1, 0, yLen);
-            idx += yLen;
-
-            // c3 (OCTET STRING 0x04)
-            if (idx >= der.length || der[idx++] != 0x04) {
-                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c3 OCTET STRING 标记 (0x04)");
-            }
-            int c3Len = readDerLength(der, idx);
-            idx += getLengthBytesCount(der, idx);
-            if (idx + c3Len > der.length) {
-                throw new IllegalArgumentException("ASN.1 c3 字段长度溢出");
-            }
-            byte[] c3 = new byte[c3Len];
-            System.arraycopy(der, idx, c3, 0, c3Len);
-            idx += c3Len;
-
-            // c2 (OCTET STRING 0x04)
-            if (idx >= der.length || der[idx++] != 0x04) {
-                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c2 OCTET STRING 标记 (0x04)");
-            }
-            int c2Len = readDerLength(der, idx);
-            idx += getLengthBytesCount(der, idx);
-            if (idx + c2Len > der.length) {
-                throw new IllegalArgumentException("ASN.1 c2 字段长度溢出");
-            }
-            byte[] c2 = new byte[c2Len];
-            System.arraycopy(der, idx, c2, 0, c2Len);
+            int[] cursor = new int[]{idx};
+            byte[] x1 = readDerField(der, cursor, (byte) 0x02, "x1", "INTEGER");
+            byte[] y1 = readDerField(der, cursor, (byte) 0x02, "y1", "INTEGER");
+            byte[] c3 = readDerField(der, cursor, (byte) 0x04, "c3", "OCTET STRING");
+            byte[] c2 = readDerField(der, cursor, (byte) 0x04, "c2", "OCTET STRING");
 
             // 拼装标准 C1C3C2 (04 || x1 (32B) || y1 (32B) || c3 (32B) || c2)
             Point c1 = new Point(new BigInteger(1, x1), new BigInteger(1, y1));
@@ -418,6 +373,23 @@ public final class Sm2Engine {
         } catch (Exception e) {
             throw new IllegalArgumentException("SM2 ASN.1 DER 密文解析失败: " + e.getMessage(), e);
         }
+    }
+
+    private static byte[] readDerField(byte[] der, int[] cursor, byte expectedTag, String fieldName, String typeDesc) {
+        int idx = cursor[0];
+        if (idx >= der.length || der[idx++] != expectedTag) {
+            String tagHex = (expectedTag < 0x10 ? "0" : "") + Integer.toHexString(expectedTag & 0xff);
+            throw new IllegalArgumentException("ASN.1 解析错误: 缺少 " + fieldName + " " + typeDesc + " 标记 (0x" + tagHex + ")");
+        }
+        int len = readDerLength(der, idx);
+        idx += getLengthBytesCount(der, idx);
+        if (idx + len > der.length) {
+            throw new IllegalArgumentException("ASN.1 " + fieldName + " 字段长度溢出");
+        }
+        byte[] value = new byte[len];
+        System.arraycopy(der, idx, value, 0, len);
+        cursor[0] = idx + len;
+        return value;
     }
 
     private static int readDerLength(byte[] bytes, int offset) {

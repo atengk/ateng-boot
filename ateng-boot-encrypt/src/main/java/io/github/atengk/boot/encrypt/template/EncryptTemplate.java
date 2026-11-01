@@ -2,13 +2,9 @@ package io.github.atengk.boot.encrypt.template;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
-import io.github.atengk.boot.encrypt.decryptor.AesCbcConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.AesGcmConfigDecryptor;
 import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptor;
+import io.github.atengk.boot.encrypt.decryptor.ConfigDecryptorFactory;
 import io.github.atengk.boot.encrypt.decryptor.ConfigEncryptor;
-import io.github.atengk.boot.encrypt.decryptor.RsaConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm2ConfigDecryptor;
-import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
@@ -37,6 +33,9 @@ public class EncryptTemplate {
     private final EncryptProperties properties;
 
     @Getter
+    private final EncryptAlgorithm defaultAlgorithm;
+
+    @Getter
     private final MultiKeyRegistry keyRegistry;
 
     @Getter
@@ -46,50 +45,30 @@ public class EncryptTemplate {
     private final List<ConfigDecryptor> decryptors;
 
     public EncryptTemplate(EncryptProperties properties,
+                           EncryptAlgorithm defaultAlgorithm,
                            MultiKeyRegistry keyRegistry,
                            CiphertextParser parser,
                            List<ConfigDecryptor> customDecryptors) {
         this.properties = Objects.requireNonNull(properties, "properties 不能为空");
+        this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm :
+                (properties.getAlgorithm() != null ? properties.getAlgorithm() : EncryptAlgorithm.AES_GCM);
         this.keyRegistry = Objects.requireNonNull(keyRegistry, "keyRegistry 不能为空");
         this.parser = Objects.requireNonNull(parser, "parser 不能为空");
-        this.decryptors = initDecryptors(customDecryptors);
+        this.decryptors = ConfigDecryptorFactory.createDefaultDecryptors(
+                customDecryptors, properties.getRetry());
+    }
+
+    public EncryptTemplate(EncryptProperties properties,
+                           MultiKeyRegistry keyRegistry,
+                           CiphertextParser parser,
+                           List<ConfigDecryptor> customDecryptors) {
+        this(properties, null, keyRegistry, parser, customDecryptors);
     }
 
     public EncryptTemplate(EncryptProperties properties,
                            MultiKeyRegistry keyRegistry,
                            CiphertextParser parser) {
-        this(properties, keyRegistry, parser, null);
-    }
-
-    private static List<ConfigDecryptor> initDecryptors(List<ConfigDecryptor> customDecryptors) {
-        List<ConfigDecryptor> list = new ArrayList<>();
-        if (customDecryptors != null) {
-            list.addAll(customDecryptors);
-        }
-        // 通过 Java ServiceLoader 发现外部 SPI 扩展解密器
-        ServiceLoader<ConfigDecryptor> serviceLoader = ServiceLoader.load(ConfigDecryptor.class);
-        for (ConfigDecryptor spiDecryptor : serviceLoader) {
-            if (list.stream().noneMatch(d -> d.getClass().equals(spiDecryptor.getClass()))) {
-                list.add(spiDecryptor);
-            }
-        }
-        // 注册默认纯 JDK 原生解密器
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_GCM))) {
-            list.add(new AesGcmConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.AES_CBC))) {
-            list.add(new AesCbcConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM4_CBC))) {
-            list.add(new Sm4ConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.RSA))) {
-            list.add(new RsaConfigDecryptor());
-        }
-        if (list.stream().noneMatch(d -> d.supports(EncryptAlgorithm.SM2))) {
-            list.add(new Sm2ConfigDecryptor());
-        }
-        return Collections.unmodifiableList(list);
+        this(properties, null, keyRegistry, parser, null);
     }
 
     /**
@@ -187,6 +166,8 @@ public class EncryptTemplate {
                 }
                 try {
                     return decryptor.decrypt(token.getCiphertext(), password);
+                } catch (ConfigDecryptionException e) {
+                    throw e;
                 } catch (Exception e) {
                     throw new ConfigDecryptionException("token", keyId, algo.getCode(), e);
                 }
@@ -219,12 +200,7 @@ public class EncryptTemplate {
         if (ciphertext == null) {
             return null;
         }
-        try {
-            return decrypt(ciphertext);
-        } catch (Exception e) {
-            log.trace("[ateng-boot-encrypt] 文本解密失败，容错返回原始文本: {}", e.getMessage());
-            return ciphertext;
-        }
+        return decryptOrDefault(ciphertext, ciphertext);
     }
 
     /**

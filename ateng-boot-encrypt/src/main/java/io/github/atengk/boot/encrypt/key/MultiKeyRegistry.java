@@ -146,8 +146,7 @@ public class MultiKeyRegistry implements ApplicationEventPublisherAware {
      * @param newDefaultKey 新的全局默认主密钥
      */
     public void rotateDefaultKey(String newDefaultKey) {
-        this.defaultKey = (newDefaultKey != null && !newDefaultKey.trim().isEmpty()) ? newDefaultKey.trim() : null;
-        notifyListeners(DEFAULT_KEY_ALIAS);
+        setDefaultKey(newDefaultKey);
     }
 
     /**
