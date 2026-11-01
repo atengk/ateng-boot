@@ -35,3 +35,19 @@ _Avoid_: 调度中心客户端, AdminClient, JobManager
 **XxlJobTestHelper (脱网调试门面)**:
 面向本地开发与自动化单测的脱网调度驱动器，允许在不启动独立 XXL-JOB Admin 的前提下，直接在内存中编程式模拟调度中心触发任意 JobHandler 并强断言执行结果。
 _Avoid_: 测试工具, 调试器, JobMockRunner, TestTrigger
+
+**XxlJobInterceptor (任务执行切面拦截器 SPI)**:
+为分布式受管任务提供前置拦截判定、执行后置处理与终态清理的三阶段切面扩展点，支持在任务执行前进行节点灰度过滤或前置预检阻断。
+_Avoid_: 任务过滤器, JobFilter, 任务钩子, JobAspectSPI
+
+**JobRuntimeGovernor (节点级任务运行时治理总线)**:
+负责单个微服务节点内部受管任务执行状态动态治理的管控核心，支持在节点维度对特定任务实施临时静默与恢复，防止故障扩散。
+_Avoid_: 任务开关, JobController, 节点控制器, JobToggle
+
+**BatchFailureHandler (批处理失败处理回调 SPI)**:
+在大数据量分片流式批处理遇到批次或局部实体处理异常时的受管回调组件，负责失败记录的抽取、死信持久化或业务降级补偿。
+_Avoid_: 错误回调, ErrorHandler, 失败监听器, BatchErrorListener
+
+**JobTimeoutFallbackHandler (任务超时降级处理器 SPI)**:
+当分布式受管任务被本地硬看门狗判定为超时并强行中断时，由框架自动触发的就地补偿降级回调组件，负责资源释放、外部锁解除或状态回滚。
+_Avoid_: 超时处理器, TimeoutHandler, 降级工具, FallbackHelper

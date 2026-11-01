@@ -9,6 +9,7 @@ import com.xxl.job.core.thread.ExecutorRegistryThreadHelper;
 import com.xxl.job.core.thread.JobLogFileCleanThreadHelper;
 import com.xxl.job.core.thread.JobThread;
 import com.xxl.job.core.thread.TriggerCallbackThreadHelper;
+import io.github.atengk.boot.job.xxl.cleaner.AtengJobLogFileCleanHelper;
 import io.github.atengk.boot.job.xxl.detector.ContainerIpDetector;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.resolver.XxlJobPortResolver;
@@ -91,7 +92,7 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
     private ApplicationContext applicationContext;
     private ExecutorRegistryThreadHelper registryThreadHelper;
     private TriggerCallbackThreadHelper callbackThreadHelper;
-    private JobLogFileCleanThreadHelper cleanThreadHelper;
+    private AtengJobLogFileCleanHelper cleanThreadHelper;
 
     public AtengXxlJobSpringExecutor() {
         this(new XxlJobProperties());
@@ -182,8 +183,8 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
                 INIT_ADMIN_BIZ_LIST_METHOD.invoke(this);
             }
 
-            // 6. 启动日志清理后台线程
-            this.cleanThreadHelper = new JobLogFileCleanThreadHelper();
+            // 6. 启动加固型日志清理后台线程 (严格正则校验，防御非日期目录与宿主隐性系统文件)
+            this.cleanThreadHelper = new AtengJobLogFileCleanHelper();
             this.cleanThreadHelper.start(getLogRetentionDays());
             if (CLEAN_HELPER_FIELD != null) {
                 CLEAN_HELPER_FIELD.set(this, this.cleanThreadHelper);
@@ -351,7 +352,7 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
             try {
                 this.cleanThreadHelper.stop();
             } catch (Exception e) {
-                log.error("停止 JobLogFileCleanThreadHelper 发生异常", e);
+                log.error("停止 AtengJobLogFileCleanHelper 发生异常", e);
             }
         }
 

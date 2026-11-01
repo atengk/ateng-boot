@@ -4,6 +4,7 @@ import com.xxl.job.core.executor.XxlJobExecutor;
 import com.xxl.job.core.openapi.executor.ExecutorBiz;
 import com.xxl.job.core.openapi.executor.impl.ExecutorBizImpl;
 import com.xxl.job.core.server.EmbedServer.EmbedHttpServerHandler;
+import io.github.atengk.boot.core.concurrent.NamedThreadFactory;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.security.XxlJobFirewallInboundHandler;
 import io.netty.bootstrap.ServerBootstrap;
@@ -61,14 +62,7 @@ public class AtengEmbedServer {
                 60L,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(2000),
-                new ThreadFactory() {
-                    private final AtomicInteger count = new AtomicInteger(1);
-
-                    @Override
-                    public Thread newThread(Runnable r) {
-                        return new Thread(r, "xxl-job, AtengEmbedServer bizThreadPool-" + count.getAndIncrement());
-                    }
-                },
+                new NamedThreadFactory("xxl-job-biz-worker", false),
                 (r, exec) -> {
                     throw new RuntimeException("xxl-job, AtengEmbedServer bizThreadPool is EXHAUSTED!");
                 });
@@ -76,9 +70,9 @@ public class AtengEmbedServer {
         java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.atomic.AtomicReference<Throwable> startError = new java.util.concurrent.atomic.AtomicReference<>();
 
-        this.serverThread = new Thread(() -> {
-            bossGroup = new NioEventLoopGroup(1);
-            workerGroup = new NioEventLoopGroup();
+        this.serverThread = new NamedThreadFactory("xxl-job-embed-server", true).newThread(() -> {
+            bossGroup = new NioEventLoopGroup(1, new NamedThreadFactory("xxl-job-netty-boss", false));
+            workerGroup = new NioEventLoopGroup(0, new NamedThreadFactory("xxl-job-netty-worker", false));
 
             try {
                 ServerBootstrap bootstrap = new ServerBootstrap();
@@ -120,8 +114,6 @@ public class AtengEmbedServer {
             }
         });
 
-        this.serverThread.setDaemon(true);
-        this.serverThread.setName("xxl-job, AtengEmbedServer");
         this.serverThread.start();
 
         try {
@@ -153,6 +145,14 @@ public class AtengEmbedServer {
 
         if (bizThreadPool != null) {
             bizThreadPool.shutdown();
+            try {
+                if (!bizThreadPool.awaitTermination(3, TimeUnit.SECONDS)) {
+                    bizThreadPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                bizThreadPool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
 
         log.info(">>>>>>>>>>> ateng-boot xxl-job remoting server destroy success.");
