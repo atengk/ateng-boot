@@ -77,31 +77,31 @@
 
         <!-- 依赖版本定义 -->
         <spring-boot.version>3.3.13</spring-boot.version>
-        <mybatis-plus.version>3.5.17</mybatis-plus.version>
-        <redisson.version>3.44.0</redisson.version>
+        <mybatis-plus.version>3.5.18.1</mybatis-plus.version>
+        <redisson.version>3.52.0</redisson.version>
         <fesod.version>2.1.0-incubating</fesod.version>
         <sa-token.version>1.46.0</sa-token.version>
-        <springdoc.version>2.6.0</springdoc.version>
-        <awssdk.version>2.25.70</awssdk.version>
+        <springdoc.version>2.10.0</springdoc.version>
+        <awssdk.version>2.57.6</awssdk.version>
         <rocketmq-client-java.version>5.2.2</rocketmq-client-java.version>
-        <greenmail.version>2.1.2</greenmail.version>
-        <commons-net.version>3.11.1</commons-net.version>
+        <greenmail.version>2.1.15</greenmail.version>
+        <commons-net.version>3.13.0</commons-net.version>
         <mockftpserver.version>3.2.0</mockftpserver.version>
-        <sshd.version>2.14.0</sshd.version>
+        <sshd.version>2.20.1</sshd.version>
         <poi-tl.version>1.12.2</poi-tl.version>
-        <pdfbox.version>3.0.4</pdfbox.version>
+        <pdfbox.version>3.0.8</pdfbox.version>
         <paho-mqttv5.version>1.2.5</paho-mqttv5.version>
         <wechatpay-java.version>0.2.17</wechatpay-java.version>
-        <alipay-sdk-java.version>4.40.1044.ALL</alipay-sdk-java.version>
+        <alipay-sdk-java.version>4.40.1061.ALL</alipay-sdk-java.version>
         <dynamic-datasource.version>4.6.0</dynamic-datasource.version>
-        <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
+        <spring-boot-admin.version>3.5.11</spring-boot-admin.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
         <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
         <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
-        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
 
         <!-- Surefire 测试参数 (Java 21+ 动态代理增强，默认空以兼容 Java 17) -->
         <argLine></argLine>
