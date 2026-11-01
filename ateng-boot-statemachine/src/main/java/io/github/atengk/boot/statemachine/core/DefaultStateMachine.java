@@ -7,6 +7,7 @@ import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.BatchOptions;
 import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
 import io.github.atengk.boot.statemachine.model.StateLifecycle;
+import io.github.atengk.boot.statemachine.model.TransitionAuditEvent;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 import org.springframework.util.ClassUtils;
 
@@ -38,11 +39,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors;
     private final Map<S, Set<E>> idempotentTargets;
     private final Map<S, StateLifecycle<S, E, C>> stateLifecycleMap;
+    private final List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners;
 
     public DefaultStateMachine(String machineId,
                                Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
                                List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors,
-                               Map<S, StateLifecycle<S, E, C>> stateLifecycleMap) {
+                               Map<S, StateLifecycle<S, E, C>> stateLifecycleMap,
+                               List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners) {
         if (machineId == null || machineId.trim().isEmpty()) {
             throw new IllegalArgumentException("machineId must not be blank");
         }
@@ -92,16 +95,24 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         this.stateLifecycleMap = stateLifecycleMap != null
                 ? Collections.unmodifiableMap(new LinkedHashMap<>(stateLifecycleMap))
                 : Collections.emptyMap();
+        this.auditListeners = new CopyOnWriteArrayList<>(auditListeners != null ? auditListeners : Collections.emptyList());
+    }
+
+    public DefaultStateMachine(String machineId,
+                               Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
+                               List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors,
+                               Map<S, StateLifecycle<S, E, C>> stateLifecycleMap) {
+        this(machineId, transitionMap, interceptors, stateLifecycleMap, Collections.emptyList());
     }
 
     public DefaultStateMachine(String machineId,
                                Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
                                List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors) {
-        this(machineId, transitionMap, interceptors, Collections.emptyMap());
+        this(machineId, transitionMap, interceptors, Collections.emptyMap(), Collections.emptyList());
     }
 
     public DefaultStateMachine(String machineId, Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap) {
-        this(machineId, transitionMap, Collections.emptyList(), Collections.emptyMap());
+        this(machineId, transitionMap, Collections.emptyList(), Collections.emptyMap(), Collections.emptyList());
     }
 
     public Map<S, StateLifecycle<S, E, C>> getStateLifecycleMap() {
@@ -119,6 +130,16 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     public void addInterceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
         if (interceptor != null && !this.interceptors.contains(interceptor)) {
             this.interceptors.add(interceptor);
+        }
+    }
+
+    public List<StateTransitionAuditListener<? super S, ? super E, ? super C>> getAuditListeners() {
+        return Collections.unmodifiableList(auditListeners);
+    }
+
+    public void addAuditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> listener) {
+        if (listener != null && !this.auditListeners.contains(listener)) {
+            this.auditListeners.add(listener);
         }
     }
 
@@ -149,6 +170,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                             machineId, sourceState, event);
                     Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
                     notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
+                    notifyAuditListeners(sourceState, sourceState, event, context, elapsed, true, null);
                     return sourceState;
                 }
                 throw new StateMachineException(
@@ -233,10 +255,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
             Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
             notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
+            notifyAuditListeners(sourceState, targetState, event, context, elapsed, true, null);
 
             return targetState;
         } catch (Exception ex) {
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
             notifyInterceptorsException(sourceState, event, context, ex);
+            notifyAuditListeners(sourceState, null, event, context, elapsed, false, ex);
             throw ex;
         }
     }
@@ -522,6 +547,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                         machineId, sourceState, event);
                 Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
                 notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
+                notifyAuditListeners(sourceState, sourceState, event, context, elapsed, true, null);
                 return TransitionResult.idempotent(sourceState, event);
             }
             StateMachineException ex = new StateMachineException(
@@ -530,12 +556,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     event,
                     String.format("状态机 [%s] 未找到从状态 [%s] 响应事件 [%s] 的合法跃迁路由", machineId, sourceState, event)
             );
-            notifyInterceptorsException(sourceState, event, context, ex);
-            return TransitionResult.failure(
-                    sourceState,
-                    event,
-                    String.format("状态机 [%s] 未找到从状态 [%s] 响应事件 [%s] 的合法跃迁路由", machineId, sourceState, event)
-            );
+            return handleQuietFailure(sourceState, event, context, startTime, ex);
         }
 
         Transition<S, E, C> matched = null;
@@ -551,13 +572,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                         String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
                         ex
                 );
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s", machineId, sourceState, event, ex.getMessage()),
-                        ex
-                );
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             }
             if (satisfied) {
                 matched = candidate;
@@ -572,12 +587,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     event,
                     String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
             );
-            notifyInterceptorsException(sourceState, event, context, ex);
-            return TransitionResult.failure(
-                    sourceState,
-                    event,
-                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
-            );
+            return handleQuietFailure(sourceState, event, context, startTime, ex);
         }
 
         S targetState;
@@ -591,13 +601,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
                     ex
             );
-            notifyInterceptorsException(sourceState, event, context, smEx);
-            return TransitionResult.failure(
-                    sourceState,
-                    event,
-                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s", machineId, sourceState, event, ex.getMessage()),
-                    ex
-            );
+            return handleQuietFailure(sourceState, event, context, startTime, smEx);
         }
 
         boolean isInternal = matched.getType() == TransitionType.INTERNAL
@@ -607,8 +611,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             try {
                 executeExitActions(sourceState, targetState, event, context);
             } catch (StateMachineException smEx) {
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(sourceState, event, smEx.getMessage(), smEx.getCause());
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             } catch (Exception ex) {
                 StateMachineException smEx = new StateMachineException(
                         StateMachineResultCode.STATE_LIFECYCLE_FAILED,
@@ -619,8 +622,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                                 machineId, sourceState, targetState, event, ex.getMessage()),
                         ex
                 );
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(sourceState, event, smEx.getMessage(), ex);
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             }
         }
 
@@ -636,13 +638,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                         String.format("状态机 [%s] 跃迁动作执行失败 [%s -> %s on %s]: %s", machineId, sourceState, targetState, event, ex.getMessage()),
                         ex
                 );
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(
-                        sourceState,
-                        event,
-                        String.format("状态机 [%s] 跃迁动作执行失败 [%s -> %s on %s]: %s", machineId, sourceState, targetState, event, ex.getMessage()),
-                        ex
-                );
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             }
         }
 
@@ -650,8 +646,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             try {
                 executeEntryActions(sourceState, targetState, event, context);
             } catch (StateMachineException smEx) {
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(sourceState, event, smEx.getMessage(), smEx.getCause());
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             } catch (Exception ex) {
                 StateMachineException smEx = new StateMachineException(
                         StateMachineResultCode.STATE_LIFECYCLE_FAILED,
@@ -662,8 +657,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                                 machineId, targetState, sourceState, event, ex.getMessage()),
                         ex
                 );
-                notifyInterceptorsException(sourceState, event, context, smEx);
-                return TransitionResult.failure(sourceState, event, smEx.getMessage(), ex);
+                return handleQuietFailure(sourceState, event, context, startTime, smEx);
             }
         }
 
@@ -672,8 +666,18 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
         notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
+        notifyAuditListeners(sourceState, targetState, event, context, elapsed, true, null);
 
         return TransitionResult.success(sourceState, targetState, event);
+    }
+
+    @SuppressWarnings("unchecked")
+    private TransitionResult<S> handleQuietFailure(S sourceState, E event, C context, long startTime, StateMachineException ex) {
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+        notifyInterceptorsException(sourceState, event, context, ex);
+        S targetState = ex.getTargetState() != null ? (S) ex.getTargetState() : null;
+        notifyAuditListeners(sourceState, targetState, event, context, elapsed, false, ex);
+        return TransitionResult.failure(sourceState, event, ex.getMessage(), ex.getCause());
     }
 
     private boolean isIdempotentHit(S sourceState, E event) {
@@ -710,6 +714,37 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 interceptor.onException(sourceState, event, context, ex);
             } catch (Exception interceptorEx) {
                 log.warn("状态机 [{}] 拦截器 [{}] 异常回调处理失败: {}", machineId, interceptor.getClass().getSimpleName(), interceptorEx.getMessage(), interceptorEx);
+            }
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void notifyAuditListeners(S fromState, S toState, E event, C context, Duration elapsed, boolean success, Throwable cause) {
+        if (auditListeners.isEmpty()) {
+            return;
+        }
+        String traceId = org.slf4j.MDC.get("traceId");
+        if (traceId == null) {
+            traceId = org.slf4j.MDC.get("trace_id");
+        }
+        TransitionAuditEvent<S, E, C> auditEvent = TransitionAuditEvent.<S, E, C>builder()
+                .machineId(machineId)
+                .fromState(fromState)
+                .toState(toState)
+                .event(event)
+                .context(context)
+                .traceId(traceId)
+                .elapsed(elapsed)
+                .success(success)
+                .cause(cause)
+                .build();
+
+        for (StateTransitionAuditListener listener : auditListeners) {
+            try {
+                listener.onTransitionCompleted(auditEvent);
+            } catch (Exception ex) {
+                log.warn("状态机 [{}] 审计监听器 [{}] 处理异常: {}",
+                        machineId, listener.getClass().getSimpleName(), ex.getMessage(), ex);
             }
         }
     }

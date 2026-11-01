@@ -19,6 +19,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     private final List<TransitionHolder<S, E, C>> transitionHolders = new ArrayList<>();
     private final Map<S, StateLifecycleHolder<S, E, C>> stateLifecycleHolders = new LinkedHashMap<>();
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors = new ArrayList<>();
+    private final List<StateTransitionAuditListener<? super S, ? super E, ? super C>> auditListeners = new ArrayList<>();
     private boolean defaultIdempotent = false;
 
     @Override
@@ -31,6 +32,14 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     public StateMachineBuilder<S, E, C> interceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
         if (interceptor != null) {
             this.interceptors.add(interceptor);
+        }
+        return this;
+    }
+
+    @Override
+    public StateMachineBuilder<S, E, C> auditListener(StateTransitionAuditListener<? super S, ? super E, ? super C> auditListener) {
+        if (auditListener != null) {
+            this.auditListeners.add(auditListener);
         }
         return this;
     }
@@ -100,7 +109,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
             stateLifecycleMap.put(entry.getKey(), entry.getValue().buildStateLifecycle());
         }
 
-        return new DefaultStateMachine<>(machineId, transitionMap, interceptors, stateLifecycleMap);
+        return new DefaultStateMachine<>(machineId, transitionMap, interceptors, stateLifecycleMap, auditListeners);
     }
 
     private interface TransitionHolder<S, E, C> {

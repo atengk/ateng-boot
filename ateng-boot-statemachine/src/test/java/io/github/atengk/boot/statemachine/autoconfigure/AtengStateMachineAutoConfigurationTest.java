@@ -57,6 +57,11 @@ class AtengStateMachineAutoConfigurationTest {
             builder.externalTransition().from(TestState.S1).to(TestState.S2).on(TestEvent.E1);
             return builder.build("SPRING_MANAGED_MACHINE");
         }
+
+        @Bean
+        public io.github.atengk.boot.statemachine.core.StateTransitionAuditListener<Object, Object, Object> testAuditListener() {
+            return event -> {};
+        }
     }
 
     @Test
@@ -75,10 +80,11 @@ class AtengStateMachineAutoConfigurationTest {
                     assertThat(springBean).isNotNull();
                     assertThat(springBean.getMachineId()).isEqualTo("SPRING_MANAGED_MACHINE");
 
-                    // 验证拦截器已被自动注入至 DefaultStateMachine
+                    // 验证拦截器与审计监听器已被自动注入至 DefaultStateMachine
                     assertThat(springBean).isInstanceOf(DefaultStateMachine.class);
                     DefaultStateMachine<?, ?, ?> defaultStateMachine = (DefaultStateMachine<?, ?, ?>) springBean;
                     assertThat(defaultStateMachine.getInterceptors()).isNotEmpty();
+                    assertThat(defaultStateMachine.getAuditListeners()).isNotEmpty();
 
                     // 验证双通道获取 2: 全局工厂获取
                     StateMachine<TestState, TestEvent, Object> factoryRetrieved =

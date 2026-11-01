@@ -118,4 +118,28 @@ class StateMachineFactoryTest {
         assertThat(StateMachineFactory.contains(null)).isFalse();
         assertThat(StateMachineFactory.unregister(null)).isNull();
     }
+
+    @Test
+    @DisplayName("测试状态机工厂内省方法: getAllMachineIds、contains、size")
+    void testIntrospectionMethods() {
+        assertThat(StateMachineFactory.size()).isEqualTo(0);
+        assertThat(StateMachineFactory.getAllMachineIds()).isEmpty();
+
+        StateMachine<OrderState, OrderEvent, Object> m1 = createMachine("MACHINE_1");
+        StateMachine<OrderState, OrderEvent, Object> m2 = createMachine("MACHINE_2");
+
+        StateMachineFactory.register(m1);
+        StateMachineFactory.register(m2);
+
+        assertThat(StateMachineFactory.size()).isEqualTo(2);
+        assertThat(StateMachineFactory.contains("MACHINE_1")).isTrue();
+        assertThat(StateMachineFactory.contains("MACHINE_2")).isTrue();
+        assertThat(StateMachineFactory.contains("MACHINE_3")).isFalse();
+
+        assertThat(StateMachineFactory.getAllMachineIds()).containsExactlyInAnyOrder("MACHINE_1", "MACHINE_2");
+
+        // 验证返回集合的只读保护
+        assertThatThrownBy(() -> StateMachineFactory.getAllMachineIds().add("HACK"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 }

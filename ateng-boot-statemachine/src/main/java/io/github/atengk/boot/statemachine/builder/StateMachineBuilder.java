@@ -70,6 +70,14 @@ public interface StateMachineBuilder<S, E, C> {
     StateMachineBuilder<S, E, C> interceptor(io.github.atengk.boot.statemachine.core.StateMachineInterceptor<? super S, ? super E, ? super C> interceptor);
 
     /**
+     * 挂载状态流转轨迹审计监听器
+     *
+     * @param auditListener 审计监听器
+     * @return 当前构建器
+     */
+    StateMachineBuilder<S, E, C> auditListener(io.github.atengk.boot.statemachine.core.StateTransitionAuditListener<? super S, ? super E, ? super C> auditListener);
+
+    /**
      * 配置状态机全局默认终态幂等放行策略
      *
      * @param idempotent 是否全局默认开启终态幂等放行

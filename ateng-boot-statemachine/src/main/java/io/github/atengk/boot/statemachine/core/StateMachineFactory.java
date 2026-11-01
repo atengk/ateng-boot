@@ -3,7 +3,10 @@ package io.github.atengk.boot.statemachine.core;
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -92,6 +95,24 @@ public final class StateMachineFactory {
      */
     public static boolean contains(String machineId) {
         return machineId != null && REGISTRY.containsKey(machineId);
+    }
+
+    /**
+     * 获取所有已注册状态机标识集合
+     *
+     * @return 不可变的状态机标识集合
+     */
+    public static Set<String> getAllMachineIds() {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(REGISTRY.keySet()));
+    }
+
+    /**
+     * 获取当前已注册状态机总数
+     *
+     * @return 注册状态机数量
+     */
+    public static int size() {
+        return REGISTRY.size();
     }
 
     /**
