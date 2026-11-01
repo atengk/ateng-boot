@@ -324,84 +324,162 @@ public final class Sm2Engine {
     }
 
     private static byte[] decryptAsn1Der(byte[] derBytes, BigInteger privKey) {
-        try {
-            // 解析 SEQUENCE { x INTEGER, y INTEGER, hash OCTET STRING, cipher OCTET STRING }
-            int idx = 1;
-            int seqLen = readDerLength(derBytes, idx);
-            idx += getLengthBytesCount(derBytes, idx);
+        byte[] c1c3c2 = derToC1c3c2(derBytes);
+        return decryptC1C3C2(c1c3c2, privKey);
+    }
 
-            // x1
-            if (derBytes[idx++] != 0x02) throw new IllegalArgumentException("ASN.1 解析错误: 缺少 x1 INTEGER");
-            int xLen = readDerLength(derBytes, idx);
-            idx += getLengthBytesCount(derBytes, idx);
+    /**
+     * 将 ASN.1 DER 编码的 SM2 密文转译为国家权威标准的 C1C3C2 字节流 (0x04 || C1 || C3 || C2)
+     *
+     * @param der ASN.1 DER 密文字节流 (必须以 0x30 起始)
+     * @return 国家权威标准的 C1C3C2 密文字节流
+     * @throws IllegalArgumentException 当 DER 格式损坏、非法或长度不足时
+     */
+    public static byte[] derToC1c3c2(byte[] der) {
+        if (der == null || der.length < 8) {
+            throw new IllegalArgumentException("SM2 ASN.1 DER 密文字节流长度非法，至少需要 8 字节");
+        }
+        if (der[0] != 0x30) {
+            throw new IllegalArgumentException("SM2 ASN.1 DER 格式非法: 必须以 0x30 (SEQUENCE) 起始，实际为: 0x" + Integer.toHexString(der[0] & 0xff));
+        }
+
+        try {
+            int idx = 1;
+            int seqLen = readDerLength(der, idx);
+            idx += getLengthBytesCount(der, idx);
+
+            if (idx + seqLen > der.length) {
+                throw new IllegalArgumentException("ASN.1 SEQUENCE 声明长度 (" + seqLen + ") 超出实际数据流长度 (" + (der.length - idx) + ")");
+            }
+
+            // x1 (INTEGER 0x02)
+            if (idx >= der.length || der[idx++] != 0x02) {
+                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 x1 INTEGER 标记 (0x02)");
+            }
+            int xLen = readDerLength(der, idx);
+            idx += getLengthBytesCount(der, idx);
+            if (idx + xLen > der.length) {
+                throw new IllegalArgumentException("ASN.1 x1 字段长度溢出");
+            }
             byte[] x1 = new byte[xLen];
-            System.arraycopy(derBytes, idx, x1, 0, xLen);
+            System.arraycopy(der, idx, x1, 0, xLen);
             idx += xLen;
 
-            // y1
-            if (derBytes[idx++] != 0x02) throw new IllegalArgumentException("ASN.1 解析错误: 缺少 y1 INTEGER");
-            int yLen = readDerLength(derBytes, idx);
-            idx += getLengthBytesCount(derBytes, idx);
+            // y1 (INTEGER 0x02)
+            if (idx >= der.length || der[idx++] != 0x02) {
+                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 y1 INTEGER 标记 (0x02)");
+            }
+            int yLen = readDerLength(der, idx);
+            idx += getLengthBytesCount(der, idx);
+            if (idx + yLen > der.length) {
+                throw new IllegalArgumentException("ASN.1 y1 字段长度溢出");
+            }
             byte[] y1 = new byte[yLen];
-            System.arraycopy(derBytes, idx, y1, 0, yLen);
+            System.arraycopy(der, idx, y1, 0, yLen);
             idx += yLen;
 
-            // c3
-            if (derBytes[idx++] != 0x04) throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c3 OCTET STRING");
-            int c3Len = readDerLength(derBytes, idx);
-            idx += getLengthBytesCount(derBytes, idx);
+            // c3 (OCTET STRING 0x04)
+            if (idx >= der.length || der[idx++] != 0x04) {
+                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c3 OCTET STRING 标记 (0x04)");
+            }
+            int c3Len = readDerLength(der, idx);
+            idx += getLengthBytesCount(der, idx);
+            if (idx + c3Len > der.length) {
+                throw new IllegalArgumentException("ASN.1 c3 字段长度溢出");
+            }
             byte[] c3 = new byte[c3Len];
-            System.arraycopy(derBytes, idx, c3, 0, c3Len);
+            System.arraycopy(der, idx, c3, 0, c3Len);
             idx += c3Len;
 
-            // c2
-            if (derBytes[idx++] != 0x04) throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c2 OCTET STRING");
-            int c2Len = readDerLength(derBytes, idx);
-            idx += getLengthBytesCount(derBytes, idx);
+            // c2 (OCTET STRING 0x04)
+            if (idx >= der.length || der[idx++] != 0x04) {
+                throw new IllegalArgumentException("ASN.1 解析错误: 缺少 c2 OCTET STRING 标记 (0x04)");
+            }
+            int c2Len = readDerLength(der, idx);
+            idx += getLengthBytesCount(der, idx);
+            if (idx + c2Len > der.length) {
+                throw new IllegalArgumentException("ASN.1 c2 字段长度溢出");
+            }
             byte[] c2 = new byte[c2Len];
-            System.arraycopy(derBytes, idx, c2, 0, c2Len);
+            System.arraycopy(der, idx, c2, 0, c2Len);
 
-            // 拼装标准 C1C3C2
+            // 拼装标准 C1C3C2 (04 || x1 (32B) || y1 (32B) || c3 (32B) || c2)
             Point c1 = new Point(new BigInteger(1, x1), new BigInteger(1, y1));
-            byte[] assembled = new byte[65 + 32 + c2.length];
+            byte[] assembled = new byte[65 + c3.length + c2.length];
             assembled[0] = 0x04;
             System.arraycopy(toFixedBytes(c1.x, 32), 0, assembled, 1, 32);
             System.arraycopy(toFixedBytes(c1.y, 32), 0, assembled, 33, 32);
-            System.arraycopy(c3, 0, assembled, 65, 32);
-            System.arraycopy(c2, 0, assembled, 97, c2.length);
+            System.arraycopy(c3, 0, assembled, 65, c3.length);
+            System.arraycopy(c2, 0, assembled, 65 + c3.length, c2.length);
 
-            return decryptC1C3C2(assembled, privKey);
+            return assembled;
+        } catch (IllegalArgumentException iae) {
+            throw iae;
         } catch (Exception e) {
             throw new IllegalArgumentException("SM2 ASN.1 DER 密文解析失败: " + e.getMessage(), e);
         }
     }
 
     private static int readDerLength(byte[] bytes, int offset) {
+        if (offset >= bytes.length) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 长度字段偏移量超出数组边界");
+        }
         int b = bytes[offset] & 0xff;
         if ((b & 0x80) == 0) {
             return b;
         }
         int numBytes = b & 0x7f;
+        if (numBytes == 0 || numBytes > 4) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 不支持的多字节长度 (numBytes=" + numBytes + ")");
+        }
+        if (offset + 1 + numBytes > bytes.length) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 长度字段字节不足");
+        }
         int length = 0;
         for (int i = 0; i < numBytes; i++) {
             length = (length << 8) | (bytes[offset + 1 + i] & 0xff);
+        }
+        if (length < 0) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 长度溢出负数: " + length);
         }
         return length;
     }
 
     private static int getLengthBytesCount(byte[] bytes, int offset) {
+        if (offset >= bytes.length) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 长度字段偏移量超出数组边界");
+        }
         int b = bytes[offset] & 0xff;
         if ((b & 0x80) == 0) {
             return 1;
         }
-        return 1 + (b & 0x7f);
+        int numBytes = b & 0x7f;
+        if (numBytes == 0 || numBytes > 4) {
+            throw new IllegalArgumentException("ASN.1 解析错误: 不支持的多字节长度 (numBytes=" + numBytes + ")");
+        }
+        return 1 + numBytes;
     }
 
     /**
-     * 将 C1C3C2 密文封装为标准 ASN.1 DER 编码
+     * 将标准 C1C3C2 密文封装为标准 ASN.1 DER 编码
+     * 结构为: SEQUENCE { x1 INTEGER, y1 INTEGER, c3 OCTET STRING, c2 OCTET STRING }
+     *
+     * @param c1c3c2 标准 C1C3C2 密文字节流 (支持 0x04 开头的 65 字节 C1 或未带 0x04 的 64 字节 C1)
+     * @return ASN.1 DER 编码的密文字节流 (以 0x30 起始)
      */
-    public static byte[] toAsn1Der(byte[] c1c3c2) {
-        int offset = (c1c3c2[0] == 0x04) ? 1 : 0;
+    public static byte[] c1c3c2ToDer(byte[] c1c3c2) {
+        if (c1c3c2 == null) {
+            throw new IllegalArgumentException("SM2 C1C3C2 密文数组不能为空");
+        }
+        if (c1c3c2.length > 0 && c1c3c2[0] == 0x30) {
+            throw new IllegalArgumentException("入参密文已为 ASN.1 DER 格式 (0x30 起始)，无需重复转译");
+        }
+        int offset = (c1c3c2.length > 0 && c1c3c2[0] == 0x04) ? 1 : 0;
+        int minLen = (offset == 1) ? 65 + 32 : 64 + 32;
+        if (c1c3c2.length < minLen) {
+            throw new IllegalArgumentException("SM2 C1C3C2 密文长度非法，不足以包含 C1 与 C3 (期望至少 " + minLen + " 字节，实际 " + c1c3c2.length + " 字节)");
+        }
+
         byte[] x1 = new byte[32];
         byte[] y1 = new byte[32];
         System.arraycopy(c1c3c2, offset, x1, 0, 32);
@@ -427,6 +505,16 @@ public final class Sm2Engine {
         writeDerLength(seq, content.length);
         seq.write(content, 0, content.length);
         return seq.toByteArray();
+    }
+
+    /**
+     * 将 C1C3C2 密文封装为标准 ASN.1 DER 编码 (保持向后二进制与源码兼容别名)
+     *
+     * @param c1c3c2 标准 C1C3C2 密文字节流
+     * @return ASN.1 DER 编码的密文字节流
+     */
+    public static byte[] toAsn1Der(byte[] c1c3c2) {
+        return c1c3c2ToDer(c1c3c2);
     }
 
     private static void writeDerLength(ByteArrayOutputStream out, int len) {

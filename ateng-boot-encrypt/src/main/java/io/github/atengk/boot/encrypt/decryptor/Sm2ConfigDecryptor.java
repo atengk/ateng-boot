@@ -98,8 +98,58 @@ public class Sm2ConfigDecryptor implements ConfigDecryptor {
         }
         Sm2Engine.Point pubPoint = Sm2Engine.parsePublicKey(publicKeyStr);
         byte[] c1c3c2 = Sm2Engine.encrypt(plaintext.getBytes(StandardCharsets.UTF_8), pubPoint);
-        byte[] der = Sm2Engine.toAsn1Der(c1c3c2);
+        byte[] der = Sm2Engine.c1c3c2ToDer(c1c3c2);
         return Base64.getEncoder().encodeToString(der);
+    }
+
+    /**
+     * 将标准 C1C3C2 密文字节流转换为 ASN.1 DER 编码密文字节流
+     *
+     * @param c1c3c2 标准 C1C3C2 密文字节流
+     * @return ASN.1 DER 编码的密文字节流
+     */
+    public static byte[] c1c3c2ToDer(byte[] c1c3c2) {
+        return Sm2Engine.c1c3c2ToDer(c1c3c2);
+    }
+
+    /**
+     * 将标准 C1C3C2 Base64 编码密文字符串转换为 ASN.1 DER Base64 编码密文字符串
+     *
+     * @param c1c3c2Base64 Base64 编码的标准 C1C3C2 密文字符串
+     * @return Base64 编码的 ASN.1 DER 密文字符串
+     */
+    public static String c1c3c2ToDer(String c1c3c2Base64) {
+        if (c1c3c2Base64 == null) {
+            return null;
+        }
+        byte[] c1c3c2 = Base64.getDecoder().decode(MultilineSecretFormatter.cleanCiphertext(c1c3c2Base64));
+        byte[] der = Sm2Engine.c1c3c2ToDer(c1c3c2);
+        return Base64.getEncoder().encodeToString(der);
+    }
+
+    /**
+     * 将 ASN.1 DER 编码密文字节流转换为国家权威标准的 C1C3C2 密文字节流
+     *
+     * @param der ASN.1 DER 密文字节流 (必须以 0x30 起始)
+     * @return 国家权威标准的 C1C3C2 密文字节流 (0x04 || C1 || C3 || C2)
+     */
+    public static byte[] derToC1c3c2(byte[] der) {
+        return Sm2Engine.derToC1c3c2(der);
+    }
+
+    /**
+     * 将 ASN.1 DER Base64 编码密文字符串转换为国家权威标准 C1C3C2 Base64 编码密文字符串
+     *
+     * @param derBase64 Base64 编码的 ASN.1 DER 密文字符串
+     * @return Base64 编码的国家权威标准 C1C3C2 密文字符串
+     */
+    public static String derToC1c3c2(String derBase64) {
+        if (derBase64 == null) {
+            return null;
+        }
+        byte[] der = Base64.getDecoder().decode(MultilineSecretFormatter.cleanCiphertext(derBase64));
+        byte[] c1c3c2 = Sm2Engine.derToC1c3c2(der);
+        return Base64.getEncoder().encodeToString(c1c3c2);
     }
 
     /**
