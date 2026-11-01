@@ -267,6 +267,13 @@ public class AtengXxlJobSpringExecutor extends XxlJobSpringExecutor implements S
         return running.get();
     }
 
+    /**
+     * 当前执行器是否处于停机排空中 (Draining)
+     */
+    public boolean isDraining() {
+        return draining.get();
+    }
+
     @Override
     public int getPhase() {
         // 返回 Integer.MAX_VALUE，确保停机时最早触发生命周期排空

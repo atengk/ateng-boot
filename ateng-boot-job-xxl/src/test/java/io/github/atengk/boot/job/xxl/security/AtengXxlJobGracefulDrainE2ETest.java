@@ -76,7 +76,7 @@ class AtengXxlJobGracefulDrainE2ETest {
 
         assertTrue(executor.isRunning(), "执行器应当成功启动");
 
-        // 模拟一个运行耗时约 600ms 的业务任务
+        // 模拟一个运行耗时约 2000ms 的业务任务
         AtomicBoolean jobStarted = new AtomicBoolean(false);
         AtomicBoolean jobCompleted = new AtomicBoolean(false);
 
@@ -84,7 +84,7 @@ class AtengXxlJobGracefulDrainE2ETest {
             @Override
             public void execute() throws Exception {
                 jobStarted.set(true);
-                TimeUnit.MILLISECONDS.sleep(600);
+                TimeUnit.MILLISECONDS.sleep(2000);
                 jobCompleted.set(true);
             }
         };
@@ -118,7 +118,12 @@ class AtengXxlJobGracefulDrainE2ETest {
         new Thread(() -> executor.stop(shutdownCallbackLatch::countDown)).start();
 
         // 阶段一验证：排空中拒绝接收新的 /run 请求
-        TimeUnit.MILLISECONDS.sleep(100);
+        long waitDrainingDeadline = System.currentTimeMillis() + 3000;
+        while (!executor.isDraining() && System.currentTimeMillis() < waitDrainingDeadline) {
+            TimeUnit.MILLISECONDS.sleep(20);
+        }
+        assertTrue(executor.isDraining(), "执行器应当已进入停机排空状态 (draining)");
+
         HttpRequest runRequest = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + port + "/run"))
                 .header("Content-Type", "application/json")

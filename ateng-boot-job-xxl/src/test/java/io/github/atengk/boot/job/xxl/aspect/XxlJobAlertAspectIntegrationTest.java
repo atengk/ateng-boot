@@ -2,6 +2,7 @@ package io.github.atengk.boot.job.xxl.aspect;
 
 import com.xxl.job.core.handler.annotation.XxlJob;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
+import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.event.XxlJobAlertEvent;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,9 +92,38 @@ class XxlJobAlertAspectIntegrationTest {
         assertEquals(2, recoveryEvent.getFailureCount(), "自愈事件应准确反映曾连续失败的总次数");
     }
 
+    @Test
+    @DisplayName("测试方法级声明 @AtengXxlJob(alertEnabled=false)：静音嘈杂任务，异常不发布告警事件")
+    void testMethodLevelAlertDisabled() {
+        assertThrows(RuntimeException.class, () -> proxy.silentFailingJob("param-silent"));
+        assertTrue(capturedEvents.isEmpty(), "声明 alertEnabled=false 的任务失败不应触发任何告警事件");
+    }
+
+    @Test
+    @DisplayName("测试方法级声明 @AtengXxlJob(alertSuppressThreshold=3)：覆盖全局阈值(2)，第 3 次失败才触发摘要")
+    void testMethodLevelAlertSuppressThresholdOverride() {
+        // 第一次失败：首发告警
+        assertThrows(RuntimeException.class, () -> proxy.customThresholdJob("t1"));
+        assertEquals(1, capturedEvents.size());
+        assertEquals(XxlJobAlertEvent.AlertType.INITIAL_FAILURE, capturedEvents.get(0).getAlertType());
+
+        // 第二次失败：若按全局阈值(2)会触发摘要，但方法级阈值为 3，因此被平滑抑制
+        assertThrows(RuntimeException.class, () -> proxy.customThresholdJob("t2"));
+        assertEquals(1, capturedEvents.size(), "方法级阈值为 3，第 2 次失败应被抑制");
+
+        // 第三次失败：达到方法级阈值 3，触发 FAILURE_SUMMARY
+        assertThrows(RuntimeException.class, () -> proxy.customThresholdJob("t3"));
+        assertEquals(2, capturedEvents.size());
+        XxlJobAlertEvent summaryEvent = capturedEvents.get(1);
+        assertEquals(XxlJobAlertEvent.AlertType.FAILURE_SUMMARY, summaryEvent.getAlertType());
+        assertEquals(3, summaryEvent.getFailureCount());
+    }
+
     public interface MockJobService {
         void failingJob(String param);
         void failingJobSuccess(String param);
+        void silentFailingJob(String param);
+        void customThresholdJob(String param);
     }
 
     public static class MockJobServiceImpl implements MockJobService {
@@ -107,6 +137,18 @@ class XxlJobAlertAspectIntegrationTest {
         @XxlJob("failingJob")
         public void failingJobSuccess(String param) {
             // success
+        }
+
+        @Override
+        @AtengXxlJob(value = "silentJob", alertEnabled = false)
+        public void silentFailingJob(String param) {
+            throw new RuntimeException("Silent job failure");
+        }
+
+        @Override
+        @AtengXxlJob(value = "thresholdJob", alertSuppressThreshold = 3)
+        public void customThresholdJob(String param) {
+            throw new RuntimeException("Custom threshold failure");
         }
     }
 

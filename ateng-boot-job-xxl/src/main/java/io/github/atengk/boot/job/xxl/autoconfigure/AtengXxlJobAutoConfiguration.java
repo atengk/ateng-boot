@@ -7,6 +7,7 @@ import io.github.atengk.boot.job.xxl.actuator.XxlJobHealthIndicator;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.fallback.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
@@ -171,6 +172,8 @@ public class AtengXxlJobAutoConfiguration {
      * @param alertAggregatorProvider 告警聚合引擎 Provider
      * @param metricsBinderProvider   Micrometer 监控度量绑定器 Provider
      * @param interceptorsProvider    任务执行切面拦截器 Provider
+     * @param governorProvider        节点级运行时治理总线 Provider
+     * @param fallbackHandlersProvider 任务超时降级处理器 Provider
      * @return 上下文切面实例
      */
     @Bean
@@ -183,9 +186,13 @@ public class AtengXxlJobAutoConfiguration {
             ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider,
             ObjectProvider<XxlJobMetricsBinder> metricsBinderProvider,
             ObjectProvider<XxlJobInterceptor> interceptorsProvider,
-            ObjectProvider<JobRuntimeGovernor> governorProvider) {
+            ObjectProvider<JobRuntimeGovernor> governorProvider,
+            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider) {
         List<XxlJobInterceptor> interceptors = interceptorsProvider != null
                 ? interceptorsProvider.orderedStream().toList()
+                : Collections.emptyList();
+        List<JobTimeoutFallbackHandler> fallbackHandlers = fallbackHandlersProvider != null
+                ? fallbackHandlersProvider.orderedStream().toList()
                 : Collections.emptyList();
         return new XxlJobContextAspect(
                 watchdogProvider.getIfAvailable(),
@@ -194,7 +201,8 @@ public class AtengXxlJobAutoConfiguration {
                 alertAggregatorProvider.getIfAvailable(),
                 metricsBinderProvider.getIfAvailable(),
                 interceptors,
-                governorProvider.getIfAvailable()
+                governorProvider.getIfAvailable(),
+                fallbackHandlers
         );
     }
 

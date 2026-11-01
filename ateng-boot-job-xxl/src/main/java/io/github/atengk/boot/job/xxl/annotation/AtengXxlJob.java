@@ -49,4 +49,22 @@ public @interface AtengXxlJob {
      */
     JobTenantMode tenantMode() default JobTenantMode.PARAM;
 
+    /**
+     * 超时降级补偿方法名（声明在同一个 Bean 上的方法名）
+     *
+     * <p>当任务被本地硬看门狗中断或执行超时时，由框架受管异步线程池调度执行该降级方法，
+     * 用于就地释放分布式外部锁、冲正数据库流水或重置任务状态。</p>
+     */
+    String fallback() default "";
+
+    /**
+     * 方法级告警开关，默认为 true。设置为 false 可静音高频探测等嘈杂任务
+     */
+    boolean alertEnabled() default true;
+
+    /**
+     * 方法级连续失败告警抑制阈值（连续失败达到该次数时触发周期聚合摘要卡片），默认为 -1 表示继承全局配置
+     */
+    int alertSuppressThreshold() default -1;
+
 }

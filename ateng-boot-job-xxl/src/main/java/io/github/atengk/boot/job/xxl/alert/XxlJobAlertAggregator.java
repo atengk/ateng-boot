@@ -81,7 +81,23 @@ public class XxlJobAlertAggregator {
      * @param throwable  抛出的异常信息
      */
     public void onJobFailure(String jobHandler, String param, String traceId, long durationMs, Throwable throwable) {
-        if (!properties.isAlertEnabled()) {
+        onJobFailure(jobHandler, param, traceId, durationMs, throwable, true, -1);
+    }
+
+    /**
+     * 记录任务执行失败并触发三阶告警决策（支持方法级告警开关与抑制阈值覆盖）
+     *
+     * @param jobHandler             任务 Handler 标识
+     * @param param                  执行入参
+     * @param traceId                全链路追踪 traceId
+     * @param durationMs             执行耗时 (毫秒)
+     * @param throwable              抛出的异常信息
+     * @param alertEnabled           方法级告警开关
+     * @param alertSuppressThreshold 方法级告警抑制阈值 (-1 表示继承全局配置)
+     */
+    public void onJobFailure(String jobHandler, String param, String traceId, long durationMs, Throwable throwable,
+                             boolean alertEnabled, int alertSuppressThreshold) {
+        if (!properties.isAlertEnabled() || !alertEnabled) {
             return;
         }
 
@@ -99,7 +115,9 @@ public class XxlJobAlertAggregator {
             Duration suppressDuration = properties.getAlertSuppressDuration() != null
                     ? properties.getAlertSuppressDuration()
                     : Duration.ofMinutes(5);
-            int threshold = properties.getAlertSuppressThreshold() > 0 ? properties.getAlertSuppressThreshold() : 10;
+            int threshold = alertSuppressThreshold > 0
+                    ? alertSuppressThreshold
+                    : (properties.getAlertSuppressThreshold() > 0 ? properties.getAlertSuppressThreshold() : 10);
 
             if (state.shouldTriggerSummary(now, threshold, suppressDuration)) {
                 int totalCount = state.getTotalFailures();
@@ -129,7 +147,20 @@ public class XxlJobAlertAggregator {
      * @param durationMs 执行耗时 (毫秒)
      */
     public void onJobSuccess(String jobHandler, String param, String traceId, long durationMs) {
-        if (!properties.isAlertEnabled()) {
+        onJobSuccess(jobHandler, param, traceId, durationMs, true);
+    }
+
+    /**
+     * 记录任务成功执行并在曾经故障后触发自愈恢复通知（支持方法级告警开关）
+     *
+     * @param jobHandler   任务 Handler 标识
+     * @param param        执行入参
+     * @param traceId      全链路追踪 traceId
+     * @param durationMs   执行耗时 (毫秒)
+     * @param alertEnabled 方法级告警开关
+     */
+    public void onJobSuccess(String jobHandler, String param, String traceId, long durationMs, boolean alertEnabled) {
+        if (!properties.isAlertEnabled() || !alertEnabled) {
             return;
         }
 

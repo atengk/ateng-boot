@@ -16,6 +16,7 @@ import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
+import io.github.atengk.boot.job.xxl.fallback.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobExecutionContext;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
@@ -56,6 +57,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -91,17 +93,18 @@ public class XxlJobContextAspect {
     private final XxlJobMetricsBinder metricsBinder;
     private final List<XxlJobInterceptor> interceptors;
     private final JobRuntimeGovernor governor;
+    private final List<JobTimeoutFallbackHandler> fallbackHandlers;
 
     public XxlJobContextAspect() {
-        this(null, null, null, null, null, null, null);
+        this(null, null, null, null, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
-        this(watchdog, properties, taskExecutor, null, null, null, null);
+        this(watchdog, properties, taskExecutor, null, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor, XxlJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, taskExecutor, alertAggregator, null, null, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, null, null, null, null);
     }
 
     public XxlJobContextAspect(
@@ -110,7 +113,7 @@ public class XxlJobContextAspect {
             Executor taskExecutor,
             XxlJobAlertAggregator alertAggregator,
             XxlJobMetricsBinder metricsBinder) {
-        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, null, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, null, null, null);
     }
 
     public XxlJobContextAspect(
@@ -120,7 +123,7 @@ public class XxlJobContextAspect {
             XxlJobAlertAggregator alertAggregator,
             XxlJobMetricsBinder metricsBinder,
             List<XxlJobInterceptor> interceptors) {
-        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, interceptors, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, interceptors, null, null);
     }
 
     public XxlJobContextAspect(
@@ -131,6 +134,18 @@ public class XxlJobContextAspect {
             XxlJobMetricsBinder metricsBinder,
             List<XxlJobInterceptor> interceptors,
             JobRuntimeGovernor governor) {
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, interceptors, governor, null);
+    }
+
+    public XxlJobContextAspect(
+            LocalWatchdog watchdog,
+            XxlJobProperties properties,
+            Executor taskExecutor,
+            XxlJobAlertAggregator alertAggregator,
+            XxlJobMetricsBinder metricsBinder,
+            List<XxlJobInterceptor> interceptors,
+            JobRuntimeGovernor governor,
+            List<JobTimeoutFallbackHandler> fallbackHandlers) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.taskExecutor = taskExecutor;
@@ -143,6 +158,13 @@ public class XxlJobContextAspect {
             this.interceptors = Collections.unmodifiableList(sorted);
         } else {
             this.interceptors = Collections.emptyList();
+        }
+        if (fallbackHandlers != null && !fallbackHandlers.isEmpty()) {
+            List<JobTimeoutFallbackHandler> sorted = new ArrayList<>(fallbackHandlers);
+            AnnotationAwareOrderComparator.sort(sorted);
+            this.fallbackHandlers = Collections.unmodifiableList(sorted);
+        } else {
+            this.fallbackHandlers = Collections.emptyList();
         }
     }
 
@@ -211,7 +233,18 @@ public class XxlJobContextAspect {
             return getDefaultReturnValue(specificMethod);
         }
 
+        JobExecutionMetadata metadata = new JobExecutionMetadata(
+                jobId,
+                jobName,
+                logId,
+                MDC.get(TRACE_ID_KEY),
+                TenantContextHolder.getTenantId()
+        );
+
         AtomicReference<LocalWatchdog.WatchdogSession> sessionRef = new AtomicReference<>(LocalWatchdog.WatchdogSession.NOOP);
+        AtomicBoolean fallbackTriggered = new AtomicBoolean(false);
+        boolean alertEnabled = (atengXxlJob != null) ? atengXxlJob.alertEnabled() : true;
+        int alertSuppressThreshold = (atengXxlJob != null) ? atengXxlJob.alertSuppressThreshold() : -1;
         long startNs = System.nanoTime();
 
         // 6. 执行参数解析、防卫校验与业务逻辑 (确保终态严格清理上下文)
@@ -224,6 +257,13 @@ public class XxlJobContextAspect {
                 String tenantIdFromResolved = extractTenantIdFromArgs(resolvedArgs);
                 if (StringUtils.hasText(tenantIdFromResolved)) {
                     TenantContextHolder.setTenantId(tenantIdFromResolved);
+                    metadata = new JobExecutionMetadata(
+                            jobId,
+                            jobName,
+                            logId,
+                            MDC.get(TRACE_ID_KEY),
+                            tenantIdFromResolved
+                    );
                 }
             }
 
@@ -231,14 +271,6 @@ public class XxlJobContextAspect {
             validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
 
             // D. 挂载执行元数据与看门狗
-            JobExecutionMetadata metadata = new JobExecutionMetadata(
-                    jobId,
-                    jobName,
-                    logId,
-                    MDC.get(TRACE_ID_KEY),
-                    TenantContextHolder.getTenantId()
-            );
-
             boolean hasWatchdog = watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative();
 
             // E. 构建任务执行上下文并执行切面拦截器 preHandle
@@ -302,11 +334,16 @@ public class XxlJobContextAspect {
                 triggerAfterCompletion(interceptorIndex, executionContext, executionThrowable);
             }
 
-            // 7. 任务执行成功：触发告警聚合自愈探测与 Micrometer 度量采集
+            // 7. 任务执行成功：若发生过看门狗超时则补发降级补偿，触发告警自愈与度量采集
             long durationNs = System.nanoTime() - startNs;
+            LocalWatchdog.WatchdogSession successSession = sessionRef.get();
+            if (successSession != null && successSession.isTimedOut() && fallbackTriggered.compareAndSet(false, true)) {
+                log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+                dispatchTimeoutFallback(pjp.getTarget(), specificMethod, atengXxlJob, metadata, Duration.ofNanos(durationNs), null);
+            }
             if (alertAggregator != null) {
                 long costMs = durationNs / 1_000_000;
-                alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs);
+                alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, alertEnabled);
             }
             if (metricsBinder != null) {
                 metricsBinder.recordExecution(jobName, XxlJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
@@ -315,13 +352,17 @@ public class XxlJobContextAspect {
         } catch (Throwable t) {
             long durationNs = System.nanoTime() - startNs;
             LocalWatchdog.WatchdogSession session = sessionRef.get();
-            if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
+            boolean isTimedOut = (session != null && session.isTimedOut())
+                    || (t instanceof InterruptedException && session != null && session.isTimedOut())
+                    || (t instanceof BusinessException && session != null && session.isTimedOut());
+            if (isTimedOut && fallbackTriggered.compareAndSet(false, true)) {
                 log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+                dispatchTimeoutFallback(pjp.getTarget(), specificMethod, atengXxlJob, metadata, Duration.ofNanos(durationNs), t);
             }
             // 8. 任务执行异常：触发告警风暴聚合判定与 Micrometer 度量采集
             if (alertAggregator != null) {
                 long costMs = durationNs / 1_000_000;
-                alertAggregator.onJobFailure(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, t);
+                alertAggregator.onJobFailure(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, t, alertEnabled, alertSuppressThreshold);
             }
             if (metricsBinder != null) {
                 metricsBinder.recordExecution(jobName, XxlJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
@@ -880,6 +921,153 @@ public class XxlJobContextAspect {
             }
         }
         return null;
+    }
+
+    /**
+     * 向受管异步线程池派发任务超时降级补偿任务
+     *
+     * @param target      目标业务 Bean
+     * @param method      被调度的业务方法
+     * @param atengXxlJob 注解配置
+     * @param metadata    任务执行元数据
+     * @param elapsed     实际执行耗时
+     * @param throwable   触发超时的异常（可能为 null）
+     */
+    protected void dispatchTimeoutFallback(Object target, Method method, AtengXxlJob atengXxlJob,
+                                           JobExecutionMetadata metadata, Duration elapsed, Throwable throwable) {
+        if (metadata == null) {
+            return;
+        }
+
+        String traceId = metadata.getTraceId();
+        String tenantId = metadata.getTenantId();
+        String user = UserContextHolder.getExplicit();
+        XxlJobContext xxlJobContext = XxlJobContext.getXxlJobContext();
+
+        Runnable fallbackTask = () -> {
+            String prevTraceId = MDC.get(TRACE_ID_KEY);
+            TenantSnapshot prevTenantSnapshot = TenantContextHolder.capturePrevious();
+            String prevUser = UserContextHolder.getExplicit();
+            XxlJobContext prevJobContext = XxlJobContext.getXxlJobContext();
+
+            if (StringUtils.hasText(traceId)) {
+                MDC.put(TRACE_ID_KEY, traceId);
+            }
+            if (StringUtils.hasText(tenantId)) {
+                TenantContextHolder.setTenantId(tenantId);
+            }
+            if (StringUtils.hasText(user)) {
+                UserContextHolder.set(user);
+            }
+            if (xxlJobContext != null) {
+                XxlJobContext.setXxlJobContext(xxlJobContext);
+            }
+
+            try {
+                executeFallback(target, method, atengXxlJob, metadata, elapsed, throwable);
+            } catch (Throwable ex) {
+                log.error("XXL-Job 任务 [{}] 超时降级补偿执行失败", metadata.getJobName(), ex);
+            } finally {
+                TenantContextHolder.restore(prevTenantSnapshot);
+                if (prevUser != null) {
+                    UserContextHolder.set(prevUser);
+                } else {
+                    UserContextHolder.clear();
+                }
+                if (prevTraceId != null) {
+                    MDC.put(TRACE_ID_KEY, prevTraceId);
+                } else {
+                    MDC.remove(TRACE_ID_KEY);
+                }
+                XxlJobContext.setXxlJobContext(prevJobContext);
+            }
+        };
+
+        if (taskExecutor != null) {
+            try {
+                taskExecutor.execute(fallbackTask);
+            } catch (Throwable t) {
+                log.error("向受管线程池提交超时降级补偿任务失败，尝试就地同步降级执行", t);
+                fallbackTask.run();
+            }
+        } else {
+            CompletableFuture.runAsync(fallbackTask);
+        }
+    }
+
+    /**
+     * 执行降级补偿逻辑：优先同 Bean 上的 fallback 方法，若无则回调全局 JobTimeoutFallbackHandler SPI
+     */
+    protected void executeFallback(Object target, Method method, AtengXxlJob atengXxlJob,
+                                   JobExecutionMetadata metadata, Duration elapsed, Throwable throwable) {
+        String fallbackMethodName = (atengXxlJob != null) ? atengXxlJob.fallback() : null;
+        boolean invokedBeanFallback = false;
+
+        if (StringUtils.hasText(fallbackMethodName) && target != null) {
+            Class<?> targetClass = org.springframework.aop.support.AopUtils.getTargetClass(target);
+            Method fallbackMethod = findFallbackMethod(targetClass, fallbackMethodName.trim());
+            if (fallbackMethod != null) {
+                try {
+                    fallbackMethod.setAccessible(true);
+                    Object[] args = buildFallbackArgs(fallbackMethod, metadata, elapsed, throwable);
+                    fallbackMethod.invoke(target, args);
+                    invokedBeanFallback = true;
+                    log.info("XXL-Job 任务 [{}] 超时成功执行 Bean [{}] 降级补偿方法: {}",
+                            metadata.getJobName(), targetClass.getSimpleName(), fallbackMethodName);
+                } catch (Throwable ex) {
+                    log.error("XXL-Job 任务 [{}] 调用 Bean 降级方法 [{}] 异常", metadata.getJobName(), fallbackMethodName, ex);
+                }
+            } else {
+                log.warn("XXL-Job 任务 [{}] 声明了降级方法 [{}]，但在 Bean [{}] 中未找到可用方法",
+                        metadata.getJobName(), fallbackMethodName, targetClass.getName());
+            }
+        }
+
+        // 若未声明或未能调用同 Bean 上的 fallback 方法，回调全局 SPI
+        if (!invokedBeanFallback && !fallbackHandlers.isEmpty()) {
+            for (JobTimeoutFallbackHandler handler : fallbackHandlers) {
+                try {
+                    handler.onTimeout(metadata, elapsed);
+                } catch (Throwable ex) {
+                    log.error("XXL-Job 任务 [{}] 回调全局超时降级处理器 [{}] 发生异常",
+                            metadata.getJobName(), handler.getClass().getName(), ex);
+                }
+            }
+        }
+    }
+
+    private Method findFallbackMethod(Class<?> targetClass, String methodName) {
+        Class<?> current = targetClass;
+        while (current != null && !current.equals(Object.class)) {
+            for (Method m : current.getDeclaredMethods()) {
+                if (m.getName().equals(methodName)) {
+                    return m;
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return null;
+    }
+
+    private Object[] buildFallbackArgs(Method fallbackMethod, JobExecutionMetadata metadata, Duration elapsed, Throwable throwable) {
+        Class<?>[] paramTypes = fallbackMethod.getParameterTypes();
+        if (paramTypes.length == 0) {
+            return new Object[0];
+        }
+        Object[] args = new Object[paramTypes.length];
+        for (int i = 0; i < paramTypes.length; i++) {
+            Class<?> pt = paramTypes[i];
+            if (JobExecutionMetadata.class.isAssignableFrom(pt)) {
+                args[i] = metadata;
+            } else if (Duration.class.isAssignableFrom(pt)) {
+                args[i] = elapsed;
+            } else if (Throwable.class.isAssignableFrom(pt)) {
+                args[i] = throwable;
+            } else {
+                args[i] = null;
+            }
+        }
+        return args;
     }
 
 }
