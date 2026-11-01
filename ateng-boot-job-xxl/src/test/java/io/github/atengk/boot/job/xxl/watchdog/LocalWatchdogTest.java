@@ -25,13 +25,16 @@ class LocalWatchdogTest {
 
     private LocalWatchdog watchdog;
     private AtomicReference<JobTimeoutEvent> capturedEvent;
+    private CountDownLatch eventLatch;
 
     @BeforeEach
     void setUp() {
         capturedEvent = new AtomicReference<>();
+        eventLatch = new CountDownLatch(1);
         ApplicationEventPublisher eventPublisher = event -> {
             if (event instanceof JobTimeoutEvent timeoutEvent) {
                 capturedEvent.set(timeoutEvent);
+                eventLatch.countDown();
             }
         };
         watchdog = new LocalWatchdog(eventPublisher);
@@ -82,10 +85,14 @@ class LocalWatchdogTest {
         }, "test-worker-thread");
 
         worker.start();
-        boolean finished = latch.await(1500, TimeUnit.MILLISECONDS);
+        boolean finished = latch.await(2000, TimeUnit.MILLISECONDS);
 
         assertThat(finished).isTrue();
         assertThat(wasInterrupted.get()).isTrue();
+
+        // 等待并校验超时事件已发布接收
+        boolean eventReceived = eventLatch.await(2000, TimeUnit.MILLISECONDS);
+        assertThat(eventReceived).isTrue();
 
         // 校验广播发布的超时事件详情
         JobTimeoutEvent event = capturedEvent.get();

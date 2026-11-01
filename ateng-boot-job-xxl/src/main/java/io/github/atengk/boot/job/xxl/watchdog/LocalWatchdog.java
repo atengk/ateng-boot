@@ -70,24 +70,7 @@ public class LocalWatchdog implements DisposableBean {
             log.warn("XXL-Job 任务本地硬超时触发 [{}], 耗时: {}ms (阈值: {}ms), 正在向工作线程 [{}] 发起强中断...",
                     jobDesc, elapsed.toMillis(), timeout.toMillis(), workerThread.getName());
 
-            // 1. 结构化记录超时日志至 XXL-Job 控制台
-            try {
-                XxlJobHelper.handleTimeout("任务执行本地硬超时 (阈值: " + timeout + ")");
-                XxlJobHelper.log("<br><font color=\"red\">----------- [LOCAL-WATCHDOG] 任务执行本地硬超时 (耗时: " +
-                        elapsed.toMillis() + "ms, 阈值: " + timeout.toMillis() + "ms)，工作线程 [" +
-                        workerThread.getName() + "] 已被强中断！ -----------</font>");
-            } catch (Throwable ex) {
-                log.debug("记录 XXL-Job 超时控制台日志异常 (可能处于离线测试): {}", ex.getMessage());
-            }
-
-            // 2. 确定性强中断工作线程
-            try {
-                workerThread.interrupt();
-            } catch (Throwable ex) {
-                log.error("强中断任务工作线程 [{}] 发生次生异常", workerThread.getName(), ex);
-            }
-
-            // 3. 发布 Spring 领域超时事件
+            // 1. 发布 Spring 领域超时事件
             if (eventPublisher != null && metadata != null) {
                 try {
                     JobTimeoutEvent event = new JobTimeoutEvent(
@@ -105,6 +88,23 @@ public class LocalWatchdog implements DisposableBean {
                 } catch (Throwable ex) {
                     log.error("发布 JobTimeoutEvent 超时事件异常", ex);
                 }
+            }
+
+            // 2. 结构化记录超时日志至 XXL-Job 控制台
+            try {
+                XxlJobHelper.handleTimeout("任务执行本地硬超时 (阈值: " + timeout + ")");
+                XxlJobHelper.log("<br><font color=\"red\">----------- [LOCAL-WATCHDOG] 任务执行本地硬超时 (耗时: " +
+                        elapsed.toMillis() + "ms, 阈值: " + timeout.toMillis() + "ms)，工作线程 [" +
+                        workerThread.getName() + "] 已被强中断！ -----------</font>");
+            } catch (Throwable ex) {
+                log.debug("记录 XXL-Job 超时控制台日志异常 (可能处于离线测试): {}", ex.getMessage());
+            }
+
+            // 3. 确定性强中断工作线程
+            try {
+                workerThread.interrupt();
+            } catch (Throwable ex) {
+                log.error("强中断任务工作线程 [{}] 发生次生异常", workerThread.getName(), ex);
             }
         }, timeout.toMillis(), TimeUnit.MILLISECONDS);
 
