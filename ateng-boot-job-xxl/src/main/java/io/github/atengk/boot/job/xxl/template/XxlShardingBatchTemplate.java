@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.xxl.template;
 
 import com.xxl.job.core.context.XxlJobContext;
+import com.xxl.job.core.context.XxlJobHelper;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -21,13 +22,13 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
 /**
@@ -38,6 +39,9 @@ import java.util.function.ToLongFunction;
  * 并全自动将父任务的四维上下文（MDC traceId、操作人、多租户）与 XXL-Job 日志镜像句柄透传至并发子线程，
  * 在子任务终态时严格执行现场清理，防止线程复用污染与上下文泄漏。</p>
  *
+ * <p>本模板内建有界失败记录收集（上限 1000 条，防御内存耗尽）、失败批次补偿回调（{@link FailedBatch}）
+ * 与自动化流式进度打卡机制，实时向 XXL-Job 调度控制台同步执行吞吐与完成率。</p>
+ *
  * @author Ateng
  * @since 2026-10-31
  */
@@ -47,24 +51,31 @@ public class XxlShardingBatchTemplate {
 
     public static final int DEFAULT_BATCH_SIZE = 1000;
     public static final int DEFAULT_MAX_CONCURRENCY = 8;
+    public static final int DEFAULT_PROGRESS_LOG_INTERVAL = 5000;
 
     private final Executor taskExecutor;
     private final int defaultBatchSize;
     private final int defaultMaxConcurrency;
     private volatile boolean failFast = true;
+    private volatile int progressLogInterval = DEFAULT_PROGRESS_LOG_INTERVAL;
 
     public XxlShardingBatchTemplate() {
-        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
+        this(null, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL);
     }
 
     public XxlShardingBatchTemplate(Executor taskExecutor) {
-        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY);
+        this(taskExecutor, DEFAULT_BATCH_SIZE, DEFAULT_MAX_CONCURRENCY, DEFAULT_PROGRESS_LOG_INTERVAL);
     }
 
     public XxlShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency) {
+        this(taskExecutor, defaultBatchSize, defaultMaxConcurrency, DEFAULT_PROGRESS_LOG_INTERVAL);
+    }
+
+    public XxlShardingBatchTemplate(Executor taskExecutor, int defaultBatchSize, int defaultMaxConcurrency, int progressLogInterval) {
         this.taskExecutor = taskExecutor;
         this.defaultBatchSize = defaultBatchSize > 0 ? defaultBatchSize : DEFAULT_BATCH_SIZE;
         this.defaultMaxConcurrency = defaultMaxConcurrency > 0 ? defaultMaxConcurrency : DEFAULT_MAX_CONCURRENCY;
+        this.progressLogInterval = progressLogInterval > 0 ? progressLogInterval : DEFAULT_PROGRESS_LOG_INTERVAL;
     }
 
     public int getDefaultBatchSize() {
@@ -83,6 +94,77 @@ public class XxlShardingBatchTemplate {
         this.failFast = failFast;
     }
 
+    public int getProgressLogInterval() {
+        return progressLogInterval;
+    }
+
+    public void setProgressLogInterval(int progressLogInterval) {
+        this.progressLogInterval = progressLogInterval;
+    }
+
+    // ==================== 进度打卡与失败项收集辅助 ====================
+
+    /**
+     * 格式化并输出分片批处理流式进度打卡信息至日志与 XXL-Job 调度控制台
+     *
+     * @param totalProcessed 已处理总条数
+     * @param successCount   成功条数
+     * @param failCount      失败条数
+     * @param batchCount     当前已处理批次计数
+     * @param startNanos     任务启动纳秒数
+     */
+    protected void reportProgress(long totalProcessed, long successCount, long failCount, int batchCount, long startNanos) {
+        reportProgress(totalProcessed, null, successCount, failCount, batchCount, startNanos);
+    }
+
+    /**
+     * 格式化并输出分片批处理流式进度打卡信息（支持已知目标总条数计算完成百分比）
+     *
+     * @param totalProcessed 已处理总条数
+     * @param totalExpected  预估总条数（若为 null 则不计算百分比）
+     * @param successCount   成功条数
+     * @param failCount      失败条数
+     * @param batchCount     当前已处理批次计数
+     * @param startNanos     任务启动纳秒数
+     */
+    protected void reportProgress(long totalProcessed, Long totalExpected, long successCount, long failCount, int batchCount, long startNanos) {
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        double throughput = elapsedMillis > 0 ? (totalProcessed * 1000.0 / elapsedMillis) : (totalProcessed > 0 ? totalProcessed : 0.0);
+        String completionRateStr = (totalExpected != null && totalExpected > 0)
+                ? String.format(" (完成率: %.2f%%)", Math.min(100.0, totalProcessed * 100.0 / totalExpected))
+                : "";
+        String formattedProgress = String.format(
+                "[PROGRESS] 批处理流式进度打卡: 已处理 %d%s 条 (成功: %d, 失败: %d, 批次: %d, 耗时: %dms, 吞吐量: %.1f 条/秒)",
+                totalProcessed, completionRateStr, successCount, failCount, batchCount, elapsedMillis, throughput);
+        log.info("{}", formattedProgress);
+        try {
+            XxlJobHelper.log(formattedProgress);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 记录失败项至有界集合（上限 1000 条，防御 JVM 堆内存 OOM）
+     *
+     * @param failedItems 失败项集合
+     * @param chunk       当前失败切片
+     * @param <T>         数据类型
+     * @return true 若当前切片导致超过上限而发生截断
+     */
+    private <T> boolean collectFailedItems(List<Object> failedItems, List<T> chunk) {
+        if (chunk == null || chunk.isEmpty()) {
+            return false;
+        }
+        int spaceLeft = BatchExecutionResult.MAX_FAILED_ITEMS - failedItems.size();
+        if (spaceLeft > 0) {
+            int toAdd = Math.min(spaceLeft, chunk.size());
+            for (int i = 0; i < toAdd; i++) {
+                failedItems.add(chunk.get(i));
+            }
+        }
+        return chunk.size() > spaceLeft;
+    }
+
     // ==================== 1. 基于游标/步长流式分页 (单线程顺序消费) ====================
 
     /**
@@ -99,7 +181,26 @@ public class XxlShardingBatchTemplate {
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
-        return executeStep(null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer);
+        return executeStep(null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 基于游标步长流式分批拉取并消费（采用默认切片大小，带失败回调）
+     *
+     * @param queryFunction  游标查询函数
+     * @param idExtractor    实体主键提取器
+     * @param batchConsumer  分批消费逻辑
+     * @param failureHandler 失败切片补偿回调
+     * @param <T>            实体类型
+     * @param <ID>           游标 ID 类型
+     * @return 批处理执行汇总统计
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeStep(null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer, failureHandler);
     }
 
     /**
@@ -120,6 +221,29 @@ public class XxlShardingBatchTemplate {
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
+        return executeStep(initialId, batchSize, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 基于游标步长流式分批拉取并消费（支持自定义初始游标、切片大小与失败补偿回调）
+     *
+     * @param initialId      初始游标 ID（为 null 时从头查询）
+     * @param batchSize      每批拉取条数
+     * @param queryFunction  游标查询函数：(lastId, batchSize) -> List<T>
+     * @param idExtractor    实体主键提取器
+     * @param batchConsumer  分批消费逻辑
+     * @param failureHandler 失败切片补偿回调（可为 null）
+     * @param <T>            实体类型
+     * @param <ID>           游标 ID 类型
+     * @return 批处理执行汇总统计
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+            ID initialId,
+            int batchSize,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -131,6 +255,9 @@ public class XxlShardingBatchTemplate {
         long successCount = 0;
         long failCount = 0;
         int batchCount = 0;
+        List<Object> failedItems = new ArrayList<>();
+        boolean truncatedFailures = false;
+        long lastReportedCount = 0;
 
         while (true) {
             if (Thread.currentThread().isInterrupted()) {
@@ -152,6 +279,21 @@ public class XxlShardingBatchTemplate {
                 successCount += chunkSize;
             } catch (Throwable t) {
                 failCount += chunkSize;
+
+                // 1. 收集失败项至有界集合 (上限 1000)
+                if (collectFailedItems(failedItems, chunk)) {
+                    truncatedFailures = true;
+                }
+
+                // 2. 触发失败补偿回调
+                if (failureHandler != null) {
+                    try {
+                        failureHandler.accept(new FailedBatch<>(chunk, batchCount, lastId, t));
+                    } catch (Throwable callbackEx) {
+                        log.error("分片流式批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
+                    }
+                }
+
                 if (failFast) {
                     if (t instanceof RuntimeException re) {
                         throw re;
@@ -161,6 +303,12 @@ public class XxlShardingBatchTemplate {
                 log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
             }
 
+            // 3. 实时进度打卡检查
+            if (progressLogInterval > 0 && (totalCount - lastReportedCount >= progressLogInterval)) {
+                lastReportedCount = totalCount;
+                reportProgress(totalCount, successCount, failCount, batchCount, startTime);
+            }
+
             lastId = idExtractor.apply(chunk.get(chunkSize - 1));
             if (chunkSize < effectiveBatchSize) {
                 break;
@@ -168,7 +316,7 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration);
+        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration, failedItems, truncatedFailures);
     }
 
     /**
@@ -180,12 +328,25 @@ public class XxlShardingBatchTemplate {
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<T> itemConsumer) {
+        return executeStepForEach(initialId, batchSize, queryFunction, idExtractor, itemConsumer, null);
+    }
+
+    /**
+     * 逐条消费步长游标数据（带失败补偿回调）
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepForEach(
+            ID initialId,
+            int batchSize,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<T> itemConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(itemConsumer, "itemConsumer 不能为 null");
         return executeStep(initialId, batchSize, queryFunction, idExtractor, batch -> {
             for (T item : batch) {
                 itemConsumer.accept(item);
             }
-        });
+        }, failureHandler);
     }
 
     // ==================== 2. 结合 ShardingContext 分片自动路由过滤 ====================
@@ -198,7 +359,19 @@ public class XxlShardingBatchTemplate {
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {
-        return executeShardedStep(sharding, null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer);
+        return executeShardedStep(sharding, null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 带有分片智能匹配的步长流式批处理（采用默认切片大小，带失败回调）
+     */
+    public <T> BatchExecutionResult executeShardedStep(
+            ShardingContext sharding,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeShardedStep(sharding, null, this.defaultBatchSize, queryFunction, idExtractor, batchConsumer, failureHandler);
     }
 
     /**
@@ -223,6 +396,30 @@ public class XxlShardingBatchTemplate {
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {
+        return executeShardedStep(sharding, initialId, batchSize, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 带有分片智能匹配的步长流式批处理（支持失败补偿回调）
+     *
+     * @param sharding       当前节点分片上下文（若为 null 则不过滤）
+     * @param initialId      初始游标 ID（Long）
+     * @param batchSize      每批拉取大小
+     * @param queryFunction  游标查询函数 (lastId, batchSize) -> List<T>
+     * @param idExtractor    Long 数值主键提取器
+     * @param batchConsumer  匹配分片的记录消费器
+     * @param failureHandler 失败切片补偿回调（可为 null）
+     * @param <T>            实体类型
+     * @return 批处理执行汇总统计
+     */
+    public <T> BatchExecutionResult executeShardedStep(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -234,6 +431,9 @@ public class XxlShardingBatchTemplate {
         long successCount = 0;
         long failCount = 0;
         int batchCount = 0;
+        List<Object> failedItems = new ArrayList<>();
+        boolean truncatedFailures = false;
+        long lastReportedCount = 0;
 
         while (true) {
             if (Thread.currentThread().isInterrupted()) {
@@ -264,6 +464,21 @@ public class XxlShardingBatchTemplate {
                     successCount += matchedSize;
                 } catch (Throwable t) {
                     failCount += matchedSize;
+
+                    // 1. 收集失败项至有界集合 (上限 1000)
+                    if (collectFailedItems(failedItems, matchedChunk)) {
+                        truncatedFailures = true;
+                    }
+
+                    // 2. 触发失败补偿回调
+                    if (failureHandler != null) {
+                        try {
+                            failureHandler.accept(new FailedBatch<>(matchedChunk, batchCount, lastId, t));
+                        } catch (Throwable callbackEx) {
+                            log.error("分片流式批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
+                        }
+                    }
+
                     log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
                     if (failFast) {
                         if (t instanceof RuntimeException re) {
@@ -271,6 +486,12 @@ public class XxlShardingBatchTemplate {
                         }
                         throw new IllegalStateException("分片流式批处理发生未受检异常", t);
                     }
+                }
+
+                // 3. 实时进度打卡检查
+                if (progressLogInterval > 0 && (totalCount - lastReportedCount >= progressLogInterval)) {
+                    lastReportedCount = totalCount;
+                    reportProgress(totalCount, successCount, failCount, batchCount, startTime);
                 }
             }
 
@@ -281,7 +502,7 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration);
+        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration, failedItems, truncatedFailures);
     }
 
     // ==================== 3. 并发切片批处理 (带背压流量保护与四维上下文透传) ====================
@@ -294,7 +515,19 @@ public class XxlShardingBatchTemplate {
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
-        return executeStepParallel(initialId, this.defaultBatchSize, this.defaultMaxConcurrency, queryFunction, idExtractor, batchConsumer);
+        return executeStepParallel(initialId, this.defaultBatchSize, this.defaultMaxConcurrency, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 基于游标步长拉取 + 受管线程池并发消费（采用默认切片与并发度，带失败回调）
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+            ID initialId,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeStepParallel(initialId, this.defaultBatchSize, this.defaultMaxConcurrency, queryFunction, idExtractor, batchConsumer, failureHandler);
     }
 
     /**
@@ -321,6 +554,31 @@ public class XxlShardingBatchTemplate {
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
+        return executeStepParallel(initialId, batchSize, maxConcurrency, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 基于游标步长拉取 + 受管线程池并发消费（支持失败补偿回调）
+     *
+     * @param initialId      初始游标 ID
+     * @param batchSize      每批拉取大小
+     * @param maxConcurrency 最大在途并发切片数（背压阈值）
+     * @param queryFunction  游标查询函数
+     * @param idExtractor    实体主键提取器
+     * @param batchConsumer  分批并发消费逻辑
+     * @param failureHandler 失败切片补偿回调（可为 null）
+     * @param <T>            实体类型
+     * @param <ID>           游标 ID 类型
+     * @return 批处理执行汇总统计
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+            ID initialId,
+            int batchSize,
+            int maxConcurrency,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -339,6 +597,10 @@ public class XxlShardingBatchTemplate {
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
+        List<Object> failedItems = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean truncatedFailures = new AtomicBoolean(false);
+        AtomicLong processedCount = new AtomicLong(0);
+        AtomicLong lastReportedCount = new AtomicLong(0);
 
         while (true) {
             if (failFast && firstError.get() != null) {
@@ -358,6 +620,7 @@ public class XxlShardingBatchTemplate {
             int chunkSize = chunk.size();
             int currentBatchIndex = batchCount.incrementAndGet();
             totalCount.addAndGet(chunkSize);
+            ID currentBatchCursor = lastId;
             lastId = idExtractor.apply(chunk.get(chunkSize - 1));
             List<T> immutableBatch = Collections.unmodifiableList(new ArrayList<>(chunk));
 
@@ -379,6 +642,23 @@ public class XxlShardingBatchTemplate {
                     } catch (Throwable t) {
                         failCount.addAndGet(chunkSize);
                         firstError.compareAndSet(null, t);
+
+                        // 1. 收集失败项至有界集合 (并发安全)
+                        synchronized (failedItems) {
+                            if (collectFailedItems(failedItems, immutableBatch)) {
+                                truncatedFailures.set(true);
+                            }
+                        }
+
+                        // 2. 触发失败补偿回调
+                        if (failureHandler != null) {
+                            try {
+                                failureHandler.accept(new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t));
+                            } catch (Throwable callbackEx) {
+                                log.error("并发分片批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
+                            }
+                        }
+
                         if (!failFast) {
                             log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                         }
@@ -390,6 +670,8 @@ public class XxlShardingBatchTemplate {
                         }
                     } finally {
                         semaphore.release();
+                        long currentProcessed = processedCount.addAndGet(chunkSize);
+                        checkAndReportProgress(currentProcessed, lastReportedCount, successCount.get(), failCount.get(), batchCount.get(), startTime);
                     }
                 }, executor);
             } catch (Throwable t) {
@@ -404,7 +686,17 @@ public class XxlShardingBatchTemplate {
         }
 
         // 等待所有在途并发切片处理完成
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } catch (Throwable ex) {
+            if (failFast) {
+                Throwable cause = firstError.get() != null ? firstError.get() : (ex.getCause() != null ? ex.getCause() : ex);
+                if (cause instanceof RuntimeException re) {
+                    throw re;
+                }
+                throw new IllegalStateException("并行分片批处理发生异常: " + cause.getMessage(), cause);
+            }
+        }
 
         if (failFast && firstError.get() != null) {
             Throwable t = firstError.get();
@@ -415,7 +707,30 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedItems, truncatedFailures.get());
+    }
+
+    /**
+     * 带有分片智能匹配的并发批处理（采用默认切片与并发度）
+     */
+    public <T> BatchExecutionResult executeShardedStepParallel(
+            ShardingContext sharding,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer) {
+        return executeShardedStepParallel(sharding, null, this.defaultBatchSize, this.defaultMaxConcurrency, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 带有分片智能匹配的并发批处理（采用默认切片与并发度，带失败回调）
+     */
+    public <T> BatchExecutionResult executeShardedStepParallel(
+            ShardingContext sharding,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeShardedStepParallel(sharding, null, this.defaultBatchSize, this.defaultMaxConcurrency, queryFunction, idExtractor, batchConsumer, failureHandler);
     }
 
     /**
@@ -429,6 +744,21 @@ public class XxlShardingBatchTemplate {
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {
+        return executeShardedStepParallel(sharding, initialId, batchSize, maxConcurrency, queryFunction, idExtractor, batchConsumer, null);
+    }
+
+    /**
+     * 带有分片智能匹配的并发批处理（支持失败补偿回调）
+     */
+    public <T> BatchExecutionResult executeShardedStepParallel(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            int maxConcurrency,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -447,6 +777,10 @@ public class XxlShardingBatchTemplate {
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
         AtomicReference<Throwable> firstError = new AtomicReference<>();
+        List<Object> failedItems = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean truncatedFailures = new AtomicBoolean(false);
+        AtomicLong processedCount = new AtomicLong(0);
+        AtomicLong lastReportedCount = new AtomicLong(0);
 
         while (true) {
             if (failFast && firstError.get() != null) {
@@ -464,6 +798,7 @@ public class XxlShardingBatchTemplate {
             }
 
             int chunkSize = chunk.size();
+            Long currentBatchCursor = lastId;
             lastId = idExtractor.applyAsLong(chunk.get(chunkSize - 1));
 
             List<T> matchedChunk = new ArrayList<>(chunkSize);
@@ -498,6 +833,23 @@ public class XxlShardingBatchTemplate {
                         } catch (Throwable t) {
                             failCount.addAndGet(matchedSize);
                             firstError.compareAndSet(null, t);
+
+                            // 1. 收集失败项至有界集合 (并发安全)
+                            synchronized (failedItems) {
+                                if (collectFailedItems(failedItems, immutableBatch)) {
+                                    truncatedFailures.set(true);
+                                }
+                            }
+
+                            // 2. 触发失败补偿回调
+                            if (failureHandler != null) {
+                                try {
+                                    failureHandler.accept(new FailedBatch<>(immutableBatch, currentBatchIndex, currentBatchCursor, t));
+                                } catch (Throwable callbackEx) {
+                                    log.error("并发分片批处理失败回调执行异常: {}", callbackEx.getMessage(), callbackEx);
+                                }
+                            }
+
                             if (!failFast) {
                                 log.error("并行分片批处理异常 [批次: {}]: {}", currentBatchIndex, t.getMessage(), t);
                             }
@@ -509,6 +861,8 @@ public class XxlShardingBatchTemplate {
                             }
                         } finally {
                             semaphore.release();
+                            long currentProcessed = processedCount.addAndGet(matchedSize);
+                            checkAndReportProgress(currentProcessed, lastReportedCount, successCount.get(), failCount.get(), batchCount.get(), startTime);
                         }
                     }, executor);
                 } catch (Throwable t) {
@@ -523,7 +877,17 @@ public class XxlShardingBatchTemplate {
             }
         }
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } catch (Throwable ex) {
+            if (failFast) {
+                Throwable cause = firstError.get() != null ? firstError.get() : (ex.getCause() != null ? ex.getCause() : ex);
+                if (cause instanceof RuntimeException re) {
+                    throw re;
+                }
+                throw new IllegalStateException("并行分片批处理发生异常: " + cause.getMessage(), cause);
+            }
+        }
 
         if (failFast && firstError.get() != null) {
             Throwable t = firstError.get();
@@ -534,7 +898,19 @@ public class XxlShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedItems, truncatedFailures.get());
+    }
+
+    private void checkAndReportProgress(long currentProcessed, AtomicLong lastReported, long successCount, long failCount, int batchCount, long startTime) {
+        if (progressLogInterval <= 0) {
+            return;
+        }
+        long last = lastReported.get();
+        if (currentProcessed - last >= progressLogInterval) {
+            if (lastReported.compareAndSet(last, currentProcessed)) {
+                reportProgress(currentProcessed, successCount, failCount, batchCount, startTime);
+            }
+        }
     }
 
     /**

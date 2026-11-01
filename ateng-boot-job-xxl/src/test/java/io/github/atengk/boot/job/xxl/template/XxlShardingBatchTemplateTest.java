@@ -320,6 +320,182 @@ class XxlShardingBatchTemplateTest {
         });
     }
 
+    @Test
+    @DisplayName("测试有界失败明细收集与截断标记：超过 1000 条上限时截断以保护 JVM 堆内存")
+    void testBoundedFailedItemsAndTruncationFlag() {
+        template.setFailFast(false);
+
+        // 构造 1500 条数据 (id 1~1500)
+        List<MockRecord> database = new ArrayList<>();
+        for (long i = 1; i <= 1500; i++) {
+            database.add(new MockRecord(i, "order-" + i));
+        }
+
+        // 每批 500 条，共 3 批，全部模拟抛出异常
+        BatchExecutionResult result = template.executeStep(
+                0L,
+                500,
+                (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
+                r -> r.id,
+                batch -> {
+                    throw new RuntimeException("模拟批量处理失败");
+                }
+        );
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getTotalCount()).isEqualTo(1500);
+        assertThat(result.getFailCount()).isEqualTo(1500);
+        assertThat(result.getSuccessCount()).isEqualTo(0);
+        assertThat(result.getBatchCount()).isEqualTo(3);
+        // 验证失败记录有界截断：最大保留 1000 条
+        assertThat(result.getFailedItems()).hasSize(BatchExecutionResult.MAX_FAILED_ITEMS);
+        assertThat(result.hasTruncatedFailures()).isTrue();
+    }
+
+    @Test
+    @DisplayName("测试失败补偿回调触发与 FailedBatch 模型数据完整性")
+    void testFailureHandlerCallbackDispatch() {
+        template.setFailFast(false);
+
+        // 构造 30 条数据，每批 10 条
+        List<MockRecord> database = new ArrayList<>();
+        for (long i = 1; i <= 30; i++) {
+            database.add(new MockRecord(i, "item-" + i));
+        }
+
+        List<FailedBatch<MockRecord>> capturedFailedBatches = new ArrayList<>();
+
+        BatchExecutionResult result = template.executeStep(
+                0L,
+                10,
+                (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
+                r -> r.id,
+                batch -> {
+                    // 第 2 批 (id 11~20) 模拟处理失败
+                    if (batch.get(0).id == 11L) {
+                        throw new IllegalStateException("第 2 批次业务异常");
+                    }
+                },
+                capturedFailedBatches::add
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(30);
+        assertThat(result.getSuccessCount()).isEqualTo(20);
+        assertThat(result.getFailCount()).isEqualTo(10);
+        assertThat(result.hasTruncatedFailures()).isFalse();
+        assertThat(result.getFailedItems()).hasSize(10);
+
+        // 验证失败补偿回调收到的 FailedBatch 详情
+        assertThat(capturedFailedBatches).hasSize(1);
+        FailedBatch<MockRecord> failedBatch = capturedFailedBatches.get(0);
+        assertThat(failedBatch.getBatchIndex()).isEqualTo(2);
+        assertThat(failedBatch.getBatchNumber()).isEqualTo(2);
+        assertThat(failedBatch.getCursorId()).isEqualTo(10L);
+        assertThat(failedBatch.getItems()).hasSize(10);
+        assertThat(failedBatch.getItems().get(0).id).isEqualTo(11L);
+        assertThat(failedBatch.getItems().get(9).id).isEqualTo(20L);
+        assertThat(failedBatch.getCause()).isInstanceOf(IllegalStateException.class)
+                .hasMessage("第 2 批次业务异常");
+    }
+
+    @Test
+    @DisplayName("测试流式批处理实时进度打卡与完成百分比计算")
+    void testProgressReportingAtStepInterval() {
+        template.setProgressLogInterval(100);
+        assertThat(template.getProgressLogInterval()).isEqualTo(100);
+
+        List<MockRecord> database = new ArrayList<>();
+        for (long i = 1; i <= 250; i++) {
+            database.add(new MockRecord(i, "progress-" + i));
+        }
+
+        List<MockRecord> consumed = new ArrayList<>();
+        BatchExecutionResult result = template.executeStep(
+                0L,
+                50,
+                (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
+                r -> r.id,
+                consumed::addAll
+        );
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getTotalCount()).isEqualTo(250);
+        assertThat(consumed).hasSize(250);
+
+        // 直接测试 reportProgress 输出逻辑（含预估总量百分比计算）
+        template.reportProgress(250, 500L, 250, 0, 5, System.nanoTime() - 100_000_000L);
+    }
+
+    @Test
+    @DisplayName("测试并发批处理下失败补偿回调与有界失败集合并发安全性")
+    void testParallelExecutionFailureHandlerAndBoundedFailures() {
+        template.setFailFast(false);
+
+        // 构造 1200 条数据，每批 200 条，共 6 批
+        List<MockRecord> database = new ArrayList<>();
+        for (long i = 1; i <= 1200; i++) {
+            database.add(new MockRecord(i, "parallel-fail-" + i));
+        }
+
+        CopyOnWriteArrayList<FailedBatch<MockRecord>> capturedBatches = new CopyOnWriteArrayList<>();
+
+        BatchExecutionResult result = template.executeStepParallel(
+                0L,
+                200,
+                4,
+                (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
+                r -> r.id,
+                batch -> {
+                    throw new RuntimeException("并发切片消费模拟失败");
+                },
+                capturedBatches::add
+        );
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getTotalCount()).isEqualTo(1200);
+        assertThat(result.getFailCount()).isEqualTo(1200);
+        assertThat(result.getFailedItems()).hasSize(BatchExecutionResult.MAX_FAILED_ITEMS);
+        assertThat(result.hasTruncatedFailures()).isTrue();
+        assertThat(capturedBatches).hasSize(6);
+    }
+
+    @Test
+    @DisplayName("测试分片流式批处理结合 ShardingContext 与失败补偿回调")
+    void testShardedStepWithFailureHandler() {
+        template.setFailFast(false);
+
+        // 构造 100 条数据 (id 1~100)
+        List<MockRecord> database = new ArrayList<>();
+        for (long i = 1; i <= 100; i++) {
+            database.add(new MockRecord(i, "sharded-item-" + i));
+        }
+
+        ShardingContext sharding = new ShardingContext(0, 2); // 偶数 ID
+        List<FailedBatch<MockRecord>> capturedBatches = new ArrayList<>();
+
+        BatchExecutionResult result = template.executeShardedStep(
+                sharding,
+                0L,
+                20,
+                (lastId, limit) -> database.stream().filter(r -> r.id > (lastId == null ? 0L : lastId)).limit(limit).toList(),
+                r -> r.id,
+                batch -> {
+                    if (batch.get(0).id == 2L) {
+                        throw new RuntimeException("分片第一批失败");
+                    }
+                },
+                capturedBatches::add
+        );
+
+        // 100 条数据中属于分片 0 的有 50 条 (2, 4, 6... 100)
+        assertThat(result.getTotalCount()).isEqualTo(50);
+        assertThat(result.getFailCount()).isEqualTo(10);
+        assertThat(result.getSuccessCount()).isEqualTo(40);
+        assertThat(capturedBatches).hasSize(1);
+        assertThat(capturedBatches.get(0).getItems()).hasSize(10);
+        assertThat(capturedBatches.get(0).getItems().get(0).id).isEqualTo(2L);
+    }
+
     static class MockRecord {
         final long id;
         final String name;
