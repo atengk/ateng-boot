@@ -149,12 +149,7 @@ public class PlaintextIngressGuard implements ApplicationListener<ApplicationEve
             }
             if (source.containsProperty(key)) {
                 Object raw = EnforceEncryptionPolicy.getRawProperty(source, key);
-                String strVal = null;
-                if (raw instanceof CharSequence cs) {
-                    strVal = cs.toString();
-                } else if (raw instanceof Number num) {
-                    strVal = num.toString();
-                }
+                String strVal = EnforceEncryptionPolicy.extractStringValue(raw);
 
                 if (strVal != null && !strVal.trim().isEmpty()) {
                     if (EnforceEncryptionPolicy.isExemptedValue(strVal)) {

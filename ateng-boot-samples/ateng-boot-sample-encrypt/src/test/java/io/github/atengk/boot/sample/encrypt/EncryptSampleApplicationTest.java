@@ -1,6 +1,7 @@
 package io.github.atengk.boot.sample.encrypt;
 
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.exception.ConfigSecurityException;
 import io.github.atengk.boot.encrypt.guard.SanitizingGuard;
 import io.github.atengk.boot.sample.encrypt.service.ConfigDecryptionScenarioService;
 import io.github.atengk.boot.sample.encrypt.service.IngressGuardScenarioService;
@@ -15,6 +16,7 @@ import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 
 import java.nio.charset.StandardCharsets;
@@ -248,5 +250,32 @@ class EncryptSampleApplicationTest {
                     })
                     .run();
         }, "存在裸明文敏感配置且开启 enforce-encrypted=true 时必须阻断启动");
+    }
+
+    @Test
+    @DisplayName("端到端验证配置中心动态推送裸明文敏感属性时被 PlaintextIngressGuard 刚性拦截")
+    void testPlaintextIngressGuardBlocksDynamicUnencryptedPush() {
+        ConfigurableApplicationContext ctx = new SpringApplicationBuilder(EncryptSampleApplication.class)
+                .run(
+                        "--spring.profiles.active=test",
+                        "--ateng.boot.encrypt.password=SampleMasterSecretKey2026!",
+                        "--ateng.boot.encrypt.enforce-encrypted=true"
+                );
+        try {
+            IngressGuardScenarioService service = ctx.getBean(IngressGuardScenarioService.class);
+            assertNotNull(service);
+
+            // 1. 动态推送裸明文敏感字符串时必须抛出异常刚性拦截
+            assertThrows(ConfigSecurityException.class, () -> {
+                service.simulatePlaintextIngress("spring.datasource.password", "hotPushedPlaintext123");
+            }, "热推送裸明文密码必须被 PlaintextIngressGuard 刚性拦截");
+
+            // 2. 动态推送未加引号纯数字密码时亦必须刚性拦截
+            assertThrows(ConfigSecurityException.class, () -> {
+                service.simulatePlaintextIngress("spring.redis.password", 123456);
+            }, "热推送未加引号纯数字密码必须被 PlaintextIngressGuard 刚性拦截");
+        } finally {
+            ctx.close();
+        }
     }
 }

@@ -191,6 +191,15 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
     }
 
     /**
+     * 获取当前包装器绑定的多密钥注册表
+     *
+     * @return 绑定的 MultiKeyRegistry 实例（若尚未绑定探测器则返回 null）
+     */
+    public MultiKeyRegistry getKeyRegistry() {
+        return keyDetector != null ? keyDetector.getRegistry() : null;
+    }
+
+    /**
      * 更新密钥探测器并清空解密缓存（用于后置阶段或动态刷新时同步最新密钥）
      */
     public void updateKeyDetector(KeyDetector newKeyDetector) {

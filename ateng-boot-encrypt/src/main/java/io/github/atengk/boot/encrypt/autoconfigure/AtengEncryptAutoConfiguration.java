@@ -51,8 +51,8 @@ public class AtengEncryptAutoConfiguration {
     public MultiKeyRegistry multiKeyRegistry(EncryptProperties properties) {
         if (environment != null) {
             for (PropertySource<?> source : environment.getPropertySources()) {
-                if (source instanceof EncryptPropertySourceWrapper wrapper && wrapper.getKeyDetector() != null) {
-                    MultiKeyRegistry registry = wrapper.getKeyDetector().getRegistry();
+                if (source instanceof EncryptPropertySourceWrapper wrapper) {
+                    MultiKeyRegistry registry = wrapper.getKeyRegistry();
                     if (registry != null) {
                         if (properties.getKeys() != null && !properties.getKeys().isEmpty()) {
                             properties.getKeys().forEach(registry::registerKey);

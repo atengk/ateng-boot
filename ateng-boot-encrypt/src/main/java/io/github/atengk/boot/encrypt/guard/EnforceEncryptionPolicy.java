@@ -114,12 +114,7 @@ public final class EnforceEncryptionPolicy {
                 }
                 if (pattern.matcher(key).matches()) {
                     Object rawValue = getRawProperty(source, key);
-                    String strVal = null;
-                    if (rawValue instanceof CharSequence cs) {
-                        strVal = cs.toString();
-                    } else if (rawValue instanceof Number num) {
-                        strVal = num.toString();
-                    }
+                    String strVal = extractStringValue(rawValue);
                     if (strVal != null && !strVal.trim().isEmpty()) {
                         // 协议与日志级别等特征防误伤豁免
                         if (isExemptedValue(strVal)) {
@@ -183,6 +178,21 @@ public final class EnforceEncryptionPolicy {
             return wrapper.getDelegate().getProperty(key);
         }
         return source.getProperty(key);
+    }
+
+    /**
+     * 从任意原始属性值中提取规范化字符串（兼容 CharSequence 与未加引号的 Number）
+     *
+     * @param rawValue 原始属性对象
+     * @return 转换后的字符串，若非文本或数值类型则返回 null
+     */
+    public static String extractStringValue(Object rawValue) {
+        if (rawValue instanceof CharSequence cs) {
+            return cs.toString();
+        } else if (rawValue instanceof Number num) {
+            return num.toString();
+        }
+        return null;
     }
 
     static boolean shouldSkipPropertySource(PropertySource<?> source) {

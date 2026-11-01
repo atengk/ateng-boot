@@ -240,21 +240,7 @@ public class InPlaceRewriter {
                     }
 
                     String plainValue = blockContent.toString().trim();
-                    String keyId = effectiveDirective.keyId();
-                    EncryptAlgorithm algorithm = (effectiveDirective.algorithmCode() != null)
-                            ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
-
-                    String password = keyRegistry.getKeyOrDefault(keyId);
-                    if (password == null || password.trim().isEmpty()) {
-                        throw new ConfigDecryptionException(String.format(
-                                "就地加密失败：字段 '%s' 缺失解密密钥 [KeyId: '%s']", key, keyId != null ? keyId : "default"));
-                    }
-
-                    String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
-                    String encToken = buildEncToken(keyId, algorithm, ciphertext);
-
-                    String reconstructed = indent + key + separator + encToken + comment;
-                    rewrittenLines.add(reconstructed);
+                    rewrittenLines.add(encryptAndReconstructLine(indent, key, separator, comment, plainValue, effectiveDirective));
                     encryptedCount++;
                     previousDirective = null;
                     lineIdx = nextIdx - 1;
@@ -263,22 +249,7 @@ public class InPlaceRewriter {
 
                 if (shouldEncrypt) {
                     String plainValue = unquote(cleanValue);
-                    String keyId = (effectiveDirective != null) ? effectiveDirective.keyId() : null;
-                    EncryptAlgorithm algorithm = (effectiveDirective != null && effectiveDirective.algorithmCode() != null)
-                            ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
-
-                    String password = keyRegistry.getKeyOrDefault(keyId);
-                    if (password == null || password.trim().isEmpty()) {
-                        throw new ConfigDecryptionException(String.format(
-                                "就地加密失败：字段 '%s' 缺失解密密钥 [KeyId: '%s']", key, keyId != null ? keyId : "default"));
-                    }
-
-                    String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
-                    String encToken = buildEncToken(keyId, algorithm, ciphertext);
-
-                    // 保持前导缩进、键名、原始分隔符、行尾注释完全一致
-                    String reconstructed = indent + key + separator + encToken + comment;
-                    rewrittenLines.add(reconstructed);
+                    rewrittenLines.add(encryptAndReconstructLine(indent, key, separator, comment, plainValue, effectiveDirective));
                     encryptedCount++;
                     previousDirective = null;
                     continue;
@@ -293,6 +264,23 @@ public class InPlaceRewriter {
         writeLinesPreservingEol(targetFile, rewrittenLines, prep.eol(), prep.endsWithEol());
         log.info("[ateng-boot-encrypt] 就地加密回写完成，共加密 {} 个敏感字段", encryptedCount);
         return encryptedCount;
+    }
+
+    private String encryptAndReconstructLine(String indent, String key, String separator, String comment,
+                                            String plainValue, Directive effectiveDirective) {
+        String keyId = (effectiveDirective != null) ? effectiveDirective.keyId() : null;
+        EncryptAlgorithm algorithm = (effectiveDirective != null && effectiveDirective.algorithmCode() != null)
+                ? resolveAlgorithm(effectiveDirective.algorithmCode()) : defaultAlgorithm;
+
+        String password = keyRegistry.getKeyOrDefault(keyId);
+        if (password == null || password.trim().isEmpty()) {
+            throw new ConfigDecryptionException(String.format(
+                    "就地加密失败：字段 '%s' 缺失解密密钥 [KeyId: '%s']", key, keyId != null ? keyId : "default"));
+        }
+
+        String ciphertext = ConfigEncryptor.encrypt(plainValue, password, algorithm);
+        String encToken = buildEncToken(keyId, algorithm, ciphertext);
+        return indent + key + separator + encToken + comment;
     }
 
     /**

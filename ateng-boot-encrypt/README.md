@@ -13,7 +13,7 @@
 - **透明无感 (Transparent & Ergonomic)**：基于 Spring Boot `EnvironmentPostProcessor` 与 `ConfigData` 机制，在配置加载阶段透明懒解密，业务代码、`@ConfigurationProperties` 与 `@Value` 完全无感；
 - **现代安全标配 (Modern Cryptography Defaults)**：默认采用具备 AEAD（Authenticated Encryption with Associated Data）完整性认证防篡改的 **AES-256-GCM** 算法，自动附带 12 字节安全随机 IV，彻底抛弃过时且不安全的 ECB/DES 算法；
 - **多 Key 轮换与隔离 (Multi-Key Routing & Isolation)**：独创 `ENC[keyId](...)` 语义契约，天然支持多中间件独立密钥隔离、`KeyRotatedEvent` 领域事件通知与无停机密钥平滑轮换；
-- **三道防误伤门禁 (Defense-in-Depth Ingress Guard)**：生产环境开启 `enforce-encrypted: true` 时，自动启动协议路径免疫（`http://`, `https://`, `classpath:`, `/`）、日志级别免疫（`DEBUG`, `INFO` 等）与显式白名单机制（`ignored-keys`），在坚决阻断裸明文密码的同时杜绝误报；
+- **三道防误伤门禁 (Defense-in-Depth Ingress Guard)**：生产环境开启 `enforce-encrypted: true` 时，自动启动协议与多级路径特征免疫（`http://`, `https://`, `classpath:`, `file:`, 以及如 `/etc/ssl/cert.pem` 的合法多级路径）、标准日志级别免疫（`DEBUG`, `INFO`, `WARN`, `ERROR`, `TRACE`）与显式白名单机制（`ignored-keys`），在坚决阻断裸明文密码的同时杜绝误报；
 - **全生命周期安全闭环 (Full Lifecycle Governance)**：涵盖开发期脱机加解密 CLI、CI/CD 阶段整文件就地回写、配置中心拉取前预解密 Hook、以及运行期 Actuator 监控物理脱敏。
 
 ### Maven 坐标
@@ -38,8 +38,9 @@
 | **纯原生国密 SM2** | 国标 GM/T 0003-2012 椭圆曲线非对称 | `Sm2ConfigDecryptor`, `Sm2Engine` | `algorithm=SM2` | `generateKeyPair()`, `encrypt(plain, pubHex)`, `decrypt(cipher, priHex)`, `c1c3c2ToDer(c1c3c2)`, `derToC1c3c2(der)` | `Sm2ConfigDecryptorTest.java`, `Sm2EngineTest.java` |
 | **标准 RSA 非对称** | 2048/4096 位 RSA 密钥分域与 PEM 互通 | `RsaConfigDecryptor`, `ConfigDecryptor` | `algorithm=RSA` | `generateKeyPair(size)`, `encodePublicKeyToPem(pub)`, `encodePrivateKeyToPem(pri)`, `encrypt(plain, pemPub)`, `decrypt(cipher, pemPri)` | `RsaConfigDecryptorTest.java`, `EncryptCliTest.java` |
 | **密文语法解析** | 令牌正则提取与 Spring Cloud 兼容 | `CiphertextParser`, `ParsedToken` | `prefix`, `suffix`, `compatible-cipher-prefix` | `hasEncrypted(text)`, `replaceTokens(text, fn)`, `formatToken(keyId, algo, cipher)`；受控兼容 `{cipher}...` 历史前缀 | `CiphertextParserTest.java`, `EncryptPropertySourceWrapperTest.java` |
-| **生产防误伤门禁** | 生产强制加密与三道防误伤过滤链 | `EnforceEncryptionPolicy`, `PlaintextIngressGuard` | `enforce-encrypted`, `sensitive-key-pattern`, `ignored-keys` | 协议路径特征放行（`http://`, `https://`, `classpath:`, `/`）、日志级别放行（`DEBUG` 等）、白名单硬放行；裸明文敏感属性刚性拦截 | `EnforceEncryptionPolicyTest.java`, `EncryptSampleApplicationTest.java` |
+| **生产防误伤门禁** | 生产强制加密与三道防误伤过滤链 | `EnforceEncryptionPolicy`, `PlaintextIngressGuard` | `enforce-encrypted`, `sensitive-key-pattern`, `ignored-keys` | URI 协议（`http://`, `https://`, `classpath:`, `file:`）与多级绝对路径（`/etc/...`）放行、标准日志级别放行（`DEBUG` 等）、白名单硬放行；裸明文敏感属性（含未加引号纯数字密码）刚性拦截 | `EnforceEncryptionPolicyTest.java`, `EncryptSampleApplicationTest.java` |
 | **配置热更新防御** | 配置中心热推送防倒灌与缓存置换 | `PlaintextIngressGuard` | `enforce-encrypted` | 监听 `EnvironmentChangeEvent` / `RefreshEvent`，原子置换清空解密缓存，拦截动态推送的裸明文敏感配置 | `IngressGuardScenarioService.java`, `PlaintextIngressGuardTest.java` |
+| **解密器装配工厂** | 解密器 SPI 发现与默认原生装配工厂 | `ConfigDecryptorFactory` | `retry.*` | `createDefaultDecryptors(custom, retry)`，统一收敛 ServiceLoader 发现、KMS 重试装饰器挂载与 JDK 原生解密器装配 | `ConfigDecryptorFactory.java`, `EncryptTemplateTest.java` |
 | **外部 KMS SPI** | 外部云 KMS / HSM 抽象解密扩展基类 | `AbstractKmsConfigDecryptor`, `ConfigDecryptor` | `algorithm=KMS` | 继承并实现 `doDecrypt(ciphertext, keyIdOrPassword)`，无缝对接 AWS、阿里云、腾讯云 KMS 及硬件加密机 | `AbstractKmsConfigDecryptorTest.java` |
 | **强类型弹性重试** | 远程云端解密指数退避重试装饰器 | `RetryingConfigDecryptor`, `EncryptRetryProperties` | `retry.delay`, `retry.max-delay`, `retry.multiplier`, `retry.jitter` | 装饰 `ConfigDecryptor`，基于 `Duration` 强类型参数进行退避重试，自动排除密码学错误快速失败 | `RetryingConfigDecryptorTest.java` |
 | **Actuator 物理脱敏** | 监控端点物理掩码脱敏防泄露机制 | `SanitizingGuard` | - | 实现 Actuator `SanitizingFunction`，对 `/actuator/env` 等端点中包含密文或匹配敏感特征的属性物理掩码为 `******` | `EncryptSampleApplicationTest.java`, `SanitizingGuardTest.java` |
@@ -287,10 +288,10 @@ String safeValue = cryptoService.decryptOrDefault("corrupted_token", "defaultFal
 
 ### 5.2 生产强制门禁与三道防误伤过滤链 (`EnforceEncryptionPolicy`)
 当开启 `ateng.boot.encrypt.enforce-encrypted: true` 时，系统在启动前置扫描外部属性源；为防止正常配置误判，内置三道过滤防线：
-1. **协议与路径特征豁免**：属性值以 `http://`、`https://`、`classpath:`、`/` 开头（如 OAuth2 Token URI、SSL 私钥证书路径）自动豁免；
-2. **日志级别特征豁免**：属性值为标准日志级别（`DEBUG`、`INFO`、`WARN`、`ERROR`、`TRACE`、`FATAL`、`OFF`）时自动放行（即使键名包含 `.secret.` 或 `.token.`）；
+1. **协议与多级绝对路径特征豁免**：属性值以 `http://`、`https://`、`classpath:`、`file:`、`ws://`、`wss://` 开头，或属于合法多级绝对路径（如 `/etc/ssl/certs/jwt.pem`、`C:\certs\...`，需至少二级目录结构，彻底杜绝单层 `/root123` 误伤逃逸）自动豁免；
+2. **标准日志级别特征豁免**：属性值为标准五大日志级别（`DEBUG`、`INFO`、`WARN`、`ERROR`、`TRACE`）时自动放行（即使键名包含 `.secret.` 或 `.token.`）；
 3. **显式与框架硬白名单**：`ateng.boot.encrypt.*` 属性硬编码白名单放行；配置项 `ateng.boot.encrypt.ignored-keys` 显式声明的属性键名跳过强制校验；
-4. **刚性拦截**：真实的未加密敏感属性（如 `spring.datasource.password=123456`）依然触发 `ConfigSecurityException` 刚性熔断，阻止应用启动。
+4. **刚性拦截**：真实的未加密敏感属性（包括未加引号的纯数字密码如 `spring.datasource.password=123456`）依然触发 `ConfigSecurityException` 刚性熔断，阻止应用启动。
 
 ### 5.3 Spring Cloud Config `{cipher}` 受控兼容
 为方便由 Spring Cloud Config 历史工程平滑迁移：

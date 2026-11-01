@@ -38,6 +38,24 @@ public class IngressGuardScenarioService {
     }
 
     /**
+     * 模拟配置中心推送裸明文敏感配置，验证防明文倒灌拦截
+     *
+     * @param sensitiveKey   敏感属性键名（如 custom.dynamic.password）
+     * @param plaintextValue 未加密的裸明文值
+     */
+    public void simulatePlaintextIngress(String sensitiveKey, Object plaintextValue) {
+        org.springframework.core.env.MapPropertySource dynamicSource =
+                new org.springframework.core.env.MapPropertySource("dynamicPushSource",
+                        java.util.Map.of(sensitiveKey, plaintextValue));
+        environment.getPropertySources().addFirst(dynamicSource);
+        try {
+            plaintextIngressGuard.onEnvironmentChange(Set.of(sensitiveKey), environment);
+        } finally {
+            environment.getPropertySources().remove("dynamicPushSource");
+        }
+    }
+
+    /**
      * 读取指定环境属性值
      *
      * @param propertyName 属性名称
