@@ -32,6 +32,11 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultLocalJobTemplate.class);
 
+    /**
+     * 预演计算未来执行时间点的单次最大上限（防止过大入参触发 OOM）
+     */
+    public static final int MAX_PREVIEW_COUNT = 100;
+
     private final LocalJobRegistry registry;
 
     public DefaultLocalJobTemplate(LocalJobRegistry registry) {
@@ -186,12 +191,13 @@ public class DefaultLocalJobTemplate implements LocalJobTemplate {
         if (!isValidCron(cronExpression) || count <= 0) {
             return Collections.emptyList();
         }
+        int targetCount = Math.min(count, MAX_PREVIEW_COUNT);
         try {
             CronExpression cron = CronExpression.parse(cronExpression.trim());
-            List<Instant> result = new ArrayList<>(count);
+            List<Instant> result = new ArrayList<>(targetCount);
             ZoneId zoneId = ZoneId.systemDefault();
             ZonedDateTime current = ZonedDateTime.ofInstant(fromTime != null ? fromTime : Instant.now(), zoneId);
-            for (int i = 0; i < count; i++) {
+            for (int i = 0; i < targetCount; i++) {
                 ZonedDateTime next = cron.next(current);
                 if (next == null) {
                     break;

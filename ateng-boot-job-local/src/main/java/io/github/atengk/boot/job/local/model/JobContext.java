@@ -134,7 +134,7 @@ public class JobContext {
             try {
                 instance = targetClass.getDeclaredConstructor().newInstance();
             } catch (Exception ex) {
-                throw new BusinessException(CommonResultCode.BAD_REQUEST, "无法解析或实例化入参对象: " + targetClass.getSimpleName());
+                throw new BusinessException(CommonResultCode.BAD_REQUEST, "无法解析或实例化入参对象: " + targetClass.getSimpleName(), ex);
             }
         }
 

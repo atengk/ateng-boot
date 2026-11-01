@@ -244,6 +244,21 @@ class LocalJobParamValidationTest {
         }
     }
 
+    @Test
+    @DisplayName("测试 JobContext.bind 反射异常时保留原始异常因果链")
+    void testBindPreservesCauseOnInstantiationFailure() {
+        JobContext context = JobContext.builder()
+                .jobName("testJob")
+                .params(Map.of("foo", "bar"))
+                .build();
+        assertThatThrownBy(() -> context.bind(UninstantiableParam.class))
+                .isInstanceOf(BusinessException.class)
+                .hasCauseInstanceOf(Exception.class);
+    }
+
+    public static abstract class UninstantiableParam {
+    }
+
     public static class DummyService {
         public void invalidThreeParams(OrderCleanupParam p1, JobContext ctx, String other) {}
         public void invalidTwoDtos(OrderCleanupParam p1, OrderCleanupParam p2) {}

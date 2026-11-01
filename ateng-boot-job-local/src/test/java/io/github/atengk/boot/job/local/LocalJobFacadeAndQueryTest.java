@@ -149,6 +149,9 @@ class LocalJobFacadeAndQueryTest {
         assertThat(jobTemplate.getNextExecutionTimes("invalid-cron", 5)).isEmpty();
         assertThat(jobTemplate.getNextExecutionTimes(cron, 0)).isEmpty();
         assertThat(jobTemplate.getNextExecutionTimes(cron, -1)).isEmpty();
+
+        // 验证上限防 OOM 防卫（超过 100 自动截断为 100）
+        assertThat(jobTemplate.getNextExecutionTimes(cron, 500)).hasSize(100);
         assertThat(jobTemplate.getNextExecutionTimes(null, 5)).isEmpty();
     }
 

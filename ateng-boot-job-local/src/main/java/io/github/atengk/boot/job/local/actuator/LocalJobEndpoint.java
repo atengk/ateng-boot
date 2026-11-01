@@ -50,7 +50,7 @@ public class LocalJobEndpoint {
             response.put("cron", cron.trim());
             response.put("valid", valid);
             if (valid) {
-                int targetCount = (count != null && count > 0) ? count : 5;
+                int targetCount = (count != null && count > 0) ? Math.min(count, 100) : 5;
                 response.put("nextExecutionTimes", jobTemplate.getNextExecutionTimes(cron.trim(), targetCount));
             } else {
                 response.put("message", "Invalid 6-part Cron expression: " + cron);

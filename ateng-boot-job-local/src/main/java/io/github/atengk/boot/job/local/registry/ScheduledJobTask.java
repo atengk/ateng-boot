@@ -3,6 +3,7 @@ package io.github.atengk.boot.job.local.registry;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
+import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.RetryUtil.RetryConfig;
@@ -249,11 +250,7 @@ public class ScheduledJobTask implements Runnable {
 
         if (definition.getTenantMode() == JobTenantMode.IGNORE) {
             TenantContextHolder.setIgnoreTenant(true);
-        } else if (definition.getTenantMode() == JobTenantMode.PARAM) {
-            if (params != null && params.containsKey("tenantId")) {
-                TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
-            }
-        } else if (params != null && params.containsKey("tenantId")) {
+        } else if (params != null && params.containsKey("tenantId") && params.get("tenantId") != null) {
             TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
         }
 
@@ -564,6 +561,7 @@ public class ScheduledJobTask implements Runnable {
                     .delay(retryInterval)
                     .multiplier(2.0)
                     .maxDelay(Duration.ofSeconds(60))
+                    .retryPredicate(error -> (error instanceof JobTimeoutException) || !(error instanceof BusinessException))
                     .onRetry((attempt, error) -> {
                         retryCount.incrementAndGet();
                         log.warn("Job [{}] execution attempt [{}] failed ({}), retrying with exponential backoff...",
