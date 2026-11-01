@@ -7,6 +7,7 @@ import io.github.atengk.boot.job.xxl.actuator.XxlJobHealthIndicator;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
@@ -181,7 +182,8 @@ public class AtengXxlJobAutoConfiguration {
             @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
             ObjectProvider<XxlJobAlertAggregator> alertAggregatorProvider,
             ObjectProvider<XxlJobMetricsBinder> metricsBinderProvider,
-            ObjectProvider<XxlJobInterceptor> interceptorsProvider) {
+            ObjectProvider<XxlJobInterceptor> interceptorsProvider,
+            ObjectProvider<JobRuntimeGovernor> governorProvider) {
         List<XxlJobInterceptor> interceptors = interceptorsProvider != null
                 ? interceptorsProvider.orderedStream().toList()
                 : Collections.emptyList();
@@ -191,7 +193,8 @@ public class AtengXxlJobAutoConfiguration {
                 taskExecutorProvider.getIfAvailable(),
                 alertAggregatorProvider.getIfAvailable(),
                 metricsBinderProvider.getIfAvailable(),
-                interceptors
+                interceptors,
+                governorProvider.getIfAvailable()
         );
     }
 
@@ -237,16 +240,32 @@ public class AtengXxlJobAutoConfiguration {
     }
 
     /**
+     * 注册节点级任务运行时治理总线
+     *
+     * <p>提供节点维度受管任务动态静默 (pause) 与恢复 (resume) 能力，状态纯内存驻留，重启后自动复位。</p>
+     *
+     * @return 节点级任务运行时治理总线
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public JobRuntimeGovernor jobRuntimeGovernor() {
+        return new JobRuntimeGovernor();
+    }
+
+    /**
      * 注册 Actuator 运维与手动触发端点 (/actuator/xxljobs)
      *
      * @param properties 配置属性
+     * @param governorProvider 治理总线 Provider
      * @return Actuator 端点实例
      */
     @Bean
     @ConditionalOnClass(Endpoint.class)
     @ConditionalOnMissingBean
-    public XxlJobEndpoint xxlJobEndpoint(XxlJobProperties properties) {
-        return new XxlJobEndpoint(properties);
+    public XxlJobEndpoint xxlJobEndpoint(
+            XxlJobProperties properties,
+            ObjectProvider<JobRuntimeGovernor> governorProvider) {
+        return new XxlJobEndpoint(properties, governorProvider.getIfAvailable());
     }
 
     /**

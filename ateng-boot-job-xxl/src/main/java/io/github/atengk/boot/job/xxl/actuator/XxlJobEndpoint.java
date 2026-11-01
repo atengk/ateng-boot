@@ -2,6 +2,7 @@ package io.github.atengk.boot.job.xxl.actuator;
 
 import com.xxl.job.core.handler.IJobHandler;
 import com.xxl.job.core.handler.impl.MethodJobHandler;
+import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
@@ -10,9 +11,11 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.Selector;
 import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
 import org.springframework.lang.Nullable;
+import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -22,8 +25,11 @@ import java.util.Set;
  *
  * <p>端点路径为 {@code /actuator/xxljobs}：
  * <ul>
- *     <li>{@code GET /actuator/xxljobs}：列出当前应用装配的所有 XXL-Job 任务处理器及元数据；</li>
- *     <li>{@code POST /actuator/xxljobs/{handler}}：手动模拟调度中心触发指定任务，支持传入自定义入参与分片。</li>
+ *     <li>{@code GET /actuator/xxljobs}：列出当前应用装配的所有 XXL-Job 任务处理器、元数据及静默状态；</li>
+ *     <li>{@code GET /actuator/xxljobs/{handler}}：查询指定任务处理器的详细元数据与当前静默状态；</li>
+ *     <li>{@code POST /actuator/xxljobs/{handler}}：手动模拟调度中心触发指定任务，支持传入自定义入参与分片；</li>
+ *     <li>{@code POST /actuator/xxljobs/{handler}/pause}：在当前节点暂停（静默）指定任务调度；</li>
+ *     <li>{@code POST /actuator/xxljobs/{handler}/resume}：在当前节点恢复指定任务的正常调度。</li>
  * </ul></p>
  *
  * @author Ateng
@@ -33,13 +39,19 @@ import java.util.Set;
 public class XxlJobEndpoint {
 
     private final XxlJobProperties properties;
+    private final JobRuntimeGovernor governor;
 
     public XxlJobEndpoint(XxlJobProperties properties) {
+        this(properties, null);
+    }
+
+    public XxlJobEndpoint(XxlJobProperties properties, JobRuntimeGovernor governor) {
         this.properties = properties != null ? properties : new XxlJobProperties();
+        this.governor = governor;
     }
 
     /**
-     * 查询所有已注册的调度任务概览
+     * 查询所有已注册的调度任务概览与节点静默状态
      *
      * @return 任务概览信息
      */
@@ -54,6 +66,15 @@ public class XxlJobEndpoint {
         Set<String> handlers = XxlJobTestHelper.getLoadedHandlers().keySet();
         result.put("jobCount", handlers.size());
         result.put("handlers", handlers);
+
+        if (governor != null) {
+            Set<String> paused = governor.getPausedHandlers();
+            result.put("pausedCount", paused.size());
+            result.put("pausedHandlers", paused);
+        } else {
+            result.put("pausedCount", 0);
+            result.put("pausedHandlers", Collections.emptySet());
+        }
         return result;
     }
 
@@ -67,6 +88,10 @@ public class XxlJobEndpoint {
     public Map<String, Object> jobDetail(@Selector String handler) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("handler", handler);
+
+        if (governor != null) {
+            result.put("paused", governor.isPaused(handler));
+        }
 
         IJobHandler jobHandler = XxlJobTestHelper.getHandler(handler);
         if (jobHandler == null) {
@@ -101,6 +126,46 @@ public class XxlJobEndpoint {
             }
         }
         return result;
+    }
+
+    /**
+     * 节点级任务运行时治理操作 (暂停或恢复)
+     *
+     * <p>对应 HTTP 请求：{@code POST /actuator/xxljobs/{handler}/pause} 或 {@code POST /actuator/xxljobs/{handler}/resume}。</p>
+     *
+     * @param handler 任务 Handler 名称
+     * @param action  治理动作 (pause 或 resume)
+     * @return 治理操作结果详情
+     */
+    @WriteOperation
+    public Map<String, Object> operateJob(
+            @Selector String handler,
+            @Selector String action) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("handler", handler);
+        response.put("action", action);
+
+        if (governor == null) {
+            response.put("success", false);
+            response.put("message", "JobRuntimeGovernor 未装配或已禁用");
+            return response;
+        }
+
+        if ("pause".equalsIgnoreCase(action)) {
+            governor.pause(handler);
+            response.put("success", true);
+            response.put("paused", true);
+            response.put("message", "任务处理器 [" + handler + "] 已在当前节点暂停 (PAUSED)");
+        } else if ("resume".equalsIgnoreCase(action)) {
+            governor.resume(handler);
+            response.put("success", true);
+            response.put("paused", false);
+            response.put("message", "任务处理器 [" + handler + "] 已在当前节点恢复 (RESUMED)");
+        } else {
+            response.put("success", false);
+            response.put("message", "不支持的治理动作: [" + action + "]，仅支持 'pause' 或 'resume'");
+        }
+        return response;
     }
 
     /**

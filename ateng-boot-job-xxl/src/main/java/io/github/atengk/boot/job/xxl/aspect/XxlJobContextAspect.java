@@ -16,6 +16,7 @@ import io.github.atengk.boot.core.util.ValidatorUtil;
 import io.github.atengk.boot.job.xxl.alert.XxlJobAlertAggregator;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import io.github.atengk.boot.job.xxl.enums.JobTenantMode;
+import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobExecutionContext;
 import io.github.atengk.boot.job.xxl.interceptor.XxlJobInterceptor;
 import io.github.atengk.boot.job.xxl.metrics.XxlJobMetricsBinder;
@@ -89,17 +90,18 @@ public class XxlJobContextAspect {
     private final XxlJobAlertAggregator alertAggregator;
     private final XxlJobMetricsBinder metricsBinder;
     private final List<XxlJobInterceptor> interceptors;
+    private final JobRuntimeGovernor governor;
 
     public XxlJobContextAspect() {
-        this(null, null, null, null, null, null);
+        this(null, null, null, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor) {
-        this(watchdog, properties, taskExecutor, null, null, null);
+        this(watchdog, properties, taskExecutor, null, null, null, null);
     }
 
     public XxlJobContextAspect(LocalWatchdog watchdog, XxlJobProperties properties, Executor taskExecutor, XxlJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, taskExecutor, alertAggregator, null, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, null, null, null);
     }
 
     public XxlJobContextAspect(
@@ -108,7 +110,7 @@ public class XxlJobContextAspect {
             Executor taskExecutor,
             XxlJobAlertAggregator alertAggregator,
             XxlJobMetricsBinder metricsBinder) {
-        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, null);
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, null, null);
     }
 
     public XxlJobContextAspect(
@@ -118,11 +120,23 @@ public class XxlJobContextAspect {
             XxlJobAlertAggregator alertAggregator,
             XxlJobMetricsBinder metricsBinder,
             List<XxlJobInterceptor> interceptors) {
+        this(watchdog, properties, taskExecutor, alertAggregator, metricsBinder, interceptors, null);
+    }
+
+    public XxlJobContextAspect(
+            LocalWatchdog watchdog,
+            XxlJobProperties properties,
+            Executor taskExecutor,
+            XxlJobAlertAggregator alertAggregator,
+            XxlJobMetricsBinder metricsBinder,
+            List<XxlJobInterceptor> interceptors,
+            JobRuntimeGovernor governor) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.taskExecutor = taskExecutor;
         this.alertAggregator = alertAggregator;
         this.metricsBinder = metricsBinder;
+        this.governor = governor;
         if (interceptors != null && !interceptors.isEmpty()) {
             List<XxlJobInterceptor> sorted = new ArrayList<>(interceptors);
             AnnotationAwareOrderComparator.sort(sorted);
@@ -187,6 +201,15 @@ public class XxlJobContextAspect {
         long jobId = XxlJobHelper.getJobId();
         String jobName = resolveJobName(specificMethod, atengXxlJob);
         Duration timeout = resolveTimeout(atengXxlJob, logId);
+
+        // 5.5. 节点级运行时治理总线判定：若该任务在当前节点被临时静默 (PAUSED)，则优雅跳过执行
+        if (this.governor != null && (this.governor.isPaused(jobName) || this.governor.isPaused(specificMethod.getName()))) {
+            String skipMsg = String.format("[SKIPPED] Handler [%s] is paused on local node (节点级临时静默)，已安全跳过执行并报告成功", jobName);
+            log.warn(skipMsg);
+            XxlJobHelper.log(skipMsg);
+            XxlJobHelper.handleSuccess(skipMsg);
+            return getDefaultReturnValue(specificMethod);
+        }
 
         AtomicReference<LocalWatchdog.WatchdogSession> sessionRef = new AtomicReference<>(LocalWatchdog.WatchdogSession.NOOP);
         long startNs = System.nanoTime();

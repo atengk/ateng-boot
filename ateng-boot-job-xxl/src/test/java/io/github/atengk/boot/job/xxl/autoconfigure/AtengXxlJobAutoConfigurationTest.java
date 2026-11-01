@@ -3,6 +3,7 @@ package io.github.atengk.boot.job.xxl.autoconfigure;
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
 import io.github.atengk.boot.job.xxl.aspect.XxlJobContextAspect;
 import io.github.atengk.boot.job.xxl.executor.AtengXxlJobSpringExecutor;
+import io.github.atengk.boot.job.xxl.governor.JobRuntimeGovernor;
 import io.github.atengk.boot.job.xxl.logback.XxlJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.xxl.properties.XxlJobProperties;
 import io.github.atengk.boot.job.xxl.template.TenantJobTemplate;
@@ -50,6 +51,7 @@ class AtengXxlJobAutoConfigurationTest {
             assertThat(context).hasSingleBean(LocalWatchdog.class);
             assertThat(context).hasSingleBean(XxlJobLogbackAppenderRegistrar.class);
             assertThat(context).hasSingleBean(XxlJobContextAspect.class);
+            assertThat(context).hasSingleBean(JobRuntimeGovernor.class);
             assertThat(context).hasSingleBean(TenantJobTemplate.class);
         });
     }
