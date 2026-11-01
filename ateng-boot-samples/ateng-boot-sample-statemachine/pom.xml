@@ -23,12 +23,6 @@
             <artifactId>ateng-boot-statemachine</artifactId>
         </dependency>
 
-        <!-- Web 运行时增强 Starter -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
-        </dependency>
-
         <!-- MyBatis-Plus 持久层增强 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

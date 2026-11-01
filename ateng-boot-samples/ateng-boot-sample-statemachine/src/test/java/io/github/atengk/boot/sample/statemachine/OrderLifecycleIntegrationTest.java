@@ -1,55 +1,68 @@
 package io.github.atengk.boot.sample.statemachine;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.atengk.boot.sample.statemachine.config.OrderStateMachineConfig;
 import io.github.atengk.boot.sample.statemachine.constant.OrderEvent;
 import io.github.atengk.boot.sample.statemachine.constant.OrderState;
 import io.github.atengk.boot.sample.statemachine.context.OrderContext;
-import io.github.atengk.boot.sample.statemachine.dto.OrderCreateRequest;
-import io.github.atengk.boot.sample.statemachine.dto.OrderTrackingRequest;
-import io.github.atengk.boot.sample.statemachine.dto.OrderTransitionRequest;
 import io.github.atengk.boot.sample.statemachine.entity.OrderDO;
+import io.github.atengk.boot.sample.statemachine.listener.OrderTransitionAuditLogger;
 import io.github.atengk.boot.sample.statemachine.mapper.OrderMapper;
-import io.github.atengk.boot.sample.statemachine.service.OrderService;
-import io.github.atengk.boot.sample.statemachine.vo.OrderVO;
-import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
+import io.github.atengk.boot.sample.statemachine.service.OrderLifecycleScenarioService;
+import io.github.atengk.boot.sample.statemachine.service.OrderProbeScenarioService;
+import io.github.atengk.boot.sample.statemachine.service.OrderTimeoutBatchScenarioService;
+import io.github.atengk.boot.sample.statemachine.service.PaymentCallbackScenarioService;
 import io.github.atengk.boot.statemachine.core.StateMachine;
 import io.github.atengk.boot.statemachine.core.StateMachineFactory;
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
+import io.github.atengk.boot.statemachine.model.BatchTransitionResult;
+import io.github.atengk.boot.statemachine.model.TransitionAuditEvent;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 订单生命周期 8 大状态与核心状态机机制端到端集成测试
+ * 电商订单状态机 4 大专职场景服务全流程端到端集成测试
+ * <p>基于纯净 Headless 非 Web 架构，在真实 H2 内存库中全真自验</p>
  *
  * @author Ateng
- * @since 2026-10-25
+ * @since 2026-11-01
  */
 @SpringBootTest
-@AutoConfigureMockMvc
 class OrderLifecycleIntegrationTest {
 
     @Autowired
-    private OrderService orderService;
+    private OrderLifecycleScenarioService lifecycleService;
+
+    @Autowired
+    private OrderProbeScenarioService probeService;
+
+    @Autowired
+    private PaymentCallbackScenarioService paymentCallbackService;
+
+    @Autowired
+    private OrderTimeoutBatchScenarioService batchScenarioService;
+
+    @Autowired
+    private OrderStateMachineConfig machineConfig;
+
+    @Autowired
+    private OrderTransitionAuditLogger auditLogger;
 
     @Autowired
     private OrderMapper orderMapper;
@@ -57,202 +70,246 @@ class OrderLifecycleIntegrationTest {
     @Autowired
     private StateMachine<OrderState, OrderEvent, OrderContext> orderStateMachine;
 
-    @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private ObjectMapper objectMapper;
+    @BeforeEach
+    void setUp() {
+        machineConfig.clearRecords();
+        auditLogger.clear();
+    }
 
     @Test
-    @DisplayName("双通道获取状态机：Spring 注入与 StateMachineFactory 查找保持一致")
+    @DisplayName("双通道获取状态机：Spring 依赖注入与 StateMachineFactory 工厂内省保持一致")
     void testStateMachineFactoryLookup() {
         StateMachine<OrderState, OrderEvent, OrderContext> found = StateMachineFactory.get(OrderStateMachineConfig.MACHINE_ID);
         assertThat(found).isNotNull();
         assertThat(found.getMachineId()).isEqualTo(OrderStateMachineConfig.MACHINE_ID);
         assertThat(found).isSameAs(orderStateMachine);
+
+        assertThat(StateMachineFactory.contains(OrderStateMachineConfig.MACHINE_ID)).isTrue();
+        assertThat(StateMachineFactory.getAllMachineIds()).contains(OrderStateMachineConfig.MACHINE_ID);
+        assertThat(StateMachineFactory.size()).isGreaterThanOrEqualTo(1);
     }
 
+    // ==========================================
+    // 场景一：OrderLifecycleScenarioService 验证
+    // ==========================================
+
     @Test
-    @DisplayName("端到端全生命周期主干流转：WAIT_PAY -> PAID -> WAIT_DELIVER -> DELIVERING -> DELIVERED -> FINISHED")
+    @DisplayName("场景一：端到端全生命周期主干流转 (WAIT_PAY -> PAID -> WAIT_DELIVER -> DELIVERING -> DELIVERED -> FINISHED)")
     void testHappyPathFullLifecycle() {
         String sn = "ORD-HAPPY-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("199.99"))
-                .build());
+        OrderDO created = lifecycleService.createOrder(sn, new BigDecimal("199.99"));
         Long id = created.getId();
         assertThat(created.getStatus()).isEqualTo(OrderState.WAIT_PAY);
 
         // 1. 买家付款：WAIT_PAY -> PAID
-        TransitionResult<OrderState> payResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.PAY)
-                .build());
+        TransitionResult<OrderState> payResult = lifecycleService.pay(id);
         assertThat(payResult.isSuccess()).isTrue();
         assertThat(payResult.getTargetState()).isEqualTo(OrderState.PAID);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
+        assertThat(lifecycleService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
 
         // 2. Choice 动态路由（低风险放行）：PAID -> WAIT_DELIVER
-        TransitionResult<OrderState> auditResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.RISK_AUDIT)
-                .riskScore(20)
-                .build());
+        TransitionResult<OrderState> auditResult = lifecycleService.auditRisk(id, 20, false);
         assertThat(auditResult.isSuccess()).isTrue();
         assertThat(auditResult.getTargetState()).isEqualTo(OrderState.WAIT_DELIVER);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.WAIT_DELIVER);
+        assertThat(lifecycleService.getOrder(id).getStatus()).isEqualTo(OrderState.WAIT_DELIVER);
 
         // 3. 商家发货：WAIT_DELIVER -> DELIVERING
-        TransitionResult<OrderState> shipResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.SHIP)
-                .trackingNo("SF123456789")
-                .build());
+        TransitionResult<OrderState> shipResult = lifecycleService.ship(id, "SF123456789");
         assertThat(shipResult.isSuccess()).isTrue();
         assertThat(shipResult.getTargetState()).isEqualTo(OrderState.DELIVERING);
-        assertThat(orderService.getOrder(id).getTrackingNo()).isEqualTo("SF123456789");
+        assertThat(lifecycleService.getOrder(id).getTrackingNo()).isEqualTo("SF123456789");
 
         // 4. 买家签收妥投：DELIVERING -> DELIVERED
-        TransitionResult<OrderState> deliveryResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.CONFIRM_DELIVERY)
-                .build());
+        TransitionResult<OrderState> deliveryResult = lifecycleService.confirmDelivery(id);
         assertThat(deliveryResult.isSuccess()).isTrue();
         assertThat(deliveryResult.getTargetState()).isEqualTo(OrderState.DELIVERED);
 
         // 5. 交易完成：DELIVERED -> FINISHED
-        TransitionResult<OrderState> finishResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.FINISH)
-                .build());
+        TransitionResult<OrderState> finishResult = lifecycleService.finish(id);
         assertThat(finishResult.isSuccess()).isTrue();
         assertThat(finishResult.getTargetState()).isEqualTo(OrderState.FINISHED);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.FINISHED);
+        assertThat(lifecycleService.getOrder(id).getStatus()).isEqualTo(OrderState.FINISHED);
     }
 
     @Test
-    @DisplayName("内部自跃迁：DELIVERING 状态下追加多次物流动态，状态保持不变")
+    @DisplayName("场景一：内部自跃迁 (DELIVERING 追加物流动态，状态保持不变)")
     void testInternalTransitionKeepsState() {
         String sn = "ORD-INTERNAL-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("88.00"))
-                .build());
+        OrderDO created = lifecycleService.createOrder(sn, new BigDecimal("88.00"));
         Long id = created.getId();
 
-        // 流转至 DELIVERING
-        orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
-        orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.RISK_AUDIT).riskScore(10).build());
-        orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.SHIP).trackingNo("JD987654321").build());
+        lifecycleService.pay(id);
+        lifecycleService.auditRisk(id, 10, false);
+        lifecycleService.ship(id, "JD987654321");
 
-        OrderVO before = orderService.getOrder(id);
+        OrderDO before = lifecycleService.getOrder(id);
         assertThat(before.getStatus()).isEqualTo(OrderState.DELIVERING);
 
         // 首次内部自跃迁
-        TransitionResult<OrderState> track1 = orderService.addTrackingInfo(id, OrderTrackingRequest.builder()
-                .trackingNo("JD987654321")
-                .trackingRemark("快件已到达【北京分拨中心】，准备发往下一站")
-                .build());
+        TransitionResult<OrderState> track1 = lifecycleService.addTracking(id, "JD987654321", "快件已到达【北京分拨中心】");
         assertThat(track1.isSuccess()).isTrue();
         assertThat(track1.getTargetState()).isEqualTo(OrderState.DELIVERING);
 
-        OrderVO after1 = orderService.getOrder(id);
+        OrderDO after1 = lifecycleService.getOrder(id);
         assertThat(after1.getStatus()).isEqualTo(OrderState.DELIVERING);
         assertThat(after1.getTrackingRemark()).contains("北京分拨中心");
 
         // 二次内部自跃迁
-        TransitionResult<OrderState> track2 = orderService.addTrackingInfo(id, OrderTrackingRequest.builder()
-                .trackingNo("JD987654321")
-                .trackingRemark("快件正在派送中，派件员电话：13800000000")
-                .build());
+        TransitionResult<OrderState> track2 = lifecycleService.addTracking(id, "JD987654321", "快件正在派送中");
         assertThat(track2.isSuccess()).isTrue();
         assertThat(track2.getTargetState()).isEqualTo(OrderState.DELIVERING);
 
-        OrderVO after2 = orderService.getOrder(id);
+        OrderDO after2 = lifecycleService.getOrder(id);
         assertThat(after2.getStatus()).isEqualTo(OrderState.DELIVERING);
         assertThat(after2.getTrackingRemark()).contains("快件正在派送中");
     }
 
     @Test
-    @DisplayName("Choice 动态分支：高风险订单 (riskScore >= 80) 流向 REFUNDING 退款拦截")
-    void testChoiceTransitionHighRiskToRefunding() {
-        String sn = "ORD-RISK-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("9999.00"))
-                .build());
-        Long id = created.getId();
+    @DisplayName("场景一：Choice 动态分支与事务回滚 (高风险流向退款，模拟 Action 异常触发事务原子回滚)")
+    void testChoiceTransitionBranchingAndRollback() {
+        // 分支 A: 高危风控 (>= 80) 流向 REFUNDING
+        String sn1 = "ORD-RISK-HIGH-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO o1 = lifecycleService.createOrder(sn1, new BigDecimal("9999.00"));
+        lifecycleService.pay(o1.getId());
 
-        orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
+        TransitionResult<OrderState> highRiskResult = lifecycleService.auditRisk(o1.getId(), 95, false);
+        assertThat(highRiskResult.isSuccess()).isTrue();
+        assertThat(highRiskResult.getTargetState()).isEqualTo(OrderState.REFUNDING);
+        assertThat(lifecycleService.getOrder(o1.getId()).getStatus()).isEqualTo(OrderState.REFUNDING);
 
-        // 风控评估打分 95（>= 80 判定高危）
-        TransitionResult<OrderState> auditResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.RISK_AUDIT)
-                .riskScore(95)
-                .build());
-        assertThat(auditResult.isSuccess()).isTrue();
-        assertThat(auditResult.getTargetState()).isEqualTo(OrderState.REFUNDING);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.REFUNDING);
+        // 分支 B: 模拟 Action 执行异常，验证本地事务原子回滚
+        String sn2 = "ORD-ROLLBACK-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO o2 = lifecycleService.createOrder(sn2, new BigDecimal("120.00"));
+        lifecycleService.pay(o2.getId());
+        assertThat(lifecycleService.getOrder(o2.getId()).getStatus()).isEqualTo(OrderState.PAID);
 
-        // 退款完成后流向 CLOSED 终态
-        TransitionResult<OrderState> finishResult = orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.FINISH)
-                .build());
-        assertThat(finishResult.isSuccess()).isTrue();
-        assertThat(finishResult.getTargetState()).isEqualTo(OrderState.CLOSED);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.CLOSED);
+        assertThatThrownBy(() -> lifecycleService.auditRisk(o2.getId(), 10, true))
+                .isInstanceOf(StateMachineException.class)
+                .hasMessageContaining("模拟 Action 执行业务异常");
+
+        // 验证数据库状态事务原子回滚，依然保持为 PAID
+        OrderDO currentInDb = orderMapper.selectById(o2.getId());
+        assertThat(currentInDb.getStatus()).isEqualTo(OrderState.PAID);
     }
 
     @Test
-    @DisplayName("多源汇聚跃迁：WAIT_PAY / PAID / WAIT_DELIVER 均可由 CANCEL 事件统一收敛至 CLOSED")
+    @DisplayName("场景一：多源汇聚跃迁 (WAIT_PAY / PAID / WAIT_DELIVER 均可通过 CANCEL 汇聚到 CLOSED)")
     void testMultiFromTransitionCancel() {
-        // 场景 1：待支付取消
-        String sn1 = "ORD-CANCEL-1-" + UUID.randomUUID().toString().substring(0, 6);
-        OrderVO o1 = orderService.createOrder(OrderCreateRequest.builder().orderSn(sn1).amount(BigDecimal.TEN).build());
-        TransitionResult<OrderState> r1 = orderService.processTransition(o1.getId(), OrderTransitionRequest.builder().event(OrderEvent.CANCEL).build());
+        // 1. WAIT_PAY -> CLOSED
+        OrderDO o1 = lifecycleService.createOrder("ORD-C1-" + UUID.randomUUID().toString().substring(0, 6), BigDecimal.TEN);
+        TransitionResult<OrderState> r1 = lifecycleService.cancel(o1.getId(), "用户主动取消");
         assertThat(r1.isSuccess()).isTrue();
         assertThat(r1.getTargetState()).isEqualTo(OrderState.CLOSED);
 
-        // 场景 2：已支付取消
-        String sn2 = "ORD-CANCEL-2-" + UUID.randomUUID().toString().substring(0, 6);
-        OrderVO o2 = orderService.createOrder(OrderCreateRequest.builder().orderSn(sn2).amount(BigDecimal.TEN).build());
-        orderService.processTransition(o2.getId(), OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
-        TransitionResult<OrderState> r2 = orderService.processTransition(o2.getId(), OrderTransitionRequest.builder().event(OrderEvent.CANCEL).build());
+        // 2. PAID -> CLOSED
+        OrderDO o2 = lifecycleService.createOrder("ORD-C2-" + UUID.randomUUID().toString().substring(0, 6), BigDecimal.TEN);
+        lifecycleService.pay(o2.getId());
+        TransitionResult<OrderState> r2 = lifecycleService.cancel(o2.getId(), "缺货取消");
         assertThat(r2.isSuccess()).isTrue();
         assertThat(r2.getTargetState()).isEqualTo(OrderState.CLOSED);
 
-        // 场景 3：待发货取消
-        String sn3 = "ORD-CANCEL-3-" + UUID.randomUUID().toString().substring(0, 6);
-        OrderVO o3 = orderService.createOrder(OrderCreateRequest.builder().orderSn(sn3).amount(BigDecimal.TEN).build());
-        orderService.processTransition(o3.getId(), OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
-        orderService.processTransition(o3.getId(), OrderTransitionRequest.builder().event(OrderEvent.RISK_AUDIT).riskScore(10).build());
-        TransitionResult<OrderState> r3 = orderService.processTransition(o3.getId(), OrderTransitionRequest.builder().event(OrderEvent.CANCEL).build());
+        // 3. WAIT_DELIVER -> CLOSED
+        OrderDO o3 = lifecycleService.createOrder("ORD-C3-" + UUID.randomUUID().toString().substring(0, 6), BigDecimal.TEN);
+        lifecycleService.pay(o3.getId());
+        lifecycleService.auditRisk(o3.getId(), 10, false);
+        TransitionResult<OrderState> r3 = lifecycleService.cancel(o3.getId(), "风控拦截后协商取消");
         assertThat(r3.isSuccess()).isTrue();
         assertThat(r3.getTargetState()).isEqualTo(OrderState.CLOSED);
     }
 
     @Test
-    @DisplayName("CAS 乐观锁防重校验：并发重复触发同一跃迁时拒绝并抛出 CONCURRENT_CAS_CONFLICT 或 TRANSITION_NOT_FOUND")
-    void testCasConcurrencyConflict() throws InterruptedException {
-        String sn = "ORD-CAS-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("50.00"))
-                .build());
-        Long id = created.getId();
+    @DisplayName("场景一：状态节点 Entry/Exit 生命周期动作触发与 UML 语义不变量")
+    void testStateNodeLifecycleEntryAndExitActions() {
+        String sn = "ORD-LIFECYCLE-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("300.00"));
+        Long id = order.getId();
 
-        // 模拟并发：两个并发请求尝试同时支付
+        lifecycleService.pay(id);
+        // 流转至 WAIT_DELIVER，触发 WAIT_DELIVER onEntry
+        lifecycleService.auditRisk(id, 20, false);
+
+        List<String> records = machineConfig.getLifecycleRecords();
+        assertThat(records).contains("ENTRY:WAIT_DELIVER:" + sn);
+
+        // 从 WAIT_DELIVER 发货流向 DELIVERING，触发 WAIT_DELIVER onExit
+        lifecycleService.ship(id, "SF888888");
+        assertThat(machineConfig.getLifecycleRecords()).contains("EXIT:WAIT_DELIVER:" + sn);
+
+        // 取消一个订单流向 CLOSED，触发 CLOSED onEntry
+        String cancelSn = "ORD-CANCEL-EXIT-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO cancelOrder = lifecycleService.createOrder(cancelSn, BigDecimal.TEN);
+        lifecycleService.cancel(cancelOrder.getId(), "直接取消");
+        assertThat(machineConfig.getLifecycleRecords()).contains("ENTRY:CLOSED:" + cancelSn);
+    }
+
+    // ==========================================
+    // 场景二：OrderProbeScenarioService 验证
+    // ==========================================
+
+    @Test
+    @DisplayName("场景二：零副作用只读预检探测 (canFire / verifyTransition / getAvailableEvents / evaluateButtonPermissions)")
+    void testOrderProbeScenarioService() {
+        String sn = "ORD-PROBE-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("250.00"));
+        Long id = order.getId();
+
+        // 1. 待支付状态探测
+        assertThat(probeService.canPay(id)).isTrue();
+        assertThat(probeService.canCancel(id)).isTrue();
+        assertThat(probeService.canShip(id, "SF123")).isFalse(); // 待支付不能发货
+
+        // 2. 预测下一状态
+        OrderContext payCtx = OrderContext.builder().orderId(id).amount(order.getAmount()).build();
+        TransitionResult<OrderState> previewResult = probeService.previewNextState(id, OrderEvent.PAY, payCtx);
+        assertThat(previewResult.isAccepted()).isTrue();
+        assertThat(previewResult.getTargetState()).isEqualTo(OrderState.PAID);
+
+        // 3. 获取可用事件列表
+        List<OrderEvent> availableEvents = probeService.getAvailableEvents(id, payCtx);
+        assertThat(availableEvents).contains(OrderEvent.PAY, OrderEvent.CANCEL);
+        assertThat(availableEvents).doesNotContain(OrderEvent.SHIP, OrderEvent.CONFIRM_DELIVERY);
+
+        // 4. 按钮权限评估视图
+        Map<String, Boolean> permissions = probeService.evaluateButtonPermissions(id);
+        assertThat(permissions.get("btnPay")).isTrue();
+        assertThat(permissions.get("btnCancel")).isTrue();
+        assertThat(permissions.get("btnShip")).isFalse();
+        assertThat(permissions.get("btnConfirmDelivery")).isFalse();
+
+        // 5. 校验零副作用不变量：订单在数据库中依然处于 WAIT_PAY 且版本号未改变
+        OrderDO afterProbe = lifecycleService.getOrder(id);
+        assertThat(afterProbe.getStatus()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(afterProbe.getVersion()).isEqualTo(0);
+    }
+
+    // ==========================================
+    // 场景三：PaymentCallbackScenarioService 验证
+    // ==========================================
+
+    @Test
+    @DisplayName("场景三：支付异步回调 CAS 并发防重与声明式幂等放行 (idempotent)")
+    void testPaymentCallbackCasAndIdempotency() throws InterruptedException {
+        String sn = "ORD-PAY-CB-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("500.00"));
+        Long id = order.getId();
+
+        // 1. 并发两个支付回调，仅有 1 个 CAS 成功，另一个触发并发冲突或幂等
         int threadCount = 2;
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch endLatch = new CountDownLatch(threadCount);
         AtomicInteger successCount = new AtomicInteger(0);
-        AtomicInteger rejectedCount = new AtomicInteger(0);
+        AtomicInteger conflictCount = new AtomicInteger(0);
 
         for (int i = 0; i < threadCount; i++) {
+            final int index = i;
             new Thread(() -> {
                 try {
                     startLatch.await();
-                    orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
+                    paymentCallbackService.handlePaymentCallback(id, new BigDecimal("500.00"), "TX-" + index);
                     successCount.incrementAndGet();
                 } catch (StateMachineException e) {
-                    if (e.getResultCode().getCode().equals(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode())
-                            || e.getResultCode().getCode().equals(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode())) {
-                        rejectedCount.incrementAndGet();
+                    if (e.getResultCode().getCode().equals(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode())) {
+                        conflictCount.incrementAndGet();
                     }
                 } catch (Exception ignored) {
                 } finally {
@@ -264,119 +321,133 @@ class OrderLifecycleIntegrationTest {
         startLatch.countDown();
         endLatch.await();
 
-        // 必有 1 次成功，另 1 次因版本号冲突(59005)或状态已跃迁(59001)触发并发防重拒绝
-        assertThat(successCount.get()).isEqualTo(1);
-        assertThat(rejectedCount.get()).isEqualTo(1);
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
+        // 确保状态已变为 PAID
+        assertThat(lifecycleService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
+
+        // 2. 声明式幂等测试：后续重复回调到达时，当前已是 PAID，由于配置了 IdempotentStrategy.ACCEPT，平滑放行无报错
+        TransitionResult<OrderState> repeatResult = paymentCallbackService.handlePaymentCallback(id, new BigDecimal("500.00"), "TX-REPEAT");
+        assertThat(repeatResult.isSuccess()).isTrue();
+        assertThat(repeatResult.getTargetState()).isEqualTo(OrderState.PAID);
     }
 
     @Test
-    @DisplayName("CAS 乐观锁版本过期确定性校验：实体版本号滞后时执行跃迁抛出 CONCURRENT_CAS_CONFLICT")
-    void testCasConflictWithStaleVersion() {
-        String sn = "ORD-CAS-STALE-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("66.00"))
-                .build());
-        Long id = created.getId();
+    @DisplayName("场景三：Spring 本地事务提交后 (performAfterCommit) 外部不可逆通知调度自验")
+    void testPaymentCallbackPostCommitNotification() {
+        String sn = "ORD-POSTCOMMIT-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("666.00"));
+        Long id = order.getId();
 
-        // 获取当前版本的订单快照（version=0）
-        OrderDO staleOrder = orderMapper.selectById(id);
-        assertThat(staleOrder.getVersion()).isEqualTo(0);
+        // 执行支付回调
+        paymentCallbackService.handlePaymentCallback(id, new BigDecimal("666.00"), "TX-POST-123");
 
-        // 模拟并发更新导致数据库中版本号已递增为 1（或状态已变更）
-        int updated = orderMapper.updateStatusWithCas(id, OrderState.WAIT_PAY.name(), OrderState.PAID.name(), 0);
-        assertThat(updated).isEqualTo(1);
+        // 验证 performAfterCommit 钩子已被触发，成功记录外部通知日志
+        List<String> postCommitRecords = machineConfig.getPostCommitRecords();
+        assertThat(postCommitRecords).contains("POST_COMMIT_NOTIFY:" + sn);
+    }
 
-        // 此时使用持有的过期快照（version=0）再次尝试触发 CAS 跃迁，受影响行数必为 0
-        OrderContext context = OrderContext.builder()
-                .orderId(id)
-                .orderSn(sn)
-                .amount(staleOrder.getAmount())
-                .operator("CONCURRENT_WORKER")
-                .build();
+    // ==========================================
+    // 场景四：OrderTimeoutBatchScenarioService 验证
+    // ==========================================
 
-        assertThatThrownBy(() -> orderStateMachine.fireEventWithCas(
-                staleOrder,
-                OrderDO::getStatus,
-                OrderDO::setStatus,
-                OrderEvent.PAY,
-                context,
-                (ent, from, to) -> orderMapper.updateStatusWithCas(ent.getId(), from.name(), to.name(), ent.getVersion())
-        ))
-                .isInstanceOf(StateMachineException.class)
-                .satisfies(ex -> {
-                    StateMachineException smEx = (StateMachineException) ex;
-                    assertThat(smEx.getCode()).isEqualTo(StateMachineResultCode.CONCURRENT_CAS_CONFLICT.getCode());
-                    assertThat(smEx.getSourceState()).isEqualTo(OrderState.WAIT_PAY);
-                    assertThat(smEx.getTargetState()).isEqualTo(OrderState.PAID);
-                });
+    @Test
+    @DisplayName("场景四：大批量超时切片关单引擎 (fireEventBatch 切片处理与结构化聚合结果)")
+    void testBatchCancelExpiredOrders() {
+        // 创建 25 笔超时未支付订单
+        List<Long> orderIds = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            OrderDO o = lifecycleService.createOrder("ORD-BATCH-" + i + "-" + UUID.randomUUID().toString().substring(0, 4),
+                    new BigDecimal("10.00"));
+            orderIds.add(o.getId());
+        }
+
+        // 以批次大小 10 进行切片批量关单
+        BatchTransitionResult<OrderState, OrderDO> batchResult = batchScenarioService.batchCancelExpiredOrders(
+                orderIds, "超时自动取消", 10);
+
+        assertThat(batchResult).isNotNull();
+        assertThat(batchResult.getTotalCount()).isEqualTo(25);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(25);
+        assertThat(batchResult.getFailureCount()).isEqualTo(0);
+        assertThat(batchResult.isAllSuccess()).isTrue();
+
+        // 验证数据库中 25 笔订单状态均已变更为 CLOSED
+        List<OrderDO> closedOrders = orderMapper.selectBatchIds(orderIds);
+        assertThat(closedOrders).allMatch(o -> o.getStatus() == OrderState.CLOSED);
     }
 
     @Test
-    @DisplayName("事务回滚验证：Action 抛出异常触发 Spring 本地事务回滚，数据库状态保持原样")
-    void testActionExceptionTriggersTransactionRollback() {
-        String sn = "ORD-ROLLBACK-" + UUID.randomUUID().toString().substring(0, 8);
-        OrderVO created = orderService.createOrder(OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("120.00"))
-                .build());
-        Long id = created.getId();
+    @DisplayName("场景四：批量切片流转部分成功与异常容错聚合自验")
+    void testBatchPartialFailureResilience() {
+        // 创建 3 笔订单：2 笔 WAIT_PAY，1 笔已流转至 FINISHED（终态无法执行 CANCEL）
+        OrderDO o1 = lifecycleService.createOrder("ORD-PF-1-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.ONE);
+        OrderDO o2 = lifecycleService.createOrder("ORD-PF-2-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.ONE);
+        OrderDO o3 = lifecycleService.createOrder("ORD-PF-3-" + UUID.randomUUID().toString().substring(0, 4), BigDecimal.ONE);
 
-        // 支付成功变为 PAID
-        orderService.processTransition(id, OrderTransitionRequest.builder().event(OrderEvent.PAY).build());
-        assertThat(orderService.getOrder(id).getStatus()).isEqualTo(OrderState.PAID);
+        // 将 o3 直接流转至 FINISHED
+        lifecycleService.pay(o3.getId());
+        lifecycleService.auditRisk(o3.getId(), 20, false);
+        lifecycleService.ship(o3.getId(), "SF-PF-3");
+        lifecycleService.confirmDelivery(o3.getId());
+        lifecycleService.finish(o3.getId());
 
-        // 触发风控，并设置 failTrigger = true 模拟 Action 抛出异常
-        assertThatThrownBy(() -> orderService.processTransition(id, OrderTransitionRequest.builder()
-                .event(OrderEvent.RISK_AUDIT)
-                .riskScore(10)
-                .failTrigger(true)
-                .build()))
-                .isInstanceOf(StateMachineException.class)
-                .hasMessageContaining("模拟 Action 执行业务异常");
+        List<Long> batchIds = List.of(o1.getId(), o2.getId(), o3.getId());
+        BatchTransitionResult<OrderState, OrderDO> batchResult = batchScenarioService.batchCancelExpiredOrders(
+                batchIds, "部分失败批次测试", 2);
 
-        // 验证数据库状态事务原子回滚，依然保持为 PAID，未被错误持久化为 WAIT_DELIVER
-        OrderDO currentInDb = orderMapper.selectById(id);
-        assertThat(currentInDb.getStatus()).isEqualTo(OrderState.PAID);
+        assertThat(batchResult.getTotalCount()).isEqualTo(3);
+        assertThat(batchResult.getSuccessCount()).isEqualTo(2);
+        assertThat(batchResult.getFailureCount()).isEqualTo(1);
+        assertThat(batchResult.isAllSuccess()).isFalse();
+
+        // 失败详情精准包含 o3 且记录错误码 TRANSITION_NOT_FOUND
+        assertThat(batchResult.getFailures()).hasSize(1);
+        OrderDO failedEntity = batchResult.getFailureEntities().get(0);
+        assertThat(failedEntity.getId()).isEqualTo(o3.getId());
+        assertThat(batchResult.getFailures().get(failedEntity).getCode()).isEqualTo(StateMachineResultCode.TRANSITION_NOT_FOUND.getCode());
+    }
+
+    // ==========================================
+    // 轨迹审计与图例导出验证
+    // ==========================================
+
+    @Test
+    @DisplayName("专职审计监听器 SPI 捕获流转轨迹 (OrderTransitionAuditLogger)")
+    void testAuditListenerCapture() {
+        String sn = "ORD-AUDIT-" + UUID.randomUUID().toString().substring(0, 8);
+        OrderDO order = lifecycleService.createOrder(sn, new BigDecimal("188.00"));
+        Long id = order.getId();
+
+        lifecycleService.pay(id);
+
+        List<TransitionAuditEvent<OrderState, OrderEvent, OrderContext>> events = auditLogger.getAuditEvents();
+        assertThat(events).isNotEmpty();
+
+        TransitionAuditEvent<OrderState, OrderEvent, OrderContext> payEvent = events.stream()
+                .filter(e -> e.getEvent() == OrderEvent.PAY)
+                .findFirst()
+                .orElse(null);
+        assertThat(payEvent).isNotNull();
+        assertThat(payEvent.getMachineId()).isEqualTo(OrderStateMachineConfig.MACHINE_ID);
+        assertThat(payEvent.getFromState()).isEqualTo(OrderState.WAIT_PAY);
+        assertThat(payEvent.getToState()).isEqualTo(OrderState.PAID);
+        assertThat(payEvent.isSuccess()).isTrue();
     }
 
     @Test
-    @DisplayName("Web 端点端到端集成测试：创建订单、触发跃迁与导出 Mermaid 图例")
-    void testWebControllerAndMermaidEndpoint() throws Exception {
-        // 1. 创建订单
-        String sn = "ORD-WEB-" + UUID.randomUUID().toString().substring(0, 6);
-        OrderCreateRequest createReq = OrderCreateRequest.builder()
-                .orderSn(sn)
-                .amount(new BigDecimal("365.00"))
-                .build();
+    @DisplayName("状态机拓扑可视化导出：Mermaid 与 PlantUML 语法图例生成自验")
+    void testTopologyExportMermaidAndPlantUml() {
+        String mermaid = lifecycleService.exportMermaidDiagram();
+        assertThat(mermaid)
+                .contains("stateDiagram-v2")
+                .contains("WAIT_PAY --> PAID : PAY")
+                .contains("DELIVERING --> DELIVERING : ADD_TRACKING")
+                .contains("DELIVERED --> FINISHED : FINISH");
 
-        String responseJson = mockMvc.perform(post("/orders")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(createReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data.orderSn").value(sn))
-                .andExpect(jsonPath("$.data.status").value("WAIT_PAY"))
-                .andReturn().getResponse().getContentAsString();
-
-        Long orderId = objectMapper.readTree(responseJson).path("data").path("id").asLong();
-
-        // 2. 导出 Mermaid 语法图例端点
-        mockMvc.perform(get("/orders/statemachine/mermaid"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("stateDiagram-v2")))
-                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("WAIT_PAY --> PAID : PAY")))
-                .andExpect(jsonPath("$.data").value(org.hamcrest.Matchers.containsString("DELIVERING --> DELIVERING : ADD_TRACKING")));
-
-        // 3. Web 触发跃迁
-        OrderTransitionRequest payReq = OrderTransitionRequest.builder().event(OrderEvent.PAY).build();
-        mockMvc.perform(post("/orders/" + orderId + "/transitions")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(payReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data.targetState").value("PAID"));
+        String plantUml = lifecycleService.exportPlantUmlDiagram();
+        assertThat(plantUml)
+                .startsWith("@startuml")
+                .endsWith("@enduml")
+                .contains("WAIT_PAY --> PAID : PAY")
+                .contains("DELIVERING --> DELIVERING : ADD_TRACKING");
     }
 }

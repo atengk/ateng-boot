@@ -464,6 +464,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         if (sourceState == null || targetState == null || event == null) {
             return;
         }
+        long startTime = System.nanoTime();
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
         if (candidates == null || candidates.isEmpty()) {
@@ -506,6 +507,9 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                 try {
                     action.execute(sourceState, targetState, event, context);
                 } catch (Exception ex) {
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+                    notifyInterceptorsException(sourceState, event, context, ex);
+                    notifyAuditListeners(sourceState, targetState, event, context, elapsed, false, ex);
                     throw new StateMachineException(
                             StateMachineResultCode.ACTION_EXECUTION_FAILED,
                             sourceState,
@@ -523,6 +527,10 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
             // 调度事务提交后动作
             schedulePostCommitActions(matched.getPostCommitActions(), sourceState, targetState, event, context);
+
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+            notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
+            notifyAuditListeners(sourceState, targetState, event, context, elapsed, true, null);
         }
     }
 

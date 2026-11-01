@@ -80,6 +80,10 @@ public class StateMachineInitializer implements SmartInitializingSingleton, Appl
                         defaultStateMachine.addAuditListener(auditListener);
                     }
                 }
+                Map<String, StateTransitionAuditListener> ctxAuditListeners = applicationContext.getBeansOfType(StateTransitionAuditListener.class);
+                for (StateTransitionAuditListener listener : ctxAuditListeners.values()) {
+                    defaultStateMachine.addAuditListener(listener);
+                }
             }
 
             // 2. 自动注册至全局 StateMachineFactory
