@@ -19,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.http.Header;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpRequestInterceptor;
+import org.apache.http.HttpResponseInterceptor;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.conn.ssl.NoopHostnameVerifier;
@@ -57,6 +58,7 @@ public class ElasticsearchClientDriver implements SearchEngineClient {
     private final RestClient restClient;
     private final RestClientTransport transport;
     private final ElasticsearchClient elasticsearchClient;
+    private final SearchEngineType engineType;
 
     public ElasticsearchClientDriver(AtengSearchProperties properties) {
         this(properties, null);
@@ -77,13 +79,14 @@ public class ElasticsearchClientDriver implements SearchEngineClient {
         // 3. 构造 Transport 与 ElasticsearchClient
         this.transport = new RestClientTransport(this.restClient, jsonpMapper);
         this.elasticsearchClient = new ElasticsearchClient(this.transport);
+        this.engineType = properties.getEngine() != null ? properties.getEngine() : SearchEngineType.ELASTICSEARCH;
 
         log.info("ElasticsearchClientDriver initialized successfully for nodes: {}", properties.getUris());
     }
 
     @Override
     public SearchEngineType getEngineType() {
-        return SearchEngineType.ELASTICSEARCH;
+        return this.engineType;
     }
 
     @Override
@@ -206,6 +209,32 @@ public class ElasticsearchClientDriver implements SearchEngineClient {
                     request.addHeader("X-Trace-Id", traceId);
                 }
             });
+
+            // OpenSearch 兼容适配（标头协商）
+            if (properties.getEngine() == SearchEngineType.OPENSEARCH) {
+                // 1. 请求拦截器：替换 Content-Type / Accept 标头中的 Elastic 专有协议标头，防止 OpenSearch 抛出 406 Not Acceptable
+                httpClientBuilder.addInterceptorLast((HttpRequestInterceptor) (request, context) -> {
+                    if (request.containsHeader("Content-Type")) {
+                        Header ct = request.getFirstHeader("Content-Type");
+                        if (ct != null && ct.getValue() != null && ct.getValue().contains("application/vnd.elasticsearch+json")) {
+                            request.setHeader("Content-Type", "application/json");
+                        }
+                    }
+                    if (request.containsHeader("Accept")) {
+                        Header accept = request.getFirstHeader("Accept");
+                        if (accept != null && accept.getValue() != null && accept.getValue().contains("application/vnd.elasticsearch+json")) {
+                            request.setHeader("Accept", "application/json");
+                        }
+                    }
+                });
+
+                // 2. 响应拦截器：补齐 X-Elastic-Product 标头以兼容 ElasticsearchClient 客户端产品校验
+                httpClientBuilder.addInterceptorLast((HttpResponseInterceptor) (response, context) -> {
+                    if (!response.containsHeader("X-Elastic-Product")) {
+                        response.addHeader("X-Elastic-Product", "Elasticsearch");
+                    }
+                });
+            }
 
             return httpClientBuilder;
         });

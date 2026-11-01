@@ -105,4 +105,13 @@ public class SearchHit<T> implements Serializable {
     public Map<String, List<String>> getHighlights() {
         return this.highlightFields != null ? this.highlightFields : Collections.emptyMap();
     }
+
+    /**
+     * 获取 OCC 乐观锁版本凭据
+     *
+     * @return OccVersion 实例
+     */
+    public OccVersion getOccVersion() {
+        return OccVersion.fromHit(this);
+    }
 }

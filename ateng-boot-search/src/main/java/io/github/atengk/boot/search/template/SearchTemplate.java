@@ -3,6 +3,7 @@ package io.github.atengk.boot.search.template;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.FieldValue;
+import co.elastic.clients.elasticsearch._types.KnnSearch;
 import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregate;
@@ -20,6 +21,7 @@ import co.elastic.clients.elasticsearch.core.search.Hit;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
+import io.github.atengk.boot.search.enums.SearchEngineType;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchBulkException;
 import io.github.atengk.boot.search.exception.SearchException;
@@ -1367,7 +1369,32 @@ public class SearchTemplate {
                                                  boolean isSearchAfter, List<String> sortValues, Integer overrideSize) {
         try {
             // 组装多租户隐式过滤
-            Query finalQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+            Query baseQuery = wrapTenantFilterIfNecessary(query.getQuery(), clazz);
+
+            // 当底层引擎为 OpenSearch 2.x 时，将 top-level knn 转译为 Query DSL 原生 knn 语法
+            boolean isOpenSearch = searchEngineClient.getEngineType() == SearchEngineType.OPENSEARCH;
+            Query effectiveQuery = baseQuery;
+            if (isOpenSearch && CollectionUtil.isNotEmpty(query.getKnnSearches())) {
+                List<Query> osKnnQueries = new ArrayList<>();
+                for (KnnSearch knn : query.getKnnSearches()) {
+                    String field = knn.field();
+                    List<Float> vector = knn.queryVector();
+                    long k = knn.k();
+                    Map<String, Object> knnData = Map.of(
+                            field, Map.of(
+                                    "vector", vector != null ? vector : java.util.Collections.emptyList(),
+                                    "k", k
+                            )
+                    );
+                    osKnnQueries.add(Query.of(q -> q._custom("knn", knnData)));
+                }
+                if (baseQuery == null) {
+                    effectiveQuery = osKnnQueries.size() == 1 ? osKnnQueries.get(0) : Query.of(q -> q.bool(b -> b.must(osKnnQueries)));
+                } else {
+                    effectiveQuery = Query.of(q -> q.bool(b -> b.must(baseQuery).must(osKnnQueries)));
+                }
+            }
+            final Query finalQuery = effectiveQuery;
 
             SearchResponse<T> response = getClient().search(b -> {
                 b.index(index);
@@ -1416,8 +1443,8 @@ public class SearchTemplate {
                     b.aggregations(query.getAggregations());
                 }
 
-                // kNN 向量检索
-                if (CollectionUtil.isNotEmpty(query.getKnnSearches())) {
+                // kNN 向量检索（仅 Elasticsearch 模式下设置 top-level knn 参数，OpenSearch 模式已在 query 中融合）
+                if (!isOpenSearch && CollectionUtil.isNotEmpty(query.getKnnSearches())) {
                     b.knn(query.getKnnSearches());
                 }
 

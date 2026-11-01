@@ -26,6 +26,11 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
     @Override
     public void initialize(ConfigurableApplicationContext applicationContext) {
+        // 当激活 local 环境（直连真实物理中间件）时跳过 MockWebServer 启动
+        if (java.util.Arrays.asList(applicationContext.getEnvironment().getActiveProfiles()).contains("local")) {
+            return;
+        }
+
         if (server == null) {
             try {
                 server = new MockWebServer();
