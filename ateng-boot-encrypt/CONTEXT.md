@@ -51,3 +51,37 @@ _Avoid_: 动态校验器, Nacos热推拦截器, IngressFilter
 **Multiline Secret Hygiene (多行大文本机密保真)**:
 支持自动容忍并清洗 YAML 缩进与换行杂质，同时 100% 还原 PEM 证书/私钥格式的非破坏性大文本解密机制。
 _Avoid_: 换行处理, 文本转义, PemParser
+
+**Encrypt Template (统一编程式加解密受管门面)**:
+Spring 受管的高阶对称加解密门面 Bean，自动整合默认算法、前后缀解析器与多密钥注册表，为业务层提供简单对称的编程式加解密、密文识别与 Token 组装能力。
+_Avoid_: 加密服务, EncryptHelper, CryptoManager, CipherBean
+
+**Properties In-Place Rewriter (属性文件就地回写引擎)**:
+在保持等号（`=`）两端空格、行尾注释与换行符严格保真的前提下，对标准 `.properties` 配置文件执行就地敏感字段加密与还原的脱机回写引擎。
+_Avoid_: 属性替换脚本, PropertiesFormatter, ConfigWriter
+
+**Key Rotated Event (密钥轮换失效事件)**:
+在多密钥注册表中新增或平滑轮换密钥时触发的上下文事件与回调，用于原子清空并刷新所有已代理属性源中的解密内存缓存。
+_Avoid_: 刷新事件, 密钥变更监听, CacheClearer
+
+**Encrypt Retry Policy (弹性解密退避重试策略)**:
+针对外部云 KMS 或硬件加密机 (HSM) 远程调用网络抖动，基于强类型 `Duration` 与最大尝试次数提供生产受控的指数退避重试配置体系。
+_Avoid_: 重试拦截器, KmsRetryer, BackoffConfig
+
+**Placeholder Immunity (占位符免疫策略)**:
+在执行就地配置文件加密（InPlaceRewriter）时，自动识别形如 `${...}`（环境变量占位符）或 `#{...}`（SpEL 表达式）的动态变量值并严格豁免加密的防御机制，杜绝破坏动态外部注入。
+_Avoid_: 变量跳过, 表达式忽略, SpelFilter
+
+**False-Positive Immunity Filter (敏感特征防误伤过滤链)**:
+在生产环境开启 `enforce-encrypted: true` 时，基于协议特征（`http://`, `https://`, `classpath:`）、标准日志级别以及显式白名单（`ignoredKeys`）自动放行非凭据字段的三道安全过滤防线。
+_Avoid_: 白名单拦截器, URL跳过, FalseAlarmGuard
+
+**Compatible Cipher Hook (兼容加密前缀开关)**:
+在密文语法解析中提供受控开关，支持透明解析 Spring Cloud `{cipher}...` 历史前缀的零成本平滑迁移机制。
+_Avoid_: 兼容模式, 老系统适配器, LegacyPrefix
+
+**SM2 Interoperable Conversion (国密 ASN.1 DER 双向转译器)**:
+在纯 JDK 原生 SM2 密码引擎中，提供标准 C1C3C2 原始拼接字节流与 ASN.1 DER 结构化序列之间的双向无损转译原语，并支持解密时首字节 `0x30` 自动探测解包。
+_Avoid_: DER编解码器, 格式转换器, Asn1Util
+
+

@@ -8,6 +8,7 @@ import io.github.atengk.boot.encrypt.decryptor.Sm4ConfigDecryptor;
 import io.github.atengk.boot.encrypt.guard.PlaintextIngressGuard;
 import io.github.atengk.boot.encrypt.guard.SanitizingGuard;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
+import io.github.atengk.boot.encrypt.template.EncryptTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -39,6 +40,7 @@ class AtengEncryptAutoConfigurationTest {
             assertThat(context).hasSingleBean(Sm2ConfigDecryptor.class);
             assertThat(context).hasSingleBean(PlaintextIngressGuard.class);
             assertThat(context).hasSingleBean(SanitizingGuard.class);
+            assertThat(context).hasSingleBean(EncryptTemplate.class);
         });
     }
 
@@ -50,6 +52,7 @@ class AtengEncryptAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(CiphertextParser.class);
                     assertThat(context).doesNotHaveBean(AesGcmConfigDecryptor.class);
                     assertThat(context).doesNotHaveBean(PlaintextIngressGuard.class);
+                    assertThat(context).doesNotHaveBean(EncryptTemplate.class);
                 });
     }
 
