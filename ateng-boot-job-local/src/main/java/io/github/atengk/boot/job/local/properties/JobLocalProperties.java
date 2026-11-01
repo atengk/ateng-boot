@@ -69,6 +69,12 @@ public class JobLocalProperties {
     private AlertProperties alert = new AlertProperties();
 
     /**
+     * 集群互斥锁配置
+     */
+    @NestedConfigurationProperty
+    private ClusterLockProperties clusterLock = new ClusterLockProperties();
+
+    /**
      * Actuator 端点嵌套配置类
      */
     @Getter
@@ -126,5 +132,33 @@ public class JobLocalProperties {
          * 任务自愈成功后是否发送恢复通知（默认 true）
          */
         private boolean recoveryNotice = true;
+    }
+
+    /**
+     * 集群互斥锁嵌套配置类
+     */
+    @Getter
+    @Setter
+    public static class ClusterLockProperties {
+
+        /**
+         * 是否启用集群互斥锁（默认 true）
+         */
+        private boolean enabled = true;
+
+        /**
+         * 集群锁存储类型（AUTO: 自动探测 Redis，有 Redis 用 Redis，无 Redis 自动降级为 local 单机内存；REDIS: 强制 Redis；LOCAL: 强制单机内存）
+         */
+        private String type = "AUTO";
+
+        /**
+         * 集群互斥锁在 Redis 中的键名前缀（默认 ateng:job:lock:）
+         */
+        private String keyPrefix = "ateng:job:lock:";
+
+        /**
+         * 默认互斥锁防死锁租约超时时长（默认 5m，当任务未显式指定或指定 0 时生效）
+         */
+        private Duration defaultLeaseTime = Duration.ofMinutes(5);
     }
 }

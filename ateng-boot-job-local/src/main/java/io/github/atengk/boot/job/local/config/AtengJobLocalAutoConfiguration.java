@@ -10,6 +10,7 @@ import io.github.atengk.boot.job.local.alert.NotificationJobAlertHandler;
 import io.github.atengk.boot.job.local.lifecycle.LocalJobLifecycleManager;
 import io.github.atengk.boot.job.local.lock.JobClusterLockProvider;
 import io.github.atengk.boot.job.local.lock.LocalJobClusterLockProvider;
+import io.github.atengk.boot.job.local.lock.RedisJobClusterLockProvider;
 import io.github.atengk.boot.job.local.processor.LocalJobAnnotationBeanPostProcessor;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.registry.LocalJobRegistry;
@@ -24,6 +25,7 @@ import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
 import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
@@ -47,6 +49,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  */
 @AutoConfiguration
 @ConditionalOnClass(ThreadPoolTaskScheduler.class)
+@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
 @EnableConfigurationProperties(JobLocalProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.job.local", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengJobLocalAutoConfiguration {
@@ -120,12 +123,40 @@ public class AtengJobLocalAutoConfiguration {
     }
 
     /**
+     * Redis 轻量集群互斥锁自动装配（当类路径存在 StringRedisTemplate 且容器存在该 Bean，且 cluster-lock.enabled=true 时装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.job.local.cluster-lock", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisJobClusterLockAutoConfiguration {
+
+        @Bean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        @ConditionalOnMissingBean(JobClusterLockProvider.class)
+        public JobClusterLockProvider redisJobClusterLockProvider(StringRedisTemplate redisTemplate,
+                                                                   JobLocalProperties properties) {
+            JobLocalProperties.ClusterLockProperties clusterLock = properties.getClusterLock() != null
+                    ? properties.getClusterLock()
+                    : new JobLocalProperties.ClusterLockProperties();
+            if ("local".equalsIgnoreCase(clusterLock.getType())) {
+                return new LocalJobClusterLockProvider();
+            }
+            return new RedisJobClusterLockProvider(
+                    redisTemplate,
+                    clusterLock.getKeyPrefix(),
+                    null,
+                    clusterLock.getDefaultLeaseTime()
+            );
+        }
+    }
+
+    /**
      * 单机定时任务集群互斥锁 SPI 默认本地兜底实现 Bean
      *
      * @return JobClusterLockProvider
      */
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(JobClusterLockProvider.class)
     public JobClusterLockProvider jobClusterLockProvider() {
         return new LocalJobClusterLockProvider();
     }
