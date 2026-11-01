@@ -165,6 +165,118 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     }
 
     @Override
+    public boolean canFire(S sourceState, E event, C context) {
+        if (sourceState == null || event == null) {
+            return false;
+        }
+        Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
+        List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
+        if (candidates == null || candidates.isEmpty()) {
+            return false;
+        }
+        for (Transition<S, E, C> candidate : candidates) {
+            try {
+                if (candidate.isSatisfied(context)) {
+                    return true;
+                }
+            } catch (Exception ex) {
+                log.debug("状态机 [{}] 纯只读预检 canFire 卫语句求值异常 [from={}, event={}]: {}",
+                        machineId, sourceState, event, ex.getMessage());
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public TransitionResult<S> verifyTransition(S sourceState, E event, C context) {
+        if (sourceState == null) {
+            return TransitionResult.failure(null, event, "源状态不可为空");
+        }
+        if (event == null) {
+            return TransitionResult.failure(sourceState, null, "触发事件不可为空");
+        }
+        Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
+        List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
+        if (candidates == null || candidates.isEmpty()) {
+            return TransitionResult.failure(
+                    sourceState,
+                    event,
+                    String.format("状态机 [%s] 未找到从状态 [%s] 响应事件 [%s] 的合法跃迁路由", machineId, sourceState, event)
+            );
+        }
+        Transition<S, E, C> matched = null;
+        for (Transition<S, E, C> candidate : candidates) {
+            boolean satisfied;
+            try {
+                satisfied = candidate.isSatisfied(context);
+            } catch (Exception ex) {
+                return TransitionResult.failure(
+                        sourceState,
+                        event,
+                        String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句执行异常: %s",
+                                machineId, sourceState, event, ex.getMessage()),
+                        ex
+                );
+            }
+            if (satisfied) {
+                matched = candidate;
+                break;
+            }
+        }
+        if (matched == null) {
+            return TransitionResult.failure(
+                    sourceState,
+                    event,
+                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 的前置条件卫语句校验不通过", machineId, sourceState, event)
+            );
+        }
+        S targetState;
+        try {
+            targetState = matched.resolveTargetState(context);
+        } catch (Exception ex) {
+            return TransitionResult.failure(
+                    sourceState,
+                    event,
+                    String.format("状态机 [%s] 从状态 [%s] 响应事件 [%s] 确定目标状态时异常: %s",
+                            machineId, sourceState, event, ex.getMessage()),
+                    ex
+            );
+        }
+        return TransitionResult.success(sourceState, targetState, event);
+    }
+
+    @Override
+    public Set<E> getAvailableEvents(S sourceState, C context) {
+        if (sourceState == null) {
+            return Collections.emptySet();
+        }
+        Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
+        if (eventMap == null || eventMap.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<E> availableEvents = new LinkedHashSet<>();
+        for (Map.Entry<E, List<Transition<S, E, C>>> entry : eventMap.entrySet()) {
+            E event = entry.getKey();
+            List<Transition<S, E, C>> candidates = entry.getValue();
+            if (candidates == null || candidates.isEmpty()) {
+                continue;
+            }
+            for (Transition<S, E, C> candidate : candidates) {
+                try {
+                    if (candidate.isSatisfied(context)) {
+                        availableEvents.add(event);
+                        break;
+                    }
+                } catch (Exception ex) {
+                    log.debug("状态机 [{}] 计算可用事件卫语句求值异常 [from={}, event={}]: {}",
+                            machineId, sourceState, event, ex.getMessage());
+                }
+            }
+        }
+        return Collections.unmodifiableSet(availableEvents);
+    }
+
+    @Override
     public TransitionResult<S> fireEventQuietly(S sourceState, E event, C context) {
         if (sourceState == null) {
             return TransitionResult.failure(null, event, "源状态不可为空");

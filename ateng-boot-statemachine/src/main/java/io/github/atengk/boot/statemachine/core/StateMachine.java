@@ -4,6 +4,7 @@ import io.github.atengk.boot.statemachine.cas.CasUpdater;
 import io.github.atengk.boot.statemachine.cas.StateMachineCasTemplate;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
 
+import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -62,8 +63,162 @@ public interface StateMachine<S, E, C> {
     }
 
     /**
+     * 判断当前状态是否可接受指定事件（纯只读无副作用预检）
+     * <p>仅求值流转路由与前置卫语句，100% 杜绝触发任何 Action 动作与持久层更新</p>
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @param context     业务上下文
+     * @return 若存在匹配路由且卫语句满足则返回 true，否则返回 false（卫语句异常时安全返回 false）
+     */
+    boolean canFire(S sourceState, E event, C context);
+
+    /**
+     * 判断当前状态是否可接受指定事件（纯只读无副作用预检，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @return 若存在匹配路由且卫语句满足则返回 true，否则返回 false
+     */
+    default boolean canFire(S sourceState, E event) {
+        return canFire(sourceState, event, (C) null);
+    }
+
+    /**
+     * 实体状态只读预检门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 若可接受跃迁返回 true，否则返回 false
+     */
+    default <T> boolean canFire(T entity, Function<T, S> getter, E event, C context) {
+        if (entity == null || getter == null) {
+            return false;
+        }
+        return canFire(getter.apply(entity), event, context);
+    }
+
+    /**
+     * 实体状态只读预检门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param event  触发事件
+     * @param <T>    业务实体类型
+     * @return 若可接受跃迁返回 true，否则返回 false
+     */
+    default <T> boolean canFire(T entity, Function<T, S> getter, E event) {
+        return canFire(entity, getter, event, (C) null);
+    }
+
+    /**
+     * 试算状态跃迁结果（纯只读无副作用预检）
+     * <p>仅试算目标状态与卫语句，100% 杜绝触发任何 Action 动作与持久层更新</p>
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @param context     业务上下文
+     * @return 结构化预检结果（成功时携带目标状态，失败时携带失败原因及异常根因）
+     */
+    TransitionResult<S> verifyTransition(S sourceState, E event, C context);
+
+    /**
+     * 试算状态跃迁结果（纯只读无副作用预检，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @param event       触发事件
+     * @return 结构化预检结果
+     */
+    default TransitionResult<S> verifyTransition(S sourceState, E event) {
+        return verifyTransition(sourceState, event, (C) null);
+    }
+
+    /**
+     * 实体状态试算跃迁预检门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param event   触发事件
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 结构化预检结果
+     */
+    default <T> TransitionResult<S> verifyTransition(T entity, Function<T, S> getter, E event, C context) {
+        if (entity == null) {
+            return TransitionResult.failure(null, event, "Target entity must not be null");
+        }
+        if (getter == null) {
+            throw new IllegalArgumentException("Getter must not be null");
+        }
+        return verifyTransition(getter.apply(entity), event, context);
+    }
+
+    /**
+     * 实体状态试算跃迁预检门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param event  触发事件
+     * @param <T>    业务实体类型
+     * @return 结构化预检结果
+     */
+    default <T> TransitionResult<S> verifyTransition(T entity, Function<T, S> getter, E event) {
+        return verifyTransition(entity, getter, event, (C) null);
+    }
+
+    /**
+     * 获取当前状态下所有满足卫语句的可用事件集合（纯只读无副作用计算）
+     *
+     * @param sourceState 当前源状态
+     * @param context     业务上下文
+     * @return 可用事件集合（保底返回不可变空集合，严禁返回 null）
+     */
+    Set<E> getAvailableEvents(S sourceState, C context);
+
+    /**
+     * 获取当前状态下所有满足卫语句的可用事件集合（纯只读无副作用计算，免上下文重载）
+     *
+     * @param sourceState 当前源状态
+     * @return 可用事件集合
+     */
+    default Set<E> getAvailableEvents(S sourceState) {
+        return getAvailableEvents(sourceState, (C) null);
+    }
+
+    /**
+     * 实体当前状态可用事件集合查询门面（零侵入 Lambda 访问）
+     *
+     * @param entity  业务实体
+     * @param getter  状态提取函数
+     * @param context 业务上下文
+     * @param <T>     业务实体类型
+     * @return 可用事件集合
+     */
+    default <T> Set<E> getAvailableEvents(T entity, Function<T, S> getter, C context) {
+        if (entity == null || getter == null) {
+            return java.util.Collections.emptySet();
+        }
+        return getAvailableEvents(getter.apply(entity), context);
+    }
+
+    /**
+     * 实体当前状态可用事件集合查询门面（免上下文重载）
+     *
+     * @param entity 业务实体
+     * @param getter 状态提取函数
+     * @param <T>    业务实体类型
+     * @return 可用事件集合
+     */
+    default <T> Set<E> getAvailableEvents(T entity, Function<T, S> getter) {
+        return getAvailableEvents(entity, getter, (C) null);
+    }
+
+    /**
      * 安全探测触发状态跃迁（静默模式）
-     * <p>不向外抛出异常，返回结构化结果承载对象，供前端按钮权限计算或状态预检使用</p>
+     * <p>静默执行状态跃迁（捕获异常并返回结果对象，包含后置动作副作用执行；若需纯只读无副作用预检，请使用 {@link #canFire} 或 {@link #verifyTransition}）</p>
      *
      * @param sourceState 当前源状态
      * @param event       触发事件

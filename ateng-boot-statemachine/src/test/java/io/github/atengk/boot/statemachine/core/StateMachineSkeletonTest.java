@@ -47,6 +47,27 @@ class StateMachineSkeletonTest {
         }
 
         @Override
+        public boolean canFire(String sourceState, String event, Object context) {
+            return "INIT".equals(sourceState) && "PAY".equals(event);
+        }
+
+        @Override
+        public TransitionResult<String> verifyTransition(String sourceState, String event, Object context) {
+            if ("INIT".equals(sourceState) && "PAY".equals(event)) {
+                return TransitionResult.success(sourceState, "PAID", event);
+            }
+            return TransitionResult.failure(sourceState, event, "Invalid transition");
+        }
+
+        @Override
+        public java.util.Set<String> getAvailableEvents(String sourceState, Object context) {
+            if ("INIT".equals(sourceState)) {
+                return java.util.Collections.singleton("PAY");
+            }
+            return java.util.Collections.emptySet();
+        }
+
+        @Override
         public TransitionResult<String> fireEventQuietly(String sourceState, String event, Object context) {
             if ("INIT".equals(sourceState) && "PAY".equals(event)) {
                 return TransitionResult.success(sourceState, "PAID", event);
