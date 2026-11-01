@@ -17,6 +17,13 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
     private final List<TransitionHolder<S, E, C>> transitionHolders = new ArrayList<>();
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors = new ArrayList<>();
+    private boolean defaultIdempotent = false;
+
+    @Override
+    public StateMachineBuilder<S, E, C> idempotent(boolean idempotent) {
+        this.defaultIdempotent = idempotent;
+        return this;
+    }
 
     @Override
     public StateMachineBuilder<S, E, C> interceptor(StateMachineInterceptor<? super S, ? super E, ? super C> interceptor) {
@@ -28,28 +35,28 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
     @Override
     public ExternalTransitionBuilder.From<S, E, C> externalTransition() {
-        ExternalTransitionHolder<S, E, C> holder = new ExternalTransitionHolder<>();
+        ExternalTransitionHolder<S, E, C> holder = new ExternalTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public InternalTransitionBuilder.From<S, E, C> internalTransition() {
-        InternalTransitionHolder<S, E, C> holder = new InternalTransitionHolder<>();
+        InternalTransitionHolder<S, E, C> holder = new InternalTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public MultiFromTransitionBuilder.From<S, E, C> multiFromTransition() {
-        MultiFromTransitionHolder<S, E, C> holder = new MultiFromTransitionHolder<>();
+        MultiFromTransitionHolder<S, E, C> holder = new MultiFromTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
 
     @Override
     public ChoiceTransitionBuilder.From<S, E, C> choiceTransition() {
-        ChoiceTransitionHolder<S, E, C> holder = new ChoiceTransitionHolder<>();
+        ChoiceTransitionHolder<S, E, C> holder = new ChoiceTransitionHolder<>(defaultIdempotent);
         transitionHolders.add(holder);
         return holder;
     }
@@ -89,6 +96,15 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         protected final List<Condition<C>> conditions = new ArrayList<>();
         protected final List<Action<S, E, C>> actions = new ArrayList<>();
         protected final List<Action<S, E, C>> postCommitActions = new ArrayList<>();
+        protected boolean idempotent;
+
+        public AbstractTransitionHolder(boolean defaultIdempotent) {
+            this.idempotent = defaultIdempotent;
+        }
+
+        protected void setIdempotent(boolean idempotent) {
+            this.idempotent = idempotent;
+        }
 
         protected void addCondition(Condition<C> condition) {
             if (condition != null) {
@@ -118,6 +134,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private S sourceState;
         private S targetState;
         private E event;
+
+        public ExternalTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public ExternalTransitionBuilder.To<S, E, C> from(S sourceState) {
@@ -165,11 +185,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete external transition configuration: sourceState, targetState, and event must all be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions));
+            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions, idempotent));
         }
     }
 
@@ -180,6 +206,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
 
         private S sourceState;
         private E event;
+
+        public InternalTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public InternalTransitionBuilder.On<S, E, C> from(S sourceState) {
@@ -218,11 +248,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null) {
                 throw new IllegalStateException("Incomplete internal transition configuration: sourceState and event must be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions, postCommitActions));
+            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions, postCommitActions, idempotent));
         }
     }
 
@@ -235,6 +271,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private final Set<S> sourceStates = new LinkedHashSet<>();
         private S targetState;
         private E event;
+
+        public MultiFromTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @SafeVarargs
         @Override
@@ -302,13 +342,19 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceStates.isEmpty() || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete multi-from transition configuration: sourceStates, targetState, and event must all be set");
             }
             List<Transition<S, E, C>> transitions = new ArrayList<>();
             for (S source : sourceStates) {
-                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions));
+                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions, idempotent));
             }
             return transitions;
         }
@@ -328,6 +374,10 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         private S defaultTargetState;
 
         private List<Condition<C>> currentBranchConditions = new ArrayList<>();
+
+        public ChoiceTransitionHolder(boolean defaultIdempotent) {
+            super(defaultIdempotent);
+        }
 
         @Override
         public ChoiceTransitionBuilder.On<S, E, C> from(S sourceState) {
@@ -391,11 +441,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> idempotent(boolean idempotent) {
+            setIdempotent(idempotent);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null || branches.isEmpty() || defaultTargetState == null) {
                 throw new IllegalStateException("Incomplete choice transition configuration: sourceState, event, at least one branch, and defaultTargetState must all be set");
             }
-            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions, postCommitActions));
+            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions, postCommitActions, idempotent));
         }
     }
 }

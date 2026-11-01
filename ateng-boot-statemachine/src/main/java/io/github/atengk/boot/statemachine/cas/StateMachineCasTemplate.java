@@ -77,6 +77,11 @@ public final class StateMachineCasTemplate {
             );
         }
 
+        // 幂等命中（实体当前已处于目标状态）：直接放行，跳过持久层 CAS 与 Action 执行
+        if (probe.isIdempotent()) {
+            return sourceState;
+        }
+
         S targetState = probe.getTargetState();
 
         // 2. 执行数据库 CAS 乐观锁条件更新
@@ -143,6 +148,11 @@ public final class StateMachineCasTemplate {
         S sourceState = getter.apply(entity);
         TransitionResult<S> probe = stateMachine.verifyTransition(sourceState, event, context);
         if (!probe.isAccepted()) {
+            return probe;
+        }
+
+        // 幂等命中（实体当前已处于目标状态）：直接放行返回成功结果
+        if (probe.isIdempotent()) {
             return probe;
         }
 

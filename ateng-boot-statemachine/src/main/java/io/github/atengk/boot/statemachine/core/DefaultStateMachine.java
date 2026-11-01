@@ -29,6 +29,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final String machineId;
     private final Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap;
     private final List<StateMachineInterceptor<? super S, ? super E, ? super C>> interceptors;
+    private final Map<S, Set<E>> idempotentTargets;
 
     public DefaultStateMachine(String machineId,
                                Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap,
@@ -55,6 +56,30 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         }
         this.transitionMap = Collections.unmodifiableMap(deepImmutableMap);
         this.interceptors = new CopyOnWriteArrayList<>(interceptors != null ? interceptors : Collections.emptyList());
+
+        Map<S, Set<E>> idempMap = new LinkedHashMap<>();
+        for (Map<E, List<Transition<S, E, C>>> eventMap : deepImmutableMap.values()) {
+            for (List<Transition<S, E, C>> transitions : eventMap.values()) {
+                for (Transition<S, E, C> transition : transitions) {
+                    if (transition.isIdempotent()) {
+                        if (transition instanceof ChoiceTransition) {
+                            ChoiceTransition<S, E, C> choice = (ChoiceTransition<S, E, C>) transition;
+                            for (ChoiceBranch<S, C> branch : choice.getBranches()) {
+                                idempMap.computeIfAbsent(branch.getTargetState(), k -> new LinkedHashSet<>()).add(transition.getEvent());
+                            }
+                            idempMap.computeIfAbsent(choice.getDefaultTargetState(), k -> new LinkedHashSet<>()).add(transition.getEvent());
+                        } else {
+                            idempMap.computeIfAbsent(transition.getTargetState(), k -> new LinkedHashSet<>()).add(transition.getEvent());
+                        }
+                    }
+                }
+            }
+        }
+        Map<S, Set<E>> immutableIdempMap = new LinkedHashMap<>();
+        for (Map.Entry<S, Set<E>> entry : idempMap.entrySet()) {
+            immutableIdempMap.put(entry.getKey(), Collections.unmodifiableSet(entry.getValue()));
+        }
+        this.idempotentTargets = Collections.unmodifiableMap(immutableIdempMap);
     }
 
     public DefaultStateMachine(String machineId, Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap) {
@@ -93,6 +118,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
 
             if (candidates == null || candidates.isEmpty()) {
+                if (isIdempotentHit(sourceState, event)) {
+                    log.info("状态机 [{}] 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过动作执行",
+                            machineId, sourceState, event);
+                    Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+                    notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
+                    return sourceState;
+                }
                 throw new StateMachineException(
                         StateMachineResultCode.TRANSITION_NOT_FOUND,
                         sourceState,
@@ -180,7 +212,7 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
         if (candidates == null || candidates.isEmpty()) {
-            return false;
+            return isIdempotentHit(sourceState, event);
         }
         for (Transition<S, E, C> candidate : candidates) {
             try {
@@ -206,6 +238,9 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
         if (candidates == null || candidates.isEmpty()) {
+            if (isIdempotentHit(sourceState, event)) {
+                return TransitionResult.idempotent(sourceState, event);
+            }
             return TransitionResult.failure(
                     sourceState,
                     event,
@@ -259,27 +294,30 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             return Collections.emptySet();
         }
         Map<E, List<Transition<S, E, C>>> eventMap = transitionMap.get(sourceState);
-        if (eventMap == null || eventMap.isEmpty()) {
-            return Collections.emptySet();
-        }
         Set<E> availableEvents = new LinkedHashSet<>();
-        for (Map.Entry<E, List<Transition<S, E, C>>> entry : eventMap.entrySet()) {
-            E event = entry.getKey();
-            List<Transition<S, E, C>> candidates = entry.getValue();
-            if (candidates == null || candidates.isEmpty()) {
-                continue;
-            }
-            for (Transition<S, E, C> candidate : candidates) {
-                try {
-                    if (candidate.isSatisfied(context)) {
-                        availableEvents.add(event);
-                        break;
+        if (eventMap != null && !eventMap.isEmpty()) {
+            for (Map.Entry<E, List<Transition<S, E, C>>> entry : eventMap.entrySet()) {
+                E event = entry.getKey();
+                List<Transition<S, E, C>> candidates = entry.getValue();
+                if (candidates == null || candidates.isEmpty()) {
+                    continue;
+                }
+                for (Transition<S, E, C> candidate : candidates) {
+                    try {
+                        if (candidate.isSatisfied(context)) {
+                            availableEvents.add(event);
+                            break;
+                        }
+                    } catch (Exception ex) {
+                        log.debug("状态机 [{}] 计算可用事件卫语句求值异常 [from={}, event={}]: {}",
+                                machineId, sourceState, event, ex.getMessage());
                     }
-                } catch (Exception ex) {
-                    log.debug("状态机 [{}] 计算可用事件卫语句求值异常 [from={}, event={}]: {}",
-                            machineId, sourceState, event, ex.getMessage());
                 }
             }
+        }
+        Set<E> idempEvents = idempotentTargets.get(sourceState);
+        if (idempEvents != null) {
+            availableEvents.addAll(idempEvents);
         }
         return Collections.unmodifiableSet(availableEvents);
     }
@@ -355,6 +393,13 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         List<Transition<S, E, C>> candidates = eventMap != null ? eventMap.get(event) : null;
 
         if (candidates == null || candidates.isEmpty()) {
+            if (isIdempotentHit(sourceState, event)) {
+                log.info("状态机 [{}] 幂等命中 [IDEMPOTENT_HIT]: 当前已处于目标状态 [{}], 重复事件 [{}] 放行，跳过动作执行",
+                        machineId, sourceState, event);
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
+                notifyInterceptorsAfter(sourceState, sourceState, event, context, elapsed);
+                return TransitionResult.idempotent(sourceState, event);
+            }
             StateMachineException ex = new StateMachineException(
                     StateMachineResultCode.TRANSITION_NOT_FOUND,
                     sourceState,
@@ -460,6 +505,14 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
         notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
 
         return TransitionResult.success(sourceState, targetState, event);
+    }
+
+    private boolean isIdempotentHit(S sourceState, E event) {
+        if (sourceState == null || event == null) {
+            return false;
+        }
+        Set<E> events = idempotentTargets.get(sourceState);
+        return events != null && events.contains(event);
     }
 
     private void notifyInterceptorsBefore(S sourceState, E event, C context) {

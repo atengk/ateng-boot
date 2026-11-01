@@ -106,5 +106,22 @@ public interface MultiFromTransitionBuilder<S, E, C> {
             }
             return performAfterCommit((from, to, event, context) -> consumer.accept(context));
         }
+
+        /**
+         * 声明当前跃迁具备终态幂等放行能力
+         *
+         * @param idempotent 是否开启幂等放行
+         * @return 当前构建阶段
+         */
+        WhenOrPerform<S, E, C> idempotent(boolean idempotent);
+
+        /**
+         * 声明当前跃迁开启终态幂等放行能力
+         *
+         * @return 当前构建阶段
+         */
+        default WhenOrPerform<S, E, C> idempotent() {
+            return idempotent(true);
+        }
     }
 }

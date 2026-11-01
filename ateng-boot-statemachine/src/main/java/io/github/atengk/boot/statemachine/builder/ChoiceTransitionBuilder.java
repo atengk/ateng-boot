@@ -124,5 +124,22 @@ public interface ChoiceTransitionBuilder<S, E, C> {
             }
             return performAfterCommit((from, to, event, context) -> consumer.accept(context));
         }
+
+        /**
+         * 声明当前 Choice 跃迁各分支目标状态具备终态幂等放行能力
+         *
+         * @param idempotent 是否开启幂等放行
+         * @return 当前阶段
+         */
+        PerformOrEnd<S, E, C> idempotent(boolean idempotent);
+
+        /**
+         * 声明当前 Choice 跃迁开启终态幂等放行能力
+         *
+         * @return 当前阶段
+         */
+        default PerformOrEnd<S, E, C> idempotent() {
+            return idempotent(true);
+        }
     }
 }

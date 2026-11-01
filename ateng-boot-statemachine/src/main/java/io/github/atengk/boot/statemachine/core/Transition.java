@@ -22,12 +22,17 @@ public class Transition<S, E, C> {
     private final List<Condition<C>> conditions;
     private final List<Action<S, E, C>> actions;
     private final List<Action<S, E, C>> postCommitActions;
+    private final boolean idempotent;
 
     public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions) {
-        this(sourceState, targetState, event, type, conditions, actions, Collections.emptyList());
+        this(sourceState, targetState, event, type, conditions, actions, Collections.emptyList(), false);
     }
 
     public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions, List<Action<S, E, C>> postCommitActions) {
+        this(sourceState, targetState, event, type, conditions, actions, postCommitActions, false);
+    }
+
+    public Transition(S sourceState, S targetState, E event, TransitionType type, List<Condition<C>> conditions, List<Action<S, E, C>> actions, List<Action<S, E, C>> postCommitActions, boolean idempotent) {
         if (sourceState == null) {
             throw new IllegalArgumentException("sourceState must not be null");
         }
@@ -41,6 +46,7 @@ public class Transition<S, E, C> {
         this.conditions = conditions != null ? Collections.unmodifiableList(new ArrayList<>(conditions)) : Collections.emptyList();
         this.actions = actions != null ? Collections.unmodifiableList(new ArrayList<>(actions)) : Collections.emptyList();
         this.postCommitActions = postCommitActions != null ? Collections.unmodifiableList(new ArrayList<>(postCommitActions)) : Collections.emptyList();
+        this.idempotent = idempotent;
     }
 
     public S getSourceState() {
@@ -69,6 +75,10 @@ public class Transition<S, E, C> {
 
     public List<Action<S, E, C>> getPostCommitActions() {
         return postCommitActions;
+    }
+
+    public boolean isIdempotent() {
+        return idempotent;
     }
 
     /**

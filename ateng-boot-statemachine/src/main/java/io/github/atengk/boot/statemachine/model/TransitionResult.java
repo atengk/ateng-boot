@@ -59,13 +59,32 @@ public class TransitionResult<S> implements Serializable {
      */
     private final Throwable cause;
 
+    /**
+     * 是否为终态幂等放行（重复事件投递）
+     */
+    private final boolean idempotent;
+
+    /**
+     * 是否为终态幂等放行
+     *
+     * @return true 代表为幂等放行
+     */
+    public boolean isIdempotent() {
+        return idempotent;
+    }
+
     private TransitionResult(boolean accepted, S sourceState, S targetState, Object event, String failureReason, Throwable cause) {
+        this(accepted, sourceState, targetState, event, failureReason, cause, false);
+    }
+
+    private TransitionResult(boolean accepted, S sourceState, S targetState, Object event, String failureReason, Throwable cause, boolean idempotent) {
         this.accepted = accepted;
         this.sourceState = sourceState;
         this.targetState = targetState;
         this.event = event;
         this.failureReason = failureReason;
         this.cause = cause;
+        this.idempotent = idempotent;
     }
 
     /**
@@ -78,7 +97,19 @@ public class TransitionResult<S> implements Serializable {
      * @return 成功结果
      */
     public static <S> TransitionResult<S> success(S sourceState, S targetState, Object event) {
-        return new TransitionResult<>(true, sourceState, targetState, event, null, null);
+        return new TransitionResult<>(true, sourceState, targetState, event, null, null, false);
+    }
+
+    /**
+     * 构建终态幂等放行成功结果（重复事件投递放行）
+     *
+     * @param state 当前状态（源状态与目标状态一致）
+     * @param event 触发事件
+     * @param <S>   状态类型
+     * @return 幂等成功结果
+     */
+    public static <S> TransitionResult<S> idempotent(S state, Object event) {
+        return new TransitionResult<>(true, state, state, event, null, null, true);
     }
 
     /**
