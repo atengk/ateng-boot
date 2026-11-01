@@ -51,7 +51,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  */
 @AutoConfiguration
 @ConditionalOnClass(ThreadPoolTaskScheduler.class)
-@AutoConfigureAfter(name = "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration")
+@AutoConfigureAfter(name = {
+        "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration",
+        "org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration"
+})
 @EnableConfigurationProperties(JobLocalProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.job.local", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class AtengJobLocalAutoConfiguration {
