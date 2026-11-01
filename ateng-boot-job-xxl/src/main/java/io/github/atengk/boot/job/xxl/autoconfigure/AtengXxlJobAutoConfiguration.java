@@ -318,12 +318,15 @@ public class AtengXxlJobAutoConfiguration {
      * <p>为分布式调度任务提供安全、沙箱化的租户级批量执行能力（对应 JobTenantMode.ITERATE 模式）。</p>
      *
      * @param tenantListProviderProvider 租户列表提供者 Provider
+     * @param taskExecutorProvider       Core 受管异步线程池 Provider
      * @return 多租户遍历执行模板
      */
     @Bean
     @ConditionalOnMissingBean
-    public TenantJobTemplate tenantJobTemplate(ObjectProvider<TenantListProvider> tenantListProviderProvider) {
-        return new TenantJobTemplate(tenantListProviderProvider.getIfAvailable());
+    public TenantJobTemplate tenantJobTemplate(
+            ObjectProvider<TenantListProvider> tenantListProviderProvider,
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
+        return new TenantJobTemplate(tenantListProviderProvider.getIfAvailable(), taskExecutorProvider.getIfAvailable());
     }
 
 }
