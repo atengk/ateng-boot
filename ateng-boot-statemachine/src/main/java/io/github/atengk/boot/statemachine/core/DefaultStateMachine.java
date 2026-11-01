@@ -3,6 +3,7 @@ package io.github.atengk.boot.statemachine.core;
 import io.github.atengk.boot.statemachine.enums.StateMachineResultCode;
 import io.github.atengk.boot.statemachine.exception.StateMachineException;
 import io.github.atengk.boot.statemachine.model.TransitionResult;
+import org.springframework.util.ClassUtils;
 
 import java.time.Duration;
 import java.util.*;
@@ -20,6 +21,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(DefaultStateMachine.class);
+    private static final boolean SPRING_TX_PRESENT = ClassUtils.isPresent(
+            "org.springframework.transaction.support.TransactionSynchronizationManager",
+            DefaultStateMachine.class.getClassLoader()
+    );
 
     private final String machineId;
     private final Map<S, Map<E, List<Transition<S, E, C>>>> transitionMap;
@@ -153,6 +158,9 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     );
                 }
             }
+
+            // 调度事务提交后动作（若处于 Spring 事务中则注册 afterCommit，否则就地同步执行）
+            schedulePostCommitActions(matched.getPostCommitActions(), sourceState, targetState, event, context);
 
             Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
             notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
@@ -326,6 +334,8 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
                     );
                 }
             }
+            // 调度事务提交后动作
+            schedulePostCommitActions(matched.getPostCommitActions(), sourceState, targetState, event, context);
         }
     }
 
@@ -443,6 +453,9 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             }
         }
 
+        // 调度事务提交后动作
+        schedulePostCommitActions(matched.getPostCommitActions(), sourceState, targetState, event, context);
+
         Duration elapsed = Duration.ofNanos(System.nanoTime() - startTime);
         notifyInterceptorsAfter(sourceState, targetState, event, context, elapsed);
 
@@ -476,6 +489,56 @@ public class DefaultStateMachine<S, E, C> implements StateMachine<S, E, C> {
             } catch (Exception interceptorEx) {
                 log.warn("状态机 [{}] 拦截器 [{}] 异常回调处理失败: {}", machineId, interceptor.getClass().getSimpleName(), interceptorEx.getMessage(), interceptorEx);
             }
+        }
+    }
+
+    private void schedulePostCommitActions(List<Action<S, E, C>> postCommitActions,
+                                           S sourceState, S targetState, E event, C context) {
+        if (postCommitActions == null || postCommitActions.isEmpty()) {
+            return;
+        }
+        if (SPRING_TX_PRESENT && SpringTransactionSynchronizer.isSynchronizationActive()) {
+            SpringTransactionSynchronizer.registerAfterCommit(() ->
+                    executePostCommitActions(postCommitActions, sourceState, targetState, event, context)
+            );
+        } else {
+            executePostCommitActions(postCommitActions, sourceState, targetState, event, context);
+        }
+    }
+
+    private void executePostCommitActions(List<Action<S, E, C>> postCommitActions,
+                                          S sourceState, S targetState, E event, C context) {
+        if (postCommitActions == null || postCommitActions.isEmpty()) {
+            return;
+        }
+        for (Action<S, E, C> action : postCommitActions) {
+            try {
+                action.execute(sourceState, targetState, event, context);
+            } catch (Exception ex) {
+                log.error("状态机 [{}] 事务提交后动作 (postCommitAction) 执行异常 [{} -> {} on {}]: {}",
+                        machineId, sourceState, targetState, event, ex.getMessage(), ex);
+                notifyInterceptorsException(sourceState, event, context, ex);
+            }
+        }
+    }
+
+    /**
+     * Spring 事务同步基础设施提供者（静态内部类延迟加载，实现缺依赖或非活跃环境下的物理类隔离）
+     */
+    private static final class SpringTransactionSynchronizer {
+        static boolean isSynchronizationActive() {
+            return org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive();
+        }
+
+        static void registerAfterCommit(Runnable task) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            task.run();
+                        }
+                    }
+            );
         }
     }
 

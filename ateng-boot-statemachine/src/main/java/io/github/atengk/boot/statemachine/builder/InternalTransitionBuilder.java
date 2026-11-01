@@ -65,5 +65,26 @@ public interface InternalTransitionBuilder<S, E, C> {
             }
             return perform((from, to, event, context) -> consumer.accept(context));
         }
+
+        /**
+         * 添加事务提交后执行动作（在 Spring 事务 commit 成功后触发；若无活跃事务则降级就地同步执行）
+         *
+         * @param action 事务提交后动作
+         * @return 当前构建阶段
+         */
+        WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action);
+
+        /**
+         * 便捷添加仅消费上下文的事务提交后动作
+         *
+         * @param consumer 上下文消费函数
+         * @return 当前构建阶段
+         */
+        default WhenOrPerform<S, E, C> performAfterCommit(Consumer<C> consumer) {
+            if (consumer == null) {
+                throw new IllegalArgumentException("Action consumer must not be null");
+            }
+            return performAfterCommit((from, to, event, context) -> consumer.accept(context));
+        }
     }
 }

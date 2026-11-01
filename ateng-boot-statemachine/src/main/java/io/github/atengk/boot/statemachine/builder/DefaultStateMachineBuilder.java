@@ -88,6 +88,7 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
     private abstract static class AbstractTransitionHolder<S, E, C> implements TransitionHolder<S, E, C> {
         protected final List<Condition<C>> conditions = new ArrayList<>();
         protected final List<Action<S, E, C>> actions = new ArrayList<>();
+        protected final List<Action<S, E, C>> postCommitActions = new ArrayList<>();
 
         protected void addCondition(Condition<C> condition) {
             if (condition != null) {
@@ -98,6 +99,12 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         protected void addAction(Action<S, E, C> action) {
             if (action != null) {
                 this.actions.add(action);
+            }
+        }
+
+        protected void addPostCommitAction(Action<S, E, C> action) {
+            if (action != null) {
+                this.postCommitActions.add(action);
             }
         }
     }
@@ -152,11 +159,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ExternalTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete external transition configuration: sourceState, targetState, and event must all be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions));
+            return Collections.singletonList(new Transition<>(sourceState, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions));
         }
     }
 
@@ -199,11 +212,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public InternalTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null) {
                 throw new IllegalStateException("Incomplete internal transition configuration: sourceState and event must be set");
             }
-            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions));
+            return Collections.singletonList(new Transition<>(sourceState, sourceState, event, TransitionType.INTERNAL, conditions, actions, postCommitActions));
         }
     }
 
@@ -277,13 +296,19 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public MultiFromTransitionBuilder.WhenOrPerform<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceStates.isEmpty() || targetState == null || event == null) {
                 throw new IllegalStateException("Incomplete multi-from transition configuration: sourceStates, targetState, and event must all be set");
             }
             List<Transition<S, E, C>> transitions = new ArrayList<>();
             for (S source : sourceStates) {
-                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions));
+                transitions.add(new Transition<>(source, targetState, event, TransitionType.EXTERNAL, conditions, actions, postCommitActions));
             }
             return transitions;
         }
@@ -360,11 +385,17 @@ public class DefaultStateMachineBuilder<S, E, C> implements StateMachineBuilder<
         }
 
         @Override
+        public ChoiceTransitionBuilder.PerformOrEnd<S, E, C> performAfterCommit(Action<S, E, C> action) {
+            addPostCommitAction(action);
+            return this;
+        }
+
+        @Override
         public List<Transition<S, E, C>> buildTransitions() {
             if (sourceState == null || event == null || branches.isEmpty() || defaultTargetState == null) {
                 throw new IllegalStateException("Incomplete choice transition configuration: sourceState, event, at least one branch, and defaultTargetState must all be set");
             }
-            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions));
+            return Collections.singletonList(new ChoiceTransition<>(sourceState, event, branches, defaultTargetState, actions, postCommitActions));
         }
     }
 }

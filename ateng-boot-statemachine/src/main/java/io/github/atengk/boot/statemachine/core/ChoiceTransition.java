@@ -19,7 +19,11 @@ public class ChoiceTransition<S, E, C> extends Transition<S, E, C> {
     private final S defaultTargetState;
 
     public ChoiceTransition(S sourceState, E event, List<ChoiceBranch<S, C>> branches, S defaultTargetState, List<Action<S, E, C>> actions) {
-        super(sourceState, defaultTargetState, event, TransitionType.CHOICE, Collections.emptyList(), actions);
+        this(sourceState, event, branches, defaultTargetState, actions, Collections.emptyList());
+    }
+
+    public ChoiceTransition(S sourceState, E event, List<ChoiceBranch<S, C>> branches, S defaultTargetState, List<Action<S, E, C>> actions, List<Action<S, E, C>> postCommitActions) {
+        super(sourceState, defaultTargetState, event, TransitionType.CHOICE, Collections.emptyList(), actions, postCommitActions);
         if (sourceState == null) {
             throw new IllegalArgumentException("sourceState must not be null");
         }
