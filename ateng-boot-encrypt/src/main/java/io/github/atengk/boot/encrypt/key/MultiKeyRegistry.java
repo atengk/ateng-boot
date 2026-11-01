@@ -2,15 +2,23 @@ package io.github.atengk.boot.encrypt.key;
 
 import io.github.atengk.boot.encrypt.config.EncryptProperties;
 import io.github.atengk.boot.encrypt.detector.KeyDetector;
+import io.github.atengk.boot.encrypt.event.KeyRotatedEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.PropertySource;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * 多密钥命名注册表与动态轮换管理器
@@ -19,12 +27,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Ateng
  * @since 2026-10-25
  */
-public class MultiKeyRegistry {
+public class MultiKeyRegistry implements ApplicationEventPublisherAware {
+
+    private static final Logger log = LoggerFactory.getLogger(MultiKeyRegistry.class);
 
     public static final String DEFAULT_KEY_ALIAS = "default";
 
     private final Map<String, String> keyMap = new ConcurrentHashMap<>();
+    private final List<Consumer<String>> changeListeners = new CopyOnWriteArrayList<>();
     private volatile String defaultKey;
+    private volatile ApplicationEventPublisher eventPublisher;
 
     public MultiKeyRegistry() {
     }
@@ -53,6 +65,7 @@ public class MultiKeyRegistry {
         String normalizedKeyId = keyId.trim();
         if (DEFAULT_KEY_ALIAS.equalsIgnoreCase(normalizedKeyId)) {
             this.defaultKey = (password != null && !password.trim().isEmpty()) ? password.trim() : null;
+            notifyListeners(DEFAULT_KEY_ALIAS);
             return;
         }
         if (password == null || password.trim().isEmpty()) {
@@ -60,6 +73,7 @@ public class MultiKeyRegistry {
         } else {
             keyMap.put(normalizedKeyId, password.trim());
         }
+        notifyListeners(normalizedKeyId);
     }
 
     /**
@@ -76,9 +90,16 @@ public class MultiKeyRegistry {
         if (DEFAULT_KEY_ALIAS.equalsIgnoreCase(normalizedKeyId)) {
             String old = this.defaultKey;
             this.defaultKey = null;
+            if (old != null) {
+                notifyListeners(DEFAULT_KEY_ALIAS);
+            }
             return old;
         }
-        return keyMap.remove(normalizedKeyId);
+        String removed = keyMap.remove(normalizedKeyId);
+        if (removed != null) {
+            notifyListeners(normalizedKeyId);
+        }
+        return removed;
     }
 
     /**
@@ -126,6 +147,7 @@ public class MultiKeyRegistry {
      */
     public void rotateDefaultKey(String newDefaultKey) {
         this.defaultKey = (newDefaultKey != null && !newDefaultKey.trim().isEmpty()) ? newDefaultKey.trim() : null;
+        notifyListeners(DEFAULT_KEY_ALIAS);
     }
 
     /**
@@ -144,6 +166,83 @@ public class MultiKeyRegistry {
      */
     public void setDefaultKey(String defaultKey) {
         this.defaultKey = (defaultKey != null && !defaultKey.trim().isEmpty()) ? defaultKey.trim() : null;
+        notifyListeners(DEFAULT_KEY_ALIAS);
+    }
+
+    /**
+     * 注册密钥变更监听器（线程安全）
+     *
+     * @param listener 密钥变更回调消费者，入参为发生轮换的 keyId
+     */
+    public void addChangeListener(Consumer<String> listener) {
+        if (listener != null) {
+            changeListeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除指定的密钥变更监听器
+     *
+     * @param listener 已注册的监听器
+     */
+    public void removeChangeListener(Consumer<String> listener) {
+        if (listener != null) {
+            changeListeners.remove(listener);
+        }
+    }
+
+    /**
+     * 获取当前所有已注册的变更监听器只读列表
+     *
+     * @return 只读监听器列表
+     */
+    public List<Consumer<String>> getChangeListeners() {
+        return Collections.unmodifiableList(changeListeners);
+    }
+
+    @Override
+    public void setApplicationEventPublisher(ApplicationEventPublisher applicationEventPublisher) {
+        this.eventPublisher = applicationEventPublisher;
+    }
+
+    /**
+     * 设置或注入 Spring 事件发布器
+     *
+     * @param eventPublisher Spring 事件发布器
+     */
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
+    /**
+     * 内部通知所有变更监听器并广播领域事件
+     *
+     * @param keyId 发生变更的密钥标识
+     */
+    private void notifyListeners(String keyId) {
+        for (Consumer<String> listener : changeListeners) {
+            try {
+                listener.accept(keyId);
+            } catch (Exception e) {
+                log.warn("[ateng-boot-encrypt] 密钥变更监听器执行异常已受控隔离: {}", e.getMessage(), e);
+            }
+        }
+        publishKeyRotatedEvent(keyId);
+    }
+
+    /**
+     * 广播 Spring ApplicationContext 领域事件
+     *
+     * @param keyId 发生变更的密钥标识
+     */
+    private void publishKeyRotatedEvent(String keyId) {
+        if (eventPublisher != null) {
+            try {
+                eventPublisher.publishEvent(new KeyRotatedEvent(this, keyId));
+            } catch (Exception e) {
+                log.warn("[ateng-boot-encrypt] 领域事件 KeyRotatedEvent 发布异常已受控隔离: {}", e.getMessage(), e);
+            }
+        }
     }
 
     /**
@@ -170,6 +269,7 @@ public class MultiKeyRegistry {
     public void clear() {
         keyMap.clear();
         defaultKey = null;
+        notifyListeners("*");
     }
 
     /**

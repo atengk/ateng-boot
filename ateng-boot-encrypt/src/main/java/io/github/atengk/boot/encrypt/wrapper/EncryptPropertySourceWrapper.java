@@ -11,6 +11,8 @@ import io.github.atengk.boot.encrypt.detector.KeyDetector;
 import io.github.atengk.boot.encrypt.exception.ConfigDecryptionException;
 import io.github.atengk.boot.encrypt.key.MultiKeyRegistry;
 import io.github.atengk.boot.encrypt.parser.CiphertextParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.env.EnumerablePropertySource;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.PropertySource;
@@ -33,6 +35,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * @since 2026-10-25
  */
 public class EncryptPropertySourceWrapper extends MapPropertySource {
+
+    private static final Logger log = LoggerFactory.getLogger(EncryptPropertySourceWrapper.class);
 
     private final PropertySource<?> delegate;
     private final CiphertextParser parser;
@@ -66,6 +70,7 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
         this.decryptors = initDecryptors(decryptors);
         this.defaultAlgorithm = defaultAlgorithm != null ? defaultAlgorithm : EncryptAlgorithm.AES_GCM;
         this.failOnError = failOnError;
+        registerCacheClearingListener(this.keyDetector);
     }
 
     public EncryptPropertySourceWrapper(PropertySource<?> delegate, KeyDetector keyDetector) {
@@ -223,7 +228,18 @@ public class EncryptPropertySourceWrapper extends MapPropertySource {
     public void updateKeyDetector(KeyDetector newKeyDetector) {
         if (newKeyDetector != null) {
             this.keyDetector = newKeyDetector;
+            registerCacheClearingListener(newKeyDetector);
             clearCache();
+        }
+    }
+
+    private void registerCacheClearingListener(KeyDetector detector) {
+        if (detector != null && detector.getRegistry() != null) {
+            detector.getRegistry().addChangeListener(keyId -> {
+                log.info("[ateng-boot-encrypt] 检测到密钥变更或轮换 [KeyId: {}]，立即原子清空属性源解密缓存: {}",
+                        keyId, delegate.getName());
+                clearCache();
+            });
         }
     }
 
