@@ -8,8 +8,15 @@ import io.github.atengk.boot.job.xxl.actuator.XxlJobEndpoint;
 import io.github.atengk.boot.job.xxl.event.XxlJobAlertEvent;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper;
 import io.github.atengk.boot.job.xxl.helper.XxlJobTestHelper.XxlJobTestResult;
+import io.github.atengk.boot.job.xxl.template.FailedBatch;
 import io.github.atengk.boot.job.xxl.template.XxlJobAdminTemplate;
+import io.github.atengk.boot.sample.job.xxl.dto.UserSyncParam;
 import io.github.atengk.boot.sample.job.xxl.handler.AlertDemoJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.ShardingBatchJobHandler.MockOrder;
+import io.github.atengk.boot.sample.job.xxl.handler.TenantJobHandler;
+import io.github.atengk.boot.sample.job.xxl.handler.TimeoutFallbackJobHandler;
+import io.github.atengk.boot.sample.job.xxl.interceptor.CanaryAuditJobInterceptor;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -52,6 +60,18 @@ class SampleJobXxlIntegrationTest {
 
     @Autowired
     private AlertDemoJobHandler alertDemoJobHandler;
+
+    @Autowired
+    private CanaryAuditJobInterceptor canaryInterceptor;
+
+    @Autowired
+    private TimeoutFallbackJobHandler timeoutFallbackHandler;
+
+    @Autowired
+    private ShardingBatchJobHandler shardingBatchJobHandler;
+
+    @Autowired
+    private TenantJobHandler tenantJobHandler;
 
     @Autowired
     private TestAlertEventListener eventListener;
@@ -170,6 +190,116 @@ class SampleJobXxlIntegrationTest {
         assertNotNull(adminTemplate);
         assertTrue(adminTemplate.getEndpointCount() >= 1);
         assertDoesNotThrow(() -> adminTemplate.triggerJob(101, "test-param"));
+    }
+
+    @Test
+    @DisplayName("测试强类型 POJO 入参：对象自动 JSON 序列化并完成强类型绑定与 JSR-303 防卫")
+    void testUserSyncPojoBinding() {
+        UserSyncParam param = new UserSyncParam();
+        param.setBatchNo("BATCH-POJO-20261102");
+        param.setBatchSize(200);
+        param.setTenantId("TENANT-POJO-888");
+
+        XxlJobTestResult result = XxlJobTestHelper.trigger("userSyncJob", param);
+        assertTrue(result.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+        assertTrue(result.handleMsg().contains("200"));
+    }
+
+    @Test
+    @DisplayName("测试生命周期拦截器：灰度跳过拦截上报成功与审计事件终态归档")
+    void testLifecycleInterceptorCanarySkip() {
+        canaryInterceptor.clear();
+
+        // 1. 灰度拦截跳过任务：preHandle 返回 false，框架优雅终止执行并直接报告 200 SUCCESS
+        XxlJobTestResult skipResult = XxlJobTestHelper.trigger("canarySkipJob");
+        assertTrue(skipResult.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, skipResult.handleCode());
+        assertTrue(skipResult.handleMsg().contains("[INTERCEPTED]"));
+        assertEquals(1, canaryInterceptor.getSkippedCount());
+
+        // 2. 正常任务：preHandle 准入放行，正常执行业务并在 afterCompletion 完成终态审计
+        XxlJobTestResult normalResult = XxlJobTestHelper.trigger("canaryNormalJob");
+        assertTrue(normalResult.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, normalResult.handleCode());
+        assertTrue(canaryInterceptor.getAuditedJobs().contains("canaryNormalJob"));
+        assertTrue(canaryInterceptor.getCompletedCount() >= 1);
+    }
+
+    @Test
+    @DisplayName("测试 Actuator 端点动态暂停与恢复任务执行")
+    void testDynamicNodePauseAndResume() {
+        // 1. 正常执行
+        XxlJobTestResult initialResult = XxlJobTestHelper.trigger("pausableTaskJob");
+        assertTrue(initialResult.isSuccess());
+        assertEquals("可暂停任务正常执行完成", initialResult.handleMsg());
+
+        // 2. 通过 Actuator 端点暂停该任务
+        Map<String, Object> pauseResp = xxlJobEndpoint.operateJob("pausableTaskJob", "pause");
+        assertEquals(true, pauseResp.get("success"));
+        assertEquals(true, pauseResp.get("paused"));
+
+        // 3. 暂停状态下触发：切面拦截跳过执行并返回 200 SUCCESS
+        XxlJobTestResult pausedResult = XxlJobTestHelper.trigger("pausableTaskJob");
+        assertTrue(pausedResult.isSuccess());
+        assertTrue(pausedResult.handleMsg().contains("[SKIPPED]"));
+
+        // 4. 通过 Actuator 端点恢复该任务
+        Map<String, Object> resumeResp = xxlJobEndpoint.operateJob("pausableTaskJob", "resume");
+        assertEquals(true, resumeResp.get("success"));
+        assertEquals(false, resumeResp.get("paused"));
+
+        // 5. 恢复后正常触发
+        XxlJobTestResult resumedResult = XxlJobTestHelper.trigger("pausableTaskJob");
+        assertTrue(resumedResult.isSuccess());
+        assertEquals("可暂停任务正常执行完成", resumedResult.handleMsg());
+    }
+
+    @Test
+    @DisplayName("测试分片批处理：结构化流式进度打卡与切片异常死信补偿回调")
+    void testShardingBatchDeadLetterCallback() {
+        shardingBatchJobHandler.clearDeadLetters();
+
+        XxlJobTestResult result = XxlJobTestHelper.trigger("shardingBatchDeadLetterJob", null, 0, 1);
+        assertTrue(result.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+
+        List<FailedBatch<MockOrder>> deadLetters = shardingBatchJobHandler.getDeadLetters();
+        assertEquals(1, deadLetters.size());
+        FailedBatch<MockOrder> failedBatch = deadLetters.get(0);
+        assertEquals(5, failedBatch.getItems().size());
+        assertNotNull(failedBatch.getCause());
+        assertTrue(failedBatch.getCause().getMessage().contains("模拟业务处理失败"));
+    }
+
+    @Test
+    @DisplayName("测试多租户并发遍历：受管线程池背压与租户上下文独立沙箱隔离")
+    void testParallelTenantIteration() {
+        tenantJobHandler.clearParallelProcessedTenants();
+
+        XxlJobTestResult result = XxlJobTestHelper.trigger("parallelTenantJob");
+        assertTrue(result.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+
+        List<String> processedTenants = tenantJobHandler.getParallelProcessedTenants();
+        assertEquals(3, processedTenants.size());
+        assertTrue(processedTenants.containsAll(List.of("tenant-1001", "tenant-1002", "tenant-1003")));
+    }
+
+    @Test
+    @DisplayName("测试本地硬看门狗超时中断与同 Bean 就地降级补偿")
+    void testWatchdogTimeoutFallback() throws InterruptedException {
+        timeoutFallbackHandler.reset();
+
+        XxlJobTestResult result = XxlJobTestHelper.trigger("timeoutFallbackDemoJob");
+        assertTrue(result.isSuccess());
+        assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+
+        // 等待异步受管线程池中的降级补偿方法完成
+        boolean reached = timeoutFallbackHandler.getFallbackLatch().await(3, TimeUnit.SECONDS);
+        assertTrue(reached);
+        assertTrue(timeoutFallbackHandler.isFallbackInvoked());
+        assertTrue(result.handleMsg().contains("timeoutFallbackDemoJob"));
     }
 
     /**

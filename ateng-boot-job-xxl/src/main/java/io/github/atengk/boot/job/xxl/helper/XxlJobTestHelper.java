@@ -8,6 +8,8 @@ import com.xxl.job.core.handler.impl.MethodJobHandler;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.exception.BusinessException;
+import io.github.atengk.boot.core.util.JsonUtil;
+import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
@@ -76,14 +78,14 @@ public class XxlJobTestHelper implements ApplicationContextAware {
      * @return 执行诊断报告
      */
     public static XxlJobTestResult trigger(String jobHandler) {
-        return trigger(jobHandler, null, 0, 1, null);
+        return trigger(jobHandler, (String) null, 0, 1, null);
     }
 
     /**
-     * 触发执行任务 (指定 handler 与入参)
+     * 触发执行任务 (指定 handler 与字符串入参)
      *
      * @param jobHandler 任务 Handler 名称
-     * @param param      执行入参
+     * @param param      执行入参字符串
      * @return 执行诊断报告
      */
     public static XxlJobTestResult trigger(String jobHandler, String param) {
@@ -91,10 +93,21 @@ public class XxlJobTestHelper implements ApplicationContextAware {
     }
 
     /**
-     * 触发执行任务 (指定分片广播参数)
+     * 触发执行任务 (指定 handler 与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject) {
+        return trigger(jobHandler, serializeParam(paramObject), 0, 1, null);
+    }
+
+    /**
+     * 触发执行任务 (指定分片广播参数与字符串入参)
      *
      * @param jobHandler 任务 Handler 名称
-     * @param param      执行入参
+     * @param param      执行入参字符串
      * @param shardIndex 当前分片索引 (从 0 开始)
      * @param shardTotal 分片总数
      * @return 执行诊断报告
@@ -104,10 +117,50 @@ public class XxlJobTestHelper implements ApplicationContextAware {
     }
 
     /**
-     * 触发执行任务 (全维参数)
+     * 触发执行任务 (指定分片广播参数与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardIndex  当前分片索引 (从 0 开始)
+     * @param shardTotal  分片总数
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, int shardIndex, int shardTotal) {
+        return trigger(jobHandler, serializeParam(paramObject), shardIndex, shardTotal, null);
+    }
+
+    /**
+     * 触发执行任务 (全维参数与 POJO/DTO 对象入参，自动序列化为 JSON)
+     *
+     * @param jobHandler  任务 Handler 名称
+     * @param paramObject 执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardIndex  当前分片索引 (从 0 开始)
+     * @param shardTotal  分片总数
+     * @param tenantId    显式指定的租户标识 (可为 null)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, int shardIndex, int shardTotal, String tenantId) {
+        return trigger(jobHandler, serializeParam(paramObject), shardIndex, shardTotal, tenantId);
+    }
+
+    /**
+     * 序列化入参对象 (String 原样返回，非 String 通过 JsonUtil 序列化为 JSON)
+     */
+    private static String serializeParam(Object paramObject) {
+        if (paramObject == null) {
+            return null;
+        }
+        if (paramObject instanceof String str) {
+            return str;
+        }
+        return JsonUtil.toJsonString(paramObject);
+    }
+
+    /**
+     * 触发执行任务 (全维参数与字符串入参)
      *
      * @param jobHandler 任务 Handler 名称
-     * @param param      执行入参
+     * @param param      执行入参字符串
      * @param shardIndex 当前分片索引 (从 0 开始)
      * @param shardTotal 分片总数
      * @param tenantId   显式指定的租户标识 (可为 null)
@@ -245,6 +298,33 @@ public class XxlJobTestHelper implements ApplicationContextAware {
                     if (StringUtils.hasText(xxlJob.destroy())) {
                         try {
                             destroyMethod = bean.getClass().getDeclaredMethod(xxlJob.destroy());
+                        } catch (NoSuchMethodException ignored) {}
+                    }
+                    MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
+                    FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
+                }
+            }
+
+            Map<Method, AtengXxlJob> atengAnnotatedMethods = MethodIntrospector.selectMethods(
+                    bean.getClass(),
+                    (MethodIntrospector.MetadataLookup<AtengXxlJob>) method -> AnnotatedElementUtils.findMergedAnnotation(method, AtengXxlJob.class)
+            );
+
+            for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
+                Method method = entry.getKey();
+                AtengXxlJob atengJob = entry.getValue();
+                String name = atengJob.value();
+                if (StringUtils.hasText(name) && !FALLBACK_HANDLER_REPOSITORY.containsKey(name)) {
+                    Method initMethod = null;
+                    Method destroyMethod = null;
+                    if (StringUtils.hasText(atengJob.init())) {
+                        try {
+                            initMethod = bean.getClass().getDeclaredMethod(atengJob.init());
+                        } catch (NoSuchMethodException ignored) {}
+                    }
+                    if (StringUtils.hasText(atengJob.destroy())) {
+                        try {
+                            destroyMethod = bean.getClass().getDeclaredMethod(atengJob.destroy());
                         } catch (NoSuchMethodException ignored) {}
                     }
                     MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
