@@ -19,6 +19,8 @@ import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
 import io.github.atengk.boot.job.local.template.DefaultLocalJobTemplate;
 import io.github.atengk.boot.job.local.template.LocalJobTemplate;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
+import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
+import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -128,6 +130,17 @@ public class AtengJobLocalAutoConfiguration {
     }
 
     /**
+     * SaaS 多租户发现服务保底 Bean（当外部未声明自定义 TenantProvider 时生效）
+     *
+     * @return 默认保底租户提供者
+     */
+    @Bean
+    @ConditionalOnMissingBean(TenantProvider.class)
+    public TenantProvider tenantProvider() {
+        return new DefaultTenantProvider();
+    }
+
+    /**
      * 单机定时任务注册中心与运行时管理器 Bean
      *
      * @param localJobTaskScheduler  专职调度器
@@ -136,6 +149,7 @@ public class AtengJobLocalAutoConfiguration {
      * @param logStorageProvider     历史日志存储提供者
      * @param clusterLockProvider    集群互斥锁提供者
      * @param properties             配置属性
+     * @param tenantProviderProvider 多租户发现服务提供者
      * @return LocalJobRegistry
      */
     @Bean
@@ -146,9 +160,15 @@ public class AtengJobLocalAutoConfiguration {
             JobMetadataRepository metadataRepository,
             JobLogStorageProvider logStorageProvider,
             JobClusterLockProvider clusterLockProvider,
-            JobLocalProperties properties) {
+            JobLocalProperties properties,
+            ObjectProvider<TenantProvider> tenantProviderProvider) {
+        TenantProvider tenantProvider = tenantProviderProvider.orderedStream()
+                .filter(tp -> !(tp instanceof DefaultTenantProvider))
+                .findFirst()
+                .orElseGet(() -> tenantProviderProvider.getIfAvailable(DefaultTenantProvider::new));
         return new LocalJobRegistry(localJobTaskScheduler, workerExecutorProvider.getIfAvailable(),
-                metadataRepository, logStorageProvider, clusterLockProvider, properties);
+                metadataRepository, logStorageProvider, clusterLockProvider, properties,
+                tenantProvider);
     }
 
     /**

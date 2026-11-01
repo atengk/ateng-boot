@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.model;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import lombok.Builder;
@@ -117,4 +118,9 @@ public class JobInfo {
      * 当前是否正在 Worker 线程池中处于活跃执行状态
      */
     private boolean executing;
+
+    /**
+     * SaaS 多租户调度模态
+     */
+    private JobTenantMode tenantMode;
 }

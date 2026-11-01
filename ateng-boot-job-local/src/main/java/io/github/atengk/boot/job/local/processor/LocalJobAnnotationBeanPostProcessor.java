@@ -74,6 +74,7 @@ public class LocalJobAnnotationBeanPostProcessor implements BeanPostProcessor, S
                 .clusterLockLeaseTime(DurationParser.parse(annotation.clusterLockLeaseTime(), Duration.ofMinutes(5)))
                 .description(annotation.description())
                 .enabled(annotation.enabled())
+                .tenantMode(annotation.tenantMode())
                 .build();
 
         MethodInvokingJobHandler handler = new MethodInvokingJobHandler(bean, method);

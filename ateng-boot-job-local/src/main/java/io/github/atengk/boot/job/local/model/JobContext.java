@@ -41,6 +41,11 @@ public class JobContext {
     private final TriggerType triggerType;
 
     /**
+     * 当前调度的租户标识（若未启用租户隔离或处于 IGNORE 模态则为 null）
+     */
+    private final String tenantId;
+
+    /**
      * 本次任务触发时间戳
      */
     private final Instant fireTime;

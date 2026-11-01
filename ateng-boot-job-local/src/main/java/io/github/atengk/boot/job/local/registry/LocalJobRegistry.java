@@ -11,6 +11,8 @@ import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.properties.JobLocalProperties;
 import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
 import io.github.atengk.boot.job.local.storage.JobMetadataRepository;
+import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
+import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -54,15 +56,16 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
     private final JobLogStorageProvider logStorageProvider;
     private final JobClusterLockProvider clusterLockProvider;
     private final JobLocalProperties properties;
+    private final TenantProvider tenantProvider;
     private final AtomicBoolean started = new AtomicBoolean(false);
     private ApplicationEventPublisher eventPublisher;
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler) {
-        this(taskScheduler, null, null, null, null, null);
+        this(taskScheduler, null, null, null, null, null, null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler, AsyncTaskExecutor workerExecutor) {
-        this(taskScheduler, workerExecutor, null, null, null, null);
+        this(taskScheduler, workerExecutor, null, null, null, null, null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -70,7 +73,7 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobMetadataRepository metadataRepository,
                             JobLogStorageProvider logStorageProvider,
                             JobLocalProperties properties) {
-        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties);
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, null, properties, null);
     }
 
     public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
@@ -79,12 +82,23 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
                             JobLogStorageProvider logStorageProvider,
                             JobClusterLockProvider clusterLockProvider,
                             JobLocalProperties properties) {
+        this(taskScheduler, workerExecutor, metadataRepository, logStorageProvider, clusterLockProvider, properties, null);
+    }
+
+    public LocalJobRegistry(ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobMetadataRepository metadataRepository,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            JobLocalProperties properties,
+                            TenantProvider tenantProvider) {
         this.taskScheduler = taskScheduler;
         this.workerExecutor = workerExecutor;
         this.metadataRepository = metadataRepository;
         this.logStorageProvider = logStorageProvider;
         this.clusterLockProvider = clusterLockProvider;
         this.properties = properties;
+        this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
     }
 
     /**
@@ -134,7 +148,7 @@ public class LocalJobRegistry implements DisposableBean, ApplicationEventPublish
         }
 
         ScheduledJobTask task = new ScheduledJobTask(definition, handler, taskScheduler, workerExecutor,
-                logStorageProvider, clusterLockProvider, eventPublisher);
+                logStorageProvider, clusterLockProvider, eventPublisher, tenantProvider);
         ScheduledJobTask existing = taskMap.putIfAbsent(jobName, task);
         if (existing != null) {
             throw new IllegalArgumentException("Duplicate job registration detected for job name: " + jobName);

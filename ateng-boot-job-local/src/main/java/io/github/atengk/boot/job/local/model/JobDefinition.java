@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.local.model;
 
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import lombok.Builder;
@@ -95,6 +96,12 @@ public class JobDefinition {
      */
     @Builder.Default
     private boolean enabled = true;
+
+    /**
+     * SaaS 多租户调度模态
+     */
+    @Builder.Default
+    private JobTenantMode tenantMode = JobTenantMode.IGNORE;
 
     /**
      * 运行时生命周期状态

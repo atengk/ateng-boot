@@ -7,6 +7,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.core.util.RetryUtil.RetryConfig;
 import io.github.atengk.boot.job.local.enums.JobStatus;
+import io.github.atengk.boot.job.local.enums.JobTenantMode;
 import io.github.atengk.boot.job.local.enums.OverlappingStrategy;
 import io.github.atengk.boot.job.local.enums.TriggerType;
 import io.github.atengk.boot.job.local.event.JobDiscardedEvent;
@@ -24,6 +25,8 @@ import io.github.atengk.boot.job.local.model.JobExecutionRecord;
 import io.github.atengk.boot.job.local.model.JobInfo;
 import io.github.atengk.boot.job.local.model.JobResult;
 import io.github.atengk.boot.job.local.storage.JobLogStorageProvider;
+import io.github.atengk.boot.job.local.tenant.DefaultTenantProvider;
+import io.github.atengk.boot.job.local.tenant.TenantProvider;
 import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;
@@ -45,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
@@ -79,6 +83,7 @@ public class ScheduledJobTask implements Runnable {
     private final JobLogStorageProvider logStorageProvider;
     private final JobClusterLockProvider clusterLockProvider;
     private final ApplicationEventPublisher eventPublisher;
+    private final TenantProvider tenantProvider;
     private final AtomicInteger activeExecutions = new AtomicInteger(0);
 
     @Getter
@@ -143,6 +148,16 @@ public class ScheduledJobTask implements Runnable {
                             JobLogStorageProvider logStorageProvider,
                             JobClusterLockProvider clusterLockProvider,
                             ApplicationEventPublisher eventPublisher) {
+        this(definition, handler, taskScheduler, workerExecutor, logStorageProvider, clusterLockProvider, eventPublisher, null);
+    }
+
+    public ScheduledJobTask(JobDefinition definition, JobHandler handler,
+                            ThreadPoolTaskScheduler taskScheduler,
+                            AsyncTaskExecutor workerExecutor,
+                            JobLogStorageProvider logStorageProvider,
+                            JobClusterLockProvider clusterLockProvider,
+                            ApplicationEventPublisher eventPublisher,
+                            TenantProvider tenantProvider) {
         this.definition = definition;
         this.handler = handler;
         this.taskScheduler = taskScheduler;
@@ -150,6 +165,7 @@ public class ScheduledJobTask implements Runnable {
         this.logStorageProvider = logStorageProvider;
         this.clusterLockProvider = clusterLockProvider;
         this.eventPublisher = eventPublisher;
+        this.tenantProvider = tenantProvider != null ? tenantProvider : new DefaultTenantProvider();
         this.status = definition.getStatus() != null ? definition.getStatus()
                 : (definition.isEnabled() ? JobStatus.RUNNING : JobStatus.PAUSED);
         this.trigger = buildTrigger(definition);
@@ -222,7 +238,13 @@ public class ScheduledJobTask implements Runnable {
             UserContextHolder.set("SYSTEM");
         }
 
-        if (params != null && params.containsKey("tenantId")) {
+        if (definition.getTenantMode() == JobTenantMode.IGNORE) {
+            TenantContextHolder.setIgnoreTenant(true);
+        } else if (definition.getTenantMode() == JobTenantMode.PARAM) {
+            if (params != null && params.containsKey("tenantId")) {
+                TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
+            }
+        } else if (params != null && params.containsKey("tenantId")) {
             TenantContextHolder.setTenantId(String.valueOf(params.get("tenantId")));
         }
 
@@ -341,10 +363,22 @@ public class ScheduledJobTask implements Runnable {
         this.lastTraceId = traceId;
         String jobName = definition.getJobName();
 
+        if (definition.getTenantMode() == JobTenantMode.ITERATE) {
+            return doExecuteIterate(triggerType, params, traceId, startTime);
+        }
+
+        String currentTenant = null;
+        if (definition.getTenantMode() == JobTenantMode.PARAM && params != null && params.containsKey("tenantId")) {
+            currentTenant = String.valueOf(params.get("tenantId"));
+        } else if (definition.getTenantMode() != JobTenantMode.IGNORE) {
+            currentTenant = TenantContextHolder.getTenantId();
+        }
+
         JobContext context = JobContext.builder()
                 .jobName(jobName)
                 .triggerType(triggerType)
                 .fireTime(startTime)
+                .tenantId(currentTenant)
                 .params(params != null ? params : Collections.emptyMap())
                 .traceId(traceId)
                 .build();
@@ -410,6 +444,90 @@ public class ScheduledJobTask implements Runnable {
                     ex.getMessage(), ex.getMessage(), getStackTraceString(ex), retryCount.get(), context.getLogs());
             publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, retryCount.get(), ex, ex.getMessage()));
             return JobResult.failure(ex.getMessage());
+        }
+    }
+
+    private JobResult doExecuteIterate(TriggerType triggerType, Map<String, Object> params, String traceId, Instant startTime) {
+        String jobName = definition.getJobName();
+        TenantProvider provider = this.tenantProvider != null ? this.tenantProvider : new DefaultTenantProvider();
+        List<String> tenantIds = provider.getTenantIds();
+        if (tenantIds == null || tenantIds.isEmpty()) {
+            log.warn("Job [{}] in ITERATE tenant mode found no active tenants from TenantProvider, skipping execution", jobName);
+            String msg = "无有效租户，跳过全租户轮询调度";
+            long duration = Duration.between(startTime, Instant.now()).toMillis();
+            this.lastDurationMs = duration;
+            this.lastStatus = "SUCCESS";
+            this.lastResultMsg = msg;
+            saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, "SUCCESS",
+                    msg, null, null, 0, Collections.emptyList());
+            publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, msg));
+            return JobResult.success(msg);
+        }
+
+        int total = tenantIds.size();
+        int successCount = 0;
+        int failureCount = 0;
+        List<String> errorMessages = new ArrayList<>();
+        List<String> aggregatedLogs = new CopyOnWriteArrayList<>();
+        AtomicInteger totalRetryCount = new AtomicInteger(0);
+
+        for (String tenantId : tenantIds) {
+            TenantContextHolder.TenantSnapshot tenantSnapshot = TenantContextHolder.capturePrevious();
+            try {
+                TenantContextHolder.setTenantId(tenantId);
+                JobContext tenantContext = JobContext.builder()
+                        .jobName(jobName)
+                        .triggerType(triggerType)
+                        .fireTime(Instant.now())
+                        .tenantId(tenantId)
+                        .params(params != null ? params : Collections.emptyMap())
+                        .traceId(traceId)
+                        .build();
+
+                tenantContext.log("Starting execution for tenant [" + tenantId + "]");
+                AtomicInteger retryCount = new AtomicInteger(0);
+                Object result = executeWithRetryAndTimeout(tenantContext, retryCount);
+                totalRetryCount.addAndGet(retryCount.get());
+                aggregatedLogs.addAll(tenantContext.getLogs());
+
+                if (result instanceof JobResult jr && !jr.isSuccess()) {
+                    failureCount++;
+                    String err = "租户 [" + tenantId + "] 失败: " + jr.getMessage();
+                    errorMessages.add(err);
+                    log.warn("Job [{}] failed for tenant [{}]: {}", jobName, tenantId, jr.getMessage());
+                } else {
+                    successCount++;
+                    log.debug("Job [{}] succeeded for tenant [{}]", jobName, tenantId);
+                }
+            } catch (Throwable t) {
+                failureCount++;
+                String err = "租户 [" + tenantId + "] 异常: " + t.getMessage();
+                errorMessages.add(err);
+                log.error("Job [{}] threw exception for tenant [{}]: {}", jobName, tenantId, t.getMessage(), t);
+            } finally {
+                TenantContextHolder.restore(tenantSnapshot);
+            }
+        }
+
+        long duration = Duration.between(startTime, Instant.now()).toMillis();
+        this.lastDurationMs = duration;
+        boolean allSuccess = (failureCount == 0);
+        String summary = String.format("完成 %d/%d 租户调度，成功 %d，失败 %d%s",
+                total, total, successCount, failureCount,
+                errorMessages.isEmpty() ? "" : "，详情: " + String.join("; ", errorMessages));
+
+        this.lastStatus = allSuccess ? "SUCCESS" : (successCount > 0 ? "PARTIAL_SUCCESS" : "FAILED");
+        this.lastResultMsg = summary;
+
+        saveExecutionRecord(traceId, triggerType, startTime, Instant.now(), duration, this.lastStatus,
+                summary, allSuccess ? null : summary, null, totalRetryCount.get(), aggregatedLogs);
+
+        if (allSuccess) {
+            publishEvent(new JobSuccessEvent(this, jobName, triggerType, traceId, duration, summary));
+            return JobResult.success(summary);
+        } else {
+            publishEvent(new JobFailedEvent(this, jobName, triggerType, traceId, duration, totalRetryCount.get(), null, summary));
+            return JobResult.failure(summary);
         }
     }
 
@@ -591,6 +709,7 @@ public class ScheduledJobTask implements Runnable {
                 .maxRetries(definition.getMaxRetries())
                 .clusterLock(definition.isClusterLock())
                 .description(definition.getDescription())
+                .tenantMode(definition.getTenantMode())
                 .lastExecutionTime(this.lastExecutionTime)
                 .lastDurationMs(this.lastDurationMs)
                 .lastStatus(this.lastStatus)

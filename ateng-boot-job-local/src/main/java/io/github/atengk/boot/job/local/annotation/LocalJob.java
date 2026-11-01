@@ -125,4 +125,16 @@ public @interface LocalJob {
      * @return 是否启用
      */
     boolean enabled() default true;
+
+    /**
+     * SaaS 多租户调度模态（默认 {@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE} 忽略租户）
+     * <ul>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#IGNORE}：系统级全局忽略租户执行</li>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#PARAM}：从入参提取 tenantId，单租户隔离执行</li>
+     *   <li>{@link io.github.atengk.boot.job.local.enums.JobTenantMode#ITERATE}：自动轮询 TenantProvider 全租户 Fail-Safe 遍历执行</li>
+     * </ul>
+     *
+     * @return 租户调度模态
+     */
+    io.github.atengk.boot.job.local.enums.JobTenantMode tenantMode() default io.github.atengk.boot.job.local.enums.JobTenantMode.IGNORE;
 }
