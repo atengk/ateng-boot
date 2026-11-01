@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 
 import java.util.Objects;
 
@@ -19,6 +20,10 @@ public abstract class AbstractKmsConfigDecryptor implements ConfigDecryptor {
 
     protected AbstractKmsConfigDecryptor() {
         this(RetryingConfigDecryptor.DEFAULT_RETRY_CONFIG);
+    }
+
+    protected AbstractKmsConfigDecryptor(EncryptRetryProperties retryProperties) {
+        this(retryProperties != null ? retryProperties.toRetryConfig() : RetryingConfigDecryptor.DEFAULT_RETRY_CONFIG);
     }
 
     protected AbstractKmsConfigDecryptor(RetryUtil.RetryConfig retryConfig) {

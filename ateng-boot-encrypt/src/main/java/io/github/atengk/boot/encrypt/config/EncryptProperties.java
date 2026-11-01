@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -60,4 +61,10 @@ public class EncryptProperties {
      * 多密钥映射表（KeyId -> Password/PrivateKey），用于多 Key 轮换与分域隔离
      */
     private Map<String, String> keys = new LinkedHashMap<>();
+
+    /**
+     * 外部 KMS / 硬件加密机弹性退避重试配置
+     */
+    @NestedConfigurationProperty
+    private EncryptRetryProperties retry = new EncryptRetryProperties();
 }

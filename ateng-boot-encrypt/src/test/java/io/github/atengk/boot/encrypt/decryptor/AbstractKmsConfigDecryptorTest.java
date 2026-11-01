@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -115,5 +116,33 @@ class AbstractKmsConfigDecryptorTest {
         assertEquals(3, attempts.get());
         assertTrue(ex.getMessage().contains("502 Bad Gateway")
                 || (ex.getCause() != null && ex.getCause().getMessage().contains("502 Bad Gateway")));
+    }
+
+    @Test
+    @DisplayName("测试基于 EncryptRetryProperties 构造的 KMS 解密器正常退避重试")
+    void testKmsWithEncryptRetryProperties() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        EncryptRetryProperties retryProps = new EncryptRetryProperties();
+        retryProps.setMaxAttempts(4);
+        retryProps.setDelay(Duration.ofMillis(5));
+        retryProps.setMultiplier(1.2);
+        retryProps.setMaxDelay(Duration.ofMillis(30));
+        retryProps.setJitter(false);
+
+        AbstractKmsConfigDecryptor kmsDecryptor = new AbstractKmsConfigDecryptor(retryProps) {
+            @Override
+            protected String doDecrypt(String ciphertext, String keyIdOrPassword) throws Exception {
+                int count = attempts.incrementAndGet();
+                if (count < 4) {
+                    throw new SocketTimeoutException("KMS 抖动 (count=" + count + ")");
+                }
+                return "kms-ok";
+            }
+        };
+
+        String result = kmsDecryptor.decrypt("payload", "alias/key");
+        assertEquals("kms-ok", result);
+        assertEquals(4, attempts.get());
     }
 }

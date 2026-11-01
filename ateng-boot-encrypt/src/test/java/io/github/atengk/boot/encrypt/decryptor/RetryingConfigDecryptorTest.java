@@ -2,6 +2,7 @@ package io.github.atengk.boot.encrypt.decryptor;
 
 import io.github.atengk.boot.core.util.RetryUtil;
 import io.github.atengk.boot.encrypt.config.EncryptAlgorithm;
+import io.github.atengk.boot.encrypt.config.EncryptRetryProperties;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -141,5 +142,39 @@ class RetryingConfigDecryptorTest {
         assertEquals("CUSTOM-AES", retrying.getAlgorithmCode());
         assertSame(delegate, retrying.getDelegate());
         assertNotNull(retrying.getRetryConfig());
+    }
+
+    @Test
+    @DisplayName("测试基于 EncryptRetryProperties 自定义配置进行网络抖动退避重试并在第4次成功")
+    void testRetryingWithEncryptRetryProperties() throws Exception {
+        AtomicInteger attempts = new AtomicInteger(0);
+        ConfigDecryptor mockKms = new ConfigDecryptor() {
+            @Override
+            public boolean supports(EncryptAlgorithm algorithm) {
+                return algorithm == EncryptAlgorithm.KMS;
+            }
+
+            @Override
+            public String decrypt(String ciphertext, String password) throws Exception {
+                int count = attempts.incrementAndGet();
+                if (count < 4) {
+                    throw new SocketTimeoutException("KMS 抖动 (count=" + count + ")");
+                }
+                return "kms-success-with-properties";
+            }
+        };
+
+        EncryptRetryProperties retryProps = new EncryptRetryProperties();
+        retryProps.setMaxAttempts(4);
+        retryProps.setDelay(Duration.ofMillis(5));
+        retryProps.setMultiplier(1.5);
+        retryProps.setMaxDelay(Duration.ofMillis(30));
+        retryProps.setJitter(false);
+
+        RetryingConfigDecryptor retryingDecryptor = new RetryingConfigDecryptor(mockKms, retryProps);
+        String result = retryingDecryptor.decrypt("cipher", "key");
+
+        assertEquals("kms-success-with-properties", result);
+        assertEquals(4, attempts.get(), "经历 4 次尝试（首次 + 3 次重试）后成功解密");
     }
 }
