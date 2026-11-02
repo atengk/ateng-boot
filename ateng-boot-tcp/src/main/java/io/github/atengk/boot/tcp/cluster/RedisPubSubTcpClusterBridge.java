@@ -78,7 +78,11 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
         Collection<TcpSession> sessions = sessionManager.getAllSessions();
         for (TcpSession session : sessions) {
             if (session.isActive()) {
-                session.send(payload);
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地全量广播直发会话失败: sessionId={}", session.getSessionId(), ex);
+                }
             }
         }
 
@@ -100,10 +104,14 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
         Assert.notNull(payload, "payload 不能为空");
 
         // 1. 本地直发本节点命中分组的会话
-        Collection<TcpSession> localSessions = sessionManager.getGroupSessions(group);
+        Collection<TcpSession> localSessions = sessionManager.getSessionsByGroup(group);
         for (TcpSession session : localSessions) {
             if (session.isActive()) {
-                session.send(payload);
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地分组 [{}] 组播直发会话失败: sessionId={}", group, session.getSessionId(), ex);
+                }
             }
         }
 
@@ -144,10 +152,14 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
 
             if (targetGroup != null) {
                 // 分组跨节点组播
-                Collection<TcpSession> groupSessions = sessionManager.getGroupSessions(targetGroup);
+                Collection<TcpSession> groupSessions = sessionManager.getSessionsByGroup(targetGroup);
                 for (TcpSession session : groupSessions) {
                     if (session.isActive()) {
-                        session.send(resolvedPayload);
+                        try {
+                            session.send(resolvedPayload);
+                        } catch (Exception ex) {
+                            log.warn("[TCP-CLUSTER] 跨节点分组 [{}] 组播投递会话失败: sessionId={}", targetGroup, session.getSessionId(), ex);
+                        }
                     }
                 }
                 log.debug("[TCP-CLUSTER] 本节点收到跨节点分组 [{}] 组播并投递至 {} 个本地会话", targetGroup, groupSessions.size());
@@ -155,15 +167,23 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
                 // 点播定向下发
                 TcpSession localSession = sessionManager.getSessionByDeviceId(targetDeviceId);
                 if (localSession != null && localSession.isActive()) {
-                    localSession.send(resolvedPayload);
-                    log.debug("[TCP-CLUSTER] 本节点收到跨节点广播并成功命中设备 [{}]，完成物理下发", targetDeviceId);
+                    try {
+                        localSession.send(resolvedPayload);
+                        log.debug("[TCP-CLUSTER] 本节点收到跨节点广播并成功命中设备 [{}]，完成物理下发", targetDeviceId);
+                    } catch (Exception ex) {
+                        log.warn("[TCP-CLUSTER] 跨节点点播投递设备 [{}] 会话失败: sessionId={}", targetDeviceId, localSession.getSessionId(), ex);
+                    }
                 }
             } else {
                 // 集群全量广播
                 Collection<TcpSession> sessions = sessionManager.getAllSessions();
                 for (TcpSession session : sessions) {
                     if (session.isActive()) {
-                        session.send(resolvedPayload);
+                        try {
+                            session.send(resolvedPayload);
+                        } catch (Exception ex) {
+                            log.warn("[TCP-CLUSTER] 跨节点全量广播投递会话失败: sessionId={}", session.getSessionId(), ex);
+                        }
                     }
                 }
             }

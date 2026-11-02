@@ -65,21 +65,22 @@ public class TcpIpFilterHandler extends RuleBasedIpFilter {
             return Collections.emptyList();
         }
         List<RuleDefinition> list = new ArrayList<>();
-        // 1. 黑名单规则优先（先匹配黑名单阻断）
-        if (properties.getBlacklist() != null) {
-            for (String expr : properties.getBlacklist()) {
-                if (StringUtils.hasText(expr)) {
-                    IpSubnetFilterRule rule = parseRule(expr.trim(), IpFilterRuleType.REJECT);
-                    list.add(new RuleDefinition(expr.trim(), IpFilterRuleType.REJECT, rule));
-                }
-            }
-        }
-        // 2. 白名单规则
-        if (properties.getWhitelist() != null) {
+        boolean hasWhitelist = properties.getWhitelist() != null && !properties.getWhitelist().isEmpty();
+
+        if (hasWhitelist) {
+            // 1. 白名单严控模式：仅加载白名单规则（ACCEPT），非白名单连接由 acceptIfNotFound=false 统一拒绝
             for (String expr : properties.getWhitelist()) {
                 if (StringUtils.hasText(expr)) {
                     IpSubnetFilterRule rule = parseRule(expr.trim(), IpFilterRuleType.ACCEPT);
                     list.add(new RuleDefinition(expr.trim(), IpFilterRuleType.ACCEPT, rule));
+                }
+            }
+        } else if (properties.getBlacklist() != null) {
+            // 2. 黑名单模式：当且仅当白名单为空时黑名单生效，命中者强行拒绝（REJECT）
+            for (String expr : properties.getBlacklist()) {
+                if (StringUtils.hasText(expr)) {
+                    IpSubnetFilterRule rule = parseRule(expr.trim(), IpFilterRuleType.REJECT);
+                    list.add(new RuleDefinition(expr.trim(), IpFilterRuleType.REJECT, rule));
                 }
             }
         }
@@ -133,13 +134,13 @@ public class TcpIpFilterHandler extends RuleBasedIpFilter {
     }
 
     private String resolveRejectReason(InetSocketAddress remoteAddress) {
-        for (RuleDefinition def : configuredRules) {
-            if (def.rule().matches(remoteAddress)) {
-                return "MATCH_BLACKLIST: " + def.expression();
-            }
-        }
         if (strictWhitelistMode) {
             return "NOT_IN_WHITELIST: 严格白名单模式已启用，客户端未在白名单放行列表内";
+        }
+        for (RuleDefinition def : configuredRules) {
+            if (def.ruleType() == IpFilterRuleType.REJECT && def.rule().matches(remoteAddress)) {
+                return "MATCH_BLACKLIST: " + def.expression();
+            }
         }
         return "IP_BLOCKED: 默认策略阻断";
     }

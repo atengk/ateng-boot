@@ -11,18 +11,18 @@
 | 特性分类 | 特性名称 | 核心门面 / 注解 / SPI | 关键配置项 (`ateng.boot.tcp.*`) | 关键 API 签名 / 核心行为 | 锚定验证源头 (*Test / Sample) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **服务端发信** | 会话/设备发信与广播 | `TcpServerTemplate` | `ateng.boot.tcp.server.enabled` | `send(String sessionId, Object payload)`<br>`sendToDevice(String deviceId, Object payload)`<br>`broadcast(Object payload)`<br>`close(sessionId)` / `closeDevice(deviceId)` 主动断开并注销会话，支持直接发送 `TcpPacket`、POJO、字符串或原始字节 | `TcpServerTemplateTest` / `SampleTcpE2eTest` |
-| **服务端同步 RPC** | 全双工请求-应答闭环 | `TcpServerTemplate`<br>`TcpRequestCorrelationManager` | `ateng.boot.tcp.server.enabled` | `request(sessionId, payload)` / `request(sessionId, payload, Duration)` / `request(sessionId, payload, Class<T>)`<br>`requestToDevice(deviceId, payload)` / `requestToDevice(deviceId, payload, Duration)` / `requestToDevice(deviceId, payload, Class<T>)`，支持泛型强类型自动转换与 `HashedWheelTimer` 超时熔断 | `TcpServerTemplateTest` / `SampleTcpE2eTest` |
+| **服务端同步 RPC** | 全双工请求-应答闭环 | `TcpServerTemplate`<br>`TcpRequestCorrelationManager` | `ateng.boot.tcp.server.enabled` | `request(sessionId, payload)` / `request(sessionId, payload, Duration)` / `request(sessionId, payload, Class<T>)` / `request(sessionId, payload, Duration, Class<T>)`<br>`requestToDevice(deviceId, payload)` / `requestToDevice(deviceId, payload, Duration)` / `requestToDevice(deviceId, payload, Class<T>)` / `requestToDevice(deviceId, payload, Duration, Class<T>)`，支持泛型强类型自动转换与 `HashedWheelTimer` 超时熔断 | `TcpServerTemplateTest` / `SampleTcpE2eTest` |
 | **服务端异步 RPC** | 异步非阻塞应答 | `TcpServerTemplate` | `ateng.boot.tcp.server.enabled` | `requestAsync(sessionId, payload)` / `requestAsync(sessionId, payload, Duration)`<br>`requestToDeviceAsync(deviceId, payload)` / `requestToDeviceAsync(deviceId, payload, Duration)`，默认 10s 超时，返回 `CompletableFuture<TcpPacket>` | `TcpServerTemplateTest` / `SampleTcpE2eTest` |
 | **集群跨节点推送** | 两级自适应集群桥接 | `TcpServerTemplate`<br>`TcpClusterBridge` SPI<br>`TcpClusterBroadcastMessage` | `ateng.boot.tcp.cluster.*` | `sendToCluster(String deviceId, Object payload)`<br>`broadcastToCluster(Object payload)`，第一级本地命中直发，未命中投递 Redis 广播并防回环过滤；支持 `PACKET` 载荷全量透传 Command、RequestId、DeviceId 与 Headers 元数据 | `TcpClusterBridgeTest` / `SampleTcpE2eTest` |
 | **集群分组组播** | 跨节点车队群组组播 | `TcpServerTemplate`<br>`TcpClusterBridge` SPI<br>`TcpSessionManager` | `ateng.boot.tcp.cluster.*` | `sendGroupToCluster(String group, Object payload)`，本地直接广播当前节点分组会话并跨节点广播至 Redis，各节点按 `group` 路由并过滤防回环 | `TcpClusterBridgeTest` / `SampleTcpE2eTest` |
 | **客户端发信** | 客户端主动上行发信 | `TcpClientTemplate` | `ateng.boot.tcp.client.enabled` | `send(Object payload)` / `sendAsync(Object payload)`，通过当前活跃长连接通道异步发送数据 | `TcpClientTemplateTest` / `SampleTcpE2eTest` |
-| **客户端同步 RPC** | 客户端全双工应答 | `TcpClientTemplate`<br>`TcpRequestCorrelationManager` | `ateng.boot.tcp.client.enabled` | `request(Object payload)` / `request(Object payload, Duration)`<br>`requestAsync(Object payload, Duration)`，等待服务端应答，超时自动清理挂起句柄 | `TcpClientTemplateTest` / `TcpClientIntegrationTest` |
+| **客户端同步 RPC** | 客户端全双工应答 | `TcpClientTemplate`<br>`TcpRequestCorrelationManager` | `ateng.boot.tcp.client.enabled` | `request(payload)` / `request(payload, Duration)` / `request(payload, Class<T>)` / `request(payload, Class<T>, Duration)`<br>`requestAsync(payload)` / `requestAsync(payload, Duration)`，等待服务端应答，超时自动清理挂起句柄 | `TcpClientTemplateTest` / `TcpClientIntegrationTest` |
 | **多客户端调度** | 命名多客户端路由注册 | `TcpClientRegistry`<br>`TcpClientTemplate` | `ateng.boot.tcp.clients.*` | `use(String clientName)`，动态获取指定远程连接的独立客户端操作门面；`getClientRegistry()` 反查客户端实体 | `TcpClientRegistryTest` / `TcpMultiClientIntegrationTest` |
 | **会话状态治理** | 会话生命周期与踢旧留新 | `TcpSessionManager` | `ateng.boot.tcp.server.max-connections` | `register(session)` / `unregister(sessionId, reason)`<br>`bind(sessionId, deviceId)` / `unbind(deviceId)`<br>`closeSession(sessionId, reason)` / `closeDevice(deviceId, reason)`，设备重连自动执行“踢旧留新”，切断旧物理会话 | `TcpSessionManagerTest` / `SampleTcpE2eTest` |
-| **分组与会话检索** | 设备/分组多维检索 | `TcpSessionManager` | - | `getSession(sessionId)` / `getSessionByDeviceId(deviceId)`<br>`addToGroup(group, sessionId)` / `removeFromGroup(group, sessionId)`<br>`getGroupSessions(group)` / `getSessionsByGroup(group)` / `getActiveCount()` | `TcpSessionManagerTest` / `SampleTcpE2eTest` |
-| **出站背压流控** | 高低水位与出站流控守卫 | `TcpSession`<br>`BackpressurePolicy`<br>`TcpBackpressureException` | `ateng.boot.tcp.server.write-buffer-high-water-mark`<br>`ateng.boot.tcp.server.write-buffer-low-water-mark`<br>`ateng.boot.tcp.server.backpressure-policy`<br>`ateng.boot.tcp.server.backpressure-timeout` | `session.isWritable()` / `session.getPendingWriteBytes()`；支持 `FAIL_FAST` 抛出 `TcpBackpressureException`、`BLOCK_TIMEOUT` 阻塞等待、`WARN_AND_SEND` 告警发送与 `DROP_OLDEST` 丢弃，彻底消除慢客户端堆积引发的 JVM OOM 崩溃 | `TcpBackpressureIntegrationTest` / `SampleTcpE2eTest` |
-| **网络层 IP 防火墙** | CIDR 白名单与黑名单安全 | `TcpIpFilterProperties`<br>`TcpIpFilterHandler`<br>`TcpIpBlockedEvent` | `ateng.boot.tcp.server.ip-filter.enabled`<br>`ateng.boot.tcp.server.ip-filter.default-rule`<br>`ateng.boot.tcp.server.ip-filter.whitelist`<br>`ateng.boot.tcp.server.ip-filter.blacklist` | 管道首位纳秒级握手拦截，支持精确 IP（`192.168.1.100`）与 CIDR 网段（`10.0.0.0/8`）；拦截时发布 `TcpIpBlockedEvent`，零直接内存分配 | `TcpIpFilterIntegrationTest` / `SampleTcpE2eTest` |
-| **带宽流量整形** | 全局与通道级限速削峰 | `TcpTrafficShapingProperties`<br>`GlobalTrafficShapingHandler`<br>`ChannelTrafficShapingHandler` | `ateng.boot.tcp.server.traffic-shaping.enabled`<br>`ateng.boot.tcp.server.traffic-shaping.global-read-limit`<br>`ateng.boot.tcp.server.traffic-shaping.global-write-limit`<br>`ateng.boot.tcp.server.traffic-shaping.channel-read-limit`<br>`ateng.boot.tcp.server.traffic-shaping.channel-write-limit` | 基于令牌桶算法限制全局与单连接出入站带宽速率（`DataSize` 强类型）；优雅停机阶段受管调用 `release()` 释放整形定时线程 | `TcpTrafficShapingIntegrationTest` / `SampleTcpE2eTest` |
+| **分组与会话检索** | 设备/分组多维检索 | `TcpSessionManager` | - | `getSession(sessionId)` / `getSessionByDeviceId(deviceId)`<br>`addToGroup(group, sessionId)` / `removeFromGroup(group, sessionId)`<br>`getSessionsByGroup(group)`（推荐）/ `getGroupSessions(group)`（`@Deprecated`）/ `getActiveCount()` | `TcpSessionManagerTest` / `SampleTcpE2eTest` |
+| **出站背压流控** | 高低水位与出站流控守卫 | `TcpSession`<br>`BackpressurePolicy`<br>`TcpBackpressureException` | `ateng.boot.tcp.server.write-buffer-high-water-mark`<br>`ateng.boot.tcp.server.write-buffer-low-water-mark`<br>`ateng.boot.tcp.server.backpressure-policy`<br>`ateng.boot.tcp.server.backpressure-timeout` | `session.isWritable()` / `session.getPendingWriteBytes()`；支持 `FAIL_FAST`（生产默认）快速失败阻断、`BLOCK_TIMEOUT` 阻塞等待、`WARN_AND_SEND` 告警发送，彻底消除慢客户端堆积引发的 JVM OOM 崩溃 | `TcpBackpressureIntegrationTest` / `SampleTcpE2eTest` |
+| **网络层 IP 防火墙** | CIDR 白名单与黑名单安全 | `TcpIpFilterProperties`<br>`TcpIpFilterHandler`<br>`TcpIpBlockedEvent` | `ateng.boot.tcp.server.ip-filter.enabled`<br>`ateng.boot.tcp.server.ip-filter.whitelist`<br>`ateng.boot.tcp.server.ip-filter.blacklist` | 管道首位纳秒级握手拦截，支持精确 IP（`192.168.1.100`）与 CIDR 网段（`10.0.0.0/8`）；白名单非空自动切换白名单严控模式；拦截时发布 `TcpIpBlockedEvent`，零直接内存分配 | `TcpIpFilterIntegrationTest` / `SampleTcpE2eTest` |
+| **带宽流量整形** | 全局与通道级限速削峰 | `TcpTrafficShapingProperties`<br>`GlobalTrafficShapingHandler`<br>`ChannelTrafficShapingHandler` | `ateng.boot.tcp.server.traffic-shaping.enabled`<br>`ateng.boot.tcp.server.traffic-shaping.global-read-limit`<br>`ateng.boot.tcp.server.traffic-shaping.global-write-limit`<br>`ateng.boot.tcp.server.traffic-shaping.channel-read-limit`<br>`ateng.boot.tcp.server.traffic-shaping.channel-write-limit`<br>`ateng.boot.tcp.server.traffic-shaping.check-interval`<br>`ateng.boot.tcp.server.traffic-shaping.max-time` | 基于令牌桶算法限制全局与单连接出入站带宽速率（`DataSize` 强类型）；优雅停机阶段受管调用 `release()` 释放整形定时线程 | `TcpTrafficShapingIntegrationTest` / `SampleTcpE2eTest` |
 | **声明式监听** | 声明式长连接监听器 | `@TcpListener` | - | 声明于 Spring Bean 上，标识当前类为 TCP 监听器；支持指定归属服务端或客户端角色，自动纳管生命周期 | `TcpDispatcherTest` / `SampleTcpE2eTest` |
 | **声明式方法路由** | 命令字方法映射与分发 | `@TcpMapping` | - | 标注于方法上，绑定业务命令字（如 `@TcpMapping("LOCATION_REPORT")`）；方法形参支持 Session、Packet、Payload、POJO、byte[]、String | `TcpDispatcherTest` / `SampleTcpE2eTest` |
 | **硬件标识注入** | 设备编号参数自动提取 | `@TcpDeviceId` | - | 标注于方法参数上，自动提取当前报文或会话绑定的硬件标识 `deviceId` | `TcpDispatcherTest` / `SampleTcpE2eTest` |
@@ -31,10 +31,10 @@
 | **路由命令字提取 SPI** | 可插拔命令字解析 SPI | `TcpRouteKeyExtractor`<br>`CompositeRouteKeyExtractor` | - | 支持从入站报文中提取路由键；内置 `JsonRouteKeyExtractor`（从 JSON 提取 command 等属性）与 `BinaryOffsetRouteKeyExtractor`（固定偏移截取）；可扩展国标二进制复合提取器 | `TcpRouteKeyExtractorTest` / `SampleTcpE2eTest` |
 | **关联流水号提取 SPI** | RPC 关联标识提取 SPI | `TcpCorrelationIdExtractor` | - | 从报文提取 RPC 关联流水号 `requestId`；默认优先取 `packet.getRequestId()` 或从 JSON/Map 解析 | `TcpRequestCorrelationManagerTest` |
 | **通道定制逃生舱** | Netty Channel 流水线定制 | `TcpChannelCustomizer` SPI | - | 在 Netty Pipeline 自由编排注册自定义 Handler；支持按组件角色（SERVER/CLIENT）与实例名定向定制 | `TcpChannelCustomizerTest` / `SampleTcpE2eTest` |
-| **报文拦截过滤 SPI** | 入站/出站双向拦截器 | `TcpPacketFilter` SPI<br>`TcpFilterChain` | - | 链式拦截入站与出站报文；支持验签、限流、解密、日志记录与短路阻断 | `TcpPacketFilterTest` |
+| **报文拦截过滤 SPI** | 入站/出站双向拦截器 | `TcpPacketFilter` SPI<br>`TcpFilterChain` | - | 链式拦截入站与出站报文；支持验签、限流、解密、日志记录与短路阻断 | `TcpPacketFilterHandlerTest` |
 | **自愈指数退避重连** | 客户端断线自愈重连 | `TcpClient` | `ateng.boot.tcp.client.reconnect.*` | 支持连接失败或异常断开后自动后台重连；基于 $2^n$ 指数退避算法并附加最大间隔与重试次数上限保护 | `TcpClientIntegrationTest` |
 | **空闲心跳保活** | 双向心跳探测与空闲超时 | `TcpServer` / `TcpClient` | `ateng.boot.tcp.server.idle.*`<br>`ateng.boot.tcp.client.heartbeat.*` | 服务端检测读写空闲超时自动断开假死连接；客户端定时发送心跳包保活，防止防火墙 NAT 超时静默切断 | `TcpHeartbeatIntegrationTest` |
-| **粘包半包分帧切片** | 数据帧切片解码与出站定界 | `TcpFramingDecoderFactory`<br>`TcpPayloadCodecHandler` | `ateng.boot.tcp.server.framing.*`<br>`ateng.boot.tcp.client.framing.*` | 支持 `NONE`、`DELIMITER`（定界符）、`FIXED_LENGTH`（固定长度）及 `LENGTH_FIELD`（基于长度字段）；出站自动补齐定界符 | `TcpFramingIntegrationTest` / `SampleTcpE2eTest` |
+| **粘包半包分帧切片** | 数据帧切片解码与出站定界 | `TcpFramingDecoderFactory`<br>`TcpPayloadCodecHandler` | `ateng.boot.tcp.server.framing.*`<br>`ateng.boot.tcp.client.framing.*` | 支持 `NONE`、`DELIMITER`（定界符）、`FIXED_LENGTH`（固定长度）及 `LENGTH_FIELD`（基于长度字段）；出站自动补齐定界符 | `TcpFramingDecoderFactoryTest` / `SampleTcpE2eTest` |
 | **国标复合分帧编解码** | JT/T 808 国标风格转义与校验 | `Jt808CompositeFrameCodec`<br>`ChecksumUtil` | `ateng.boot.tcp.server.framing.delimiter=0x7E` | 支持 `0x7E` 起止定界、`0x7D 0x02 <-> 0x7E` 与 `0x7D 0x01 <-> 0x7D` 报文转义还原与 BCC 异或（XOR）全真校验和防伪验证 | `Jt808CompositeFrameCodecTest` / `SampleTcpE2eTest` |
 | **直接内存安全释放** | 入站安全堆转译与零泄漏 | `TcpPayloadCodecHandler` | - | 入站 ByteBuf 确定性在 `finally` 块通过 `ReferenceCountUtil.release()` 释放，业务层真明文 `TcpPayload` 安全交付 | `TcpPayloadCodecHandlerTest` |
 | **业务强类型编解码 SPI** | 可插拔双向编解码器 SPI | `TcpCodec<T>` SPI | - | 定义 `encode(T message)` 与 `decode(TcpPayload payload)`，支持将自定义私有协议强类型对象无损双向转译 | `TcpPayloadCodecHandlerTest` |
@@ -94,10 +94,9 @@ ateng:
         write-buffer-high-water-mark: 64KB
         backpressure-policy: BLOCK_TIMEOUT
         backpressure-timeout: 3s
-        # 网络层 IP 访问控制防火墙（纳秒级首位拦截）
+        # 网络层 IP 访问控制防火墙（纳秒级首位拦截，白名单非空自动切换严格白名单模式）
         ip-filter:
           enabled: true
-          default-rule: ACCEPT        # 默认 ACCEPT 或 REJECT
           whitelist:
             - 127.0.0.1
             - 192.168.0.0/16
@@ -275,8 +274,8 @@ public ConfigResponse queryServerConfig() {
     // 发起 RPC 同步请求，5 秒超时
     return tcpClientTemplate.request(
             TcpPacket.ofJson("GET_CONFIG", Map.of("key", "timeout")),
-            Duration.ofSeconds(5),
-            ConfigResponse.class
+            ConfigResponse.class,
+            Duration.ofSeconds(5)
     );
 }
 ```
@@ -287,14 +286,20 @@ public ConfigResponse queryServerConfig() {
 
 ### 3.1 出站背压流控策略与通道可写性变迁监听
 
-针对生产者发送速率远超消费者处理能力的慢客户端场景，框架提供四种背压策略：
+针对生产者发送速率远超消费者处理能力的慢客户端场景，框架提供三种出站背压流控策略：
 
 | 策略枚举 (`BackpressurePolicy`) | 核心行为 | 适用场景 |
 | :--- | :--- | :--- |
-| `BLOCK_TIMEOUT` (默认) | 阻塞调用线程等待对端排空，超过超时阈值抛出 `TcpBackpressureException` | 高吞吐金融/物联网核心业务，兼顾背压与可用性 |
-| `FAIL_FAST` | 触达高水位时立即抛出 `TcpBackpressureException`，拒绝缓冲 | 实时流控敏感系统，快速将背压向上游传播 |
-| `WARN_AND_SEND` | 记录高危 WARN 日志后强行压入出站队列（允许堆积） | 诊断分析或监控采集阶段 |
-| `DROP_OLDEST` | 丢弃通道待发缓冲队列中最旧的报文并压入新报文 | 音视频流、高频遥测刷新（允许丢帧） |
+| `FAIL_FAST` (生产默认) | 触达高水位时立即抛出 `TcpBackpressureException`，拒绝出站堆积 | 实时流控敏感系统，快速失败并将背压向上游传播 |
+| `BLOCK_TIMEOUT` | 阻塞调用线程等待对端排空，超过超时阈值抛出 `TcpBackpressureException` | 高吞吐低延迟场景，兼顾背压流控与业务可用性 |
+| `WARN_AND_SEND` | 记录高危 WARN 日志后强行压入出站队列（允许堆积） | 诊断分析或不可丢弃的关键下发指令 |
+
+开发者不仅可以通过配置文件统一设定全局背压策略，还可在业务运行期针对特定重要长连接会话动态编程式调整背压行为：
+
+```java
+// 针对关键会话动态定制为阻塞等待 2 秒策略
+session.setBackpressurePolicy(BackpressurePolicy.BLOCK_TIMEOUT, Duration.ofSeconds(2));
+```
 
 监听出站可写性变迁事件：
 
@@ -325,11 +330,14 @@ ateng:
       server:
         ip-filter:
           enabled: true
-          default-rule: REJECT        # 仅放行白名单
+          # 白名单非空时自动切换白名单严控模式（仅放行白名单，阻断其他全部 IP）
+          # 白名单为空时自动切换黑名单模式（仅拦截黑名单，放行其他全部 IP）
           whitelist:
             - 127.0.0.1               # 单一主机地址
             - 192.168.1.0/24          # CIDR 局域网段
             - 10.0.0.0/8              # 内网骨干网段
+          blacklist:
+            - 10.0.0.99               # 明确恶意 IP
 ```
 
 监听被防火墙拦截的安全事件：
@@ -380,6 +388,34 @@ tcpServerTemplate.sendGroupToCluster("FLEET-ALPHA", TcpPacket.ofJson("FLEET_ALER
 )));
 ```
 
+#### 自定义集群桥接扩展点 (TcpClusterBridge SPI 接管)
+框架默认提供基于 Redis Pub/Sub 的分布式桥接实现（`RedisPubSubTcpClusterBridge`）。当业务需要使用 Kafka、RocketMQ、RabbitMQ 或专用 RPC 总线跨节点分发时，只需实现 `TcpClusterBridge` SPI 并注册为 Spring Bean：
+
+```java
+@Component
+public class CustomRocketMqClusterBridge implements TcpClusterBridge {
+
+    @Override
+    public boolean sendToCluster(String deviceId, Object payload) {
+        // 自定义 MQ 投递目标设备报文
+        return true;
+    }
+
+    @Override
+    public boolean broadcastToCluster(Object payload) {
+        // 自定义 MQ 全网广播
+        return true;
+    }
+
+    @Override
+    public boolean sendGroupToCluster(String group, Object payload) {
+        // 自定义 MQ 车队/分组广播
+        return true;
+    }
+}
+```
+框架自动遵循 `@ConditionalOnMissingBean(TcpClusterBridge.class)` 契约，由开发者自定义桥接平滑接管，无需侵入框架核心。
+
 ### 3.5 交通部 JT/T 808 国标复合分帧与双轨路由 SPI
 
 支持国标二进制复合分帧（`0x7E` 起止符、`0x7D` 转义还原与 BCC 校验）与标准 JSON 协议共存：
@@ -398,12 +434,18 @@ public class Jt808RouteKeyExtractor implements TcpRouteKeyExtractor {
         }
         byte[] bytes = packet.getPayload().asBytes();
         if (bytes != null && bytes.length > 3 && bytes[0] == Jt808CompositeFrameCodec.DELIMITER) {
-            // 国标二进制复合帧：0x7E 开头，第 1、2 字节为消息 ID（大端序）
-            int msgId = ((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF);
-            if (msgId == (Jt808CompositeFrameCodec.MSG_ID_LOCATION & 0xFFFF)) {
-                return "JT808_LOCATION";
+            // 国标二进制复合帧：0x7E 开头，先提取帧内头部数据执行反转义，防御 0x7D 转义字符造成的偏移
+            int probeLen = Math.min(bytes.length - 1, 8);
+            byte[] headerProbe = new byte[probeLen];
+            System.arraycopy(bytes, 1, headerProbe, 0, probeLen);
+            byte[] unescaped = ChecksumUtil.unescapeJt808(headerProbe);
+            if (unescaped.length >= 2) {
+                int msgId = ((unescaped[0] & 0xFF) << 8) | (unescaped[1] & 0xFF);
+                if (msgId == (Jt808CompositeFrameCodec.MSG_ID_LOCATION & 0xFFFF)) {
+                    return "JT808_LOCATION";
+                }
+                return String.format("JT808_0x%04X", msgId);
             }
-            return String.format("JT808_0x%04X", msgId);
         }
         // 兜底委托给标准 JSON 路由命令字提取器
         return jsonExtractor.extract(packet);
@@ -530,14 +572,16 @@ curl -X GET "http://localhost:8080/actuator/tcp"
   "activeSessions": 1,
   "servers": {
     "default": {
+      "name": "default",
+      "running": true,
+      "host": "0.0.0.0",
       "port": 9099,
       "actualPort": 9099,
-      "running": true,
-      "connections": 1
+      "framingMode": "DELIMITER",
+      "sslEnabled": false
     }
   },
   "metrics": {
-    "connectionsActive": 1,
     "connectionsTotal": 120,
     "messagesReceived": 45000,
     "messagesSent": 45000,

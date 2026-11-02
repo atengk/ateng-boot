@@ -18,26 +18,42 @@ class Jt808CompositeFrameCodecTest {
     @Test
     @DisplayName("测试国标复合报文编码与解码正向链路")
     void testEncodeAndDecode() {
-        String deviceId = "888888";
-        long seq = 1024L;
-        double longitude = 116.407412;
-        double latitude = 39.904231;
-        double speed = 88.5;
-        String engineStatus = "ON";
+        LocationReportPacket packet = new LocationReportPacket(
+                "888888",
+                1024L,
+                116.407412,
+                39.904231,
+                88.5,
+                "ON",
+                System.currentTimeMillis()
+        );
 
-        byte[] frame = Jt808CompositeFrameCodec.encodeLocationReport(deviceId, seq, longitude, latitude, speed, engineStatus);
+        byte[] frame = Jt808CompositeFrameCodec.encodeLocationReport(packet);
         assertThat(frame).isNotNull();
         assertThat(frame[0]).isEqualTo(Jt808CompositeFrameCodec.DELIMITER);
         assertThat(frame[frame.length - 1]).isEqualTo(Jt808CompositeFrameCodec.DELIMITER);
 
         LocationReportPacket decoded = Jt808CompositeFrameCodec.decodeLocationReport(frame);
         assertThat(decoded).isNotNull();
-        assertThat(decoded.getDeviceId()).isEqualTo(deviceId);
-        assertThat(decoded.getSeq()).isEqualTo(seq);
-        assertThat(decoded.getLongitude()).isEqualTo(Math.round(longitude * 1_000_000) / 1_000_000.0);
-        assertThat(decoded.getLatitude()).isEqualTo(Math.round(latitude * 1_000_000) / 1_000_000.0);
-        assertThat(decoded.getSpeed()).isEqualTo(speed);
+        assertThat(decoded.getDeviceId()).isEqualTo("888888");
+        assertThat(decoded.getSeq()).isEqualTo(1024L);
+        assertThat(decoded.getLongitude()).isEqualTo(Math.round(116.407412 * 1_000_000) / 1_000_000.0);
+        assertThat(decoded.getLatitude()).isEqualTo(Math.round(39.904231 * 1_000_000) / 1_000_000.0);
+        assertThat(decoded.getSpeed()).isEqualTo(88.5);
         assertThat(decoded.getEngineStatus()).isEqualTo("ON");
+    }
+
+    @Test
+    @DisplayName("测试截断报文长度不足 34 字节时快速失败，防御 BufferUnderflowException")
+    void testTruncatedBodyThrowsIllegalArgumentException() {
+        // 构造仅 25 字节的数据（在 23-33 字节危险区间）
+        byte[] truncated = new byte[25];
+        truncated[0] = Jt808CompositeFrameCodec.DELIMITER;
+        truncated[truncated.length - 1] = Jt808CompositeFrameCodec.DELIMITER;
+
+        assertThatThrownBy(() -> Jt808CompositeFrameCodec.decodeLocationReport(truncated))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("有效长度不足");
     }
 
     @Test

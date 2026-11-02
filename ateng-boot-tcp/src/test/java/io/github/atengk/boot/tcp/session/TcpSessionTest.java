@@ -112,6 +112,25 @@ class TcpSessionTest {
     }
 
     @Test
+    @DisplayName("验证背压策略 BLOCK_TIMEOUT: Netty EventLoop 线程内严禁同步阻塞，自动触发防死锁拦截")
+    void testBackpressureBlockTimeoutRejectsInEventLoop() {
+        Channel mockChannel = mock(Channel.class);
+        io.netty.channel.EventLoop mockEventLoop = mock(io.netty.channel.EventLoop.class);
+        when(mockChannel.isActive()).thenReturn(true);
+        when(mockChannel.isWritable()).thenReturn(false);
+        when(mockChannel.eventLoop()).thenReturn(mockEventLoop);
+        when(mockEventLoop.inEventLoop()).thenReturn(true);
+
+        TcpSession session = new TcpSession("SES-DEADLOCK-GUARD", mockChannel);
+        session.setBackpressurePolicy(BackpressurePolicy.BLOCK_TIMEOUT);
+
+        assertThatThrownBy(() -> session.send("Flood"))
+                .isInstanceOf(TcpBackpressureException.class)
+                .hasMessageContaining("EventLoop 线程内严禁同步阻塞等待背压以防死锁")
+                .hasMessageContaining("SES-DEADLOCK-GUARD");
+    }
+
+    @Test
     @DisplayName("验证背压策略 WARN_AND_SEND: 通道不可写时记录告警并放行写入")
     void testBackpressureWarnAndSend() {
         Channel mockChannel = mock(Channel.class);

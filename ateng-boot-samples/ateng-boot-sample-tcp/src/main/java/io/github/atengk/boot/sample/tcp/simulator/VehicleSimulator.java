@@ -191,6 +191,26 @@ public class VehicleSimulator {
     }
 
     /**
+     * 上报交通部 JT/T 808 国标风格复合定位报文（通过结构化实体包）
+     *
+     * @param packet 定位数据包实体
+     */
+    public void reportJt808Location(LocationReportPacket packet) {
+        if (packet == null) {
+            return;
+        }
+        byte[] frame = Jt808CompositeFrameCodec.encodeLocationReport(packet);
+        TcpPacket tcpPacket = TcpPacket.builder()
+                .command("JT808_LOCATION")
+                .deviceId(packet.getDeviceId() != null ? packet.getDeviceId() : this.deviceId)
+                .payload(TcpPayload.of(frame))
+                .build();
+        sendPacket(tcpPacket);
+        log.info("车机终端模拟器已上报 JT/T 808 国标实体定位: deviceId={}, seq={}, speed={}, frameBytes={}",
+                packet.getDeviceId(), packet.getSeq(), packet.getSpeed(), frame.length);
+    }
+
+    /**
      * 上报交通部 JT/T 808 国标风格复合定位报文（含 0x7E 分隔符、0x7D 转义还原与 BCC 校验码）
      *
      * @param seq          流水号

@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 统一标准 TCP 领域会话契约
@@ -120,6 +121,12 @@ public class TcpSession {
                         "TCP 出站缓冲区已达高水位且通道不可写，触发背压快速失败: sessionId=" + sessionId +
                                 ", pendingWriteBytes=" + getPendingWriteBytes());
                 case BLOCK_TIMEOUT -> {
+                    if (channel.eventLoop() != null && channel.eventLoop().inEventLoop()) {
+                        log.warn("检测到在 Netty I/O (EventLoop) 线程中触发 BLOCK_TIMEOUT 背压阻塞等待，为防止出站缓冲排空死锁，自动降级为 FAIL_FAST 快速失败: sessionId={}", sessionId);
+                        throw new TcpBackpressureException(
+                                "Netty EventLoop 线程内严禁同步阻塞等待背压以防死锁: sessionId=" + sessionId +
+                                        ", pendingWriteBytes=" + getPendingWriteBytes());
+                    }
                     Duration effectiveTimeout = timeout != null ? timeout : (this.backpressureTimeout != null ? this.backpressureTimeout : Duration.ofSeconds(3));
                     long waitNanos = effectiveTimeout.toNanos();
                     long deadline = System.nanoTime() + waitNanos;
@@ -131,7 +138,8 @@ public class TcpSession {
                                             "): sessionId=" + sessionId + ", pendingWriteBytes=" + getPendingWriteBytes());
                         }
                         try {
-                            Thread.sleep(10);
+                            long sleepMillis = Math.min(10, Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+                            Thread.sleep(sleepMillis);
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             throw new TcpBackpressureException("TCP 出站缓冲区背压等待被中断: sessionId=" + sessionId, e);

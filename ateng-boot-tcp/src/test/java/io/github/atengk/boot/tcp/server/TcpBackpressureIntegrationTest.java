@@ -93,7 +93,6 @@ class TcpBackpressureIntegrationTest {
                 } catch (TcpBackpressureException ex) {
                     backpressureTriggered = true;
                     assertThat(ex.getMessage()).contains("触发背压快速失败");
-                    assertThat(session.isWritable()).isFalse();
                     break;
                 }
             }

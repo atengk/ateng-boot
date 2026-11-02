@@ -51,7 +51,11 @@ public class LocalTcpClusterBridge implements TcpClusterBridge {
         }
         for (TcpSession session : sessions) {
             if (session.isActive()) {
-                session.send(payload);
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地单机广播投递会话失败: sessionId={}", session.getSessionId(), ex);
+                }
             }
         }
         return true;
@@ -61,13 +65,17 @@ public class LocalTcpClusterBridge implements TcpClusterBridge {
     public boolean sendGroupToCluster(String group, Object payload) {
         Assert.hasText(group, "group 不能为空");
         Assert.notNull(payload, "payload 不能为空");
-        Collection<TcpSession> sessions = sessionManager.getGroupSessions(group);
+        Collection<TcpSession> sessions = sessionManager.getSessionsByGroup(group);
         if (sessions.isEmpty()) {
             return false;
         }
         for (TcpSession session : sessions) {
             if (session.isActive()) {
-                session.send(payload);
+                try {
+                    session.send(payload);
+                } catch (Exception ex) {
+                    log.warn("[TCP-CLUSTER] 本地单机分组 [{}] 组播投递会话失败: sessionId={}", group, session.getSessionId(), ex);
+                }
             }
         }
         return true;

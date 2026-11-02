@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sample.tcp;
 
+import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
 import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
 import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
 import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
@@ -62,6 +63,9 @@ class SampleTcpE2eTest {
         if (simRecon != null) {
             simRecon.stop();
         }
+        if (scenarioService != null) {
+            scenarioService.reset();
+        }
     }
 
     @Test
@@ -89,7 +93,16 @@ class SampleTcpE2eTest {
 
         // 3. 验证交通部 JT/T 808 国标风格复合分帧上报（含 0x7E 分隔符、0x7D 转义还原与 BCC 校验和验证）
         long jt808Seq = 1001L;
-        sim1.reportJt808Location(jt808Seq, 116.407412, 39.904231, 85.5, "ON");
+        LocationReportPacket jt808Packet = new LocationReportPacket(
+                deviceId1,
+                jt808Seq,
+                116.407412,
+                39.904231,
+                85.5,
+                "ON",
+                System.currentTimeMillis()
+        );
+        sim1.reportJt808Location(jt808Packet);
         await().untilAsserted(() -> {
             VehicleStatusVO status = scenarioService.getVehicleStatus(deviceId1);
             assertThat(status).isNotNull();

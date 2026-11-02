@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
+import io.github.atengk.boot.tcp.exception.TcpBackpressureException;
 import io.github.atengk.boot.tcp.exception.TcpException;
 import io.github.atengk.boot.tcp.exception.TcpTimeoutException;
 import io.github.atengk.boot.tcp.model.TcpPacket;
@@ -65,7 +66,13 @@ public class TcpClientTemplate {
         if (session != null) {
             session.send(msg);
         } else {
-            client.getChannel().writeAndFlush(msg);
+            Channel channel = client.getChannel();
+            if (channel != null && !channel.isWritable()) {
+                throw new TcpBackpressureException("TCP 客户端出站缓冲区已达高水位且通道不可写，触发背压快速失败");
+            }
+            if (channel != null) {
+                channel.writeAndFlush(msg);
+            }
         }
     }
 
@@ -205,9 +212,19 @@ public class TcpClientTemplate {
 
         try {
             TcpSession session = client.getSession();
-            ChannelFuture channelFuture = session != null
-                    ? session.send(packet)
-                    : client.getChannel().writeAndFlush(packet);
+            ChannelFuture channelFuture;
+            if (session != null) {
+                channelFuture = session.send(packet);
+            } else {
+                Channel channel = client.getChannel();
+                if (channel != null && !channel.isWritable()) {
+                    throw new TcpBackpressureException("TCP 客户端出站缓冲区已达高水位且通道不可写，触发背压快速失败: requestId=" + requestId);
+                }
+                channelFuture = channel != null ? channel.writeAndFlush(packet) : null;
+                if (channelFuture == null) {
+                    throw new IllegalStateException("TCP 客户端通道不存在，无法发送请求: requestId=" + requestId);
+                }
+            }
             channelFuture.addListener(f -> {
                 if (!f.isSuccess()) {
                     correlationManager.completeExceptionally(requestId, f.cause());

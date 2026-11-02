@@ -233,6 +233,15 @@ public class VehicleTelemetryScenarioService {
         return Collections.unmodifiableList(eventLogs);
     }
 
+    /**
+     * 重置并清空所有内存状态与事件日志（用于测试夹具或重置场景）
+     */
+    public void reset() {
+        vehicleStore.clear();
+        eventLogs.clear();
+        log.info("[SCENARIO] 车辆遥测管控服务内部状态已重置清空");
+    }
+
     private void recordEventLog(String logEntry) {
         eventLogs.add(logEntry);
         while (eventLogs.size() > MAX_EVENT_LOG_SIZE) {

@@ -3,6 +3,7 @@ package io.github.atengk.boot.sample.tcp.codec;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.route.JsonRouteKeyExtractor;
 import io.github.atengk.boot.tcp.route.TcpRouteKeyExtractor;
+import io.github.atengk.boot.tcp.util.ChecksumUtil;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -31,12 +32,18 @@ public class Jt808RouteKeyExtractor implements TcpRouteKeyExtractor {
         }
         byte[] bytes = packet.getPayload().asBytes();
         if (bytes != null && bytes.length > 3 && bytes[0] == Jt808CompositeFrameCodec.DELIMITER) {
-            // 国标二进制复合帧：0x7E 开头，第 1、2 字节为消息 ID（大端序）
-            int msgId = ((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF);
-            if (msgId == (Jt808CompositeFrameCodec.MSG_ID_LOCATION & 0xFFFF)) {
-                return "JT808_LOCATION";
+            // 国标二进制复合帧：0x7E 开头，先提取帧内头部数据执行反转义，防御 0x7D 转义字符造成的偏移
+            int probeLen = Math.min(bytes.length - 1, 8);
+            byte[] headerProbe = new byte[probeLen];
+            System.arraycopy(bytes, 1, headerProbe, 0, probeLen);
+            byte[] unescaped = ChecksumUtil.unescapeJt808(headerProbe);
+            if (unescaped.length >= 2) {
+                int msgId = ((unescaped[0] & 0xFF) << 8) | (unescaped[1] & 0xFF);
+                if (msgId == (Jt808CompositeFrameCodec.MSG_ID_LOCATION & 0xFFFF)) {
+                    return "JT808_LOCATION";
+                }
+                return String.format("JT808_0x%04X", msgId);
             }
-            return String.format("JT808_0x%04X", msgId);
         }
         // 兜底委托给标准 JSON 路由命令字提取器
         return jsonExtractor.extract(packet);

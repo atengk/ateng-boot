@@ -26,6 +26,26 @@ public final class Jt808CompositeFrameCodec {
     }
 
     /**
+     * 将车机定位实体数据编码为符合 JT/T 808 规范的复合二进制帧
+     *
+     * @param packet 定位数据包实体
+     * @return 完整的复合报文字节数组
+     */
+    public static byte[] encodeLocationReport(LocationReportPacket packet) {
+        if (packet == null) {
+            throw new IllegalArgumentException("LocationReportPacket 实体不能为空");
+        }
+        return encodeLocationReport(
+                packet.getDeviceId(),
+                packet.getSeq() != null ? packet.getSeq() : 0L,
+                packet.getLongitude() != null ? packet.getLongitude() : 0.0,
+                packet.getLatitude() != null ? packet.getLatitude() : 0.0,
+                packet.getSpeed() != null ? packet.getSpeed() : 0.0,
+                packet.getEngineStatus()
+        );
+    }
+
+    /**
      * 将车机定位数据编码为符合 JT/T 808 规范的复合二进制帧（含 0x7E 标识符、转义与 BCC 校验码）
      *
      * @param deviceId     车机硬件编号
@@ -93,9 +113,11 @@ public final class Jt808CompositeFrameCodec {
 
         // 2. 执行 0x7D 反转义还原真实字节
         byte[] unescaped = ChecksumUtil.unescapeJt808(payloadEscaped);
-        int minHeaderLen = 4 + DEVICE_ID_LENGTH + 2;
-        if (unescaped.length < minHeaderLen + 1) { // 最小头 + 1 字节校验码
-            throw new IllegalArgumentException("反转义后报文有效长度不足: length=" + unescaped.length);
+        int minHeaderLen = 4 + DEVICE_ID_LENGTH + 2; // 22 字节
+        int minRequiredLen = minHeaderLen + 11 + 1;  // 报文头(22B) + 位置上报体(11B) + 校验位(1B) = 34 字节
+        if (unescaped.length < minRequiredLen) {
+            throw new IllegalArgumentException(String.format("JT/T 808 位置上报报文有效长度不足: 期望至少 %d 字节, 实际 %d 字节",
+                    minRequiredLen, unescaped.length));
         }
 
         // 3. 校验 BCC 异或校验和

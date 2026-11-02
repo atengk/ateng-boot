@@ -204,6 +204,25 @@ class TcpIpFilterIntegrationTest {
     }
 
     @Test
+    @DisplayName("验证白名单严控契约: 当白名单非空时白名单规则绝对优先，黑名单失效")
+    void testWhitelistPrecedenceOverBlacklist() throws Exception {
+        TcpIpFilterProperties filterProperties = new TcpIpFilterProperties();
+        filterProperties.setEnabled(true);
+        // 同时配置白名单与黑名单
+        filterProperties.getWhitelist().add("127.0.0.1");
+        filterProperties.getBlacklist().add("127.0.0.1");
+
+        startServer(filterProperties);
+        int port = tcpServer.getActualPort();
+
+        try (Socket clientSocket = new Socket("127.0.0.1", port)) {
+            await().atMost(3, TimeUnit.SECONDS).until(() -> !sessionManager.getAllSessions().isEmpty());
+            assertThat(sessionManager.getAllSessions()).hasSize(1);
+            assertThat(publishedEvents.stream().anyMatch(e -> e instanceof TcpIpBlockedEvent)).isFalse();
+        }
+    }
+
+    @Test
     @DisplayName("验证 IP 防火墙禁用时放行所有连接")
     void testDisabledFilterAllowsAll() throws Exception {
         TcpIpFilterProperties filterProperties = new TcpIpFilterProperties();

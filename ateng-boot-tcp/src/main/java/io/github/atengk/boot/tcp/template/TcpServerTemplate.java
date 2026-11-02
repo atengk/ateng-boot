@@ -337,7 +337,7 @@ public class TcpServerTemplate {
             return;
         }
         Object msg = wrapPayload(payload);
-        Set<TcpSession> sessions = sessionManager.getGroupSessions(group);
+        Set<TcpSession> sessions = sessionManager.getSessionsByGroup(group);
         for (TcpSession session : sessions) {
             if (session.isActive()) {
                 try {
