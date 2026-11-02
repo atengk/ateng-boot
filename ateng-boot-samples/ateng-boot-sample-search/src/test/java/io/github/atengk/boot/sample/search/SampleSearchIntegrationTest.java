@@ -168,6 +168,24 @@ class SampleSearchIntegrationTest {
                 searchTemplate.indices().create("product_index", mappingJson);
             }
 
+            // 初始化 access_log 索引 mapping (确保 timestamp 为 date 类型)
+            String todayLogIndex = "access_log_" + java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
+            if (!searchTemplate.indices().exists(todayLogIndex)) {
+                String logMappingJson = """
+                        {
+                          "mappings": {
+                            "properties": {
+                              "id": { "type": "keyword" },
+                              "path": { "type": "keyword" },
+                              "clientIp": { "type": "keyword" },
+                              "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
+                            }
+                          }
+                        }
+                        """;
+                searchTemplate.indices().create(todayLogIndex, logMappingJson);
+            }
+
             // 预置基准商品文档并立即刷盘
             ProductDoc doc = ProductDoc.builder()
                     .id("P001")
@@ -321,7 +339,7 @@ class SampleSearchIntegrationTest {
     @Test
     @DisplayName("06. 检索结果字段折叠去重 (Field Collapsing)")
     void testFieldCollapsingSearch() {
-        SearchPage<ProductDoc> page = productCatalogScenario.searchWithCollapse("Apple", "brand.keyword");
+        SearchPage<ProductDoc> page = productCatalogScenario.searchWithCollapse("Apple", "brand");
         assertThat(page.getHits()).isNotEmpty();
     }
 
@@ -371,6 +389,12 @@ class SampleSearchIntegrationTest {
                 .build();
 
         logAnalyticsScenario.recordAccessLog(logDoc);
+        if (isLocalProfileActive()) {
+            try {
+                searchTemplate.refresh("access_log_*");
+            } catch (Exception ignored) {
+            }
+        }
 
         // 时序分桶直方图聚合
         SearchPage<AccessLogDoc> page = logAnalyticsScenario.aggregateTrafficTrend("access_log_*", "1d");
