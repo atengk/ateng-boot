@@ -105,4 +105,10 @@ public class TcpServerProperties {
      */
     @NestedConfigurationProperty
     private TcpSslProperties ssl = new TcpSslProperties();
+
+    /**
+     * 网络层 IP 访问控制防火墙配置
+     */
+    @NestedConfigurationProperty
+    private TcpIpFilterProperties ipFilter = new TcpIpFilterProperties();
 }

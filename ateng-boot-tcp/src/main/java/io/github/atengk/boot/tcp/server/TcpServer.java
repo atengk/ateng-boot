@@ -149,6 +149,9 @@ public class TcpServer implements SmartLifecycle {
                 : new NioEventLoopGroup();
 
         this.sslContext = TcpSslContextFactory.buildServerSslContext(properties.getSsl());
+        TcpIpFilterHandler ipFilterHandler = (properties.getIpFilter() != null && properties.getIpFilter().isEnabled())
+                ? new TcpIpFilterHandler(properties.getIpFilter(), eventPublisher)
+                : null;
         TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(
                 properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
@@ -169,12 +172,17 @@ public class TcpServer implements SmartLifecycle {
                         protected void initChannel(SocketChannel ch) {
                             ChannelPipeline pipeline = ch.pipeline();
 
-                            // 0. TLS/mTLS 链路加密
+                            // 0. 网络层 IP 访问控制防火墙（纳秒级首位拦截，零直接内存分配）
+                            if (ipFilterHandler != null) {
+                                pipeline.addLast("ipFilter", ipFilterHandler);
+                            }
+
+                            // 1. TLS/mTLS 链路加密
                             if (sslContext != null) {
                                 pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc()));
                             }
 
-                            // 1. 空闲心跳检测处理器
+                            // 2. 空闲心跳检测处理器
                             Duration r = properties.getIdle().getReaderIdleTime();
                             Duration w = properties.getIdle().getWriterIdleTime();
                             Duration a = properties.getIdle().getAllIdleTime();
@@ -183,7 +191,7 @@ public class TcpServer implements SmartLifecycle {
                                         new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
                             }
 
-                            // 2. 粘包拆包解码器与对称出站定界符属性绑定
+                            // 3. 粘包拆包解码器与对称出站定界符属性绑定
                             if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
                                 byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
                                 ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
@@ -193,18 +201,18 @@ public class TcpServer implements SmartLifecycle {
                                 pipeline.addLast("frameDecoder", frameDecoder);
                             }
 
-                            // 3. 安全堆内存转译与直接内存释放闭环
+                            // 4. 安全堆内存转译与直接内存释放闭环
                             pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
 
-                            // 4. 报文过滤器链
+                            // 5. 报文过滤器链
                             if (filterHandler != null) {
                                 pipeline.addLast("packetFilter", filterHandler);
                             }
 
-                            // 5. 服务端连接通道生命周期处理器
+                            // 6. 服务端连接通道生命周期处理器
                             pipeline.addLast("serverHandler", serverHandler);
 
-                            // 6. 执行通道定制逃生舱
+                            // 7. 执行通道定制逃生舱
                             for (TcpChannelCustomizer customizer : channelCustomizers) {
                                 customizer.customize(ch, "SERVER", name);
                             }
