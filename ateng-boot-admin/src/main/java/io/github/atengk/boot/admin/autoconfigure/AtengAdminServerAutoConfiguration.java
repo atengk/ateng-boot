@@ -13,6 +13,7 @@ import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
+import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -70,6 +71,15 @@ public class AtengAdminServerAutoConfiguration {
     @Order(Ordered.HIGHEST_PRECEDENCE + 50)
     public AdminSsrfGuardFilter adminSsrfGuardFilter(AtengAdminServerProperties properties) {
         return new AdminSsrfGuardFilter(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @Order(Ordered.HIGHEST_PRECEDENCE + 60)
+    public AdminWriteGuardFilter adminWriteGuardFilter(AtengAdminServerProperties properties,
+                                                       ObjectProvider<AdminServerProperties> adminServerPropertiesProvider) {
+        AdminServerProperties adminServerProperties = adminServerPropertiesProvider.getIfAvailable();
+        return new AdminWriteGuardFilter(properties, adminServerProperties);
     }
 
     @Bean(name = "sbaNotificationTaskScheduler", destroyMethod = "destroy")

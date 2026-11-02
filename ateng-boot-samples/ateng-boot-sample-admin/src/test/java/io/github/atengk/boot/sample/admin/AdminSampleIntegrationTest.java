@@ -11,6 +11,7 @@ import de.codecentric.boot.admin.server.domain.events.InstanceStatusChangedEvent
 import de.codecentric.boot.admin.server.domain.values.InstanceId;
 import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
+import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import jakarta.servlet.http.Cookie;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -64,13 +66,19 @@ class AdminSampleIntegrationTest {
     @Autowired
     private AtengAdminNotificationNotifier notificationNotifier;
 
+    @Autowired
+    private AtengAdminServerProperties properties;
+
     @AfterEach
     void tearDown() {
-        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO
+        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO，重置写操作开关
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
         ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
         if (logger != null) {
             logger.setLevel(Level.INFO);
+        }
+        if (properties != null) {
+            properties.setEnableWriteOperations(true);
         }
     }
 
@@ -232,5 +240,64 @@ class AdminSampleIntegrationTest {
         notificationNotifier.notify(upEvent).block();
         assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(faultInstanceId);
         assertThat(notificationNotifier.getAlertedInstances()).doesNotContain(faultInstanceId);
+    }
+
+    @Test
+    @DisplayName("场景 7：控制台只读安全守卫与高危写操作拦截")
+    void shouldEnforceWriteGuardPolicy() throws Exception {
+        try {
+            // 1. 获取合法运维管理员会话 Cookie
+            MvcResult loginResult = mockMvc.perform(post("/admin/login")
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .param("username", "admin")
+                            .param("password", "admin"))
+                    .andExpect(status().is3xxRedirection())
+                    .andReturn();
+            Cookie satokenCookie = loginResult.getResponse().getCookie("satoken");
+            assertThat(satokenCookie).isNotNull();
+
+            // 2. 开启只读管控模式 (enableWriteOperations = false)
+            properties.setEnableWriteOperations(false);
+
+            // 3. 模拟发起针对微服务 Actuator 端点的修改请求（在线修改日志级别） -> 即使已登录亦被 403 阻断
+            mockMvc.perform(post("/admin/instances/inst-sample-001/actuator/loggers/root")
+                            .cookie(satokenCookie)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"configuredLevel\":\"DEBUG\"}"))
+                    .andExpect(status().isForbidden());
+
+            // 4. 模拟发起针对微服务 Actuator 端点的 PUT 请求 -> 断言 403 Forbidden
+            mockMvc.perform(put("/admin/instances/inst-sample-001/actuator/env")
+                            .cookie(satokenCookie)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"name\":\"test\"}"))
+                    .andExpect(status().isForbidden());
+
+            // 5. 模拟未携带会话凭据的高危写请求 -> 前置过滤器快速失败直接 403 阻断
+            mockMvc.perform(post("/admin/instances/inst-sample-001/actuator/loggers/root")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"configuredLevel\":\"DEBUG\"}"))
+                    .andExpect(status().isForbidden());
+
+            // 6. 模拟只读模式下的生命周期通信（注册请求） -> 严格放行不受 403 阻断
+            String validPayload = """
+                    {
+                        "name": "read-only-test-svc",
+                        "serviceUrl": "http://127.0.0.1:8080/",
+                        "managementUrl": "http://127.0.0.1:8080/actuator",
+                        "healthUrl": "http://127.0.0.1:8080/actuator/health"
+                    }
+                    """;
+            mockMvc.perform(post("/admin/instances")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                            .content(validPayload))
+                    .andExpect(request().asyncStarted());
+
+            // 7. 恢复为允许写操作 (enableWriteOperations = true)
+            properties.setEnableWriteOperations(true);
+        } finally {
+            properties.setEnableWriteOperations(true);
+        }
     }
 }

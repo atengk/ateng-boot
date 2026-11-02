@@ -35,3 +35,19 @@ _Avoid_: AdminProperties, SbaConfig, AdminSettings
 **AtengAdminServerAutoConfiguration**:
 Spring Boot Admin 服务端防御性自动装配类，统一注册于 `AutoConfiguration.imports`。在保障缺省平滑覆盖的前提下装配路由守卫、登录控制器、注册防火墙、凭据提供者与告警通知器。
 _Avoid_: AdminAutoConfiguration, SbaServerConfiguration, AdminConfiguration
+
+**AdminInstanceAdmissionPolicy**:
+SBA 客户端实例注册准入策略扩展点 SPI，定义 `evaluate(registration, request)` 契约。默认由内置准入实现执行集群密钥、敏感云元数据与正则白名单核验，支持企业级平滑扩展自定义服务名白名单、VPC 内网网段与多租户配额审查。
+_Avoid_: RegistrationPolicy, InstanceValidator, AdmissionGuard
+
+**AdminAdmissionResult**:
+实例注册准入评估结果强类型领域模型，提供 `admit()` 静态通过工厂与 `reject(reason)` 静态拒绝工厂，携带明确的拒绝原因与 HTTP 状态码。
+_Avoid_: AdmissionResponse, ValidationResult, PolicyCheckResult
+
+**AdminWriteGuardFilter**:
+SBA 控制台只读模式与高危写操作安全守卫过滤器。激活 `enableWriteOperations = false` 只读策略时，前置拦截针对微服务 Actuator 代理端点（`/instances/{id}/actuator/**`）的所有非幂等写请求（`POST`/`PUT`/`DELETE`/`PATCH`），严格防御越权篡改日志级别、重载配置或触发容器下线。
+_Avoid_: ReadOnlyFilter, OperationGuardFilter, ConsoleWriteFilter
+
+**ZombieInstanceCleanupScheduler**:
+容器云与弹性伸缩环境下离线僵尸实例自动清理受管调度器。周期性扫描 `InstanceRepository`，针对失联或已处于 `OFFLINE`/`UNKNOWN` 状态且持续超过 `zombie-threshold` 阈值的历史死亡实例执行确定性注销与内存排空，杜绝长时间运行下的内存膨胀与控制台虚警。
+_Avoid_: ZombieCleaner, InstanceGarbageCollector, SbaEvictTask

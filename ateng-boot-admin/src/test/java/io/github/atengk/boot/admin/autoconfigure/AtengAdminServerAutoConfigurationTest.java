@@ -11,6 +11,7 @@ import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
+import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -89,6 +90,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AdminLoginController.class);
                     assertThat(context).hasSingleBean(AtengActuatorHttpHeadersProvider.class);
                     assertThat(context).hasSingleBean(AdminSsrfGuardFilter.class);
+                    assertThat(context).hasSingleBean(AdminWriteGuardFilter.class);
                     assertThat(context).hasSingleBean(AtengAdminNotificationNotifier.class);
                     assertThat(context).hasBean("adminSaServletFilter");
                     assertThat(context.getBean("adminSaServletFilter")).isInstanceOf(SaServletFilter.class);
