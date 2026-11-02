@@ -80,6 +80,16 @@ class AtengTcpPropertiesTest {
         assertThat(serverIpFilter.getWhitelist()).isEmpty();
         assertThat(serverIpFilter.getBlacklist()).isEmpty();
 
+        // Server Traffic Shaping 默认值验证
+        TcpTrafficShapingProperties serverTrafficShaping = server.getTrafficShaping();
+        assertThat(serverTrafficShaping.isEnabled()).isFalse();
+        assertThat(serverTrafficShaping.getGlobalReadLimit()).isEqualTo(DataSize.ofBytes(0));
+        assertThat(serverTrafficShaping.getGlobalWriteLimit()).isEqualTo(DataSize.ofBytes(0));
+        assertThat(serverTrafficShaping.getChannelReadLimit()).isEqualTo(DataSize.ofBytes(0));
+        assertThat(serverTrafficShaping.getChannelWriteLimit()).isEqualTo(DataSize.ofBytes(0));
+        assertThat(serverTrafficShaping.getCheckInterval()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(serverTrafficShaping.getMaxTime()).isEqualTo(Duration.ofSeconds(15));
+
         // Client 默认值验证
         TcpClientProperties client = properties.getClient();
         assertThat(client.isEnabled()).isFalse();
@@ -137,6 +147,13 @@ class AtengTcpPropertiesTest {
         map.put("ateng.boot.tcp.server.ip-filter.whitelist[0]", "192.168.1.0/24");
         map.put("ateng.boot.tcp.server.ip-filter.whitelist[1]", "10.0.0.1");
         map.put("ateng.boot.tcp.server.ip-filter.blacklist[0]", "192.168.1.50");
+        map.put("ateng.boot.tcp.server.traffic-shaping.enabled", "true");
+        map.put("ateng.boot.tcp.server.traffic-shaping.global-read-limit", "10MB");
+        map.put("ateng.boot.tcp.server.traffic-shaping.global-write-limit", "20MB");
+        map.put("ateng.boot.tcp.server.traffic-shaping.channel-read-limit", "1MB");
+        map.put("ateng.boot.tcp.server.traffic-shaping.channel-write-limit", "2MB");
+        map.put("ateng.boot.tcp.server.traffic-shaping.check-interval", "500ms");
+        map.put("ateng.boot.tcp.server.traffic-shaping.max-time", "10s");
         map.put("ateng.boot.tcp.server.write-buffer-low-water-mark", "16KB");
         map.put("ateng.boot.tcp.server.write-buffer-high-water-mark", "128KB");
         map.put("ateng.boot.tcp.server.backpressure-policy", "BLOCK_TIMEOUT");
@@ -175,6 +192,13 @@ class AtengTcpPropertiesTest {
         assertThat(properties.getServer().getIpFilter().isEnabled()).isTrue();
         assertThat(properties.getServer().getIpFilter().getWhitelist()).containsExactly("192.168.1.0/24", "10.0.0.1");
         assertThat(properties.getServer().getIpFilter().getBlacklist()).containsExactly("192.168.1.50");
+        assertThat(properties.getServer().getTrafficShaping().isEnabled()).isTrue();
+        assertThat(properties.getServer().getTrafficShaping().getGlobalReadLimit()).isEqualTo(DataSize.ofMegabytes(10));
+        assertThat(properties.getServer().getTrafficShaping().getGlobalWriteLimit()).isEqualTo(DataSize.ofMegabytes(20));
+        assertThat(properties.getServer().getTrafficShaping().getChannelReadLimit()).isEqualTo(DataSize.ofMegabytes(1));
+        assertThat(properties.getServer().getTrafficShaping().getChannelWriteLimit()).isEqualTo(DataSize.ofMegabytes(2));
+        assertThat(properties.getServer().getTrafficShaping().getCheckInterval()).isEqualTo(Duration.ofMillis(500));
+        assertThat(properties.getServer().getTrafficShaping().getMaxTime()).isEqualTo(Duration.ofSeconds(10));
         assertThat(properties.getServer().getWriteBufferLowWaterMark()).isEqualTo(DataSize.ofKilobytes(16));
         assertThat(properties.getServer().getWriteBufferHighWaterMark()).isEqualTo(DataSize.ofKilobytes(128));
         assertThat(properties.getServer().getBackpressurePolicy()).isEqualTo(BackpressurePolicy.BLOCK_TIMEOUT);

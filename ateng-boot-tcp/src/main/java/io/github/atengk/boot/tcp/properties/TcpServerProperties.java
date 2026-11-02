@@ -111,4 +111,10 @@ public class TcpServerProperties {
      */
     @NestedConfigurationProperty
     private TcpIpFilterProperties ipFilter = new TcpIpFilterProperties();
+
+    /**
+     * 网络层流量整形与带宽限速配置
+     */
+    @NestedConfigurationProperty
+    private TcpTrafficShapingProperties trafficShaping = new TcpTrafficShapingProperties();
 }

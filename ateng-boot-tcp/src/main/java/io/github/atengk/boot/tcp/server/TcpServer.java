@@ -7,6 +7,7 @@ import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
 import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.properties.TcpServerProperties;
+import io.github.atengk.boot.tcp.properties.TcpTrafficShapingProperties;
 import io.github.atengk.boot.tcp.route.TcpDispatcher;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.spi.TcpChannelCustomizer;
@@ -19,6 +20,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.handler.traffic.ChannelTrafficShapingHandler;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -60,6 +63,7 @@ public class TcpServer implements SmartLifecycle {
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
     private SslContext sslContext;
+    private GlobalTrafficShapingHandler globalTrafficShapingHandler;
     private volatile boolean running = false;
     private int actualPort;
 
@@ -152,6 +156,20 @@ public class TcpServer implements SmartLifecycle {
         TcpIpFilterHandler ipFilterHandler = (properties.getIpFilter() != null && properties.getIpFilter().isEnabled())
                 ? new TcpIpFilterHandler(properties.getIpFilter(), eventPublisher)
                 : null;
+
+        TcpTrafficShapingProperties tsProps = properties.getTrafficShaping();
+        if (tsProps != null && tsProps.isEnabled()) {
+            long gWrite = tsProps.getGlobalWriteLimit() != null ? tsProps.getGlobalWriteLimit().toBytes() : 0;
+            long gRead = tsProps.getGlobalReadLimit() != null ? tsProps.getGlobalReadLimit().toBytes() : 0;
+            long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
+            long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
+
+            if (gWrite > 0 || gRead > 0) {
+                this.globalTrafficShapingHandler = new GlobalTrafficShapingHandler(
+                        workerGroup, gWrite, gRead, checkInterval, maxTime);
+            }
+        }
+
         TcpServerChannelHandler serverHandler = new TcpServerChannelHandler(
                 properties, sessionManager, correlationManager, dispatcher, eventPublisher, metricsCollector);
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
@@ -182,7 +200,22 @@ public class TcpServer implements SmartLifecycle {
                                 pipeline.addLast("sslHandler", sslContext.newHandler(ch.alloc()));
                             }
 
-                            // 2. 空闲心跳检测处理器
+                            // 2. 全局与单连接网络带宽流量整形（限速与削峰填谷）
+                            if (globalTrafficShapingHandler != null) {
+                                pipeline.addLast("globalTrafficShaping", globalTrafficShapingHandler);
+                            }
+                            if (tsProps != null && tsProps.isEnabled()) {
+                                long cWrite = tsProps.getChannelWriteLimit() != null ? tsProps.getChannelWriteLimit().toBytes() : 0;
+                                long cRead = tsProps.getChannelReadLimit() != null ? tsProps.getChannelReadLimit().toBytes() : 0;
+                                if (cWrite > 0 || cRead > 0) {
+                                    long checkInterval = tsProps.getCheckInterval() != null ? tsProps.getCheckInterval().toMillis() : 1000L;
+                                    long maxTime = tsProps.getMaxTime() != null ? tsProps.getMaxTime().toMillis() : 15000L;
+                                    pipeline.addLast("channelTrafficShaping",
+                                            new ChannelTrafficShapingHandler(cWrite, cRead, checkInterval, maxTime));
+                                }
+                            }
+
+                            // 3. 空闲心跳检测处理器
                             Duration r = properties.getIdle().getReaderIdleTime();
                             Duration w = properties.getIdle().getWriterIdleTime();
                             Duration a = properties.getIdle().getAllIdleTime();
@@ -191,7 +224,7 @@ public class TcpServer implements SmartLifecycle {
                                         new IdleStateHandler((int) r.toSeconds(), (int) w.toSeconds(), (int) a.toSeconds()));
                             }
 
-                            // 3. 粘包拆包解码器与对称出站定界符属性绑定
+                            // 4. 粘包拆包解码器与对称出站定界符属性绑定
                             if (properties.getFraming().getMode() == io.github.atengk.boot.tcp.enums.FramingMode.DELIMITER) {
                                 byte[] delim = TcpFramingDecoderFactory.resolveDelimiterBytes(properties.getFraming());
                                 ch.attr(TcpPayloadCodecHandler.DELIMITER_KEY).set(delim);
@@ -201,18 +234,18 @@ public class TcpServer implements SmartLifecycle {
                                 pipeline.addLast("frameDecoder", frameDecoder);
                             }
 
-                            // 4. 安全堆内存转译与直接内存释放闭环
+                            // 5. 安全堆内存转译与直接内存释放闭环
                             pipeline.addLast("payloadCodec", TcpPayloadCodecHandler.INSTANCE);
 
-                            // 5. 报文过滤器链
+                            // 6. 报文过滤器链
                             if (filterHandler != null) {
                                 pipeline.addLast("packetFilter", filterHandler);
                             }
 
-                            // 6. 服务端连接通道生命周期处理器
+                            // 7. 服务端连接通道生命周期处理器
                             pipeline.addLast("serverHandler", serverHandler);
 
-                            // 7. 执行通道定制逃生舱
+                            // 8. 执行通道定制逃生舱
                             for (TcpChannelCustomizer customizer : channelCustomizers) {
                                 customizer.customize(ch, "SERVER", name);
                             }
@@ -283,6 +316,17 @@ public class TcpServer implements SmartLifecycle {
             log.warn("注销存量客户端会话异常", ex);
         }
 
+        // 释放全局流量整形处理器
+        if (globalTrafficShapingHandler != null) {
+            try {
+                globalTrafficShapingHandler.release();
+            } catch (Exception ex) {
+                log.warn("释放全局流量整形处理器异常", ex);
+            } finally {
+                globalTrafficShapingHandler = null;
+            }
+        }
+
         // 释放 Netty 线程池
         long drainMillis = properties.getDrainTimeout() != null ? properties.getDrainTimeout().toMillis() : 5000L;
         if (workerGroup != null) {
@@ -296,6 +340,15 @@ public class TcpServer implements SmartLifecycle {
 
         this.running = false;
         log.info("TCP 服务端 [{}] 已平滑安全停止", this.name);
+    }
+
+    /**
+     * 获取全局网络带宽流量整形处理器（若未启用则返回 null）
+     *
+     * @return GlobalTrafficShapingHandler 实例
+     */
+    public GlobalTrafficShapingHandler getGlobalTrafficShapingHandler() {
+        return globalTrafficShapingHandler;
     }
 
     public boolean isRunning() {
