@@ -1,5 +1,6 @@
 package io.github.atengk.boot.sms.config;
 
+import io.github.atengk.boot.sms.guard.*;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
@@ -19,11 +20,13 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
+import java.util.concurrent.Executor;
 
 /**
  * ateng-boot 短信底座自动装配类
@@ -87,16 +90,61 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
+     * 自动装配手机号出站黑名单过滤器
+     *
+     * @return SmsBlacklistProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsBlacklistProvider smsBlacklistProvider() {
+        return new InMemorySmsBlacklistProvider();
+    }
+
+    /**
+     * 自动装配单日成本预算熔断器（检测到 Redis 时采用分布式熔断计数，否则优雅降级为纯内存实现）
+     *
+     * @param properties            配置属性
+     * @param redisTemplateProvider Redis 模板提供者
+     * @param eventPublisherProvider 事件发布器提供者
+     * @return DailyBudgetBreaker
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public DailyBudgetBreaker dailyBudgetBreaker(SmsProperties properties,
+                                                 ObjectProvider<StringRedisTemplate> redisTemplateProvider,
+                                                 ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
+        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        ApplicationEventPublisher publisher = eventPublisherProvider.getIfAvailable();
+        if (redisTemplate != null) {
+            return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(), publisher);
+        }
+        return new InMemoryDailyBudgetBreaker(properties.getGuard(), publisher);
+    }
+
+    /**
      * 自动装配顶层短信操作门面
      *
-     * @param properties 配置属性
-     * @param providers  容器中所有已注册的短信驱动实现
+     * @param properties           配置属性
+     * @param providers            容器中所有已注册的短信驱动实现
+     * @param blacklistProvider    出站黑名单过滤器提供者
+     * @param budgetBreaker        单日成本预算熔断器提供者
+     * @param taskExecutorProvider 异步执行器提供者
      * @return SmsTemplate
      */
     @Bean
     @ConditionalOnMissingBean
-    public SmsTemplate smsTemplate(SmsProperties properties, List<SmsProvider> providers) {
-        return new SmsTemplate(properties, providers);
+    public SmsTemplate smsTemplate(SmsProperties properties,
+                                   List<SmsProvider> providers,
+                                   ObjectProvider<SmsBlacklistProvider> blacklistProvider,
+                                   ObjectProvider<DailyBudgetBreaker> budgetBreaker,
+                                   ObjectProvider<Executor> taskExecutorProvider) {
+        return new SmsTemplate(
+                properties,
+                providers,
+                blacklistProvider.getIfAvailable(),
+                budgetBreaker.getIfAvailable(),
+                taskExecutorProvider.getIfAvailable()
+        );
     }
 
     /**

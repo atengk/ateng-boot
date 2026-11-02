@@ -40,13 +40,23 @@ public class MockSmsProvider implements SmsProvider {
         // 纯内存记录
         sentRequests.offer(request);
 
-        log.info("[MockSmsProvider] 模拟发信成功 -> 渠道: {}, 目标号码: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
-                channelName,
-                maskedPhone,
-                request.getTemplateId(),
-                request.getSignName() != null ? request.getSignName() : (channel != null ? channel.getSignName() : "MOCK"),
-                request.getParams(),
-                bizId);
+        if (request.getPhones() != null && request.getPhones().size() > 1) {
+            log.info("[MockSmsProvider] 模拟批量发信成功 -> 渠道: {}, 目标号码数: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
+                    channelName,
+                    request.getPhones().size(),
+                    request.getTemplateId(),
+                    request.getSignName() != null ? request.getSignName() : (channel != null ? channel.getSignName() : "MOCK"),
+                    request.getParams(),
+                    bizId);
+        } else {
+            log.info("[MockSmsProvider] 模拟发信成功 -> 渠道: {}, 目标号码: {}, 模板ID: {}, 签名: {}, 动态参数: {}, 模拟流水号: {}",
+                    channelName,
+                    maskedPhone,
+                    request.getTemplateId(),
+                    request.getSignName() != null ? request.getSignName() : (channel != null ? channel.getSignName() : "MOCK"),
+                    request.getParams(),
+                    bizId);
+        }
 
         return SmsResult.mock(channelName, bizId, requestId);
     }
