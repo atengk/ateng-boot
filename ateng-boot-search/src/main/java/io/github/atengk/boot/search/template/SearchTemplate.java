@@ -15,9 +15,12 @@ import co.elastic.clients.elasticsearch.core.CountResponse;
 import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch.core.MgetResponse;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import co.elastic.clients.elasticsearch.core.get.GetResult;
+import co.elastic.clients.elasticsearch.core.mget.MultiGetResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -438,6 +441,148 @@ public class SearchTemplate {
             }
             throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
                     "Failed to get document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 根据多个文档 ID 批量查询文档实体列表（可变长参数）
+     * <p>
+     * 自动从实体类提取 @SearchIndex 索引名；底层基于 _mget 批量端点单次往返检索；
+     * 严格遵循空安全不变量，自动过滤未命中项，保底返回纯净的 List（不含 null 元素）。
+     *
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 可变参数
+     * @param <T>   实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    @SafeVarargs
+    public final <T> List<T> getByIds(Class<T> clazz, String... ids) {
+        return getByIds(clazz, ids != null ? Arrays.asList(ids) : Collections.emptyList());
+    }
+
+    /**
+     * 根据多个文档 ID 批量查询文档实体列表
+     * <p>
+     * 自动从实体类提取 @SearchIndex 索引名；底层基于 _mget 批量端点单次往返检索；
+     * 严格遵循空安全不变量，自动过滤未命中项，保底返回纯净的 List（不含 null 元素）。
+     *
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 集合
+     * @param <T>   实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<T> getByIds(Class<T> clazz, Collection<String> ids) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return getByIds(index, clazz, ids);
+    }
+
+    /**
+     * 根据多个文档 ID 从指定索引批量查询文档实体列表
+     *
+     * @param index 目标索引名
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 集合
+     * @param <T>   实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<T> getByIds(String index, Class<T> clazz, Collection<String> ids) {
+        List<SearchHit<T>> hits = getHitsByIds(index, clazz, ids);
+        if (hits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return hits.stream().map(SearchHit::getContent).filter(Objects::nonNull).toList();
+    }
+
+    /**
+     * 根据多个文档 ID 批量查询完整命中文档模型列表（可变长参数）
+     *
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 可变参数
+     * @param <T>   实体类型
+     * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    @SafeVarargs
+    public final <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, String... ids) {
+        return getHitsByIds(clazz, ids != null ? Arrays.asList(ids) : Collections.emptyList());
+    }
+
+    /**
+     * 根据多个文档 ID 批量查询完整命中文档模型列表
+     *
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 集合
+     * @param <T>   实体类型
+     * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, Collection<String> ids) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return getHitsByIds(index, clazz, ids);
+    }
+
+    /**
+     * 根据多个文档 ID 从指定索引批量查询完整命中文档模型列表
+     *
+     * @param index 目标索引名
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 集合
+     * @param <T>   实体类型
+     * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<SearchHit<T>> getHitsByIds(String index, Class<T> clazz, Collection<String> ids) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        if (CollectionUtil.isEmpty(ids)) {
+            return Collections.emptyList();
+        }
+        List<String> validIds = ids.stream().filter(StringUtils::hasText).toList();
+        if (validIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        if (searchMetrics != null) {
+            return searchMetrics.recordQuery(() -> executeDoGetHitsByIds(index, clazz, validIds));
+        }
+        return executeDoGetHitsByIds(index, clazz, validIds);
+    }
+
+    private <T> List<SearchHit<T>> executeDoGetHitsByIds(String index, Class<T> clazz, List<String> idList) {
+        try {
+            MgetResponse<T> response = getClient().mget(b -> b.index(index).ids(idList), clazz);
+            if (response == null || CollectionUtil.isEmpty(response.docs())) {
+                return Collections.emptyList();
+            }
+            List<SearchHit<T>> hits = new ArrayList<>(response.docs().size());
+            for (MultiGetResponseItem<T> item : response.docs()) {
+                if (item.isResult()) {
+                    GetResult<T> getResult = item.result();
+                    if (getResult.found() && getResult.source() != null) {
+                        hits.add(SearchHit.<T>builder()
+                                .id(getResult.id())
+                                .index(getResult.index())
+                                .content(getResult.source())
+                                .seqNo(getResult.seqNo())
+                                .primaryTerm(getResult.primaryTerm())
+                                .version(getResult.version())
+                                .routing(getResult.routing())
+                                .build());
+                    }
+                }
+            }
+            return hits;
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Index not found during mget on index [{}]", index);
+                return Collections.emptyList();
+            }
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+                    "Failed to get documents by ids from index [" + index + "]: " + e.getMessage(), e);
         }
     }
 

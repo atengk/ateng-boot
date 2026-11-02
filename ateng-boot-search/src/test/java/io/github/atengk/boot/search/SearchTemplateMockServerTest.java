@@ -2006,4 +2006,198 @@ class SearchTemplateMockServerTest {
         assertThat(recordedRequest.getPath()).contains("/custom_order_idx/_count");
         assertThat(recordedRequest.getPath()).contains("routing=route_east");
     }
+
+    @Test
+    @DisplayName("测试 getByIds 全部命中文档")
+    void testGetByIdsAllHit() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 1,
+                      "_seq_no": 1,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "user1001",
+                        "email": "user1001@example.com",
+                        "age": 20,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "1002",
+                      "_version": 1,
+                      "_seq_no": 2,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1002",
+                        "username": "user1002",
+                        "email": "user1002@example.com",
+                        "age": 22,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("1001", "1002"));
+
+        assertThat(users).hasSize(2);
+        assertThat(users.get(0).getUsername()).isEqualTo("user1001");
+        assertThat(users.get(1).getUsername()).isEqualTo("user1002");
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_mget");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"ids\":[\"1001\",\"1002\"]");
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 部分命中时自动过滤未找到的元素（严禁返回 null 元素）")
+    void testGetByIdsPartialHit() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 1,
+                      "_seq_no": 1,
+                      "_primary_term": 1,
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "user1001",
+                        "email": "user1001@example.com",
+                        "age": 20,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "9999",
+                      "found": false
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("1001", "9999"));
+
+        assertThat(users).hasSize(1);
+        assertThat(users.get(0).getUsername()).isEqualTo("user1001");
+        assertThat(users).doesNotContainNull();
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 全部未命中时保底返回空集合")
+    void testGetByIdsAllMiss() {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "9991",
+                      "found": false
+                    },
+                    {
+                      "_index": "user_idx",
+                      "_id": "9992",
+                      "found": false
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds(UserDoc.class, List.of("9991", "9992"));
+
+        assertThat(users).isNotNull();
+        assertThat(users).isEmpty();
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 传入 null 或空集合时零网络请求保底返回 emptyList")
+    void testGetByIdsEmptyOrNullIds() {
+        List<UserDoc> res1 = searchTemplate.getByIds(UserDoc.class, (List<String>) null);
+        assertThat(res1).isEmpty();
+
+        List<UserDoc> res2 = searchTemplate.getByIds(UserDoc.class, Collections.emptyList());
+        assertThat(res2).isEmpty();
+
+        List<UserDoc> res3 = searchTemplate.getByIds(UserDoc.class);
+        assertThat(res3).isEmpty();
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试 getHitsByIds 返回包含 seqNo/primaryTerm/version 的完整命中文档载荷")
+    void testGetHitsByIdsSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "user_idx",
+                      "_id": "1001",
+                      "_version": 3,
+                      "_seq_no": 8,
+                      "_primary_term": 2,
+                      "_routing": "route_east",
+                      "found": true,
+                      "_source": {
+                        "id": "1001",
+                        "username": "ateng",
+                        "email": "ateng@example.com",
+                        "age": 18,
+                        "createTime": "2026-10-25 12:00:00"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        List<SearchHit<UserDoc>> hits = searchTemplate.getHitsByIds(UserDoc.class, "1001");
+
+        assertThat(hits).hasSize(1);
+        SearchHit<UserDoc> hit = hits.get(0);
+        assertThat(hit.getId()).isEqualTo("1001");
+        assertThat(hit.getIndex()).isEqualTo("user_idx");
+        assertThat(hit.getVersion()).isEqualTo(3L);
+        assertThat(hit.getSeqNo()).isEqualTo(8L);
+        assertThat(hit.getPrimaryTerm()).isEqualTo(2L);
+        assertThat(hit.getRouting()).isEqualTo("route_east");
+        assertThat(hit.getContent()).isNotNull();
+        assertThat(hit.getContent().getUsername()).isEqualTo("ateng");
+    }
+
+    @Test
+    @DisplayName("测试 getByIds 指定索引时目标索引不存在保底返回空集合")
+    void testGetByIdsIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [missing_idx]"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        List<UserDoc> users = searchTemplate.getByIds("missing_idx", UserDoc.class, List.of("1001"));
+        assertThat(users).isNotNull();
+        assertThat(users).isEmpty();
+    }
 }
