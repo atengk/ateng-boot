@@ -10,6 +10,7 @@ import io.github.atengk.boot.job.snail.actuator.SnailJobHealthIndicator;
 import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
+import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
@@ -157,6 +158,17 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
+     * SnailJob 节点级任务运行时动态治理总线
+     *
+     * @return SnailJobRuntimeGovernor 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SnailJobRuntimeGovernor snailJobRuntimeGovernor() {
+        return new SnailJobRuntimeGovernor();
+    }
+
+    /**
      * SnailJob 三阶告警防风暴聚合与自愈引擎
      *
      * @param properties                   SnailJob 配置属性
@@ -206,6 +218,7 @@ public class AtengSnailJobAutoConfiguration {
      *
      * @param properties                SnailJob 配置属性
      * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
+     * @param governorProvider          节点级运行时治理总线提供者 (可选)
      * @return SnailJobEndpoint 实例
      */
     @Bean
@@ -213,8 +226,13 @@ public class AtengSnailJobAutoConfiguration {
     @ConditionalOnMissingBean
     public SnailJobEndpoint snailJobEndpoint(
             SnailJobProperties properties,
-            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider) {
-        return new SnailJobEndpoint(properties, drainStateMachineProvider.getIfAvailable());
+            ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
+            ObjectProvider<SnailJobRuntimeGovernor> governorProvider) {
+        return new SnailJobEndpoint(
+                properties,
+                drainStateMachineProvider.getIfAvailable(),
+                governorProvider.getIfAvailable()
+        );
     }
 
     /**
@@ -243,6 +261,7 @@ public class AtengSnailJobAutoConfiguration {
      * @param alertAggregatorProvider    告警聚合器提供者 (可选)
      * @param interceptorsProvider       生命周期拦截器提供者 (可选)
      * @param fallbackHandlersProvider   全局超时降级补偿处理器提供者 (可选)
+     * @param governorProvider           节点级运行时治理总线提供者 (可选)
      * @return SnailJobContextAspect 实例
      */
     @Bean
@@ -255,7 +274,8 @@ public class AtengSnailJobAutoConfiguration {
             ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
             ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
             ObjectProvider<SnailJobInterceptor> interceptorsProvider,
-            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider) {
+            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
+            ObjectProvider<SnailJobRuntimeGovernor> governorProvider) {
         return new SnailJobContextAspect(
                 watchdog,
                 properties,
@@ -263,7 +283,8 @@ public class AtengSnailJobAutoConfiguration {
                 metricsBinderProvider.getIfAvailable(),
                 alertAggregatorProvider.getIfAvailable(),
                 interceptorsProvider.orderedStream().toList(),
-                fallbackHandlersProvider.orderedStream().toList()
+                fallbackHandlersProvider.orderedStream().toList(),
+                governorProvider.getIfAvailable()
         );
     }
 

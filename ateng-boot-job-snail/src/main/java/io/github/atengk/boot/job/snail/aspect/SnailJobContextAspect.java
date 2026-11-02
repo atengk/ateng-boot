@@ -29,6 +29,7 @@ import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.interceptor.SnailJobExecutionContext;
 import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
@@ -99,13 +100,14 @@ public class SnailJobContextAspect {
     private final SnailJobAlertAggregator alertAggregator;
     private final java.util.List<SnailJobInterceptor> interceptors;
     private final java.util.List<JobTimeoutFallbackHandler> fallbackHandlers;
+    private final SnailJobRuntimeGovernor governor;
 
     public SnailJobContextAspect() {
-        this(null, null, null, null, null, null, null);
+        this(null, null, null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(SnailLocalWatchdog watchdog, SnailJobProperties properties) {
-        this(watchdog, properties, null, null, null, null, null);
+        this(watchdog, properties, null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -114,7 +116,7 @@ public class SnailJobContextAspect {
             GracefulDrainStateMachine drainStateMachine,
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -124,7 +126,7 @@ public class SnailJobContextAspect {
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator,
             java.util.List<SnailJobInterceptor> interceptors) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, null, null);
     }
 
     public SnailJobContextAspect(
@@ -135,6 +137,18 @@ public class SnailJobContextAspect {
             SnailJobAlertAggregator alertAggregator,
             java.util.List<SnailJobInterceptor> interceptors,
             java.util.List<JobTimeoutFallbackHandler> fallbackHandlers) {
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, fallbackHandlers, null);
+    }
+
+    public SnailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator,
+            java.util.List<SnailJobInterceptor> interceptors,
+            java.util.List<JobTimeoutFallbackHandler> fallbackHandlers,
+            SnailJobRuntimeGovernor governor) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.drainStateMachine = drainStateMachine;
@@ -154,6 +168,7 @@ public class SnailJobContextAspect {
         } else {
             this.fallbackHandlers = java.util.Collections.emptyList();
         }
+        this.governor = governor;
     }
 
     public java.util.List<SnailJobInterceptor> getInterceptors() {
@@ -162,6 +177,10 @@ public class SnailJobContextAspect {
 
     public java.util.List<JobTimeoutFallbackHandler> getFallbackHandlers() {
         return fallbackHandlers;
+    }
+
+    public SnailJobRuntimeGovernor getGovernor() {
+        return governor;
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
@@ -335,6 +354,24 @@ public class SnailJobContextAspect {
         Throwable errorThrown = null;
 
         try {
+            // 0. 节点级运行时动态治理状态检查 (若已被暂停，直接跳过并向服务端反馈成功)
+            if (governor != null && governor.isPaused(jobName)) {
+                log.info("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: jobName={}, traceId={}", jobName, traceId);
+                Object skipResult = createGovernorSkippedResult(specificMethod, jobName);
+                executionContext = new SnailJobExecutionContext(
+                        pjp.getTarget(),
+                        specificMethod,
+                        pjp.getArgs(),
+                        metadata
+                );
+                triggerAfterCompletion(executedInterceptors, executionContext, skipResult, null);
+                afterCompletionTriggered = true;
+                if (metricsBinder != null) {
+                    metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SKIPPED, TenantContextHolder.getTenantId(), Duration.ZERO);
+                }
+                return skipResult;
+            }
+
             // A. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
             resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
 
@@ -981,6 +1018,18 @@ public class SnailJobContextAspect {
         }
         // 5. 回退使用 targetClass.getSimpleName()
         return targetClass.getSimpleName();
+    }
+
+    private Object createGovernorSkippedResult(Method method, String jobName) {
+        if (method.getReturnType().equals(Void.TYPE)) {
+            return null;
+        }
+        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
+            ExecuteResult result = ExecuteResult.success("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: " + jobName);
+            result.setMessage("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: " + jobName);
+            return result;
+        }
+        return null;
     }
 
     private Object createInterceptedSuccessResult(Method method, SnailJobInterceptor interceptor) {

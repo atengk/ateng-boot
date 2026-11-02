@@ -7,6 +7,7 @@ import com.aizuda.snailjob.client.job.core.cache.JobExecutorInfoCache;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
 import com.aizuda.snailjob.client.job.core.dto.JobExecutorInfo;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
+import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +32,7 @@ public class SnailJobEndpointTest {
     private SnailJobEndpoint endpoint;
     private SnailJobProperties properties;
     private GracefulDrainStateMachine drainStateMachine;
+    private SnailJobRuntimeGovernor governor;
 
     public static class SampleJobService {
         public String executeJob(JobArgs args) {
@@ -56,7 +58,8 @@ public class SnailJobEndpointTest {
         properties.setPort(17889);
 
         drainStateMachine = new GracefulDrainStateMachine(properties);
-        endpoint = new SnailJobEndpoint(properties, drainStateMachine);
+        governor = new SnailJobRuntimeGovernor();
+        endpoint = new SnailJobEndpoint(properties, drainStateMachine, governor);
 
         // 注册测试调度任务
         Method jobMethod = SampleJobService.class.getMethod("executeJob", JobArgs.class);
@@ -178,5 +181,61 @@ public class SnailJobEndpointTest {
         assertNotNull(triggerResult);
         assertEquals(false, triggerResult.get("success"));
         assertTrue(((String) triggerResult.get("message")).contains("未找到"));
+    }
+
+    @Test
+    public void testListJobsAndDetailWithGovernor() {
+        governor.pause("testSampleJob");
+
+        Map<String, Object> listResult = endpoint.listJobs();
+        assertNotNull(listResult);
+        assertEquals(1, listResult.get("pausedCount"));
+        assertTrue(((java.util.List<?>) listResult.get("pausedJobs")).contains("testSampleJob"));
+
+        Map<String, Object> detail = endpoint.jobDetail("testSampleJob");
+        assertEquals(true, detail.get("isPaused"));
+
+        Map<String, Object> unpausedDetail = endpoint.jobDetail("otherJob");
+        assertEquals(false, unpausedDetail.get("isPaused"));
+    }
+
+    @Test
+    public void testManageJobPauseAndResume() {
+        // 1. 通过 manageJob 暂停
+        Map<String, Object> pauseResult = endpoint.manageJob("testSampleJob", "pause", null);
+        assertNotNull(pauseResult);
+        assertEquals(true, pauseResult.get("success"));
+        assertEquals("pause", pauseResult.get("action"));
+        assertEquals(true, pauseResult.get("paused"));
+        assertEquals(true, pauseResult.get("statusChanged"));
+        assertTrue(governor.isPaused("testSampleJob"));
+
+        // 2. 通过 manageJob 恢复
+        Map<String, Object> resumeResult = endpoint.manageJob("testSampleJob", "resume", null);
+        assertNotNull(resumeResult);
+        assertEquals(true, resumeResult.get("success"));
+        assertEquals("resume", resumeResult.get("action"));
+        assertEquals(false, resumeResult.get("paused"));
+        assertEquals(true, resumeResult.get("statusChanged"));
+        assertFalse(governor.isPaused("testSampleJob"));
+
+        // 3. 缺省 action 触发 triggerJob
+        Map<String, Object> triggerResult = endpoint.manageJob("testSampleJob", null, "{\"message\":\"via-manage\"}");
+        assertNotNull(triggerResult);
+        assertEquals(true, triggerResult.get("success"));
+        assertEquals("executed:{\"message\":\"via-manage\"}", triggerResult.get("result"));
+    }
+
+    @Test
+    public void testManageGovernorResumeAll() {
+        governor.pause("jobA");
+        governor.pause("jobB");
+        assertEquals(2, governor.getPausedCount());
+
+        Map<String, Object> result = endpoint.manageGovernor("resumeAll", null);
+        assertNotNull(result);
+        assertEquals(true, result.get("success"));
+        assertEquals(2, result.get("resumedCount"));
+        assertEquals(0, governor.getPausedCount());
     }
 }

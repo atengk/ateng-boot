@@ -10,6 +10,7 @@ import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
+import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import org.slf4j.MDC;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
@@ -42,10 +43,19 @@ public class SnailJobEndpoint {
 
     private final SnailJobProperties properties;
     private final GracefulDrainStateMachine drainStateMachine;
+    private final SnailJobRuntimeGovernor governor;
 
     public SnailJobEndpoint(SnailJobProperties properties, GracefulDrainStateMachine drainStateMachine) {
+        this(properties, drainStateMachine, null);
+    }
+
+    public SnailJobEndpoint(
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobRuntimeGovernor governor) {
         this.properties = properties != null ? properties : new SnailJobProperties();
         this.drainStateMachine = drainStateMachine;
+        this.governor = governor;
     }
 
     /**
@@ -69,6 +79,14 @@ public class SnailJobEndpoint {
             result.put("inFlightJobs", drainStateMachine.getInFlightJobCount());
             result.put("inFlightRetries", drainStateMachine.getInFlightRetryCount());
             result.put("totalInFlight", drainStateMachine.getTotalInFlightCount());
+        }
+
+        if (governor != null) {
+            result.put("pausedJobs", new ArrayList<>(governor.getPausedHandlers()));
+            result.put("pausedCount", governor.getPausedCount());
+        } else {
+            result.put("pausedJobs", Collections.emptyList());
+            result.put("pausedCount", 0);
         }
 
         Map<String, JobExecutorInfo> jobExecutors = getAllJobExecutors();
@@ -96,6 +114,7 @@ public class SnailJobEndpoint {
     public Map<String, Object> jobDetail(@Selector String name) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("name", name);
+        result.put("isPaused", governor != null && governor.isPaused(name));
 
         // 1. 优先匹配调度任务
         JobExecutorInfo jobInfo = JobExecutorInfoCache.get(name);
@@ -151,14 +170,90 @@ public class SnailJobEndpoint {
     }
 
     /**
+     * 运维管控与脱机手动触发指定调度任务 (支持 pause / resume / trigger)
+     *
+     * @param jobName 调度任务名称
+     * @param action  治理动作 (可选: pause / resume / trigger，缺省为 trigger)
+     * @param args    调度入参 (可选，仅 trigger 时生效)
+     * @return 执行或治理结果详情
+     */
+    @WriteOperation
+    public Map<String, Object> manageJob(
+            @Selector String jobName,
+            @Nullable String action,
+            @Nullable String args) {
+        if ("pause".equalsIgnoreCase(action)) {
+            boolean paused = (governor != null) && governor.pause(jobName);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("jobName", jobName);
+            response.put("action", "pause");
+            response.put("paused", true);
+            response.put("statusChanged", paused);
+            response.put("success", true);
+            return response;
+        }
+        if ("resume".equalsIgnoreCase(action)) {
+            boolean resumed = (governor != null) && governor.resume(jobName);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("jobName", jobName);
+            response.put("action", "resume");
+            response.put("paused", false);
+            response.put("statusChanged", resumed);
+            response.put("success", true);
+            return response;
+        }
+
+        return triggerJob(jobName, args);
+    }
+
+    /**
+     * 全局批量动态治理操作 (如 resumeAll / clear / 批量 pause / resume)
+     *
+     * @param action  治理动作 (pause / resume / resumeAll / clear)
+     * @param jobName 任务名称 (当 action 为 pause / resume 时必填)
+     * @return 治理结果响应
+     */
+    @WriteOperation
+    public Map<String, Object> manageGovernor(@Nullable String action, @Nullable String jobName) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        if ("resumeAll".equalsIgnoreCase(action) || "clear".equalsIgnoreCase(action)) {
+            int count = (governor != null) ? governor.resumeAll() : 0;
+            response.put("action", action);
+            response.put("resumedCount", count);
+            response.put("success", true);
+            return response;
+        }
+        if ("pause".equalsIgnoreCase(action) && jobName != null) {
+            boolean paused = (governor != null) && governor.pause(jobName);
+            response.put("jobName", jobName);
+            response.put("action", "pause");
+            response.put("paused", true);
+            response.put("statusChanged", paused);
+            response.put("success", true);
+            return response;
+        }
+        if ("resume".equalsIgnoreCase(action) && jobName != null) {
+            boolean resumed = (governor != null) && governor.resume(jobName);
+            response.put("jobName", jobName);
+            response.put("action", "resume");
+            response.put("paused", false);
+            response.put("statusChanged", resumed);
+            response.put("success", true);
+            return response;
+        }
+        response.put("success", false);
+        response.put("message", "未知治理动作或缺少必要参数: action=" + action + ", jobName=" + jobName);
+        return response;
+    }
+
+    /**
      * 脱机手动触发指定调度任务执行
      *
      * @param jobName 调度任务名称
      * @param args    调度入参 (可选)
      * @return 执行结果详情
      */
-    @WriteOperation
-    public Map<String, Object> triggerJob(@Selector String jobName, @Nullable String args) {
+    public Map<String, Object> triggerJob(String jobName, @Nullable String args) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("jobName", jobName);
         response.put("args", args);
