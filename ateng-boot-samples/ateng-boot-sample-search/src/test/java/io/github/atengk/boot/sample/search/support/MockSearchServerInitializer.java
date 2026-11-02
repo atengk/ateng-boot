@@ -65,6 +65,14 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             String method = request.getMethod() != null ? request.getMethod() : "GET";
             String body = request.getBody() != null ? request.getBody().readUtf8() : "";
 
+            // 0. HEAD 轻量探测 (existsById)
+            if (method.equals("HEAD")) {
+                return new MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "application/json")
+                        .setHeader("X-Elastic-Product", "Elasticsearch");
+            }
+
             // 1. 集群健康探针
             if (path.contains("/_cluster/health")) {
                 return jsonResponse(200, """
@@ -89,8 +97,103 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
             }
 
             // 2. 别名与索引结构管理
-            if (path.contains("/_aliases") || (!path.contains("/_doc") && (path.contains("product_") || path.contains("access_log_") || path.contains("/order_")) && (method.equals("PUT") || method.equals("DELETE")))) {
+            if (path.contains("/_aliases") || path.contains("/_index_template") || (!path.contains("/_doc") && (path.contains("product_") || path.contains("access_log_") || path.contains("/order_")) && (method.equals("PUT") || method.equals("DELETE")))) {
                 return jsonResponse(200, "{\"acknowledged\":true}");
+            }
+
+            // 2.1 物理段刷新
+            if (path.contains("/_refresh")) {
+                return jsonResponse(200, """
+                        {
+                          "_shards": { "total": 1, "successful": 1, "failed": 0 }
+                        }
+                        """);
+            }
+
+            // 2.2 服务端数据重索引
+            if (path.contains("/_reindex")) {
+                return jsonResponse(200, """
+                        {
+                          "took": 15,
+                          "timed_out": false,
+                          "total": 50,
+                          "updated": 0,
+                          "created": 50,
+                          "deleted": 0,
+                          "batches": 1,
+                          "version_conflicts": 0,
+                          "noops": 0,
+                          "retries": { "bulk": 0, "search": 0 },
+                          "throttled_millis": 0,
+                          "requests_per_second": -1.0,
+                          "throttled_until_millis": 0,
+                          "failures": []
+                        }
+                        """);
+            }
+
+            // 2.3 条件清理 deleteByQuery
+            if (path.contains("/_delete_by_query")) {
+                return jsonResponse(200, """
+                        {
+                          "took": 5,
+                          "timed_out": false,
+                          "total": 10,
+                          "deleted": 10,
+                          "batches": 1,
+                          "version_conflicts": 0,
+                          "noops": 0,
+                          "retries": { "bulk": 0, "search": 0 },
+                          "throttled_millis": 0,
+                          "requests_per_second": -1.0,
+                          "throttled_until_millis": 0,
+                          "failures": []
+                        }
+                        """);
+            }
+
+            // 2.4 轻量计数 count
+            if (path.contains("/_count")) {
+                return jsonResponse(200, """
+                        {
+                          "count": 42,
+                          "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 }
+                        }
+                        """);
+            }
+
+            // 2.5 批量获取 mget
+            if (path.contains("/_mget")) {
+                return jsonResponse(200, """
+                        {
+                          "docs": [
+                            {
+                              "_index": "product_index",
+                              "_id": "P001",
+                              "_version": 1,
+                              "_seq_no": 1,
+                              "_primary_term": 1,
+                              "found": true,
+                              "_source": {
+                                "id": "P001",
+                                "title": "iPhone 16 Pro Max",
+                                "description": "苹果年度旗舰芯片A18 Pro",
+                                "category": "手机",
+                                "brand": "Apple",
+                                "tags": ["数码", "旗舰"],
+                                "price": 9999.00,
+                                "stock": 100,
+                                "status": "ON_SALE",
+                                "tenantId": "tenant-001",
+                                "createTime": "2026-10-26 10:00:00",
+                                "skus": [
+                                  { "skuId": "SKU-001", "color": "曜石黑", "price": 9999.00, "stock": 50 }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                        """);
             }
 
             // 3. 批量写入 Bulk 请求
@@ -150,6 +253,24 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
 
             // 5. 检索 Search
             if (path.contains("/_search")) {
+                if (body.contains("daily_traffic")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 3,
+                              "timed_out": false,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                              "hits": { "total": { "value": 100, "relation": "eq" }, "hits": [] },
+                              "aggregations": {
+                                "date_histogram#daily_traffic": {
+                                  "buckets": [
+                                    { "key_as_string": "2026-11-01", "key": 1793491200000, "doc_count": 60 },
+                                    { "key_as_string": "2026-11-02", "key": 1793577600000, "doc_count": 40 }
+                                  ]
+                                }
+                              }
+                            }
+                            """);
+                }
                 if (body.contains("brand_agg")) {
                     return jsonResponse(200, """
                             {
@@ -230,7 +351,10 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                                   "location": { "lat": 31.2304, "lon": 121.4737 },
                                   "embedding": [0.12, 0.34, 0.56, 0.78],
                                   "tenantId": "tenant-001",
-                                  "createTime": "2026-10-26 10:00:00"
+                                  "createTime": "2026-10-26 10:00:00",
+                                  "skus": [
+                                    { "skuId": "SKU-001", "color": "曜石黑", "price": 9999.00, "stock": 50 }
+                                  ]
                                 },
                                 "highlight": {
                                   "title": ["<em>iPhone</em> 16 Pro Max"],
@@ -266,7 +390,10 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                             "stock": 100,
                             "status": "ON_SALE",
                             "tenantId": "tenant-001",
-                            "createTime": "2026-10-26 10:00:00"
+                            "createTime": "2026-10-26 10:00:00",
+                            "skus": [
+                              { "skuId": "SKU-001", "color": "曜石黑", "price": 9999.00, "stock": 50 }
+                            ]
                           }
                         }
                         """);

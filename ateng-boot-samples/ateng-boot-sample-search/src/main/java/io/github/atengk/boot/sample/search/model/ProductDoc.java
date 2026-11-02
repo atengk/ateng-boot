@@ -56,6 +56,19 @@ public class ProductDoc {
 
     private LocalDateTime createTime;
 
+    private List<SkuItem> skus;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SkuItem {
+        private String skuId;
+        private String color;
+        private BigDecimal price;
+        private Integer stock;
+    }
+
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
