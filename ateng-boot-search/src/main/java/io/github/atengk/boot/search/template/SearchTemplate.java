@@ -1,6 +1,7 @@
 package io.github.atengk.boot.search.template;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch._types.KnnSearch;
@@ -12,6 +13,7 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.CountResponse;
+import co.elastic.clients.elasticsearch.core.DeleteByQueryResponse;
 import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
@@ -1100,6 +1102,83 @@ public class SearchTemplate {
             }
             throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR,
                     "Failed to delete document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 根据查询规格条件批量删除文档
+     * <p>
+     * 自动从实体类解析 @SearchIndex 索引名；多租户激活时自动隐式注入租户隔离过滤（标注 @IgnoreTenant 的实体除外）；
+     * 默认配置 conflicts 为 Proceed，高并发版本冲突时不中断批量任务。
+     *
+     * @param query 查询规格对象
+     * @param clazz 实体类类型
+     * @return 成功删除的文档数量
+     */
+    public long deleteByQuery(SearchQuery query, Class<?> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = query != null && CollectionUtil.isNotEmpty(query.getIndices())
+                ? query.getIndices().get(0)
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return deleteByQuery(index, query, clazz);
+    }
+
+    /**
+     * 在指定索引上根据查询规格条件批量删除文档
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @return 成功删除的文档数量
+     */
+    public long deleteByQuery(String index, SearchQuery query) {
+        return deleteByQuery(index, query, null);
+    }
+
+    /**
+     * 在指定索引上根据查询规格条件批量删除文档，支持实体映射规则与多租户过滤
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象
+     * @param clazz 实体类类型（用于多租户隐式过滤等元数据解析，可为 null）
+     * @return 成功删除的文档数量
+     */
+    public long deleteByQuery(String index, SearchQuery query, Class<?> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        if (searchMetrics != null) {
+            return searchMetrics.recordQuery(() -> executeDoDeleteByQuery(index, query, clazz));
+        }
+        return executeDoDeleteByQuery(index, query, clazz);
+    }
+
+    private long executeDoDeleteByQuery(String index, SearchQuery query, Class<?> clazz) {
+        try {
+            Query baseQuery = query != null ? query.getQuery() : null;
+            Query effectiveQuery = wrapTenantFilterIfNecessary(baseQuery, clazz);
+            Query finalQuery = effectiveQuery != null ? effectiveQuery : Query.of(q -> q.matchAll(m -> m));
+
+            DeleteByQueryResponse response = getClient().deleteByQuery(builder -> {
+                builder.index(index).query(finalQuery);
+                builder.conflicts(Conflicts.Proceed);
+                if (query != null && StringUtils.hasText(query.getRouting())) {
+                    builder.routing(query.getRouting());
+                }
+                return builder;
+            });
+            log.debug("Executed deleteByQuery on index [{}], deleted: {}, versionConflicts: {}",
+                    index, response.deleted(), response.versionConflicts());
+            return response.deleted() != null ? response.deleted() : 0L;
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Index not found during deleteByQuery on index [{}]", index);
+                return 0L;
+            }
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR,
+                    "Failed to execute deleteByQuery on index [" + index + "]: " + e.getMessage(), e);
         }
     }
 

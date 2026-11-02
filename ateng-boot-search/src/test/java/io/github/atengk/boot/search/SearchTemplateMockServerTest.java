@@ -2200,4 +2200,169 @@ class SearchTemplateMockServerTest {
         assertThat(users).isNotNull();
         assertThat(users).isEmpty();
     }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 成功条件批量删除文档")
+    void testDeleteByQuerySuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 15,
+                  "timed_out": false,
+                  "total": 10,
+                  "deleted": 10,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().term("status", "CANCELLED").build();
+        long deleted = searchTemplate.deleteByQuery(query, UserDoc.class);
+
+        assertThat(deleted).isEqualTo(10L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/user_idx/_delete_by_query");
+        assertThat(recordedRequest.getPath()).contains("conflicts=proceed");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"status\":{\"value\":\"CANCELLED\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 多租户自动隐式注入租户隔离过滤")
+    void testDeleteByQueryWithTenantIsolation() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "took": 8,
+                  "timed_out": false,
+                  "total": 3,
+                  "deleted": 3,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery(SearchQuery.builder().matchAll().build(), UserDoc.class);
+
+        assertThat(deleted).isEqualTo(3L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/user_idx/_delete_by_query");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_001\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 实体标注 @IgnoreTenant 时豁免多租户过滤")
+    void testDeleteByQueryWithIgnoredTenant() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "took": 12,
+                  "timed_out": false,
+                  "total": 8,
+                  "deleted": 8,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery(SearchQuery.builder().matchAll().build(), IgnoredTenantDoc.class);
+
+        assertThat(deleted).isEqualTo(8L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/global_dict_idx/_delete_by_query");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).doesNotContain("\"tenant_id\"");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 指定显式索引与 routing 路由参数")
+    void testDeleteByQueryWithExplicitIndexAndRouting() throws Exception {
+        String mockResponseBody = """
+                {
+                  "took": 6,
+                  "timed_out": false,
+                  "total": 5,
+                  "deleted": 5,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().routing("route_east").term("type", "audit").build();
+        long deleted = searchTemplate.deleteByQuery("custom_audit_idx", query);
+
+        assertThat(deleted).isEqualTo(5L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/custom_audit_idx/_delete_by_query");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+        assertThat(recordedRequest.getPath()).contains("conflicts=proceed");
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 当目标索引不存在时保底返回 0")
+    void testDeleteByQueryIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [non_existing_idx]"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        long deleted = searchTemplate.deleteByQuery("non_existing_idx", SearchQuery.builder().build());
+        assertThat(deleted).isEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("测试 deleteByQuery 底层服务端错误转译为 SearchException 且保留原因")
+    void testDeleteByQueryDriverErrorTranslation() {
+        mockWebServer.enqueue(new MockResponse().setResponseCode(500).setBody("Internal Server Error"));
+
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("user_idx", SearchQuery.builder().build()))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR);
+                    assertThat(se.getMessage()).contains("Failed to execute deleteByQuery");
+                });
+    }
 }
