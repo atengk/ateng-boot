@@ -27,6 +27,7 @@ import io.github.atengk.boot.job.snail.template.SnailMyBatisStreamingTemplate;
 import io.github.atengk.boot.job.snail.template.SnailShardingBatchTemplate;
 import io.github.atengk.boot.job.snail.template.TenantJobTemplate;
 import io.github.atengk.boot.job.snail.tenant.TenantListProvider;
+import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -110,13 +111,26 @@ public class AtengSnailJobAutoConfiguration {
     /**
      * SnailJob 本地硬超时看门狗引擎
      *
-     * @param eventPublisher Spring 领域事件发布器
+     * @param eventPublisher           Spring 领域事件发布器
+     * @param properties               SnailJob 配置属性
+     * @param fallbackHandlersProvider 全局超时降级补偿处理器提供者 (可选)
+     * @param asyncExecutorProvider    受管异步线程池提供者 (可选)
      * @return SnailLocalWatchdog 实例
      */
     @Bean
     @ConditionalOnMissingBean
-    public SnailLocalWatchdog snailLocalWatchdog(ApplicationEventPublisher eventPublisher) {
-        return new SnailLocalWatchdog(eventPublisher);
+    public SnailLocalWatchdog snailLocalWatchdog(
+            ApplicationEventPublisher eventPublisher,
+            SnailJobProperties properties,
+            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider,
+            @Qualifier("taskExecutor") ObjectProvider<Executor> asyncExecutorProvider) {
+        return new SnailLocalWatchdog(
+                eventPublisher,
+                null,
+                properties.getWatchdogGracePeriod(),
+                fallbackHandlersProvider.orderedStream().toList(),
+                asyncExecutorProvider.getIfAvailable()
+        );
     }
 
     /**
@@ -228,6 +242,7 @@ public class AtengSnailJobAutoConfiguration {
      * @param metricsBinderProvider      度量绑定器提供者 (可选)
      * @param alertAggregatorProvider    告警聚合器提供者 (可选)
      * @param interceptorsProvider       生命周期拦截器提供者 (可选)
+     * @param fallbackHandlersProvider   全局超时降级补偿处理器提供者 (可选)
      * @return SnailJobContextAspect 实例
      */
     @Bean
@@ -239,14 +254,16 @@ public class AtengSnailJobAutoConfiguration {
             ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
             ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
             ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
-            ObjectProvider<SnailJobInterceptor> interceptorsProvider) {
+            ObjectProvider<SnailJobInterceptor> interceptorsProvider,
+            ObjectProvider<JobTimeoutFallbackHandler> fallbackHandlersProvider) {
         return new SnailJobContextAspect(
                 watchdog,
                 properties,
                 drainStateMachineProvider.getIfAvailable(),
                 metricsBinderProvider.getIfAvailable(),
                 alertAggregatorProvider.getIfAvailable(),
-                interceptorsProvider.orderedStream().toList()
+                interceptorsProvider.orderedStream().toList(),
+                fallbackHandlersProvider.orderedStream().toList()
         );
     }
 

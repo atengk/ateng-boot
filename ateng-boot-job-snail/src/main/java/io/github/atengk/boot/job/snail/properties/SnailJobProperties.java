@@ -67,6 +67,11 @@ public class SnailJobProperties {
     private Duration defaultJobTimeout = Duration.ofHours(1);
 
     /**
+     * 本地硬看门狗中断后工作线程响应终止的宽限期（超限后触发紧急异步全局降级兜底）
+     */
+    private Duration watchdogGracePeriod = Duration.ofSeconds(2);
+
+    /**
      * 是否开启 SLF4J 动态日志双写镜像（自动将任务中的 log.info 镜像推送到 SnailJob 服务端控制台）
      */
     private boolean logMirrorEnabled = true;

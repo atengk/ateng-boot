@@ -34,6 +34,7 @@ import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
+import io.github.atengk.boot.job.snail.watchdog.JobTimeoutFallbackHandler;
 import io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata;
 import io.github.atengk.boot.job.snail.watchdog.SnailLocalWatchdog;
 import jakarta.validation.Constraint;
@@ -51,13 +52,17 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.annotation.Order;
+import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -93,13 +98,14 @@ public class SnailJobContextAspect {
     private final SnailJobMetricsBinder metricsBinder;
     private final SnailJobAlertAggregator alertAggregator;
     private final java.util.List<SnailJobInterceptor> interceptors;
+    private final java.util.List<JobTimeoutFallbackHandler> fallbackHandlers;
 
     public SnailJobContextAspect() {
-        this(null, null, null, null, null, null);
+        this(null, null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(SnailLocalWatchdog watchdog, SnailJobProperties properties) {
-        this(watchdog, properties, null, null, null, null);
+        this(watchdog, properties, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -108,7 +114,7 @@ public class SnailJobContextAspect {
             GracefulDrainStateMachine drainStateMachine,
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator) {
-        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null);
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null, null);
     }
 
     public SnailJobContextAspect(
@@ -118,6 +124,17 @@ public class SnailJobContextAspect {
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator,
             java.util.List<SnailJobInterceptor> interceptors) {
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, interceptors, null);
+    }
+
+    public SnailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator,
+            java.util.List<SnailJobInterceptor> interceptors,
+            java.util.List<JobTimeoutFallbackHandler> fallbackHandlers) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.drainStateMachine = drainStateMachine;
@@ -130,10 +147,21 @@ public class SnailJobContextAspect {
         } else {
             this.interceptors = java.util.Collections.emptyList();
         }
+        if (fallbackHandlers != null && !fallbackHandlers.isEmpty()) {
+            java.util.List<JobTimeoutFallbackHandler> sorted = new java.util.ArrayList<>(fallbackHandlers);
+            AnnotationAwareOrderComparator.sort(sorted);
+            this.fallbackHandlers = java.util.Collections.unmodifiableList(sorted);
+        } else {
+            this.fallbackHandlers = java.util.Collections.emptyList();
+        }
     }
 
     public java.util.List<SnailJobInterceptor> getInterceptors() {
         return interceptors;
+    }
+
+    public java.util.List<JobTimeoutFallbackHandler> getFallbackHandlers() {
+        return fallbackHandlers;
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
@@ -302,12 +330,13 @@ public class SnailJobContextAspect {
         java.util.List<SnailJobInterceptor> executedInterceptors = new java.util.ArrayList<>(this.interceptors.size());
         boolean afterCompletionTriggered = false;
         SnailJobExecutionContext executionContext = null;
+        Object[] resolvedArgs = null;
         Object executionResult = null;
         Throwable errorThrown = null;
 
         try {
             // A. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
-            Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
+            resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
 
             // B. 若租户模式为 PARAM 且前面未提取到租户，从反序列化后的实参中二次探测
             if (tenantMode == JobTenantMode.PARAM && !StringUtils.hasText(TenantContextHolder.getTenantId())) {
@@ -375,6 +404,67 @@ public class SnailJobContextAspect {
             return executionResult;
 
         } catch (Throwable t) {
+            SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
+            boolean isTimedOut = (session != null) && (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut()));
+            if (isTimedOut) {
+                log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
+                long elapsedNanos = System.nanoTime() - startTimeNanos;
+                Duration elapsed = Duration.ofNanos(elapsedNanos);
+
+                // 尝试执行方法级就地降级补偿
+                String fallbackMethodName = (atengSnailJob != null) ? atengSnailJob.fallbackMethod().trim() : "";
+                if (StringUtils.hasText(fallbackMethodName)) {
+                    try {
+                        Object fallbackResult = invokeFallbackMethod(
+                                pjp.getTarget(),
+                                targetClass,
+                                fallbackMethodName,
+                                metadata,
+                                elapsed,
+                                t,
+                                resolvedArgs,
+                                pjp.getArgs()
+                        );
+                        log.info("[SnailJob] 任务 [{}] 超时就地降级补偿方法 [{}] 执行成功", jobName, fallbackMethodName);
+                        Object finalResult = (fallbackResult != null)
+                                ? fallbackResult
+                                : createFallbackSuccessResult(specificMethod, fallbackMethodName);
+                        executionResult = finalResult;
+                        errorThrown = null;
+
+                        // 拦截器 postHandle 后置处理 (逆序执行)
+                        if (!executedInterceptors.isEmpty()) {
+                            SnailJobExecutionContext ctx = (executionContext != null)
+                                    ? executionContext
+                                    : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, (resolvedArgs != null ? resolvedArgs : pjp.getArgs()), metadata);
+                            for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+                                try {
+                                    executedInterceptors.get(i).postHandle(ctx, executionResult);
+                                } catch (Throwable it) {
+                                    log.error("[SnailJob] 拦截器 [{}] postHandle 执行异常: {}",
+                                            executedInterceptors.get(i).getClass().getSimpleName(), it.getMessage(), it);
+                                }
+                            }
+                        }
+
+                        long durationMs = elapsed.toMillis();
+                        if (metricsBinder != null) {
+                            metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), elapsed);
+                        }
+                        if (alertAggregator != null) {
+                            alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
+                        }
+                        return finalResult;
+                    } catch (Throwable fallbackEx) {
+                        log.error("[SnailJob] 任务 [{}] 就地降级补偿方法 [{}] 执行异常: {}",
+                                jobName, fallbackMethodName, fallbackEx.getMessage(), fallbackEx);
+                    }
+                }
+
+                // 若未配置就地降级或就地降级执行抛出异常，触发全局超时降级 SPI
+                triggerGlobalFallbackHandlers(metadata, elapsed);
+            }
+
             errorThrown = t;
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
             if (metricsBinder != null) {
@@ -382,10 +472,6 @@ public class SnailJobContextAspect {
             }
             if (alertAggregator != null) {
                 alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, t);
-            }
-            SnailLocalWatchdog.WatchdogSession session = sessionRef.get();
-            if (session.isTimedOut() || (t instanceof InterruptedException && session.isTimedOut())) {
-                log.warn("SnailJob 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
             }
             throw t;
         } finally {
@@ -905,6 +991,164 @@ public class SnailJobContextAspect {
             ExecuteResult result = ExecuteResult.success("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
             result.setMessage("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
             return result;
+        }
+        return null;
+    }
+
+    private Object createFallbackSuccessResult(Method method, String fallbackMethodName) {
+        if (method.getReturnType().equals(Void.TYPE)) {
+            return null;
+        }
+        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
+            ExecuteResult result = ExecuteResult.success("[FALLBACK] 任务超时就地降级补偿完成: " + fallbackMethodName);
+            result.setMessage("[FALLBACK] 任务超时就地降级补偿完成: " + fallbackMethodName);
+            return result;
+        }
+        return null;
+    }
+
+    private void triggerGlobalFallbackHandlers(SnailJobExecutionMetadata metadata, Duration elapsed) {
+        if (fallbackHandlers == null || fallbackHandlers.isEmpty()) {
+            return;
+        }
+        for (JobTimeoutFallbackHandler handler : fallbackHandlers) {
+            try {
+                handler.onTimeout(metadata, elapsed);
+            } catch (Throwable ex) {
+                log.error("[SnailJob] 全局超时降级处理器 [{}] 执行异常: {}",
+                        handler.getClass().getSimpleName(), ex.getMessage(), ex);
+            }
+        }
+    }
+
+    /**
+     * 智能反射匹配并执行当前 Bean 上的方法级超时就地降级补偿逻辑
+     *
+     * @param target             目标 Bean 实例
+     * @param targetClass        目标类 Class
+     * @param fallbackMethodName 声明的降级方法名
+     * @param metadata           任务执行上下文元数据
+     * @param elapsed            超时已耗时
+     * @param error              导致超时的原始异常或中断异常
+     * @param resolvedArgs       已解析绑定的业务方法实参
+     * @param rawArgs            AOP 原始调用实参
+     * @return 降级方法执行结果
+     * @throws Throwable 降级方法执行抛出的真实业务异常
+     */
+    protected Object invokeFallbackMethod(
+            Object target,
+            Class<?> targetClass,
+            String fallbackMethodName,
+            SnailJobExecutionMetadata metadata,
+            Duration elapsed,
+            Throwable error,
+            Object[] resolvedArgs,
+            Object[] rawArgs) throws Throwable {
+        List<Method> candidates = new ArrayList<>();
+        Class<?> searchType = targetClass;
+        while (searchType != null && searchType != Object.class) {
+            Method[] methods = searchType.isInterface() ? searchType.getMethods() : searchType.getDeclaredMethods();
+            for (Method method : methods) {
+                if (method.getName().equals(fallbackMethodName)) {
+                    candidates.add(method);
+                }
+            }
+            searchType = searchType.getSuperclass();
+        }
+
+        if (candidates.isEmpty()) {
+            throw new NoSuchMethodException("在目标类 [" + targetClass.getName() + "] 中未找到降级补偿方法: " + fallbackMethodName);
+        }
+
+        Method bestMethod = null;
+        Object[] bestArgs = null;
+        int maxScore = -1;
+
+        for (Method candidate : candidates) {
+            Parameter[] parameters = candidate.getParameters();
+            Object[] matched = new Object[parameters.length];
+            boolean matchSuccess = true;
+            int score = 0;
+
+            for (int i = 0; i < parameters.length; i++) {
+                Parameter param = parameters[i];
+                Class<?> type = param.getType();
+                Object argValue = null;
+                boolean found = false;
+
+                if (SnailJobExecutionMetadata.class.isAssignableFrom(type)) {
+                    argValue = metadata;
+                    found = true;
+                    score += 10;
+                } else if (Duration.class.isAssignableFrom(type)) {
+                    argValue = elapsed;
+                    found = true;
+                    score += 10;
+                } else if (Throwable.class.isAssignableFrom(type)) {
+                    argValue = error;
+                    found = true;
+                    score += 10;
+                } else if (SnailJobContext.class.isAssignableFrom(type)) {
+                    argValue = SnailJobContextHolder.get();
+                    found = true;
+                    score += 5;
+                } else if (JobContext.class.isAssignableFrom(type)) {
+                    argValue = (SnailJobContextHolder.get() != null) ? SnailJobContextHolder.get().getNativeJobContext() : null;
+                    found = true;
+                    score += 5;
+                } else if (ShardingContext.class.isAssignableFrom(type)) {
+                    argValue = (SnailJobContextHolder.get() != null) ? SnailJobContextHolder.get().getSharding() : null;
+                    found = true;
+                    score += 5;
+                } else {
+                    Object matchedArg = findArgByType(type, resolvedArgs);
+                    if (matchedArg == null) {
+                        matchedArg = findArgByType(type, rawArgs);
+                    }
+                    if (matchedArg != null) {
+                        argValue = matchedArg;
+                        found = true;
+                        score += 5;
+                    } else if (!type.isPrimitive()) {
+                        argValue = null;
+                        found = true;
+                    }
+                }
+
+                if (!found) {
+                    matchSuccess = false;
+                    break;
+                }
+                matched[i] = argValue;
+            }
+
+            if (matchSuccess && (bestMethod == null || score > maxScore || (score == maxScore && parameters.length > bestMethod.getParameterCount()))) {
+                bestMethod = candidate;
+                bestArgs = matched;
+                maxScore = score;
+            }
+        }
+
+        if (bestMethod == null) {
+            throw new IllegalStateException("在目标类 [" + targetClass.getName() + "] 中未找到可与上下文参数相匹配的降级补偿方法: " + fallbackMethodName);
+        }
+
+        ReflectionUtils.makeAccessible(bestMethod);
+        try {
+            return bestMethod.invoke(target, bestArgs);
+        } catch (InvocationTargetException ite) {
+            throw ite.getTargetException();
+        }
+    }
+
+    private Object findArgByType(Class<?> type, Object[] args) {
+        if (args == null || args.length == 0) {
+            return null;
+        }
+        for (Object arg : args) {
+            if (arg != null && type.isInstance(arg)) {
+                return arg;
+            }
         }
         return null;
     }

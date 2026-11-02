@@ -11,7 +11,11 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,7 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>基于 Netty {@link HashedWheelTimer} 时间轮监控任务执行生命周期。
  * 当任务运行时间超出预设阈值时，确定性触发工作线程 {@link Thread#interrupt()} 强中断，
- * 广播发布 {@link SnailJobTimeoutEvent} 并记录结构化超时日志，彻底防御僵尸线程积压与线程池耗尽。</p>
+ * 广播发布 {@link SnailJobTimeoutEvent} 并记录结构化超时日志，彻底防御僵尸线程积压与线程池耗尽。
+ * 同时支持两级防御：当中断后工作线程在宽限期内顽固无响应时，异步触发全局 {@link JobTimeoutFallbackHandler} 紧急降级兜底。</p>
  *
  * @author Ateng
  * @since 2026-10-31
@@ -32,16 +37,41 @@ public class SnailLocalWatchdog implements DisposableBean {
 
     private final HashedWheelTimer timer;
     private final ApplicationEventPublisher eventPublisher;
+    private final Duration gracePeriod;
+    private final List<JobTimeoutFallbackHandler> fallbackHandlers;
+    private final Executor asyncExecutor;
 
     public SnailLocalWatchdog(ApplicationEventPublisher eventPublisher) {
-        this(eventPublisher, new NamedThreadFactory("ateng-snail-watchdog-", true));
+        this(eventPublisher, null, Duration.ofSeconds(2), Collections.emptyList(), null);
     }
 
     public SnailLocalWatchdog(ApplicationEventPublisher eventPublisher, ThreadFactory threadFactory) {
+        this(eventPublisher, threadFactory, Duration.ofSeconds(2), Collections.emptyList(), null);
+    }
+
+    public SnailLocalWatchdog(
+            ApplicationEventPublisher eventPublisher,
+            ThreadFactory threadFactory,
+            Duration gracePeriod,
+            List<JobTimeoutFallbackHandler> fallbackHandlers,
+            Executor asyncExecutor) {
         this.eventPublisher = eventPublisher;
+        this.gracePeriod = (gracePeriod != null && !gracePeriod.isNegative()) ? gracePeriod : Duration.ofSeconds(2);
+        this.fallbackHandlers = (fallbackHandlers != null && !fallbackHandlers.isEmpty())
+                ? Collections.unmodifiableList(new ArrayList<>(fallbackHandlers))
+                : Collections.emptyList();
+        this.asyncExecutor = asyncExecutor;
         ThreadFactory factory = (threadFactory != null) ? threadFactory : new NamedThreadFactory("ateng-snail-watchdog-", true);
         // 刻度步长 50ms，512 个槽位的时间轮，具备极低 CPU 占用与精准超时检测
         this.timer = new HashedWheelTimer(factory, 50, TimeUnit.MILLISECONDS, 512);
+    }
+
+    public Duration getGracePeriod() {
+        return gracePeriod;
+    }
+
+    public List<JobTimeoutFallbackHandler> getFallbackHandlers() {
+        return fallbackHandlers;
     }
 
     /**
@@ -94,10 +124,42 @@ public class SnailLocalWatchdog implements DisposableBean {
                     log.error("发布 SnailJobTimeoutEvent 领域事件异常", ex);
                 }
             }
+
+            // 3. 调度第二级紧急宽限期检查 (若工作线程顽固未终止，异步派发全局降级 SPI)
+            if (gracePeriod != null && !gracePeriod.isZero() && !gracePeriod.isNegative()
+                    && !fallbackHandlers.isEmpty()) {
+                Timeout graceTimeout = timer.newTimeout(gt -> {
+                    if (workerThread.isAlive() && !session.isCancelled()) {
+                        log.error("SnailJob 任务工作线程 [{}] 在中断宽限期 ({}ms) 后仍顽固处于存活状态，触发第二级紧急异步全局降级补偿...",
+                                workerThread.getName(), gracePeriod.toMillis());
+                        dispatchEmergencyFallback(metadata, elapsed.plus(gracePeriod));
+                    }
+                }, gracePeriod.toMillis(), TimeUnit.MILLISECONDS);
+                session.setGraceTimeoutHandle(graceTimeout);
+            }
         }, timeout.toMillis(), TimeUnit.MILLISECONDS);
 
         session.setTimeoutHandle(timeoutHandle);
         return session;
+    }
+
+    private void dispatchEmergencyFallback(SnailJobExecutionMetadata metadata, Duration elapsed) {
+        Runnable task = () -> {
+            for (JobTimeoutFallbackHandler handler : fallbackHandlers) {
+                try {
+                    handler.onTimeout(metadata, elapsed);
+                } catch (Throwable ex) {
+                    log.error("紧急全局超时降级处理器 [{}] 执行异常", handler.getClass().getSimpleName(), ex);
+                }
+            }
+        };
+        if (asyncExecutor != null) {
+            asyncExecutor.execute(task);
+        } else {
+            Thread emergencyThread = new Thread(task, "ateng-snail-watchdog-emergency");
+            emergencyThread.setDaemon(true);
+            emergencyThread.start();
+        }
     }
 
     @Override
@@ -121,19 +183,35 @@ public class SnailLocalWatchdog implements DisposableBean {
             public boolean isTimedOut() {
                 return false;
             }
+
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
         };
 
         private volatile Timeout timeoutHandle;
+        private volatile Timeout graceTimeoutHandle;
         private final AtomicBoolean timedOut = new AtomicBoolean(false);
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
         public void setTimeoutHandle(Timeout timeoutHandle) {
             this.timeoutHandle = timeoutHandle;
         }
 
+        public void setGraceTimeoutHandle(Timeout graceTimeoutHandle) {
+            this.graceTimeoutHandle = graceTimeoutHandle;
+        }
+
         public void cancel() {
+            cancelled.set(true);
             Timeout handle = this.timeoutHandle;
             if (handle != null && !handle.isExpired()) {
                 handle.cancel();
+            }
+            Timeout grace = this.graceTimeoutHandle;
+            if (grace != null && !grace.isExpired()) {
+                grace.cancel();
             }
         }
 
@@ -143,6 +221,10 @@ public class SnailLocalWatchdog implements DisposableBean {
 
         public boolean isTimedOut() {
             return timedOut.get();
+        }
+
+        public boolean isCancelled() {
+            return cancelled.get();
         }
     }
 }

@@ -43,4 +43,13 @@ public @interface AtengSnailJob {
      * 是否在任务执行抛出未受控异常时触发告警聚合分发
      */
     boolean alert() default true;
+
+    /**
+     * 超时降级就地补偿方法名称（定义于同一 Spring Bean 内）
+     *
+     * <p>当任务触发看门狗硬超时被中断时，工作线程优先就地执行该方法进行补偿与资源清理。
+     * 方法支持无参，或按需声明 {@link io.github.atengk.boot.job.snail.watchdog.SnailJobExecutionMetadata}、
+     * {@link java.time.Duration}、{@link Throwable} 或原始方法入参。</p>
+     */
+    String fallbackMethod() default "";
 }
