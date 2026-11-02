@@ -67,6 +67,7 @@
         <module>ateng-boot-tcp</module>
         <module>ateng-boot-search</module>
         <module>ateng-boot-admin</module>
+        <module>ateng-boot-social</module>
     </modules>
 
     <properties>
@@ -98,6 +99,10 @@
         <spring-boot-admin.version>3.3.4</spring-boot-admin.version>
         <xxl-job.version>3.5.0</xxl-job.version>
         <snail-job.version>1.10.0</snail-job.version>
+        <dromara-anduin.version>2.2.0</dromara-anduin.version>
+        <tools-jackson.version>3.2.4</tools-jackson.version>
+        <commons-collections4.version>4.4</commons-collections4.version>
+        <guava.version>33.4.0-jre</guava.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -414,6 +419,31 @@
                 <groupId>io.github.atengk</groupId>
                 <artifactId>ateng-boot-admin</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.atengk</groupId>
+                <artifactId>ateng-boot-social</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.dromara.anduin</groupId>
+                <artifactId>dromara-anduin</artifactId>
+                <version>${dromara-anduin.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${tools-jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-collections4</artifactId>
+                <version>${commons-collections4.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>${guava.version}</version>
             </dependency>
             <dependency>
                 <groupId>de.codecentric</groupId>

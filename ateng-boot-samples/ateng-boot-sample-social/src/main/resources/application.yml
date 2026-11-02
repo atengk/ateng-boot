@@ -1,0 +1,13 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-social
+
+ateng:
+  boot:
+    social:
+      enabled: true
+      connect-timeout: 5s
+      read-timeout: 10s
