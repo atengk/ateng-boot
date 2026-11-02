@@ -6,6 +6,7 @@ import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
@@ -131,6 +132,109 @@ public class SearchQueryBuilder {
             return this;
         }
         mustQueries.add(Query.of(q -> q.multiMatch(mm -> mm.query(query.toString()).fields(Arrays.asList(fields)))));
+        return this;
+    }
+
+    /**
+     * MatchPhrase 短语精准保序检索（织入 must 分支）
+     * <p>
+     * 匹配词条顺序与相对位置完全一致的短语文本。
+     *
+     * @param field 字段名
+     * @param query 查询关键词或短语
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrase(String field, Object query) {
+        return matchPhrase(field, query, null);
+    }
+
+    /**
+     * MatchPhrase 短语精准保序检索（支持指定 slop 容差跨度）
+     *
+     * @param field 字段名
+     * @param query 查询关键词或短语
+     * @param slop  词条允许的最大间隙跨度（可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrase(String field, Object query, Integer slop) {
+        if (!StringUtils.hasText(field) || query == null) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.matchPhrase(mp -> {
+            mp.field(field).query(query.toString());
+            if (slop != null && slop >= 0) {
+                mp.slop(slop);
+            }
+            return mp;
+        })));
+        return this;
+    }
+
+    /**
+     * MatchPhrasePrefix 搜索联想自动补全（织入 must 分支）
+     * <p>
+     * 专为搜索输入框实时联想设计，最后一个词条作为前缀展开匹配。
+     *
+     * @param field 字段名
+     * @param query 查询短语前缀
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrasePrefix(String field, Object query) {
+        return matchPhrasePrefix(field, query, null);
+    }
+
+    /**
+     * MatchPhrasePrefix 搜索联想自动补全（支持控制最大展开词条数）
+     *
+     * @param field         字段名
+     * @param query         查询短语前缀
+     * @param maxExpansions 控制前缀展开的后缀词项上限
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder matchPhrasePrefix(String field, Object query, Integer maxExpansions) {
+        if (!StringUtils.hasText(field) || query == null) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.matchPhrasePrefix(mpp -> {
+            mpp.field(field).query(query.toString());
+            if (maxExpansions != null && maxExpansions > 0) {
+                mpp.maxExpansions(maxExpansions);
+            }
+            return mpp;
+        })));
+        return this;
+    }
+
+    /**
+     * Fuzzy 拼写纠错与容错召回（织入 must 分支）
+     *
+     * @param field 字段名
+     * @param value 匹配值（支持包含拼写误差的文本）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fuzzy(String field, String value) {
+        return fuzzy(field, value, null);
+    }
+
+    /**
+     * Fuzzy 拼写纠错与容错召回（支持自定义编辑距离参数）
+     *
+     * @param field     字段名
+     * @param value     匹配值
+     * @param fuzziness 编辑距离（如 "AUTO"、"1"、"2"，可为 null）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder fuzzy(String field, String value, String fuzziness) {
+        if (!StringUtils.hasText(field) || !StringUtils.hasText(value)) {
+            return this;
+        }
+        mustQueries.add(Query.of(q -> q.fuzzy(f -> {
+            f.field(field).value(toFieldValue(value));
+            if (StringUtils.hasText(fuzziness)) {
+                f.fuzziness(fuzziness);
+            }
+            return f;
+        })));
         return this;
     }
 
@@ -378,6 +482,46 @@ public class SearchQueryBuilder {
      */
     public SearchQueryBuilder minimumShouldMatch(String minimum) {
         this.minimumShouldMatch = minimum;
+        return this;
+    }
+
+    /**
+     * Nested 嵌套对象独立作用域匹配（织入 must 分支）
+     * <p>
+     * 解决对象数组跨元素多属性交叉误判（例如避免同一商品中不同 SKU 属性交叉命中）。
+     *
+     * @param path           嵌套对象路径（如 "skus"、"items"）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path, Consumer<SearchQueryBuilder> nestedConsumer) {
+        return nested(path, null, nestedConsumer);
+    }
+
+    /**
+     * Nested 嵌套对象独立作用域匹配（织入 must 分支，支持指定子对象评分模式）
+     *
+     * @param path           嵌套对象路径（如 "skus"、"items"）
+     * @param scoreMode      子对象评分模式（如 Avg, Max, None 等，可为 null）
+     * @param nestedConsumer 嵌套作用域查询闭包
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder nested(String path, ChildScoreMode scoreMode, Consumer<SearchQueryBuilder> nestedConsumer) {
+        if (!StringUtils.hasText(path) || nestedConsumer == null) {
+            return this;
+        }
+        SearchQueryBuilder sub = new SearchQueryBuilder();
+        nestedConsumer.accept(sub);
+        Query subQuery = sub.buildQuery();
+        if (subQuery != null) {
+            mustQueries.add(Query.of(q -> q.nested(n -> {
+                n.path(path).query(subQuery);
+                if (scoreMode != null) {
+                    n.scoreMode(scoreMode);
+                }
+                return n;
+            })));
+        }
         return this;
     }
 

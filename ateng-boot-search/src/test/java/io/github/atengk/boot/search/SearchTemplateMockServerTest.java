@@ -2,6 +2,7 @@ package io.github.atengk.boot.search;
 
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
+import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
@@ -2364,5 +2365,94 @@ class SearchTemplateMockServerTest {
                     assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_DOCUMENT_DELETE_ERROR);
                     assertThat(se.getMessage()).contains("Failed to execute deleteByQuery");
                 });
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrase 短语精准保序检索 DSL 生成")
+    void testMatchPhraseDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().matchPhrase("intro", "quick brown fox").build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"match_phrase\":{\"intro\":{\"query\":\"quick brown fox\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrasePrefix 搜索联想自动补全 DSL 生成及 maxExpansions 参数")
+    void testMatchPhrasePrefixDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().matchPhrasePrefix("title", "spring b", 20).build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"match_phrase_prefix\":{\"title\":{\"max_expansions\":20,\"query\":\"spring b\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 fuzzy 拼写容错检索 DSL 生成及 fuzziness 参数")
+    void testFuzzyDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().fuzzy("username", "atengg", "AUTO").build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"fuzzy\":{\"username\":{\"fuzziness\":\"AUTO\",\"value\":\"atengg\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 nested 嵌套对象作用域独立匹配 DSL 生成及 scoreMode 参数")
+    void testNestedDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder().nested("skus", ChildScoreMode.Avg, sub -> sub
+                .term("skus.color", "white")
+                .gte("skus.price", 99)).build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"nested\":{\"path\":\"skus\"");
+        assertThat(body).contains("\"score_mode\":\"avg\"");
+        assertThat(body).contains("\"term\":{\"skus.color\":{\"value\":\"white\"}}");
+        assertThat(body).contains("\"range\":{\"skus.price\":{\"gte\":99}}");
     }
 }
