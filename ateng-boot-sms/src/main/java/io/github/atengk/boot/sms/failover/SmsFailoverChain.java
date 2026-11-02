@@ -4,6 +4,7 @@ import io.github.atengk.boot.core.util.BusinessAssert;
 import io.github.atengk.boot.core.util.DesensitizeUtil;
 import io.github.atengk.boot.sms.exception.SmsResultCode;
 import io.github.atengk.boot.sms.exception.SmsSendException;
+import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.model.SmsChannel;
 import io.github.atengk.boot.sms.model.SmsRequest;
 import io.github.atengk.boot.sms.model.SmsResult;
@@ -26,10 +27,18 @@ public class SmsFailoverChain {
 
     private final SmsChannelRegistry channelRegistry;
     private final Map<SmsSupplier, SmsProvider> providerMap;
+    private final List<SmsSendFailureHandler> failureHandlers;
 
-    public SmsFailoverChain(SmsChannelRegistry channelRegistry, Map<SmsSupplier, SmsProvider> providerMap) {
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry,
+                            Map<SmsSupplier, SmsProvider> providerMap,
+                            List<SmsSendFailureHandler> failureHandlers) {
         this.channelRegistry = channelRegistry;
         this.providerMap = providerMap != null ? providerMap : Collections.emptyMap();
+        this.failureHandlers = failureHandlers != null ? failureHandlers : Collections.emptyList();
+    }
+
+    public SmsFailoverChain(SmsChannelRegistry channelRegistry, Map<SmsSupplier, SmsProvider> providerMap) {
+        this(channelRegistry, providerMap, null);
     }
 
     /**
@@ -119,7 +128,19 @@ public class SmsFailoverChain {
             currentChannel = backupChannel;
         }
 
-        // 容灾链全部尝试失败
+        // 容灾链全部尝试失败，触发最终失败补偿处理器
+        if (failureHandlers != null && !failureHandlers.isEmpty()) {
+            for (SmsSendFailureHandler handler : failureHandlers) {
+                if (handler != null) {
+                    try {
+                        handler.handle(request, currentChannel != null ? currentChannel : initialChannel, lastException);
+                    } catch (Exception handlerEx) {
+                        log.error("[SmsFailoverChain] 失败补偿处理器 [{}] 执行异常: {}", handler.getClass().getName(), handlerEx.getMessage());
+                    }
+                }
+            }
+        }
+
         if (lastException instanceof SmsSendException sse) {
             throw sse;
         }

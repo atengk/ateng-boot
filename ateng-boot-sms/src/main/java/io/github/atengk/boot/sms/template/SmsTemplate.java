@@ -14,6 +14,7 @@ import io.github.atengk.boot.sms.guard.DailyBudgetBreaker;
 import io.github.atengk.boot.sms.guard.InMemoryDailyBudgetBreaker;
 import io.github.atengk.boot.sms.guard.InMemorySmsBlacklistProvider;
 import io.github.atengk.boot.sms.guard.SmsBlacklistProvider;
+import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.model.*;
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.SmsProvider;
@@ -23,6 +24,8 @@ import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -52,6 +55,9 @@ public class SmsTemplate {
     private final List<SmsChannelResolver> channelResolvers;
 
     @Getter
+    private final List<SmsSendFailureHandler> failureHandlers;
+
+    @Getter
     private final SmsFailoverChain failoverChain;
 
     @Getter
@@ -67,6 +73,7 @@ public class SmsTemplate {
                        List<SmsProvider> providers,
                        SmsChannelRegistry channelRegistry,
                        List<SmsChannelResolver> channelResolvers,
+                       List<SmsSendFailureHandler> failureHandlers,
                        SmsBlacklistProvider blacklistProvider,
                        DailyBudgetBreaker dailyBudgetBreaker,
                        Executor executor) {
@@ -89,7 +96,8 @@ public class SmsTemplate {
         AnnotationAwareOrderComparator.sort(resolversList);
         this.channelResolvers = Collections.unmodifiableList(resolversList);
 
-        this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap);
+        this.failureHandlers = failureHandlers != null ? Collections.unmodifiableList(new ArrayList<>(failureHandlers)) : Collections.emptyList();
+        this.failoverChain = new SmsFailoverChain(this.channelRegistry, this.providerMap, this.failureHandlers);
         this.blacklistProvider = blacklistProvider != null ? blacklistProvider : new InMemorySmsBlacklistProvider();
         this.dailyBudgetBreaker = dailyBudgetBreaker != null ? dailyBudgetBreaker : new InMemoryDailyBudgetBreaker(this.properties.getGuard());
         this.executor = executor != null ? executor : AsyncUtil.getExecutor();
@@ -97,14 +105,24 @@ public class SmsTemplate {
 
     public SmsTemplate(SmsProperties properties,
                        List<SmsProvider> providers,
+                       SmsChannelRegistry channelRegistry,
+                       List<SmsChannelResolver> channelResolvers,
                        SmsBlacklistProvider blacklistProvider,
                        DailyBudgetBreaker dailyBudgetBreaker,
                        Executor executor) {
-        this(properties, providers, null, null, blacklistProvider, dailyBudgetBreaker, executor);
+        this(properties, providers, channelRegistry, channelResolvers, null, blacklistProvider, dailyBudgetBreaker, executor);
+    }
+
+    public SmsTemplate(SmsProperties properties,
+                       List<SmsProvider> providers,
+                       SmsBlacklistProvider blacklistProvider,
+                       DailyBudgetBreaker dailyBudgetBreaker,
+                       Executor executor) {
+        this(properties, providers, null, null, null, blacklistProvider, dailyBudgetBreaker, executor);
     }
 
     public SmsTemplate(SmsProperties properties, List<SmsProvider> providers) {
-        this(properties, providers, null, null, null, null, null);
+        this(properties, providers, null, null, null, null, null, null);
     }
 
     /**
@@ -178,6 +196,37 @@ public class SmsTemplate {
     public CompletableFuture<SmsResult> sendAsync(SmsRequest request) {
         BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
         return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> send(request)), executor);
+    }
+
+    /**
+     * 本地事务感知发信
+     * 仅在 Spring 本地事务成功 COMMIT 后触发真实投递，事务回滚时自动安全取消，彻底防御幽灵短信
+     * 若当前线程无活动事务，则降级为直接同步发送
+     *
+     * @param request 发信请求值对象
+     */
+    public void sendAfterCommit(SmsRequest request) {
+        BusinessAssert.notNull(request, "发信请求 SmsRequest 不能为空");
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        send(request);
+                    } catch (Exception ex) {
+                        log.error("[SmsTemplate] 事务提交后异步发信异常 (目标号码: {}): {}",
+                                DesensitizeUtil.mobilePhone(request.getPhone()), ex.getMessage(), ex);
+                    }
+                }
+            });
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 检测到活动事务，已注册事务提交后投递钩子 (目标号码: {})",
+                        DesensitizeUtil.mobilePhone(request.getPhone()));
+            }
+        } else {
+            send(request);
+        }
     }
 
     /**
@@ -308,6 +357,37 @@ public class SmsTemplate {
     public CompletableFuture<BatchSmsResult> sendBatchAsync(BatchSmsRequest request) {
         BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
         return CompletableFuture.supplyAsync(AsyncContext.wrapSupplier(() -> sendBatch(request)), executor);
+    }
+
+    /**
+     * 本地事务感知批量发信
+     * 仅在 Spring 本地事务成功 COMMIT 后触发批量发信，事务回滚时自动安全取消
+     * 若当前线程无活动事务，则降级为直接同步发送
+     *
+     * @param request 批量发信请求
+     */
+    public void sendBatchAfterCommit(BatchSmsRequest request) {
+        BusinessAssert.notNull(request, "批量发信请求 BatchSmsRequest 不能为空");
+
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        sendBatch(request);
+                    } catch (Exception ex) {
+                        log.error("[SmsTemplate] 事务提交后批量发信异常 (总号码数: {}): {}",
+                                request.getPhones().size(), ex.getMessage(), ex);
+                    }
+                }
+            });
+            if (log.isDebugEnabled()) {
+                log.debug("[SmsTemplate] 检测到活动事务，已注册事务提交后批量投递钩子 (总号码数: {})",
+                        request.getPhones().size());
+            }
+        } else {
+            sendBatch(request);
+        }
     }
 
     /**

@@ -1,6 +1,9 @@
 package io.github.atengk.boot.sms.config;
 
+import io.github.atengk.boot.sms.callback.SmsCallbackController;
 import io.github.atengk.boot.sms.guard.*;
+import io.github.atengk.boot.sms.handler.LoggingSmsSendFailureHandler;
+import io.github.atengk.boot.sms.handler.SmsSendFailureHandler;
 import io.github.atengk.boot.sms.limiter.InMemorySmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.RedisSmsRateLimiter;
 import io.github.atengk.boot.sms.limiter.SmsRateLimiter;
@@ -149,12 +152,24 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
+     * 自动装配默认发信失败后置补偿处理器
+     *
+     * @return SmsSendFailureHandler
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsSendFailureHandler loggingSmsSendFailureHandler() {
+        return new LoggingSmsSendFailureHandler();
+    }
+
+    /**
      * 自动装配顶层短信操作门面
      *
      * @param properties               配置属性
      * @param providers                容器中所有已注册的短信驱动实现
      * @param channelRegistry          渠道注册中心
      * @param channelResolversProvider 渠道解析器提供者列表
+     * @param failureHandlersProvider  失败补偿处理器列表提供者
      * @param blacklistProvider        出站黑名单过滤器提供者
      * @param budgetBreaker            单日成本预算熔断器提供者
      * @param taskExecutorProvider     异步执行器提供者
@@ -166,6 +181,7 @@ public class AtengSmsAutoConfiguration {
                                    List<SmsProvider> providers,
                                    SmsChannelRegistry channelRegistry,
                                    ObjectProvider<List<SmsChannelResolver>> channelResolversProvider,
+                                   ObjectProvider<List<SmsSendFailureHandler>> failureHandlersProvider,
                                    ObjectProvider<SmsBlacklistProvider> blacklistProvider,
                                    ObjectProvider<DailyBudgetBreaker> budgetBreaker,
                                    ObjectProvider<Executor> taskExecutorProvider) {
@@ -174,10 +190,26 @@ public class AtengSmsAutoConfiguration {
                 providers,
                 channelRegistry,
                 channelResolversProvider.getIfAvailable(),
+                failureHandlersProvider.getIfAvailable(),
                 blacklistProvider.getIfAvailable(),
                 budgetBreaker.getIfAvailable(),
                 taskExecutorProvider.getIfAvailable()
         );
+    }
+
+    /**
+     * 自动装配入站 Webhook 回调网关控制器
+     *
+     * @param channelRegistry 渠道注册中心
+     * @param eventPublisher  领域事件发布器
+     * @return SmsCallbackController
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "ateng.boot.sms.callback", name = "enabled", havingValue = "true")
+    public SmsCallbackController smsCallbackController(SmsChannelRegistry channelRegistry,
+                                                       ApplicationEventPublisher eventPublisher) {
+        return new SmsCallbackController(channelRegistry, eventPublisher);
     }
 
     /**
