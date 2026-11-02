@@ -358,11 +358,31 @@ class SampleJobSnailIntegrationTest {
         SnailJobTestResult r3 = scenarioService.executeShardingBatch(0, 1);
         assertThat(r3.isSuccess()).isTrue();
 
-        // 13.5 运行时治理
+        // 13.5 Map 切片与规约聚合场景编排驱动
+        SnailJobTestResult rMap = scenarioService.executeMapTask("splitTask", "{\"dataRange\":\"1-1000\"}");
+        assertThat(rMap.isSuccess()).isTrue();
+        SnailJobTestResult rReduce = scenarioService.executeReduceTask("{\"summaryId\":\"SUM-002\"}");
+        assertThat(rReduce.isSuccess()).isTrue();
+        SnailJobTestResult rMerge = scenarioService.executeMergeReduceTask("{\"mergeBatch\":\"MB-002\"}");
+        assertThat(rMerge.isSuccess()).isTrue();
+
+        // 13.6 超时看门狗与就地降级补偿场景编排驱动
+        SnailJobTestResult rTimeout = scenarioService.executeTimeoutFallback("PARAM-SCENARIO-01");
+        assertThat(rTimeout.isSuccess()).isTrue();
+
+        // 13.7 多租户批量遍历执行场景编排
+        SnailJobTestResult rTenant = scenarioService.executeTenantBatch();
+        assertThat(rTenant.isSuccess()).isTrue();
+
+        // 13.8 金丝雀灰度绕过场景编排
+        SnailJobTestResult rCanary = scenarioService.executeCanaryBypass();
+        assertThat(rCanary.isSuccess()).isTrue();
+
+        // 13.9 运行时治理联动
         assertThat(scenarioService.pauseJob("simpleGreetingJob")).isTrue();
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isTrue();
+        assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(1);
         assertThat(scenarioService.resumeJob("simpleGreetingJob")).isTrue();
-        assertThat(runtimeGovernor.isPaused("simpleGreetingJob")).isFalse();
+        assertThat(scenarioService.getStatusSummary().get("pausedJobs")).isEqualTo(0);
     }
 
     @Test

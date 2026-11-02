@@ -120,6 +120,18 @@ class SnailJobRuntimeGovernorAspectTest {
         assertThat(governedJobService.getSliceExecutionCount()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("测试返回基本类型 (boolean/int) 的任务在暂停跳过时安全返回默认值，防拆箱 NPE")
+    void testPrimitiveReturnTypeSkippedWithoutNpe() {
+        governor.pause("testPrimitiveJob");
+        boolean boolResult = governedJobService.executeBooleanJob();
+        assertThat(boolResult).isTrue();
+
+        governor.pause("testIntJob");
+        int intResult = governedJobService.executeIntJob();
+        assertThat(intResult).isEqualTo(0);
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy(proxyTargetClass = true)
     static class TestConfig {
@@ -161,6 +173,18 @@ class SnailJobRuntimeGovernorAspectTest {
         public ExecuteResult executeMap(MapArgs args, MapHandler handler) {
             sliceExecutionCount.incrementAndGet();
             return ExecuteResult.success("slice-executed");
+        }
+
+        @JobExecutor(name = "testPrimitiveJob")
+        @AtengSnailJob
+        public boolean executeBooleanJob() {
+            return false;
+        }
+
+        @JobExecutor(name = "testIntJob")
+        @AtengSnailJob
+        public int executeIntJob() {
+            return 42;
         }
     }
 }

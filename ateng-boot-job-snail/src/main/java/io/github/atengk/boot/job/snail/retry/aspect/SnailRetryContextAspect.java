@@ -173,13 +173,7 @@ public class SnailRetryContextAspect {
                 try {
                     result = pjp.proceed();
                 } catch (Throwable t) {
-                    // 发生异常即将上报，确保注册表中保持有效快照供远程重试消费
-                    this.contextStore.put(fineGrainedKey, currentSnapshot);
-                    if (StringUtils.hasText(idempotentKey)) {
-                        this.contextStore.put(scene + ":" + idempotentKey, currentSnapshot);
-                    }
-                    this.contextStore.put(contextKey, currentSnapshot);
-                    this.contextStore.put(classKey, currentSnapshot);
+                    // 发生异常即将上报，保持已登记的上下文快照供远程重试消费，向外抛出异常
                     throw t;
                 }
             }

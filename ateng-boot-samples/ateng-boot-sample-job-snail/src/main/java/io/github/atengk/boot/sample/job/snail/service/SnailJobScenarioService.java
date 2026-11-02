@@ -6,6 +6,7 @@ import io.github.atengk.boot.job.snail.governor.SnailJobRuntimeGovernor;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import io.github.atengk.boot.sample.job.snail.dto.UserSyncParam;
+import io.github.atengk.boot.sample.job.snail.handler.AlertDemoJobHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -31,6 +32,7 @@ public class SnailJobScenarioService {
     private final SnailJobTestHelper testHelper;
     private final SnailJobRuntimeGovernor governor;
     private final RetryDemoService retryDemoService;
+    private final AlertDemoJobHandler alertDemoJobHandler;
 
     /**
      * 执行极简问候任务并返回执行摘要
@@ -94,6 +96,51 @@ public class SnailJobScenarioService {
     public SnailJobTestResult executeReduceTask(Object param) {
         log.info("[SnailJobScenarioService] 触发 Reduce 规约汇总场景");
         return SnailJobTestHelper.triggerReduce("mapReduceDemoJob", param);
+    }
+
+    /**
+     * 执行 MergeReduce 最终合并规约任务
+     *
+     * @param param 合并规约入参
+     * @return 执行诊断结果
+     */
+    public SnailJobTestResult executeMergeReduceTask(Object param) {
+        log.info("[SnailJobScenarioService] 触发 MergeReduce 最终合并规约场景");
+        return SnailJobTestHelper.triggerMergeReduce("mapReduceDemoJob", param);
+    }
+
+    /**
+     * 执行多租户隔离批量遍历任务场景
+     *
+     * @return 执行诊断结果
+     */
+    public SnailJobTestResult executeTenantBatch() {
+        log.info("[SnailJobScenarioService] 触发多租户隔离批量遍历场景");
+        return testHelper.triggerJob("tenantBatchJob", null);
+    }
+
+    /**
+     * 执行告警自愈与静默场景
+     *
+     * @param injectFault 是否注入故障
+     * @return 执行诊断结果
+     */
+    public SnailJobTestResult executeAlertFaultSimulation(boolean injectFault) {
+        log.info("[SnailJobScenarioService] 触发告警自愈场景: injectFault={}", injectFault);
+        if (alertDemoJobHandler != null) {
+            alertDemoJobHandler.setFaultInjected(injectFault);
+        }
+        return testHelper.triggerJob("alertDemoJob", injectFault ? "FAIL" : "OK");
+    }
+
+    /**
+     * 执行金丝雀灰度绕过拦截场景
+     *
+     * @return 执行诊断结果
+     */
+    public SnailJobTestResult executeCanaryBypass() {
+        log.info("[SnailJobScenarioService] 触发金丝雀灰度绕过拦截场景");
+        return testHelper.triggerJob("canaryBypassJob", null);
     }
 
     /**

@@ -38,7 +38,7 @@ public class TimeoutFallbackDemoJobHandler {
      * @throws InterruptedException 线程被看门狗中断时抛出
      */
     @JobExecutor(name = "timeoutFallbackJob")
-    @AtengSnailJob(value = "timeoutFallbackJob", timeout = "80ms", fallbackMethod = "executeFallbackCompensation")
+    @AtengSnailJob(timeout = "80ms", fallbackMethod = "executeFallbackCompensation")
     public ExecuteResult executeWithTimeout(JobArgs args) throws InterruptedException {
         executionCount.incrementAndGet();
         log.info("[TimeoutFallbackDemoJobHandler] 开始执行耗时任务 (模拟执行 500ms)...");

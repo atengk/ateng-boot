@@ -1,6 +1,7 @@
 package io.github.atengk.boot.job.snail.aspect;
 
 import com.aizuda.snailjob.client.job.core.MapHandler;
+import com.aizuda.snailjob.common.core.enums.StatusEnum;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
 import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
 import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
@@ -347,7 +348,6 @@ public class SnailJobContextAspect {
         SnailJobContextHolder.set(snailJobContext);
 
         java.util.List<SnailJobInterceptor> executedInterceptors = new java.util.ArrayList<>(this.interceptors.size());
-        boolean afterCompletionTriggered = false;
         SnailJobExecutionContext executionContext = null;
         Object[] resolvedArgs = null;
         Object executionResult = null;
@@ -364,8 +364,7 @@ public class SnailJobContextAspect {
                         pjp.getArgs(),
                         metadata
                 );
-                triggerAfterCompletion(executedInterceptors, executionContext, skipResult, null);
-                afterCompletionTriggered = true;
+                executionResult = skipResult;
                 if (metricsBinder != null) {
                     metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SKIPPED, TenantContextHolder.getTenantId(), Duration.ZERO);
                 }
@@ -383,9 +382,6 @@ public class SnailJobContextAspect {
                 }
             }
 
-            // C. JSR-303 参数校验与 Fail-Fast 快速失败防卫
-            validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
-
             // 构建拦截器上下文
             executionContext = new SnailJobExecutionContext(
                     pjp.getTarget(),
@@ -394,7 +390,7 @@ public class SnailJobContextAspect {
                     metadata
             );
 
-            // 拦截器 preHandle 前置拦截执行 (按 Order 正序执行)
+            // C. 拦截器 preHandle 前置拦截执行 (在参数校验之前执行，支持拦截器短路跳过与灰度绕过)
             if (!this.interceptors.isEmpty()) {
                 for (SnailJobInterceptor interceptor : this.interceptors) {
                     boolean proceed = interceptor.preHandle(executionContext);
@@ -402,21 +398,23 @@ public class SnailJobContextAspect {
                         log.info("[INTERCEPTED] 任务调度被拦截器阻断并跳过执行: interceptor={}, jobName={}, traceId={}",
                                 interceptor.getClass().getSimpleName(), jobName, traceId);
                         Object skipResult = createInterceptedSuccessResult(specificMethod, interceptor);
-                        triggerAfterCompletion(executedInterceptors, executionContext, skipResult, null);
-                        afterCompletionTriggered = true;
+                        executionResult = skipResult;
                         return skipResult;
                     }
                     executedInterceptors.add(interceptor);
                 }
             }
 
-            // D. 挂载看门狗
+            // D. JSR-303 参数校验与 Fail-Fast 快速失败防卫 (仅对未被拦截短路放行的任务执行)
+            validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
+
+            // E. 挂载看门狗
             if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
                 SnailLocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
                 sessionRef.set(session);
             }
 
-            // E. 执行调度逻辑
+            // F. 执行调度逻辑
             executionResult = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
 
             // 拦截器 postHandle 后置处理 (逆序执行)
@@ -485,11 +483,17 @@ public class SnailJobContextAspect {
                         }
 
                         long durationMs = elapsed.toMillis();
+                        boolean fallbackSuccess = isResultSuccess(finalResult);
                         if (metricsBinder != null) {
-                            metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), elapsed);
+                            String metricStatus = fallbackSuccess ? SnailJobMetricsBinder.STATUS_SUCCESS : SnailJobMetricsBinder.STATUS_FAILURE;
+                            metricsBinder.recordJobExecution(jobName, metricStatus, TenantContextHolder.getTenantId(), elapsed);
                         }
                         if (alertAggregator != null) {
-                            alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
+                            if (fallbackSuccess) {
+                                alertAggregator.onJobSuccess(jobName, rawParam, traceId, durationMs);
+                            } else {
+                                alertAggregator.onJobFailure(jobName, rawParam, traceId, durationMs, t);
+                            }
                         }
                         return finalResult;
                     } catch (Throwable fallbackEx) {
@@ -512,12 +516,10 @@ public class SnailJobContextAspect {
             }
             throw t;
         } finally {
-            if (!afterCompletionTriggered) {
-                SnailJobExecutionContext ctx = (executionContext != null)
-                        ? executionContext
-                        : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, pjp.getArgs(), metadata);
-                triggerAfterCompletion(executedInterceptors, ctx, executionResult, errorThrown);
-            }
+            SnailJobExecutionContext ctx = (executionContext != null)
+                    ? executionContext
+                    : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, (resolvedArgs != null ? resolvedArgs : pjp.getArgs()), metadata);
+            triggerAfterCompletion(executedInterceptors, ctx, executionResult, errorThrown);
             if (drainStateMachine != null) {
                 drainStateMachine.decrementInFlightJob();
             }
@@ -1021,39 +1023,71 @@ public class SnailJobContextAspect {
     }
 
     private Object createGovernorSkippedResult(Method method, String jobName) {
-        if (method.getReturnType().equals(Void.TYPE)) {
-            return null;
-        }
-        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
-            ExecuteResult result = ExecuteResult.success("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: " + jobName);
-            result.setMessage("[SKIPPED] 任务调度已被节点级运行时治理总线暂停: " + jobName);
-            return result;
-        }
-        return null;
+        return createSuccessResultForType(method, "[SKIPPED] 任务调度已被节点级运行时治理总线暂停: " + jobName);
     }
 
     private Object createInterceptedSuccessResult(Method method, SnailJobInterceptor interceptor) {
-        if (method.getReturnType().equals(Void.TYPE)) {
+        return createSuccessResultForType(method, "[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
+    }
+
+    private Object createFallbackSuccessResult(Method method, String fallbackMethodName) {
+        return createSuccessResultForType(method, "[FALLBACK] 任务超时就地降级补偿完成: " + fallbackMethodName);
+    }
+
+    private Object createSuccessResultForType(Method method, String message) {
+        Class<?> returnType = method.getReturnType();
+        if (returnType.equals(Void.TYPE)) {
             return null;
         }
-        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
-            ExecuteResult result = ExecuteResult.success("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
-            result.setMessage("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
+        if (ExecuteResult.class.isAssignableFrom(returnType) || returnType.equals(Object.class)) {
+            ExecuteResult result = ExecuteResult.success(message);
+            result.setMessage(message);
             return result;
+        }
+        if (String.class.equals(returnType)) {
+            return message;
+        }
+        // 基本原生类型防拆箱 NullPointerException 确定性安全默认值
+        if (returnType.isPrimitive()) {
+            if (returnType.equals(boolean.class)) {
+                return Boolean.TRUE;
+            }
+            if (returnType.equals(byte.class)) {
+                return (byte) 0;
+            }
+            if (returnType.equals(short.class)) {
+                return (short) 0;
+            }
+            if (returnType.equals(int.class)) {
+                return 0;
+            }
+            if (returnType.equals(long.class)) {
+                return 0L;
+            }
+            if (returnType.equals(float.class)) {
+                return 0.0f;
+            }
+            if (returnType.equals(double.class)) {
+                return 0.0d;
+            }
+            if (returnType.equals(char.class)) {
+                return '\0';
+            }
         }
         return null;
     }
 
-    private Object createFallbackSuccessResult(Method method, String fallbackMethodName) {
-        if (method.getReturnType().equals(Void.TYPE)) {
-            return null;
+    private boolean isResultSuccess(Object result) {
+        if (result == null) {
+            return true;
         }
-        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
-            ExecuteResult result = ExecuteResult.success("[FALLBACK] 任务超时就地降级补偿完成: " + fallbackMethodName);
-            result.setMessage("[FALLBACK] 任务超时就地降级补偿完成: " + fallbackMethodName);
-            return result;
+        if (result instanceof ExecuteResult er) {
+            return er.getStatus() == StatusEnum.YES.getStatus();
         }
-        return null;
+        if (result instanceof Boolean b) {
+            return b;
+        }
+        return true;
     }
 
     private void triggerGlobalFallbackHandlers(SnailJobExecutionMetadata metadata, Duration elapsed) {

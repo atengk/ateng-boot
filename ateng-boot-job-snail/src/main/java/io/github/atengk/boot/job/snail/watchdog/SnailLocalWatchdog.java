@@ -156,9 +156,9 @@ public class SnailLocalWatchdog implements DisposableBean {
         if (asyncExecutor != null) {
             asyncExecutor.execute(task);
         } else {
-            Thread emergencyThread = new Thread(task, "ateng-snail-watchdog-emergency");
-            emergencyThread.setDaemon(true);
-            emergencyThread.start();
+            // 受管线程池未注入时由当前看门狗调度线程直接同步执行降级，严格杜绝创建未受管的裸野线程
+            log.warn("当前环境未注入受管异步线程池设施，紧急全局超时降级将由看门狗调度线程同步执行: job={}", metadata.getJobName());
+            task.run();
         }
     }
 

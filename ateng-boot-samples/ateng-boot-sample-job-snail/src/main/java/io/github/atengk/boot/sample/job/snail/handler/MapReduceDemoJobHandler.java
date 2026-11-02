@@ -12,9 +12,13 @@ import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * MapReduce 动态切片与规约聚合任务执行器示例
@@ -50,14 +54,40 @@ public class MapReduceDemoJobHandler {
         mapExecutionCount.incrementAndGet();
         String traceId = SnailJobContextHolder.getTraceId();
         String taskName = args != null ? args.getTaskName() : "splitTask";
-        log.info("[MapReduceDemoJobHandler] 执行 Map 拆分切片任务, taskName: {}, traceId: {}", taskName, traceId);
+        String rawParams = args != null ? String.valueOf(args.getJobParams()) : null;
+        log.info("[MapReduceDemoJobHandler] 执行 Map 拆分切片任务, taskName: {}, rawParams: {}, traceId: {}", taskName, rawParams, traceId);
 
-        List<String> subTasks = List.of("TASK-CHUNK-1", "TASK-CHUNK-2", "TASK-CHUNK-3");
+        // 真实依据入参 dataRange (如 "1-1000") 进行动态步长拆分切片计算
+        List<String> subTasks = calculateDynamicSlices(rawParams);
         if (handler != null) {
             ExecuteResult mapRes = handler.doMap(subTasks, "processTask");
-            log.info("[MapReduceDemoJobHandler] doMap 分发子任务完成: {}", mapRes);
+            log.info("[MapReduceDemoJobHandler] doMap 分发子任务完成 (共 {} 个切片): {}", subTasks.size(), mapRes);
         }
         return ExecuteResult.success("Map slice splitTask executed with " + subTasks.size() + " subtasks");
+    }
+
+    private List<String> calculateDynamicSlices(String rawParams) {
+        if (StringUtils.hasText(rawParams)) {
+            Matcher matcher = Pattern.compile("\"?dataRange\"?\\s*[:=]\\s*\"?(\\d+)-(\\d+)\"?").matcher(rawParams);
+            if (matcher.find()) {
+                long start = Long.parseLong(matcher.group(1));
+                long end = Long.parseLong(matcher.group(2));
+                long total = Math.max(0, end - start + 1);
+                // 动态计算切片：数据量 > 500 时拆分为 3 个等长批次，否则按 2 个批次切分
+                int slices = (total > 500) ? 3 : 2;
+                long step = (total + slices - 1) / slices;
+                List<String> result = new ArrayList<>(slices);
+                for (int i = 0; i < slices; i++) {
+                    long chunkStart = start + i * step;
+                    long chunkEnd = Math.min(end, chunkStart + step - 1);
+                    if (chunkStart <= end) {
+                        result.add("CHUNK:" + chunkStart + "-" + chunkEnd);
+                    }
+                }
+                return result;
+            }
+        }
+        return List.of("CHUNK:1-333", "CHUNK:334-666", "CHUNK:667-1000");
     }
 
     /**

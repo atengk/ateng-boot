@@ -30,7 +30,7 @@ public class TenantJobHandler {
     /**
      * 全局归档任务：忽略多租户上下文，全局扫描
      */
-    @AtengSnailJob(value = "globalArchiveJob", tenantMode = JobTenantMode.IGNORE)
+    @AtengSnailJob(tenantMode = JobTenantMode.IGNORE)
     @JobExecutor(name = "globalArchiveJob")
     public ExecuteResult globalArchiveJob() {
         boolean ignoreTenant = TenantContextHolder.isIgnoreTenant();
@@ -41,7 +41,7 @@ public class TenantJobHandler {
     /**
      * 单租户限定任务：入参或请求头绑定当前租户
      */
-    @AtengSnailJob(value = "tenantScopedJob", tenantMode = JobTenantMode.PARAM)
+    @AtengSnailJob(tenantMode = JobTenantMode.PARAM)
     @JobExecutor(name = "tenantScopedJob")
     public ExecuteResult tenantScopedJob(JobArgs args) {
         String currentTenant = TenantContextHolder.getTenantId();
@@ -52,7 +52,7 @@ public class TenantJobHandler {
     /**
      * 租户批量遍历任务：按租户沙箱隔离逐一遍历执行
      */
-    @AtengSnailJob(value = "tenantBatchJob", tenantMode = JobTenantMode.ITERATE)
+    @AtengSnailJob(tenantMode = JobTenantMode.ITERATE)
     @JobExecutor(name = "tenantBatchJob")
     public ExecuteResult tenantBatchJob() {
         List<String> tenants = List.of("tenant-alpha", "tenant-beta");

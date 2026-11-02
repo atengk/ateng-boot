@@ -78,6 +78,21 @@ class SnailJobTimeoutFallbackTest {
     }
 
     @Test
+    @DisplayName("测试就地降级补偿方法返回业务失败时结果透传并维持失败状态")
+    void shouldPropagateFailureWhenFallbackReturnsFailure() throws Exception {
+        JobArgs jobArgs = new JobArgs();
+        jobArgs.setJobId(109L);
+        jobArgs.setTaskBatchId(209L);
+        jobArgs.setJobParams("{\"traceId\":\"trace-fallback-failed\"}");
+
+        ExecuteResult result = fallbackJobService.executeWithFailingFallback(jobArgs);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getStatus()).isEqualTo(0);
+        assertThat(result.getMessage()).isEqualTo("fallback-explicit-failed");
+    }
+
+    @Test
     @DisplayName("测试超时就地降级补偿方法形参智能匹配 (metadata, elapsed, throwable, jobArgs)")
     void shouldExecuteInPlaceFallbackWithParameterMatching() throws Exception {
         JobArgs jobArgs = new JobArgs();
@@ -292,6 +307,19 @@ class SnailJobTimeoutFallbackTest {
 
         public ExecuteResult customFallback() {
             return ExecuteResult.success("custom-fallback-result");
+        }
+
+        @JobExecutor(name = "testFailingFallbackJob")
+        @AtengSnailJob(timeout = "60ms", fallbackMethod = "failingFallback")
+        public ExecuteResult executeWithFailingFallback(JobArgs args) throws InterruptedException {
+            Thread.sleep(600);
+            return ExecuteResult.success("original-success");
+        }
+
+        public ExecuteResult failingFallback() {
+            ExecuteResult er = ExecuteResult.failure("fallback-explicit-failed");
+            er.setMessage("fallback-explicit-failed");
+            return er;
         }
 
         @JobExecutor(name = "testParamFallbackJob")

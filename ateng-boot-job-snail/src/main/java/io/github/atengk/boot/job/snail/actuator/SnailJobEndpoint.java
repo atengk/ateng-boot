@@ -182,27 +182,9 @@ public class SnailJobEndpoint {
             @Selector String jobName,
             @Nullable String action,
             @Nullable String args) {
-        if ("pause".equalsIgnoreCase(action)) {
-            boolean paused = (governor != null) && governor.pause(jobName);
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("jobName", jobName);
-            response.put("action", "pause");
-            response.put("paused", true);
-            response.put("statusChanged", paused);
-            response.put("success", true);
-            return response;
+        if ("pause".equalsIgnoreCase(action) || "resume".equalsIgnoreCase(action)) {
+            return executeGovernorAction(jobName, action);
         }
-        if ("resume".equalsIgnoreCase(action)) {
-            boolean resumed = (governor != null) && governor.resume(jobName);
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("jobName", jobName);
-            response.put("action", "resume");
-            response.put("paused", false);
-            response.put("statusChanged", resumed);
-            response.put("success", true);
-            return response;
-        }
-
         return triggerJob(jobName, args);
     }
 
@@ -215,34 +197,32 @@ public class SnailJobEndpoint {
      */
     @WriteOperation
     public Map<String, Object> manageGovernor(@Nullable String action, @Nullable String jobName) {
-        Map<String, Object> response = new LinkedHashMap<>();
         if ("resumeAll".equalsIgnoreCase(action) || "clear".equalsIgnoreCase(action)) {
             int count = (governor != null) ? governor.resumeAll() : 0;
+            Map<String, Object> response = new LinkedHashMap<>();
             response.put("action", action);
             response.put("resumedCount", count);
             response.put("success", true);
             return response;
         }
-        if ("pause".equalsIgnoreCase(action) && jobName != null) {
-            boolean paused = (governor != null) && governor.pause(jobName);
-            response.put("jobName", jobName);
-            response.put("action", "pause");
-            response.put("paused", true);
-            response.put("statusChanged", paused);
-            response.put("success", true);
-            return response;
+        if (jobName != null && ("pause".equalsIgnoreCase(action) || "resume".equalsIgnoreCase(action))) {
+            return executeGovernorAction(jobName, action);
         }
-        if ("resume".equalsIgnoreCase(action) && jobName != null) {
-            boolean resumed = (governor != null) && governor.resume(jobName);
-            response.put("jobName", jobName);
-            response.put("action", "resume");
-            response.put("paused", false);
-            response.put("statusChanged", resumed);
-            response.put("success", true);
-            return response;
-        }
+        Map<String, Object> response = new LinkedHashMap<>();
         response.put("success", false);
         response.put("message", "未知治理动作或缺少必要参数: action=" + action + ", jobName=" + jobName);
+        return response;
+    }
+
+    private Map<String, Object> executeGovernorAction(String jobName, String action) {
+        boolean isPause = "pause".equalsIgnoreCase(action);
+        boolean statusChanged = (governor != null) && (isPause ? governor.pause(jobName) : governor.resume(jobName));
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("jobName", jobName);
+        response.put("action", isPause ? "pause" : "resume");
+        response.put("paused", isPause);
+        response.put("statusChanged", statusChanged);
+        response.put("success", true);
         return response;
     }
 

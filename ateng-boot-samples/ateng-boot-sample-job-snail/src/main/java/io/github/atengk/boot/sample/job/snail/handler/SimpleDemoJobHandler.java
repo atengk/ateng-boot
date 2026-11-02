@@ -30,7 +30,7 @@ public class SimpleDemoJobHandler {
     /**
      * 超时守卫增强调度任务
      */
-    @AtengSnailJob(value = "timeoutGuardedJob", timeout = "500ms")
+    @AtengSnailJob(timeout = "500ms")
     @JobExecutor(name = "timeoutGuardedJob")
     public ExecuteResult timeoutGuardedJob() {
         log.info("[SimpleDemoJobHandler] 执行超时守卫增强任务, 当前租户: {}", SnailJobContextHolder.getTenantId());
