@@ -1,8 +1,10 @@
 package io.github.atengk.boot.search;
 
 import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
+import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.model.PageResult;
 import io.github.atengk.boot.search.driver.ElasticsearchClientDriver;
@@ -2454,5 +2456,93 @@ class SearchTemplateMockServerTest {
         assertThat(body).contains("\"score_mode\":\"avg\"");
         assertThat(body).contains("\"term\":{\"skus.color\":{\"value\":\"white\"}}");
         assertThat(body).contains("\"range\":{\"skus.price\":{\"gte\":99}}");
+    }
+
+    @Test
+    @DisplayName("测试 collapse 字段折叠去重 DSL 生成及 SearchTemplate 请求下发")
+    void testCollapseDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .term("status", "ACTIVE")
+                .collapse("brand.keyword")
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"collapse\":{\"field\":\"brand.keyword\"}");
+        assertThat(body).contains("\"term\":{\"status\":{\"value\":\"ACTIVE\"}}");
+
+        // 测试直接传入原生 FieldCollapse 对象
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        SearchQuery rawCollapseQuery = SearchQuery.builder()
+                .collapse(FieldCollapse.of(fc -> fc.field("spuId")))
+                .build();
+        searchTemplate.search(rawCollapseQuery, UserDoc.class);
+
+        RecordedRequest req2 = mockWebServer.takeRequest();
+        String body2 = req2.getBody().readUtf8();
+        assertThat(body2).contains("\"collapse\":{\"field\":\"spuId\"}");
+    }
+
+    @Test
+    @DisplayName("测试 minAggregation 与 maxAggregation 极值度量算子 DSL 生成")
+    void testMinAndMaxAggregationDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .minAggregation("min_price", "price")
+                .maxAggregation("max_price", "price")
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"min_price\":{\"min\":{\"field\":\"price\"}}");
+        assertThat(body).contains("\"max_price\":{\"max\":{\"field\":\"price\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 dateHistogramAggregation 时序直方图分桶聚合算子 DSL 生成")
+    void testDateHistogramAggregationDsl() throws Exception {
+        String mockResp = """
+                {
+                  "took": 2,
+                  "timed_out": false,
+                  "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                  "hits": { "total": { "value": 0, "relation": "eq" }, "hits": [] }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        SearchQuery query = SearchQuery.builder()
+                .dateHistogramAggregation("daily_trend", "createTime", "1d")
+                .dateHistogramAggregation("monthly_trend", "createTime", "1M")
+                .dateHistogramAggregation("hourly_trend", "createTime", CalendarInterval.Hour)
+                .build();
+        searchTemplate.search(query, UserDoc.class);
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        String body = req.getBody().readUtf8();
+        assertThat(body).contains("\"daily_trend\":{\"date_histogram\":{\"calendar_interval\":\"day\",\"field\":\"createTime\"}}");
+        assertThat(body).contains("\"monthly_trend\":{\"date_histogram\":{\"calendar_interval\":\"month\",\"field\":\"createTime\"}}");
+        assertThat(body).contains("\"hourly_trend\":{\"date_histogram\":{\"calendar_interval\":\"hour\",\"field\":\"createTime\"}}");
     }
 }

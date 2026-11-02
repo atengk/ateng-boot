@@ -4,6 +4,7 @@ import co.elastic.clients.elasticsearch._types.KnnSearch;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import lombok.Getter;
 
@@ -85,10 +86,23 @@ public class SearchQuery implements Serializable {
      */
     private final boolean trackTotalHits;
 
+    /**
+     * 字段折叠去重配置 (Field Collapsing)
+     */
+    private final FieldCollapse collapse;
+
     SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
                 Map<String, Aggregation> aggregations, List<KnnSearch> knnSearches,
                 int from, int size, int pageNum, String routing,
                 List<String> searchAfter, boolean trackTotalHits) {
+        this(indices, query, sorts, highlight, aggregations, knnSearches, from, size, pageNum, routing, searchAfter, trackTotalHits, null);
+    }
+
+    SearchQuery(List<String> indices, Query query, List<SortOptions> sorts, Highlight highlight,
+                Map<String, Aggregation> aggregations, List<KnnSearch> knnSearches,
+                int from, int size, int pageNum, String routing,
+                List<String> searchAfter, boolean trackTotalHits,
+                FieldCollapse collapse) {
         this.indices = indices != null ? Collections.unmodifiableList(indices) : Collections.emptyList();
         this.query = query;
         this.sorts = sorts != null ? Collections.unmodifiableList(sorts) : Collections.emptyList();
@@ -101,6 +115,7 @@ public class SearchQuery implements Serializable {
         this.routing = routing;
         this.searchAfter = searchAfter != null ? Collections.unmodifiableList(searchAfter) : Collections.emptyList();
         this.trackTotalHits = trackTotalHits;
+        this.collapse = collapse;
     }
 
     /**

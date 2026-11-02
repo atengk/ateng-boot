@@ -1847,6 +1847,11 @@ public class SearchTemplate {
                     b.highlight(query.getHighlight());
                 }
 
+                // 字段折叠去重 (Field Collapsing)
+                if (query.getCollapse() != null) {
+                    b.collapse(query.getCollapse());
+                }
+
                 // 聚合配置
                 if (query.getAggregations() != null && !query.getAggregations().isEmpty()) {
                     b.aggregations(query.getAggregations());

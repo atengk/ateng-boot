@@ -5,9 +5,11 @@ import co.elastic.clients.elasticsearch._types.KnnSearch;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.SortOrder;
 import co.elastic.clients.elasticsearch._types.aggregations.Aggregation;
+import co.elastic.clients.elasticsearch._types.aggregations.CalendarInterval;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.ChildScoreMode;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.search.FieldCollapse;
 import co.elastic.clients.elasticsearch.core.search.Highlight;
 import co.elastic.clients.elasticsearch.core.search.HighlightField;
 import co.elastic.clients.json.JsonData;
@@ -65,6 +67,7 @@ public class SearchQueryBuilder {
     private final List<String> searchAfter = new ArrayList<>();
     private final List<String> indices = new ArrayList<>();
     private boolean trackTotalHits = true;
+    private FieldCollapse collapse;
 
     // ==================== 1. 精确与分词匹配 ====================
 
@@ -767,6 +770,67 @@ public class SearchQueryBuilder {
         return this;
     }
 
+    /**
+     * Min 数值极小值聚合快捷算子
+     *
+     * @param name  聚合名称
+     * @param field 目标数值或日期字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder minAggregation(String name, String field) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
+            aggregations.put(name, Aggregation.of(a -> a.min(m -> m.field(field))));
+        }
+        return this;
+    }
+
+    /**
+     * Max 数值极大值聚合快捷算子
+     *
+     * @param name  聚合名称
+     * @param field 目标数值或日期字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder maxAggregation(String name, String field) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field)) {
+            aggregations.put(name, Aggregation.of(a -> a.max(m -> m.field(field))));
+        }
+        return this;
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（支持字符串日历间隔表达式）
+     * <p>
+     * 支持传入如 "1d", "1h", "1M", "day", "month" 等标准日历间隔，自动映射至原生 {@link CalendarInterval}。
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 日历间隔表达式（如 "1d", "1h", "1M" 等）
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, String calendarInterval) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && StringUtils.hasText(calendarInterval)) {
+            CalendarInterval interval = parseCalendarInterval(calendarInterval);
+            return dateHistogramAggregation(name, field, interval);
+        }
+        return this;
+    }
+
+    /**
+     * DateHistogram 时序直方图分桶聚合算子（强类型 CalendarInterval 枚举）
+     *
+     * @param name             聚合名称
+     * @param field            时序时间字段名
+     * @param calendarInterval 强类型日历间隔枚举
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder dateHistogramAggregation(String name, String field, CalendarInterval calendarInterval) {
+        if (StringUtils.hasText(name) && StringUtils.hasText(field) && calendarInterval != null) {
+            aggregations.put(name, Aggregation.of(a -> a.dateHistogram(dh -> dh.field(field).calendarInterval(calendarInterval))));
+        }
+        return this;
+    }
+
     // ==================== 9. 分页与控制 ====================
 
     /**
@@ -833,6 +897,33 @@ public class SearchQueryBuilder {
 
     public SearchQueryBuilder trackTotalHits(boolean trackTotalHits) {
         this.trackTotalHits = trackTotalHits;
+        return this;
+    }
+
+    /**
+     * 检索结果字段折叠去重 (Field Collapsing)
+     * <p>
+     * 基于指定字段（如 brand.keyword 或 spuId）对命中结果进行分组折叠，每个分组默认仅展示匹配度最高的顶层文档，
+     * 有效防止单一实体垄断检索结果首屏。
+     *
+     * @param field 折叠字段名
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder collapse(String field) {
+        if (StringUtils.hasText(field)) {
+            this.collapse = FieldCollapse.of(fc -> fc.field(field));
+        }
+        return this;
+    }
+
+    /**
+     * 检索结果字段折叠去重 (Field Collapsing)
+     *
+     * @param collapse 原生 FieldCollapse 配置
+     * @return 当前构建器
+     */
+    public SearchQueryBuilder collapse(FieldCollapse collapse) {
+        this.collapse = collapse;
         return this;
     }
 
@@ -909,8 +1000,51 @@ public class SearchQueryBuilder {
                 pageNum,
                 routing,
                 new ArrayList<>(searchAfter),
-                trackTotalHits
+                trackTotalHits,
+                collapse
         );
+    }
+
+    /**
+     * 将字符串表达式解析为标准 CalendarInterval 枚举
+     *
+     * @param interval 日历间隔表达式（如 "1d", "day", "1M", "month", "1h", "hour" 等）
+     * @return 对应的 CalendarInterval 枚举
+     * @throws IllegalArgumentException 当传入非法或不支持的日历间隔时抛出
+     */
+    private static CalendarInterval parseCalendarInterval(String interval) {
+        if (!StringUtils.hasText(interval)) {
+            throw new IllegalArgumentException("calendarInterval must not be blank");
+        }
+        String trimmed = interval.trim();
+        // 1. 优先精准匹配 aliases（区分大小写，如 "1M" 为月，"1m" 为分钟）
+        for (CalendarInterval ci : CalendarInterval.values()) {
+            if (ci.aliases() != null) {
+                for (String alias : ci.aliases()) {
+                    if (alias.equals(trimmed)) {
+                        return ci;
+                    }
+                }
+            }
+        }
+        // 2. 忽略大小写匹配枚举名与 jsonValue
+        for (CalendarInterval ci : CalendarInterval.values()) {
+            if (ci.name().equalsIgnoreCase(trimmed) || ci.jsonValue().equalsIgnoreCase(trimmed)) {
+                return ci;
+            }
+        }
+        // 3. 常见复数或扩展缩写兜底支持
+        return switch (trimmed.toLowerCase()) {
+            case "s", "second", "seconds" -> CalendarInterval.Second;
+            case "m", "minute", "minutes" -> CalendarInterval.Minute;
+            case "h", "hour", "hours" -> CalendarInterval.Hour;
+            case "d", "day", "days" -> CalendarInterval.Day;
+            case "w", "week", "weeks" -> CalendarInterval.Week;
+            case "month", "months" -> CalendarInterval.Month;
+            case "q", "quarter", "quarters" -> CalendarInterval.Quarter;
+            case "y", "year", "years" -> CalendarInterval.Year;
+            default -> throw new IllegalArgumentException("Unsupported calendar interval: " + interval);
+        };
     }
 
     private static FieldValue toFieldValue(Object value) {
