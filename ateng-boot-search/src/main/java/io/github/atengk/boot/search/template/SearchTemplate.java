@@ -109,6 +109,26 @@ public class SearchTemplate {
     }
 
     /**
+     * 显式刷新指定索引（Lucene Segment 物理持久化与即时可读）
+     *
+     * @param index 目标索引名
+     * @return 刷新是否成功
+     */
+    public boolean refresh(String index) {
+        return indices().refresh(index);
+    }
+
+    /**
+     * 根据实体类显式刷新对应的索引
+     *
+     * @param clazz 实体类类型
+     * @return 刷新是否成功
+     */
+    public boolean refresh(Class<?> clazz) {
+        return indices().refresh(clazz);
+    }
+
+    /**
      * 获取基于全局配置预设的受管流式批量缓冲处理器构建器
      *
      * @return SearchBulkProcessor.Builder 实例

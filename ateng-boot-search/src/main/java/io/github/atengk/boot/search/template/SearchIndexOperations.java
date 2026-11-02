@@ -1,18 +1,23 @@
 package io.github.atengk.boot.search.template;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
+import co.elastic.clients.elasticsearch.core.ReindexResponse;
 import co.elastic.clients.elasticsearch.indices.CreateIndexResponse;
 import co.elastic.clients.elasticsearch.indices.DeleteIndexResponse;
+import co.elastic.clients.elasticsearch.indices.DeleteIndexTemplateResponse;
 import co.elastic.clients.elasticsearch.indices.GetMappingResponse;
 import co.elastic.clients.elasticsearch.indices.PutIndexTemplateResponse;
 import co.elastic.clients.elasticsearch.indices.PutMappingResponse;
+import co.elastic.clients.elasticsearch.indices.RefreshResponse;
 import co.elastic.clients.elasticsearch.indices.UpdateAliasesResponse;
 import co.elastic.clients.elasticsearch.indices.update_aliases.Action;
 import co.elastic.clients.transport.endpoints.BooleanResponse;
 import io.github.atengk.boot.search.enums.SearchResultCode;
 import io.github.atengk.boot.search.exception.SearchException;
+import io.github.atengk.boot.search.query.SearchQuery;
 import io.github.atengk.boot.search.util.SearchExceptionClassifier;
 import io.github.atengk.boot.search.util.SearchMetadataHelper;
 import lombok.RequiredArgsConstructor;
@@ -266,6 +271,29 @@ public class SearchIndexOperations {
     }
 
     /**
+     * 删除指定的索引模板 (Index Template)
+     *
+     * @param templateName 模板名称
+     * @return 是否成功删除（若模板不存在返回 false）
+     */
+    public boolean deleteIndexTemplate(String templateName) {
+        Objects.requireNonNull(templateName, "templateName must not be null");
+        try {
+            DeleteIndexTemplateResponse response = getClient().indices()
+                    .deleteIndexTemplate(b -> b.name(templateName));
+            log.info("Deleted index template [{}] acknowledged: {}", templateName, response.acknowledged());
+            return response.acknowledged();
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Index template [{}] does not exist, deletion returns false", templateName);
+                return false;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Failed to delete index template [" + templateName + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * 生产原子别名热切换 (Atomic Alias Swap)
      * <p>
      * 在底层单次 {@code _aliases} 请求中原子执行 {@code remove} 旧索引绑定 + {@code add} 新索引绑定，
@@ -294,6 +322,91 @@ public class SearchIndexOperations {
         } catch (Exception e) {
             throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
                     "Failed to swap alias [" + aliasName + "] from [" + oldIndex + "] to [" + newIndex + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 显式刷新指定索引（Lucene Segment 物理持久化与即时可读）
+     * <p>
+     * 触发索引的刷新操作，确保在此之前执行的写入、更新或删除操作立即对后续检索可见。
+     *
+     * @param index 目标索引名
+     * @return 刷新是否成功（分片失败数为 0）
+     */
+    public boolean refresh(String index) {
+        Objects.requireNonNull(index, "index must not be null");
+        try {
+            RefreshResponse response = getClient().indices().refresh(b -> b.index(index));
+            boolean success = response.shards() == null || response.shards().failed() == null || response.shards().failed().intValue() == 0;
+            log.info("Refreshed index [{}], successful shards: {}, failed shards: {}",
+                    index,
+                    response.shards() != null ? response.shards().successful() : null,
+                    response.shards() != null ? response.shards().failed() : 0);
+            return success;
+        } catch (Exception e) {
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Failed to refresh index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 根据实体类显式刷新对应的索引
+     *
+     * @param clazz 实体类类型
+     * @return 刷新是否成功
+     */
+    public boolean refresh(Class<?> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return refresh(index);
+    }
+
+    /**
+     * 在 Elasticsearch 服务端将源索引全量数据重索引至目标索引
+     * <p>
+     * 与 {@link #swapAlias} 配合形成生产零停机数据迁移闭环。
+     *
+     * @param sourceIndex 源索引名
+     * @param targetIndex 目标索引名
+     * @return 是否重索引成功（无失败批次）
+     */
+    public boolean reindex(String sourceIndex, String targetIndex) {
+        return reindex(sourceIndex, targetIndex, null);
+    }
+
+    /**
+     * 在 Elasticsearch 服务端将源索引数据按条件过滤重索引至目标索引
+     *
+     * @param sourceIndex 源索引名
+     * @param targetIndex 目标索引名
+     * @param filterQuery 过滤条件规格（可为空，为空时执行全量复制）
+     * @return 是否重索引成功（无失败批次）
+     */
+    public boolean reindex(String sourceIndex, String targetIndex, SearchQuery filterQuery) {
+        Objects.requireNonNull(sourceIndex, "sourceIndex must not be null");
+        Objects.requireNonNull(targetIndex, "targetIndex must not be null");
+        try {
+            ReindexResponse response = getClient().reindex(b -> {
+                b.source(s -> {
+                    s.index(sourceIndex);
+                    if (filterQuery != null && filterQuery.getQuery() != null) {
+                        s.query(filterQuery.getQuery());
+                    }
+                    return s;
+                });
+                b.dest(d -> d.index(targetIndex));
+                b.conflicts(Conflicts.Proceed);
+                b.waitForCompletion(true);
+                return b;
+            });
+            boolean success = response.failures() == null || response.failures().isEmpty();
+            log.info("Reindexed from [{}] to [{}], total: {}, created: {}, updated: {}, failures: {}",
+                    sourceIndex, targetIndex, response.total(), response.created(), response.updated(),
+                    response.failures() != null ? response.failures().size() : 0);
+            return success;
+        } catch (Exception e) {
+            throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
+                    "Failed to reindex from [" + sourceIndex + "] to [" + targetIndex + "]: " + e.getMessage(), e);
         }
     }
 }

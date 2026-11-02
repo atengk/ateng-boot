@@ -2545,4 +2545,133 @@ class SearchTemplateMockServerTest {
         assertThat(body).contains("\"monthly_trend\":{\"date_histogram\":{\"calendar_interval\":\"month\",\"field\":\"createTime\"}}");
         assertThat(body).contains("\"hourly_trend\":{\"date_histogram\":{\"calendar_interval\":\"hour\",\"field\":\"createTime\"}}");
     }
+
+    @Test
+    @DisplayName("测试 refresh 物理段合并刷新（支持字符串索引与实体类 Class）")
+    void testRefreshIndexAndClass() throws Exception {
+        String mockResp = """
+                {
+                  "_shards": {
+                    "total": 2,
+                    "successful": 2,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean refreshed = searchTemplate.indices().refresh("order_idx");
+        assertThat(refreshed).isTrue();
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("POST");
+        assertThat(req.getPath()).isEqualTo("/order_idx/_refresh");
+
+        // 测试 Class 入参
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        boolean refreshedDoc = searchTemplate.indices().refresh(UserDoc.class);
+        assertThat(refreshedDoc).isTrue();
+
+        RecordedRequest reqDoc = mockWebServer.takeRequest();
+        assertThat(reqDoc.getMethod()).isEqualTo("POST");
+        assertThat(reqDoc.getPath()).isEqualTo("/user_idx/_refresh");
+
+        // 测试分片刷新失败场景
+        String failedShardsResp = """
+                {
+                  "_shards": {
+                    "total": 2,
+                    "successful": 1,
+                    "failed": 1
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, failedShardsResp));
+        boolean failedRefresh = searchTemplate.indices().refresh("broken_idx");
+        assertThat(failedRefresh).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 deleteIndexTemplate 索引模板删除与 404 容错保底")
+    void testDeleteIndexTemplate() throws Exception {
+        String mockResp = """
+                {
+                  "acknowledged": true
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean deleted = searchTemplate.indices().deleteIndexTemplate("log_template");
+        assertThat(deleted).isTrue();
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("DELETE");
+        assertThat(req.getPath()).isEqualTo("/_index_template/log_template");
+
+        // 测试不存在模板返回 false
+        String notFoundResp = """
+                {
+                  "error": {
+                    "root_cause": [{ "type": "resource_not_found_exception", "reason": "index template [not_found] missing" }],
+                    "type": "resource_not_found_exception",
+                    "reason": "index template [not_found] missing"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, notFoundResp));
+        boolean notFoundDeleted = searchTemplate.indices().deleteIndexTemplate("not_found");
+        assertThat(notFoundDeleted).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 reindex 数据平滑重索引（全量与条件过滤）")
+    void testReindex() throws Exception {
+        String mockResp = """
+                {
+                  "took": 15,
+                  "timed_out": false,
+                  "total": 50,
+                  "updated": 0,
+                  "created": 50,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        // 1. 全量重索引
+        boolean reindexed = searchTemplate.indices().reindex("source_idx", "target_idx");
+        assertThat(reindexed).isTrue();
+
+        RecordedRequest req1 = mockWebServer.takeRequest();
+        assertThat(req1.getMethod()).isEqualTo("POST");
+        assertThat(req1.getPath()).contains("/_reindex");
+        assertThat(req1.getPath()).contains("wait_for_completion=true");
+        String body1 = req1.getBody().readUtf8();
+        assertThat(body1).contains("\"source\":{\"index\":[\"source_idx\"]}");
+        assertThat(body1).contains("\"dest\":{\"index\":\"target_idx\"}");
+        assertThat(body1).contains("\"conflicts\":\"proceed\"");
+
+        // 2. 带条件增量/过滤重索引
+        mockWebServer.enqueue(esResponse(200, mockResp));
+        SearchQuery filterQuery = SearchQuery.builder().term("status", "ACTIVE").build();
+        boolean reindexWithFilter = searchTemplate.indices().reindex("source_idx", "target_idx", filterQuery);
+        assertThat(reindexWithFilter).isTrue();
+
+        RecordedRequest req2 = mockWebServer.takeRequest();
+        assertThat(req2.getMethod()).isEqualTo("POST");
+        assertThat(req2.getPath()).contains("/_reindex");
+        assertThat(req2.getPath()).contains("wait_for_completion=true");
+        String body2 = req2.getBody().readUtf8();
+        assertThat(body2).contains("\"source\":{\"index\":[\"source_idx\"],\"query\":{\"bool\":{\"filter\":[{\"term\":{\"status\":{\"value\":\"ACTIVE\"}}}]}}}");
+        assertThat(body2).contains("\"dest\":{\"index\":\"target_idx\"}");
+    }
 }
