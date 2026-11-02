@@ -10,6 +10,9 @@ import io.github.atengk.boot.sms.provider.HuaweiSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.provider.TencentSmsProvider;
+import io.github.atengk.boot.sms.registry.SmsChannelRegistry;
+import io.github.atengk.boot.sms.registry.SmsChannelResolver;
+import io.github.atengk.boot.sms.registry.TenantSmsChannelResolver;
 import io.github.atengk.boot.sms.repository.InMemorySmsVerifyCodeRepository;
 import io.github.atengk.boot.sms.repository.RedisSmsVerifyCodeRepository;
 import io.github.atengk.boot.sms.repository.SmsVerifyCodeRepository;
@@ -90,6 +93,30 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
+     * 自动装配多命名短信渠道注册中心
+     *
+     * @param properties 配置属性
+     * @return SmsChannelRegistry
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SmsChannelRegistry smsChannelRegistry(SmsProperties properties) {
+        return new SmsChannelRegistry(properties);
+    }
+
+    /**
+     * 自动装配基于多租户上下文的默认短信渠道解析器
+     *
+     * @param channelRegistry 渠道注册表
+     * @return TenantSmsChannelResolver
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public TenantSmsChannelResolver tenantSmsChannelResolver(SmsChannelRegistry channelRegistry) {
+        return new TenantSmsChannelResolver(channelRegistry);
+    }
+
+    /**
      * 自动装配手机号出站黑名单过滤器
      *
      * @return SmsBlacklistProvider
@@ -103,8 +130,8 @@ public class AtengSmsAutoConfiguration {
     /**
      * 自动装配单日成本预算熔断器（检测到 Redis 时采用分布式熔断计数，否则优雅降级为纯内存实现）
      *
-     * @param properties            配置属性
-     * @param redisTemplateProvider Redis 模板提供者
+     * @param properties             配置属性
+     * @param redisTemplateProvider  Redis 模板提供者
      * @param eventPublisherProvider 事件发布器提供者
      * @return DailyBudgetBreaker
      */
@@ -124,23 +151,29 @@ public class AtengSmsAutoConfiguration {
     /**
      * 自动装配顶层短信操作门面
      *
-     * @param properties           配置属性
-     * @param providers            容器中所有已注册的短信驱动实现
-     * @param blacklistProvider    出站黑名单过滤器提供者
-     * @param budgetBreaker        单日成本预算熔断器提供者
-     * @param taskExecutorProvider 异步执行器提供者
+     * @param properties               配置属性
+     * @param providers                容器中所有已注册的短信驱动实现
+     * @param channelRegistry          渠道注册中心
+     * @param channelResolversProvider 渠道解析器提供者列表
+     * @param blacklistProvider        出站黑名单过滤器提供者
+     * @param budgetBreaker            单日成本预算熔断器提供者
+     * @param taskExecutorProvider     异步执行器提供者
      * @return SmsTemplate
      */
     @Bean
     @ConditionalOnMissingBean
     public SmsTemplate smsTemplate(SmsProperties properties,
                                    List<SmsProvider> providers,
+                                   SmsChannelRegistry channelRegistry,
+                                   ObjectProvider<List<SmsChannelResolver>> channelResolversProvider,
                                    ObjectProvider<SmsBlacklistProvider> blacklistProvider,
                                    ObjectProvider<DailyBudgetBreaker> budgetBreaker,
                                    ObjectProvider<Executor> taskExecutorProvider) {
         return new SmsTemplate(
                 properties,
                 providers,
+                channelRegistry,
+                channelResolversProvider.getIfAvailable(),
                 blacklistProvider.getIfAvailable(),
                 budgetBreaker.getIfAvailable(),
                 taskExecutorProvider.getIfAvailable()
