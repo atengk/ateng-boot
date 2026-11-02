@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>实现工业级告警治理状态机：
  * <ol>
  *     <li><b>首发告警 (First Failure)</b>：任务/重试首次失败时立即推送红色告警卡片并广播事件；</li>
- *     <li><b>风暴抑制与周期摘要 (Suppression & Summary)</b>：持续失败期间抑制中间重复骚扰，达到周期或阈值推送橙色聚合摘要卡片；</li>
+ *     <li><b>风暴抑制与周期摘要 (Suppression &amp; Summary)</b>：持续失败期间抑制中间重复骚扰，达到周期或阈值推送橙色聚合摘要卡片；</li>
  *     <li><b>自愈恢复通知 (Self-Healing Recovery)</b>：连续失败后首次成功执行推送绿色自愈卡片并重置健康状态；</li>
  *     <li><b>死信沉降告警 (Dead Letter Incident)</b>：重试任务达到上限进入死信后立即发布 {@link SnailRetryDeadLetterEvent} 并推送高危红色卡片。</li>
  * </ol>

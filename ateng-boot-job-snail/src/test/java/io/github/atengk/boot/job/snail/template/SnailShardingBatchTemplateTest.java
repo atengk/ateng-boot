@@ -157,7 +157,7 @@ class SnailShardingBatchTemplateTest {
         List<String> threadUsers = new CopyOnWriteArrayList<>();
         List<String> threadWfParams = new CopyOnWriteArrayList<>();
 
-        BatchExecutionResult result = template.executeStepParallel(
+        BatchExecutionResult<Long> result = template.executeStepParallel(
                 0L,
                 3,
                 2,
@@ -216,7 +216,7 @@ class SnailShardingBatchTemplateTest {
         List<Long> mockDb = List.of(1L, 2L, 3L, 4L, 5L);
         List<Long> successfullyConsumed = new CopyOnWriteArrayList<>();
 
-        BatchExecutionResult result = template.executeStepParallel(
+        BatchExecutionResult<Long> result = template.executeStepParallel(
                 0L,
                 2,
                 2,
@@ -235,7 +235,82 @@ class SnailShardingBatchTemplateTest {
         assertThat(result.getFailCount()).isEqualTo(2); // 包含 3L 的批次有 2 条数据 (3L, 4L)
         assertThat(result.getSuccessCount()).isEqualTo(3); // (1L, 2L) 和 (5L)
         assertThat(result.isSuccess()).isFalse();
+        assertThat(result.hasFailures()).isTrue();
+        assertThat(result.getFailedBatchCount()).isEqualTo(1);
+        assertThat(result.failedBatchCount()).isEqualTo(1);
+        assertThat(result.getFailedBatches()).hasSize(1);
+        FailedBatch<Long> failedBatch = result.getFailedBatches().get(0);
+        assertThat(failedBatch.cursorStart()).isEqualTo(3L);
+        assertThat(failedBatch.cursorEnd()).isEqualTo(4L);
+        assertThat(failedBatch.itemCount()).isEqualTo(2);
+        assertThat(failedBatch.throwable()).isInstanceOf(RuntimeException.class);
         assertThat(successfullyConsumed).containsExactlyInAnyOrder(1L, 2L, 5L);
+    }
+
+    @Test
+    @DisplayName("executeStep: failFast=false 收集 FailedBatch 详细诊断数据")
+    void testExecuteStepCaptureFailedBatches() {
+        List<Long> mockDb = List.of(1L, 2L, 3L, 4L, 5L);
+        List<Long> consumed = new ArrayList<>();
+
+        BatchExecutionResult<Long> result = template.executeStep(
+                0L,
+                2,
+                false,
+                (lastId, batchSize) -> mockDb.stream().filter(id -> id > lastId).limit(batchSize).toList(),
+                id -> id,
+                batch -> {
+                    if (batch.contains(3L)) {
+                        throw new RuntimeException("模拟顺序批次消费异常");
+                    }
+                    consumed.addAll(batch);
+                }
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(5);
+        assertThat(result.getSuccessCount()).isEqualTo(3);
+        assertThat(result.getFailCount()).isEqualTo(2);
+        assertThat(result.hasFailures()).isTrue();
+        assertThat(result.getFailedBatchCount()).isEqualTo(1);
+        assertThat(result.getFailedBatches()).hasSize(1);
+
+        FailedBatch<Long> failed = result.getFailedBatches().get(0);
+        assertThat(failed.cursorStart()).isEqualTo(3L);
+        assertThat(failed.cursorEnd()).isEqualTo(4L);
+        assertThat(failed.batchIndex()).isEqualTo(2);
+        assertThat(failed.shardIndex()).isNull();
+        assertThat(failed.itemCount()).isEqualTo(2);
+        assertThat(failed.throwable()).isInstanceOf(RuntimeException.class).hasMessage("模拟顺序批次消费异常");
+        assertThat(consumed).containsExactly(1L, 2L, 5L);
+    }
+
+    @Test
+    @DisplayName("executeShardedStep: failFast=false 分片场景下收集 FailedBatch 且保留 shardIndex")
+    void testExecuteShardedStepCaptureFailedBatches() {
+        List<Long> mockDb = List.of(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L);
+        ShardingContext shard1Of2 = new ShardingContext(1, 2); // 匹配 1, 3, 5, 7, 9
+
+        BatchExecutionResult<Long> result = template.executeShardedStep(
+                shard1Of2,
+                -1L,
+                2,
+                false,
+                (lastId, batchSize) -> mockDb.stream().filter(id -> id > lastId).limit(batchSize).toList(),
+                id -> id,
+                batch -> {
+                    if (batch.contains(5L)) {
+                        throw new RuntimeException("分片 1 批次失败");
+                    }
+                }
+        );
+
+        assertThat(result.getTotalCount()).isEqualTo(5);
+        assertThat(result.hasFailures()).isTrue();
+        assertThat(result.getFailedBatches()).hasSize(1);
+        FailedBatch<Long> failed = result.getFailedBatches().get(0);
+        assertThat(failed.shardIndex()).isEqualTo(1);
+        assertThat(failed.cursorStart()).isEqualTo(5L);
+        assertThat(failed.itemCount()).isEqualTo(1); // 4L 被分片过滤后本批次仅含 5L
     }
 
     @Test

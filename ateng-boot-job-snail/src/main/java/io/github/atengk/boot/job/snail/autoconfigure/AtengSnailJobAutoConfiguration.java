@@ -16,6 +16,8 @@ import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
 import io.github.atengk.boot.job.snail.retry.callback.SnailRetryDeadLetterCallback;
+import io.github.atengk.boot.job.snail.retry.context.InMemorySnailRetryContextStore;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
@@ -267,11 +269,23 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
+     * SnailJob 远程重试四维现场快照持久化存储策略 (默认基于内存 LRU 缓存)
+     *
+     * @return SnailRetryContextStore 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(SnailRetryContextStore.class)
+    public SnailRetryContextStore snailRetryContextStore() {
+        return new InMemorySnailRetryContextStore();
+    }
+
+    /**
      * SnailJob 分布式重试四维现场快照与跨节点保真还原切面
      *
-     * @param drainStateMachineProvider 平滑排空状态机提供者 (可选)
-     * @param metricsBinderProvider     度量绑定器提供者 (可选)
-     * @param alertAggregatorProvider   告警聚合器提供者 (可选)
+     * @param drainStateMachineProvider  平滑排空状态机提供者 (可选)
+     * @param metricsBinderProvider      度量绑定器提供者 (可选)
+     * @param alertAggregatorProvider    告警聚合器提供者 (可选)
+     * @param retryContextStoreProvider  重试上下文存储策略提供者 (可选)
      * @return SnailRetryContextAspect 实例
      */
     @Bean
@@ -280,11 +294,13 @@ public class AtengSnailJobAutoConfiguration {
     public SnailRetryContextAspect snailRetryContextAspect(
             ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
             ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
-            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
+            ObjectProvider<SnailRetryContextStore> retryContextStoreProvider) {
         return new SnailRetryContextAspect(
                 drainStateMachineProvider.getIfAvailable(),
                 metricsBinderProvider.getIfAvailable(),
-                alertAggregatorProvider.getIfAvailable()
+                alertAggregatorProvider.getIfAvailable(),
+                retryContextStoreProvider.getIfAvailable()
         );
     }
 

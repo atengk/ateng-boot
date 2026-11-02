@@ -102,7 +102,7 @@ public class SnailShardingBatchTemplate {
      * @param <ID>          游标 ID 类型
      * @return 批处理执行汇总统计
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStep(
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer) {
@@ -121,7 +121,7 @@ public class SnailShardingBatchTemplate {
      * @param <ID>          游标 ID 类型
      * @return 批处理执行汇总统计
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStep(
             ID initialId,
             int batchSize,
             BiFunction<ID, Integer, List<T>> queryFunction,
@@ -143,7 +143,7 @@ public class SnailShardingBatchTemplate {
      * @param <ID>          游标 ID 类型
      * @return 批处理执行汇总统计
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStep(
             ID initialId,
             int batchSize,
             boolean failFast,
@@ -161,6 +161,7 @@ public class SnailShardingBatchTemplate {
         long successCount = 0;
         long failCount = 0;
         int batchCount = 0;
+        List<FailedBatch<ID>> failedBatches = new ArrayList<>();
 
         while (true) {
             if (Thread.currentThread().isInterrupted()) {
@@ -177,11 +178,15 @@ public class SnailShardingBatchTemplate {
             totalCount += chunkSize;
             batchCount++;
 
+            ID chunkStartId = idExtractor.apply(chunk.get(0));
+            ID chunkEndId = idExtractor.apply(chunk.get(chunkSize - 1));
+
             try {
                 batchConsumer.accept(Collections.unmodifiableList(chunk));
                 successCount += chunkSize;
             } catch (Throwable t) {
                 failCount += chunkSize;
+                failedBatches.add(new FailedBatch<>(chunkStartId, chunkEndId, null, batchCount, chunkSize, t));
                 if (failFast) {
                     if (t instanceof RuntimeException re) {
                         throw re;
@@ -191,20 +196,20 @@ public class SnailShardingBatchTemplate {
                 log.error("[SnailShardingBatchTemplate] 游标流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
             }
 
-            lastId = idExtractor.apply(chunk.get(chunkSize - 1));
+            lastId = chunkEndId;
             if (chunkSize < effectiveBatchSize) {
                 break;
             }
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration);
+        return new BatchExecutionResult<>(totalCount, successCount, failCount, batchCount, duration, failedBatches);
     }
 
     /**
      * 逐条消费步长游标数据
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepForEach(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStepForEach(
             ID initialId,
             int batchSize,
             BiFunction<ID, Integer, List<T>> queryFunction,
@@ -223,7 +228,7 @@ public class SnailShardingBatchTemplate {
     /**
      * 带有分片智能匹配的步长流式批处理（自动提取当前 SnailJob 分片）
      */
-    public <T> BatchExecutionResult executeShardedStep(
+    public <T> BatchExecutionResult<Long> executeShardedStep(
             BiFunction<Long, Integer, List<T>> queryFunction,
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer) {
@@ -245,7 +250,7 @@ public class SnailShardingBatchTemplate {
      * @param <T>           实体类型
      * @return 批处理执行汇总统计
      */
-    public <T> BatchExecutionResult executeShardedStep(
+    public <T> BatchExecutionResult<Long> executeShardedStep(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
@@ -268,7 +273,7 @@ public class SnailShardingBatchTemplate {
      * @param <T>           实体类型
      * @return 批处理执行汇总统计
      */
-    public <T> BatchExecutionResult executeShardedStep(
+    public <T> BatchExecutionResult<Long> executeShardedStep(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
@@ -287,6 +292,7 @@ public class SnailShardingBatchTemplate {
         long successCount = 0;
         long failCount = 0;
         int batchCount = 0;
+        List<FailedBatch<Long>> failedBatches = new ArrayList<>();
 
         while (true) {
             if (Thread.currentThread().isInterrupted()) {
@@ -312,11 +318,17 @@ public class SnailShardingBatchTemplate {
                 int matchedSize = matchedChunk.size();
                 totalCount += matchedSize;
                 batchCount++;
+
+                Long chunkStartId = idExtractor.applyAsLong(matchedChunk.get(0));
+                Long chunkEndId = idExtractor.applyAsLong(matchedChunk.get(matchedSize - 1));
+                Integer shardIndex = (sharding != null) ? sharding.getShardIndex() : null;
+
                 try {
                     batchConsumer.accept(Collections.unmodifiableList(matchedChunk));
                     successCount += matchedSize;
                 } catch (Throwable t) {
                     failCount += matchedSize;
+                    failedBatches.add(new FailedBatch<>(chunkStartId, chunkEndId, shardIndex, batchCount, matchedSize, t));
                     if (failFast) {
                         if (t instanceof RuntimeException re) {
                             throw re;
@@ -334,13 +346,13 @@ public class SnailShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount, successCount, failCount, batchCount, duration);
+        return new BatchExecutionResult<>(totalCount, successCount, failCount, batchCount, duration, failedBatches);
     }
 
     /**
      * 带有分片智能匹配的逐条流式消费
      */
-    public <T> BatchExecutionResult executeShardedStepForEach(
+    public <T> BatchExecutionResult<Long> executeShardedStepForEach(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
@@ -360,7 +372,7 @@ public class SnailShardingBatchTemplate {
     /**
      * 基于游标步长拉取 + 受管线程池并发消费（采用默认切片与默认并发度）
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStepParallel(
             ID initialId,
             BiFunction<ID, Integer, List<T>> queryFunction,
             Function<T, ID> idExtractor,
@@ -381,7 +393,7 @@ public class SnailShardingBatchTemplate {
      * @param <ID>           游标类型
      * @return 批处理执行汇总统计
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStepParallel(
             ID initialId,
             int batchSize,
             int maxConcurrency,
@@ -405,7 +417,7 @@ public class SnailShardingBatchTemplate {
      * @param <ID>           游标类型
      * @return 批处理执行汇总统计
      */
-    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStepParallel(
+    public <T, ID extends Comparable<ID>> BatchExecutionResult<ID> executeStepParallel(
             ID initialId,
             int batchSize,
             int maxConcurrency,
@@ -427,6 +439,7 @@ public class SnailShardingBatchTemplate {
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
+        List<FailedBatch<ID>> failedBatches = Collections.synchronizedList(new ArrayList<>());
 
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
         List<CompletableFuture<Void>> futures = Collections.synchronizedList(new ArrayList<>());
@@ -453,6 +466,9 @@ public class SnailShardingBatchTemplate {
             int chunkSize = chunk.size();
             totalCount.addAndGet(chunkSize);
             int currentBatch = batchCount.incrementAndGet();
+
+            ID chunkStartId = idExtractor.apply(chunk.get(0));
+            ID chunkEndId = idExtractor.apply(chunk.get(chunkSize - 1));
 
             try {
                 semaphore.acquire();
@@ -490,6 +506,7 @@ public class SnailShardingBatchTemplate {
                     successCount.addAndGet(chunkSize);
                 } catch (Throwable t) {
                     failCount.addAndGet(chunkSize);
+                    failedBatches.add(new FailedBatch<>(chunkStartId, chunkEndId, null, currentBatch, chunkSize, t));
                     firstError.compareAndSet(null, t);
                     log.error("[SnailShardingBatchTemplate] 并发批处理子任务执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
                 } finally {
@@ -513,7 +530,7 @@ public class SnailShardingBatchTemplate {
 
             futures.add(future);
 
-            lastId = idExtractor.apply(chunk.get(chunkSize - 1));
+            lastId = chunkEndId;
             if (chunkSize < effectiveBatchSize) {
                 break;
             }
@@ -536,13 +553,13 @@ public class SnailShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult<>(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedBatches);
     }
 
     /**
      * 带有分片过滤的并发批处理（采用默认 failFast 策略）
      */
-    public <T> BatchExecutionResult executeShardedStepParallel(
+    public <T> BatchExecutionResult<Long> executeShardedStepParallel(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
@@ -567,7 +584,7 @@ public class SnailShardingBatchTemplate {
      * @param <T>              实体类型
      * @return 批处理执行汇总统计
      */
-    public <T> BatchExecutionResult executeShardedStepParallel(
+    public <T> BatchExecutionResult<Long> executeShardedStepParallel(
             ShardingContext sharding,
             Long initialId,
             int batchSize,
@@ -590,6 +607,7 @@ public class SnailShardingBatchTemplate {
         AtomicLong successCount = new AtomicLong(0);
         AtomicLong failCount = new AtomicLong(0);
         AtomicInteger batchCount = new AtomicInteger(0);
+        List<FailedBatch<Long>> failedBatches = Collections.synchronizedList(new ArrayList<>());
 
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
         List<CompletableFuture<Void>> futures = Collections.synchronizedList(new ArrayList<>());
@@ -626,6 +644,10 @@ public class SnailShardingBatchTemplate {
                 totalCount.addAndGet(matchedSize);
                 int currentBatch = batchCount.incrementAndGet();
 
+                Long chunkStartId = idExtractor.applyAsLong(matchedChunk.get(0));
+                Long chunkEndId = idExtractor.applyAsLong(matchedChunk.get(matchedSize - 1));
+                Integer shardIndex = (sharding != null) ? sharding.getShardIndex() : null;
+
                 try {
                     semaphore.acquire();
                 } catch (InterruptedException e) {
@@ -660,6 +682,7 @@ public class SnailShardingBatchTemplate {
                         successCount.addAndGet(matchedSize);
                     } catch (Throwable t) {
                         failCount.addAndGet(matchedSize);
+                        failedBatches.add(new FailedBatch<>(chunkStartId, chunkEndId, shardIndex, currentBatch, matchedSize, t));
                         firstError.compareAndSet(null, t);
                         log.error("[SnailShardingBatchTemplate] 分片并发切片执行异常 [批次: {}]: {}", currentBatch, t.getMessage(), t);
                     } finally {
@@ -703,6 +726,6 @@ public class SnailShardingBatchTemplate {
         }
 
         Duration duration = Duration.ofNanos(System.nanoTime() - startTime);
-        return new BatchExecutionResult(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration);
+        return new BatchExecutionResult<>(totalCount.get(), successCount.get(), failCount.get(), batchCount.get(), duration, failedBatches);
     }
 }

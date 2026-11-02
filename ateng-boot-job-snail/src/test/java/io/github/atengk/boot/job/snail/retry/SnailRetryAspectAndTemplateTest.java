@@ -2,6 +2,7 @@ package io.github.atengk.boot.job.snail.retry;
 
 import com.aizuda.snailjob.client.core.intercepter.RetrySiteSnapshot;
 import com.aizuda.snailjob.common.core.model.IdempotentIdContext;
+import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
@@ -9,7 +10,9 @@ import io.github.atengk.boot.job.snail.annotation.AtengSnailRetry;
 import io.github.atengk.boot.job.snail.autoconfigure.AtengSnailJobAutoConfiguration;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.retry.aspect.SnailRetryContextAspect;
+import io.github.atengk.boot.job.snail.retry.context.InMemorySnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.template.SnailRetryTemplate;
@@ -55,6 +58,9 @@ class SnailRetryAspectAndTemplateTest {
 
     @Autowired
     private ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator;
+
+    @Autowired
+    private SnailRetryContextStore retryContextStore;
 
     @AfterEach
     void tearDown() {
@@ -214,6 +220,39 @@ class SnailRetryAspectAndTemplateTest {
         assertThat(reported).isTrue();
     }
 
+    @Test
+    @DisplayName("测试 SnailRetryContextStore 默认自动装配 InMemorySnailRetryContextStore 并正常工作")
+    void testRetryContextStoreAutowired() {
+        assertThat(retryContextStore).isNotNull();
+        assertThat(retryContextStore).isInstanceOf(InMemorySnailRetryContextStore.class);
+
+        AsyncContext.ContextSnapshot snapshot = AsyncContext.ContextSnapshot.capture();
+        retryContextStore.put("test_key", snapshot);
+        assertThat(retryContextStore.get("test_key")).isEqualTo(snapshot);
+
+        retryContextStore.remove("test_key");
+        assertThat(retryContextStore.get("test_key")).isNull();
+    }
+
+    @Test
+    @DisplayName("测试远程重试阶段未命中快照且入参缺少 getTenantId 访问器时记录警告日志并安全保底")
+    void testRemoteRetryFallbackWithoutTenantAccessor() {
+        NoTenantCommand cmd = new NoTenantCommand("CMD_NO_TENANT_100", "test");
+        MDC.clear();
+        UserContextHolder.clear();
+        TenantContextHolder.clear();
+
+        RetrySiteSnapshot.setStage(RetrySiteSnapshot.EnumStage.REMOTE.getStage());
+        try {
+            String result = mockRetryService.processNoTenant(cmd);
+            assertThat(result).isEqualTo("processed: CMD_NO_TENANT_100");
+            // 验证租户未被设置，不会抛错
+            assertThat(TenantContextHolder.getTenantId()).isNull();
+        } finally {
+            RetrySiteSnapshot.removeAll();
+        }
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestConfig {
@@ -221,6 +260,14 @@ class SnailRetryAspectAndTemplateTest {
         public MockRetryService mockRetryService() {
             return new MockRetryService();
         }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class NoTenantCommand {
+        private String orderNo;
+        private String remark;
     }
 
     @Data
@@ -234,6 +281,11 @@ class SnailRetryAspectAndTemplateTest {
 
     @Service
     public static class MockRetryService {
+
+        @AtengSnailRetry(scene = "orderPayScene", idempotentSpel = "#cmd.orderNo", tenantMode = JobTenantMode.PARAM)
+        public String processNoTenant(NoTenantCommand cmd) {
+            return "processed: " + cmd.getOrderNo();
+        }
 
         @AtengSnailRetry(scene = "orderPayScene", idempotentSpel = "#order.orderNo", tenantMode = JobTenantMode.PARAM)
         public String payOrder(OrderCommand order) {

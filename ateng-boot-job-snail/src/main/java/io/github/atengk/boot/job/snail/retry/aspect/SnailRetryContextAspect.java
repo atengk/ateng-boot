@@ -17,6 +17,7 @@ import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextRegistry;
+import io.github.atengk.boot.job.snail.retry.context.SnailRetryContextStore;
 import io.github.atengk.boot.job.snail.retry.generator.ArgsHashIdempotentIdGenerator;
 import io.github.atengk.boot.job.snail.retry.generator.SpelIdempotentIdGenerator;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -39,7 +40,7 @@ import java.time.Duration;
  *
  * <p>拦截标注有 {@link Retryable} 或 {@link AtengSnailRetry} 的业务方法：
  * <ul>
- *     <li><b>首次执行 / 本地拦截</b>：基于 {@link AsyncContext#capture()} 抓取当前 MDC traceId、User 操作人、
+ *     <li><b>首次执行 / 本地拦截</b>：基于 {@link AsyncContext.ContextSnapshot#capture()} 抓取当前 MDC traceId、User 操作人、
  *     Tenant 租户与 IgnoreTenant 标志，登记至 {@link SnailRetryContextRegistry}；</li>
  *     <li><b>远程重试 / 跨节点执行</b>：当流量作为远程重试分发到达工作线程时，自动解包并还原四维现场，
  *     彻底杜绝跨租户越权查询与脏读；并在 {@code finally} 严格还原现场，确保线程池复用安全。</li>
@@ -64,17 +65,32 @@ public class SnailRetryContextAspect {
     private final SpelIdempotentIdGenerator spelIdempotentIdGenerator = new SpelIdempotentIdGenerator();
     private final ArgsHashIdempotentIdGenerator argsHashIdempotentIdGenerator = new ArgsHashIdempotentIdGenerator();
 
+    private final SnailRetryContextStore contextStore;
+
     public SnailRetryContextAspect() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     public SnailRetryContextAspect(
             GracefulDrainStateMachine drainStateMachine,
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator) {
+        this(drainStateMachine, metricsBinder, alertAggregator, null);
+    }
+
+    public SnailRetryContextAspect(
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator,
+            SnailRetryContextStore contextStore) {
         this.drainStateMachine = drainStateMachine;
         this.metricsBinder = metricsBinder;
         this.alertAggregator = alertAggregator;
+        this.contextStore = (contextStore != null) ? contextStore : SnailRetryContextRegistry.getStore();
+    }
+
+    public SnailRetryContextStore getContextStore() {
+        return contextStore;
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.core.annotation.Retryable) || " +
@@ -115,15 +131,15 @@ public class SnailRetryContextAspect {
             if (isRemoteRetry) {
                 // 远程重试阶段：保存当前工作线程初始现场，优先通过细粒度幂等键还原上报时的四维快照
                 AsyncContext.ContextSnapshot previous = AsyncContext.ContextSnapshot.capturePrevious();
-                AsyncContext.ContextSnapshot recorded = SnailRetryContextRegistry.get(fineGrainedKey);
+                AsyncContext.ContextSnapshot recorded = this.contextStore.get(fineGrainedKey);
                 if (recorded == null && StringUtils.hasText(idempotentKey)) {
-                    recorded = SnailRetryContextRegistry.get(scene + ":" + idempotentKey);
+                    recorded = this.contextStore.get(scene + ":" + idempotentKey);
                 }
                 if (recorded == null) {
-                    recorded = SnailRetryContextRegistry.get(contextKey);
+                    recorded = this.contextStore.get(contextKey);
                 }
                 if (recorded == null) {
-                    recorded = SnailRetryContextRegistry.get(classKey);
+                    recorded = this.contextStore.get(classKey);
                 }
 
                 if (recorded != null) {
@@ -138,32 +154,32 @@ public class SnailRetryContextAspect {
                     result = pjp.proceed();
                 } finally {
                     previous.restore();
-                    SnailRetryContextRegistry.remove(fineGrainedKey);
+                    this.contextStore.remove(fineGrainedKey);
                     if (StringUtils.hasText(idempotentKey)) {
-                        SnailRetryContextRegistry.remove(scene + ":" + idempotentKey);
+                        this.contextStore.remove(scene + ":" + idempotentKey);
                     }
                 }
             } else {
                 // 首次业务执行或本地重试阶段：捕获并登记当前四维快照（挂载细粒度键防多租户并发串写）
                 ensureTraceIdPresent();
                 AsyncContext.ContextSnapshot currentSnapshot = AsyncContext.ContextSnapshot.capture();
-                SnailRetryContextRegistry.put(fineGrainedKey, currentSnapshot);
+                this.contextStore.put(fineGrainedKey, currentSnapshot);
                 if (StringUtils.hasText(idempotentKey)) {
-                    SnailRetryContextRegistry.put(scene + ":" + idempotentKey, currentSnapshot);
+                    this.contextStore.put(scene + ":" + idempotentKey, currentSnapshot);
                 }
-                SnailRetryContextRegistry.put(contextKey, currentSnapshot);
-                SnailRetryContextRegistry.put(classKey, currentSnapshot);
+                this.contextStore.put(contextKey, currentSnapshot);
+                this.contextStore.put(classKey, currentSnapshot);
 
                 try {
                     result = pjp.proceed();
                 } catch (Throwable t) {
                     // 发生异常即将上报，确保注册表中保持有效快照供远程重试消费
-                    SnailRetryContextRegistry.put(fineGrainedKey, currentSnapshot);
+                    this.contextStore.put(fineGrainedKey, currentSnapshot);
                     if (StringUtils.hasText(idempotentKey)) {
-                        SnailRetryContextRegistry.put(scene + ":" + idempotentKey, currentSnapshot);
+                        this.contextStore.put(scene + ":" + idempotentKey, currentSnapshot);
                     }
-                    SnailRetryContextRegistry.put(contextKey, currentSnapshot);
-                    SnailRetryContextRegistry.put(classKey, currentSnapshot);
+                    this.contextStore.put(contextKey, currentSnapshot);
+                    this.contextStore.put(classKey, currentSnapshot);
                     throw t;
                 }
             }
@@ -228,6 +244,8 @@ public class SnailRetryContextAspect {
             String tenantId = SnailJobContextAspect.extractPropertyFromArgs(args, "getTenantId");
             if (StringUtils.hasText(tenantId)) {
                 TenantContextHolder.setTenantId(tenantId);
+            } else {
+                log.warn("[SnailRetry] 远程重试从入参反射提取租户标识失败，入参缺少 getTenantId 访问器或为 null，当前上下文未绑定租户");
             }
         }
     }
