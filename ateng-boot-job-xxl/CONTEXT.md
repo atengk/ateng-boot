@@ -1,6 +1,6 @@
 # XXL-Job 分布式任务调度与生产加固底座
 
-面向企业级微服务分布式任务调度、大数据分片批处理与高可用运维治理的基础设施，基于官方 `com.xuxueli:xxl-job-core:3.5.0`（原生 Spring Boot 3 与 JDK 17 基线）深度加固，提供原生无侵入增强与高阶声明式注解 `@AtengXxlJob`、四维全链路上下文透传（`AsyncContext` / MDC `traceId` / 多租户隔离）、SLF4J 日志动态镜像无感推送（`XxlJobLogbackAppender`）、本地硬看门狗超时中断熔断、强类型 DTO 入参与 JSR-303 防卫、大数据分片流式批处理模板（`XxlShardingBatchTemplate`）、K8s 停机三阶平滑排空状态机、执行器端口防踩踏自愈与 CIDR 防火墙、三阶告警防风暴聚合自愈，以及免调度中心本地调试端点与 100% 离线自洽单测沙箱。
+面向企业级微服务分布式任务调度、大数据分片批处理与高可用运维治理的基础设施，基于官方 `com.xuxueli:xxl-job-core:3.5.0`（原生 Spring Boot 3 与 JDK 17 基线）深度加固，提供原生无侵入增强与高阶声明式注解 `@AtengXxlJob`、四维全链路上下文透传（`AsyncContext` / MDC `traceId` / 多租户隔离）、SLF4J 日志动态镜像无感推送（`XxlJobLogbackAppender`）、本地硬看门狗超时中断熔断与两级降级补偿（同 Bean 补偿 + `JobTimeoutFallbackHandler` 全局 SPI）、任务切面责任链拦截器 SPI（`XxlJobInterceptor`）、节点级任务运行时治理总线（`JobRuntimeGovernor`）、强类型 DTO 入参与 JSR-303 防卫、大数据分片流式批处理模板（`XxlShardingBatchTemplate`，含 `FailedBatch` 失败切片收集与进度打卡）、多租户受管并发遍历（`TenantJobTemplate.executeForEachTenantParallel` 信号量背压并发）、K8s 停机三阶平滑排空状态机、执行器端口防踩踏自愈与 CIDR 防火墙、三阶告警防风暴聚合自愈，以及脱网调试 POJO 自动序列化门面 `XxlJobTestHelper` 与 100% 离线自洽单测沙箱。
 
 ## Language
 
