@@ -188,16 +188,57 @@ stateDiagram-v2
 - **对称告警闭环与防恢复扰民**：
   维护 `alertedInstances` 集合。**仅当实例曾经真实触发过告警（即已确认发生真实故障）并在随后恢复时，才触发一次“实例恢复”通知**；对于在防抖期内自愈的偶发闪断，绝对不产生任何多余卡片通知。
 
+### 决策五：控制台只读安全守卫与高危写操作物理拦截 (`AdminWriteGuardFilter`)
+
+- **生产合规只读约束**：
+  在生产环境中，监控看板默认应当处于只读观测模式，防止运维人员误触操作对线上微服务造成生产事故。
+- **物理拦截策略**：
+  在 `AdminWriteGuardFilter` 中，当 `ateng.boot.admin.server.enable-write-operations = false` 时，前置拦截针对微服务 Actuator 反向代理端点（`/instances/{id}/actuator/**`）的所有非幂等写操作（`POST`/`PUT`/`DELETE`/`PATCH`），直接响应 `403 Forbidden`。
+- **通信豁免保护**：
+  严格豁免微服务生命周期请求（`POST /instances` 注册、`DELETE /instances/{id}` 注销）与控制台登录/登出请求，保证集群通信绝不受限。
+
+### 决策六：动态实例准入与租户安全审查扩展点 (`AdminInstanceAdmissionPolicy` SPI)
+
+- **拔插式准入契约**：
+  抽象 `AdminInstanceAdmissionPolicy` 接口，定义 `AdminAdmissionResult evaluate(Registration registration, HttpServletRequest request)` 契约。
+- **开箱自洽与企业级接管**：
+  默认由 `DefaultAdminInstanceAdmissionPolicy` 实现集群 Secret、云元数据网段阻断与正则 URL 检查；企业开发者可通过声明 Bean 轻松扩展自定义准入规则（如强制服务名规范、VPC CIDR 子网白名单审查等）。
+
+### 决策七：异构微服务 Actuator 出站抓取多模态认证自适应推导
+
+- **异构多模态自适应**：
+  在 `AtengActuatorHttpHeadersProvider` 中，支持优先级自适应推导：
+  1. HTTP Basic Auth：从元数据提取 `user.name` 与 `user.password` 合成 `Basic` 凭据；
+  2. Bearer Token：从元数据提取 `bearer-token` 合成 `Bearer` 凭据；
+  3. 自定义 Token：从元数据提取 `actuator-token` 挂载 `X-Actuator-Token`；
+  4. 全局兜底：未配置时降级采用 `default-actuator-token` 作为保底。
+
+### 决策八：容器云离线僵尸实例自动清理调度器 (`ZombieInstanceCleanupScheduler`)
+
+- **SmartLifecycle 受管生命周期**：
+  实现 `SmartLifecycle` 契约，依托独立的 `sba-zombie-cleanup-` 守护线程池按照 `cleanup.interval`（默认 1h）执行 `fixedDelay` 调度。
+- **超期判定与优雅排空**：
+  对持续处于 `OFFLINE` 或 `UNKNOWN` 状态且超期超过 `cleanup.zombie-threshold`（默认 24h）的死亡 Pod 实例执行注销与内存排空，防御 Kubernetes 频繁伸缩下的内存膨胀。
+
+### 决策九：告警名单规则过滤与探针富文本报错根因诊断增强
+
+- **双阶名单过滤**：
+  支持 `alert.included-services` 白名单与 `alert.excluded-services` 黑名单（支持 AntPath 通配符），以及 `alert.notify-statuses` 状态过滤；在防抖入队前与超时触发前双重校验，降低无用调度与告警噪音。
+- **探针富文本诊断与安全脱敏**：
+  自动解析 `statusInfo.details` 提取各健康探针组件的报错根因与版本元数据，并强制脱敏 `user.password`、`bearer-token` 等敏感键，确保告警卡片具备真实诊断价值且零泄密风险。
+
 ---
 
 ## 收益与架构影响
 
 1. **绝对解耦与架构一致性**：彻底清除 Spring Security 及其全家桶，全框架安全基线 100% 统一于 Sa-Token，代码量减少 40%，启动极速且无 Filter 冲突。
 2. **端到端安全闭环**：
-   - 入站：`AdminSsrfGuardFilter` 强力阻断云元数据和非法内网探测，`ResettableContentCachingRequestWrapper` 守卫单向流复用；
-   - 出站：`AtengActuatorHttpHeadersProvider` 穿透微服务已加固的 Actuator 生产端点，兼顾严密防护与可观测性。
-3. **运维噪音暴跌 90%**：30 秒防抖消除偶发网络抖动虚警，60 秒发版静默消除 K8s 滚动更新误报，告警卡片具备真实确定性价值。
-4. **强类型与生产开箱即用**：配置项基于 `Duration` 消除单位歧义，内置高颜值拟物化登录页面，开箱即用。
+   - 入站：`AdminSsrfGuardFilter` + `AdminInstanceAdmissionPolicy` SPI 强力阻断云元数据和非法内网探测，`ResettableContentCachingRequestWrapper` 守卫单向流复用；
+   - 生产防护：`AdminWriteGuardFilter` 物理拦截控制台高危写操作，生产环境严格只读防御；
+   - 出站：`AtengActuatorHttpHeadersProvider` 三模态自适应穿透异构微服务已加固的 Actuator 生产端点。
+3. **云原生弹性伸缩排空**：`ZombieInstanceCleanupScheduler` 周期性排空失联离线 Pod，彻底根除 Kubernetes 频繁伸缩引起的内存膨胀。
+4. **运维噪音暴跌 90%**：30 秒防抖消除偶发网络抖动虚警，60 秒发版静默消除 K8s 滚动更新误报，黑白名单精确过滤，告警卡片直观呈现探针报错根因且深度脱敏凭据。
+5. **强类型与生产开箱即用**：配置项基于 `Duration` 消除单位歧义，内置高颜值拟物化登录页面，开箱即用。
 
 ---
 
