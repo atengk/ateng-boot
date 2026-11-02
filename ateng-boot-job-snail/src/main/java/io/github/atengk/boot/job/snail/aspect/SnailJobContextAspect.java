@@ -12,6 +12,7 @@ import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import com.aizuda.snailjob.client.job.core.executor.JobContextManager;
 import com.aizuda.snailjob.common.core.model.JobContext;
+import com.aizuda.snailjob.model.dto.ExecuteResult;
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.atengk.boot.core.code.CommonResultCode;
@@ -28,6 +29,8 @@ import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
+import io.github.atengk.boot.job.snail.interceptor.SnailJobExecutionContext;
+import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
@@ -46,6 +49,7 @@ import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.convert.DurationStyle;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
@@ -88,13 +92,14 @@ public class SnailJobContextAspect {
     private final GracefulDrainStateMachine drainStateMachine;
     private final SnailJobMetricsBinder metricsBinder;
     private final SnailJobAlertAggregator alertAggregator;
+    private final java.util.List<SnailJobInterceptor> interceptors;
 
     public SnailJobContextAspect() {
-        this(null, null, null, null, null);
+        this(null, null, null, null, null, null);
     }
 
     public SnailJobContextAspect(SnailLocalWatchdog watchdog, SnailJobProperties properties) {
-        this(watchdog, properties, null, null, null);
+        this(watchdog, properties, null, null, null, null);
     }
 
     public SnailJobContextAspect(
@@ -103,11 +108,32 @@ public class SnailJobContextAspect {
             GracefulDrainStateMachine drainStateMachine,
             SnailJobMetricsBinder metricsBinder,
             SnailJobAlertAggregator alertAggregator) {
+        this(watchdog, properties, drainStateMachine, metricsBinder, alertAggregator, null);
+    }
+
+    public SnailJobContextAspect(
+            SnailLocalWatchdog watchdog,
+            SnailJobProperties properties,
+            GracefulDrainStateMachine drainStateMachine,
+            SnailJobMetricsBinder metricsBinder,
+            SnailJobAlertAggregator alertAggregator,
+            java.util.List<SnailJobInterceptor> interceptors) {
         this.watchdog = watchdog;
         this.properties = properties;
         this.drainStateMachine = drainStateMachine;
         this.metricsBinder = metricsBinder;
         this.alertAggregator = alertAggregator;
+        if (interceptors != null && !interceptors.isEmpty()) {
+            java.util.List<SnailJobInterceptor> sorted = new java.util.ArrayList<>(interceptors);
+            AnnotationAwareOrderComparator.sort(sorted);
+            this.interceptors = java.util.Collections.unmodifiableList(sorted);
+        } else {
+            this.interceptors = java.util.Collections.emptyList();
+        }
+    }
+
+    public java.util.List<SnailJobInterceptor> getInterceptors() {
+        return interceptors;
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
@@ -273,6 +299,12 @@ public class SnailJobContextAspect {
         }
         SnailJobContextHolder.set(snailJobContext);
 
+        java.util.List<SnailJobInterceptor> executedInterceptors = new java.util.ArrayList<>(this.interceptors.size());
+        boolean afterCompletionTriggered = false;
+        SnailJobExecutionContext executionContext = null;
+        Object executionResult = null;
+        Throwable errorThrown = null;
+
         try {
             // A. 解析方法形参并完成强类型绑定 (JobArgs、JobContext、DTO、String)
             Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam, jobArgs, snailJobContext);
@@ -288,6 +320,30 @@ public class SnailJobContextAspect {
             // C. JSR-303 参数校验与 Fail-Fast 快速失败防卫
             validateParameters(pjp.getTarget(), specificMethod, specificMethod.getParameters(), resolvedArgs, jobName);
 
+            // 构建拦截器上下文
+            executionContext = new SnailJobExecutionContext(
+                    pjp.getTarget(),
+                    specificMethod,
+                    resolvedArgs,
+                    metadata
+            );
+
+            // 拦截器 preHandle 前置拦截执行 (按 Order 正序执行)
+            if (!this.interceptors.isEmpty()) {
+                for (SnailJobInterceptor interceptor : this.interceptors) {
+                    boolean proceed = interceptor.preHandle(executionContext);
+                    if (!proceed) {
+                        log.info("[INTERCEPTED] 任务调度被拦截器阻断并跳过执行: interceptor={}, jobName={}, traceId={}",
+                                interceptor.getClass().getSimpleName(), jobName, traceId);
+                        Object skipResult = createInterceptedSuccessResult(specificMethod, interceptor);
+                        triggerAfterCompletion(executedInterceptors, executionContext, skipResult, null);
+                        afterCompletionTriggered = true;
+                        return skipResult;
+                    }
+                    executedInterceptors.add(interceptor);
+                }
+            }
+
             // D. 挂载看门狗
             if (watchdog != null && timeout != null && !timeout.isZero() && !timeout.isNegative()) {
                 SnailLocalWatchdog.WatchdogSession session = watchdog.startWatch(Thread.currentThread(), timeout, metadata);
@@ -295,7 +351,20 @@ public class SnailJobContextAspect {
             }
 
             // E. 执行调度逻辑
-            Object executionResult = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+            executionResult = (resolvedArgs != null && resolvedArgs.length > 0) ? pjp.proceed(resolvedArgs) : pjp.proceed();
+
+            // 拦截器 postHandle 后置处理 (逆序执行)
+            if (!executedInterceptors.isEmpty()) {
+                for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+                    try {
+                        executedInterceptors.get(i).postHandle(executionContext, executionResult);
+                    } catch (Throwable it) {
+                        log.error("[SnailJob] 拦截器 [{}] postHandle 执行异常: {}",
+                                executedInterceptors.get(i).getClass().getSimpleName(), it.getMessage(), it);
+                    }
+                }
+            }
+
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
             if (metricsBinder != null) {
                 metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
@@ -306,6 +375,7 @@ public class SnailJobContextAspect {
             return executionResult;
 
         } catch (Throwable t) {
+            errorThrown = t;
             long durationMs = Duration.ofNanos(System.nanoTime() - startTimeNanos).toMillis();
             if (metricsBinder != null) {
                 metricsBinder.recordJobExecution(jobName, SnailJobMetricsBinder.STATUS_FAILURE, TenantContextHolder.getTenantId(), Duration.ofMillis(durationMs));
@@ -319,6 +389,12 @@ public class SnailJobContextAspect {
             }
             throw t;
         } finally {
+            if (!afterCompletionTriggered) {
+                SnailJobExecutionContext ctx = (executionContext != null)
+                        ? executionContext
+                        : new SnailJobExecutionContext(pjp.getTarget(), specificMethod, pjp.getArgs(), metadata);
+                triggerAfterCompletion(executedInterceptors, ctx, executionResult, errorThrown);
+            }
             if (drainStateMachine != null) {
                 drainStateMachine.decrementInFlightJob();
             }
@@ -819,5 +895,35 @@ public class SnailJobContextAspect {
         }
         // 5. 回退使用 targetClass.getSimpleName()
         return targetClass.getSimpleName();
+    }
+
+    private Object createInterceptedSuccessResult(Method method, SnailJobInterceptor interceptor) {
+        if (method.getReturnType().equals(Void.TYPE)) {
+            return null;
+        }
+        if (ExecuteResult.class.isAssignableFrom(method.getReturnType()) || method.getReturnType().equals(Object.class)) {
+            ExecuteResult result = ExecuteResult.success("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
+            result.setMessage("[INTERCEPTED] 任务调度被拦截器跳过执行: " + interceptor.getClass().getSimpleName());
+            return result;
+        }
+        return null;
+    }
+
+    private void triggerAfterCompletion(
+            java.util.List<SnailJobInterceptor> executedInterceptors,
+            SnailJobExecutionContext context,
+            Object result,
+            Throwable ex) {
+        if (executedInterceptors == null || executedInterceptors.isEmpty()) {
+            return;
+        }
+        for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+            try {
+                executedInterceptors.get(i).afterCompletion(context, result, ex);
+            } catch (Throwable t) {
+                log.error("[SnailJob] 拦截器 [{}] afterCompletion 执行异常: {}",
+                        executedInterceptors.get(i).getClass().getSimpleName(), t.getMessage(), t);
+            }
+        }
     }
 }

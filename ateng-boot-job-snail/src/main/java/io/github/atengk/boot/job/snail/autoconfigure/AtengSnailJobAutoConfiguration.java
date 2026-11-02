@@ -11,6 +11,7 @@ import io.github.atengk.boot.job.snail.alert.SnailJobAlertAggregator;
 import io.github.atengk.boot.job.snail.aspect.SnailJobContextAspect;
 import io.github.atengk.boot.job.snail.drain.GracefulDrainStateMachine;
 import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
+import io.github.atengk.boot.job.snail.interceptor.SnailJobInterceptor;
 import io.github.atengk.boot.job.snail.log.SnailJobLogbackAppenderRegistrar;
 import io.github.atengk.boot.job.snail.metrics.SnailJobMetricsBinder;
 import io.github.atengk.boot.job.snail.properties.SnailJobProperties;
@@ -219,13 +220,14 @@ public class AtengSnailJobAutoConfiguration {
     }
 
     /**
-     * SnailJob 调度任务四维上下文与声明式增强切面
+     * SnailJob 调度任务上下文、链路追踪、形参注入与受管超时看门狗切面
      *
-     * @param watchdog                   本地硬看门狗
+     * @param watchdog                   本地硬超时看门狗
      * @param properties                 SnailJob 配置属性
      * @param drainStateMachineProvider  平滑排空状态机提供者 (可选)
      * @param metricsBinderProvider      度量绑定器提供者 (可选)
      * @param alertAggregatorProvider    告警聚合器提供者 (可选)
+     * @param interceptorsProvider       生命周期拦截器提供者 (可选)
      * @return SnailJobContextAspect 实例
      */
     @Bean
@@ -236,13 +238,15 @@ public class AtengSnailJobAutoConfiguration {
             SnailJobProperties properties,
             ObjectProvider<GracefulDrainStateMachine> drainStateMachineProvider,
             ObjectProvider<SnailJobMetricsBinder> metricsBinderProvider,
-            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider) {
+            ObjectProvider<SnailJobAlertAggregator> alertAggregatorProvider,
+            ObjectProvider<SnailJobInterceptor> interceptorsProvider) {
         return new SnailJobContextAspect(
                 watchdog,
                 properties,
                 drainStateMachineProvider.getIfAvailable(),
                 metricsBinderProvider.getIfAvailable(),
-                alertAggregatorProvider.getIfAvailable()
+                alertAggregatorProvider.getIfAvailable(),
+                interceptorsProvider.orderedStream().toList()
         );
     }
 
