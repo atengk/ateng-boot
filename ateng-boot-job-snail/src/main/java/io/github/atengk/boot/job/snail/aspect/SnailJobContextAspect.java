@@ -1,7 +1,14 @@
 package io.github.atengk.boot.job.snail.aspect;
 
+import com.aizuda.snailjob.client.job.core.MapHandler;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
+import com.aizuda.snailjob.client.job.core.dto.MapArgs;
+import com.aizuda.snailjob.client.job.core.dto.MergeReduceArgs;
+import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import com.aizuda.snailjob.client.job.core.executor.JobContextManager;
 import com.aizuda.snailjob.common.core.model.JobContext;
@@ -35,6 +42,7 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.convert.DurationStyle;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotatedElementUtils;
@@ -72,6 +80,7 @@ public class SnailJobContextAspect {
     private static final Logger log = LoggerFactory.getLogger(SnailJobContextAspect.class);
 
     public static final String TRACE_ID_KEY = "traceId";
+    public static final String TASK_NAME_KEY = "snail.taskName";
     public static final String DEFAULT_JOB_USER = "SYSTEM";
 
     private final SnailLocalWatchdog watchdog;
@@ -102,10 +111,19 @@ public class SnailJobContextAspect {
     }
 
     @Around("@annotation(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
+            "@annotation(com.aizuda.snailjob.client.job.core.annotation.MapExecutor) || " +
+            "@annotation(com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor) || " +
+            "@annotation(com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor) || " +
             "@annotation(io.github.atengk.boot.job.snail.annotation.AtengSnailJob) || " +
             "@within(com.aizuda.snailjob.client.job.core.annotation.JobExecutor) || " +
+            "@within(com.aizuda.snailjob.client.job.core.annotation.MapExecutor) || " +
+            "@within(com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor) || " +
+            "@within(com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor) || " +
             "@within(io.github.atengk.boot.job.snail.annotation.AtengSnailJob) || " +
-            "execution(* com.aizuda.snailjob.client.job.core.IJobExecutor+.jobExecute(..))")
+            "execution(* com.aizuda.snailjob.client.job.core.IJobExecutor+.jobExecute(..)) || " +
+            "execution(* com.aizuda.snailjob.client.job.core.executor.AbstractMapExecutor+.doJobMapExecute(..)) || " +
+            "execution(* com.aizuda.snailjob.client.job.core.executor.AbstractMapReduceExecutor+.doReduceExecute(..)) || " +
+            "execution(* com.aizuda.snailjob.client.job.core.executor.AbstractMapReduceExecutor+.doMergeReduceExecute(..))")
     public Object aroundJob(ProceedingJoinPoint pjp) throws Throwable {
         MethodSignature signature = (MethodSignature) pjp.getSignature();
         Method method = signature.getMethod();
@@ -153,8 +171,9 @@ public class SnailJobContextAspect {
             }
         }
 
-        // 2. MDC traceId 上下文编排
+        // 2. MDC traceId 与 taskName 链路追踪上下文编排
         String previousTraceId = MDC.get(TRACE_ID_KEY);
+        String previousTaskName = MDC.get(TASK_NAME_KEY);
         String extractedTraceId = extractTraceId(rawParam, pjp.getArgs());
         String traceId = StringUtils.hasText(extractedTraceId) ? extractedTraceId : (StringUtils.hasText(previousTraceId) ? previousTraceId : IdUtil.fastSimpleUUID());
         MDC.put(TRACE_ID_KEY, traceId);
@@ -216,6 +235,16 @@ public class SnailJobContextAspect {
         } else if (nativeJobContext != null && nativeJobContext.getShardingTotal() != null) {
             snailJobContext.setShardingTotal(nativeJobContext.getShardingTotal());
             snailJobContext.setShardingIndex(nativeJobContext.getShardingIndex());
+        }
+
+        if (jobArgs instanceof MapArgs ma && StringUtils.hasText(ma.getTaskName())) {
+            snailJobContext.setTaskName(ma.getTaskName());
+        } else if (jobName.contains(":") && !StringUtils.hasText(snailJobContext.getTaskName())) {
+            snailJobContext.setTaskName(jobName.substring(jobName.indexOf(":") + 1));
+        }
+
+        if (StringUtils.hasText(snailJobContext.getTaskName())) {
+            MDC.put(TASK_NAME_KEY, snailJobContext.getTaskName());
         }
 
         if (jobArgs != null) {
@@ -325,6 +354,11 @@ public class SnailJobContextAspect {
             } else {
                 MDC.remove(TRACE_ID_KEY);
             }
+            if (previousTaskName != null) {
+                MDC.put(TASK_NAME_KEY, previousTaskName);
+            } else {
+                MDC.remove(TASK_NAME_KEY);
+            }
         }
     }
 
@@ -363,16 +397,24 @@ public class SnailJobContextAspect {
             Class<?> type = param.getType();
             Object rawArg = (rawArgs != null && i < rawArgs.length) ? rawArgs[i] : null;
 
-            // 1. JobArgs 参数注入
+            // 1. JobArgs 参数注入 (兼容 MapArgs、ReduceArgs、MergeReduceArgs、ShardingJobArgs)
             if (JobArgs.class.isAssignableFrom(type)) {
                 if (rawArg instanceof JobArgs explicitArgs) {
                     resolved[i] = explicitArgs;
-                } else if (jobArgs != null) {
+                } else if (jobArgs != null && type.isInstance(jobArgs)) {
+                    resolved[i] = jobArgs;
+                } else if (jobArgs != null && JobArgs.class.equals(type)) {
                     resolved[i] = jobArgs;
                 } else {
-                    JobArgs ja = new JobArgs();
-                    ja.setJobParams(rawParam);
-                    resolved[i] = ja;
+                    try {
+                        JobArgs ja = (JobArgs) type.getDeclaredConstructor().newInstance();
+                        ja.setJobParams(rawParam);
+                        resolved[i] = ja;
+                    } catch (Exception e) {
+                        JobArgs ja = new JobArgs();
+                        ja.setJobParams(rawParam);
+                        resolved[i] = ja;
+                    }
                 }
             } else if (JobContext.class.isAssignableFrom(type)) {
                 // 2. JobContext 参数注入
@@ -387,8 +429,11 @@ public class SnailJobContextAspect {
             } else if (ShardingContext.class.isAssignableFrom(type)) {
                 // 4. ShardingContext 分片上下文参数注入
                 resolved[i] = (snailJobContext != null) ? snailJobContext.getSharding() : ShardingContext.current();
+            } else if (MapHandler.class.isAssignableFrom(type)) {
+                // 5. MapHandler 参数注入 (MapReduce 特有)
+                resolved[i] = (rawArg instanceof MapHandler mh) ? mh : null;
             } else if (String.class.isAssignableFrom(type)) {
-                // 5. 原生字符串参数注入
+                // 6. 原生字符串参数注入
                 if (StringUtils.hasText(rawParam)) {
                     resolved[i] = rawParam;
                 } else if (rawArg instanceof String str) {
@@ -399,8 +444,10 @@ public class SnailJobContextAspect {
                     resolved[i] = null;
                 }
             } else {
-                // 4. 强类型 DTO 反序列化注入
-                if (StringUtils.hasText(rawParam)) {
+                // 7. 强类型 DTO 反序列化注入 (优先使用匹配的目标类型实参)
+                if (rawArg != null && type.isInstance(rawArg)) {
+                    resolved[i] = rawArg;
+                } else if (StringUtils.hasText(rawParam)) {
                     try {
                         JavaType javaType = JsonUtil.getObjectMapper().constructType(param.getParameterizedType());
                         resolved[i] = JsonUtil.getObjectMapper().readValue(rawParam, javaType);
@@ -408,8 +455,6 @@ public class SnailJobContextAspect {
                         String errorMsg = "SnailJob 参数反序列化失败: 无法将入参 [" + rawParam + "] 转换为目标类型 [" + type.getName() + "]: " + e.getMessage();
                         throw new BusinessException(CommonResultCode.BAD_REQUEST.getCode(), errorMsg, e);
                     }
-                } else if (rawArg != null && type.isInstance(rawArg)) {
-                    resolved[i] = rawArg;
                 } else {
                     resolved[i] = null;
                 }
@@ -435,7 +480,11 @@ public class SnailJobContextAspect {
         for (int i = 0; i < parameters.length; i++) {
             Parameter param = parameters[i];
             Object arg = (resolvedArgs != null && i < resolvedArgs.length) ? resolvedArgs[i] : null;
-            if (JobArgs.class.isAssignableFrom(param.getType()) || JobContext.class.isAssignableFrom(param.getType())) {
+            if (JobArgs.class.isAssignableFrom(param.getType()) 
+                    || JobContext.class.isAssignableFrom(param.getType()) 
+                    || MapHandler.class.isAssignableFrom(param.getType())
+                    || SnailJobContext.class.isAssignableFrom(param.getType())
+                    || ShardingContext.class.isAssignableFrom(param.getType())) {
                 continue;
             }
 
@@ -677,22 +726,98 @@ public class SnailJobContextAspect {
     }
 
     /**
-     * 解析任务标识名称
+     * 解析任务标识名称（支持普通调度任务与 Map / Reduce / MergeReduce 复合命名）
      */
     protected String resolveJobName(Method specificMethod, Class<?> targetClass, AtengSnailJob atengSnailJob, JobArgs jobArgs) {
+        MapExecutor mapExecutor = AnnotatedElementUtils.findMergedAnnotation(specificMethod, MapExecutor.class);
+        ReduceExecutor reduceExecutor = AnnotatedElementUtils.findMergedAnnotation(specificMethod, ReduceExecutor.class);
+        MergeReduceExecutor mergeReduceExecutor = AnnotatedElementUtils.findMergedAnnotation(specificMethod, MergeReduceExecutor.class);
+
+        boolean isSlice = mapExecutor != null || reduceExecutor != null || mergeReduceExecutor != null
+                || "doJobMapExecute".equals(specificMethod.getName())
+                || "doReduceExecute".equals(specificMethod.getName())
+                || "doMergeReduceExecute".equals(specificMethod.getName())
+                || (jobArgs instanceof MapArgs)
+                || (jobArgs instanceof ReduceArgs)
+                || (jobArgs instanceof MergeReduceArgs);
+
+        if (isSlice) {
+            String taskName;
+            if (reduceExecutor != null || "doReduceExecute".equals(specificMethod.getName()) || (jobArgs instanceof ReduceArgs)) {
+                taskName = "reduce";
+            } else if (mergeReduceExecutor != null || "doMergeReduceExecute".equals(specificMethod.getName()) || (jobArgs instanceof MergeReduceArgs)) {
+                taskName = "mergeReduce";
+            } else {
+                if (mapExecutor != null && StringUtils.hasText(mapExecutor.taskName())) {
+                    taskName = mapExecutor.taskName().trim();
+                } else if (jobArgs instanceof MapArgs ma && StringUtils.hasText(ma.getTaskName())) {
+                    taskName = ma.getTaskName().trim();
+                } else {
+                    taskName = "map";
+                }
+            }
+
+            if (atengSnailJob != null && StringUtils.hasText(atengSnailJob.value())) {
+                String declared = atengSnailJob.value().trim();
+                if (declared.contains(":")) {
+                    return declared;
+                }
+                return declared + ":" + taskName;
+            }
+
+            String enclosingJobName = resolveEnclosingJobName(specificMethod, targetClass, jobArgs);
+            if (enclosingJobName.endsWith(":" + taskName)) {
+                return enclosingJobName;
+            }
+            return enclosingJobName + ":" + taskName;
+        }
+
         if (atengSnailJob != null && StringUtils.hasText(atengSnailJob.value())) {
-            return atengSnailJob.value();
+            return atengSnailJob.value().trim();
         }
         JobExecutor jobExecutor = AnnotatedElementUtils.findMergedAnnotation(specificMethod, JobExecutor.class);
         if (jobExecutor == null) {
             jobExecutor = AnnotatedElementUtils.findMergedAnnotation(targetClass, JobExecutor.class);
         }
         if (jobExecutor != null && StringUtils.hasText(jobExecutor.name())) {
-            return jobExecutor.name();
+            return jobExecutor.name().trim();
         }
         if (jobArgs != null && StringUtils.hasText(jobArgs.getExecutorInfo())) {
-            return jobArgs.getExecutorInfo();
+            return jobArgs.getExecutorInfo().trim();
         }
         return specificMethod.getName();
+    }
+
+    /**
+     * 解析切片任务所属的主任务名称
+     */
+    protected String resolveEnclosingJobName(Method specificMethod, Class<?> targetClass, JobArgs jobArgs) {
+        // 1. 类级别 @AtengSnailJob
+        AtengSnailJob classAteng = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailJob.class);
+        if (classAteng != null && StringUtils.hasText(classAteng.value())) {
+            return classAteng.value().trim();
+        }
+        // 2. 类级别 @JobExecutor
+        JobExecutor classJobExecutor = AnnotatedElementUtils.findMergedAnnotation(targetClass, JobExecutor.class);
+        if (classJobExecutor != null && StringUtils.hasText(classJobExecutor.name())) {
+            return classJobExecutor.name().trim();
+        }
+        // 3. jobArgs.getExecutorInfo()
+        if (jobArgs != null && StringUtils.hasText(jobArgs.getExecutorInfo())) {
+            return jobArgs.getExecutorInfo().trim();
+        }
+        // 4. 扫描 targetClass 中的 @JobExecutor 方法
+        for (Method method : targetClass.getDeclaredMethods()) {
+            JobExecutor methodExecutor = AnnotatedElementUtils.findMergedAnnotation(method, JobExecutor.class);
+            if (methodExecutor != null && StringUtils.hasText(methodExecutor.name())) {
+                return methodExecutor.name().trim();
+            }
+            AtengSnailJob methodAteng = AnnotatedElementUtils.findMergedAnnotation(method, AtengSnailJob.class);
+            if (methodAteng != null && StringUtils.hasText(methodAteng.value())) {
+                return methodAteng.value().trim();
+            }
+        }
+        // 5. 回退使用 targetClass.getSimpleName()
+        return targetClass.getSimpleName();
     }
 }

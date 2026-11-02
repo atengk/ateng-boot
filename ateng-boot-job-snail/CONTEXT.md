@@ -1,6 +1,6 @@
 # SnailJob 分布式任务调度与分布式重试加固底座
 
-面向企业级微服务分布式任务调度、复杂工作流（DAG）、Map/MapReduce 动态分布式切片计算、分布式业务异常重试（Local / Remote）与死信治理的基础设施，基于官方 `com.aizuda:snail-job-client-starter:2.0.2`（原生 Spring Boot 3 与 JDK 17 基线）深度加固，提供原生无侵入增强与高阶声明式注解 `@AtengSnailJob`、分布式重试增强 `@AtengSnailRetry`、四维全链路上下文透传与远程重试保真还原（`AsyncContext` / MDC `traceId` / 租户模式 / 操作人）、SLF4J 动态日志镜像无感推送（`SnailJobLogbackAppender`）、本地硬看门狗超时中断熔断、强类型 DTO 入参与 JSR-303 防卫、大数据分片流式批处理模板（`SnailShardingBatchTemplate`）、原生 MapReduce 流式切片门面、编程式重试门面（`SnailRetryTemplate`）、OpenAPI 编程式管理门面（`SnailJobAdminTemplate`）、三阶告警防风暴聚合自愈与死信领域事件直通通道、K8s 停机三阶平滑排空状态机，以及免服务端本地调试端点与 100% 离线自洽单测沙箱。
+面向企业级微服务分布式任务调度、复杂工作流（DAG）、Map/MapReduce 动态分布式切片计算、分布式业务异常重试（Local / Remote）与死信治理的基础设施，基于官方 `com.aizuda:snail-job-client-starter:1.10.0`（原生 Spring Boot 3 与 JDK 17 基线）深度加固，提供原生无侵入增强与高阶声明式注解 `@AtengSnailJob`、分布式重试增强 `@AtengSnailRetry`、四维全链路上下文透传与远程重试保真还原（`AsyncContext` / MDC `traceId` / 租户模式 / 操作人）、SLF4J 动态日志镜像无感推送（`SnailJobLogbackAppender`）、本地硬看门狗超时中断熔断与方法级降级补偿、强类型 DTO 入参与 JSR-303 防卫、大数据分片流式批处理模板（`SnailShardingBatchTemplate`）、原生 MapReduce 流式切片纳管、编程式重试门面（`SnailRetryTemplate`）、OpenAPI 编程式管理门面（`SnailJobAdminTemplate`）、三阶告警防风暴聚合自愈与死信领域事件直通通道、K8s 停机三阶平滑排空状态机、节点级运行时治理总线（`SnailJobRuntimeGovernor`），以及免服务端本地调试端点与 100% 离线自洽单测沙箱。
 
 ## Language
 
@@ -9,7 +9,7 @@
 _Avoid_: 定时器, 后台线程, 重试切面, EasyRetryJob
 
 **AtengSnailJob (高阶声明式调度注解)**:
-扩展原生 `@JobExecutor` 契约的高阶注解，支持显式声明方法级本地硬超时阈值（`timeout`）、多租户隔离模式（`tenantMode`）、告警抑制策略与强类型入参 DTO 自动反序列化。
+扩展原生 `@JobExecutor` 及 `@MapExecutor`/`@ReduceExecutor` 契约的高阶注解，支持显式声明方法级本地硬超时阈值（`timeout`）、超时降级补偿方法（`fallbackMethod`）、多租户隔离模式（`tenantMode`）、告警抑制策略与强类型入参 DTO 自动反序列化。
 _Avoid_: SnailJob增强注解, 自定义Job, JobAnnotation
 
 **AtengSnailRetry (高阶声明式重试注解)**:
@@ -20,6 +20,26 @@ _Avoid_: 重试增强, 业务重试, RetryAnnotation
 标识任务在调度期间的多租户隔离边界策略：`IGNORE`（平台级全局扫描，忽略租户限制）、`PARAM`（从调度参数中提取 `tenantId` 独立挂载）、`ITERATE`（租户级沙箱轮询，依次独立事务执行）。
 _Avoid_: 租户级别, 隔离模式, TenantPolicy
 
+**SnailJobInterceptor (调度生命周期责任链拦截器)**:
+调度任务执行生命周期责任链扩展点，提供 `preHandle`、`postHandle`、`afterCompletion` 三个挂载点，支持企业挂载安全校验、金丝雀灰度、审计追溯与动态数据源切换。
+_Avoid_: JobFilter, 任务监听器, SnailAspect
+
+**JobTimeoutFallbackHandler (调度超时降级处理器)**:
+当调度或切片任务被本地硬看门狗判定为超时并强行中断时触发的兜底降级 SPI 契约，支持执行本地补偿、分布式锁解除或外部状态回滚。
+_Avoid_: 超时补丁, FallbackService, 超时回调接口
+
+**SnailRetryContextStore (分布式重试现场存储门面)**:
+为分布式远程重试四维上下文快照提供读写与 TTL 淘汰抽象的存储 SPI，支持默认单机内存 LRU 缓存与可选分布式缓存实现，杜绝跨节点远程重试时的租户越权与 traceId 断裂。
+_Avoid_: 上下文缓存, ContextCache, RetryStorage
+
+**FailedBatch (批处理失败分片游标模型)**:
+记录 `SnailShardingBatchTemplate` 在大数据量步长或游标消费过程中失败批次的元数据模型，包含起始游标、结束游标、分片索引与异常原因。
+_Avoid_: 失败记录, BatchError, ErrorItem
+
+**SnailJobRuntimeGovernor (节点级任务运行时治理总线)**:
+负责单个服务节点内存中受管任务执行状态的动态治理组件，支持在节点维度对特定任务实施临时静默 (pause) 与恢复 (resume)，挂载至 Actuator 端点并随 Pod 重启自复位。
+_Avoid_: 任务开关, JobController, PauseManager
+
 **SnailRetryTemplate (编程式分布式重试门面)**:
 为无法挂载 `@Retryable` 注解的动态场景（如外部三方客户端调用、动态幂等计算）提供的对称编程式重试门面，支持上下文透传、指标采集与手动失败上报。
 _Avoid_: 重试工具类, RetryHelper, RetryUtil
@@ -29,7 +49,7 @@ _Avoid_: 重试工具类, RetryHelper, RetryUtil
 _Avoid_: 调度中心SDK, OpenApiClient, SnailAdminClient
 
 **SnailShardingBatchTemplate (分片流式批处理门面)**:
-专为大数据量静态分片场景设计的流式批处理模板，内聚子线程四维上下文透传、游标步进流式查询与堆内存防 OOM 刚性熔断。
+专为大数据量静态分片场景设计的流式批处理模板，内聚子线程四维上下文透传、游标步进流式查询、失败切片收集与堆内存防 OOM 刚性熔断。
 _Avoid_: 批量工具, 批处理类, BatchHelper
 
 **SnailJobLogbackAppender (日志动态镜像追加器)**:

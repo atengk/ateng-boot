@@ -3,11 +3,19 @@ package io.github.atengk.boot.job.snail.helper;
 import com.aizuda.snailjob.client.core.annotation.Retryable;
 import com.aizuda.snailjob.client.core.cache.RetryerInfoCache;
 import com.aizuda.snailjob.client.core.retryer.RetryerInfo;
+import com.aizuda.snailjob.client.job.core.MapHandler;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor;
 import com.aizuda.snailjob.client.job.core.cache.JobExecutorInfoCache;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
 import com.aizuda.snailjob.client.job.core.dto.JobExecutorInfo;
+import com.aizuda.snailjob.client.job.core.dto.MapArgs;
+import com.aizuda.snailjob.client.job.core.dto.MergeReduceArgs;
+import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
+import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
@@ -22,6 +30,7 @@ import io.github.atengk.boot.job.snail.context.SnailJobContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
@@ -90,6 +99,63 @@ public class SnailJobTestHelper implements ApplicationContextAware {
      */
     public static SnailJobTestResult triggerJob(String jobName, Object param) {
         return triggerJob(jobName, param, 0, 1, null, null);
+    }
+
+    /**
+     * 手动触发 Map 切片任务 (支持自动组装 MapArgs 与复合命名)
+     *
+     * @param jobName  根任务名称或复合任务名称
+     * @param taskName 切片任务名称
+     * @param param    切片任务入参
+     * @return 测试执行诊断报告
+     */
+    public static SnailJobTestResult triggerMap(String jobName, String taskName, Object param) {
+        String compositeName = jobName.contains(":") ? jobName : jobName + ":" + taskName;
+        MapArgs mapArgs = new MapArgs();
+        mapArgs.setTaskName(taskName);
+        mapArgs.setJobParams(param);
+        mapArgs.setExecutorInfo(jobName);
+        return triggerJob(compositeName, mapArgs);
+    }
+
+    /**
+     * 手动触发 Reduce 规约任务 (支持自动组装 ReduceArgs 与复合命名)
+     *
+     * @param jobName 根任务名称或复合任务名称
+     * @param param   规约入参 (支持 ReduceArgs 或普通入参)
+     * @return 测试执行诊断报告
+     */
+    public static SnailJobTestResult triggerReduce(String jobName, Object param) {
+        String compositeName = jobName.endsWith(":reduce") ? jobName : (jobName.contains(":") ? jobName : jobName + ":reduce");
+        ReduceArgs reduceArgs;
+        if (param instanceof ReduceArgs ra) {
+            reduceArgs = ra;
+        } else {
+            reduceArgs = new ReduceArgs();
+            reduceArgs.setJobParams(param);
+            reduceArgs.setExecutorInfo(jobName);
+        }
+        return triggerJob(compositeName, reduceArgs);
+    }
+
+    /**
+     * 手动触发 MergeReduce 合并规约任务 (支持自动组装 MergeReduceArgs 与复合命名)
+     *
+     * @param jobName 根任务名称或复合任务名称
+     * @param param   合并规约入参 (支持 MergeReduceArgs 或普通入参)
+     * @return 测试执行诊断报告
+     */
+    public static SnailJobTestResult triggerMergeReduce(String jobName, Object param) {
+        String compositeName = jobName.endsWith(":mergeReduce") ? jobName : (jobName.contains(":") ? jobName : jobName + ":mergeReduce");
+        MergeReduceArgs mergeArgs;
+        if (param instanceof MergeReduceArgs ma) {
+            mergeArgs = ma;
+        } else {
+            mergeArgs = new MergeReduceArgs();
+            mergeArgs.setJobParams(param);
+            mergeArgs.setExecutorInfo(jobName);
+        }
+        return triggerJob(compositeName, mergeArgs);
     }
 
     /**
@@ -173,15 +239,37 @@ public class SnailJobTestHelper implements ApplicationContextAware {
 
             // 构造模拟 JobArgs
             JobArgs jobArgs;
-            if (shardTotal > 1) {
+            if (param instanceof JobArgs ja) {
+                jobArgs = ja;
+            } else if (shardTotal > 1) {
                 ShardingJobArgs shardingArgs = new ShardingJobArgs();
                 shardingArgs.setJobParams(param);
                 shardingArgs.setShardingIndex(shardIndex);
                 shardingArgs.setShardingTotal(shardTotal);
                 jobArgs = shardingArgs;
+            } else if (jobName.endsWith(":reduce") || (executorInfo.getMethod() != null && AnnotatedElementUtils.findMergedAnnotation(executorInfo.getMethod(), ReduceExecutor.class) != null)) {
+                ReduceArgs reduceArgs = new ReduceArgs();
+                reduceArgs.setJobParams(param);
+                jobArgs = reduceArgs;
+            } else if (jobName.endsWith(":mergeReduce") || (executorInfo.getMethod() != null && AnnotatedElementUtils.findMergedAnnotation(executorInfo.getMethod(), MergeReduceExecutor.class) != null)) {
+                MergeReduceArgs mergeArgs = new MergeReduceArgs();
+                mergeArgs.setJobParams(param);
+                jobArgs = mergeArgs;
+            } else if (jobName.contains(":") || (executorInfo.getMethod() != null && AnnotatedElementUtils.findMergedAnnotation(executorInfo.getMethod(), MapExecutor.class) != null)) {
+                MapArgs mapArgs = new MapArgs();
+                mapArgs.setJobParams(param);
+                if (jobName.contains(":")) {
+                    mapArgs.setTaskName(jobName.substring(jobName.indexOf(":") + 1));
+                }
+                jobArgs = mapArgs;
             } else {
                 jobArgs = new JobArgs();
                 jobArgs.setJobParams(param);
+            }
+
+            if (jobName.contains(":")) {
+                String taskName = jobName.substring(jobName.indexOf(":") + 1);
+                jobContext.setTaskName(taskName);
             }
 
             log.info(">>>>>> [SnailJob脱网单测] 开始触发任务 [jobName: {}, param: {}, shard: {}/{}, tenant: {}]",
@@ -191,23 +279,8 @@ public class SnailJobTestHelper implements ApplicationContextAware {
             Object target = executorInfo.getExecutor();
             ReflectionUtils.makeAccessible(method);
 
-            Object executionResult;
-
-            if (method.getParameterCount() > 0) {
-                Class<?> firstType = method.getParameterTypes()[0];
-                if (JobArgs.class.isAssignableFrom(firstType)) {
-                    executionResult = ReflectionUtils.invokeMethod(method, target, jobArgs);
-                } else if (param != null && firstType.isAssignableFrom(param.getClass())) {
-                    executionResult = ReflectionUtils.invokeMethod(method, target, param);
-                } else if (param instanceof String jsonStr && firstType != String.class && jsonStr.trim().startsWith("{")) {
-                    Object parsedDto = JsonUtil.parseObject(jsonStr, firstType);
-                    executionResult = ReflectionUtils.invokeMethod(method, target, parsedDto);
-                } else {
-                    executionResult = ReflectionUtils.invokeMethod(method, target, param);
-                }
-            } else {
-                executionResult = ReflectionUtils.invokeMethod(method, target);
-            }
+            Object[] invocationArgs = prepareJobArguments(method, jobArgs, param);
+            Object executionResult = ReflectionUtils.invokeMethod(method, target, invocationArgs);
 
             long durationMs = (System.nanoTime() - startNs) / 1_000_000;
             log.info("<<<<<< [SnailJob脱网单测] 任务 [{}] 执行成功 (耗时: {}ms, traceId: {})", jobName, durationMs, traceId);
@@ -318,6 +391,39 @@ public class SnailJobTestHelper implements ApplicationContextAware {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static Object[] prepareJobArguments(Method method, JobArgs jobArgs, Object param) {
+        Class<?>[] paramTypes = method.getParameterTypes();
+        if (paramTypes.length == 0) {
+            return new Object[0];
+        }
+        Object explicitParam = (param instanceof JobArgs ja) ? ja.getJobParams() : param;
+        Object[] args = new Object[paramTypes.length];
+        for (int i = 0; i < paramTypes.length; i++) {
+            Class<?> pt = paramTypes[i];
+            if (JobArgs.class.isAssignableFrom(pt)) {
+                args[i] = jobArgs;
+            } else if (MapHandler.class.isAssignableFrom(pt)) {
+                args[i] = (MapHandler<Object>) (list, tName) -> ExecuteResult.success();
+            } else if (explicitParam != null && pt.isInstance(explicitParam)) {
+                args[i] = explicitParam;
+            } else if (explicitParam instanceof String jsonStr && pt != String.class && jsonStr.trim().startsWith("{")) {
+                try {
+                    args[i] = JsonUtil.parseObject(jsonStr, pt);
+                } catch (Exception e) {
+                    args[i] = jsonStr;
+                }
+            } else if (i == 0 && explicitParam != null) {
+                args[i] = explicitParam;
+            } else if (i == 1 && explicitParam != null) {
+                args[i] = explicitParam;
+            } else {
+                args[i] = null;
+            }
+        }
+        return args;
+    }
+
     private static Object[] matchArguments(Method method, Object[] args) {
         Class<?>[] paramTypes = method.getParameterTypes();
         if (paramTypes.length == 0) {
@@ -356,7 +462,19 @@ public class SnailJobTestHelper implements ApplicationContextAware {
         // 3. 从 Spring 容器动态内省扫描
         if (applicationContext != null) {
             scanAndRegisterSpringBeans(applicationContext);
-            return FALLBACK_JOB_REPOSITORY.get(jobName);
+            fallback = FALLBACK_JOB_REPOSITORY.get(jobName);
+            if (fallback != null) {
+                return fallback;
+            }
+        }
+
+        // 4. 若为复合命名 <rootJobName>:<taskName>，尝试通过 taskName 匹配
+        if (jobName.contains(":")) {
+            String taskName = jobName.substring(jobName.indexOf(":") + 1);
+            JobExecutorInfo byTask = FALLBACK_JOB_REPOSITORY.get(taskName);
+            if (byTask != null) {
+                return byTask;
+            }
         }
         return null;
     }
@@ -430,7 +548,47 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                 }
             }
 
-            // 2. 扫描 @Retryable 与 @AtengSnailRetry
+            // 2. 扫描 @MapExecutor、@ReduceExecutor、@MergeReduceExecutor
+            Class<?> targetClass = AopUtils.getTargetClass(bean);
+            String rootJobName = resolveRootJobName(targetClass);
+
+            Map<Method, MapExecutor> mapMethods = MethodIntrospector.selectMethods(
+                    bean.getClass(),
+                    (MethodIntrospector.MetadataLookup<MapExecutor>) method -> AnnotatedElementUtils.findMergedAnnotation(method, MapExecutor.class)
+            );
+            for (Map.Entry<Method, MapExecutor> entry : mapMethods.entrySet()) {
+                Method m = entry.getKey();
+                String taskName = StringUtils.hasText(entry.getValue().taskName()) ? entry.getValue().taskName().trim() : m.getName();
+                JobExecutorInfo info = new JobExecutorInfo(taskName, m, Collections.emptyMap(), null, null, bean);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":" + taskName, info);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(taskName, info);
+            }
+
+            Map<Method, ReduceExecutor> reduceMethods = MethodIntrospector.selectMethods(
+                    bean.getClass(),
+                    (MethodIntrospector.MetadataLookup<ReduceExecutor>) method -> AnnotatedElementUtils.findMergedAnnotation(method, ReduceExecutor.class)
+            );
+            for (Map.Entry<Method, ReduceExecutor> entry : reduceMethods.entrySet()) {
+                Method m = entry.getKey();
+                JobExecutorInfo info = new JobExecutorInfo("reduce", m, Collections.emptyMap(), null, null, bean);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":reduce", info);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent("reduce", info);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(m.getName(), info);
+            }
+
+            Map<Method, MergeReduceExecutor> mergeReduceMethods = MethodIntrospector.selectMethods(
+                    bean.getClass(),
+                    (MethodIntrospector.MetadataLookup<MergeReduceExecutor>) method -> AnnotatedElementUtils.findMergedAnnotation(method, MergeReduceExecutor.class)
+            );
+            for (Map.Entry<Method, MergeReduceExecutor> entry : mergeReduceMethods.entrySet()) {
+                Method m = entry.getKey();
+                JobExecutorInfo info = new JobExecutorInfo("mergeReduce", m, Collections.emptyMap(), null, null, bean);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(rootJobName + ":mergeReduce", info);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent("mergeReduce", info);
+                FALLBACK_JOB_REPOSITORY.putIfAbsent(m.getName(), info);
+            }
+
+            // 3. 扫描 @Retryable 与 @AtengSnailRetry
             Map<Method, Retryable> retryMethods = MethodIntrospector.selectMethods(
                     bean.getClass(),
                     (MethodIntrospector.MetadataLookup<Retryable>) method -> AnnotatedElementUtils.findMergedAnnotation(method, Retryable.class)
@@ -497,6 +655,28 @@ public class SnailJobTestHelper implements ApplicationContextAware {
                 FALLBACK_RETRY_REPOSITORY.putIfAbsent(key, retryerInfo);
             }
         }
+    }
+
+    private static String resolveRootJobName(Class<?> targetClass) {
+        JobExecutor jobExecutor = AnnotatedElementUtils.findMergedAnnotation(targetClass, JobExecutor.class);
+        if (jobExecutor != null && StringUtils.hasText(jobExecutor.name())) {
+            return jobExecutor.name().trim();
+        }
+        AtengSnailJob atengJob = AnnotatedElementUtils.findMergedAnnotation(targetClass, AtengSnailJob.class);
+        if (atengJob != null && StringUtils.hasText(atengJob.value())) {
+            return atengJob.value().trim();
+        }
+        for (Method m : targetClass.getDeclaredMethods()) {
+            JobExecutor mExec = AnnotatedElementUtils.findMergedAnnotation(m, JobExecutor.class);
+            if (mExec != null && StringUtils.hasText(mExec.name())) {
+                return mExec.name().trim();
+            }
+            AtengSnailJob mAteng = AnnotatedElementUtils.findMergedAnnotation(m, AtengSnailJob.class);
+            if (mAteng != null && StringUtils.hasText(mAteng.value())) {
+                return mAteng.value().trim();
+            }
+        }
+        return targetClass.getSimpleName();
     }
 
     @SuppressWarnings("unchecked")

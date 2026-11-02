@@ -1,8 +1,15 @@
 package io.github.atengk.boot.job.snail.helper;
 
 import com.aizuda.snailjob.client.core.annotation.Retryable;
+import com.aizuda.snailjob.client.job.core.MapHandler;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
+import com.aizuda.snailjob.client.job.core.dto.MapArgs;
+import com.aizuda.snailjob.client.job.core.dto.MergeReduceArgs;
+import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.context.UserContextHolder;
@@ -61,6 +68,21 @@ public class SnailJobTestHelperTest {
         @AtengSnailRetry(scene = "failingRetryScene")
         public void executeFailingRetry() {
             throw new RuntimeException("Test retry failure");
+        }
+
+        @MapExecutor(taskName = "sliceA")
+        public String executeSliceA(MapArgs args, MapHandler handler) {
+            return "sliceADone:" + args.getTaskName() + "|" + (handler != null);
+        }
+
+        @ReduceExecutor
+        public String executeReduce(ReduceArgs args) {
+            return "reduceDone:" + args.getJobParams();
+        }
+
+        @MergeReduceExecutor
+        public String executeMergeReduce(MergeReduceArgs args) {
+            return "mergeReduceDone:" + args.getJobParams();
         }
     }
 
@@ -160,5 +182,23 @@ public class SnailJobTestHelperTest {
     @Test
     public void testTriggerNotFoundRetryThrows() {
         assertThrows(BusinessException.class, () -> SnailJobTestHelper.triggerRetry("nonExistentScene"));
+    }
+
+    @Test
+    public void testTriggerMapReduceViaHelper() {
+        SnailJobTestResult mapResult = SnailJobTestHelper.triggerMap("SampleTestService", "sliceA", "p1");
+        assertNotNull(mapResult);
+        assertTrue(mapResult.isSuccess());
+        assertEquals("sliceADone:sliceA|true", mapResult.result());
+
+        SnailJobTestResult reduceResult = SnailJobTestHelper.triggerReduce("SampleTestService", "p2");
+        assertNotNull(reduceResult);
+        assertTrue(reduceResult.isSuccess());
+        assertEquals("reduceDone:p2", reduceResult.result());
+
+        SnailJobTestResult mergeResult = SnailJobTestHelper.triggerMergeReduce("SampleTestService", "p3");
+        assertNotNull(mergeResult);
+        assertTrue(mergeResult.isSuccess());
+        assertEquals("mergeReduceDone:p3", mergeResult.result());
     }
 }

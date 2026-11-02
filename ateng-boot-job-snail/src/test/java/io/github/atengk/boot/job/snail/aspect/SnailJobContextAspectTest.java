@@ -1,7 +1,14 @@
 package io.github.atengk.boot.job.snail.aspect;
 
+import com.aizuda.snailjob.client.job.core.MapHandler;
 import com.aizuda.snailjob.client.job.core.annotation.JobExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MapExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.MergeReduceExecutor;
+import com.aizuda.snailjob.client.job.core.annotation.ReduceExecutor;
 import com.aizuda.snailjob.client.job.core.dto.JobArgs;
+import com.aizuda.snailjob.client.job.core.dto.MapArgs;
+import com.aizuda.snailjob.client.job.core.dto.MergeReduceArgs;
+import com.aizuda.snailjob.client.job.core.dto.ReduceArgs;
 import com.aizuda.snailjob.client.job.core.dto.ShardingJobArgs;
 import com.aizuda.snailjob.model.dto.ExecuteResult;
 import io.github.atengk.boot.core.context.TenantContextHolder;
@@ -12,6 +19,8 @@ import io.github.atengk.boot.job.snail.autoconfigure.AtengSnailJobAutoConfigurat
 import io.github.atengk.boot.job.snail.context.SnailJobContext;
 import io.github.atengk.boot.job.snail.enums.JobTenantMode;
 import io.github.atengk.boot.job.snail.event.SnailJobTimeoutEvent;
+import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper;
+import io.github.atengk.boot.job.snail.helper.SnailJobTestHelper.SnailJobTestResult;
 import io.github.atengk.boot.job.snail.model.ShardingContext;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -58,6 +67,12 @@ class SnailJobContextAspectTest {
     private MockJobService mockJobService;
 
     @Autowired
+    private MockMapReduceJobService mockMapReduceJobService;
+
+    @Autowired
+    private StandaloneSliceJobService standaloneSliceJobService;
+
+    @Autowired
     private TestTimeoutEventListener timeoutEventListener;
 
     @AfterEach
@@ -66,6 +81,7 @@ class SnailJobContextAspectTest {
         UserContextHolder.clear();
         MDC.clear();
         timeoutEventListener.clear();
+        SnailJobTestHelper.clear();
     }
 
     @Test
@@ -218,6 +234,150 @@ class SnailJobContextAspectTest {
         assertThat(result.getResult()).isEqualTo("index: 2, total: 5");
     }
 
+    @Test
+    @DisplayName("测试 @MapExecutor 切片任务拦截、复合命名注入与 4D 上下文确定性清理")
+    void testMapExecutorInterceptionAndCompositeNaming() {
+        MDC.put(SnailJobContextAspect.TRACE_ID_KEY, "prev-trace-map");
+        MDC.put(SnailJobContextAspect.TASK_NAME_KEY, "prev-task");
+        UserContextHolder.set("prev-map-user");
+        TenantContextHolder.setTenantId("prev-tenant");
+
+        MapArgs mapArgs = new MapArgs();
+        mapArgs.setJobId(3001L);
+        mapArgs.setTaskBatchId(4001L);
+        mapArgs.setTaskName("slice1");
+        mapArgs.setJobParams("{\"traceId\":\"slice-trace-101\",\"userId\":\"slice-operator\"}");
+
+        MapHandler<Object> mockHandler = (list, taskName) -> ExecuteResult.success();
+
+        ExecuteResult result = mockMapReduceJobService.executeMap(mapArgs, mockHandler);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("slice1-done");
+
+        // 验证 4D 上下文在 finally 中严格复原，无任何线程复用污染
+        assertThat(MDC.get(SnailJobContextAspect.TRACE_ID_KEY)).isEqualTo("prev-trace-map");
+        assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isEqualTo("prev-task");
+        assertThat(UserContextHolder.getExplicit()).isEqualTo("prev-map-user");
+        assertThat(TenantContextHolder.getTenantId()).isEqualTo("prev-tenant");
+    }
+
+    @Test
+    @DisplayName("测试 @ReduceExecutor 规约任务拦截与复合命名")
+    void testReduceExecutorInterception() {
+        ReduceArgs reduceArgs = new ReduceArgs();
+        reduceArgs.setJobId(3002L);
+        reduceArgs.setTaskBatchId(4002L);
+        reduceArgs.setJobParams("{\"traceId\":\"reduce-trace-102\"}");
+
+        ExecuteResult result = mockMapReduceJobService.executeReduce(reduceArgs);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("reduce-done");
+
+        assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 @MergeReduceExecutor 合并规约任务拦截与复合命名")
+    void testMergeReduceExecutorInterception() {
+        MergeReduceArgs mergeArgs = new MergeReduceArgs();
+        mergeArgs.setJobId(3003L);
+        mergeArgs.setTaskBatchId(4003L);
+        mergeArgs.setJobParams("{\"traceId\":\"merge-trace-103\"}");
+
+        ExecuteResult result = mockMapReduceJobService.executeMergeReduce(mergeArgs);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("mergeReduce-done");
+
+        assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("测试独立切片类缺省根任务名时回退为 <ClassName>:<taskName>")
+    void testStandaloneSliceFallbackNaming() {
+        MapArgs mapArgs = new MapArgs();
+        mapArgs.setTaskName("standaloneSlice");
+
+        MapHandler<Object> mockHandler = (list, taskName) -> ExecuteResult.success();
+
+        ExecuteResult result = standaloneSliceJobService.executeSlice(mapArgs, mockHandler);
+        assertThat(result).isNotNull();
+        assertThat(result.getResult()).isEqualTo("standalone-done");
+
+        assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isNull();
+    }
+
+    @Test
+    @DisplayName("测试 Map 切片任务挂载 @Valid 参数强类型校验及 MapHandler 防御")
+    void testMapExecutorParameterValidation() {
+        MapArgs mapArgs = new MapArgs();
+        mapArgs.setTaskName("sliceValidated");
+        mapArgs.setJobParams("{\"name\":\"valid-slice-order\",\"count\":10}");
+
+        MapHandler<Object> mockHandler = (list, taskName) -> ExecuteResult.success();
+
+        // 1. 合法参数执行成功，MapHandler 不受干扰
+        ExecuteResult successResult = mockMapReduceJobService.executeMapWithValidation(mapArgs, null, mockHandler);
+        assertThat(successResult).isNotNull();
+        assertThat(successResult.getResult()).isEqualTo("validated: valid-slice-order");
+
+        // 2. 约束违规触发 JSR-303 Fail-Fast 异常
+        MapArgs invalidArgs = new MapArgs();
+        invalidArgs.setTaskName("sliceValidated");
+        invalidArgs.setJobParams("{\"name\":\"invalid-order\",\"count\":0}");
+
+        assertThatThrownBy(() -> mockMapReduceJobService.executeMapWithValidation(invalidArgs, null, mockHandler))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("参数校验失败");
+    }
+
+    @Test
+    @DisplayName("测试 Map 切片任务受管本地硬看门狗超时中断与事件广播")
+    void testMapExecutorWatchdogTimeout() throws InterruptedException {
+        MapArgs mapArgs = new MapArgs();
+        mapArgs.setJobId(9001L);
+        mapArgs.setTaskBatchId(9002L);
+        mapArgs.setTaskName("sliceTimeout");
+
+        MapHandler<Object> mockHandler = (list, taskName) -> ExecuteResult.success();
+
+        timeoutEventListener.resetLatch(1);
+
+        mockMapReduceJobService.executeMapTimeout(mapArgs, mockHandler);
+
+        boolean received = timeoutEventListener.await(3, TimeUnit.SECONDS);
+        assertThat(received).isTrue();
+
+        List<SnailJobTimeoutEvent> events = timeoutEventListener.getEvents();
+        assertThat(events).hasSize(1);
+        SnailJobTimeoutEvent event = events.get(0);
+        assertThat(event.getJobId()).isEqualTo(9001L);
+        assertThat(event.getTaskBatchId()).isEqualTo(9002L);
+        assertThat(event.getJobName()).isEqualTo("mapReduceTestJob:sliceTimeout");
+
+        // 验证当前线程残留中断标记已在 finally 中确定性清理
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 SnailJobTestHelper 便捷触发 Map / Reduce / MergeReduce 切片任务")
+    void testSnailJobTestHelperMapReduceTriggers() {
+        // 1. triggerMap
+        SnailJobTestResult mapResult = SnailJobTestHelper.triggerMap("mapReduceTestJob", "slice1", "{\"traceId\":\"tr-map\"}");
+        assertThat(mapResult).isNotNull();
+        assertThat(mapResult.isSuccess()).isTrue();
+        assertThat(mapResult.traceId()).isNotEmpty();
+
+        // 2. triggerReduce
+        SnailJobTestResult reduceResult = SnailJobTestHelper.triggerReduce("mapReduceTestJob", "{\"traceId\":\"tr-red\"}");
+        assertThat(reduceResult).isNotNull();
+        assertThat(reduceResult.isSuccess()).isTrue();
+
+        // 3. triggerMergeReduce
+        SnailJobTestResult mergeResult = SnailJobTestHelper.triggerMergeReduce("mapReduceTestJob", "{\"traceId\":\"tr-mrg\"}");
+        assertThat(mergeResult).isNotNull();
+        assertThat(mergeResult.isSuccess()).isTrue();
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class TestJobConfig {
@@ -225,6 +385,16 @@ class SnailJobContextAspectTest {
         @Bean
         public MockJobService mockJobService() {
             return new MockJobService();
+        }
+
+        @Bean
+        public MockMapReduceJobService mockMapReduceJobService() {
+            return new MockMapReduceJobService();
+        }
+
+        @Bean
+        public StandaloneSliceJobService standaloneSliceJobService() {
+            return new StandaloneSliceJobService();
         }
 
         @Bean
@@ -300,6 +470,67 @@ class SnailJobContextAspectTest {
         public ExecuteResult executeWithSharding(JobArgs args, ShardingContext sharding) {
             assertThat(sharding).isNotNull();
             return ExecuteResult.success("index: " + sharding.getShardIndex() + ", total: " + sharding.getShardTotal());
+        }
+    }
+
+    @Service
+    @JobExecutor(name = "mapReduceTestJob")
+    public static class MockMapReduceJobService {
+
+        @MapExecutor(taskName = "slice1")
+        public ExecuteResult executeMap(MapArgs args, MapHandler handler) {
+            assertThat(SnailJobContext.current().getJobName()).isEqualTo("mapReduceTestJob:slice1");
+            assertThat(SnailJobContext.current().getTaskName()).isEqualTo("slice1");
+            assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isEqualTo("slice1");
+            assertThat(MDC.get(SnailJobContextAspect.TRACE_ID_KEY)).isNotEmpty();
+            assertThat(handler).isNotNull();
+            return ExecuteResult.success("slice1-done");
+        }
+
+        @MapExecutor(taskName = "sliceValidated")
+        public ExecuteResult executeMapWithValidation(MapArgs args, @Valid OrderTaskDto dto, MapHandler handler) {
+            assertThat(dto).isNotNull();
+            assertThat(handler).isNotNull();
+            return ExecuteResult.success("validated: " + dto.getName());
+        }
+
+        @ReduceExecutor
+        public ExecuteResult executeReduce(ReduceArgs args) {
+            assertThat(SnailJobContext.current().getJobName()).isEqualTo("mapReduceTestJob:reduce");
+            assertThat(SnailJobContext.current().getTaskName()).isEqualTo("reduce");
+            assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isEqualTo("reduce");
+            return ExecuteResult.success("reduce-done");
+        }
+
+        @MergeReduceExecutor
+        public ExecuteResult executeMergeReduce(MergeReduceArgs args) {
+            assertThat(SnailJobContext.current().getJobName()).isEqualTo("mapReduceTestJob:mergeReduce");
+            assertThat(SnailJobContext.current().getTaskName()).isEqualTo("mergeReduce");
+            assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isEqualTo("mergeReduce");
+            return ExecuteResult.success("mergeReduce-done");
+        }
+
+        @MapExecutor(taskName = "sliceTimeout")
+        @AtengSnailJob(timeout = "80ms")
+        public ExecuteResult executeMapTimeout(MapArgs args, MapHandler handler) {
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                return ExecuteResult.failure(null, "slice-interrupted");
+            }
+            return ExecuteResult.success();
+        }
+    }
+
+    @Service
+    public static class StandaloneSliceJobService {
+
+        @MapExecutor(taskName = "standaloneSlice")
+        public ExecuteResult executeSlice(MapArgs args, MapHandler handler) {
+            assertThat(SnailJobContext.current().getJobName()).isEqualTo("StandaloneSliceJobService:standaloneSlice");
+            assertThat(SnailJobContext.current().getTaskName()).isEqualTo("standaloneSlice");
+            assertThat(MDC.get(SnailJobContextAspect.TASK_NAME_KEY)).isEqualTo("standaloneSlice");
+            return ExecuteResult.success("standalone-done");
         }
     }
 

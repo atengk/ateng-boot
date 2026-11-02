@@ -87,8 +87,8 @@ flowchart TD
 
 ## 关键技术决策明细
 
-### 1. 2.0.2 基线与双擎模块化装配
-- **依赖基线**：锁定 `com.aizuda:snail-job-client-starter:2.0.2`（原生 Spring Boot 3 与 JDK 17 Jakarta 体系），并在 `ateng-boot-bom` 中全局纳管。
+### 1. 1.10.0 稳定基线与双擎模块化装配
+- **依赖基线**：锁定官方稳定版本 `com.aizuda:snail-job-client-starter:1.10.0`（兼顾原生 Spring Boot 3 与 JDK 17 LTS 生产运行稳定性，架构设计前瞻兼容 2.x API 演进），并在 `ateng-boot-bom` 中全局纳管。
 - **细粒度特性开关**：
   ```yaml
   ateng:
@@ -130,8 +130,31 @@ flowchart TD
 - **告警防风暴与死信通道**：任务失败三阶状态机抑制风暴（首发告警 -> 聚合摘要 -> 成功自愈），重试死信极速发布 `SnailRetryDeadLetterEvent` 直投协同机器人；
 - **`SnailJobTestHelper`**：提供纯内存脱网驱动器，单测无需外部 SnailJob 服务端，配合 Sample 工程的双模机制保障 CI 100% 离线全绿。
 
+### 7. Map / MapReduce 动态分布式切片计算全面纳管
+- **全生命周期切面织入**：切面全面覆盖 `@MapExecutor`、`@ReduceExecutor` 与 `@MergeReduceExecutor`，打通 MDC `traceId` 染色、看门狗超时监控与入参校验。
+- **复合命名空间契约**：切片方法以 `<JobName>:<taskName>` 复合命名（如 `orderSyncJob:mapOrders`），杜绝跨任务同名切片方法的指标与看门狗会话碰撞。
+
+### 8. 调度生命周期责任链拦截器 SPI (`SnailJobInterceptor`)
+- **正交职责分离**：设计专职于 Job 调度与切片执行链路的 `SnailJobInterceptor` 责任链扩展点（`preHandle` / `postHandle` / `afterCompletion`），传递强类型 `SnailJobExecutionContext`。
+- **与 Retry 隔离**：重试链路维持原有的四维现场快照与死信回调机制，保持各引擎职责清晰。
+
+### 9. 本地看门狗超时降级与两级补偿机制
+- **方法级与全局降级双防线**：`@AtengSnailJob` 扩展 `fallbackMethod` 属性，工作线程响应中断后就地优先触发同 Bean 降级方法；同时提供全局 `JobTimeoutFallbackHandler` SPI，在线程严重卡死时由受管异步线程池隔离执行保底脱困。
+
+### 10. 分布式远程重试上下文存储 SPI (`SnailRetryContextStore`)
+- **多实例集群沙箱保真**：抽象 `SnailRetryContextStore` SPI，默认维持 `InMemorySnailRetryContextStore`，预留分布式 Redis 持久化扩展点，并在实参回退提取失败时输出明确告警日志，防御跨节点多租户越权。
+
+### 11. 批处理失败分片游标模型 (`FailedBatch<K>`)
+- **精准故障追溯与补跑**：在 `SnailShardingBatchTemplate` 的返回模型 `BatchExecutionResult` 中增补 `List<FailedBatch<K>>`，记录失败游标起始值与异常原因，对齐 XXL-Job 批处理成熟度。
+
+### 12. 节点级任务运行时治理总线 (`SnailJobRuntimeGovernor`)
+- **节点级动态静默与旁路**：提供单机内存任务治理总线，支持临时 `pause` 与 `resume` 特定任务处理器，被静默任务安全旁路并返回成功以防报警风暴；随 Pod 重启自复位并接入 Actuator 运维端点。
+
+### 13. 样例工程架构纯净化与零 Controller 污染治理
+- **坚守非 Web 模块准出铁律**：彻底清理 `ateng-boot-sample-job-snail` 中违规设立的 `SampleSnailJobController`，重构为标准 `ScenarioService` 并由 `@SpringBootTest` 驱动端到端验证，彻底消除架构破窗。
+
 ---
 
 ## 结论与后续演进
 
-本架构决策彻底补齐了 SnailJob 在生产级分布式微服务体系中的全部短板与非功能边界盲区，为后续编码实现确立了清晰的契约、防线与验收标准。
+本架构决策经过全场景对标与两轮前沿决策审问，确立了清晰的契约、防线与验收标准，完整闭环了 SnailJob 调度与协同重试双擎生产级加固方案。
