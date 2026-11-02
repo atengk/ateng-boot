@@ -1,6 +1,10 @@
 package io.github.atengk.boot.admin.security;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
+import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.InstanceRegistration;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.core.util.JsonUtil;
 import jakarta.servlet.FilterChain;
@@ -19,13 +23,11 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.List;
+import java.util.Objects;
 
 /**
- * 拦截客户端注册请求，防止恶意伪造实例与 SSRF 内网穿透渗透
+ * 拦截客户端注册请求，委托准入策略 SPI 进行安全合规核验与防 SSRF 穿透
  * 采用 ContentCachingRequestWrapper 无损缓存 Body，支持下游重复消费
  *
  * @author Ateng
@@ -37,22 +39,16 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
     /**
      * 客户端注册共享通信密钥请求头键名
      */
-    public static final String CLIENT_SECRET_HEADER = "X-Admin-Client-Secret";
+    public static final String CLIENT_SECRET_HEADER = DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER;
 
-    /**
-     * 云厂商元数据敏感 IP 地址（硬阻断）
-     */
-    private static final String CLOUD_METADATA_HOST = "169.254.169.254";
+    private final AdminInstanceAdmissionPolicy admissionPolicy;
 
-    /**
-     * 链路本地地址前缀
-     */
-    private static final String LINK_LOCAL_PREFIX = "169.254.";
-
-    private final AtengAdminServerProperties properties;
+    public AdminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
+        this.admissionPolicy = Objects.requireNonNull(admissionPolicy, "admissionPolicy must not be null");
+    }
 
     public AdminSsrfGuardFilter(AtengAdminServerProperties properties) {
-        this.properties = properties;
+        this(new DefaultAdminInstanceAdmissionPolicy(properties));
     }
 
     @Override
@@ -62,33 +58,16 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
 
         // 仅拦截向 SBA 注册新实例的 POST 请求（如 /instances 或 {contextPath}/instances）
         if ("POST".equalsIgnoreCase(request.getMethod()) && isInstancesEndpoint(path)) {
-            // 1. 验证集群共享客户端通信密钥
-            if (properties != null && StringUtils.hasText(properties.getClientSecret())) {
-                String clientSecret = request.getHeader(CLIENT_SECRET_HEADER);
-                if (!isSecretMatch(clientSecret, properties.getClientSecret())) {
-                    log.warn("[SSRF Guard] 注册拦截：客户端未提供有效的 [{}] 标头", CLIENT_SECRET_HEADER);
-                    reject(response, HttpStatus.FORBIDDEN, "Invalid X-Admin-Client-Secret");
-                    return;
-                }
-            }
-
-            // 2. 使用可重读包装器包装以避免 Body 被流读取破坏
+            // 1. 使用可重读包装器包装以避免 Body 被流读取破坏
             ResettableContentCachingRequestWrapper wrappedRequest = new ResettableContentCachingRequestWrapper(request);
             byte[] body = wrappedRequest.getContentAsByteArray();
 
+            // 2. 解析实例注册元数据
+            InstanceRegistration registration = null;
             if (body != null && body.length > 0) {
                 try {
                     JsonNode root = JsonUtil.getObjectMapper().readTree(body);
-                    String serviceUrl = root.path("serviceUrl").asText(null);
-                    String managementUrl = root.path("managementUrl").asText(null);
-                    String healthUrl = root.path("healthUrl").asText(null);
-
-                    if (!isUrlSafe(serviceUrl) || !isUrlSafe(managementUrl) || !isUrlSafe(healthUrl)) {
-                        log.warn("[SSRF Guard] 注册拦截：上报 URL 命中敏感黑名单或非法格式！serviceUrl=[{}], managementUrl=[{}], healthUrl=[{}]",
-                                serviceUrl, managementUrl, healthUrl);
-                        reject(response, HttpStatus.FORBIDDEN, "URL forbidden by SSRF Guard Policy");
-                        return;
-                    }
+                    registration = InstanceRegistration.parse(root);
                 } catch (Exception e) {
                     log.error("[SSRF Guard] 解析注册 Body 失败: {}", e.getMessage());
                     reject(response, HttpStatus.BAD_REQUEST, "Malformed JSON registration payload");
@@ -96,59 +75,26 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
                 }
             }
 
-            // 传递已缓存 Body 且支持无损重读的包装请求向下游流转
+            // 3. 委托准入策略 SPI 执行合规与安全评估
+            AdminAdmissionResult result = admissionPolicy.evaluate(registration, wrappedRequest);
+            if (result == null || result.isRejected()) {
+                HttpStatus status = (result != null && result.getStatus() != null)
+                        ? result.getStatus()
+                        : HttpStatus.FORBIDDEN;
+                String reason = (result != null && StringUtils.hasText(result.getReason()))
+                        ? result.getReason()
+                        : "Registration rejected by admission policy";
+                log.warn("[SSRF Guard] 注册请求未通过准入策略审核: status=[{}], reason=[{}]", status.value(), reason);
+                reject(response, status, reason);
+                return;
+            }
+
+            // 4. 传递已缓存 Body 且支持无损重读的包装请求向下游流转
             filterChain.doFilter(wrappedRequest, response);
             return;
         }
 
         filterChain.doFilter(request, response);
-    }
-
-    /**
-     * 校验 URL 是否安全合规
-     *
-     * @param urlStr 目标 URL 字符串
-     * @return true 若安全合规，false 若命中黑名单或非法格式
-     */
-    private boolean isUrlSafe(String urlStr) {
-        if (!StringUtils.hasText(urlStr)) {
-            return true;
-        }
-        try {
-            URI uri = URI.create(urlStr.trim());
-            String host = uri.getHost();
-            if (host == null) {
-                return false;
-            }
-
-            // 1. 绝对硬阻断云厂商元数据地址 (169.254.0.0/16 网段)
-            if (CLOUD_METADATA_HOST.equalsIgnoreCase(host) || host.startsWith(LINK_LOCAL_PREFIX)) {
-                return false;
-            }
-
-            // 2. 本地环回地址弹性检查 (localhost / 127.0.0.1 / ::1 / 0.0.0.0)
-            boolean isLoopback = "localhost".equalsIgnoreCase(host)
-                    || "127.0.0.1".equals(host)
-                    || "::1".equals(host)
-                    || "0.0.0.0".equals(host);
-            if (isLoopback && (properties == null || !properties.isAllowLocalInstances())) {
-                return false;
-            }
-
-            // 3. 正则白名单过滤 (若配置了 allowed-url-patterns 列表)
-            if (properties != null) {
-                List<String> allowedPatterns = properties.getAllowedUrlPatterns();
-                if (allowedPatterns != null && !allowedPatterns.isEmpty()) {
-                    boolean matched = allowedPatterns.stream().anyMatch(urlStr::matches);
-                    if (!matched) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     /**
@@ -160,16 +106,6 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
         }
         String normalized = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
         return normalized.endsWith("/instances");
-    }
-
-    /**
-     * 恒定时间比对密钥，防范时序侧信道反推攻击
-     */
-    private boolean isSecretMatch(String actual, String expected) {
-        if (actual == null || expected == null) {
-            return false;
-        }
-        return MessageDigest.isEqual(actual.getBytes(StandardCharsets.UTF_8), expected.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

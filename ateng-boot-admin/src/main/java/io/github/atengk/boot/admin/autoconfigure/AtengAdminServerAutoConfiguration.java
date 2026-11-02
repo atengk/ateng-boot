@@ -6,6 +6,8 @@ import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
+import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
@@ -68,9 +70,15 @@ public class AtengAdminServerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public AdminInstanceAdmissionPolicy adminInstanceAdmissionPolicy(AtengAdminServerProperties properties) {
+        return new DefaultAdminInstanceAdmissionPolicy(properties);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     @Order(Ordered.HIGHEST_PRECEDENCE + 50)
-    public AdminSsrfGuardFilter adminSsrfGuardFilter(AtengAdminServerProperties properties) {
-        return new AdminSsrfGuardFilter(properties);
+    public AdminSsrfGuardFilter adminSsrfGuardFilter(AdminInstanceAdmissionPolicy admissionPolicy) {
+        return new AdminSsrfGuardFilter(admissionPolicy);
     }
 
     @Bean

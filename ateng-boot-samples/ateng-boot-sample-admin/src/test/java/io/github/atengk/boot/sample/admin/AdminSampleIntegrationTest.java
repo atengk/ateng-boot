@@ -300,4 +300,42 @@ class AdminSampleIntegrationTest {
             properties.setEnableWriteOperations(true);
         }
     }
+
+    @Test
+    @DisplayName("场景 8：动态实例注册准入策略 SPI 自定义扩展测试（拦截非法服务名与放行合规实例）")
+    void shouldEnforceCustomAdmissionPolicy() throws Exception {
+        // 1. 模拟上报以 forbidden- 开头的未授权违规服务名实例 -> 被自定义准入策略 403 阻断并返回清晰提示
+        String forbiddenPayload = """
+                {
+                    "name": "forbidden-order-svc",
+                    "serviceUrl": "http://127.0.0.1:8080/",
+                    "managementUrl": "http://127.0.0.1:8080/actuator",
+                    "healthUrl": "http://127.0.0.1:8080/actuator/health"
+                }
+                """;
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content(forbiddenPayload))
+                .andExpect(status().isForbidden())
+                .andExpect(result -> {
+                    String body = result.getResponse().getContentAsString();
+                    assertThat(body).contains("Service name rejected by sample admission policy: forbidden-order-svc");
+                });
+
+        // 2. 模拟上报合规命名的服务实例 -> 通过准入策略审查并成功放行注册
+        String compliantPayload = """
+                {
+                    "name": "compliant-inventory-svc",
+                    "serviceUrl": "http://127.0.0.1:8080/",
+                    "managementUrl": "http://127.0.0.1:8080/actuator",
+                    "healthUrl": "http://127.0.0.1:8080/actuator/health"
+                }
+                """;
+        mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content(compliantPayload))
+                .andExpect(request().asyncStarted());
+    }
 }

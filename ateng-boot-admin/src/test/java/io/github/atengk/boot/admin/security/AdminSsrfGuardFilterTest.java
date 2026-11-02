@@ -1,5 +1,7 @@
 package io.github.atengk.boot.admin.security;
 
+import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
+import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -7,6 +9,7 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -241,5 +244,50 @@ class AdminSsrfGuardFilterTest {
 
         assertThat(malformedRes.getStatus()).isEqualTo(400);
         assertThat(malformedRes.getContentAsString()).contains("Malformed JSON registration payload");
+    }
+
+    @Test
+    @DisplayName("委托自定义准入策略并正确传递自定义拒绝状态码与描述")
+    void shouldDelegateToCustomAdmissionPolicy() throws ServletException, IOException {
+        AdminInstanceAdmissionPolicy customPolicy = (registration, request) -> {
+            if (registration != null && "unapproved-vendor".equals(registration.getName())) {
+                return AdminAdmissionResult.reject(HttpStatus.UNPROCESSABLE_ENTITY, "Vendor not in admission whitelist");
+            }
+            return AdminAdmissionResult.admit();
+        };
+
+        AdminSsrfGuardFilter filter = new AdminSsrfGuardFilter(customPolicy);
+
+        // 1. 触发自定义拒绝
+        String payload = """
+                {
+                    "name": "unapproved-vendor",
+                    "serviceUrl": "http://vendor:8080/",
+                    "managementUrl": "http://vendor:8080/actuator",
+                    "healthUrl": "http://vendor:8080/actuator/health"
+                }
+                """;
+        MockHttpServletRequest req1 = new MockHttpServletRequest("POST", "/instances");
+        req1.setContent(payload.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse res1 = new MockHttpServletResponse();
+        filter.doFilter(req1, res1, new MockFilterChain());
+        assertThat(res1.getStatus()).isEqualTo(422);
+        assertThat(res1.getContentAsString()).contains("Vendor not in admission whitelist");
+
+        // 2. 触发自定义放行
+        String validPayload = """
+                {
+                    "name": "approved-service",
+                    "serviceUrl": "http://approved:8080/",
+                    "managementUrl": "http://approved:8080/actuator",
+                    "healthUrl": "http://approved:8080/actuator/health"
+                }
+                """;
+        MockHttpServletRequest req2 = new MockHttpServletRequest("POST", "/instances");
+        req2.setContent(validPayload.getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse res2 = new MockHttpServletResponse();
+        AtomicBoolean chainExecuted = new AtomicBoolean(false);
+        filter.doFilter(req2, res2, (req, res) -> chainExecuted.set(true));
+        assertThat(chainExecuted.get()).isTrue();
     }
 }

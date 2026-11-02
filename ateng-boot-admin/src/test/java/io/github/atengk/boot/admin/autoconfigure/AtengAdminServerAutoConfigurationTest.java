@@ -4,6 +4,9 @@ import cn.dev33.satoken.filter.SaServletFilter;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
+import io.github.atengk.boot.admin.admission.AdminAdmissionResult;
+import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
@@ -65,6 +68,14 @@ class AtengAdminServerAutoConfigurationTest {
         }
     }
 
+    @Configuration
+    static class CustomAdmissionPolicyConfiguration {
+        @Bean
+        public AdminInstanceAdmissionPolicy customAdmissionPolicy() {
+            return (registration, request) -> AdminAdmissionResult.admit();
+        }
+    }
+
     @Test
     @DisplayName("存在 Marker 且默认配置下成功装配 AtengAdminServerAutoConfiguration 并具备合理默认值")
     void shouldAutoConfigureWhenMarkerPresentWithDefaults() {
@@ -89,6 +100,8 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context.getBean(AdminAuthProvider.class)).isInstanceOf(DefaultPropertiesAdminAuthProvider.class);
                     assertThat(context).hasSingleBean(AdminLoginController.class);
                     assertThat(context).hasSingleBean(AtengActuatorHttpHeadersProvider.class);
+                    assertThat(context).hasSingleBean(AdminInstanceAdmissionPolicy.class);
+                    assertThat(context.getBean(AdminInstanceAdmissionPolicy.class)).isInstanceOf(DefaultAdminInstanceAdmissionPolicy.class);
                     assertThat(context).hasSingleBean(AdminSsrfGuardFilter.class);
                     assertThat(context).hasSingleBean(AdminWriteGuardFilter.class);
                     assertThat(context).hasSingleBean(AtengAdminNotificationNotifier.class);
@@ -107,6 +120,17 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(authProvider).isNotInstanceOf(DefaultPropertiesAdminAuthProvider.class);
                     assertThat(authProvider.authenticate("custom-user", "custom-pass")).isTrue();
                     assertThat(authProvider.authenticate("admin", "admin")).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("开发者声明自定义 AdminInstanceAdmissionPolicy 时能够平滑覆盖默认实现")
+    void shouldAllowCustomAdmissionPolicyOverride() {
+        webContextRunner.withUserConfiguration(MarkerTestConfiguration.class, CustomAdmissionPolicyConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AdminInstanceAdmissionPolicy.class);
+                    AdminInstanceAdmissionPolicy admissionPolicy = context.getBean(AdminInstanceAdmissionPolicy.class);
+                    assertThat(admissionPolicy).isNotInstanceOf(DefaultAdminInstanceAdmissionPolicy.class);
                 });
     }
 
