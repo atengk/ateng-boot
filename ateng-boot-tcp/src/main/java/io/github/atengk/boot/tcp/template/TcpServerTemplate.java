@@ -196,11 +196,16 @@ public class TcpServerTemplate {
 
         CompletableFuture<TcpPacket> future = correlationManager.register(requestId, timeout);
 
-        session.send(packet).addListener(f -> {
-            if (!f.isSuccess()) {
-                correlationManager.completeExceptionally(requestId, f.cause());
-            }
-        });
+        try {
+            session.send(packet).addListener(f -> {
+                if (!f.isSuccess()) {
+                    correlationManager.completeExceptionally(requestId, f.cause());
+                }
+            });
+        } catch (Exception ex) {
+            correlationManager.completeExceptionally(requestId, ex);
+            throw ex;
+        }
 
         return future;
     }

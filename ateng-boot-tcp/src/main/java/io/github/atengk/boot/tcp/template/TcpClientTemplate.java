@@ -11,6 +11,7 @@ import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClientProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +61,12 @@ public class TcpClientTemplate {
             throw new IllegalStateException("TCP 客户端尚未建立活跃连接，无法发送消息");
         }
         Object msg = wrapPayload(payload);
-        client.getChannel().writeAndFlush(msg);
+        TcpSession session = client.getSession();
+        if (session != null) {
+            session.send(msg);
+        } else {
+            client.getChannel().writeAndFlush(msg);
+        }
     }
 
     /**
@@ -197,11 +203,20 @@ public class TcpClientTemplate {
 
         CompletableFuture<TcpPacket> future = correlationManager.register(requestId, timeout);
 
-        client.getChannel().writeAndFlush(packet).addListener(f -> {
-            if (!f.isSuccess()) {
-                correlationManager.completeExceptionally(requestId, f.cause());
-            }
-        });
+        try {
+            TcpSession session = client.getSession();
+            ChannelFuture channelFuture = session != null
+                    ? session.send(packet)
+                    : client.getChannel().writeAndFlush(packet);
+            channelFuture.addListener(f -> {
+                if (!f.isSuccess()) {
+                    correlationManager.completeExceptionally(requestId, f.cause());
+                }
+            });
+        } catch (Exception ex) {
+            correlationManager.completeExceptionally(requestId, ex);
+            throw ex;
+        }
 
         return future;
     }

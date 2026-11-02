@@ -154,12 +154,16 @@ public class TcpServer implements SmartLifecycle {
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
 
         try {
+            int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
+            int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
+
             ServerBootstrap bootstrap = new ServerBootstrap();
             bootstrap.group(bossGroup, workerGroup)
                     .channel(NioServerSocketChannel.class)
                     .option(ChannelOption.SO_BACKLOG, properties.getSoBacklog())
                     .childOption(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
                     .childOption(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
+                    .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         protected void initChannel(SocketChannel ch) {

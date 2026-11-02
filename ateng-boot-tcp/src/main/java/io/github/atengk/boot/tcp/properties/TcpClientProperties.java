@@ -1,8 +1,10 @@
 package io.github.atengk.boot.tcp.properties;
 
+import io.github.atengk.boot.tcp.enums.BackpressurePolicy;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.NestedConfigurationProperty;
+import org.springframework.util.unit.DataSize;
 
 import java.time.Duration;
 
@@ -50,6 +52,26 @@ public class TcpClientProperties {
      * 是否开启 SO_KEEPALIVE 底层保活（默认 true）
      */
     private boolean soKeepalive = true;
+
+    /**
+     * Netty 写缓冲区低水位阈值（低于该阈值恢复可写，默认 32KB）
+     */
+    private DataSize writeBufferLowWaterMark = DataSize.ofKilobytes(32);
+
+    /**
+     * Netty 写缓冲区高水位阈值（高于该阈值触发不可写背压，默认 64KB）
+     */
+    private DataSize writeBufferHighWaterMark = DataSize.ofKilobytes(64);
+
+    /**
+     * 出站背压拦截策略（默认 FAIL_FAST 快速失败）
+     */
+    private BackpressurePolicy backpressurePolicy = BackpressurePolicy.FAIL_FAST;
+
+    /**
+     * 当背压策略为 BLOCK_TIMEOUT 时的等待阻塞超时阈值（默认 3s）
+     */
+    private Duration backpressureTimeout = Duration.ofSeconds(3);
 
     /**
      * 数据帧粘包拆包切片配置

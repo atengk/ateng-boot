@@ -140,11 +140,15 @@ public class TcpClient implements SmartLifecycle {
         TcpPacketFilterHandler filterHandler = !packetFilters.isEmpty() ? new TcpPacketFilterHandler(packetFilters) : null;
         TcpClientChannelHandler clientHandler = new TcpClientChannelHandler(this, properties, correlationManager, dispatcher, eventPublisher, metricsCollector);
 
+        int lowWaterMark = (int) (properties.getWriteBufferLowWaterMark() != null ? properties.getWriteBufferLowWaterMark().toBytes() : 32 * 1024);
+        int highWaterMark = (int) (properties.getWriteBufferHighWaterMark() != null ? properties.getWriteBufferHighWaterMark().toBytes() : 64 * 1024);
+
         bootstrap.group(workerGroup)
                 .channel(NioSocketChannel.class)
                 .option(ChannelOption.TCP_NODELAY, properties.isTcpNodelay())
                 .option(ChannelOption.SO_KEEPALIVE, properties.isSoKeepalive())
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) properties.getConnectTimeout().toMillis())
+                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(lowWaterMark, highWaterMark))
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {

@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.client;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
+import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
 import io.github.atengk.boot.tcp.exception.TcpException;
@@ -76,6 +77,10 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         String sessionId = IdUtil.fastSimpleUUID();
         TcpSession session = new TcpSession(sessionId, ctx.channel());
+        if (properties != null) {
+            session.setBackpressurePolicy(properties.getBackpressurePolicy());
+            session.setBackpressureTimeout(properties.getBackpressureTimeout());
+        }
         ctx.channel().attr(TcpSession.SESSION_KEY).set(session);
 
         client.onConnected(ctx.channel(), session);
@@ -134,6 +139,18 @@ public class TcpClientChannelHandler extends ChannelDuplexHandler {
             metricsCollector.recordMessageSent(resolveByteLength(msg));
         }
         super.write(ctx, msg, promise);
+    }
+
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
+        if (session != null && eventPublisher != null) {
+            boolean writable = ctx.channel().isWritable();
+            log.debug("TCP 客户端通道可写状态变迁: sessionId={}, writable={}, pendingWriteBytes={}",
+                    session.getSessionId(), writable, session.getPendingWriteBytes());
+            eventPublisher.publishEvent(new TcpChannelWritabilityChangedEvent(client, session, writable));
+        }
+        super.channelWritabilityChanged(ctx);
     }
 
     @Override

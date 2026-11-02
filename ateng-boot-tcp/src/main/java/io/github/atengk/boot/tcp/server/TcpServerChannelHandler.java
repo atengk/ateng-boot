@@ -3,6 +3,7 @@ package io.github.atengk.boot.tcp.server;
 import io.github.atengk.boot.core.util.IdUtil;
 import io.github.atengk.boot.tcp.correlation.TcpRequestCorrelationManager;
 import io.github.atengk.boot.tcp.enums.CloseReason;
+import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionIdleEvent;
 import io.github.atengk.boot.tcp.metric.TcpMetricsCollector;
 import io.github.atengk.boot.tcp.model.TcpPacket;
@@ -85,6 +86,10 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
 
         String sessionId = IdUtil.fastSimpleUUID();
         TcpSession session = new TcpSession(sessionId, ctx.channel());
+        if (properties != null) {
+            session.setBackpressurePolicy(properties.getBackpressurePolicy());
+            session.setBackpressureTimeout(properties.getBackpressureTimeout());
+        }
         ctx.channel().attr(TcpSession.SESSION_KEY).set(session);
 
         sessionManager.register(session);
@@ -130,6 +135,18 @@ public class TcpServerChannelHandler extends ChannelDuplexHandler {
             metricsCollector.recordMessageSent(resolveByteLength(msg));
         }
         super.write(ctx, msg, promise);
+    }
+
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        TcpSession session = ctx.channel().attr(TcpSession.SESSION_KEY).get();
+        if (session != null && eventPublisher != null) {
+            boolean writable = ctx.channel().isWritable();
+            log.debug("TCP 服务端通道可写状态变迁: sessionId={}, writable={}, pendingWriteBytes={}",
+                    session.getSessionId(), writable, session.getPendingWriteBytes());
+            eventPublisher.publishEvent(new TcpChannelWritabilityChangedEvent(this, session, writable));
+        }
+        super.channelWritabilityChanged(ctx);
     }
 
     @Override

@@ -1,5 +1,6 @@
 package io.github.atengk.boot.tcp.properties;
 
+import io.github.atengk.boot.tcp.enums.BackpressurePolicy;
 import io.github.atengk.boot.tcp.enums.ClientAuth;
 import io.github.atengk.boot.tcp.enums.FramingMode;
 import org.junit.jupiter.api.DisplayName;
@@ -44,6 +45,10 @@ class AtengTcpPropertiesTest {
         assertThat(server.getSoBacklog()).isEqualTo(1024);
         assertThat(server.isTcpNodelay()).isTrue();
         assertThat(server.isSoKeepalive()).isTrue();
+        assertThat(server.getWriteBufferLowWaterMark()).isEqualTo(DataSize.ofKilobytes(32));
+        assertThat(server.getWriteBufferHighWaterMark()).isEqualTo(DataSize.ofKilobytes(64));
+        assertThat(server.getBackpressurePolicy()).isEqualTo(BackpressurePolicy.FAIL_FAST);
+        assertThat(server.getBackpressureTimeout()).isEqualTo(Duration.ofSeconds(3));
 
         // Server Framing 默认值验证
         TcpFramingProperties serverFraming = server.getFraming();
@@ -78,6 +83,10 @@ class AtengTcpPropertiesTest {
         assertThat(client.getRequestTimeout()).isEqualTo(Duration.ofSeconds(10));
         assertThat(client.isTcpNodelay()).isTrue();
         assertThat(client.isSoKeepalive()).isTrue();
+        assertThat(client.getWriteBufferLowWaterMark()).isEqualTo(DataSize.ofKilobytes(32));
+        assertThat(client.getWriteBufferHighWaterMark()).isEqualTo(DataSize.ofKilobytes(64));
+        assertThat(client.getBackpressurePolicy()).isEqualTo(BackpressurePolicy.FAIL_FAST);
+        assertThat(client.getBackpressureTimeout()).isEqualTo(Duration.ofSeconds(3));
 
         // Client Reconnect 默认值验证
         TcpReconnectProperties reconnect = client.getReconnect();
@@ -118,10 +127,17 @@ class AtengTcpPropertiesTest {
         map.put("ateng.boot.tcp.server.framing.length-field.length", "4");
         map.put("ateng.boot.tcp.server.ssl.enabled", "true");
         map.put("ateng.boot.tcp.server.ssl.client-auth", "NEED");
+        map.put("ateng.boot.tcp.server.write-buffer-low-water-mark", "16KB");
+        map.put("ateng.boot.tcp.server.write-buffer-high-water-mark", "128KB");
+        map.put("ateng.boot.tcp.server.backpressure-policy", "BLOCK_TIMEOUT");
+        map.put("ateng.boot.tcp.server.backpressure-timeout", "5s");
         map.put("ateng.boot.tcp.client.enabled", "true");
         map.put("ateng.boot.tcp.client.request-timeout", "15s");
         map.put("ateng.boot.tcp.client.reconnect.initial-interval", "2s");
         map.put("ateng.boot.tcp.client.reconnect.max-attempts", "5");
+        map.put("ateng.boot.tcp.client.write-buffer-low-water-mark", "64KB");
+        map.put("ateng.boot.tcp.client.write-buffer-high-water-mark", "256KB");
+        map.put("ateng.boot.tcp.client.backpressure-policy", "WARN_AND_SEND");
 
         // 绑定多命名实例
         map.put("ateng.boot.tcp.servers.jt808.port", "8088");
@@ -146,11 +162,18 @@ class AtengTcpPropertiesTest {
         assertThat(properties.getServer().getFraming().getLengthField().getOffset()).isEqualTo(2);
         assertThat(properties.getServer().getSsl().isEnabled()).isTrue();
         assertThat(properties.getServer().getSsl().getClientAuth()).isEqualTo(ClientAuth.NEED);
+        assertThat(properties.getServer().getWriteBufferLowWaterMark()).isEqualTo(DataSize.ofKilobytes(16));
+        assertThat(properties.getServer().getWriteBufferHighWaterMark()).isEqualTo(DataSize.ofKilobytes(128));
+        assertThat(properties.getServer().getBackpressurePolicy()).isEqualTo(BackpressurePolicy.BLOCK_TIMEOUT);
+        assertThat(properties.getServer().getBackpressureTimeout()).isEqualTo(Duration.ofSeconds(5));
 
         assertThat(properties.getClient().isEnabled()).isTrue();
         assertThat(properties.getClient().getRequestTimeout()).isEqualTo(Duration.ofSeconds(15));
         assertThat(properties.getClient().getReconnect().getInitialInterval()).isEqualTo(Duration.ofSeconds(2));
         assertThat(properties.getClient().getReconnect().getMaxAttempts()).isEqualTo(5);
+        assertThat(properties.getClient().getWriteBufferLowWaterMark()).isEqualTo(DataSize.ofKilobytes(64));
+        assertThat(properties.getClient().getWriteBufferHighWaterMark()).isEqualTo(DataSize.ofKilobytes(256));
+        assertThat(properties.getClient().getBackpressurePolicy()).isEqualTo(BackpressurePolicy.WARN_AND_SEND);
 
         // 验证多实例绑定
         assertThat(properties.getServers()).containsKey("jt808");
