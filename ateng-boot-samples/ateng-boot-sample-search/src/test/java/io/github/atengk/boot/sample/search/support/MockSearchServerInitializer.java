@@ -271,6 +271,27 @@ public class MockSearchServerInitializer implements ApplicationContextInitialize
                             }
                             """);
                 }
+                if (body.contains("min_price") || body.contains("max_price")) {
+                    return jsonResponse(200, """
+                            {
+                              "took": 2,
+                              "timed_out": false,
+                              "_shards": { "total": 1, "successful": 1, "skipped": 0, "failed": 0 },
+                              "hits": { "total": { "value": 10, "relation": "eq" }, "hits": [] },
+                              "aggregations": {
+                                "min#min_price": {
+                                  "value": 1999.0
+                                },
+                                "max#max_price": {
+                                  "value": 9999.0
+                                },
+                                "avg#avg_price": {
+                                  "value": 5999.0
+                                }
+                              }
+                            }
+                            """);
+                }
                 if (body.contains("brand_agg")) {
                     return jsonResponse(200, """
                             {

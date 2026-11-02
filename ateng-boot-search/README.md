@@ -14,8 +14,8 @@
 | **精确计数统计** | 条件文档计数 (Count) | `SearchTemplate` | - | `count(SearchQuery, Class<?>)` / `count(String, SearchQuery)`，直达 ES `_count` 专用端点，免除全文打分与文档正文载荷加载 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
 | **精准主键检索** | 主键实体查询 | `SearchTemplate` | - | `getById(Class<T>, String)` / `getById(Class<T>, String, String)` / `getById(String, Class<T>, String, String)`，根据文档 ID 与分片路由键精准定位文档实体，不存在返回 `null`；路由防漏 Fail-Fast 拦截 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
 | **完整命中载荷** | 元数据命中文档模型 | `SearchTemplate`<br>`SearchHit<T>` | - | `getHitById(Class<T>, String)` / `getHitById(Class<T>, String, String)` / `getHitById(String, Class<T>, String, String)`，返回包含打分、版本元数据、高亮与排序凭据的 `SearchHit<T>` | `SearchTemplateMockServerTest` |
-| **批量主键检索** | 批量实体拉取 (MGet) | `SearchTemplate` | - | `getByIds(Class<T>, Collection<String>)` / `getByIds(String, Class<T>, Collection<String>)`，直达 `_mget` 批量端点消除 N+1 网络往返，严格过滤 null 元素，保底返回非空列表 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
-| **批量元数据检索** | 批量元数据拉取 (MGet Hits) | `SearchTemplate`<br>`SearchHit<T>` | - | `getHitsByIds(Class<T>, Collection<String>)` / `getHitsByIds(String, Class<T>, Collection<String>)`，单次网络往返批量拉取包含 `_version`、`_seq_no`、`_primary_term` 的完整元数据模型列表 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
+| **批量主键检索** | 批量实体拉取 (MGet) | `SearchTemplate` | - | `getByIds(Class<T>, Collection<String>)` / `getByIds(Class<T>, Collection<String>, String)` / `getByIds(String, Class<T>, Collection<String>, String)`，直达 `_mget` 批量端点消除 N+1 网络往返，严格过滤 null 元素，保底返回非空列表；支持分片路由与防漏校验 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
+| **批量元数据检索** | 批量元数据拉取 (MGet Hits) | `SearchTemplate`<br>`SearchHit<T>` | - | `getHitsByIds(Class<T>, Collection<String>)` / `getHitsByIds(Class<T>, Collection<String>, String)` / `getHitsByIds(String, Class<T>, Collection<String>, String)`，单次网络往返批量拉取包含 `_version`、`_seq_no`、`_primary_term` 的完整元数据模型列表；支持分片路由与防漏校验 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
 | **局部增量更新** | 字段级 Partial Update | `SearchTemplate` | - | `update(Class<?>, String, Map<String, Object>)` / `update(Class<?>, String, String, Map<String, Object>)`，局部更新指定字段，支持 `docAsUpsert` | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
 | **主键物理删除** | 单文档物理删除 | `SearchTemplate` | - | `deleteById(Class<?>, String)` / `deleteById(Class<?>, String, String)` / `deleteById(String, String, String)`，物理删除单条文档，路由防漏守卫 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
 | **条件批量清理** | 条件物理清理 (Delete-By-Query) | `SearchTemplate` | - | `deleteByQuery(SearchQuery, Class<?>)` / `deleteByQuery(String, SearchQuery)`，直达 `_delete_by_query` 端点，强制隐式织入多租户过滤，默认配置 `conflicts = "proceed"` 并发容错，返回删除文档计数 | `SearchTemplateMockServerTest`<br>`SampleSearchIntegrationTest` |
@@ -180,8 +180,8 @@ public class ProductDoc {
     public static class SkuItem {
         private String skuId;
         private String color;
-        private String size;
         private BigDecimal price;
+        private Integer stock;
     }
 
     @Data
@@ -229,9 +229,9 @@ public class ProductCatalogSearchScenario {
         return searchTemplate.existsById(ProductDoc.class, id, routing);
     }
 
-    // 3. 批量主键查询（_mget 端点，消除 N+1 网络往返）
-    public List<ProductDoc> getProductsBatch(Collection<String> ids) {
-        return searchTemplate.getByIds(ProductDoc.class, ids);
+    // 3. 批量主键查询（_mget 端点，消除 N+1 网络往返，支持分片路由）
+    public List<ProductDoc> getProductsBatch(Collection<String> ids, String routing) {
+        return searchTemplate.getByIds(ProductDoc.class, ids, routing);
     }
 
     // 4. 关键字全文检索与高亮切片自动回填

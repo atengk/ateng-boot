@@ -383,8 +383,15 @@ public class SearchIndexOperations {
      * @return 是否重索引成功（无失败批次）
      */
     public boolean reindex(String sourceIndex, String targetIndex, SearchQuery filterQuery) {
-        Objects.requireNonNull(sourceIndex, "sourceIndex must not be null");
-        Objects.requireNonNull(targetIndex, "targetIndex must not be null");
+        if (!StringUtils.hasText(sourceIndex)) {
+            throw new IllegalArgumentException("sourceIndex must not be blank");
+        }
+        if (!StringUtils.hasText(targetIndex)) {
+            throw new IllegalArgumentException("targetIndex must not be blank");
+        }
+        if (sourceIndex.trim().equals(targetIndex.trim())) {
+            throw new IllegalArgumentException("sourceIndex and targetIndex must not be the same: [" + sourceIndex + "]");
+        }
         try {
             ReindexResponse response = getClient().reindex(b -> {
                 b.source(s -> {
@@ -399,12 +406,17 @@ public class SearchIndexOperations {
                 b.waitForCompletion(true);
                 return b;
             });
-            boolean success = response.failures() == null || response.failures().isEmpty();
-            log.info("Reindexed from [{}] to [{}], total: {}, created: {}, updated: {}, failures: {}",
+            boolean noFailures = response.failures() == null || response.failures().isEmpty();
+            boolean notTimedOut = !Boolean.TRUE.equals(response.timedOut());
+            boolean success = noFailures && notTimedOut;
+            log.info("Reindexed from [{}] to [{}], total: {}, created: {}, updated: {}, failures: {}, timedOut: {}",
                     sourceIndex, targetIndex, response.total(), response.created(), response.updated(),
-                    response.failures() != null ? response.failures().size() : 0);
+                    response.failures() != null ? response.failures().size() : 0, response.timedOut());
             return success;
         } catch (Exception e) {
+            if (e instanceof SearchException se) {
+                throw se;
+            }
             throw new SearchException(SearchResultCode.SEARCH_OPERATION_ERROR,
                     "Failed to reindex from [" + sourceIndex + "] to [" + targetIndex + "]: " + e.getMessage(), e);
         }

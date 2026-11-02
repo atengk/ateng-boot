@@ -160,7 +160,7 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder matchPhrase(String field, Object query, Integer slop) {
-        if (!StringUtils.hasText(field) || query == null) {
+        if (!StringUtils.hasText(field) || query == null || !StringUtils.hasText(query.toString())) {
             return this;
         }
         mustQueries.add(Query.of(q -> q.matchPhrase(mp -> {
@@ -195,7 +195,7 @@ public class SearchQueryBuilder {
      * @return 当前构建器
      */
     public SearchQueryBuilder matchPhrasePrefix(String field, Object query, Integer maxExpansions) {
-        if (!StringUtils.hasText(field) || query == null) {
+        if (!StringUtils.hasText(field) || query == null || !StringUtils.hasText(query.toString())) {
             return this;
         }
         mustQueries.add(Query.of(q -> q.matchPhrasePrefix(mpp -> {
@@ -885,6 +885,17 @@ public class SearchQueryBuilder {
     }
 
     public SearchQueryBuilder indices(String... indices) {
+        if (indices != null) {
+            for (String idx : indices) {
+                if (StringUtils.hasText(idx)) {
+                    this.indices.add(idx);
+                }
+            }
+        }
+        return this;
+    }
+
+    public SearchQueryBuilder indices(Collection<String> indices) {
         if (indices != null) {
             for (String idx : indices) {
                 if (StringUtils.hasText(idx)) {

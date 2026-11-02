@@ -85,6 +85,82 @@ class SampleSearchIntegrationTest {
     @Autowired
     private Environment environment;
 
+    private static final String OPENSEARCH_PRODUCT_MAPPING = """
+            {
+              "settings": {
+                "index.knn": true
+              },
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "title": { "type": "text" },
+                  "description": { "type": "text" },
+                  "category": { "type": "keyword" },
+                  "brand": { "type": "keyword" },
+                  "status": { "type": "keyword" },
+                  "price": { "type": "double" },
+                  "stock": { "type": "integer" },
+                  "tenantId": { "type": "keyword" },
+                  "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
+                  "location": { "type": "geo_point" },
+                  "embedding": { "type": "knn_vector", "dimension": 4 },
+                  "skus": {
+                    "type": "nested",
+                    "properties": {
+                      "skuId": { "type": "keyword" },
+                      "color": { "type": "keyword" },
+                      "price": { "type": "double" },
+                      "stock": { "type": "integer" }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+
+    private static final String ELASTICSEARCH_PRODUCT_MAPPING = """
+            {
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "title": { "type": "text" },
+                  "description": { "type": "text" },
+                  "category": { "type": "keyword" },
+                  "brand": { "type": "keyword" },
+                  "status": { "type": "keyword" },
+                  "price": { "type": "double" },
+                  "stock": { "type": "integer" },
+                  "tenantId": { "type": "keyword" },
+                  "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
+                  "location": { "type": "geo_point" },
+                  "embedding": { "type": "dense_vector", "dims": 4 },
+                  "skus": {
+                    "type": "nested",
+                    "properties": {
+                      "skuId": { "type": "keyword" },
+                      "color": { "type": "keyword" },
+                      "price": { "type": "double" },
+                      "stock": { "type": "integer" }
+                    }
+                  }
+                }
+              }
+            }
+            """;
+
+    private static final String ACCESS_LOG_MAPPING = """
+            {
+              "mappings": {
+                "properties": {
+                  "id": { "type": "keyword" },
+                  "path": { "type": "keyword" },
+                  "clientIp": { "type": "keyword" },
+                  "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
+                }
+              }
+            }
+            """;
+
     private boolean isLocalProfileActive() {
         return environment != null && Arrays.asList(environment.getActiveProfiles()).contains("local");
     }
@@ -99,71 +175,7 @@ class SampleSearchIntegrationTest {
     private void ensureProductIndexReady() {
         try {
             boolean isOpenSearch = properties != null && properties.getEngine() == SearchEngineType.OPENSEARCH;
-            String mappingJson;
-            if (isOpenSearch) {
-                mappingJson = """
-                        {
-                          "settings": {
-                            "index.knn": true
-                          },
-                          "mappings": {
-                            "properties": {
-                              "id": { "type": "keyword" },
-                              "title": { "type": "text" },
-                              "description": { "type": "text" },
-                              "category": { "type": "keyword" },
-                              "brand": { "type": "keyword" },
-                              "status": { "type": "keyword" },
-                              "price": { "type": "double" },
-                              "stock": { "type": "integer" },
-                              "tenantId": { "type": "keyword" },
-                              "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
-                              "location": { "type": "geo_point" },
-                              "embedding": { "type": "knn_vector", "dimension": 4 },
-                              "skus": {
-                                "type": "nested",
-                                "properties": {
-                                  "skuId": { "type": "keyword" },
-                                  "color": { "type": "keyword" },
-                                  "price": { "type": "double" },
-                                  "stock": { "type": "integer" }
-                                }
-                              }
-                            }
-                          }
-                        }
-                        """;
-            } else {
-                mappingJson = """
-                        {
-                          "mappings": {
-                            "properties": {
-                              "id": { "type": "keyword" },
-                              "title": { "type": "text" },
-                              "description": { "type": "text" },
-                              "category": { "type": "keyword" },
-                              "brand": { "type": "keyword" },
-                              "status": { "type": "keyword" },
-                              "price": { "type": "double" },
-                              "stock": { "type": "integer" },
-                              "tenantId": { "type": "keyword" },
-                              "createTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" },
-                              "location": { "type": "geo_point" },
-                              "embedding": { "type": "dense_vector", "dims": 4 },
-                              "skus": {
-                                "type": "nested",
-                                "properties": {
-                                  "skuId": { "type": "keyword" },
-                                  "color": { "type": "keyword" },
-                                  "price": { "type": "double" },
-                                  "stock": { "type": "integer" }
-                                }
-                              }
-                            }
-                          }
-                        }
-                        """;
-            }
+            String mappingJson = isOpenSearch ? OPENSEARCH_PRODUCT_MAPPING : ELASTICSEARCH_PRODUCT_MAPPING;
             if (!searchTemplate.indices().exists("product_index")) {
                 searchTemplate.indices().create("product_index", mappingJson);
             }
@@ -171,19 +183,7 @@ class SampleSearchIntegrationTest {
             // 初始化 access_log 索引 mapping (确保 timestamp 为 date 类型)
             String todayLogIndex = "access_log_" + java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
             if (!searchTemplate.indices().exists(todayLogIndex)) {
-                String logMappingJson = """
-                        {
-                          "mappings": {
-                            "properties": {
-                              "id": { "type": "keyword" },
-                              "path": { "type": "keyword" },
-                              "clientIp": { "type": "keyword" },
-                              "timestamp": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||strict_date_optional_time||epoch_millis" }
-                            }
-                          }
-                        }
-                        """;
-                searchTemplate.indices().create(todayLogIndex, logMappingJson);
+                searchTemplate.indices().create(todayLogIndex, ACCESS_LOG_MAPPING);
             }
 
             // 预置基准商品文档并立即刷盘
@@ -208,8 +208,9 @@ class SampleSearchIntegrationTest {
             productCatalogScenario.saveProduct(doc);
 
             try {
-                searchTemplate.refresh("product_index");
-            } catch (Exception ignored) {
+                searchTemplate.indices().refresh("product_index");
+            } catch (Exception e) {
+                log.debug("Refreshing product_index on setup encountered exception: {}", e.getMessage());
             }
         } catch (Exception ex) {
             log.warn("ensureProductIndexReady failed: {}", ex.getMessage());
@@ -271,8 +272,8 @@ class SampleSearchIntegrationTest {
         }
         assertThat(fetched.getTitle()).contains("iPhone");
 
-        // 4. _mget 批量多主键查询
-        List<ProductDoc> batchDocs = productCatalogScenario.getProductsBatch(List.of(testId, "P_NON_EXISTING"));
+        // 4. _mget 批量多主键查询（带分片路由 Apple）
+        List<ProductDoc> batchDocs = productCatalogScenario.getProductsBatch(List.of(testId, "P_NON_EXISTING"), "Apple");
         assertThat(batchDocs).isNotEmpty();
 
         // 5. 局部更新与删除
@@ -354,7 +355,19 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("08. 浅分页与超过 10,000 条深度分页安全刚性熔断")
+    @DisplayName("08. 商品价格区间极值与均值度量统计聚合 (Min / Max / Avg 聚合)")
+    void testProductPriceMetricsAggregation() {
+        SearchPage<ProductDoc> page = productCatalogScenario.aggregatePriceMetrics(null);
+        assertThat(page.getAggregations()).isNotEmpty();
+        assertThat(page.getAggregations()).containsKey("min_price");
+        assertThat(page.getAggregations()).containsKey("max_price");
+        assertThat(page.getAggregations()).containsKey("avg_price");
+        assertThat(page.getAggregations().get("min_price").min().value()).isPositive();
+        assertThat(page.getAggregations().get("max_price").max().value()).isPositive();
+    }
+
+    @Test
+    @DisplayName("09. 浅分页与超过 10,000 条深度分页安全刚性熔断")
     void testShallowPagination() {
         PageResult<ProductDoc> result = productCatalogScenario.searchShallowPaging(1, 10);
         assertThat(result.getRecords()).isNotEmpty();
@@ -366,7 +379,7 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("09. searchAfter 深度游标滚动分页")
+    @DisplayName("10. searchAfter 深度游标滚动分页")
     void testSearchAfterCursor() {
         SearchScrollResult<ProductDoc> result = productCatalogScenario.searchCursorPaging(null, 1);
         assertThat(result.getHits()).isNotEmpty();
@@ -379,7 +392,7 @@ class SampleSearchIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("10. SpEL 动态时序按天分表写入与 DateHistogram 直方图时间分桶聚合走势")
+    @DisplayName("11. SpEL 动态时序按天分表写入与 DateHistogram 直方图时间分桶聚合走势")
     void testSpelDynamicTimeSeriesAndDateHistogram() {
         AccessLogDoc logDoc = AccessLogDoc.builder()
                 .id("LOG-001")
@@ -391,8 +404,9 @@ class SampleSearchIntegrationTest {
         logAnalyticsScenario.recordAccessLog(logDoc);
         if (isLocalProfileActive()) {
             try {
-                searchTemplate.refresh("access_log_*");
-            } catch (Exception ignored) {
+                searchTemplate.indices().refresh("access_log_*");
+            } catch (Exception e) {
+                log.debug("Refreshing access_log_* encountered exception: {}", e.getMessage());
             }
         }
 
@@ -402,7 +416,7 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("11. 审计日志轻量计数与 deleteByQuery 条件批量物理清理")
+    @DisplayName("12. 审计日志轻量计数与 deleteByQuery 条件批量物理清理")
     void testCountAndDeleteByQueryPurge() {
         // 轻量计数
         long count = logAnalyticsScenario.countLogsByPath("/api/products/search");
@@ -418,7 +432,7 @@ class SampleSearchIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("12. 索引模板建立与对称删除生命周期 (Index Template)")
+    @DisplayName("13. 索引模板建立与对称删除生命周期 (Index Template)")
     void testIndexTemplateLifecycle() {
         String templateName = "sample_log_template";
         String templateJson = """
@@ -438,7 +452,7 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("13. 服务端平滑数据重索引 (全量与增量)、物理刷新与原子别名热切闭环")
+    @DisplayName("14. 服务端平滑数据重索引 (全量与增量)、物理刷新与原子别名热切闭环")
     void testZeroDowntimeReindexAndSwapAlias() {
         if (isLocalProfileActive()) {
             if (!searchTemplate.indices().exists("product_v1")) {
@@ -474,7 +488,7 @@ class SampleSearchIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("14. 严格批量全事务性写入与宽容批量局部失败隔离")
+    @DisplayName("15. 严格批量全事务性写入与宽容批量局部失败隔离")
     void testBatchIngestionModes() {
         ProductDoc doc1 = ProductDoc.builder().id("P101").title("iPad Pro").brand("Apple").build();
         ProductDoc docFail = ProductDoc.builder().id("FAIL_TRIGGER").title("Error Item").brand("Apple").build();
@@ -501,7 +515,7 @@ class SampleSearchIntegrationTest {
     }
 
     @Test
-    @DisplayName("15. SearchBulkProcessor 高吞吐非阻塞流式缓冲写入与安全排空")
+    @DisplayName("16. SearchBulkProcessor 高吞吐非阻塞流式缓冲写入与安全排空")
     void testBulkProcessorStreaming() {
         String id1 = isLocalProfileActive() ? "P_STREAM_001" : "P001";
         String id2 = isLocalProfileActive() ? "P_STREAM_002" : "P002";
@@ -518,7 +532,7 @@ class SampleSearchIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("16. Actuator 云原生健康探针与 Micrometer 性能度量指标采集验证")
+    @DisplayName("17. Actuator 云原生健康探针与 Micrometer 性能度量指标采集验证")
     void testActuatorAndMetrics() {
         assertThat(healthIndicator).isNotNull();
         Health health = healthIndicator.health();

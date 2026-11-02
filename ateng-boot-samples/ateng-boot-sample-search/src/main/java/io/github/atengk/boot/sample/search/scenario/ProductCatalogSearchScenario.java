@@ -76,13 +76,24 @@ public class ProductCatalogSearchScenario {
     }
 
     /**
-     * 根据多个商品 ID 批量检索商品列表（底层 _mget 批量端点）
+     * 根据多个商品 ID 批量检索商品列表（底层 _mget 批量端点，适用于未标注 @SearchRouting 或由默认路由分片的场景）
      *
      * @param ids 商品 ID 集合
      * @return 命中的商品列表
      */
     public List<ProductDoc> getProductsBatch(Collection<String> ids) {
-        return searchTemplate.getByIds(ProductDoc.class, ids);
+        return getProductsBatch(ids, null);
+    }
+
+    /**
+     * 根据多个商品 ID 与品牌分片路由批量检索商品列表（底层 _mget 批量端点）
+     *
+     * @param ids     商品 ID 集合
+     * @param routing 分片路由键（如品牌名）
+     * @return 命中的商品列表
+     */
+    public List<ProductDoc> getProductsBatch(Collection<String> ids, String routing) {
+        return searchTemplate.getByIds(ProductDoc.class, ids, routing);
     }
 
     /**
@@ -211,6 +222,26 @@ public class ProductCatalogSearchScenario {
                 .knn("embedding", vector, k, 100)
                 .build();
         return searchTemplate.search(query, ProductDoc.class).getHits();
+    }
+
+    /**
+     * 商品价格区间统计与极值度量聚合 (Min / Max / Avg 聚合算子实测)
+     *
+     * @param category 商品分类筛选（可为空）
+     * @return 包含聚合计算结果的搜索分页模型
+     */
+    public SearchPage<ProductDoc> aggregatePriceMetrics(String category) {
+        SearchQueryBuilder builder = SearchQueryBuilder.create();
+        if (category != null && !category.isBlank()) {
+            builder.term("category", category);
+        }
+        SearchQuery query = builder
+                .size(0)
+                .minAggregation("min_price", "price")
+                .maxAggregation("max_price", "price")
+                .avgAggregation("avg_price", "price")
+                .build();
+        return searchTemplate.search(query, ProductDoc.class);
     }
 
     /**

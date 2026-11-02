@@ -1040,7 +1040,7 @@ class SearchTemplateMockServerTest {
     }
 
     @Test
-    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 getById/getHitById 触发防御性前置阻断")
+    @DisplayName("测试当实体标注 @SearchRouting 时未传 routing 调用 getById/getHitById/getByIds/getHitsByIds 触发防御性前置阻断")
     void testRoutingRequiredGuardOnGetAndGetHit() {
         assertThatThrownBy(() -> searchTemplate.getById(RoutedOrderDoc.class, "order_1001"))
                 .isInstanceOf(SearchException.class)
@@ -1055,6 +1055,22 @@ class SearchTemplateMockServerTest {
                 .satisfies(ex -> {
                     SearchException se = (SearchException) ex;
                     assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                });
+
+        assertThatThrownBy(() -> searchTemplate.getByIds(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThatThrownBy(() -> searchTemplate.getHitsByIds(RoutedOrderDoc.class, List.of("order_1001")))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
                 });
 
         assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
@@ -1126,6 +1142,43 @@ class SearchTemplateMockServerTest {
         RecordedRequest deleteReq = mockWebServer.takeRequest();
         assertThat(deleteReq.getMethod()).isEqualTo("DELETE");
         assertThat(deleteReq.getPath()).isEqualTo("/routed_order_idx/_doc/order_1001?routing=tenant_east");
+    }
+
+    @Test
+    @DisplayName("测试提供 routing 参数的 getByIds 和 getHitsByIds 批量请求")
+    void testRoutedGetByIdsAndHitsByIdsSuccess() throws Exception {
+        String mockMgetBody = """
+                {
+                  "docs": [
+                    {
+                      "_index": "routed_order_idx",
+                      "_id": "order_1001",
+                      "_version": 1,
+                      "_seq_no": 5,
+                      "_primary_term": 1,
+                      "_routing": "tenant_east",
+                      "found": true,
+                      "_source": {
+                        "orderId": "order_1001",
+                        "tenantId": "tenant_east",
+                        "orderAmount": 199.9,
+                        "status": "PAID"
+                      }
+                    }
+                  ]
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockMgetBody));
+
+        List<SearchHit<RoutedOrderDoc>> hits = searchTemplate.getHitsByIds(
+                RoutedOrderDoc.class, List.of("order_1001"), "tenant_east");
+        assertThat(hits).hasSize(1);
+        assertThat(hits.get(0).getId()).isEqualTo("order_1001");
+        assertThat(hits.get(0).getRouting()).isEqualTo("tenant_east");
+
+        RecordedRequest req = mockWebServer.takeRequest();
+        assertThat(req.getMethod()).isEqualTo("POST");
+        assertThat(req.getPath()).contains("routing=tenant_east");
     }
 
     @Test
@@ -2370,6 +2423,78 @@ class SearchTemplateMockServerTest {
     }
 
     @Test
+    @DisplayName("测试 deleteByQuery 参数校验防线：非空与非空白校验")
+    void testDeleteByQueryParameterValidation() {
+        // 1. null query 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(null, UserDoc.class))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("query must not be null");
+
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("user_idx", null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("query must not be null");
+
+        // 2. null clazz 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery(SearchQuery.builder().build(), null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("clazz must not be null");
+
+        // 3. blank index 前置拦截
+        assertThatThrownBy(() -> searchTemplate.deleteByQuery("  ", SearchQuery.builder().build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 count 与 deleteByQuery 支持多索引查询时不丢失后续索引")
+    void testMultiIndicesHandlingOnCountAndDel() throws Exception {
+        // 1. count 多索引测试
+        String mockCountBody = """
+                {
+                  "count": 42,
+                  "_shards": { "total": 2, "successful": 2, "skipped": 0, "failed": 0 }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockCountBody));
+
+        SearchQuery multiIndexQuery = SearchQuery.builder()
+                .indices(List.of("idx_log_202610", "idx_log_202611"))
+                .matchAll()
+                .build();
+
+        long count = searchTemplate.count(multiIndexQuery, UserDoc.class);
+        assertThat(count).isEqualTo(42L);
+
+        RecordedRequest countReq = mockWebServer.takeRequest();
+        assertThat(countReq.getPath()).contains("idx_log_202610,idx_log_202611/_count");
+
+        // 2. deleteByQuery 多索引测试
+        String mockDelBody = """
+                {
+                  "took": 10,
+                  "timed_out": false,
+                  "total": 5,
+                  "deleted": 5,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockDelBody));
+
+        long deleted = searchTemplate.deleteByQuery(multiIndexQuery, UserDoc.class);
+        assertThat(deleted).isEqualTo(5L);
+
+        RecordedRequest delReq = mockWebServer.takeRequest();
+        assertThat(delReq.getPath()).contains("idx_log_202610,idx_log_202611/_delete_by_query");
+    }
+
+    @Test
     @DisplayName("测试 matchPhrase 短语精准保序检索 DSL 生成")
     void testMatchPhraseDsl() throws Exception {
         String mockResp = """
@@ -2673,5 +2798,56 @@ class SearchTemplateMockServerTest {
         String body2 = req2.getBody().readUtf8();
         assertThat(body2).contains("\"source\":{\"index\":[\"source_idx\"],\"query\":{\"bool\":{\"filter\":[{\"term\":{\"status\":{\"value\":\"ACTIVE\"}}}]}}}");
         assertThat(body2).contains("\"dest\":{\"index\":\"target_idx\"}");
+    }
+
+    @Test
+    @DisplayName("测试 reindex 源索引与目标索引同名或空白时触发防御性校验")
+    void testReindexSelfIndexGuard() {
+        assertThatThrownBy(() -> searchTemplate.indices().reindex("same_idx", "same_idx"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceIndex and targetIndex must not be the same");
+
+        assertThatThrownBy(() -> searchTemplate.indices().reindex(" ", "target_idx"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceIndex must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 reindex 服务端响应 timed_out 为 true 时判定失败")
+    void testReindexTimedOutReturnsFalse() {
+        String mockResp = """
+                {
+                  "took": 30000,
+                  "timed_out": true,
+                  "total": 100,
+                  "updated": 0,
+                  "created": 50,
+                  "deleted": 0,
+                  "batches": 1,
+                  "version_conflicts": 0,
+                  "noops": 0,
+                  "retries": { "bulk": 0, "search": 0 },
+                  "throttled_millis": 0,
+                  "requests_per_second": -1.0,
+                  "throttled_until_millis": 0,
+                  "failures": []
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResp));
+
+        boolean result = searchTemplate.indices().reindex("source_idx", "target_idx");
+        assertThat(result).isFalse();
+    }
+
+    @Test
+    @DisplayName("测试 matchPhrase 与 matchPhrasePrefix 空白字符串防卫")
+    void testMatchPhraseBlankQueryDefense() {
+        SearchQuery query = SearchQuery.builder()
+                .matchPhrase("title", "   ")
+                .matchPhrasePrefix("title", "")
+                .build();
+
+        // 空白文本不生成 matchPhrase 节点，缺省回退为 matchAll
+        assertThat(query.getQuery().isMatchAll()).isTrue();
     }
 }

@@ -109,26 +109,6 @@ public class SearchTemplate {
     }
 
     /**
-     * 显式刷新指定索引（Lucene Segment 物理持久化与即时可读）
-     *
-     * @param index 目标索引名
-     * @return 刷新是否成功
-     */
-    public boolean refresh(String index) {
-        return indices().refresh(index);
-    }
-
-    /**
-     * 根据实体类显式刷新对应的索引
-     *
-     * @param clazz 实体类类型
-     * @return 刷新是否成功
-     */
-    public boolean refresh(Class<?> clazz) {
-        return indices().refresh(clazz);
-    }
-
-    /**
      * 获取基于全局配置预设的受管流式批量缓冲处理器构建器
      *
      * @return SearchBulkProcessor.Builder 实例
@@ -477,8 +457,18 @@ public class SearchTemplate {
      * @param <T>   实体类型
      * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
      */
-    @SafeVarargs
-    public final <T> List<T> getByIds(Class<T> clazz, String... ids) {
+    /**
+     * 根据多个文档 ID 批量查询文档实体列表（可变长参数）
+     * <p>
+     * 自动从实体类提取 @SearchIndex 索引名；底层基于 _mget 批量端点单次往返检索；
+     * 严格遵循空安全不变量，自动过滤未命中项，保底返回纯净的 List（不含 null 元素）。
+     *
+     * @param clazz 实体类类型
+     * @param ids   文档 ID 可变参数
+     * @param <T>   实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<T> getByIds(Class<T> clazz, String... ids) {
         return getByIds(clazz, ids != null ? Arrays.asList(ids) : Collections.emptyList());
     }
 
@@ -494,9 +484,22 @@ public class SearchTemplate {
      * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
      */
     public <T> List<T> getByIds(Class<T> clazz, Collection<String> ids) {
+        return getByIds(clazz, ids, null);
+    }
+
+    /**
+     * 根据多个文档 ID 与分片路由键批量查询文档实体列表
+     *
+     * @param clazz   实体类类型
+     * @param ids     文档 ID 集合
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @param <T>     实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<T> getByIds(Class<T> clazz, Collection<String> ids, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return getByIds(index, clazz, ids);
+        return getByIds(index, clazz, ids, routing);
     }
 
     /**
@@ -509,7 +512,21 @@ public class SearchTemplate {
      * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
      */
     public <T> List<T> getByIds(String index, Class<T> clazz, Collection<String> ids) {
-        List<SearchHit<T>> hits = getHitsByIds(index, clazz, ids);
+        return getByIds(index, clazz, ids, null);
+    }
+
+    /**
+     * 根据多个文档 ID 与分片路由键从指定索引批量查询文档实体列表
+     *
+     * @param index   目标索引名
+     * @param clazz   实体类类型
+     * @param ids     文档 ID 集合
+     * @param routing 分片路由键
+     * @param <T>     实体类型
+     * @return 命中文档实体列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<T> getByIds(String index, Class<T> clazz, Collection<String> ids, String routing) {
+        List<SearchHit<T>> hits = getHitsByIds(index, clazz, ids, routing);
         if (hits.isEmpty()) {
             return Collections.emptyList();
         }
@@ -524,8 +541,7 @@ public class SearchTemplate {
      * @param <T>   实体类型
      * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
      */
-    @SafeVarargs
-    public final <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, String... ids) {
+    public <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, String... ids) {
         return getHitsByIds(clazz, ids != null ? Arrays.asList(ids) : Collections.emptyList());
     }
 
@@ -538,9 +554,22 @@ public class SearchTemplate {
      * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
      */
     public <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, Collection<String> ids) {
+        return getHitsByIds(clazz, ids, null);
+    }
+
+    /**
+     * 根据多个文档 ID 与分片路由键批量查询完整命中文档模型列表
+     *
+     * @param clazz   实体类类型
+     * @param ids     文档 ID 集合
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @param <T>     实体类型
+     * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<SearchHit<T>> getHitsByIds(Class<T> clazz, Collection<String> ids, String routing) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = SearchMetadataHelper.resolveIndexName(clazz);
-        return getHitsByIds(index, clazz, ids);
+        return getHitsByIds(index, clazz, ids, routing);
     }
 
     /**
@@ -553,10 +582,31 @@ public class SearchTemplate {
      * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
      */
     public <T> List<SearchHit<T>> getHitsByIds(String index, Class<T> clazz, Collection<String> ids) {
+        return getHitsByIds(index, clazz, ids, null);
+    }
+
+    /**
+     * 根据多个文档 ID 与分片路由键从指定索引批量查询完整命中文档模型列表
+     *
+     * @param index   目标索引名
+     * @param clazz   实体类类型
+     * @param ids     文档 ID 集合
+     * @param routing 分片路由键
+     * @param <T>     实体类型
+     * @return 命中文档载荷 SearchHit 列表，若全部未命中或参数为空则返回空集合（非 null）
+     */
+    public <T> List<SearchHit<T>> getHitsByIds(String index, Class<T> clazz, Collection<String> ids, String routing) {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
         Objects.requireNonNull(clazz, "clazz must not be null");
+
+        // 分片路由防漏校验：若实体标注了 @SearchRouting 但未提供 routing，执行 Fail-Fast
+        if (SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
+            throw new SearchException(SearchResultCode.SEARCH_ROUTING_REQUIRED,
+                    "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use getByIds/getHitsByIds with routing parameter.");
+        }
+
         if (CollectionUtil.isEmpty(ids)) {
             return Collections.emptyList();
         }
@@ -566,14 +616,20 @@ public class SearchTemplate {
         }
 
         if (searchMetrics != null) {
-            return searchMetrics.recordQuery(() -> executeDoGetHitsByIds(index, clazz, validIds));
+            return searchMetrics.recordQuery(() -> executeDoGetHitsByIds(index, clazz, validIds, routing));
         }
-        return executeDoGetHitsByIds(index, clazz, validIds);
+        return executeDoGetHitsByIds(index, clazz, validIds, routing);
     }
 
-    private <T> List<SearchHit<T>> executeDoGetHitsByIds(String index, Class<T> clazz, List<String> idList) {
+    private <T> List<SearchHit<T>> executeDoGetHitsByIds(String index, Class<T> clazz, List<String> idList, String routing) {
         try {
-            MgetResponse<T> response = getClient().mget(b -> b.index(index).ids(idList), clazz);
+            MgetResponse<T> response = getClient().mget(b -> {
+                b.index(index).ids(idList);
+                if (StringUtils.hasText(routing)) {
+                    b.routing(routing);
+                }
+                return b;
+            }, clazz);
             if (response == null || CollectionUtil.isEmpty(response.docs())) {
                 return Collections.emptyList();
             }
@@ -1131,14 +1187,15 @@ public class SearchTemplate {
      * 自动从实体类解析 @SearchIndex 索引名；多租户激活时自动隐式注入租户隔离过滤（标注 @IgnoreTenant 的实体除外）；
      * 默认配置 conflicts 为 Proceed，高并发版本冲突时不中断批量任务。
      *
-     * @param query 查询规格对象
-     * @param clazz 实体类类型
+     * @param query 查询规格对象（不得为 null）
+     * @param clazz 实体类类型（不得为 null）
      * @return 成功删除的文档数量
      */
     public long deleteByQuery(SearchQuery query, Class<?> clazz) {
         Objects.requireNonNull(clazz, "clazz must not be null");
-        String index = query != null && CollectionUtil.isNotEmpty(query.getIndices())
-                ? query.getIndices().get(0)
+        Objects.requireNonNull(query, "query must not be null");
+        String index = CollectionUtil.isNotEmpty(query.getIndices())
+                ? String.join(",", query.getIndices())
                 : SearchMetadataHelper.resolveIndexName(clazz);
         return deleteByQuery(index, query, clazz);
     }
@@ -1147,10 +1204,11 @@ public class SearchTemplate {
      * 在指定索引上根据查询规格条件批量删除文档
      *
      * @param index 目标索引名
-     * @param query 查询规格对象
+     * @param query 查询规格对象（不得为 null）
      * @return 成功删除的文档数量
      */
     public long deleteByQuery(String index, SearchQuery query) {
+        Objects.requireNonNull(query, "query must not be null");
         return deleteByQuery(index, query, null);
     }
 
@@ -1158,7 +1216,7 @@ public class SearchTemplate {
      * 在指定索引上根据查询规格条件批量删除文档，支持实体映射规则与多租户过滤
      *
      * @param index 目标索引名
-     * @param query 查询规格对象
+     * @param query 查询规格对象（不得为 null）
      * @param clazz 实体类类型（用于多租户隐式过滤等元数据解析，可为 null）
      * @return 成功删除的文档数量
      */
@@ -1166,6 +1224,7 @@ public class SearchTemplate {
         if (!StringUtils.hasText(index)) {
             throw new IllegalArgumentException("Index must not be blank");
         }
+        Objects.requireNonNull(query, "query must not be null");
         if (searchMetrics != null) {
             return searchMetrics.recordQuery(() -> executeDoDeleteByQuery(index, query, clazz));
         }
@@ -1573,7 +1632,7 @@ public class SearchTemplate {
     public long count(SearchQuery query, Class<?> clazz) {
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = query != null && CollectionUtil.isNotEmpty(query.getIndices())
-                ? query.getIndices().get(0)
+                ? String.join(",", query.getIndices())
                 : SearchMetadataHelper.resolveIndexName(clazz);
         return count(index, query, clazz);
     }
@@ -1651,7 +1710,7 @@ public class SearchTemplate {
         Objects.requireNonNull(query, "query must not be null");
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = CollectionUtil.isNotEmpty(query.getIndices())
-                ? query.getIndices().get(0)
+                ? String.join(",", query.getIndices())
                 : SearchMetadataHelper.resolveIndexName(clazz);
         return search(index, query, clazz);
     }
@@ -1724,7 +1783,7 @@ public class SearchTemplate {
         Objects.requireNonNull(query, "query must not be null");
         Objects.requireNonNull(clazz, "clazz must not be null");
         String index = CollectionUtil.isNotEmpty(query.getIndices())
-                ? query.getIndices().get(0)
+                ? String.join(",", query.getIndices())
                 : SearchMetadataHelper.resolveIndexName(clazz);
         return searchAfter(index, query, sortValues, size, clazz);
     }
