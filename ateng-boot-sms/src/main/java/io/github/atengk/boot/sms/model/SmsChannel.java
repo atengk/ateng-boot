@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.ToString;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +68,11 @@ public class SmsChannel implements Serializable {
      * 顺延容灾降级备用渠道名称（为 null 表示无备用渠道）
      */
     private final String failoverChannel;
+
+    /**
+     * 网络请求超时时间
+     */
+    private final Duration timeout;
 
     /**
      * 模板参数顺序配置（模板ID -> 有序参数名列表）

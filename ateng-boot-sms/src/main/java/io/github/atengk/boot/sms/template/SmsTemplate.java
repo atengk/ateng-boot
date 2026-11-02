@@ -69,6 +69,7 @@ public class SmsTemplate {
                         .region(prop.getRegion())
                         .endpoint(prop.getEndpoint())
                         .failoverChannel(prop.getFailoverChannel())
+                        .timeout(prop.getTimeout())
                         .templateParamOrders(paramOrders)
                         .build();
                 channelCache.put(name, channel);

@@ -1,14 +1,17 @@
 package io.github.atengk.boot.sms.config;
 
 import io.github.atengk.boot.sms.properties.SmsProperties;
+import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.template.SmsTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.web.client.RestClient;
 
 import java.util.List;
 
@@ -32,6 +35,19 @@ public class AtengSmsAutoConfiguration {
     @ConditionalOnMissingBean
     public MockSmsProvider mockSmsProvider() {
         return new MockSmsProvider();
+    }
+
+    /**
+     * 自动装配阿里云短信驱动 (POP RPC 协议原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return AliyunSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AliyunSmsProvider aliyunSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new AliyunSmsProvider(builder);
     }
 
     /**

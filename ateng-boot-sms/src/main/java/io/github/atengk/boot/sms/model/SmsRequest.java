@@ -6,9 +6,11 @@ import lombok.Builder;
 import lombok.Getter;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.List;
 
 /**
- * 单条短信发送领域请求对象
+ * 单条或批量短信发送领域请求对象
  * 内存中保持真明文，日志打印与外部表示强制执行手机号敏感脱敏
  *
  * @author Ateng
@@ -21,9 +23,14 @@ public class SmsRequest implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 目标接收人手机号（支持国内 11 位或带国际区号 E.164 格式）
+     * 目标接收人单手机号
      */
     private final String phone;
+
+    /**
+     * 批量发信手机号列表（支持一次投递多个目标号码）
+     */
+    private final List<String> phones;
 
     /**
      * 短信模板编码 / ID
@@ -50,25 +57,41 @@ public class SmsRequest implements Serializable {
      */
     private final String bizId;
 
-    /**
-     * 构造并实施前置契约校验
-     *
-     * @param phone      手机号
-     * @param templateId 模板ID
-     * @param params     参数
-     * @param signName   签名
-     * @param channel    渠道
-     * @param bizId      业务流水号
-     */
-    public SmsRequest(String phone, String templateId, SmsParam params, String signName, String channel, String bizId) {
-        BusinessAssert.hasText(phone, "目标手机号不能为空");
+    public SmsRequest(String phone, List<String> phones, String templateId, SmsParam params, String signName, String channel, String bizId) {
         BusinessAssert.hasText(templateId, "短信模板编码不能为空");
-        this.phone = phone.trim();
         this.templateId = templateId.trim();
         this.params = params != null ? params : SmsParam.create();
         this.signName = signName != null ? signName.trim() : null;
         this.channel = channel != null ? channel.trim() : null;
         this.bizId = bizId != null ? bizId.trim() : null;
+
+        if (phones != null && !phones.isEmpty()) {
+            this.phones = Collections.unmodifiableList(phones);
+            this.phone = (phone != null && !phone.isBlank()) ? phone.trim() : phones.get(0);
+        } else {
+            BusinessAssert.hasText(phone, "目标手机号不能为空");
+            this.phone = phone.trim();
+            this.phones = List.of(this.phone);
+        }
+    }
+
+    public SmsRequest(String phone, String templateId, SmsParam params, String signName, String channel, String bizId) {
+        this(phone, null, templateId, params, signName, channel, bizId);
+    }
+
+    /**
+     * 获取发信手机号码列表（保底返回非空列表）
+     *
+     * @return 手机号码列表
+     */
+    public List<String> getPhones() {
+        if (phones != null && !phones.isEmpty()) {
+            return phones;
+        }
+        if (phone != null && !phone.isBlank()) {
+            return List.of(phone);
+        }
+        return Collections.emptyList();
     }
 
     /**
@@ -105,10 +128,24 @@ public class SmsRequest implements Serializable {
         return builder().phone(phone).templateId(templateId).params(params).build();
     }
 
+    /**
+     * 自定义 Builder 增强方法
+     */
+    public static class SmsRequestBuilder {
+        public SmsRequestBuilder param(String key, Object value) {
+            if (this.params == null) {
+                this.params = SmsParam.create();
+            }
+            this.params.add(key, value);
+            return this;
+        }
+    }
+
     @Override
     public String toString() {
         return "SmsRequest{" +
                 "phone='" + DesensitizeUtil.mobilePhone(phone) + '\'' +
+                ", phones=" + (phones != null ? phones.stream().map(DesensitizeUtil::mobilePhone).toList() : "[]") +
                 ", templateId='" + templateId + '\'' +
                 ", params=" + params +
                 ", signName='" + signName + '\'' +

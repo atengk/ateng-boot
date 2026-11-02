@@ -111,6 +111,24 @@ public class SmsParam implements Serializable {
     }
 
     /**
+     * 判断当前参数集是否为空
+     *
+     * @return true 表示无任何键值或数组参数
+     */
+    public boolean isEmpty() {
+        return mapParams.isEmpty() && arrayParams.isEmpty();
+    }
+
+    /**
+     * 获取参数键值对映射
+     *
+     * @return 字典映射
+     */
+    public Map<String, Object> asMap() {
+        return getMapParams();
+    }
+
+    /**
      * 获取不可修改的键值对参数字典
      *
      * @return 字典映射
