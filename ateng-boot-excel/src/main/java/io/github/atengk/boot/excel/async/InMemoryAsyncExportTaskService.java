@@ -144,17 +144,17 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
                     task.setFilePath(storageKey);
                     task.setDownloadUrl(fileStorage.getDownloadUrl(taskId, storageKey));
                     task.setFileSize(fileSize);
-                    task.setStatus(ExportTaskStatus.SUCCESS);
                     task.setProgress(100);
                     task.setFinishTime(LocalDateTime.now());
+                    task.setStatus(ExportTaskStatus.SUCCESS);
                     log.info("异步导出任务完成 [{}]: 文件大小 = {} 字节", taskId, task.getFileSize());
                 } catch (Throwable ex) {
                     if (task.getStatus() == ExportTaskStatus.CANCELLED) {
                         return;
                     }
-                    task.setStatus(ExportTaskStatus.FAILED);
                     task.setErrorMsg(ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
                     task.setFinishTime(LocalDateTime.now());
+                    task.setStatus(ExportTaskStatus.FAILED);
                     log.error("异步导出任务执行失败 [{}]: {}", taskId, ex.getMessage(), ex);
                 } finally {
                     futureMap.remove(taskId);
@@ -193,8 +193,8 @@ public class InMemoryAsyncExportTaskService implements AsyncExportTaskService, D
             return false;
         }
 
-        task.setStatus(ExportTaskStatus.CANCELLED);
         task.setFinishTime(LocalDateTime.now());
+        task.setStatus(ExportTaskStatus.CANCELLED);
 
         Future<?> future = futureMap.remove(taskId);
         if (future != null) {
