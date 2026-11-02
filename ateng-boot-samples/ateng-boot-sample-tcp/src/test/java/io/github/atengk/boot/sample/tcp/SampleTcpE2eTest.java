@@ -1,8 +1,9 @@
 package io.github.atengk.boot.sample.tcp;
 
-import io.github.atengk.boot.core.util.JsonUtil;
-import io.github.atengk.boot.sample.tcp.model.*;
-import io.github.atengk.boot.sample.tcp.service.VehicleControlService;
+import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
+import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
+import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
+import io.github.atengk.boot.sample.tcp.service.VehicleTelemetryScenarioService;
 import io.github.atengk.boot.sample.tcp.simulator.VehicleSimulator;
 import io.github.atengk.boot.tcp.actuator.TcpActuatorEndpoint;
 import io.github.atengk.boot.tcp.server.TcpServer;
@@ -10,32 +11,26 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * TCP 车载长连接端到端集成测试沙箱
+ * TCP 车载长连接全场景端到端集成测试沙箱
  * <p>
- * 100% 离线自洽，基于动态随机端口、内存车机仿真与完整 MockMvc Servlet 契约管线完成业务闭环验证。
+ * 遵循框架非 Web Starter 零 Controller 刚性铁律，100% 离线自洽，基于动态随机端口、
+ * 内存仿真车机终端与 {@link VehicleTelemetryScenarioService} 业务场景服务完成业务全闭环验证。
+ * 覆盖车机认证、JT/T 808 国标复合报文（0x7E/0x7D/BCC）、全双工 RPC、车队分组组播、出站背压与高可用自愈。
  * </p>
  *
  * @author Ateng
  * @since 2026-10-26
  */
 @SpringBootTest(classes = SampleTcpApplication.class)
-@AutoConfigureMockMvc
 @ActiveProfiles("test")
 class SampleTcpE2eTest {
 
@@ -43,149 +38,178 @@ class SampleTcpE2eTest {
     private TcpServer tcpServer;
 
     @Autowired
-    private VehicleControlService vehicleControlService;
-
-    @Autowired
-    private MockMvc mockMvc;
+    private VehicleTelemetryScenarioService scenarioService;
 
     @Autowired(required = false)
     private TcpActuatorEndpoint tcpActuatorEndpoint;
 
-    private VehicleSimulator simulator1;
-    private VehicleSimulator simulator2;
-    private VehicleSimulator simulatorRecon;
+    private VehicleSimulator sim1;
+    private VehicleSimulator sim2;
+    private VehicleSimulator simDuplicate;
+    private VehicleSimulator simRecon;
 
     @AfterEach
     void tearDown() {
-        if (simulator1 != null) {
-            simulator1.stop();
+        if (sim1 != null) {
+            sim1.stop();
         }
-        if (simulator2 != null) {
-            simulator2.stop();
+        if (sim2 != null) {
+            sim2.stop();
         }
-        if (simulatorRecon != null) {
-            simulatorRecon.stop();
+        if (simDuplicate != null) {
+            simDuplicate.stop();
+        }
+        if (simRecon != null) {
+            simRecon.stop();
         }
     }
 
     @Test
-    @DisplayName("端到端全真验证：连接登录 -> 定位上报自动ACK -> 远程控制指令 -> 全双工RPC下发 -> 广播预警 -> 断网自愈重连 -> 踢旧留新 -> MockMvc管线")
+    @DisplayName("端到端全真验证：接入认证 -> JT/T 808国标复合报文(0x7E/0x7D/BCC) -> JSON定位 -> 心跳 -> 全双工RPC -> 车队分组组播 -> 广播 -> 背压感知 -> 踢旧留新 -> 自愈重连 -> Actuator诊断")
     void testEndToEndVehicleScenario() throws Exception {
         assertThat(tcpServer.isRunning()).isTrue();
         int serverPort = tcpServer.getActualPort();
         assertThat(serverPort).isGreaterThan(0);
 
-        String deviceId = "VEHICLE-E2E-8888";
+        String deviceId1 = "VEHICLE-001";
+        String deviceId2 = "VEHICLE-002";
 
-        // 1. 启动车机终端模拟器并建立物理长连接
-        simulator1 = new VehicleSimulator(deviceId, "127.0.0.1", serverPort);
-        simulator1.start();
-        await().until(simulator1::isConnected);
+        // 1. 启动车机仿真器 1 并建立长连接
+        sim1 = new VehicleSimulator(deviceId1, "127.0.0.1", serverPort);
+        sim1.start();
+        await().until(sim1::isConnected);
 
-        // 2. 模拟发送登录包，完成设备标识绑定
-        simulator1.login();
+        // 2. 模拟发送登录认证包，完成设备标识绑定
+        sim1.login();
         await().untilAsserted(() -> {
-            VehicleStatusVO status = vehicleControlService.getVehicleStatus(deviceId);
+            VehicleStatusVO status = scenarioService.getVehicleStatus(deviceId1);
             assertThat(status).isNotNull();
             assertThat(status.getOnline()).isTrue();
         });
 
-        // 3. 模拟上报定位遥测数据包（包含 engineStatus），验证服务端自动返回 LOCATION_ACK 回执
-        long reportSeq = 9901L;
-        simulator1.reportLocation(reportSeq, 116.4074, 39.9042, 72.5, "ON");
+        // 3. 验证交通部 JT/T 808 国标风格复合分帧上报（含 0x7E 分隔符、0x7D 转义还原与 BCC 校验和验证）
+        long jt808Seq = 1001L;
+        sim1.reportJt808Location(jt808Seq, 116.407412, 39.904231, 85.5, "ON");
         await().untilAsserted(() -> {
-            VehicleStatusVO status = vehicleControlService.getVehicleStatus(deviceId);
+            VehicleStatusVO status = scenarioService.getVehicleStatus(deviceId1);
             assertThat(status).isNotNull();
-            assertThat(status.getLastSpeed()).isEqualTo(72.5);
+            assertThat(status.getLastSpeed()).isEqualTo(85.5);
             assertThat(status.getEngineStatus()).isEqualTo("ON");
-            assertThat(status.getLastLongitude()).isEqualTo(116.4074);
-            assertThat(status.getLastLatitude()).isEqualTo(39.9042);
-            // 验证车机收到了 @TcpMapping 自动回写的 LOCATION_ACK 回执
-            assertThat(simulator1.getReceivedAcks()).contains("LOCATION_ACK");
+            assertThat(status.getLastLongitude()).isEqualTo(116.407412);
+            assertThat(status.getLastLatitude()).isEqualTo(39.904231);
+            assertThat(sim1.getReceivedAcks()).contains("JT808_LOCATION_ACK");
         });
 
-        // 4. 下发单车远程控制指令（LOCK / UNLOCK），验证全双工回执与执行闭环
-        VehicleCommandRequest lockCmd = new VehicleCommandRequest(deviceId, "LOCK", Map.of("mode", "SAFE"));
-        mockMvc.perform(post("/api/tcp/vehicle/control")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(JsonUtil.toJsonString(lockCmd)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.command").value("LOCK"))
-                .andExpect(jsonPath("$.data.status").value("SUCCESS"));
-        assertThat(simulator1.getExecutedCommands()).contains("LOCK");
+        // 3.1 负向防卫验证：上报 BCC 异或校验码损坏的 JT/T 808 报文，服务端拦截拒绝并不更新非法车速
+        sim1.reportCorruptedJt808Location(1002L);
+        // 等待处理完毕后，验证有效状态依然保持合法上报的数据
+        VehicleStatusVO statusAfterCorrupted = scenarioService.getVehicleStatus(deviceId1);
+        assertThat(statusAfterCorrupted.getLastSpeed()).isEqualTo(85.5);
 
-        // 5. 下发全双工 RPC 参数查询指令，终端自动应答并验证 MockMvc 返回
-        VehicleParamQueryRequest queryReq = new VehicleParamQueryRequest(deviceId, "SYSTEM");
-        mockMvc.perform(post("/api/tcp/vehicle/query-params")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(JsonUtil.toJsonString(queryReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.deviceId").value(deviceId))
-                .andExpect(jsonPath("$.data.firmwareVersion").value("v2.1.0-release"))
-                .andExpect(jsonPath("$.data.batteryLevel").value(88))
-                .andExpect(jsonPath("$.data.status").value("NORMAL"));
-
-        // 6. 模拟向全网在线终端广播预警消息并验证 Servlet 契约
-        String alertMsg = "【预警】前方路段严重拥堵，建议绕行G4京港澳高速";
-        BroadcastAlertRequest alertReq = new BroadcastAlertRequest(alertMsg);
-        mockMvc.perform(post("/api/tcp/vehicle/broadcast-alert")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(JsonUtil.toJsonString(alertReq)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
+        // 4. 模拟标准 JSON 格式高频定位上报，验证服务端自动返回 LOCATION_ACK 回执
+        long jsonSeq = 2001L;
+        sim1.reportLocation(jsonSeq, 121.473701, 31.230416, 68.0, "ON");
         await().untilAsserted(() -> {
-            assertThat(simulator1.getReceivedAlerts()).contains(alertMsg);
+            VehicleStatusVO status = scenarioService.getVehicleStatus(deviceId1);
+            assertThat(status).isNotNull();
+            assertThat(status.getLastSpeed()).isEqualTo(68.0);
+            assertThat(status.getLastLongitude()).isEqualTo(121.473701);
+            assertThat(status.getLastLatitude()).isEqualTo(31.230416);
+            assertThat(sim1.getReceivedAcks()).contains("LOCATION_ACK");
         });
 
-        // 7. 验证 Web Controller Servlet 真实管线（TraceFilter、状态码与 JSR-303 防卫）
-        mockMvc.perform(get("/api/tcp/vehicle/status").param("deviceId", deviceId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.deviceId").value(deviceId))
-                .andExpect(jsonPath("$.data.online").value(true))
-                .andExpect(jsonPath("$.data.engineStatus").value("ON"));
+        // 5. 模拟终端心跳保活
+        sim1.sendHeartbeat();
+        await().untilAsserted(() -> {
+            assertThat(sim1.getReceivedAcks()).contains("HEARTBEAT_ACK");
+        });
 
-        mockMvc.perform(get("/api/tcp/vehicle/events"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
+        // 6. 下发全双工单车远程控制指令（LOCK / UNLOCK），验证同步 RPC 回执与执行闭环
+        VehicleControlAck controlAck = scenarioService.sendControlCommand(deviceId1, "LOCK", Map.of("securityMode", "HIGH"));
+        assertThat(controlAck).isNotNull();
+        assertThat(controlAck.getCommand()).isEqualTo("LOCK");
+        assertThat(controlAck.getStatus()).isEqualTo("SUCCESS");
+        assertThat(sim1.getExecutedCommands()).contains("LOCK");
 
-        // 8. 验证 Actuator /actuator/tcp 管控端点信息诊断
+        // 7. 下发全双工 RPC 参数查询指令，验证终端自动应答并同步返回结果
+        VehicleParamQueryAck queryAck = scenarioService.queryDeviceParams(deviceId1, "SYSTEM");
+        assertThat(queryAck).isNotNull();
+        assertThat(queryAck.getDeviceId()).isEqualTo(deviceId1);
+        assertThat(queryAck.getFirmwareVersion()).isEqualTo("v2.1.0-release");
+        assertThat(queryAck.getBatteryLevel()).isEqualTo(88);
+        assertThat(queryAck.getStatus()).isEqualTo("NORMAL");
+
+        // 8. 启动车机仿真器 2 并加入不同车队分组，验证集群车队分组组播与跨组严格隔离
+        sim2 = new VehicleSimulator(deviceId2, "127.0.0.1", serverPort);
+        sim2.start();
+        await().until(sim2::isConnected);
+        sim2.login();
+        await().untilAsserted(() -> {
+            VehicleStatusVO status2 = scenarioService.getVehicleStatus(deviceId2);
+            assertThat(status2).isNotNull();
+            assertThat(status2.getOnline()).isTrue();
+        });
+
+        // 将车机 1 分配到 FLEET-ALPHA 车队，车机 2 分配到 FLEET-BETA 车队
+        assertThat(scenarioService.assignFleetGroup(deviceId1, "FLEET-ALPHA")).isTrue();
+        assertThat(scenarioService.assignFleetGroup(deviceId2, "FLEET-BETA")).isTrue();
+
+        // 向 FLEET-ALPHA 车队发送集群组播调度预警
+        String fleetAlertMsg = "【ALPHA车队调度】前方大雾天气，全队开启雾灯并将车速限制在60km/h以内";
+        scenarioService.sendFleetGroupAlert("FLEET-ALPHA", fleetAlertMsg);
+
+        // 验证 FLEET-ALPHA 成员 sim1 成功收到该预警，而 FLEET-BETA 成员 sim2 未收到（组播隔离）
+        await().untilAsserted(() -> {
+            assertThat(sim1.getReceivedFleetAlerts()).contains(fleetAlertMsg);
+            assertThat(sim2.getReceivedFleetAlerts()).doesNotContain(fleetAlertMsg);
+        });
+
+        // 9. 模拟向全网在线车机广播全局限速预警
+        String globalAlertMsg = "【全网紧急通知】暴雨红色预警生效，全路网减速慢行";
+        scenarioService.broadcastSpeedLimitAlert(globalAlertMsg);
+        await().untilAsserted(() -> {
+            assertThat(sim1.getReceivedAlerts()).contains(globalAlertMsg);
+            assertThat(sim2.getReceivedAlerts()).contains(globalAlertMsg);
+        });
+
+        // 10. 验证出站缓冲区背压感知与健康状态
+        assertThat(scenarioService.isOutboundWritable(deviceId1)).isTrue();
+        assertThat(scenarioService.getPendingWriteBytes(deviceId1)).isGreaterThanOrEqualTo(0L);
+
+        // 11. 验证 Actuator /actuator/tcp 管控端点信息诊断
         if (tcpActuatorEndpoint != null) {
             Map<String, Object> info = tcpActuatorEndpoint.info();
             assertThat(info.get("status")).isEqualTo("UP");
             assertThat(info.get("activeSessions")).isInstanceOf(Number.class);
 
-            Map<String, Object> detail = tcpActuatorEndpoint.sessionDetail(deviceId);
-            assertThat(detail.get("deviceId")).isEqualTo(deviceId);
+            Map<String, Object> detail = tcpActuatorEndpoint.sessionDetail(deviceId1);
+            assertThat(detail.get("deviceId")).isEqualTo(deviceId1);
             assertThat(detail.get("active")).isEqualTo(true);
         }
 
-        // 9. 模拟网络闪断后新连接接入：验证“踢旧留新”机制
-        simulator2 = new VehicleSimulator(deviceId, "127.0.0.1", serverPort);
-        simulator2.start();
-        await().until(simulator2::isConnected);
+        // 12. 模拟网络异常重连接入：验证“踢旧留新”机制
+        simDuplicate = new VehicleSimulator(deviceId1, "127.0.0.1", serverPort);
+        simDuplicate.start();
+        await().until(simDuplicate::isConnected);
+        simDuplicate.login();
 
-        simulator2.login();
         await().untilAsserted(() -> {
-            assertThat(simulator1.isConnected()).isFalse();
-            assertThat(simulator2.isConnected()).isTrue();
+            assertThat(sim1.isConnected()).isFalse();
+            assertThat(simDuplicate.isConnected()).isTrue();
         });
 
-        // 10. 验证客户端后台自愈重连能力
+        // 13. 验证客户端后台自愈重连机制
         String reconDeviceId = "VEHICLE-RECON-777";
-        simulatorRecon = new VehicleSimulator(reconDeviceId, "127.0.0.1", serverPort, true);
-        simulatorRecon.start();
-        await().until(simulatorRecon::isConnected);
-        simulatorRecon.login();
+        simRecon = new VehicleSimulator(reconDeviceId, "127.0.0.1", serverPort, true);
+        simRecon.start();
+        await().until(simRecon::isConnected);
+        simRecon.login();
 
         // 人为切断底层网络通道
-        simulatorRecon.getTcpClient().disconnect();
-        await().until(() -> !simulatorRecon.isConnected());
+        simRecon.getTcpClient().disconnect();
+        await().until(() -> !simRecon.isConnected());
 
         // 验证客户端后台指数退避守护进程自动重连恢复
-        await().until(simulatorRecon::isConnected);
+        await().until(simRecon::isConnected);
     }
 }

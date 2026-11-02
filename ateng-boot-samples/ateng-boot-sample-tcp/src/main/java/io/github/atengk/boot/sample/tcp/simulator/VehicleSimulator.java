@@ -1,7 +1,11 @@
 package io.github.atengk.boot.sample.tcp.simulator;
 
 import io.github.atengk.boot.core.util.JsonUtil;
-import io.github.atengk.boot.sample.tcp.model.*;
+import io.github.atengk.boot.sample.tcp.codec.Jt808CompositeFrameCodec;
+import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
+import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
+import io.github.atengk.boot.sample.tcp.model.VehicleParamQuery;
+import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
 import io.github.atengk.boot.tcp.client.TcpClient;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
@@ -23,7 +27,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 车载长连接终端仿真模拟器
  * <p>
- * 模拟车联网实际车机终端硬件，支持登录注册、定位报文上报、全双工远程控制与 RPC 参数查询自动应答、广播预警监听与断线自愈重连。
+ * 模拟车联网实际车机终端硬件，支持登录注册、JSON与JT/T 808国标定位报文上报、心跳保活、
+ * 全双工远程控制与 RPC 参数查询自动应答、车队分组组播预警与全网广播监听、以及断线自愈重连。
  * </p>
  *
  * @author Ateng
@@ -39,6 +44,7 @@ public class VehicleSimulator {
     private final int port;
     private final boolean enableReconnect;
     private final List<String> receivedAlerts = new CopyOnWriteArrayList<>();
+    private final List<String> receivedFleetAlerts = new CopyOnWriteArrayList<>();
     private final List<String> executedCommands = new CopyOnWriteArrayList<>();
     private final List<String> receivedAcks = new CopyOnWriteArrayList<>();
     private final AtomicBoolean autoReplyParamQuery = new AtomicBoolean(true);
@@ -123,7 +129,20 @@ public class VehicleSimulator {
     }
 
     /**
-     * 上报定位遥测数据包
+     * 发送心跳保活包
+     */
+    public void sendHeartbeat() {
+        Map<String, Object> payload = Map.of(
+                "command", "HEARTBEAT",
+                "deviceId", deviceId,
+                "timestamp", System.currentTimeMillis()
+        );
+        sendPacket(TcpPacket.ofJson("HEARTBEAT", payload));
+        log.info("车机终端模拟器已发送心跳保活: deviceId={}", deviceId);
+    }
+
+    /**
+     * 上报定位遥测数据包 (JSON 格式)
      *
      * @param report 定位上报实体
      */
@@ -141,12 +160,12 @@ public class VehicleSimulator {
                 .payload(TcpPayload.fromJson(report))
                 .build();
         sendPacket(packet);
-        log.info("车机终端模拟器已上报定位: deviceId={}, seq={}, speed={}, engine={}",
+        log.info("车机终端模拟器已上报定位 (JSON): deviceId={}, seq={}, speed={}, engine={}",
                 deviceId, report.getSeq(), report.getSpeed(), report.getEngineStatus());
     }
 
     /**
-     * 上报定位遥测快捷方法
+     * 上报定位遥测快捷方法 (JSON 格式)
      *
      * @param seq          流水号
      * @param longitude    经度
@@ -169,6 +188,48 @@ public class VehicleSimulator {
 
     public void reportLocation(long seq, double longitude, double latitude, double speed) {
         reportLocation(seq, longitude, latitude, speed, "ON");
+    }
+
+    /**
+     * 上报交通部 JT/T 808 国标风格复合定位报文（含 0x7E 分隔符、0x7D 转义还原与 BCC 校验码）
+     *
+     * @param seq          流水号
+     * @param longitude    经度
+     * @param latitude     纬度
+     * @param speed        车速
+     * @param engineStatus 发动机状态
+     */
+    public void reportJt808Location(long seq, double longitude, double latitude, double speed, String engineStatus) {
+        byte[] frame = Jt808CompositeFrameCodec.encodeLocationReport(deviceId, seq, longitude, latitude, speed, engineStatus);
+        TcpPacket packet = TcpPacket.builder()
+                .command("JT808_LOCATION")
+                .deviceId(deviceId)
+                .payload(TcpPayload.of(frame))
+                .build();
+        sendPacket(packet);
+        log.info("车机终端模拟器已上报 JT/T 808 国标定位: deviceId={}, seq={}, speed={}, frameBytes={}",
+                deviceId, seq, speed, frame.length);
+    }
+
+    public void reportJt808Location(long seq, double longitude, double latitude, double speed) {
+        reportJt808Location(seq, longitude, latitude, speed, "ON");
+    }
+
+    /**
+     * 模拟上报 BCC 校验码被篡改损坏的 JT/T 808 报文（用于负向防卫验证）
+     *
+     * @param seq 流水号
+     */
+    public void reportCorruptedJt808Location(long seq) {
+        byte[] frame = Jt808CompositeFrameCodec.encodeLocationReport(deviceId, seq, 116.4, 39.9, 60.0, "ON");
+        frame[frame.length - 2] = (byte) (frame[frame.length - 2] ^ 0xFF);
+        TcpPacket packet = TcpPacket.builder()
+                .command("JT808_LOCATION")
+                .deviceId(deviceId)
+                .payload(TcpPayload.of(frame))
+                .build();
+        sendPacket(packet);
+        log.info("车机终端模拟器已发送 BCC 损坏的 JT/T 808 报文: deviceId={}, seq={}", deviceId, seq);
     }
 
     private void handleInboundPacket(Channel channel, TcpPacket packet) {
@@ -231,27 +292,45 @@ public class VehicleSimulator {
             TcpPacket ackPacket = TcpPacket.of("PARAM_QUERY_ACK", reqId, TcpPayload.fromJson(ack));
             channel.writeAndFlush(ackPacket);
             log.info("车机终端模拟器已自动应答 RPC 参数查询: deviceId={}, reqId={}", deviceId, reqId);
+        } else if ("FLEET_ALERT".equalsIgnoreCase(command)) {
+            // 3. 接收车队分组集群组播预警
+            String alert = extractMessage(packet.getPayload());
+            receivedFleetAlerts.add(alert);
+            receivedAlerts.add(alert);
+            log.info("车机终端模拟器收到车队分组集群预警: deviceId={}, alert={}", deviceId, alert);
         } else if ("ALERT_BROADCAST".equalsIgnoreCase(command)) {
-            // 3. 接收全网预警广播
-            String alert = packet.getPayload() != null ? packet.getPayload().asString() : "";
-            if (alert != null && alert.trim().startsWith("{")) {
-                try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> map = JsonUtil.parseObject(alert, Map.class);
-                    if (map != null && map.get("message") != null) {
-                        alert = map.get("message").toString();
-                    }
-                } catch (Exception ex) {
-                    log.warn("解析广播预警报文异常: {}", ex.getMessage());
-                }
-            }
+            // 4. 接收全网预警广播
+            String alert = extractMessage(packet.getPayload());
             receivedAlerts.add(alert);
             log.info("车机终端模拟器收到全网广播预警: deviceId={}, alert={}", deviceId, alert);
-        } else if ("LOCATION_ACK".equalsIgnoreCase(command)) {
-            // 4. 接收定位上报的服务器自动 ACK 回执
-            receivedAcks.add("LOCATION_ACK");
-            log.info("车机终端模拟器收到定位 ACK 回执: deviceId={}", deviceId);
+        } else if ("LOCATION_ACK".equalsIgnoreCase(command) || "JT808_LOCATION_ACK".equalsIgnoreCase(command)) {
+            // 5. 接收定位上报的服务器自动 ACK 回执
+            receivedAcks.add(command);
+            log.info("车机终端模拟器收到定位 ACK 回执: deviceId={}, cmd={}", deviceId, command);
+        } else if ("HEARTBEAT_ACK".equalsIgnoreCase(command)) {
+            // 6. 接收心跳 ACK 回执
+            receivedAcks.add("HEARTBEAT_ACK");
+            log.info("车机终端模拟器收到心跳 ACK 回执: deviceId={}", deviceId);
         }
+    }
+
+    private String extractMessage(TcpPayload payload) {
+        if (payload == null) {
+            return "";
+        }
+        String text = payload.asString();
+        if (text != null && text.trim().startsWith("{")) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> map = JsonUtil.parseObject(text, Map.class);
+                if (map != null && map.get("message") != null) {
+                    return map.get("message").toString();
+                }
+            } catch (Exception ex) {
+                log.warn("解析预警报文载荷异常: {}", ex.getMessage());
+            }
+        }
+        return text != null ? text : "";
     }
 
     private void sendPacket(TcpPacket packet) {
@@ -268,6 +347,10 @@ public class VehicleSimulator {
 
     public List<String> getReceivedAlerts() {
         return Collections.unmodifiableList(receivedAlerts);
+    }
+
+    public List<String> getReceivedFleetAlerts() {
+        return Collections.unmodifiableList(receivedFleetAlerts);
     }
 
     public List<String> getExecutedCommands() {

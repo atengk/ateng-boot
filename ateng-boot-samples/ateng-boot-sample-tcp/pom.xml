@@ -17,16 +17,6 @@
     <description>ateng-boot TCP 工业物联网与车联网双模长连接通信自验样例（车机定位上报、声明式@TcpListener、全双工同步RPC、踢旧留新、多端口与TLS通信、Actuator探针与Micrometer指标暴露）</description>
 
     <dependencies>
-        <!-- Web 契约层依赖 (提供体验 Controller 接口与 HTTP 体验) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
-        </dependency>
-
         <!-- TCP 核心 Starter -->
         <dependency>
             <groupId>io.github.atengk</groupId>

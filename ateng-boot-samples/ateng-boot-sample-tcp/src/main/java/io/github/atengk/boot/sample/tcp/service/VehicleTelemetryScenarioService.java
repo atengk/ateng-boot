@@ -1,12 +1,20 @@
 package io.github.atengk.boot.sample.tcp.service;
 
 import io.github.atengk.boot.core.util.IdUtil;
-import io.github.atengk.boot.sample.tcp.model.*;
+import io.github.atengk.boot.sample.tcp.model.LocationReportPacket;
+import io.github.atengk.boot.sample.tcp.model.VehicleControlAck;
+import io.github.atengk.boot.sample.tcp.model.VehicleParamQuery;
+import io.github.atengk.boot.sample.tcp.model.VehicleParamQueryAck;
+import io.github.atengk.boot.sample.tcp.model.VehicleStatusVO;
+import io.github.atengk.boot.tcp.event.TcpChannelWritabilityChangedEvent;
 import io.github.atengk.boot.tcp.event.TcpDeviceBoundEvent;
+import io.github.atengk.boot.tcp.event.TcpIpBlockedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionClosedEvent;
 import io.github.atengk.boot.tcp.event.TcpSessionConnectedEvent;
 import io.github.atengk.boot.tcp.model.TcpPacket;
 import io.github.atengk.boot.tcp.model.TcpPayload;
+import io.github.atengk.boot.tcp.session.TcpSession;
+import io.github.atengk.boot.tcp.session.TcpSessionManager;
 import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,33 +22,40 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.*;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * 车载长连接业务协同与管控服务
+ * 车联网车载长连接全业务场景协同与管控服务
  * <p>
- * 遵循严格无状态与并发纪律，内部采用线程安全领域状态模型封装，对外提供纯净防御性 VO 视图。
+ * 纯净自洽的业务场景服务组件，遵循工业级代码成熟度规范，实现车机身份接入、高频遥测摄取、
+ * 全双工 RPC 远程控制与参数查询、车队集群分组组播、出站背压流控感知以及全生命周期事件闭环。
  * </p>
  *
  * @author Ateng
- * @since 2026-10-26
+ * @since 2026-11-02
  */
 @Service
-public class VehicleControlService {
+public class VehicleTelemetryScenarioService {
 
-    private static final Logger log = LoggerFactory.getLogger(VehicleControlService.class);
-    private static final int MAX_EVENT_LOG_SIZE = 200;
+    private static final Logger log = LoggerFactory.getLogger(VehicleTelemetryScenarioService.class);
+    private static final int MAX_EVENT_LOG_SIZE = 300;
 
     private final TcpServerTemplate tcpServerTemplate;
+    private final TcpSessionManager sessionManager;
 
     private final ConcurrentMap<String, VehicleState> vehicleStore = new ConcurrentHashMap<>();
     private final List<String> eventLogs = new CopyOnWriteArrayList<>();
 
-    public VehicleControlService(TcpServerTemplate tcpServerTemplate) {
+    public VehicleTelemetryScenarioService(TcpServerTemplate tcpServerTemplate,
+                                          TcpSessionManager sessionManager) {
         this.tcpServerTemplate = tcpServerTemplate;
+        this.sessionManager = sessionManager;
     }
 
     /**
@@ -82,7 +97,7 @@ public class VehicleControlService {
     }
 
     /**
-     * 向指定车载终端下发全双工控制指令（如 LOCK / UNLOCK / SPEED_LIMIT / REBOOT）
+     * 向指定车载终端下发全双工远程控制指令（如 LOCK / UNLOCK / SPEED_LIMIT / REBOOT）
      *
      * @param deviceId 目标设备编号
      * @param command  控制指令码
@@ -133,6 +148,45 @@ public class VehicleControlService {
     }
 
     /**
+     * 将指定车机当前活跃会话加入车队分组（Fleet Group）
+     *
+     * @param deviceId 车机硬件标识
+     * @param group    车队分组标识（如 FLEET-ALPHA）
+     * @return 是否成功加入
+     */
+    public boolean assignFleetGroup(String deviceId, String group) {
+        if (deviceId == null || group == null) {
+            return false;
+        }
+        TcpSession session = sessionManager.getSessionByDeviceId(deviceId);
+        if (session != null) {
+            sessionManager.addToGroup(group, session.getSessionId());
+            log.info("车机已加入车队分组: deviceId={}, sessionId={}, group={}", deviceId, session.getSessionId(), group);
+            return true;
+        }
+        log.warn("车机当前不在线，无法加入分组: deviceId={}, group={}", deviceId, group);
+        return false;
+    }
+
+    /**
+     * 向指定车队分组进行集群多节点跨机组播（Cluster Fleet Group Multicast）
+     *
+     * @param group        目标车队分组标识
+     * @param alertMessage 调度预警消息
+     */
+    public void sendFleetGroupAlert(String group, String alertMessage) {
+        Map<String, Object> payload = Map.of(
+                "command", "FLEET_ALERT",
+                "group", group,
+                "message", alertMessage
+        );
+        TcpPacket packet = TcpPacket.ofJson("FLEET_ALERT", payload);
+        tcpServerTemplate.sendGroupToCluster(group, packet);
+        recordEventLog("GROUP_ALERT_DISPATCHED: group=" + group + ", msg=" + alertMessage);
+        log.info("车队分组预警已跨节点集群组播: group={}, msg={}", group, alertMessage);
+    }
+
+    /**
      * 向全网在线车机广播限速预警通知
      *
      * @param alertMessage 预警信息
@@ -144,7 +198,30 @@ public class VehicleControlService {
         );
         TcpPacket packet = TcpPacket.ofJson("ALERT_BROADCAST", alertMap);
         tcpServerTemplate.broadcast(packet);
+        recordEventLog("BROADCAST_ALERT_DISPATCHED: msg=" + alertMessage);
         log.info("全网广播预警已下发: msg={}", alertMessage);
+    }
+
+    /**
+     * 探测指定车机长连接出站通道背压可写状态
+     *
+     * @param deviceId 设备编号
+     * @return 是否处于健康可写状态（若离线返回 false）
+     */
+    public boolean isOutboundWritable(String deviceId) {
+        TcpSession session = sessionManager.getSessionByDeviceId(deviceId);
+        return session != null && session.isWritable();
+    }
+
+    /**
+     * 获取指定车机长连接出站待发送缓冲字节数
+     *
+     * @param deviceId 设备编号
+     * @return 待发送字节数（若离线返回 -1）
+     */
+    public long getPendingWriteBytes(String deviceId) {
+        TcpSession session = sessionManager.getSessionByDeviceId(deviceId);
+        return session != null ? session.getPendingWriteBytes() : -1L;
     }
 
     /**
@@ -163,7 +240,7 @@ public class VehicleControlService {
         }
     }
 
-    // ==================== 领域事件感知 ====================
+    // ==================== 领域与网络治理事件感知 ====================
 
     @EventListener
     public void onSessionConnected(TcpSessionConnectedEvent event) {
@@ -198,6 +275,25 @@ public class VehicleControlService {
             }
         }
         log.info("监听到 TCP 会话关闭事件: {}", logEntry);
+    }
+
+    @EventListener
+    public void onWritabilityChanged(TcpChannelWritabilityChangedEvent event) {
+        long pending = event.getSession() != null ? event.getSession().getPendingWriteBytes() : -1L;
+        String logEntry = String.format("WRITABILITY_CHANGED: sessionId=%s, writable=%s, pending=%d",
+                event.getSession() != null ? event.getSession().getSessionId() : "unknown",
+                event.isWritable(),
+                pending);
+        recordEventLog(logEntry);
+        log.info("监听到 TCP 通道可写状态变化事件: {}", logEntry);
+    }
+
+    @EventListener
+    public void onIpBlocked(TcpIpBlockedEvent event) {
+        String logEntry = String.format("IP_BLOCKED: remote=%s, rule=%s",
+                event.getRemoteAddress(), event.getRuleDetail());
+        recordEventLog(logEntry);
+        log.warn("监听到 TCP 网络防火墙拦截事件: {}", logEntry);
     }
 
     /**
