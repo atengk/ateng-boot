@@ -17,6 +17,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,23 +57,35 @@ class ZombieInstanceCleanupSchedulerTest {
     }
 
     private Instance createInstance(String idStr, StatusInfo statusInfo) {
+        return createInstance(idStr, statusInfo, Instant.now(), true);
+    }
+
+    private Instance createInstance(String idStr, StatusInfo statusInfo, Instant statusTimestamp) {
+        return createInstance(idStr, statusInfo, statusTimestamp, true);
+    }
+
+    private Instance createInstance(String idStr, StatusInfo statusInfo, Instant statusTimestamp, boolean registered) {
+        Instance instance = org.mockito.Mockito.mock(Instance.class);
+        InstanceId instanceId = InstanceId.of(idStr);
         Registration registration = Registration.builder()
                 .name("test-app-" + idStr)
                 .healthUrl("http://127.0.0.1:8080/actuator/health")
                 .managementUrl("http://127.0.0.1:8080/actuator")
                 .serviceUrl("http://127.0.0.1:8080/")
                 .build();
-        return Instance.create(InstanceId.of(idStr))
-                .register(registration)
-                .withStatusInfo(statusInfo);
+        org.mockito.Mockito.lenient().when(instance.getId()).thenReturn(instanceId);
+        org.mockito.Mockito.lenient().when(instance.isRegistered()).thenReturn(registered);
+        org.mockito.Mockito.lenient().when(instance.getStatusInfo()).thenReturn(statusInfo);
+        org.mockito.Mockito.lenient().when(instance.getStatusTimestamp()).thenReturn(statusTimestamp);
+        org.mockito.Mockito.lenient().when(instance.getRegistration()).thenReturn(registration);
+        return instance;
     }
 
     @Test
     @DisplayName("超期且处于 OFFLINE 状态的实例应当被成功驱逐注销")
-    void shouldEvictExpiredOfflineInstance() throws InterruptedException {
-        Instance zombieInstance = createInstance("inst-offline", StatusInfo.ofOffline());
-        // 等待超过 50ms 阈值使其实际超期
-        Thread.sleep(70);
+    void shouldEvictExpiredOfflineInstance() {
+        // 构造状态更新时间为 100ms 之前的离线实例（阈值为 50ms），消除物理 Thread.sleep 盲等
+        Instance zombieInstance = createInstance("inst-offline", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)));
 
         when(repository.findAll()).thenReturn(Flux.just(zombieInstance));
         when(registry.deregister(InstanceId.of("inst-offline"))).thenReturn(Mono.just(InstanceId.of("inst-offline")));
@@ -85,9 +98,8 @@ class ZombieInstanceCleanupSchedulerTest {
 
     @Test
     @DisplayName("超期且处于 UNKNOWN 状态的实例应当被成功驱逐注销")
-    void shouldEvictExpiredUnknownInstance() throws InterruptedException {
-        Instance zombieInstance = createInstance("inst-unknown", StatusInfo.ofUnknown());
-        Thread.sleep(70);
+    void shouldEvictExpiredUnknownInstance() {
+        Instance zombieInstance = createInstance("inst-unknown", StatusInfo.ofUnknown(), Instant.now().minus(Duration.ofMillis(100)));
 
         when(repository.findAll()).thenReturn(Flux.just(zombieInstance));
         when(registry.deregister(InstanceId.of("inst-unknown"))).thenReturn(Mono.just(InstanceId.of("inst-unknown")));
@@ -103,7 +115,7 @@ class ZombieInstanceCleanupSchedulerTest {
     void shouldNotEvictNonExpiredOfflineInstance() {
         // 设置超期阈值为 1 小时，刚创建的实例绝不会超期
         properties.getCleanup().setZombieThreshold(Duration.ofHours(1));
-        Instance recentOfflineInstance = createInstance("inst-recent", StatusInfo.ofOffline());
+        Instance recentOfflineInstance = createInstance("inst-recent", StatusInfo.ofOffline(), Instant.now());
 
         when(repository.findAll()).thenReturn(Flux.just(recentOfflineInstance));
 
@@ -115,9 +127,8 @@ class ZombieInstanceCleanupSchedulerTest {
 
     @Test
     @DisplayName("处于健康 UP 状态的实例即使时间超期也绝不应被驱逐注销")
-    void shouldNotEvictExpiredUpInstance() throws InterruptedException {
-        Instance upInstance = createInstance("inst-up", StatusInfo.ofUp());
-        Thread.sleep(70);
+    void shouldNotEvictExpiredUpInstance() {
+        Instance upInstance = createInstance("inst-up", StatusInfo.ofUp(), Instant.now().minus(Duration.ofMillis(100)));
 
         when(repository.findAll()).thenReturn(Flux.just(upInstance));
 
@@ -129,9 +140,8 @@ class ZombieInstanceCleanupSchedulerTest {
 
     @Test
     @DisplayName("未注册或已注销的实例应当被过滤忽略")
-    void shouldIgnoreUnregisteredInstance() throws InterruptedException {
-        Instance deregisteredInstance = createInstance("inst-deregistered", StatusInfo.ofOffline()).deregister();
-        Thread.sleep(70);
+    void shouldIgnoreUnregisteredInstance() {
+        Instance deregisteredInstance = createInstance("inst-deregistered", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)), false);
 
         when(repository.findAll()).thenReturn(Flux.just(deregisteredInstance));
 
@@ -143,13 +153,12 @@ class ZombieInstanceCleanupSchedulerTest {
 
     @Test
     @DisplayName("当 InstanceRegistry 为空时能够降级通过 InstanceRepository computeIfPresent 触发注销")
-    void shouldFallbackToRepositoryWhenRegistryIsNull() throws InterruptedException {
+    void shouldFallbackToRepositoryWhenRegistryIsNull() {
         ZombieInstanceCleanupScheduler fallbackScheduler = new ZombieInstanceCleanupScheduler(repository, null, properties);
-        Instance zombieInstance = createInstance("inst-fallback", StatusInfo.ofOffline());
-        Thread.sleep(70);
+        Instance zombieInstance = createInstance("inst-fallback", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)));
 
         when(repository.findAll()).thenReturn(Flux.just(zombieInstance));
-        when(repository.computeIfPresent(any(), any())).thenReturn(Mono.just(zombieInstance.deregister()));
+        when(repository.computeIfPresent(any(), any())).thenReturn(Mono.just(zombieInstance));
 
         int evicted = fallbackScheduler.cleanZombies();
 
@@ -169,10 +178,9 @@ class ZombieInstanceCleanupSchedulerTest {
 
     @Test
     @DisplayName("单实例驱逐异常时能够继续处理后续候选实例")
-    void shouldContinueWhenSingleInstanceEvictionFails() throws InterruptedException {
-        Instance failInstance = createInstance("inst-fail", StatusInfo.ofOffline());
-        Instance successInstance = createInstance("inst-success", StatusInfo.ofOffline());
-        Thread.sleep(70);
+    void shouldContinueWhenSingleInstanceEvictionFails() {
+        Instance failInstance = createInstance("inst-fail", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)));
+        Instance successInstance = createInstance("inst-success", StatusInfo.ofOffline(), Instant.now().minus(Duration.ofMillis(100)));
 
         when(repository.findAll()).thenReturn(Flux.just(failInstance, successInstance));
         when(registry.deregister(InstanceId.of("inst-fail"))).thenReturn(Mono.error(new RuntimeException("Eviction error")));

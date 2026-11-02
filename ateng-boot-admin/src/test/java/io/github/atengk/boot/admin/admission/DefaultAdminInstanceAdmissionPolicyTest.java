@@ -172,4 +172,49 @@ class DefaultAdminInstanceAdmissionPolicyTest {
         AdminAdmissionResult result = policy.evaluate(null, request);
         assertThat(result.isAllowed()).isTrue();
     }
+
+    @Test
+    @DisplayName("畸形或非法格式 URL 触发解析异常并安全阻断")
+    void shouldRejectMalformedUrlSafely() {
+        AtengAdminServerProperties properties = createProperties();
+        DefaultAdminInstanceAdmissionPolicy policy = new DefaultAdminInstanceAdmissionPolicy(properties);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/instances");
+        request.addHeader(DefaultAdminInstanceAdmissionPolicy.CLIENT_SECRET_HEADER, VALID_SECRET);
+
+        InstanceRegistration malformedReg = InstanceRegistration.of(
+                "malformed-svc",
+                "http://[::invalid-ipv6]:8080/",
+                "http://127.0.0.1:8080/actuator",
+                "http://127.0.0.1:8080/actuator/health"
+        );
+        AdminAdmissionResult result = policy.evaluate(malformedReg, request);
+        assertThat(result.isRejected()).isTrue();
+        assertThat(result.getReason()).contains("URL forbidden by SSRF Guard Policy");
+    }
+
+    @Test
+    @DisplayName("InstanceRegistration.from 适配器空安全与全字段精确映射")
+    void shouldAdaptFromSbaRegistration() {
+        assertThat(InstanceRegistration.from(null)).isNull();
+
+        de.codecentric.boot.admin.server.domain.values.Registration sbaReg =
+                de.codecentric.boot.admin.server.domain.values.Registration.builder()
+                        .name("sba-adapted-svc")
+                        .serviceUrl("http://192.168.1.10:8080/")
+                        .managementUrl("http://192.168.1.10:8080/actuator")
+                        .healthUrl("http://192.168.1.10:8080/actuator/health")
+                        .source("http-api")
+                        .metadata(java.util.Map.of("region", "cn-hangzhou"))
+                        .build();
+
+        InstanceRegistration adapted = InstanceRegistration.from(sbaReg);
+        assertThat(adapted).isNotNull();
+        assertThat(adapted.getName()).isEqualTo("sba-adapted-svc");
+        assertThat(adapted.getServiceUrl()).isEqualTo("http://192.168.1.10:8080/");
+        assertThat(adapted.getManagementUrl()).isEqualTo("http://192.168.1.10:8080/actuator");
+        assertThat(adapted.getHealthUrl()).isEqualTo("http://192.168.1.10:8080/actuator/health");
+        assertThat(adapted.getSource()).isEqualTo("http-api");
+        assertThat(adapted.getMetadata()).containsEntry("region", "cn-hangzhou");
+    }
 }

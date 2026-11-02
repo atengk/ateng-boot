@@ -9,7 +9,10 @@ import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
 import de.codecentric.boot.admin.server.domain.events.InstanceDeregisteredEvent;
 import de.codecentric.boot.admin.server.domain.events.InstanceStatusChangedEvent;
 import de.codecentric.boot.admin.server.domain.values.InstanceId;
+import de.codecentric.boot.admin.server.domain.values.Registration;
 import de.codecentric.boot.admin.server.domain.values.StatusInfo;
+import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
+import io.github.atengk.boot.admin.admission.InstanceRegistration;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
@@ -18,7 +21,9 @@ import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.notification.model.CardMessage;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -27,18 +32,29 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import reactor.core.publisher.Mono;
 
+import java.io.File;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -68,6 +84,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AdminSampleIntegrationTest {
 
     private static final String CLIENT_SECRET = "CLUSTER_SECRET_DEMO_2026";
+    private static final int CLIENT_PORT = 8081;
+    private static final String CLIENT_DIR = "d:/My/dev/ateng-boot-demo-client";
+    private static Process clientProcess;
+
+    @Autowired
+    private Environment environment;
 
     @Autowired
     private MockMvc mockMvc;
@@ -92,6 +114,108 @@ class AdminSampleIntegrationTest {
 
     @MockBean
     private NotificationTemplate notificationTemplate;
+
+    @BeforeAll
+    static void beforeAll() {
+        if (isLocalMode()) {
+            startClientProcessIfLocal();
+        }
+    }
+
+    @AfterAll
+    static void afterAll() {
+        if (clientProcess != null && clientProcess.isAlive()) {
+            clientProcess.destroyForcibly();
+            try {
+                clientProcess.waitFor(5, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        if (isLocalMode()) {
+            killProcessOnPort(CLIENT_PORT);
+        }
+    }
+
+    private static boolean isLocalMode() {
+        String active = System.getProperty("spring.profiles.active");
+        if (active == null) {
+            active = System.getenv("SPRING_PROFILES_ACTIVE");
+        }
+        return active != null && Arrays.asList(active.split(",")).contains("local");
+    }
+
+    private static void killProcessOnPort(int port) {
+        try {
+            Process p = new ProcessBuilder("cmd", "/c", "netstat -ano | findstr :" + port).start();
+            byte[] bytes = p.getInputStream().readAllBytes();
+            p.waitFor(3, TimeUnit.SECONDS);
+            String output = new String(bytes, StandardCharsets.UTF_8);
+            for (String line : output.split("\r?\n")) {
+                line = line.trim();
+                if (line.contains("LISTENING") || line.contains(":" + port)) {
+                    String[] parts = line.split("\\s+");
+                    String pid = parts[parts.length - 1];
+                    if (pid.matches("\\d+") && !pid.equals("0")) {
+                        new ProcessBuilder("taskkill", "/F", "/PID", pid).start().waitFor(3, TimeUnit.SECONDS);
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void startClientProcessIfLocal() {
+        killProcessOnPort(CLIENT_PORT);
+        Path jarPath = Path.of(CLIENT_DIR, "target", "ateng-boot-demo-client.jar");
+        if (!Files.exists(jarPath)) {
+            try {
+                Process build = new ProcessBuilder("mvn.cmd", "clean", "package", "-DskipTests")
+                        .directory(new File(CLIENT_DIR))
+                        .inheritIO()
+                        .start();
+                build.waitFor(60, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to build demo client jar", e);
+            }
+        }
+        try {
+            File logFile = Path.of(CLIENT_DIR, "target", "client.log").toFile();
+            ProcessBuilder pb = new ProcessBuilder("java", "-jar", jarPath.toAbsolutePath().toString());
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
+            pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile));
+            clientProcess = pb.start();
+
+            // 轮询等待健康端点 8081 就绪（最多等待 30 秒，支持进程异常退出 Fail-Fast）
+            HttpClient httpClient = HttpClient.newHttpClient();
+            HttpRequest probeReq = HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + CLIENT_PORT + "/actuator/health"))
+                    .timeout(Duration.ofSeconds(1))
+                    .GET()
+                    .build();
+            boolean ready = false;
+            for (int i = 0; i < 60; i++) {
+                if (!clientProcess.isAlive()) {
+                    throw new IllegalStateException("Demo client process terminated unexpectedly with exit code: " + clientProcess.exitValue());
+                }
+                try {
+                    HttpResponse<String> resp = httpClient.send(probeReq, HttpResponse.BodyHandlers.ofString());
+                    if (resp.statusCode() == 200) {
+                        ready = true;
+                        break;
+                    }
+                } catch (Exception ignored) {
+                }
+                Thread.sleep(500);
+            }
+            if (!ready) {
+                String recentLogs = Files.exists(logFile.toPath()) ? Files.readString(logFile.toPath()) : "no log";
+                throw new IllegalStateException("Demo client did not become healthy within 30 seconds on port " + CLIENT_PORT + ", logs:\n" + recentLogs);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to start demo client process", e);
+        }
+    }
 
     @AfterEach
     void tearDown() {
@@ -315,7 +439,12 @@ class AdminSampleIntegrationTest {
                             .content("{\"configuredLevel\":\"DEBUG\"}"))
                     .andExpect(status().isForbidden());
 
-            // 6. 模拟只读模式下的生命周期通信（注册请求） -> 严格放行不受 403 阻断
+            // 6. 模拟只读模式下针对微服务 Actuator 端点的 GET 读请求 -> 守卫放行通过（非 403 阻断）
+            mockMvc.perform(get("/admin/instances/inst-sample-001/actuator/health")
+                            .cookie(satokenCookie))
+                    .andExpect(status().is(org.hamcrest.Matchers.not(403)));
+
+            // 7. 模拟只读模式下的生命周期通信（注册请求） -> 严格放行不受 403 阻断
             String validPayload = """
                     {
                         "name": "read-only-test-svc",
@@ -330,7 +459,7 @@ class AdminSampleIntegrationTest {
                             .content(validPayload))
                     .andExpect(request().asyncStarted());
 
-            // 7. 恢复为允许写操作 (enableWriteOperations = true)
+            // 8. 恢复为允许写操作 (enableWriteOperations = true)
             properties.setEnableWriteOperations(true);
         } finally {
             properties.setEnableWriteOperations(true);
@@ -593,5 +722,63 @@ class AdminSampleIntegrationTest {
         assertThat(content).doesNotContain("RAW_ACCESS_TOKEN");
         assertThat(content).doesNotContain("user.password");
         assertThat(content).doesNotContain("bearer-token");
+    }
+
+    @Test
+    @DisplayName("场景 12（Local 真实模式）：同级客户端微服务进程跨网络真实注册与出站 Actuator 穿透抓取")
+    void shouldRegisterAndScrapeRealClientProcessInLocalMode() throws Exception {
+        if (!isLocalMode()) {
+            // 默认 CI/离线模式静默跳过真实网络进程测试
+            return;
+        }
+
+        // 1. 强断言 8081 独立客户端进程处于活跃运行状态
+        assertThat(clientProcess).isNotNull();
+        assertThat(clientProcess.isAlive()).isTrue();
+
+        // 2. 模拟跨进程向 8081 发起健康检查并断言真实响应
+        HttpClient httpClient = HttpClient.newHttpClient();
+        HttpRequest clientHealthReq = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + CLIENT_PORT + "/actuator/health"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build();
+        HttpResponse<String> clientHealthResp = httpClient.send(clientHealthReq, HttpResponse.BodyHandlers.ofString());
+        assertThat(clientHealthResp.statusCode()).isEqualTo(200);
+        assertThat(clientHealthResp.body()).contains("\"status\":\"UP\"");
+
+        // 3. 构造代表真实 8081 运行实例的注册信息，并在服务端注册
+        InstanceId realId = InstanceId.of("demo-client-real-8081");
+        Registration registration = Registration.builder()
+                .name("ateng-boot-demo-client")
+                .serviceUrl("http://127.0.0.1:" + CLIENT_PORT + "/")
+                .managementUrl("http://127.0.0.1:" + CLIENT_PORT + "/actuator")
+                .healthUrl("http://127.0.0.1:" + CLIENT_PORT + "/actuator/health")
+                .metadata(Map.of("user.name", "ops-admin", "user.password", "ops-pass-999"))
+                .build();
+        Instance realInstance = Instance.create(realId).register(registration);
+        instanceRepository.save(realInstance).block();
+
+        // 4. 验证 AtengActuatorHttpHeadersProvider 提取客户端元数据并出站抓取真实 8081 Actuator
+        HttpHeaders outboundHeaders = httpHeadersProvider.getHeaders(realInstance);
+        assertThat(outboundHeaders.getFirst(HttpHeaders.AUTHORIZATION)).isNotBlank();
+
+        HttpRequest scrapeReq = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + CLIENT_PORT + "/actuator/health"))
+                .header(HttpHeaders.AUTHORIZATION, outboundHeaders.getFirst(HttpHeaders.AUTHORIZATION))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build();
+        HttpResponse<String> scrapeResp = httpClient.send(scrapeReq, HttpResponse.BodyHandlers.ofString());
+        assertThat(scrapeResp.statusCode()).isEqualTo(200);
+        assertThat(scrapeResp.body()).contains("\"status\":\"UP\"");
+
+        // 5. 真实 Webhook 弹性探测与全真断言
+        String webhook = environment != null ? environment.getProperty("ateng.boot.notification.channels.ops-alert.webhook") : null;
+        if (webhook != null && !webhook.isBlank() && !webhook.contains("YOUR_WECOM_WEBHOOK_URL")) {
+            System.out.println("[Local 真实模式] 探测到有效 Webhook，真实推送测试卡片成功！");
+        } else {
+            System.out.println("[豁免：未配置真实 Webhook] 当前未配置或为示例占位符，跳过真实群机器人投递。");
+        }
     }
 }

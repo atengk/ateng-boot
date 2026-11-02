@@ -112,6 +112,7 @@ public class DefaultAdminInstanceAdmissionPolicy implements AdminInstanceAdmissi
             }
             return true;
         } catch (Exception e) {
+            log.debug("[Admission Policy] URL 校验解析异常，判定为不安全: [{}]", urlStr, e);
             return false;
         }
     }

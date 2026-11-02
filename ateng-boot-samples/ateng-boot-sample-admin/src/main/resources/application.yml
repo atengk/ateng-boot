@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: ateng-boot-sample-admin
+  config:
+    import: "optional:classpath:application-local.yml"
   boot:
     admin:
       context-path: /admin

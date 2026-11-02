@@ -67,7 +67,7 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-admin
 
 ## 3. 端到端集成测试场景清单
 
-测试类 [AdminSampleIntegrationTest.java](./src/test/java/io/github/atengk/boot/sample/admin/AdminSampleIntegrationTest.java) 实现了 11 大端到端全场景实测覆盖：
+测试类 [AdminSampleIntegrationTest.java](./src/test/java/io/github/atengk/boot/sample/admin/AdminSampleIntegrationTest.java) 实现了 12 大端到端全场景实测覆盖（支持离线自洽与 Local 真实模式双模切换）：
 
 | 场景编号 | 场景名称 | 测试核心行为与验证点 |
 | :--- | :--- | :--- |
@@ -77,8 +77,22 @@ mvn spring-boot:run -pl ateng-boot-samples/ateng-boot-sample-admin
 | **场景 4** | 双向安全握手穿透与 Token 映射 | 客户端携带 `X-Admin-Client-Secret` 注册成功，服务端出站自动提取 `actuator-token` 注入标头 |
 | **场景 5** | 在线动态修改日志级别 | 通过 Logback 接口在线将包日志级别动态调整为 `DEBUG` 并断言生效 |
 | **场景 6** | 优雅下线发版静默与告警防抖自愈 | 收到注销事件进入 60 秒发版静默缓存；故障状态进入 30 秒防抖队列；防抖期内自愈 UP 则撤销告警 |
-| **场景 7** | 控制台只读安全守卫与写操作拦截 | `enableWriteOperations=false` 时，拦截针对 Actuator 的 `POST`/`PUT`/`DELETE`/`PATCH` 请求返回 403 |
+| **场景 7** | 控制台只读安全守卫与写操作拦截 | `enableWriteOperations=false` 时，拦截针对 Actuator 的 `POST`/`PUT`/`DELETE`/`PATCH` 请求返回 403，放行 GET 读请求与生命周期注册 |
 | **场景 8** | 动态实例注册准入扩展点 SPI | 自定义 `AdminInstanceAdmissionPolicy` 审查服务名，非法服务名拒绝响应 403，合法服务放行 |
 | **场景 9** | Actuator 出站抓取多模态认证推导 | 自适应解析实例元数据中的 `user.name`/`user.password` 合成 `Basic` 标头，解析 `bearer-token` 合成 `Bearer` 标头 |
 | **场景 10** | 离线僵尸实例自动清理调度器 | 模拟超期处于 `OFFLINE` 状态的僵尸实例，调度器自动将其注销并断言其实际从持久层注销 |
 | **场景 11** | 告警规则名单过滤与探针富文本诊断 | 验证 `excluded-services` 静默、`included-services` 过滤、`notify-statuses` 状态过滤，以及生成的 `CardMessage` 包含探针错误根因并对密码脱敏 |
+| **场景 12** | Local 真实模式跨网络进程注册与抓取 | 激活 `local` Profile 时，受管拉起同级客户端工程 `ateng-boot-demo-client`（8081），验证真实跨网络注册、出站 Basic Auth 抓取穿透与 Webhook 探测 |
+
+---
+
+## 4. Local 真实模式联调指南
+
+如需在本地直连真实客户端微服务与群机器人 Webhook：
+1. **准备同级客户端微服务**：同级目录 `../ateng-boot-demo-client` 已内置极简微服务工程；
+2. **配置本地凭据**：复制 `src/main/resources/application-local.example.yml` 为 `application-local.yml` 并填入真实 Webhook（已被 `.gitignore` 忽略，零机密泄露风险）；
+3. **运行全真联调测试**：
+   ```bash
+   mvn test -pl ateng-boot-samples/ateng-boot-sample-admin "-Dspring.profiles.active=local" -T 1C -nsu -B
+   ```
+   测试套件将自动管理 8081 客户端子进程生命周期，完成真实网络调用并在测试完成后确定性销毁。

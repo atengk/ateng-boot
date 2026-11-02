@@ -57,7 +57,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
             this.taskScheduler = taskScheduler;
             this.internalTaskScheduler = false;
         } else {
-            this.taskScheduler = createDefaultTaskScheduler();
+            this.taskScheduler = null;
             this.internalTaskScheduler = true;
         }
     }
@@ -92,7 +92,10 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
             this.taskScheduler = createDefaultTaskScheduler();
         }
 
-        this.scheduledFuture = this.taskScheduler.scheduleWithFixedDelay(this::cleanZombies, interval);
+        // 首发调度优化：计算初始延迟（若周期小于 10 秒则以周期为准，否则 10 秒后执行首发清理，防御长周期下服务启动无即席扫描）
+        Duration initialDelay = interval.compareTo(Duration.ofSeconds(10)) < 0 ? interval : Duration.ofSeconds(10);
+        Instant startTime = Instant.now().plus(initialDelay);
+        this.scheduledFuture = this.taskScheduler.scheduleWithFixedDelay(this::cleanZombies, startTime, interval);
         this.running = true;
 
         Duration threshold = this.properties != null && this.properties.getCleanup() != null
@@ -112,6 +115,7 @@ public class ZombieInstanceCleanupScheduler implements SmartLifecycle {
         }
         if (this.taskScheduler != null && this.internalTaskScheduler) {
             this.taskScheduler.destroy();
+            this.taskScheduler = null;
         }
         this.running = false;
         log.info("ZombieInstanceCleanupScheduler stopped successfully.");

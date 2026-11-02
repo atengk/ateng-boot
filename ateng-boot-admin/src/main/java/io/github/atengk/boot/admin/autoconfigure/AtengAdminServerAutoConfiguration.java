@@ -124,8 +124,14 @@ public class AtengAdminServerAutoConfiguration {
     public ZombieInstanceCleanupScheduler zombieInstanceCleanupScheduler(
             InstanceRepository repository,
             ObjectProvider<InstanceRegistry> registryProvider,
+            ObjectProvider<ThreadPoolTaskScheduler> taskSchedulerProvider,
             AtengAdminServerProperties properties) {
-        return new ZombieInstanceCleanupScheduler(repository, registryProvider.getIfAvailable(), properties);
+        return new ZombieInstanceCleanupScheduler(
+                repository,
+                registryProvider.getIfAvailable(),
+                properties,
+                taskSchedulerProvider.getIfAvailable()
+        );
     }
 
     /**

@@ -232,10 +232,6 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
         }
     }
 
-    private void sendNotification(Instance instance, String title, String status) {
-        sendNotification(instance, title, status, instance != null ? instance.getStatusInfo() : null);
-    }
-
     private void sendNotification(Instance instance, String title, String status, StatusInfo statusInfo) {
         NotificationTemplate notifier = notificationTemplateProvider != null ? notificationTemplateProvider.getIfAvailable() : null;
         if (notifier == null) {
@@ -300,27 +296,21 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             return true;
         }
         List<String> excluded = properties.getAlert().getExcludedServices();
-        if (excluded != null && !excluded.isEmpty()) {
-            for (String pattern : excluded) {
-                if (matchServiceName(pattern, serviceName)) {
-                    return false;
-                }
-            }
+        if (matchesAnyPattern(excluded, serviceName)) {
+            return false;
         }
         List<String> included = properties.getAlert().getIncludedServices();
         if (included != null && !included.isEmpty()) {
-            boolean matched = false;
-            for (String pattern : included) {
-                if (matchServiceName(pattern, serviceName)) {
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                return false;
-            }
+            return matchesAnyPattern(included, serviceName);
         }
         return true;
+    }
+
+    private boolean matchesAnyPattern(List<String> patterns, String serviceName) {
+        if (patterns == null || patterns.isEmpty()) {
+            return false;
+        }
+        return patterns.stream().anyMatch(pattern -> matchServiceName(pattern, serviceName));
     }
 
     private boolean matchServiceName(String pattern, String serviceName) {

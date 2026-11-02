@@ -31,7 +31,7 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
 
     private static final Set<String> MUTATING_METHODS = Set.of("POST", "PUT", "DELETE", "PATCH");
 
-    private int order = Ordered.HIGHEST_PRECEDENCE + 60;
+    private final int order;
     private final AtengAdminServerProperties properties;
     private final String contextPath;
     private final Pattern actuatorProxyPattern;
@@ -41,12 +41,13 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
         return this.order;
     }
 
-    public void setOrder(int order) {
-        this.order = order;
+    public AdminWriteGuardFilter(AtengAdminServerProperties properties, AdminServerProperties adminServerProperties) {
+        this(properties, adminServerProperties, Ordered.HIGHEST_PRECEDENCE + 60);
     }
 
-    public AdminWriteGuardFilter(AtengAdminServerProperties properties, AdminServerProperties adminServerProperties) {
+    public AdminWriteGuardFilter(AtengAdminServerProperties properties, AdminServerProperties adminServerProperties, int order) {
         this.properties = properties;
+        this.order = order;
         this.contextPath = AtengAdminServerAutoConfiguration.normalizeContextPath(
                 adminServerProperties != null ? adminServerProperties.getContextPath() : null
         );
@@ -91,8 +92,6 @@ public class AdminWriteGuardFilter extends OncePerRequestFilter implements Order
      * 输出 JSON 格式拒绝响应
      */
     private void reject(HttpServletResponse response, HttpStatus status, String msg) throws IOException {
-        response.setStatus(status.value());
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(String.format("{\"code\":%d,\"message\":\"%s\"}", status.value(), msg));
+        AdminSecurityResponseUtil.writeJsonResponse(response, status, msg);
     }
 }

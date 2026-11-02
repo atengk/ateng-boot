@@ -112,9 +112,7 @@ public class AdminSsrfGuardFilter extends OncePerRequestFilter {
      * 输出 JSON 格式拒绝响应
      */
     private void reject(HttpServletResponse response, HttpStatus status, String msg) throws IOException {
-        response.setStatus(status.value());
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(String.format("{\"code\":%d,\"message\":\"%s\"}", status.value(), msg));
+        AdminSecurityResponseUtil.writeJsonResponse(response, status, msg);
     }
 
     /**
