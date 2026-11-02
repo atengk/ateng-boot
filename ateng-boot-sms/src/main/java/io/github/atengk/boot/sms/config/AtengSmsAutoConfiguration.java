@@ -2,6 +2,7 @@ package io.github.atengk.boot.sms.config;
 
 import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
+import io.github.atengk.boot.sms.provider.HuaweiSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
 import io.github.atengk.boot.sms.provider.TencentSmsProvider;
@@ -62,6 +63,19 @@ public class AtengSmsAutoConfiguration {
     public TencentSmsProvider tencentSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
         RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
         return new TencentSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配华为云短信驱动 (WSSE 鉴权协议原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return HuaweiSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public HuaweiSmsProvider huaweiSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new HuaweiSmsProvider(builder);
     }
 
     /**
