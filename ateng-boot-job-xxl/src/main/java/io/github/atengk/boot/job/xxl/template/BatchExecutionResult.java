@@ -69,10 +69,18 @@ public class BatchExecutionResult implements Serializable {
         this.failCount = failCount;
         this.batchCount = batchCount;
         this.duration = duration != null ? duration : Duration.ZERO;
-        this.failedItems = (failedItems != null && !failedItems.isEmpty())
-                ? Collections.unmodifiableList(new ArrayList<>(failedItems))
-                : Collections.emptyList();
-        this.truncatedFailures = truncatedFailures;
+        if (failedItems != null && !failedItems.isEmpty()) {
+            if (failedItems.size() > MAX_FAILED_ITEMS) {
+                this.failedItems = Collections.unmodifiableList(new ArrayList<>(failedItems.subList(0, MAX_FAILED_ITEMS)));
+                this.truncatedFailures = true;
+            } else {
+                this.failedItems = Collections.unmodifiableList(new ArrayList<>(failedItems));
+                this.truncatedFailures = truncatedFailures;
+            }
+        } else {
+            this.failedItems = Collections.emptyList();
+            this.truncatedFailures = truncatedFailures;
+        }
     }
 
     /**

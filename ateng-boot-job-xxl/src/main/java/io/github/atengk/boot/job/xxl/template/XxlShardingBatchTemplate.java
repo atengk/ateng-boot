@@ -151,7 +151,7 @@ public class XxlShardingBatchTemplate {
      * @param <T>         数据类型
      * @return true 若当前切片导致超过上限而发生截断
      */
-    private <T> boolean collectFailedItems(List<Object> failedItems, List<T> chunk) {
+    static <T> boolean collectFailedItems(List<Object> failedItems, List<T> chunk) {
         if (chunk == null || chunk.isEmpty()) {
             return false;
         }
@@ -244,6 +244,35 @@ public class XxlShardingBatchTemplate {
             Function<T, ID> idExtractor,
             Consumer<List<T>> batchConsumer,
             Consumer<FailedBatch<T>> failureHandler) {
+        return executeStep(initialId, batchSize, null, this.failFast, queryFunction, idExtractor, batchConsumer, failureHandler);
+    }
+
+    /**
+     * 基于游标/主键步长流式分页批处理（显式指定 failFast 策略）
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+            ID initialId,
+            int batchSize,
+            boolean failFast,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeStep(initialId, batchSize, null, failFast, queryFunction, idExtractor, batchConsumer, failureHandler);
+    }
+
+    /**
+     * 基于游标/主键步长流式分页批处理（支持预期总量进度计算与显式指定 failFast 策略）
+     */
+    public <T, ID extends Comparable<ID>> BatchExecutionResult executeStep(
+            ID initialId,
+            int batchSize,
+            Long totalExpected,
+            boolean failFast,
+            BiFunction<ID, Integer, List<T>> queryFunction,
+            Function<T, ID> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -294,19 +323,21 @@ public class XxlShardingBatchTemplate {
                     }
                 }
 
+                if (!failFast) {
+                    log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
+                }
                 if (failFast) {
                     if (t instanceof RuntimeException re) {
                         throw re;
                     }
                     throw new IllegalStateException("分片流式批处理发生未受检异常", t);
                 }
-                log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
             }
 
             // 3. 实时进度打卡检查
             if (progressLogInterval > 0 && (totalCount - lastReportedCount >= progressLogInterval)) {
                 lastReportedCount = totalCount;
-                reportProgress(totalCount, successCount, failCount, batchCount, startTime);
+                reportProgress(totalCount, totalExpected, successCount, failCount, batchCount, startTime);
             }
 
             lastId = idExtractor.apply(chunk.get(chunkSize - 1));
@@ -420,6 +451,37 @@ public class XxlShardingBatchTemplate {
             ToLongFunction<T> idExtractor,
             Consumer<List<T>> batchConsumer,
             Consumer<FailedBatch<T>> failureHandler) {
+        return executeShardedStep(sharding, initialId, batchSize, null, this.failFast, queryFunction, idExtractor, batchConsumer, failureHandler);
+    }
+
+    /**
+     * 带有分片智能匹配的步长流式批处理（支持显式指定 failFast 策略与失败补偿回调）
+     */
+    public <T> BatchExecutionResult executeShardedStep(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            boolean failFast,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
+        return executeShardedStep(sharding, initialId, batchSize, null, failFast, queryFunction, idExtractor, batchConsumer, failureHandler);
+    }
+
+    /**
+     * 带有分片智能匹配的步长流式批处理（支持预期总量进度计算、显式指定 failFast 策略与失败补偿回调）
+     */
+    public <T> BatchExecutionResult executeShardedStep(
+            ShardingContext sharding,
+            Long initialId,
+            int batchSize,
+            Long totalExpected,
+            boolean failFast,
+            BiFunction<Long, Integer, List<T>> queryFunction,
+            ToLongFunction<T> idExtractor,
+            Consumer<List<T>> batchConsumer,
+            Consumer<FailedBatch<T>> failureHandler) {
         Objects.requireNonNull(queryFunction, "queryFunction 不能为 null");
         Objects.requireNonNull(idExtractor, "idExtractor 不能为 null");
         Objects.requireNonNull(batchConsumer, "batchConsumer 不能为 null");
@@ -479,7 +541,9 @@ public class XxlShardingBatchTemplate {
                         }
                     }
 
-                    log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
+                    if (!failFast) {
+                        log.error("分片流式批处理执行异常 [批次: {}, 当前游标 ID: {}]: {}", batchCount, lastId, t.getMessage(), t);
+                    }
                     if (failFast) {
                         if (t instanceof RuntimeException re) {
                             throw re;
@@ -491,7 +555,7 @@ public class XxlShardingBatchTemplate {
                 // 3. 实时进度打卡检查
                 if (progressLogInterval > 0 && (totalCount - lastReportedCount >= progressLogInterval)) {
                     lastReportedCount = totalCount;
-                    reportProgress(totalCount, successCount, failCount, batchCount, startTime);
+                    reportProgress(totalCount, totalExpected, successCount, failCount, batchCount, startTime);
                 }
             }
 

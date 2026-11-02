@@ -51,6 +51,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -85,6 +86,17 @@ public class XxlJobContextAspect {
 
     public static final String TRACE_ID_KEY = "traceId";
     public static final String DEFAULT_JOB_USER = "SYSTEM";
+
+    private static final Map<Class<?>, Object> DEFAULT_PRIMITIVE_VALUES = Map.of(
+            boolean.class, false,
+            byte.class, (byte) 0,
+            short.class, (short) 0,
+            int.class, 0,
+            long.class, 0L,
+            float.class, 0.0f,
+            double.class, 0.0d,
+            char.class, '\0'
+    );
 
     private final LocalWatchdog watchdog;
     private final XxlJobProperties properties;
@@ -224,15 +236,6 @@ public class XxlJobContextAspect {
         String jobName = resolveJobName(specificMethod, atengXxlJob);
         Duration timeout = resolveTimeout(atengXxlJob, logId);
 
-        // 5.5. 节点级运行时治理总线判定：若该任务在当前节点被临时静默 (PAUSED)，则优雅跳过执行
-        if (this.governor != null && (this.governor.isPaused(jobName) || this.governor.isPaused(specificMethod.getName()))) {
-            String skipMsg = String.format("[SKIPPED] Handler [%s] is paused on local node (节点级临时静默)，已安全跳过执行并报告成功", jobName);
-            log.warn(skipMsg);
-            XxlJobHelper.log(skipMsg);
-            XxlJobHelper.handleSuccess(skipMsg);
-            return getDefaultReturnValue(specificMethod);
-        }
-
         JobExecutionMetadata metadata = new JobExecutionMetadata(
                 jobId,
                 jobName,
@@ -249,6 +252,15 @@ public class XxlJobContextAspect {
 
         // 6. 执行参数解析、防卫校验与业务逻辑 (确保终态严格清理上下文)
         try {
+            // 6.0. 节点级运行时治理总线判定：若该任务在当前节点被临时静默 (PAUSED)，则优雅跳过执行并在 finally 中严格还原清理上下文
+            if (this.governor != null && (this.governor.isPaused(jobName) || this.governor.isPaused(specificMethod.getName()))) {
+                String skipMsg = String.format("[SKIPPED] Handler [%s] is paused on local node (节点级临时静默)，已安全跳过执行并报告成功", jobName);
+                log.warn(skipMsg);
+                XxlJobHelper.log(skipMsg);
+                XxlJobHelper.handleSuccess(skipMsg);
+                return getDefaultReturnValue(specificMethod);
+            }
+
             // A. 解析方法形参并完成强类型绑定 (ShardingContext、DTO、String)
             Object[] resolvedArgs = resolveArguments(specificMethod, pjp.getArgs(), rawParam);
 
@@ -334,19 +346,26 @@ public class XxlJobContextAspect {
                 triggerAfterCompletion(interceptorIndex, executionContext, executionThrowable);
             }
 
-            // 7. 任务执行成功：若发生过看门狗超时则补发降级补偿，触发告警自愈与度量采集
+            // 7. 任务执行返回：若发生过看门狗超时则补发降级补偿，触发告警与度量采集
             long durationNs = System.nanoTime() - startNs;
             LocalWatchdog.WatchdogSession successSession = sessionRef.get();
-            if (successSession != null && successSession.isTimedOut() && fallbackTriggered.compareAndSet(false, true)) {
+            boolean hasTimedOut = (successSession != null && successSession.isTimedOut());
+            if (hasTimedOut && fallbackTriggered.compareAndSet(false, true)) {
                 log.warn("XXL-Job 任务 [{}] 本地硬超时 (阈值: {}) 并已被中断", jobName, timeout);
                 dispatchTimeoutFallback(pjp.getTarget(), specificMethod, atengXxlJob, metadata, Duration.ofNanos(durationNs), null);
             }
             if (alertAggregator != null) {
                 long costMs = durationNs / 1_000_000;
-                alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, alertEnabled);
+                if (hasTimedOut) {
+                    alertAggregator.onJobFailure(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs,
+                            new TimeoutException("XXL-Job 任务超时 (阈值: " + timeout + ")"), alertEnabled, alertSuppressThreshold);
+                } else {
+                    alertAggregator.onJobSuccess(jobName, rawParam, MDC.get(TRACE_ID_KEY), costMs, alertEnabled);
+                }
             }
             if (metricsBinder != null) {
-                metricsBinder.recordExecution(jobName, XxlJobMetricsBinder.STATUS_SUCCESS, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
+                String status = hasTimedOut ? XxlJobMetricsBinder.STATUS_FAILURE : XxlJobMetricsBinder.STATUS_SUCCESS;
+                metricsBinder.recordExecution(jobName, status, TenantContextHolder.getTenantId(), Duration.ofNanos(durationNs));
             }
             return result;
         } catch (Throwable t) {
@@ -890,37 +909,7 @@ public class XxlJobContextAspect {
      * 根据方法返回类型获取默认保底返回值
      */
     private Object getDefaultReturnValue(Method method) {
-        Class<?> returnType = method.getReturnType();
-        if (returnType.equals(Void.TYPE)) {
-            return null;
-        }
-        if (returnType.isPrimitive()) {
-            if (returnType.equals(boolean.class)) {
-                return false;
-            }
-            if (returnType.equals(byte.class)) {
-                return (byte) 0;
-            }
-            if (returnType.equals(short.class)) {
-                return (short) 0;
-            }
-            if (returnType.equals(int.class)) {
-                return 0;
-            }
-            if (returnType.equals(long.class)) {
-                return 0L;
-            }
-            if (returnType.equals(float.class)) {
-                return 0.0f;
-            }
-            if (returnType.equals(double.class)) {
-                return 0.0d;
-            }
-            if (returnType.equals(char.class)) {
-                return '\0';
-            }
-        }
-        return null;
+        return DEFAULT_PRIMITIVE_VALUES.get(method.getReturnType());
     }
 
     /**
@@ -991,7 +980,7 @@ public class XxlJobContextAspect {
                 fallbackTask.run();
             }
         } else {
-            CompletableFuture.runAsync(fallbackTask);
+            fallbackTask.run();
         }
     }
 

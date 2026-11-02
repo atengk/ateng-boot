@@ -300,8 +300,12 @@ public class AtengXxlJobAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean(XxlShardingBatchTemplate.class)
         public XxlMyBatisStreamingTemplate xxlMyBatisStreamingTemplate(
-                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-            return new XxlMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable());
+                @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+                XxlJobProperties properties) {
+            int batchSize = (properties != null && properties.getBatchSize() > 0) ? properties.getBatchSize() : XxlShardingBatchTemplate.DEFAULT_BATCH_SIZE;
+            int maxConcurrency = (properties != null && properties.getBatchMaxConcurrency() > 0) ? properties.getBatchMaxConcurrency() : XxlShardingBatchTemplate.DEFAULT_MAX_CONCURRENCY;
+            int progressLogInterval = (properties != null && properties.getProgressLogInterval() > 0) ? properties.getProgressLogInterval() : XxlShardingBatchTemplate.DEFAULT_PROGRESS_LOG_INTERVAL;
+            return new XxlMyBatisStreamingTemplate(taskExecutorProvider.getIfAvailable(), batchSize, maxConcurrency, progressLogInterval);
         }
     }
 
@@ -311,13 +315,18 @@ public class AtengXxlJobAutoConfiguration {
      * <p>提供大数据分片流式步长游标拉取、防 OOM 并发切片消费，并自动向子线程透传四维上下文与 XXL-Job 日志镜像句柄。</p>
      *
      * @param taskExecutorProvider Core 受管异步线程池 Provider
+     * @param properties           XXL-Job 配置属性
      * @return 分片流式批处理模板实例
      */
     @Bean
     @ConditionalOnMissingBean(XxlShardingBatchTemplate.class)
     public XxlShardingBatchTemplate xxlShardingBatchTemplate(
-            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider) {
-        return new XxlShardingBatchTemplate(taskExecutorProvider.getIfAvailable());
+            @Qualifier("taskExecutor") ObjectProvider<Executor> taskExecutorProvider,
+            XxlJobProperties properties) {
+        int batchSize = (properties != null && properties.getBatchSize() > 0) ? properties.getBatchSize() : XxlShardingBatchTemplate.DEFAULT_BATCH_SIZE;
+        int maxConcurrency = (properties != null && properties.getBatchMaxConcurrency() > 0) ? properties.getBatchMaxConcurrency() : XxlShardingBatchTemplate.DEFAULT_MAX_CONCURRENCY;
+        int progressLogInterval = (properties != null && properties.getProgressLogInterval() > 0) ? properties.getProgressLogInterval() : XxlShardingBatchTemplate.DEFAULT_PROGRESS_LOG_INTERVAL;
+        return new XxlShardingBatchTemplate(taskExecutorProvider.getIfAvailable(), batchSize, maxConcurrency, progressLogInterval);
     }
 
     /**

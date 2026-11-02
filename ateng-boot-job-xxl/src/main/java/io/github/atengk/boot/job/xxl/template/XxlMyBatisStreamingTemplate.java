@@ -171,14 +171,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
             } catch (Throwable t) {
                 failCount.addAndGet(size);
 
-                int spaceLeft = BatchExecutionResult.MAX_FAILED_ITEMS - failedItems.size();
-                if (spaceLeft > 0) {
-                    int toAdd = Math.min(spaceLeft, size);
-                    for (int i = 0; i < toAdd; i++) {
-                        failedItems.add(batch.get(i));
-                    }
-                }
-                if (size > spaceLeft) {
+                if (XxlShardingBatchTemplate.collectFailedItems(failedItems, batch)) {
                     truncatedFailures[0] = true;
                 }
 
@@ -330,14 +323,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                         firstError.compareAndSet(null, t);
 
                         synchronized (failedItems) {
-                            int spaceLeft = BatchExecutionResult.MAX_FAILED_ITEMS - failedItems.size();
-                            if (spaceLeft > 0) {
-                                int toAdd = Math.min(spaceLeft, chunkSize);
-                                for (int i = 0; i < toAdd; i++) {
-                                    failedItems.add(immutableBatch.get(i));
-                                }
-                            }
-                            if (chunkSize > spaceLeft) {
+                            if (XxlShardingBatchTemplate.collectFailedItems(failedItems, immutableBatch)) {
                                 truncatedFailures.set(true);
                             }
                         }
@@ -402,7 +388,6 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
         try {
             CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         } catch (Throwable t) {
-            log.error("并行流式消费聚合等待异常: {}", t.getMessage(), t);
             if (isFailFast()) {
                 Throwable cause = firstError.get() != null ? firstError.get() : (t.getCause() != null ? t.getCause() : t);
                 if (cause instanceof RuntimeException re) {
@@ -410,6 +395,7 @@ public class XxlMyBatisStreamingTemplate extends XxlShardingBatchTemplate {
                 }
                 throw new IllegalStateException("并行流式消费聚合等待异常: " + cause.getMessage(), cause);
             }
+            log.error("并行流式消费聚合等待异常: {}", t.getMessage(), t);
         }
 
         if (isFailFast() && firstError.get() != null) {

@@ -79,6 +79,18 @@ class XxlJobTestHelperTest {
         assertThat(pojoHandler.getCapturedParam()).isEqualTo("hello-ateng");
     }
 
+    @Test
+    @DisplayName("测试 XxlJobTestHelper.trigger 使用 ShardingContext 对象透传分片参数")
+    void testTriggerWithShardingContext() {
+        DemoOrderPojo order = new DemoOrderPojo(2001L, "ORDER-SHARDING", 888);
+        io.github.atengk.boot.job.xxl.model.ShardingContext context = new io.github.atengk.boot.job.xxl.model.ShardingContext(2, 5);
+        XxlJobTestResult result = XxlJobTestHelper.trigger("pojoJobHandler", order, context, "tenant-sharding-999");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(pojoHandler.getCapturedTenant()).isEqualTo("tenant-sharding-999");
+        assertThat(pojoHandler.getCapturedParam()).contains("\"orderNo\":\"ORDER-SHARDING\"");
+    }
+
     public record DemoOrderPojo(Long orderId, String orderNo, Integer amount) {}
 
     @Configuration(proxyBeanMethods = false)

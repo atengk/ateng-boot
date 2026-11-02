@@ -10,6 +10,7 @@ import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.job.xxl.annotation.AtengXxlJob;
+import io.github.atengk.boot.job.xxl.model.ShardingContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
@@ -141,6 +142,33 @@ public class XxlJobTestHelper implements ApplicationContextAware {
      */
     public static XxlJobTestResult trigger(String jobHandler, Object paramObject, int shardIndex, int shardTotal, String tenantId) {
         return trigger(jobHandler, serializeParam(paramObject), shardIndex, shardTotal, tenantId);
+    }
+
+    /**
+     * 触发执行任务 (基于 ShardingContext 分片上下文与参数对象)
+     *
+     * @param jobHandler      任务 Handler 名称
+     * @param paramObject     执行入参对象 (非 String 对象将自动序列化为 JSON 字符串)
+     * @param shardingContext 分片广播上下文 (为 null 时采用单机 0/1)
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, ShardingContext shardingContext) {
+        return trigger(jobHandler, paramObject, shardingContext, null);
+    }
+
+    /**
+     * 触发执行任务 (基于 ShardingContext 分片上下文与指定租户)
+     *
+     * @param jobHandler      任务 Handler 名称
+     * @param paramObject     执行入参对象
+     * @param shardingContext 分片广播上下文 (为 null 时采用单机 0/1)
+     * @param tenantId        显式指定的租户标识
+     * @return 执行诊断报告
+     */
+    public static XxlJobTestResult trigger(String jobHandler, Object paramObject, ShardingContext shardingContext, String tenantId) {
+        int shardIndex = shardingContext != null ? shardingContext.getShardIndex() : 0;
+        int shardTotal = shardingContext != null ? shardingContext.getShardTotal() : 1;
+        return trigger(jobHandler, paramObject, shardIndex, shardTotal, tenantId);
     }
 
     /**
@@ -284,25 +312,8 @@ public class XxlJobTestHelper implements ApplicationContextAware {
             );
 
             for (Map.Entry<Method, XxlJob> entry : annotatedMethods.entrySet()) {
-                Method method = entry.getKey();
                 XxlJob xxlJob = entry.getValue();
-                String name = xxlJob.value();
-                if (StringUtils.hasText(name)) {
-                    Method initMethod = null;
-                    Method destroyMethod = null;
-                    if (StringUtils.hasText(xxlJob.init())) {
-                        try {
-                            initMethod = bean.getClass().getDeclaredMethod(xxlJob.init());
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                    if (StringUtils.hasText(xxlJob.destroy())) {
-                        try {
-                            destroyMethod = bean.getClass().getDeclaredMethod(xxlJob.destroy());
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                    MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
-                    FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
-                }
+                registerJobHandler(bean, entry.getKey(), xxlJob.value(), xxlJob.init(), xxlJob.destroy());
             }
 
             Map<Method, AtengXxlJob> atengAnnotatedMethods = MethodIntrospector.selectMethods(
@@ -311,26 +322,37 @@ public class XxlJobTestHelper implements ApplicationContextAware {
             );
 
             for (Map.Entry<Method, AtengXxlJob> entry : atengAnnotatedMethods.entrySet()) {
-                Method method = entry.getKey();
                 AtengXxlJob atengJob = entry.getValue();
-                String name = atengJob.value();
-                if (StringUtils.hasText(name) && !FALLBACK_HANDLER_REPOSITORY.containsKey(name)) {
-                    Method initMethod = null;
-                    Method destroyMethod = null;
-                    if (StringUtils.hasText(atengJob.init())) {
-                        try {
-                            initMethod = bean.getClass().getDeclaredMethod(atengJob.init());
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                    if (StringUtils.hasText(atengJob.destroy())) {
-                        try {
-                            destroyMethod = bean.getClass().getDeclaredMethod(atengJob.destroy());
-                        } catch (NoSuchMethodException ignored) {}
-                    }
-                    MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
-                    FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
-                }
+                registerJobHandler(bean, entry.getKey(), atengJob.value(), atengJob.init(), atengJob.destroy());
             }
+        }
+    }
+
+    /**
+     * 注册任务 Handler 至本地运行备选库
+     */
+    private static void registerJobHandler(Object bean, Method method, String name, String init, String destroy) {
+        if (!StringUtils.hasText(name) || FALLBACK_HANDLER_REPOSITORY.containsKey(name)) {
+            return;
+        }
+        Method initMethod = resolveLifecycleMethod(bean.getClass(), init);
+        Method destroyMethod = resolveLifecycleMethod(bean.getClass(), destroy);
+        MethodJobHandler handler = new MethodJobHandler(bean, method, initMethod, destroyMethod);
+        FALLBACK_HANDLER_REPOSITORY.putIfAbsent(name, handler);
+    }
+
+    /**
+     * 反射解析生命周期初始化与销毁方法
+     */
+    private static Method resolveLifecycleMethod(Class<?> targetClass, String methodName) {
+        if (!StringUtils.hasText(methodName)) {
+            return null;
+        }
+        try {
+            return targetClass.getDeclaredMethod(methodName.trim());
+        } catch (NoSuchMethodException ex) {
+            log.debug("目标类 [{}] 中未找到声明的生命周期方法 [{}]", targetClass.getName(), methodName, ex);
+            return null;
         }
     }
 

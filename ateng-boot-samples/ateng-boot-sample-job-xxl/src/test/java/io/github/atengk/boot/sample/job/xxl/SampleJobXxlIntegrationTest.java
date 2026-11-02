@@ -134,6 +134,7 @@ class SampleJobXxlIntegrationTest {
         XxlJobTestResult result = XxlJobTestHelper.trigger("shardingBatchJob", null, 0, 2);
         assertTrue(result.isSuccess());
         assertEquals(XxlJobContext.HANDLE_CODE_SUCCESS, result.handleCode());
+        assertTrue(result.handleMsg().contains("累计消费"));
     }
 
     @Test
@@ -270,6 +271,7 @@ class SampleJobXxlIntegrationTest {
         assertEquals(5, failedBatch.getItems().size());
         assertNotNull(failedBatch.getCause());
         assertTrue(failedBatch.getCause().getMessage().contains("模拟业务处理失败"));
+        assertTrue(result.handleMsg().contains("死信收集 1 批"));
     }
 
     @Test

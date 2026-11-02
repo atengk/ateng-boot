@@ -4,6 +4,7 @@ import com.xxl.job.core.context.XxlJobContext;
 import com.xxl.job.core.context.XxlJobHelper;
 import io.github.atengk.boot.core.code.CommonResultCode;
 import io.github.atengk.boot.core.context.TenantContextHolder;
+import io.github.atengk.boot.core.context.TenantContextHolder.TenantSnapshot;
 import io.github.atengk.boot.core.context.UserContextHolder;
 import io.github.atengk.boot.core.exception.BusinessException;
 import io.github.atengk.boot.core.util.SpringUtil;
@@ -153,8 +154,9 @@ public class TenantJobTemplate {
                 successCount++;
             } catch (Throwable t) {
                 failCount++;
-                failedTenants.add(tenantId);
-                log.error("[TenantJobTemplate] 租户 [{}] 调度任务执行失败: {}", tenantId, t.getMessage(), t);
+                if (failedTenants.size() < BatchExecutionResult.MAX_FAILED_ITEMS) {
+                    failedTenants.add(tenantId);
+                }
                 try {
                     XxlJobHelper.log("<font color=\"red\">[TENANT-JOB] 租户 [" + tenantId + "] 执行失败: " + t.getMessage() + "</font>");
                 } catch (Throwable ignored) {
@@ -168,6 +170,7 @@ public class TenantJobTemplate {
                     throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
                             "多租户遍历任务在租户 [" + tenantId + "] 快速失败中断: " + t.getMessage(), t);
                 }
+                log.error("[TenantJobTemplate] 租户 [{}] 调度任务执行失败: {}", tenantId, t.getMessage(), t);
             }
         }
 
@@ -184,7 +187,8 @@ public class TenantJobTemplate {
         } catch (Throwable ignored) {
         }
 
-        return new BatchExecutionResult(total, successCount, failCount, (int) total, duration, failedTenants, false);
+        boolean truncated = failCount > BatchExecutionResult.MAX_FAILED_ITEMS;
+        return new BatchExecutionResult(total, successCount, failCount, (int) total, duration, failedTenants, truncated);
     }
 
     // ==================== 2. 并发多线程租户遍历 (带背压与沙箱隔离) ====================
@@ -326,6 +330,7 @@ public class TenantJobTemplate {
                     Map<String, String> prevMdc = MDC.getCopyOfContextMap();
                     String prevUser = UserContextHolder.getExplicit();
                     XxlJobContext prevJobContext = XxlJobContext.getXxlJobContext();
+                    TenantSnapshot prevTenantSnapshot = TenantContextHolder.capturePrevious();
 
                     try {
                         if (parentMdc != null) {
@@ -348,9 +353,12 @@ public class TenantJobTemplate {
                         successCount.incrementAndGet();
                     } catch (Throwable t) {
                         failCount.incrementAndGet();
-                        failedTenants.add(tenantId);
+                        synchronized (failedTenants) {
+                            if (failedTenants.size() < BatchExecutionResult.MAX_FAILED_ITEMS) {
+                                failedTenants.add(tenantId);
+                            }
+                        }
                         firstError.compareAndSet(null, t);
-                        log.error("[TenantJobTemplate] 租户 [{}] 并发调度任务执行失败: {}", tenantId, t.getMessage(), t);
                         try {
                             XxlJobHelper.log("<font color=\"red\">[TENANT-JOB] 租户 [" + tenantId + "] 执行失败: " + t.getMessage() + "</font>");
                         } catch (Throwable ignored) {
@@ -363,10 +371,12 @@ public class TenantJobTemplate {
                             throw new BusinessException(CommonResultCode.INTERNAL_SERVER_ERROR.getCode(),
                                     "多租户并行任务在租户 [" + tenantId + "] 快速失败中断: " + t.getMessage(), t);
                         }
+                        log.error("[TenantJobTemplate] 租户 [{}] 并发调度任务执行失败: {}", tenantId, t.getMessage(), t);
                     } finally {
                         semaphore.release();
 
                         // 终态现场清理，防止线程池复用污染
+                        TenantContextHolder.restore(prevTenantSnapshot);
                         if (prevMdc != null) {
                             MDC.setContextMap(prevMdc);
                         } else {
@@ -422,7 +432,8 @@ public class TenantJobTemplate {
         } catch (Throwable ignored) {
         }
 
-        return new BatchExecutionResult(total, successCount.get(), failCount.get(), (int) total, duration, failedTenants, false);
+        boolean truncated = failCount.get() > BatchExecutionResult.MAX_FAILED_ITEMS;
+        return new BatchExecutionResult(total, successCount.get(), failCount.get(), (int) total, duration, failedTenants, truncated);
     }
 
     /**

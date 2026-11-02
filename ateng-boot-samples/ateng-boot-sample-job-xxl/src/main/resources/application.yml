@@ -23,6 +23,7 @@ ateng:
         alert-enabled: true
         alert-suppress-duration: 5m
         alert-suppress-threshold: 3
+        progress-log-interval: 5
 
 management:
   endpoints:

@@ -122,4 +122,19 @@ public class XxlJobProperties {
      */
     private int alertSuppressThreshold = 10;
 
+    /**
+     * 分片流式批处理默认单批条数 (默认 1000)
+     */
+    private int batchSize = 1000;
+
+    /**
+     * 分片流式批处理默认最大并发度 (默认 8)
+     */
+    private int batchMaxConcurrency = 8;
+
+    /**
+     * 分片流式批处理实时进度打卡步长间隔条数 (默认 5000)
+     */
+    private int progressLogInterval = 5000;
+
 }
