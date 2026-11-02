@@ -3,6 +3,7 @@ package io.github.atengk.boot.admin.properties;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.NestedConfigurationProperty;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -63,4 +64,36 @@ public class AtengAdminServerProperties {
      * 是否允许在 Web 控制台执行修改日志级别等高危写操作（默认开启）
      */
     private boolean enableWriteOperations = true;
+
+    /**
+     * 容器云离线僵尸实例自动清理调度配置
+     */
+    @NestedConfigurationProperty
+    private CleanupProperties cleanup = new CleanupProperties();
+
+    /**
+     * 离线僵尸实例自动清理配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-02
+     */
+    @Getter
+    @Setter
+    public static class CleanupProperties {
+
+        /**
+         * 是否启用容器云离线僵尸实例自动清理调度器（默认 false）
+         */
+        private boolean enabled = false;
+
+        /**
+         * 僵尸实例清理扫描调度周期（默认 1 小时）
+         */
+        private Duration interval = Duration.ofHours(1);
+
+        /**
+         * 判定为僵尸实例的持续离线超期阈值（默认 24 小时）
+         */
+        private Duration zombieThreshold = Duration.ofHours(24);
+    }
 }

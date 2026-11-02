@@ -19,6 +19,10 @@ ateng:
         default-actuator-token: DEFAULT_ACTUATOR_TOKEN_DEMO
         debounce-duration: 30s
         allow-local-instances: true
+        cleanup:
+          enabled: true
+          interval: 1h
+          zombie-threshold: 24h
     observability:
       security:
         token: CLIENT_ACTUATOR_TOKEN_DEMO

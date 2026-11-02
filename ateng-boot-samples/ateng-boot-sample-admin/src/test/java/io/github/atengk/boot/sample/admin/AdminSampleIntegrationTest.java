@@ -13,6 +13,7 @@ import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import io.github.atengk.boot.admin.notifier.AtengAdminNotificationNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
+import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.AfterEach;
@@ -26,8 +27,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,9 +75,12 @@ class AdminSampleIntegrationTest {
     @Autowired
     private AtengAdminServerProperties properties;
 
+    @Autowired(required = false)
+    private ZombieInstanceCleanupScheduler zombieCleanupScheduler;
+
     @AfterEach
     void tearDown() {
-        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO，重置写操作开关
+        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO，重置写操作开关与僵尸阈值
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
         ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
         if (logger != null) {
@@ -82,6 +88,9 @@ class AdminSampleIntegrationTest {
         }
         if (properties != null) {
             properties.setEnableWriteOperations(true);
+            if (properties.getCleanup() != null) {
+                properties.getCleanup().setZombieThreshold(Duration.ofHours(24));
+            }
         }
     }
 
@@ -407,5 +416,59 @@ class AdminSampleIntegrationTest {
         assertThat(bearerHeaders.getFirst(HttpHeaders.AUTHORIZATION))
                 .isEqualTo("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sample-token-content");
         assertThat(bearerHeaders.containsKey(AtengActuatorHttpHeadersProvider.ACTUATOR_TOKEN_HEADER)).isFalse();
+    }
+
+    @Test
+    @DisplayName("场景 10：容器云离线僵尸实例自动清理调度器测试（模拟超期离线实例并断言成功驱逐注销）")
+    void shouldAutoEvictZombieInstanceWhenThresholdExceeded() throws Exception {
+        assertThat(zombieCleanupScheduler).isNotNull();
+        assertThat(zombieCleanupScheduler.isRunning()).isTrue();
+
+        // 1. 注册一个微服务实例
+        String payload = """
+                {
+                    "name": "zombie-candidate-service",
+                    "serviceUrl": "http://127.0.0.1:8080/",
+                    "managementUrl": "http://127.0.0.1:8080/actuator",
+                    "healthUrl": "http://127.0.0.1:8080/actuator/health"
+                }
+                """;
+        MvcResult asyncResult = mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content(payload))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        MvcResult postResult = mockMvc.perform(asyncDispatch(asyncResult))
+                .andExpect(status().is2xxSuccessful())
+                .andReturn();
+
+        String instIdStr = objectMapper.readTree(postResult.getResponse().getContentAsString()).path("id").asText();
+        InstanceId instanceId = InstanceId.of(instIdStr);
+
+        Instance instance = instanceRepository.find(instanceId).block();
+        assertThat(instance).isNotNull();
+        assertThat(instance.isRegistered()).isTrue();
+
+        // 2. 将实例状态更新为 OFFLINE
+        instanceRepository.compute(instanceId, (id, inst) -> Mono.just(inst.withStatusInfo(StatusInfo.ofOffline()))).block();
+
+        // 3. 动态配置僵尸阈值为 10ms，并短暂等待确保其实际超期
+        Duration originalThreshold = properties.getCleanup().getZombieThreshold();
+        try {
+            properties.getCleanup().setZombieThreshold(Duration.ofMillis(10));
+            Thread.sleep(30);
+
+            // 4. 手动触发清理扫描并断言驱逐成功
+            int evicted = zombieCleanupScheduler.cleanZombies();
+            assertThat(evicted).isGreaterThanOrEqualTo(1);
+
+            // 5. 再次查询该实例，断言其已成功注销（isRegistered == false）
+            Instance evictedInstance = instanceRepository.find(instanceId).block();
+            assertThat(evictedInstance).isNotNull();
+            assertThat(evictedInstance.isRegistered()).isFalse();
+        } finally {
+            properties.getCleanup().setZombieThreshold(originalThreshold);
+        }
     }
 }

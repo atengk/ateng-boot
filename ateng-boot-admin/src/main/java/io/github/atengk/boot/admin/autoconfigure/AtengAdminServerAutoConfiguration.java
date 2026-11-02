@@ -6,6 +6,7 @@ import cn.dev33.satoken.stp.StpUtil;
 import de.codecentric.boot.admin.server.config.AdminServerMarkerConfiguration;
 import de.codecentric.boot.admin.server.config.AdminServerProperties;
 import de.codecentric.boot.admin.server.domain.entities.InstanceRepository;
+import de.codecentric.boot.admin.server.services.InstanceRegistry;
 import io.github.atengk.boot.admin.admission.AdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.admission.DefaultAdminInstanceAdmissionPolicy;
 import io.github.atengk.boot.admin.controller.AdminLoginController;
@@ -14,6 +15,7 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
+import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import io.github.atengk.boot.notification.template.NotificationTemplate;
@@ -113,6 +115,17 @@ public class AtengAdminServerAutoConfiguration {
         ThreadPoolTaskScheduler taskScheduler = schedulerProvider.getIfAvailable();
         ScheduledExecutorService executor = taskScheduler != null ? taskScheduler.getScheduledExecutor() : scheduledExecutorProvider.getIfAvailable();
         return new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties, executor);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(InstanceRepository.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.admin.server.cleanup", name = "enabled", havingValue = "true")
+    public ZombieInstanceCleanupScheduler zombieInstanceCleanupScheduler(
+            InstanceRepository repository,
+            ObjectProvider<InstanceRegistry> registryProvider,
+            AtengAdminServerProperties properties) {
+        return new ZombieInstanceCleanupScheduler(repository, registryProvider.getIfAvailable(), properties);
     }
 
     /**

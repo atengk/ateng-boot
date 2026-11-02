@@ -13,6 +13,7 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AdminAuthProvider;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.provider.DefaultPropertiesAdminAuthProvider;
+import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
 import io.github.atengk.boot.admin.security.AdminWriteGuardFilter;
 import org.junit.jupiter.api.DisplayName;
@@ -76,6 +77,14 @@ class AtengAdminServerAutoConfigurationTest {
         }
     }
 
+    @Configuration
+    static class CustomCleanupSchedulerConfiguration {
+        @Bean
+        public ZombieInstanceCleanupScheduler customZombieInstanceCleanupScheduler() {
+            return new ZombieInstanceCleanupScheduler(null, null, new AtengAdminServerProperties());
+        }
+    }
+
     @Test
     @DisplayName("存在 Marker 且默认配置下成功装配 AtengAdminServerAutoConfiguration 并具备合理默认值")
     void shouldAutoConfigureWhenMarkerPresentWithDefaults() {
@@ -94,6 +103,9 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.isAllowLocalInstances()).isTrue();
                     assertThat(properties.getAllowedUrlPatterns()).isEmpty();
                     assertThat(properties.isEnableWriteOperations()).isTrue();
+                    assertThat(properties.getCleanup().isEnabled()).isFalse();
+                    assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofHours(1));
+                    assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(24));
 
                     // 验证认证与登录组件自动装配
                     assertThat(context).hasSingleBean(AdminAuthProvider.class);
@@ -107,6 +119,7 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(AtengAdminNotificationNotifier.class);
                     assertThat(context).hasBean("adminSaServletFilter");
                     assertThat(context.getBean("adminSaServletFilter")).isInstanceOf(SaServletFilter.class);
+                    assertThat(context).doesNotHaveBean(ZombieInstanceCleanupScheduler.class);
                 });
     }
 
@@ -135,6 +148,18 @@ class AtengAdminServerAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("开发者声明自定义 ZombieInstanceCleanupScheduler 时能够平滑覆盖默认装配")
+    void shouldAllowCustomCleanupSchedulerOverride() {
+        webContextRunner.withUserConfiguration(MarkerTestConfiguration.class, CustomCleanupSchedulerConfiguration.class)
+                .withPropertyValues("ateng.boot.admin.server.cleanup.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(ZombieInstanceCleanupScheduler.class);
+                    assertThat(context.getBean(ZombieInstanceCleanupScheduler.class))
+                            .isSameAs(context.getBean("customZombieInstanceCleanupScheduler"));
+                });
+    }
+
+    @Test
     @DisplayName("自定义配置属性能够正确绑定并生效")
     void shouldBindCustomPropertiesSuccessfully() {
         webContextRunner.withUserConfiguration(MarkerTestConfiguration.class)
@@ -146,7 +171,10 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.debounce-duration=45s",
                         "ateng.boot.admin.server.allow-local-instances=false",
                         "ateng.boot.admin.server.allowed-url-patterns[0]=^https://.*",
-                        "ateng.boot.admin.server.enable-write-operations=false"
+                        "ateng.boot.admin.server.enable-write-operations=false",
+                        "ateng.boot.admin.server.cleanup.enabled=true",
+                        "ateng.boot.admin.server.cleanup.interval=30m",
+                        "ateng.boot.admin.server.cleanup.zombie-threshold=12h"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(AtengAdminServerProperties.class);
@@ -159,6 +187,10 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.isAllowLocalInstances()).isFalse();
                     assertThat(properties.getAllowedUrlPatterns()).containsExactly("^https://.*");
                     assertThat(properties.isEnableWriteOperations()).isFalse();
+                    assertThat(properties.getCleanup().isEnabled()).isTrue();
+                    assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofMinutes(30));
+                    assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(12));
+                    assertThat(context).hasSingleBean(ZombieInstanceCleanupScheduler.class);
                 });
     }
 
