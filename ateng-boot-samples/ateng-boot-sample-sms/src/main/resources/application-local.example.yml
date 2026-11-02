@@ -1,0 +1,36 @@
+# 本地服务真实联调配置模板（请复制为 application-local.yml 并填入三大公有云真实短信凭据）
+# 真实 application-local.yml 已被根目录 .gitignore 忽略，绝对严禁提交公网真实 IP、AccessKey 与凭据入库
+spring:
+  config:
+    activate:
+      on-profile: local
+
+ateng:
+  boot:
+    sms:
+      default-channel: aliyun-prod
+      channels:
+        aliyun-prod:
+          supplier: ALIYUN
+          sign-name: YOUR_ALIYUN_SIGN_NAME
+          access-key-id: YOUR_ALIYUN_ACCESS_KEY_ID
+          access-key-secret: YOUR_ALIYUN_ACCESS_KEY_SECRET
+          endpoint: dysmsapi.aliyuncs.com
+          region-id: cn-hangzhou
+          failover-channel: tencent-backup
+        tencent-backup:
+          supplier: TENCENT
+          sign-name: YOUR_TENCENT_SIGN_NAME
+          sdk-app-id: YOUR_TENCENT_SDK_APP_ID
+          secret-id: YOUR_TENCENT_SECRET_ID
+          secret-key: YOUR_TENCENT_SECRET_KEY
+          endpoint: sms.tencentcloudapi.com
+          region: ap-guangzhou
+          failover-channel: huawei-backup
+        huawei-backup:
+          supplier: HUAWEI
+          sign-name: YOUR_HUAWEI_SIGN_NAME
+          app-key: YOUR_HUAWEI_APP_KEY
+          app-secret: YOUR_HUAWEI_APP_SECRET
+          sender: YOUR_HUAWEI_SENDER_CHANNEL_NUM
+          app-url: https://smsapi.cn-north-4.myhuaweicloud.com:443

@@ -23,11 +23,14 @@ import io.github.atengk.boot.sms.template.SmsTemplate;
 import io.github.atengk.boot.sms.template.SmsVerifyCodeTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.client.RestClient;
 
@@ -122,33 +125,13 @@ public class AtengSmsAutoConfiguration {
     /**
      * 自动装配手机号出站黑名单过滤器
      *
+     * @param properties 配置属性
      * @return SmsBlacklistProvider
      */
     @Bean
     @ConditionalOnMissingBean
-    public SmsBlacklistProvider smsBlacklistProvider() {
-        return new InMemorySmsBlacklistProvider();
-    }
-
-    /**
-     * 自动装配单日成本预算熔断器（检测到 Redis 时采用分布式熔断计数，否则优雅降级为纯内存实现）
-     *
-     * @param properties             配置属性
-     * @param redisTemplateProvider  Redis 模板提供者
-     * @param eventPublisherProvider 事件发布器提供者
-     * @return DailyBudgetBreaker
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public DailyBudgetBreaker dailyBudgetBreaker(SmsProperties properties,
-                                                 ObjectProvider<StringRedisTemplate> redisTemplateProvider,
-                                                 ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        ApplicationEventPublisher publisher = eventPublisherProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(), publisher);
-        }
-        return new InMemoryDailyBudgetBreaker(properties.getGuard(), publisher);
+    public SmsBlacklistProvider smsBlacklistProvider(SmsProperties properties) {
+        return new InMemorySmsBlacklistProvider(properties.getGuard().getBlacklist());
     }
 
     /**
@@ -213,40 +196,6 @@ public class AtengSmsAutoConfiguration {
     }
 
     /**
-     * 自动装配滑动窗口频控限流器（检测到 Redis 时采用分布式限流，否则优雅降级为纯内存限流）
-     *
-     * @param properties            配置属性
-     * @param redisTemplateProvider Redis 模板提供者
-     * @return SmsRateLimiter
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public SmsRateLimiter smsRateLimiter(SmsProperties properties,
-                                         ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            return new RedisSmsRateLimiter(redisTemplate, properties.getRateLimit());
-        }
-        return new InMemorySmsRateLimiter(properties.getRateLimit());
-    }
-
-    /**
-     * 自动装配短信验证码仓储（检测到 Redis 时采用分布式原子仓储，否则优雅降级为本地内存仓储）
-     *
-     * @param redisTemplateProvider Redis 模板提供者
-     * @return SmsVerifyCodeRepository
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    public SmsVerifyCodeRepository smsVerifyCodeRepository(ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
-        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
-        if (redisTemplate != null) {
-            return new RedisSmsVerifyCodeRepository(redisTemplate);
-        }
-        return new InMemorySmsVerifyCodeRepository();
-    }
-
-    /**
      * 自动装配短信验证码全生命周期治理门面
      *
      * @param smsTemplate 顶层发信门面
@@ -262,5 +211,64 @@ public class AtengSmsAutoConfiguration {
                                                        SmsRateLimiter rateLimiter,
                                                        SmsVerifyCodeRepository repository) {
         return new SmsVerifyCodeTemplate(smsTemplate, properties, rateLimiter, repository);
+    }
+
+    /**
+     * Redis 分布式基础设施自动装配配置类
+     * 仅当类路径存在 StringRedisTemplate 时探测加载
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(name = "org.springframework.data.redis.core.StringRedisTemplate")
+    static class RedisSmsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        public DailyBudgetBreaker redisDailyBudgetBreaker(SmsProperties properties,
+                                                          StringRedisTemplate redisTemplate,
+                                                          ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
+            return new RedisDailyBudgetBreaker(redisTemplate, properties.getGuard(), eventPublisherProvider.getIfAvailable());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        public SmsRateLimiter redisSmsRateLimiter(SmsProperties properties, StringRedisTemplate redisTemplate) {
+            return new RedisSmsRateLimiter(redisTemplate, properties.getRateLimit());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        @ConditionalOnBean(StringRedisTemplate.class)
+        public SmsVerifyCodeRepository redisSmsVerifyCodeRepository(StringRedisTemplate redisTemplate) {
+            return new RedisSmsVerifyCodeRepository(redisTemplate);
+        }
+    }
+
+    /**
+     * 纯内存自洽能力自动装配配置类
+     * 在未接入 Redis 或 RedisTemplate 不存在时优雅降级保底，确保 100% 离线自洽
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class InMemorySmsConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public DailyBudgetBreaker inMemoryDailyBudgetBreaker(SmsProperties properties,
+                                                            ObjectProvider<ApplicationEventPublisher> eventPublisherProvider) {
+            return new InMemoryDailyBudgetBreaker(properties.getGuard(), eventPublisherProvider.getIfAvailable());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsRateLimiter inMemorySmsRateLimiter(SmsProperties properties) {
+            return new InMemorySmsRateLimiter(properties.getRateLimit());
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SmsVerifyCodeRepository inMemorySmsVerifyCodeRepository() {
+            return new InMemorySmsVerifyCodeRepository();
+        }
     }
 }

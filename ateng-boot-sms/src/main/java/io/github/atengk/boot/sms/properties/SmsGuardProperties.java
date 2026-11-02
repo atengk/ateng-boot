@@ -24,4 +24,9 @@ public class SmsGuardProperties implements Serializable {
      * 是否启用出站黑名单静默前置拦截，默认 true
      */
     private boolean blacklistEnabled = true;
+
+    /**
+     * 初始出站拦截手机号黑名单集合
+     */
+    private java.util.List<String> blacklist = new java.util.ArrayList<>();
 }

@@ -168,9 +168,12 @@ public class SmsCallbackController {
             phone = getStr(item, "from");
             content = getStr(item, "body");
         } else {
-            phone = item.containsKey("phone") ? getStr(item, "phone") : getStr(item, "mobile");
-            content = item.containsKey("content") ? getStr(item, "content") : getStr(item, "text");
-            signName = getStr(item, "signName");
+            phone = item.containsKey("phone_number") ? getStr(item, "phone_number")
+                    : (item.containsKey("phone") ? getStr(item, "phone") : getStr(item, "mobile"));
+            content = item.containsKey("content") ? getStr(item, "content")
+                    : (item.containsKey("text") ? getStr(item, "text") : getStr(item, "body"));
+            signName = item.containsKey("sign_name") ? getStr(item, "sign_name")
+                    : (item.containsKey("sign") ? getStr(item, "sign") : getStr(item, "signName"));
         }
 
         if (phone == null || phone.isBlank()) {
@@ -207,11 +210,15 @@ public class SmsCallbackController {
             bizId = getStr(item, "smsMsgId");
             success = "DELIVRD".equalsIgnoreCase(resultCode);
         } else {
-            phone = item.containsKey("phone") ? getStr(item, "phone") : getStr(item, "mobile");
-            resultCode = item.containsKey("resultCode") ? getStr(item, "resultCode") : getStr(item, "status");
-            resultMessage = getStr(item, "resultMessage");
-            bizId = item.containsKey("bizId") ? getStr(item, "bizId") : getStr(item, "sid");
-            success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode);
+            phone = item.containsKey("phone_number") ? getStr(item, "phone_number")
+                    : (item.containsKey("phone") ? getStr(item, "phone")
+                    : (item.containsKey("mobile") ? getStr(item, "mobile") : getStr(item, "to")));
+            resultCode = item.containsKey("err_code") ? getStr(item, "err_code")
+                    : (item.containsKey("resultCode") ? getStr(item, "resultCode") : getStr(item, "status"));
+            resultMessage = item.containsKey("err_msg") ? getStr(item, "err_msg") : getStr(item, "resultMessage");
+            bizId = item.containsKey("biz_id") ? getStr(item, "biz_id")
+                    : (item.containsKey("bizId") ? getStr(item, "bizId") : getStr(item, "sid"));
+            success = Boolean.TRUE.equals(item.get("success")) || "DELIVRD".equalsIgnoreCase(resultCode) || "SUCCESS".equalsIgnoreCase(resultCode);
         }
 
         if (phone == null || phone.isBlank()) {

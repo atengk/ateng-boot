@@ -94,8 +94,8 @@ class SmsBatchAndGuardTest {
         assertEquals(2, mockSmsProvider.getSentCount());
 
         List<SmsRequest> capturedRequests = mockSmsProvider.getSentRequests();
-        assertEquals(1000, capturedRequests.get(0).getPhones().size());
-        assertEquals(50, capturedRequests.get(1).getPhones().size());
+        List<Integer> capturedSizes = capturedRequests.stream().map(req -> req.getPhones().size()).sorted().toList();
+        assertEquals(List.of(50, 1000), capturedSizes);
     }
 
     @Test
@@ -110,8 +110,8 @@ class SmsBatchAndGuardTest {
         tencentChannel.setSignName("腾讯测试");
         props.getChannels().put("tencent-test", tencentChannel);
 
-        // 使用自定义 MockSmsProvider 监听腾讯云调用
-        List<SmsRequest> capturedList = new ArrayList<>();
+        // 使用自定义 MockSmsProvider 监听腾讯云调用（并发安全收集）
+        List<SmsRequest> capturedList = new java.util.concurrent.CopyOnWriteArrayList<>();
         SmsProvider tencentMockProvider = new SmsProvider() {
             @Override
             public SmsSupplier getSupplier() {
@@ -146,9 +146,11 @@ class SmsBatchAndGuardTest {
         assertEquals(450, result.getSuccessCount());
         assertEquals(3, result.getBatchResults().size(), "450个号码按腾讯单批上限200应切为3批");
         assertEquals(3, capturedList.size());
-        assertEquals(200, capturedList.get(0).getPhones().size());
-        assertEquals(200, capturedList.get(1).getPhones().size());
-        assertEquals(50, capturedList.get(2).getPhones().size());
+        List<Integer> capturedSizes = capturedList.stream()
+                .map(req -> req.getPhones().size())
+                .sorted()
+                .toList();
+        assertEquals(List.of(50, 200, 200), capturedSizes);
     }
 
     @Test
