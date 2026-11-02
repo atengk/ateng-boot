@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>${project.groupId}:${project.artifactId}</name>
-    <description>ateng-boot 工业级 SnailJob 分布式任务调度与分布式重试双擎生产加固底座（基于 2.0.2 基线，支持自动装配、四维上下文透传与远程重试保真、SLF4J 动态日志镜像、本地硬看门狗、强类型入参校验与 100% 离线自洽沙箱）</description>
+    <description>ateng-boot 工业级 SnailJob 分布式任务调度与分布式重试双擎生产加固底座（基于 1.10.0 基线，支持自动装配、四维上下文透传与远程重试保真、SLF4J 动态日志镜像、本地硬看门狗、强类型入参校验与 100% 离线自洽沙箱）</description>
 
     <dependencies>
         <!-- 核心底座依赖 (提供统一异常契约、结果码、四维上下文透传与受管线程池设施) -->
@@ -23,7 +23,7 @@
             <artifactId>ateng-boot-core</artifactId>
         </dependency>
 
-        <!-- SnailJob 官方客户端核心 Starter 与双擎依赖 (2.0.2 基线，BOM 统管) -->
+        <!-- SnailJob 官方客户端核心 Starter 与双擎依赖 (1.10.0 基线，BOM 统管) -->
         <dependency>
             <groupId>com.aizuda</groupId>
             <artifactId>snail-job-client-starter</artifactId>
