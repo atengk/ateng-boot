@@ -4,6 +4,7 @@ import io.github.atengk.boot.sms.properties.SmsProperties;
 import io.github.atengk.boot.sms.provider.AliyunSmsProvider;
 import io.github.atengk.boot.sms.provider.MockSmsProvider;
 import io.github.atengk.boot.sms.provider.SmsProvider;
+import io.github.atengk.boot.sms.provider.TencentSmsProvider;
 import io.github.atengk.boot.sms.template.SmsTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -48,6 +49,19 @@ public class AtengSmsAutoConfiguration {
     public AliyunSmsProvider aliyunSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
         RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
         return new AliyunSmsProvider(builder);
+    }
+
+    /**
+     * 自动装配腾讯云短信驱动 (API 3.0 TC3 协议原生直连)
+     *
+     * @param restClientBuilderProvider RestClient 构造器提供者
+     * @return TencentSmsProvider
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public TencentSmsProvider tencentSmsProvider(ObjectProvider<RestClient.Builder> restClientBuilderProvider) {
+        RestClient.Builder builder = restClientBuilderProvider.getIfAvailable(RestClient::builder);
+        return new TencentSmsProvider(builder);
     }
 
     /**
