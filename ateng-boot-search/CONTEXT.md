@@ -59,3 +59,24 @@ _Avoid_: TextHighlight, EmTagField, MarkField, 高亮切片
 **SearchDataScopeHelper (检索数据权限辅助器)**:
 用于快速向当前查询流式构建器注入多租户隔离与部门/个人数据范围过滤条件的上下文装配辅助器。
 _Avoid_: EsPermissionUtil, SearchFilterHelper, DataScopeAppender
+
+**NestedQuery (嵌套对象检索)**:
+针对文档内对象数组（如商品包含多个 SKU）进行独立作用域精准匹配的检索算子，有效隔离各子对象内部多字段组合条件，彻底消除跨对象多属性交叉误命中。
+_Avoid_: ObjectQuery, InnerQuery, EmbeddedFilter, 嵌入式查询
+
+**FieldCollapsing (字段折叠去重)**:
+基于文档特定字段（如 SPU ID 或品牌商）对命中结果集进行分组去重并保留最优代表文档的原生折叠机制，避免同类热门数据在首屏搜索结果中霸屏。
+_Avoid_: DistinctQuery, GroupByHit, Deduplication, 折叠展示
+
+**DeleteByQuery (条件驱动批量清理)**:
+基于 DSL 检索条件向底层搜索引擎直接下发的批量物理删除指令，自动附带多租户隔离约束并在高并发下遵循容错自愈策略。
+_Avoid_: BatchDelete, PurgeQuery, QueryRemove, 范围删除
+
+**Reindex (跨索引数据重索引)**:
+在搜索引擎服务端将指定源索引（支持可选过滤条件）全量或增量复制至目标新索引的高可用数据同步机制，与原子别名热切换共同构成零停机索引平滑重建闭环。
+_Avoid_: IndexMigrate, DataSync, CopyIndex, 索引拷贝
+
+**DateHistogram (时序时间直方图聚合)**:
+按固定日历时间间隔（如按天、按小时）对时序数据字段进行切片分桶度量统计的聚合算子，专供日志审计、业务大盘趋势与监控报表看板构建。
+_Avoid_: TimeBucket, DateAgg, TimelineStat, 时间切片
+

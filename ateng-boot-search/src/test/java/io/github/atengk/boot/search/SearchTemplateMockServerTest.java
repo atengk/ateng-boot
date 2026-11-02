@@ -1822,4 +1822,188 @@ class SearchTemplateMockServerTest {
         String body = req.getBody().readUtf8();
         assertThat(body).doesNotContain("\"search_after\"");
     }
+
+    @Test
+    @DisplayName("测试 existsById 存在时返回 true 并发出 HEAD 请求")
+    void testExistsByIdSuccess() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById(UserDoc.class, "1849764512345678901");
+        assertThat(exists).isTrue();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_doc/1849764512345678901");
+    }
+
+    @Test
+    @DisplayName("测试 existsById 不存在时返回 false")
+    void testExistsByIdNotFound() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(404)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById(UserDoc.class, "999999");
+        assertThat(exists).isFalse();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_doc/999999");
+    }
+
+    @Test
+    @DisplayName("测试 existsById 支持显式指定索引与路由键")
+    void testExistsByIdWithIndexAndRouting() throws Exception {
+        mockWebServer.enqueue(new MockResponse()
+                .setResponseCode(200)
+                .setHeader("X-Elastic-Product", "Elasticsearch"));
+
+        boolean exists = searchTemplate.existsById("custom_user_idx", "1001", "route_east");
+        assertThat(exists).isTrue();
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("HEAD");
+        assertThat(recordedRequest.getPath()).contains("/custom_user_idx/_doc/1001");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+    }
+
+    @Test
+    @DisplayName("测试实体标注 @SearchRouting 时未传 routing 调用 existsById 触发防御性前置阻断")
+    void testExistsByIdRoutingRequiredGuard() {
+        assertThatThrownBy(() -> searchTemplate.existsById(RoutedOrderDoc.class, "order_1001"))
+                .isInstanceOf(SearchException.class)
+                .satisfies(ex -> {
+                    SearchException se = (SearchException) ex;
+                    assertThat(se.getResultCode()).isEqualTo(SearchResultCode.SEARCH_ROUTING_REQUIRED);
+                    assertThat(se.getMessage()).contains("Routing key is required");
+                });
+
+        assertThat(mockWebServer.getRequestCount()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("测试 existsById 参数校验前置防卫")
+    void testExistsByIdParameterValidation() {
+        assertThatThrownBy(() -> searchTemplate.existsById((Class<?>) null, "1001"))
+                .isInstanceOf(NullPointerException.class);
+
+        assertThatThrownBy(() -> searchTemplate.existsById(UserDoc.class, " "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Document id must not be blank");
+
+        assertThatThrownBy(() -> searchTemplate.existsById(" ", "1001"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Index must not be blank");
+    }
+
+    @Test
+    @DisplayName("测试 count 精准统计文档条数")
+    void testCountSuccess() throws Exception {
+        String mockResponseBody = """
+                {
+                  "count": 42,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().term("username", "ateng").build();
+        long count = searchTemplate.count(query, UserDoc.class);
+
+        assertThat(count).isEqualTo(42L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_count");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"username\":{\"value\":\"ateng\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 count 多租户自动隐式注入租户隔离过滤")
+    void testCountWithMultiTenancy() throws Exception {
+        TenantContextHolder.setTenantId("tenant_001");
+        String mockResponseBody = """
+                {
+                  "count": 5,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        long count = searchTemplate.count(UserDoc.class);
+
+        assertThat(count).isEqualTo(5L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).isEqualTo("/user_idx/_count");
+        String requestBody = recordedRequest.getBody().readUtf8();
+        assertThat(requestBody).contains("\"term\":{\"tenant_id\":{\"value\":\"tenant_001\"}}");
+    }
+
+    @Test
+    @DisplayName("测试 count 当索引不存在时保底返回 0")
+    void testCountIndexNotFound() {
+        String mockResponseBody = """
+                {
+                  "error": {
+                    "root_cause": [
+                      {
+                        "type": "index_not_found_exception",
+                        "reason": "no such index [non_existing_idx]",
+                        "index": "non_existing_idx"
+                      }
+                    ],
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [non_existing_idx]",
+                    "index": "non_existing_idx"
+                  },
+                  "status": 404
+                }
+                """;
+        mockWebServer.enqueue(esResponse(404, mockResponseBody));
+
+        long count = searchTemplate.count("non_existing_idx", null);
+        assertThat(count).isEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("测试 count 指定索引与 routing 路由参数")
+    void testCountWithExplicitIndexAndRouting() throws Exception {
+        String mockResponseBody = """
+                {
+                  "count": 18,
+                  "_shards": {
+                    "total": 1,
+                    "successful": 1,
+                    "skipped": 0,
+                    "failed": 0
+                  }
+                }
+                """;
+        mockWebServer.enqueue(esResponse(200, mockResponseBody));
+
+        SearchQuery query = SearchQuery.builder().routing("route_east").build();
+        long count = searchTemplate.count("custom_order_idx", query);
+
+        assertThat(count).isEqualTo(18L);
+
+        RecordedRequest recordedRequest = mockWebServer.takeRequest();
+        assertThat(recordedRequest.getMethod()).isEqualTo("POST");
+        assertThat(recordedRequest.getPath()).contains("/custom_order_idx/_count");
+        assertThat(recordedRequest.getPath()).contains("routing=route_east");
+    }
 }

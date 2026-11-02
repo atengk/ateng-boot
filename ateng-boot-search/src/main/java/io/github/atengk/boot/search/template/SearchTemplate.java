@@ -11,6 +11,7 @@ import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.CountResponse;
 import co.elastic.clients.elasticsearch.core.DeleteResponse;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
@@ -18,6 +19,7 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.UpdateResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.elasticsearch.core.search.Hit;
+import co.elastic.clients.transport.endpoints.BooleanResponse;
 import io.github.atengk.boot.core.context.TenantContextHolder;
 import io.github.atengk.boot.core.util.CollectionUtil;
 import io.github.atengk.boot.search.bulk.SearchBulkProcessor;
@@ -436,6 +438,104 @@ public class SearchTemplate {
             }
             throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
                     "Failed to get document [id=" + id + "] from index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
+
+    // ==================== 2.1 文档存在性探测 (Exists) ====================
+
+    /**
+     * 根据文档 ID 判断文档是否存在
+     * <p>
+     * 自动从实体类上提取 @SearchIndex 索引名。通过底层 HTTP HEAD 请求快速探测，
+     * 无需拉取或反序列化 _source 报文体，响应时间微秒级。若文档不存在或索引不存在返回 false。
+     *
+     * @param clazz 实体类类型
+     * @param id    文档 ID
+     * @return 文档是否存在
+     */
+    public boolean existsById(Class<?> clazz, String id) {
+        return existsById(clazz, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键判断文档是否存在
+     *
+     * @param clazz   实体类类型
+     * @param id      文档 ID
+     * @param routing 分片路由键（若实体标注了 @SearchRouting 则必须显式传递）
+     * @return 文档是否存在
+     */
+    public boolean existsById(Class<?> clazz, String id, String routing) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = SearchMetadataHelper.resolveIndexName(clazz);
+        return existsById(index, clazz, id, routing);
+    }
+
+    /**
+     * 根据文档 ID 判断指定索引中的文档是否存在
+     *
+     * @param index 目标索引名
+     * @param id    文档 ID
+     * @return 文档是否存在
+     */
+    public boolean existsById(String index, String id) {
+        return existsById(index, null, id, null);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键判断指定索引中的文档是否存在
+     *
+     * @param index   目标索引名
+     * @param id      文档 ID
+     * @param routing 分片路由键
+     * @return 文档是否存在
+     */
+    public boolean existsById(String index, String id, String routing) {
+        return existsById(index, null, id, routing);
+    }
+
+    /**
+     * 根据文档 ID 与分片路由键从指定索引判断文档是否存在
+     *
+     * @param index   目标索引名
+     * @param clazz   实体类类型（若标注了 @SearchRouting 且 routing 为空时触发快速失败，可为 null）
+     * @param id      文档 ID
+     * @param routing 分片路由键
+     * @return 文档是否存在
+     */
+    public boolean existsById(String index, Class<?> clazz, String id, String routing) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        if (!StringUtils.hasText(id)) {
+            throw new IllegalArgumentException("Document id must not be blank");
+        }
+
+        // 分片路由防漏校验：若实体标注了 @SearchRouting 但未提供 routing，执行 Fail-Fast
+        if (clazz != null && SearchMetadataHelper.hasRoutingAnnotation(clazz) && !StringUtils.hasText(routing)) {
+            throw new SearchException(SearchResultCode.SEARCH_ROUTING_REQUIRED,
+                    "Routing key is required for document entity [" + clazz.getSimpleName() + "] annotated with @SearchRouting. Use existsById with routing parameter.");
+        }
+
+        try {
+            BooleanResponse response = getClient().exists(builder -> {
+                builder.index(index).id(id);
+                if (StringUtils.hasText(routing)) {
+                    builder.routing(routing);
+                }
+                return builder;
+            });
+            return response.value();
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Document or index not found for index [{}] and id [{}]", index, id);
+                return false;
+            }
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+                    "Failed to check document existence for id [" + id + "] on index [" + index + "]: " + e.getMessage(), e);
         }
     }
 
@@ -1205,7 +1305,92 @@ public class SearchTemplate {
                 .build();
     }
 
-    // ==================== 6. 文档检索与双轨分页 (Search & SearchAfter) ====================
+    // ==================== 6. 文档检索、计数与双轨分页 (Search, Count & SearchAfter) ====================
+
+    /**
+     * 统计指定实体映射索引中的文档总数
+     *
+     * @param clazz 实体类类型
+     * @return 匹配的文档总数
+     */
+    public long count(Class<?> clazz) {
+        return count(null, clazz);
+    }
+
+    /**
+     * 统计指定实体映射索引中符合查询规格的文档总数
+     * <p>
+     * 对接原生 _count 轻量端点，免除相关度打分与文档排序开销；自动组装多租户隐式过滤。
+     *
+     * @param query 查询规格对象（若为 null 则统计全量文档）
+     * @param clazz 实体类类型
+     * @return 匹配的文档总数
+     */
+    public long count(SearchQuery query, Class<?> clazz) {
+        Objects.requireNonNull(clazz, "clazz must not be null");
+        String index = query != null && CollectionUtil.isNotEmpty(query.getIndices())
+                ? query.getIndices().get(0)
+                : SearchMetadataHelper.resolveIndexName(clazz);
+        return count(index, query, clazz);
+    }
+
+    /**
+     * 统计指定索引中符合查询规格的文档总数
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象（若为 null 则统计全量文档）
+     * @return 匹配的文档总数
+     */
+    public long count(String index, SearchQuery query) {
+        return count(index, query, null);
+    }
+
+    /**
+     * 统计指定索引中符合查询规格与实体映射规则的文档总数
+     *
+     * @param index 目标索引名
+     * @param query 查询规格对象（若为 null 则统计全量文档）
+     * @param clazz 实体类类型（用于多租户隐式过滤等元数据解析，可为 null）
+     * @return 匹配的文档总数
+     */
+    public long count(String index, SearchQuery query, Class<?> clazz) {
+        if (!StringUtils.hasText(index)) {
+            throw new IllegalArgumentException("Index must not be blank");
+        }
+        if (searchMetrics != null) {
+            return searchMetrics.recordQuery(() -> executeDoCount(index, query, clazz));
+        }
+        return executeDoCount(index, query, clazz);
+    }
+
+    private long executeDoCount(String index, SearchQuery query, Class<?> clazz) {
+        try {
+            Query baseQuery = query != null ? query.getQuery() : null;
+            Query effectiveQuery = wrapTenantFilterIfNecessary(baseQuery, clazz);
+
+            CountResponse response = getClient().count(b -> {
+                b.index(index);
+                if (effectiveQuery != null) {
+                    b.query(effectiveQuery);
+                }
+                if (query != null && StringUtils.hasText(query.getRouting())) {
+                    b.routing(query.getRouting());
+                }
+                return b;
+            });
+            return response.count();
+        } catch (Exception e) {
+            if (SearchExceptionClassifier.isNotFound(e)) {
+                log.debug("Index not found during count on index [{}]", index);
+                return 0L;
+            }
+            if (e instanceof SearchException se) {
+                throw se;
+            }
+            throw new SearchException(SearchResultCode.SEARCH_DOCUMENT_GET_ERROR,
+                    "Failed to execute count on index [" + index + "]: " + e.getMessage(), e);
+        }
+    }
 
     /**
      * 执行标准浅分页检索
