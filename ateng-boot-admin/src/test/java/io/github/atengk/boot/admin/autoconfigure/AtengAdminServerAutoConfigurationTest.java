@@ -106,6 +106,9 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getCleanup().isEnabled()).isFalse();
                     assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofHours(1));
                     assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(24));
+                    assertThat(properties.getAlert().getIncludedServices()).isEmpty();
+                    assertThat(properties.getAlert().getExcludedServices()).isEmpty();
+                    assertThat(properties.getAlert().getNotifyStatuses()).containsExactly("DOWN", "OFFLINE");
 
                     // 验证认证与登录组件自动装配
                     assertThat(context).hasSingleBean(AdminAuthProvider.class);
@@ -174,7 +177,10 @@ class AtengAdminServerAutoConfigurationTest {
                         "ateng.boot.admin.server.enable-write-operations=false",
                         "ateng.boot.admin.server.cleanup.enabled=true",
                         "ateng.boot.admin.server.cleanup.interval=30m",
-                        "ateng.boot.admin.server.cleanup.zombie-threshold=12h"
+                        "ateng.boot.admin.server.cleanup.zombie-threshold=12h",
+                        "ateng.boot.admin.server.alert.included-services[0]=order-*",
+                        "ateng.boot.admin.server.alert.excluded-services[0]=temp-*",
+                        "ateng.boot.admin.server.alert.notify-statuses[0]=DOWN"
                 )
                 .run(context -> {
                     assertThat(context).hasSingleBean(AtengAdminServerProperties.class);
@@ -190,6 +196,9 @@ class AtengAdminServerAutoConfigurationTest {
                     assertThat(properties.getCleanup().isEnabled()).isTrue();
                     assertThat(properties.getCleanup().getInterval()).isEqualTo(Duration.ofMinutes(30));
                     assertThat(properties.getCleanup().getZombieThreshold()).isEqualTo(Duration.ofHours(12));
+                    assertThat(properties.getAlert().getIncludedServices()).containsExactly("order-*");
+                    assertThat(properties.getAlert().getExcludedServices()).containsExactly("temp-*");
+                    assertThat(properties.getAlert().getNotifyStatuses()).containsExactly("DOWN");
                     assertThat(context).hasSingleBean(ZombieInstanceCleanupScheduler.class);
                 });
     }

@@ -17,6 +17,8 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -192,5 +194,102 @@ class AtengAdminNotificationNotifierTest {
         AtengAdminNotificationNotifier defaultNotifier = new AtengAdminNotificationNotifier(repository, notificationTemplateProvider, properties);
         assertThat(defaultNotifier).isNotNull();
         defaultNotifier.stop();
+    }
+
+    @Test
+    @DisplayName("场景 8：命中 excluded-services 黑名单的服务发生故障时静默忽略告警")
+    void shouldSuppressAlertWhenServiceMatchesExcludedList() {
+        properties.getAlert().getExcludedServices().add("order-*");
+
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        notifier.doNotify(downEvent, registeredInstance).block();
+
+        verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+        assertThat(notifier.getPendingTasks()).doesNotContainKey(instanceId);
+    }
+
+    @Test
+    @DisplayName("场景 9：配置 included-services 白名单时，未在白名单中的服务发生故障时静默忽略告警")
+    void shouldSuppressAlertWhenServiceNotInIncludedList() {
+        properties.getAlert().getIncludedServices().add("payment-*");
+
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        notifier.doNotify(downEvent, registeredInstance).block();
+
+        verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+        assertThat(notifier.getPendingTasks()).doesNotContainKey(instanceId);
+    }
+
+    @Test
+    @DisplayName("场景 10：配置 included-services 白名单时，白名单内的服务正常触发防抖调度")
+    void shouldAllowAlertWhenServiceMatchesIncludedList() {
+        properties.getAlert().getIncludedServices().add("order-*");
+
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofDown());
+        notifier.doNotify(downEvent, registeredInstance).block();
+
+        verify(scheduler, times(1)).schedule(any(Runnable.class), eq(30L), eq(TimeUnit.SECONDS));
+        assertThat(notifier.getPendingTasks()).containsKey(instanceId);
+    }
+
+    @Test
+    @DisplayName("场景 11：配置 notify-statuses 状态白名单时，非目标状态变迁被静默忽略")
+    void shouldSuppressAlertWhenStatusNotInNotifyStatuses() {
+        properties.getAlert().setNotifyStatuses(List.of("DOWN"));
+
+        InstanceStatusChangedEvent offlineEvent = new InstanceStatusChangedEvent(instanceId, 1L, StatusInfo.ofOffline());
+        notifier.doNotify(offlineEvent, registeredInstance).block();
+
+        verify(scheduler, never()).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+        assertThat(notifier.getPendingTasks()).doesNotContainKey(instanceId);
+    }
+
+    @Test
+    @DisplayName("场景 12：富文本告警卡片能够自动提取应用版本与健康探针详情，并深度脱敏安全凭据")
+    void shouldAppendProbeDetailsAndVersionToCardMessage() {
+        Registration registrationWithMeta = Registration.create("order-service", "http://order:8080/actuator/health")
+                .serviceUrl("http://order:8080")
+                .metadata("version", "v3.2.1")
+                .metadata("region", "cn-hangzhou")
+                .metadata("user.password", "SUPER_SECRET_PWD")
+                .metadata("bearer-token", "RAW_JWT_TOKEN")
+                .build();
+        Instance enrichedInstance = Instance.create(instanceId).register(registrationWithMeta);
+
+        Map<String, Object> details = Map.of(
+                "diskSpace", Map.of("status", "DOWN", "error", "Disk is 99% full"),
+                "db", Map.of("status", "DOWN", "error", "Connection timeout to MySQL")
+        );
+        StatusInfo statusInfoWithDetails = StatusInfo.valueOf("DOWN", details);
+        InstanceStatusChangedEvent downEvent = new InstanceStatusChangedEvent(instanceId, 1L, statusInfoWithDetails);
+
+        notifier.doNotify(downEvent, enrichedInstance).block();
+        assertThat(capturedScheduledTask.get()).isNotNull();
+
+        // 执行防抖超时任务
+        capturedScheduledTask.get().run();
+
+        ArgumentCaptor<CardMessage> cardCaptor = ArgumentCaptor.forClass(CardMessage.class);
+        verify(notificationTemplate, times(1)).sendAsync(cardCaptor.capture());
+
+        CardMessage sentCard = cardCaptor.getValue();
+        String content = sentCard.getContent();
+
+        // 断言富文本诊断字段呈现
+        assertThat(content).contains("**应用版本**：v3.2.1");
+        assertThat(content).contains("**探针诊断详情**：");
+        assertThat(content).contains("diskSpace");
+        assertThat(content).contains("Disk is 99% full");
+        assertThat(content).contains("db");
+        assertThat(content).contains("Connection timeout to MySQL");
+
+        // 断言元数据提取与凭据脱敏保护
+        assertThat(content).contains("**实例元数据**：");
+        assertThat(content).contains("region");
+        assertThat(content).contains("cn-hangzhou");
+        assertThat(content).doesNotContain("SUPER_SECRET_PWD");
+        assertThat(content).doesNotContain("RAW_JWT_TOKEN");
+        assertThat(content).doesNotContain("user.password");
+        assertThat(content).doesNotContain("bearer-token");
     }
 }

@@ -15,14 +15,18 @@ import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.admin.provider.AtengActuatorHttpHeadersProvider;
 import io.github.atengk.boot.admin.scheduler.ZombieInstanceCleanupScheduler;
 import io.github.atengk.boot.admin.security.AdminSsrfGuardFilter;
+import io.github.atengk.boot.notification.model.CardMessage;
+import io.github.atengk.boot.notification.template.NotificationTemplate;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -31,9 +35,17 @@ import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -78,18 +90,30 @@ class AdminSampleIntegrationTest {
     @Autowired(required = false)
     private ZombieInstanceCleanupScheduler zombieCleanupScheduler;
 
+    @MockBean
+    private NotificationTemplate notificationTemplate;
+
     @AfterEach
     void tearDown() {
-        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO，重置写操作开关与僵尸阈值
+        // 全自洽单测上下文零污染治理：确保 Logback 状态恢复为 INFO，重置写操作开关、通知配置与阈值
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
         ch.qos.logback.classic.Logger logger = context.getLogger("io.github.atengk.boot.sample.admin");
         if (logger != null) {
             logger.setLevel(Level.INFO);
         }
+        if (notificationTemplate != null) {
+            reset(notificationTemplate);
+        }
         if (properties != null) {
             properties.setEnableWriteOperations(true);
+            properties.setDebounceDuration(Duration.ofSeconds(30));
             if (properties.getCleanup() != null) {
                 properties.getCleanup().setZombieThreshold(Duration.ofHours(24));
+            }
+            if (properties.getAlert() != null) {
+                properties.getAlert().getIncludedServices().clear();
+                properties.getAlert().getExcludedServices().clear();
+                properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN", "OFFLINE")));
             }
         }
     }
@@ -470,5 +494,104 @@ class AdminSampleIntegrationTest {
         } finally {
             properties.getCleanup().setZombieThreshold(originalThreshold);
         }
+    }
+
+    @Test
+    @DisplayName("场景 11：告警通知规则名单过滤与探针富文本诊断增强端到端联动测试")
+    void shouldFilterAlertsByRulesAndEnrichProbeDetails() throws Exception {
+        // 1. 测试黑名单排除：配置 excluded-services 命中 silent-* 服务直接静默
+        properties.getAlert().getExcludedServices().add("silent-*");
+
+        InstanceId silentId = InstanceId.of("silent-inst-01");
+        Instance silentInstance = Instance.create(silentId)
+                .register(de.codecentric.boot.admin.server.domain.values.Registration.create("silent-svc", "http://127.0.0.1:8080/health").build());
+        instanceRepository.save(silentInstance).block();
+
+        InstanceStatusChangedEvent silentDown = new InstanceStatusChangedEvent(silentId, 1L, StatusInfo.ofDown());
+        notificationNotifier.notify(silentDown).block();
+
+        // 验证静默跳过：未纳入防抖队列，未调用通知发送
+        assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(silentId);
+        verify(notificationTemplate, never()).sendAsync(any());
+
+        // 2. 测试白名单过滤：配置 included-services 仅关注 core-* 服务
+        properties.getAlert().getExcludedServices().clear();
+        properties.getAlert().getIncludedServices().add("core-*");
+
+        InstanceId otherId = InstanceId.of("other-inst-01");
+        Instance otherInstance = Instance.create(otherId)
+                .register(de.codecentric.boot.admin.server.domain.values.Registration.create("other-svc", "http://127.0.0.1:8080/health").build());
+        instanceRepository.save(otherInstance).block();
+
+        InstanceStatusChangedEvent otherDown = new InstanceStatusChangedEvent(otherId, 1L, StatusInfo.ofDown());
+        notificationNotifier.notify(otherDown).block();
+
+        assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(otherId);
+
+        // 3. 测试状态白名单过滤：配置 notify-statuses 仅关注 DOWN 状态，忽略 OFFLINE
+        properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN")));
+
+        InstanceId coreOfflineId = InstanceId.of("core-offline-01");
+        Instance coreOfflineInstance = Instance.create(coreOfflineId)
+                .register(de.codecentric.boot.admin.server.domain.values.Registration.create("core-payment-svc", "http://127.0.0.1:8080/health").build());
+        instanceRepository.save(coreOfflineInstance).block();
+
+        InstanceStatusChangedEvent offlineEvent = new InstanceStatusChangedEvent(coreOfflineId, 1L, StatusInfo.ofOffline());
+        notificationNotifier.notify(offlineEvent).block();
+
+        assertThat(notificationNotifier.getPendingTasks()).doesNotContainKey(coreOfflineId);
+
+        // 4. 测试富文本诊断卡片增强与敏感凭据脱敏
+        properties.getAlert().setNotifyStatuses(new ArrayList<>(List.of("DOWN", "OFFLINE")));
+        properties.setDebounceDuration(Duration.ZERO);
+
+        InstanceId coreAlertId = InstanceId.of("core-alert-01");
+        de.codecentric.boot.admin.server.domain.values.Registration enrichedReg = de.codecentric.boot.admin.server.domain.values.Registration.builder()
+                .name("core-order-svc")
+                .serviceUrl("http://127.0.0.1:8080/")
+                .healthUrl("http://127.0.0.1:8080/actuator/health")
+                .managementUrl("http://127.0.0.1:8080/actuator")
+                .metadata("version", "v2.5.0")
+                .metadata("zone", "zone-east-1")
+                .metadata("user.password", "TOP_SECRET_PASSWORD")
+                .metadata("bearer-token", "RAW_ACCESS_TOKEN")
+                .build();
+        Instance coreAlertInstance = Instance.create(coreAlertId).register(enrichedReg);
+        instanceRepository.save(coreAlertInstance).block();
+
+        Map<String, Object> probeDetails = Map.of(
+                "diskSpace", Map.of("status", "DOWN", "error", "Free disk space is below threshold"),
+                "redis", Map.of("status", "DOWN", "error", "Redis connection refused")
+        );
+        StatusInfo failureStatus = StatusInfo.valueOf("DOWN", probeDetails);
+        InstanceStatusChangedEvent coreDownEvent = new InstanceStatusChangedEvent(coreAlertId, 1L, failureStatus);
+
+        notificationNotifier.notify(coreDownEvent).block();
+
+        // 异步等待卡片消息生成并断言
+        ArgumentCaptor<CardMessage> cardCaptor = ArgumentCaptor.forClass(CardMessage.class);
+        verify(notificationTemplate, timeout(3000).times(1)).sendAsync(cardCaptor.capture());
+
+        CardMessage sentCard = cardCaptor.getValue();
+        assertThat(sentCard.getTitle()).contains("微服务实例异常宕机告警");
+        String content = sentCard.getContent();
+
+        // 验证应用名、版本与探针错误根因呈现
+        assertThat(content).contains("core-order-svc");
+        assertThat(content).contains("**应用版本**：v2.5.0");
+        assertThat(content).contains("**探针诊断详情**：");
+        assertThat(content).contains("diskSpace");
+        assertThat(content).contains("Free disk space is below threshold");
+        assertThat(content).contains("redis");
+        assertThat(content).contains("Redis connection refused");
+
+        // 验证实例普通元数据保留与机密敏感字段脱敏排除
+        assertThat(content).contains("**实例元数据**：");
+        assertThat(content).contains("zone");
+        assertThat(content).contains("zone-east-1");
+        assertThat(content).doesNotContain("TOP_SECRET_PASSWORD");
+        assertThat(content).doesNotContain("RAW_ACCESS_TOKEN");
+        assertThat(content).doesNotContain("user.password");
+        assertThat(content).doesNotContain("bearer-token");
     }
 }

@@ -72,6 +72,38 @@ public class AtengAdminServerProperties {
     private CleanupProperties cleanup = new CleanupProperties();
 
     /**
+     * 告警通知规则与过滤配置
+     */
+    @NestedConfigurationProperty
+    private AlertProperties alert = new AlertProperties();
+
+    /**
+     * 告警通知过滤规则配置属性
+     *
+     * @author Ateng
+     * @since 2026-11-02
+     */
+    @Getter
+    @Setter
+    public static class AlertProperties {
+
+        /**
+         * 告警通知关注的服务名白名单（支持通配符或精确匹配；若为空则默认关注所有服务）
+         */
+        private List<String> includedServices = new ArrayList<>();
+
+        /**
+         * 告警通知忽略的服务名黑名单（命中任意一项的服务直接静默，不触发告警）
+         */
+        private List<String> excludedServices = new ArrayList<>();
+
+        /**
+         * 触发告警通知的目标实例状态列表（默认包含 DOWN 与 OFFLINE）
+         */
+        private List<String> notifyStatuses = new ArrayList<>(List.of("DOWN", "OFFLINE"));
+    }
+
+    /**
      * 离线僵尸实例自动清理配置属性
      *
      * @author Ateng

@@ -6,6 +6,7 @@ import de.codecentric.boot.admin.server.domain.events.InstanceDeregisteredEvent;
 import de.codecentric.boot.admin.server.domain.events.InstanceEvent;
 import de.codecentric.boot.admin.server.domain.events.InstanceStatusChangedEvent;
 import de.codecentric.boot.admin.server.domain.values.InstanceId;
+import de.codecentric.boot.admin.server.domain.values.StatusInfo;
 import de.codecentric.boot.admin.server.notify.AbstractStatusChangeNotifier;
 import io.github.atengk.boot.admin.properties.AtengAdminServerProperties;
 import io.github.atengk.boot.notification.model.CardMessage;
@@ -15,6 +16,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.util.PatternMatchUtils;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 
@@ -22,6 +24,8 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -61,6 +65,13 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
      * K8s 优雅下线实例缓存：InstanceId -> 优雅注销时间戳
      */
     private final Map<InstanceId, Long> deregisteredInstances = new ConcurrentHashMap<>();
+
+    /**
+     * 实例元数据敏感键集合（防止凭据与密钥泄露至协作群机器人卡片中）
+     */
+    private static final Set<String> SENSITIVE_METADATA_KEYS = Set.of(
+            "user.password", "password", "token", "secret", "bearer-token", "actuator-token"
+    );
 
     public AtengAdminNotificationNotifier(InstanceRepository repository,
                                           ObjectProvider<NotificationTemplate> notificationTemplateProvider,
@@ -156,16 +167,25 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             }
 
             // 2. 状态跃迁判定
-            if ("DOWN".equalsIgnoreCase(currentStatus) || "OFFLINE".equalsIgnoreCase(currentStatus)) {
-                handleFaultStatus(instance, currentStatus);
+            if (isFaultStatus(currentStatus)) {
+                handleFaultStatus(instance, statusEvent);
             } else if ("UP".equalsIgnoreCase(currentStatus)) {
-                handleRecoveryStatus(instance);
+                handleRecoveryStatus(instance, statusEvent);
             }
         });
     }
 
-    private void handleFaultStatus(Instance instance, String status) {
+    private void handleFaultStatus(Instance instance, InstanceStatusChangedEvent statusEvent) {
         InstanceId id = instance.getId();
+        String appName = resolveInstanceName(instance, id);
+        String status = statusEvent.getStatusInfo().getStatus();
+
+        // 1. 前置名单规则校验：未在白名单或命中黑名单直接跳过防抖告警
+        if (!isServiceAlertAllowed(appName)) {
+            log.info("[SBA Notifier] 实例 [{}] 命中告警名单过滤规则，静默跳过防抖告警", appName);
+            return;
+        }
+
         long delaySeconds = properties != null && properties.getDebounceDuration() != null
                 ? properties.getDebounceDuration().toSeconds()
                 : 30L;
@@ -176,19 +196,24 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
             existing.cancel(true);
         }
 
-        String appName = resolveInstanceName(instance, id);
         log.warn("[SBA Notifier] 实例 [{}] 状态异常 [{}]，开启 {} 秒防抖倒计时...", appName, status, delaySeconds);
 
         ScheduledFuture<?> scheduledTask = scheduler.schedule(() -> {
             pendingTasks.remove(id);
+            String currentAppName = resolveInstanceName(instance, id);
+            // 2. 防抖超时触发前二次名单校验，防止等待期间配置动态变更
+            if (!isServiceAlertAllowed(currentAppName)) {
+                log.info("[SBA Notifier] 实例 [{}] 在防抖超时后命中告警名单过滤规则，静默取消告警", currentAppName);
+                return;
+            }
             alertedInstances.add(id);
-            sendNotification(instance, "🚨 微服务实例异常宕机告警", status);
+            sendNotification(instance, "🚨 微服务实例异常宕机告警", status, statusEvent.getStatusInfo());
         }, delaySeconds, TimeUnit.SECONDS);
 
         pendingTasks.put(id, scheduledTask);
     }
 
-    private void handleRecoveryStatus(Instance instance) {
+    private void handleRecoveryStatus(Instance instance, InstanceStatusChangedEvent statusEvent) {
         InstanceId id = instance.getId();
         String appName = resolveInstanceName(instance, id);
 
@@ -201,31 +226,198 @@ public class AtengAdminNotificationNotifier extends AbstractStatusChangeNotifier
 
         // 2. 仅当该实例先前确实发送过宕机告警时，才发送恢复卡片
         if (alertedInstances.remove(id)) {
-            sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP");
+            if (isServiceAlertAllowed(appName)) {
+                sendNotification(instance, "🟢 微服务实例恢复正常通知", "UP", statusEvent.getStatusInfo());
+            }
         }
     }
 
     private void sendNotification(Instance instance, String title, String status) {
+        sendNotification(instance, title, status, instance != null ? instance.getStatusInfo() : null);
+    }
+
+    private void sendNotification(Instance instance, String title, String status, StatusInfo statusInfo) {
         NotificationTemplate notifier = notificationTemplateProvider != null ? notificationTemplateProvider.getIfAvailable() : null;
         if (notifier == null) {
             return;
         }
 
-        String appName = resolveInstanceName(instance, instance.getId());
-        String serviceUrl = instance.isRegistered() && instance.getRegistration() != null
+        String appName = resolveInstanceName(instance, instance != null ? instance.getId() : null);
+        String serviceUrl = instance != null && instance.isRegistered() && instance.getRegistration() != null
                 ? instance.getRegistration().getServiceUrl()
                 : "-";
         String timeStr = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
-        String content = String.format("""
+        StringBuilder contentBuilder = new StringBuilder();
+        contentBuilder.append(String.format("""
                 **应用名称**：%s
                 **实例地址**：%s
                 **当前状态**：%s
                 **发生时间**：%s
-                """, appName, serviceUrl, status, timeStr);
+                """, appName, serviceUrl, status, timeStr));
 
-        CardMessage card = CardMessage.of(title, content);
+        // 1. 提取并附加应用版本
+        String version = resolveVersion(instance);
+        if (StringUtils.hasText(version)) {
+            contentBuilder.append(String.format("**应用版本**：%s\n", version));
+        }
+
+        // 2. 提取并附加探针故障诊断详情 (Probe Details)
+        StatusInfo infoToFormat = statusInfo != null ? statusInfo : (instance != null ? instance.getStatusInfo() : null);
+        String probeDetails = formatProbeDetails(infoToFormat);
+        if (StringUtils.hasText(probeDetails)) {
+            contentBuilder.append("\n**探针诊断详情**：\n").append(probeDetails).append("\n");
+        }
+
+        // 3. 提取非敏感环境元数据 (Metadata)
+        String metadataSummary = formatMetadata(instance);
+        if (StringUtils.hasText(metadataSummary)) {
+            contentBuilder.append("\n**实例元数据**：\n").append(metadataSummary).append("\n");
+        }
+
+        CardMessage card = CardMessage.of(title, contentBuilder.toString().trim());
         notifier.sendAsync(card);
+    }
+
+    private boolean isFaultStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return false;
+        }
+        List<String> notifyStatuses = properties != null && properties.getAlert() != null
+                ? properties.getAlert().getNotifyStatuses()
+                : null;
+        if (notifyStatuses == null || notifyStatuses.isEmpty()) {
+            return "DOWN".equalsIgnoreCase(status) || "OFFLINE".equalsIgnoreCase(status);
+        }
+        return notifyStatuses.stream().anyMatch(s -> s.equalsIgnoreCase(status));
+    }
+
+    private boolean isServiceAlertAllowed(String serviceName) {
+        if (!StringUtils.hasText(serviceName)) {
+            return false;
+        }
+        if (properties == null || properties.getAlert() == null) {
+            return true;
+        }
+        List<String> excluded = properties.getAlert().getExcludedServices();
+        if (excluded != null && !excluded.isEmpty()) {
+            for (String pattern : excluded) {
+                if (matchServiceName(pattern, serviceName)) {
+                    return false;
+                }
+            }
+        }
+        List<String> included = properties.getAlert().getIncludedServices();
+        if (included != null && !included.isEmpty()) {
+            boolean matched = false;
+            for (String pattern : included) {
+                if (matchServiceName(pattern, serviceName)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean matchServiceName(String pattern, String serviceName) {
+        if (!StringUtils.hasText(pattern)) {
+            return false;
+        }
+        String p = pattern.trim();
+        String s = serviceName.trim();
+        if (p.equalsIgnoreCase(s)) {
+            return true;
+        }
+        return PatternMatchUtils.simpleMatch(p.toLowerCase(Locale.ROOT), s.toLowerCase(Locale.ROOT));
+    }
+
+    private String resolveVersion(Instance instance) {
+        if (instance == null) {
+            return null;
+        }
+        if (instance.getBuildVersion() != null && StringUtils.hasText(instance.getBuildVersion().getValue())) {
+            return instance.getBuildVersion().getValue();
+        }
+        if (instance.isRegistered() && instance.getRegistration() != null) {
+            Map<String, String> metadata = instance.getRegistration().getMetadata();
+            if (metadata != null) {
+                if (StringUtils.hasText(metadata.get("version"))) {
+                    return metadata.get("version");
+                }
+                if (StringUtils.hasText(metadata.get("build.version"))) {
+                    return metadata.get("build.version");
+                }
+            }
+        }
+        return null;
+    }
+
+    private String formatProbeDetails(StatusInfo statusInfo) {
+        if (statusInfo == null || statusInfo.getDetails() == null || statusInfo.getDetails().isEmpty()) {
+            return null;
+        }
+        Map<String, Object> details = statusInfo.getDetails();
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Object> entry : details.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Map<?, ?> nestedMap) {
+                sb.append(String.format("- **%s**: ", key));
+                Object nestedStatus = nestedMap.get("status");
+                Object error = nestedMap.get("error");
+                if (error == null && nestedMap.get("details") instanceof Map<?, ?> detailsMap) {
+                    error = detailsMap.get("error");
+                    if (error == null) {
+                        error = detailsMap.get("message");
+                    }
+                }
+                if (nestedStatus != null && error != null) {
+                    sb.append(String.format("status=`%s`, error=`%s`\n", nestedStatus, error));
+                } else if (nestedStatus != null) {
+                    sb.append(String.format("status=`%s`\n", nestedStatus));
+                } else if (error != null) {
+                    sb.append(String.format("error=`%s`\n", error));
+                } else {
+                    sb.append(String.format("`%s`\n", nestedMap));
+                }
+            } else {
+                sb.append(String.format("- **%s**: `%s`\n", key, value));
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    private String formatMetadata(Instance instance) {
+        if (instance == null || !instance.isRegistered() || instance.getRegistration() == null) {
+            return null;
+        }
+        Map<String, String> metadata = instance.getRegistration().getMetadata();
+        if (metadata == null || metadata.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : metadata.entrySet()) {
+            String key = entry.getKey();
+            if (key == null) {
+                continue;
+            }
+            String lowerKey = key.toLowerCase(Locale.ROOT);
+            if (SENSITIVE_METADATA_KEYS.stream().anyMatch(lowerKey::contains)) {
+                continue;
+            }
+            if ("version".equalsIgnoreCase(key) || "build.version".equalsIgnoreCase(key)) {
+                continue;
+            }
+            sb.append(String.format("- **%s**: `%s`\n", key, entry.getValue()));
+        }
+        return sb.toString().trim();
     }
 
     /**
