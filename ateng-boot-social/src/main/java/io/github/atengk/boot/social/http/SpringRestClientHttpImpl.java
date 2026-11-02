@@ -1,5 +1,6 @@
 package io.github.atengk.boot.social.http;
 
+import io.github.atengk.boot.social.context.CurrentSocialAppContextHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.http.AdapterHttpResponse;
 import org.dromara.anduin.http.HttpClientAdapter;
@@ -19,6 +20,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 基于 Spring 6 RestClient 原生实现的 OAuth2 网络适配器
@@ -30,7 +32,8 @@ import java.util.Map;
 @Slf4j
 public class SpringRestClientHttpImpl implements HttpClientAdapter {
 
-    private final RestClient restClient;
+    private final RestClient defaultRestClient;
+    private final Map<String, RestClient> appClientMap = new ConcurrentHashMap<>();
 
     /**
      * 默认构造函数（连接超时 10s，读取超时 15s，无代理）
@@ -57,7 +60,7 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
         if (proxy != null) {
             requestFactory.setProxy(proxy);
         }
-        this.restClient = RestClient.builder()
+        this.defaultRestClient = RestClient.builder()
                 .requestFactory(requestFactory)
                 .requestInterceptor(new SocialTraceInterceptor())
                 .build();
@@ -69,7 +72,50 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
      * @param restClient 外部受管 RestClient 实例
      */
     public SpringRestClientHttpImpl(RestClient restClient) {
-        this.restClient = restClient != null ? restClient : RestClient.create();
+        this.defaultRestClient = restClient != null ? restClient : RestClient.create();
+    }
+
+    /**
+     * 为特定应用标识注册独立配置的 RestClient（如针对海外平台挂载专用代理或定制超时）
+     *
+     * @param appKey         应用唯一标识
+     * @param connectTimeout 连接超时
+     * @param readTimeout    读取超时
+     * @param proxy          专属代理
+     */
+    public void registerAppRestClient(String appKey, Duration connectTimeout, Duration readTimeout, Proxy proxy) {
+        if (appKey == null || appKey.isBlank()) {
+            return;
+        }
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        if (connectTimeout != null) {
+            requestFactory.setConnectTimeout((int) connectTimeout.toMillis());
+        }
+        if (readTimeout != null) {
+            requestFactory.setReadTimeout((int) readTimeout.toMillis());
+        }
+        if (proxy != null) {
+            requestFactory.setProxy(proxy);
+        }
+        RestClient client = RestClient.builder()
+                .requestFactory(requestFactory)
+                .requestInterceptor(new SocialTraceInterceptor())
+                .build();
+        appClientMap.put(appKey, client);
+    }
+
+    /**
+     * 获取当前上下文适用的 RestClient
+     */
+    public RestClient obtainClient() {
+        String currentAppKey = CurrentSocialAppContextHolder.getAppKey();
+        if (currentAppKey != null && !currentAppKey.isBlank()) {
+            RestClient appClient = appClientMap.get(currentAppKey);
+            if (appClient != null) {
+                return appClient;
+            }
+        }
+        return defaultRestClient;
     }
 
     @Override
@@ -143,7 +189,7 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
     private AdapterHttpResponse execute(HttpMethod method, String url, String body, HttpHeader customHeader) {
         try {
             URI uri = URI.create(url);
-            RestClient.RequestBodySpec requestSpec = restClient.method(method).uri(uri);
+            RestClient.RequestBodySpec requestSpec = obtainClient().method(method).uri(uri);
 
             // 统一挂载 User-Agent 标头
             requestSpec.header(HttpConstants.USER_AGENT, HttpConstants.USER_AGENT_DATA);

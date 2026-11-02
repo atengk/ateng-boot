@@ -1,12 +1,16 @@
 package io.github.atengk.boot.social.autoconfigure;
 
+import io.github.atengk.boot.social.factory.SocialAppFactory;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
+import io.github.atengk.boot.social.spi.SocialAppConfigProvider;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.anduin.cache.AuthStateCache;
 import org.dromara.anduin.http.HttpClientAdapter;
 import org.dromara.anduin.http.UnifiedHttpClientAccessor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -47,6 +51,27 @@ public class AtengSocialAutoConfiguration {
         UnifiedHttpClientAccessor.setAdapter(adapter);
         log.info("Initialized Spring 6 RestClient adapter for Social OAuth2 communication");
         return adapter;
+    }
+
+    /**
+     * 自动装配社交应用路由与实例工厂
+     *
+     * @param configProviderObjectProvider 动态切源 SPI 提供者
+     * @param stateCacheObjectProvider    State 缓存提供者
+     * @param httpClientAdapter           网络适配器
+     * @return SocialAppFactory 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public SocialAppFactory socialAppFactory(
+            ObjectProvider<SocialAppConfigProvider> configProviderObjectProvider,
+            ObjectProvider<AuthStateCache> stateCacheObjectProvider,
+            HttpClientAdapter httpClientAdapter) {
+        SpringRestClientHttpImpl springClient = httpClientAdapter instanceof SpringRestClientHttpImpl s
+                ? s : null;
+        SocialAppFactory factory = new SocialAppFactory(properties, configProviderObjectProvider, stateCacheObjectProvider, springClient);
+        log.info("Initialized SocialAppFactory with {} static apps configured", properties.getApps().size());
+        return factory;
     }
 
     @PostConstruct

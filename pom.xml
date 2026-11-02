@@ -103,6 +103,7 @@
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-collections4.version>4.4</commons-collections4.version>
         <guava.version>33.4.0-jre</guava.version>
+        <jackson-annotations.version>2.22</jackson-annotations.version>
 
         <!-- 插件版本定义 -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
@@ -444,6 +445,11 @@
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>${guava.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>${jackson-annotations.version}</version>
             </dependency>
             <dependency>
                 <groupId>de.codecentric</groupId>
