@@ -6,6 +6,7 @@ import io.github.atengk.boot.tcp.model.TcpPayload;
 import io.github.atengk.boot.tcp.properties.TcpClusterProperties;
 import io.github.atengk.boot.tcp.session.TcpSession;
 import io.github.atengk.boot.tcp.session.TcpSessionManager;
+import io.github.atengk.boot.tcp.template.TcpServerTemplate;
 import io.netty.channel.embedded.EmbeddedChannel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -148,5 +149,103 @@ class TcpClusterBridgeTest {
         assertThat(packet.getDeviceId()).isEqualTo("DEV-DEVICE-999");
         assertThat(packet.getPayload().asString()).isEqualTo("{\"sampleKey\":\"sampleVal\"}");
         assertThat(packet.getHeaders()).containsEntry("traceId", "T-123456");
+    }
+
+    @Test
+    @DisplayName("验证 LocalTcpClusterBridge 单机分组组播逻辑")
+    void testLocalTcpClusterBridgeGroupMulticast() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        LocalTcpClusterBridge bridge = new LocalTcpClusterBridge(sessionManager);
+
+        EmbeddedChannel ch1 = new EmbeddedChannel();
+        TcpSession session1 = new TcpSession("ses-1", ch1);
+        sessionManager.register(session1);
+        sessionManager.addToGroup("FLEET_A", "ses-1");
+
+        EmbeddedChannel ch2 = new EmbeddedChannel();
+        TcpSession session2 = new TcpSession("ses-2", ch2);
+        sessionManager.register(session2);
+        sessionManager.addToGroup("FLEET_B", "ses-2");
+
+        // 1. 向 FLEET_A 组播 -> 仅 session1 收到
+        boolean sent = bridge.sendGroupToCluster("FLEET_A", "FLEET_A_MSG");
+        assertThat(sent).isTrue();
+        assertThat(ch1.outboundMessages()).isNotEmpty();
+        assertThat(ch2.outboundMessages()).isEmpty();
+
+        // 2. 向不存在的分组组播 -> 返回 false
+        boolean notSent = bridge.sendGroupToCluster("FLEET_UNKNOWN", "EMPTY_MSG");
+        assertThat(notSent).isFalse();
+    }
+
+    @Test
+    @DisplayName("验证 RedisPubSubTcpClusterBridge 跨节点分组组播发信、对端接收路由与防回环守卫")
+    void testRedisPubSubGroupMulticastSendAndReceive() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        StringRedisTemplate redisTemplate = Mockito.mock(StringRedisTemplate.class);
+        TcpClusterProperties clusterProperties = new TcpClusterProperties();
+        clusterProperties.getRedis().setEnabled(true);
+        clusterProperties.getRedis().setTopic("test:cluster:topic");
+
+        RedisPubSubTcpClusterBridge bridge = new RedisPubSubTcpClusterBridge(sessionManager, redisTemplate, clusterProperties);
+
+        // 注册两个会话，分别加入 FLEET_ALPHA 与 FLEET_BETA
+        EmbeddedChannel chAlpha = new EmbeddedChannel();
+        TcpSession sessionAlpha = new TcpSession("ses-alpha", chAlpha);
+        sessionManager.register(sessionAlpha);
+        sessionManager.addToGroup("FLEET_ALPHA", "ses-alpha");
+
+        EmbeddedChannel chBeta = new EmbeddedChannel();
+        TcpSession sessionBeta = new TcpSession("ses-beta", chBeta);
+        sessionManager.register(sessionBeta);
+        sessionManager.addToGroup("FLEET_BETA", "ses-beta");
+
+        // 1. 发起 FLEET_ALPHA 组播 -> 本地直发 + Redis 跨节点广播
+        boolean sent = bridge.sendGroupToCluster("FLEET_ALPHA", "DISPATCH_ALPHA");
+        assertThat(sent).isTrue();
+        assertThat(chAlpha.outboundMessages()).isNotEmpty();
+        assertThat(chBeta.outboundMessages()).isEmpty();
+        verify(redisTemplate).convertAndSend(eq("test:cluster:topic"), anyString());
+
+        chAlpha.outboundMessages().clear();
+
+        // 2. 模拟从 Redis 收到其它节点广播的分组组播 (group = FLEET_BETA)
+        TcpClusterBroadcastMessage remoteGroupMsg = TcpClusterBroadcastMessage.ofGroup("FLEET_BETA", "node-remote-99", "BROADCAST_TO_BETA");
+        String json = JsonUtil.toJsonString(remoteGroupMsg);
+        bridge.onMessage(new DefaultMessage("test:cluster:topic".getBytes(StandardCharsets.UTF_8), json.getBytes(StandardCharsets.UTF_8)), null);
+
+        // 验证 FLEET_BETA 收到，FLEET_ALPHA 未收到
+        assertThat(chBeta.outboundMessages()).isNotEmpty();
+        assertThat(chAlpha.outboundMessages()).isEmpty();
+
+        chBeta.outboundMessages().clear();
+
+        // 3. 模拟自身节点的防回环守卫
+        TcpClusterBroadcastMessage selfLoopMsg = TcpClusterBroadcastMessage.ofGroup("FLEET_BETA", bridge.getNodeId(), "LOOP_MSG");
+        String loopJson = JsonUtil.toJsonString(selfLoopMsg);
+        bridge.onMessage(new DefaultMessage("test:cluster:topic".getBytes(StandardCharsets.UTF_8), loopJson.getBytes(StandardCharsets.UTF_8)), null);
+
+        assertThat(chBeta.outboundMessages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("验证 TcpServerTemplate 门面 sendGroupToCluster 方法")
+    void testTcpServerTemplateSendGroupToCluster() {
+        TcpSessionManager sessionManager = new TcpSessionManager();
+        TcpServerTemplate template = new TcpServerTemplate(sessionManager);
+
+        EmbeddedChannel ch = new EmbeddedChannel();
+        TcpSession session = new TcpSession("ses-group-1", ch);
+        sessionManager.register(session);
+        sessionManager.addToGroup("ZONE_1", "ses-group-1");
+
+        // 无 clusterBridge 时退化为本地组播
+        boolean sent = template.sendGroupToCluster("ZONE_1", "ZONE_PAYLOAD");
+        assertThat(sent).isTrue();
+        assertThat(ch.outboundMessages()).isNotEmpty();
+
+        // group 为 null 时防御
+        boolean nullGroupSent = template.sendGroupToCluster(null, "FAIL_MSG");
+        assertThat(nullGroupSent).isFalse();
     }
 }

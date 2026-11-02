@@ -260,6 +260,16 @@ public class TcpSessionManager implements ApplicationEventPublisherAware {
     }
 
     /**
+     * 获取指定分组下所有活跃的会话集合（同 {@link #getGroupSessions(String)}）
+     *
+     * @param group 分组名称
+     * @return 活跃会话集合（保底非空集合）
+     */
+    public Set<TcpSession> getSessionsByGroup(String group) {
+        return getGroupSessions(group);
+    }
+
+    /**
      * 主动关闭指定会话
      *
      * @param sessionId 会话 ID

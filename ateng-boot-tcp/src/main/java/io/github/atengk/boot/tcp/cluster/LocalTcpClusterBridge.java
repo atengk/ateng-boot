@@ -56,4 +56,20 @@ public class LocalTcpClusterBridge implements TcpClusterBridge {
         }
         return true;
     }
+
+    @Override
+    public boolean sendGroupToCluster(String group, Object payload) {
+        Assert.hasText(group, "group 不能为空");
+        Assert.notNull(payload, "payload 不能为空");
+        Collection<TcpSession> sessions = sessionManager.getGroupSessions(group);
+        if (sessions.isEmpty()) {
+            return false;
+        }
+        for (TcpSession session : sessions) {
+            if (session.isActive()) {
+                session.send(payload);
+            }
+        }
+        return true;
+    }
 }

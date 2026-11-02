@@ -486,4 +486,22 @@ public class TcpServerTemplate {
         broadcast(payload);
         return true;
     }
+
+    /**
+     * 向微服务集群中属于指定逻辑分组的全部在线设备跨节点组播报文（本地直发优先 + 分布式集群广播）
+     *
+     * @param group   业务逻辑分组标识
+     * @param payload 组播报文载荷
+     * @return 是否成功触发本地直发或分布式组播
+     */
+    public boolean sendGroupToCluster(String group, Object payload) {
+        if (group == null) {
+            return false;
+        }
+        if (clusterBridge != null) {
+            return clusterBridge.sendGroupToCluster(group, wrapPayload(payload));
+        }
+        sendToGroup(group, payload);
+        return true;
+    }
 }

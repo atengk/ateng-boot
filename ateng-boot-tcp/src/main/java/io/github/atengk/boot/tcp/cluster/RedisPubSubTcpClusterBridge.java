@@ -95,6 +95,32 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
     }
 
     @Override
+    public boolean sendGroupToCluster(String group, Object payload) {
+        Assert.hasText(group, "group 不能为空");
+        Assert.notNull(payload, "payload 不能为空");
+
+        // 1. 本地直发本节点命中分组的会话
+        Collection<TcpSession> localSessions = sessionManager.getGroupSessions(group);
+        for (TcpSession session : localSessions) {
+            if (session.isActive()) {
+                session.send(payload);
+            }
+        }
+
+        // 2. 广播至 Redis 让集群其他 Pod 下发
+        try {
+            TcpClusterBroadcastMessage broadcastMessage = TcpClusterBroadcastMessage.ofGroup(group, nodeId, payload);
+            String messageJson = JsonUtil.toJsonString(broadcastMessage);
+            redisTemplate.convertAndSend(topic, messageJson);
+            log.debug("[TCP-CLUSTER] 向 Redis 广播通道 [{}] 派发分组 [{}] 组播指令", topic, group);
+            return true;
+        } catch (Exception ex) {
+            log.error("[TCP-CLUSTER] 向 Redis 广播通道投递分组 [{}] 组播消息异常", group, ex);
+            return false;
+        }
+    }
+
+    @Override
     public void onMessage(Message message, byte[] pattern) {
         try {
             byte[] body = message.getBody();
@@ -112,10 +138,20 @@ public class RedisPubSubTcpClusterBridge implements TcpClusterBridge, MessageLis
                 return;
             }
 
+            String targetGroup = broadcastMessage.getGroup();
             String targetDeviceId = broadcastMessage.getDeviceId();
             Object resolvedPayload = broadcastMessage.resolvePayload();
 
-            if (targetDeviceId != null) {
+            if (targetGroup != null) {
+                // 分组跨节点组播
+                Collection<TcpSession> groupSessions = sessionManager.getGroupSessions(targetGroup);
+                for (TcpSession session : groupSessions) {
+                    if (session.isActive()) {
+                        session.send(resolvedPayload);
+                    }
+                }
+                log.debug("[TCP-CLUSTER] 本节点收到跨节点分组 [{}] 组播并投递至 {} 个本地会话", targetGroup, groupSessions.size());
+            } else if (targetDeviceId != null) {
                 // 点播定向下发
                 TcpSession localSession = sessionManager.getSessionByDeviceId(targetDeviceId);
                 if (localSession != null && localSession.isActive()) {
