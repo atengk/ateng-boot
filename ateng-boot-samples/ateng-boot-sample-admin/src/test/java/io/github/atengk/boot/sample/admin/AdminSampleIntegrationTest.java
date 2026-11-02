@@ -27,6 +27,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -337,5 +340,72 @@ class AdminSampleIntegrationTest {
                         .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
                         .content(compliantPayload))
                 .andExpect(request().asyncStarted());
+    }
+
+    @Test
+    @DisplayName("场景 9：Actuator 出站抓取多模态认证自适应扩展测试（Basic Auth 与 Bearer Auth 端到端注册与标头挂载）")
+    void shouldAdaptivelyDeriveMultiModalOutboundAuthHeaders() throws Exception {
+        // 1. 注册配置 user.name 与 user.password 的微服务实例 (Basic Auth)
+        String basicPayload = """
+                {
+                    "name": "basic-auth-sample-service",
+                    "serviceUrl": "http://127.0.0.1:8080/",
+                    "managementUrl": "http://127.0.0.1:8080/actuator",
+                    "healthUrl": "http://127.0.0.1:8080/actuator/health",
+                    "metadata": {
+                        "user.name": "ops-admin",
+                        "user.password": "ops-pass-999"
+                    }
+                }
+                """;
+        MvcResult basicAsync = mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content(basicPayload))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        MvcResult basicResult = mockMvc.perform(asyncDispatch(basicAsync))
+                .andExpect(status().is2xxSuccessful())
+                .andReturn();
+
+        String basicInstId = objectMapper.readTree(basicResult.getResponse().getContentAsString()).path("id").asText();
+        Instance basicInstance = instanceRepository.find(InstanceId.of(basicInstId)).block();
+        assertThat(basicInstance).isNotNull();
+
+        HttpHeaders basicHeaders = httpHeadersProvider.getHeaders(basicInstance);
+        String expectedBasicAuth = "Basic " + Base64.getEncoder().encodeToString("ops-admin:ops-pass-999".getBytes(StandardCharsets.UTF_8));
+        assertThat(basicHeaders.getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo(expectedBasicAuth);
+        assertThat(basicHeaders.containsKey(AtengActuatorHttpHeadersProvider.ACTUATOR_TOKEN_HEADER)).isFalse();
+
+        // 2. 注册配置 bearer-token 的微服务实例 (Bearer Auth)
+        String bearerPayload = """
+                {
+                    "name": "bearer-auth-sample-service",
+                    "serviceUrl": "http://127.0.0.1:8080/",
+                    "managementUrl": "http://127.0.0.1:8080/actuator",
+                    "healthUrl": "http://127.0.0.1:8080/actuator/health",
+                    "metadata": {
+                        "bearer-token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sample-token-content"
+                    }
+                }
+                """;
+        MvcResult bearerAsync = mockMvc.perform(post("/admin/instances")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header(AdminSsrfGuardFilter.CLIENT_SECRET_HEADER, CLIENT_SECRET)
+                        .content(bearerPayload))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+        MvcResult bearerResult = mockMvc.perform(asyncDispatch(bearerAsync))
+                .andExpect(status().is2xxSuccessful())
+                .andReturn();
+
+        String bearerInstId = objectMapper.readTree(bearerResult.getResponse().getContentAsString()).path("id").asText();
+        Instance bearerInstance = instanceRepository.find(InstanceId.of(bearerInstId)).block();
+        assertThat(bearerInstance).isNotNull();
+
+        HttpHeaders bearerHeaders = httpHeadersProvider.getHeaders(bearerInstance);
+        assertThat(bearerHeaders.getFirst(HttpHeaders.AUTHORIZATION))
+                .isEqualTo("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sample-token-content");
+        assertThat(bearerHeaders.containsKey(AtengActuatorHttpHeadersProvider.ACTUATOR_TOKEN_HEADER)).isFalse();
     }
 }
