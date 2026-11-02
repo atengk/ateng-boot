@@ -23,12 +23,6 @@
             <artifactId>ateng-boot-job-snail</artifactId>
         </dependency>
 
-        <!-- Web 运行时增强 Starter (统一契约 Result<T> 与参数校验) -->
-        <dependency>
-            <groupId>io.github.atengk</groupId>
-            <artifactId>ateng-boot-web</artifactId>
-        </dependency>
-
         <!-- Spring Boot Actuator 运维端点监控 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

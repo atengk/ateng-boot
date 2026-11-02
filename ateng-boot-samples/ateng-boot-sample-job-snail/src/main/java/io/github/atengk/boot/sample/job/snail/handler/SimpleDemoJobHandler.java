@@ -36,4 +36,13 @@ public class SimpleDemoJobHandler {
         log.info("[SimpleDemoJobHandler] 执行超时守卫增强任务, 当前租户: {}", SnailJobContextHolder.getTenantId());
         return ExecuteResult.success("Timeout guarded job succeeded");
     }
+
+    /**
+     * 金丝雀灰度绕过演示任务
+     */
+    @JobExecutor(name = "canaryBypassJob")
+    public ExecuteResult canaryBypassJob() {
+        log.info("[SimpleDemoJobHandler] 执行金丝雀任务，正常情况下应被拦截器跳过");
+        return ExecuteResult.success("Canary executed");
+    }
 }

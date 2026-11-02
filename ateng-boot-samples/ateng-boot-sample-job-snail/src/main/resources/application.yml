@@ -1,6 +1,3 @@
-server:
-  port: 8080
-
 spring:
   application:
     name: ateng-boot-sample-job-snail
@@ -18,9 +15,6 @@ management:
 
 ateng:
   boot:
-    web:
-      trace:
-        enabled: true
     job:
       snail:
         enabled: true
