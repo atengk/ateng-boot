@@ -4,6 +4,7 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import io.github.atengk.boot.ai.autoconfigure.AtengAiAutoConfiguration;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -31,6 +32,7 @@ class AtengAiAutoConfigurationTest {
         contextRunner.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(AiModelRegistry.class);
+            assertThat(context).hasSingleBean(AiTemplate.class);
             assertThat(context).doesNotHaveBean(ChatLanguageModel.class);
             assertThat(context).doesNotHaveBean(StreamingChatLanguageModel.class);
 
@@ -46,6 +48,7 @@ class AtengAiAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).doesNotHaveBean(AiModelRegistry.class);
+                    assertThat(context).doesNotHaveBean(AiTemplate.class);
                     assertThat(context).doesNotHaveBean(ChatLanguageModel.class);
                 });
     }
@@ -60,6 +63,7 @@ class AtengAiAutoConfigurationTest {
         ).run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(AiModelRegistry.class);
+            assertThat(context).hasSingleBean(AiTemplate.class);
             assertThat(context).hasSingleBean(ChatLanguageModel.class);
             assertThat(context).hasSingleBean(StreamingChatLanguageModel.class);
 
@@ -99,6 +103,18 @@ class AtengAiAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("用户自定义 AiTemplate Bean 时触发 @ConditionalOnMissingBean 守卫接管")
+    void testCustomAiTemplateOverride() {
+        contextRunner.withUserConfiguration(CustomAiTemplateConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AiTemplate.class);
+                    AiTemplate template = context.getBean(AiTemplate.class);
+                    assertThat(template).isSameAs(CustomAiTemplateConfig.MOCK_TEMPLATE);
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomModelConfig {
         static final ChatLanguageModel MOCK_MODEL = Mockito.mock(ChatLanguageModel.class);
@@ -106,6 +122,16 @@ class AtengAiAutoConfigurationTest {
         @Bean
         public ChatLanguageModel openAiChatModel() {
             return MOCK_MODEL;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomAiTemplateConfig {
+        static final AiTemplate MOCK_TEMPLATE = Mockito.mock(AiTemplate.class);
+
+        @Bean
+        public AiTemplate aiTemplate() {
+            return MOCK_TEMPLATE;
         }
     }
 }

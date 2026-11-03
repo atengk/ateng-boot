@@ -8,6 +8,7 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
+import io.github.atengk.boot.ai.template.AiTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -115,5 +116,18 @@ public class AtengAiAutoConfiguration {
             log.info("ateng-boot-ai 未检测到任何有效的大模型 API Key 配置，模型注册表处于待命状态。");
         }
         return registry;
+    }
+
+    /**
+     * 自动装配 AI 核心命令式操作门面
+     *
+     * @param registry   模型注册中心
+     * @param properties AI 根配置属性
+     * @return AiTemplate 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AiTemplate aiTemplate(AiModelRegistry registry, AtengAiProperties properties) {
+        return new AiTemplate(registry, properties);
     }
 }
