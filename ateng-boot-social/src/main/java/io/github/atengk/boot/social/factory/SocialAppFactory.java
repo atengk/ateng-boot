@@ -112,11 +112,12 @@ public class SocialAppFactory {
         AuthConfig anduinAuthConfig = appConfig.toAuthConfig();
 
         try {
-            return AuthRequestBuilder.builder()
+            AuthRequest rawAuthRequest = AuthRequestBuilder.builder()
                     .source(appConfig.getSource())
                     .authConfig(anduinAuthConfig)
                     .authStateCache(stateCache)
                     .build();
+            return new AppKeyAwareAuthRequest(appKey, rawAuthRequest);
         } catch (Exception ex) {
             log.error("Failed to build AuthRequest for appKey: {}, source: {}", appKey, appConfig.getSource(), ex);
             throw new SocialException("构建第三方 OAuth2 请求实例失败: " + ex.getMessage(), ex);

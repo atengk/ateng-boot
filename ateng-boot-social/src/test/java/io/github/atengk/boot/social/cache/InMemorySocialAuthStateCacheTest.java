@@ -78,6 +78,11 @@ class InMemorySocialAuthStateCacheTest {
         assertThat(cache.containsKey(key)).isTrue();
         assertThat(cache.get(key)).isEqualTo(value);
 
+        // 测试当 context 存在但无 redirectUrl 时，get(key) 保底返回 key 本身
+        cache.set("key_no_redirect", StateContext.builder().tenantId("t1").build(), Duration.ofMinutes(1));
+        assertThat(cache.get("key_no_redirect")).isEqualTo("key_no_redirect");
+        assertThat(cache.get("not_exist_key")).isNull();
+
         cache.expire(key);
         assertThat(cache.containsKey(key)).isFalse();
     }

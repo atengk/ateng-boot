@@ -60,20 +60,20 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
      * @param proxy          可选网络代理
      */
     public SpringRestClientHttpImpl(Duration connectTimeout, Duration readTimeout, Proxy proxy) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        if (connectTimeout != null) {
-            requestFactory.setConnectTimeout((int) connectTimeout.toMillis());
-        }
-        if (readTimeout != null) {
-            requestFactory.setReadTimeout((int) readTimeout.toMillis());
-        }
-        if (proxy != null) {
-            requestFactory.setProxy(proxy);
-        }
-        this.defaultRestClient = RestClient.builder()
-                .requestFactory(requestFactory)
-                .requestInterceptor(new SocialTraceInterceptor())
-                .build();
+        this(connectTimeout, readTimeout, proxy, null);
+    }
+
+    /**
+     * 带超时、代理与 URL 转换重写器的全参构造函数（推荐生产/测试显式不可变装配）
+     *
+     * @param connectTimeout 连接超时时间
+     * @param readTimeout    读取超时时间
+     * @param proxy          可选网络代理
+     * @param urlRewriter    可选 URL 重写转换函数
+     */
+    public SpringRestClientHttpImpl(Duration connectTimeout, Duration readTimeout, Proxy proxy, java.util.function.Function<String, String> urlRewriter) {
+        this.defaultRestClient = createRestClient(connectTimeout, readTimeout, proxy);
+        this.urlRewriter = urlRewriter;
     }
 
     /**
@@ -97,6 +97,10 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
         if (appKey == null || appKey.isBlank()) {
             return;
         }
+        appClientMap.put(appKey, createRestClient(connectTimeout, readTimeout, proxy));
+    }
+
+    private static RestClient createRestClient(Duration connectTimeout, Duration readTimeout, Proxy proxy) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         if (connectTimeout != null) {
             requestFactory.setConnectTimeout((int) connectTimeout.toMillis());
@@ -107,11 +111,10 @@ public class SpringRestClientHttpImpl implements HttpClientAdapter {
         if (proxy != null) {
             requestFactory.setProxy(proxy);
         }
-        RestClient client = RestClient.builder()
+        return RestClient.builder()
                 .requestFactory(requestFactory)
                 .requestInterceptor(new SocialTraceInterceptor())
                 .build();
-        appClientMap.put(appKey, client);
     }
 
     /**

@@ -329,7 +329,11 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new SocialException(SocialResultCode.SOCIAL_BIND_TICKET_INVALID, "绑定凭证 BindTicket 非法、已过期或已被重复消费");
         }
 
-        // 2. 解析生效的应用标识
+        // 2. 解析生效的应用标识并防御跨应用篡改
+        if (appKey != null && !appKey.isBlank() && socialUser.getAppKey() != null && !appKey.equals(socialUser.getAppKey())) {
+            log.warn("BindTicket appKey mismatch: ticketAppKey=[{}], paramAppKey=[{}]", socialUser.getAppKey(), appKey);
+            throw new SocialException("绑定凭据关联的应用标识与当前参数不匹配");
+        }
         String effectiveAppKey = (appKey != null && !appKey.isBlank()) ? appKey : socialUser.getAppKey();
         if (effectiveAppKey == null || effectiveAppKey.isBlank()) {
             effectiveAppKey = socialUser.getSource();
@@ -338,7 +342,7 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
         // 3. 联动持久化业务 SPI 绑定账号
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
         if (detailsService != null) {
-            detailsService.bind(userId, effectiveAppKey, socialUser);
+            detailsService.bindSocialUser(userId, effectiveAppKey, socialUser);
         } else {
             log.warn("SocialUserDetailsService is not provided, skipping local user binding persistence: userId=[{}], appKey=[{}]", userId, effectiveAppKey);
         }
@@ -374,37 +378,32 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new IllegalArgumentException("应用标识 [appKey] 不能为空");
         }
 
-        // 1. 获取持久化 SPI 扩展点
+        // 1. 获取持久化 SPI 扩展点（必须配置以保障孤儿账号防卫与持久化闭环）
         SocialUserDetailsService detailsService = userDetailsServiceObjectProvider.getIfAvailable();
-        if (detailsService != null) {
-            // 2. 孤儿死号前置安全防卫：核验业务层不变量
-            boolean canUnbind;
-            try {
-                canUnbind = detailsService.canUnbind(userId, appKey);
-            } catch (Exception ex) {
-                log.error("SocialUserDetailsService.canUnbind check error for userId: [{}], appKey: [{}]: {}",
-                        userId, appKey, ex.getMessage(), ex);
-                throw new SocialException("孤儿账号解绑核验执行异常: " + ex.getMessage(), ex);
-            }
+        if (detailsService == null) {
+            throw new SocialException("未配置 SocialUserDetailsService 业务持久化扩展点，无法执行账号解绑与孤儿防卫");
+        }
 
-            if (!canUnbind) {
-                log.warn("Social unbinding rejected by safety guard: userId=[{}], appKey=[{}]", userId, appKey);
-                throw new SocialUnbindRejectedException(userId, appKey);
-            }
+        // 2. 孤儿死号前置安全防卫：核验业务层不变量
+        boolean canUnbind;
+        try {
+            canUnbind = detailsService.canUnbind(userId, appKey);
+        } catch (Exception ex) {
+            throw new SocialException("孤儿账号解绑核验执行异常: " + ex.getMessage(), ex);
+        }
 
-            // 3. 执行持久化解绑
-            try {
-                detailsService.unbind(userId, appKey);
-            } catch (SocialException ex) {
-                throw ex;
-            } catch (Exception ex) {
-                log.error("Failed to unbind social user: userId=[{}], appKey=[{}]: {}",
-                        userId, appKey, ex.getMessage(), ex);
-                throw new SocialException("解除第三方账号绑定异常: " + ex.getMessage(), ex);
-            }
-        } else {
-            log.warn("SocialUserDetailsService is not provided, skipping local user unbinding persistence: userId=[{}], appKey=[{}]",
-                    userId, appKey);
+        if (!canUnbind) {
+            log.warn("Social unbinding rejected by safety guard: userId=[{}], appKey=[{}]", userId, appKey);
+            throw new SocialUnbindRejectedException(userId, appKey);
+        }
+
+        // 3. 执行持久化解绑
+        try {
+            detailsService.unbind(userId, appKey);
+        } catch (SocialException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new SocialException("解除第三方账号绑定异常: " + ex.getMessage(), ex);
         }
 
         log.info("Social user successfully unbound: userId=[{}], appKey=[{}]", userId, appKey);
@@ -441,8 +440,16 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             throw new IllegalArgumentException("回调参数 [callback] 不能为空");
         }
         SocialAppConfig appConfig = socialAppFactory.getAppConfig(appKey);
-        if (!appConfig.isIgnoreCheckState() && callback.getState() != null) {
-            stateCache.removeContext(callback.getState());
+        String state = callback.getState();
+        if (!appConfig.isIgnoreCheckState()) {
+            if (state == null || state.isBlank()) {
+                throw new SocialStateExpiredException("第三方回调参数中未携带防伪状态码 [state]");
+            }
+            if (!stateCache.containsKey(state)) {
+                log.warn("OAuth2 state invalid or expired: appKey=[{}], state=[{}]", appKey, state);
+                throw new SocialStateExpiredException(state);
+            }
+            stateCache.removeContext(state);
         }
         return exchangeSocialUser(appKey, appConfig, callback);
     }
@@ -476,7 +483,6 @@ public class SocialAuthTemplate implements ApplicationEventPublisherAware {
             try {
                 authResponse = authRequest.login(callback);
             } catch (Exception ex) {
-                log.error("Third-party OAuth2 login exception for appKey: [{}]: {}", appKey, ex.getMessage(), ex);
                 throw new SocialAuthException("第三方授权认证异常: " + ex.getMessage(), ex);
             }
 

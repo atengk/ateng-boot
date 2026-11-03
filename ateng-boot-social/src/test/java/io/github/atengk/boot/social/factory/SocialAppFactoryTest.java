@@ -89,11 +89,20 @@ class SocialAppFactoryTest {
 
         AuthRequest authRequest = factory.createAuthRequest("github-main");
         assertThat(authRequest).isNotNull();
-        assertThat(authRequest).isInstanceOf(AuthGithubRequest.class);
+        assertThat(authRequest).isInstanceOf(AppKeyAwareAuthRequest.class);
+        AppKeyAwareAuthRequest appKeyAwareRequest = (AppKeyAwareAuthRequest) authRequest;
+        assertThat(appKeyAwareRequest.getAppKey()).isEqualTo("github-main");
+        assertThat(appKeyAwareRequest.getDelegate()).isInstanceOf(AuthGithubRequest.class);
+
+        // 验证执行时自动绑定 CurrentSocialAppContextHolder 并在完成后清理
+        String authorizeUrl = authRequest.authorize("state_test");
+        assertThat(authorizeUrl).contains("state=state_test");
+        assertThat(CurrentSocialAppContextHolder.getAppKey()).isNull();
 
         AuthRequest giteeRequest = factory.createAuthRequest("gitee-main");
         assertThat(giteeRequest).isNotNull();
-        assertThat(giteeRequest).isInstanceOf(AuthGiteeRequest.class);
+        assertThat(giteeRequest).isInstanceOf(AppKeyAwareAuthRequest.class);
+        assertThat(((AppKeyAwareAuthRequest) giteeRequest).getDelegate()).isInstanceOf(AuthGiteeRequest.class);
     }
 
     @Test
@@ -118,7 +127,8 @@ class SocialAppFactoryTest {
 
         AuthRequest request = factory.createAuthRequest("tenant-gitee");
         assertThat(request).isNotNull();
-        assertThat(request).isInstanceOf(AuthGiteeRequest.class);
+        assertThat(request).isInstanceOf(AppKeyAwareAuthRequest.class);
+        assertThat(((AppKeyAwareAuthRequest) request).getDelegate()).isInstanceOf(AuthGiteeRequest.class);
     }
 
     @Test

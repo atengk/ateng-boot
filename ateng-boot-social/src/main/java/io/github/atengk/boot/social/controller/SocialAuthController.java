@@ -46,7 +46,7 @@ public class SocialAuthController {
      * @param tenantId    租户标识
      * @return 携带高熵防伪 State 的第三方平台授权地址
      */
-    @GetMapping("/{appKey}/render")
+    @GetMapping("/render/{appKey}")
     public Result<String> renderAuthorizeUrl(
             @PathVariable("appKey") String appKey,
             @RequestParam(value = "redirectUrl", required = false) String redirectUrl,
@@ -66,7 +66,7 @@ public class SocialAuthController {
      * @param callback 接收包含 code、auth_code、state 等平台回调参数
      * @return 认证结果（已绑定签发会话或未绑定引导两阶段绑定）
      */
-    @GetMapping("/{appKey}/callback")
+    @GetMapping("/callback/{appKey}")
     public Result<SocialAuthResult> callback(
             @PathVariable("appKey") String appKey,
             AuthCallback callback) {
@@ -81,7 +81,7 @@ public class SocialAuthController {
      * @param request 直传登录请求对象
      * @return 认证结果
      */
-    @PostMapping("/{appKey}/direct-login")
+    @PostMapping("/direct-login/{appKey}")
     public Result<SocialAuthResult> directLogin(
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialDirectLoginRequest request) {
@@ -100,7 +100,7 @@ public class SocialAuthController {
      * @param request 绑定请求对象
      * @return 认证结果
      */
-    @PostMapping("/{appKey}/bind")
+    @PostMapping("/bind/{appKey}")
     public Result<SocialAuthResult> bind(
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialBindRequest request) {
@@ -119,7 +119,7 @@ public class SocialAuthController {
      * @param request 解绑请求对象
      * @return 操作成功响应
      */
-    @PostMapping("/{appKey}/unbind")
+    @PostMapping("/unbind/{appKey}")
     public Result<Void> unbind(
             @PathVariable("appKey") String appKey,
             @Valid @RequestBody SocialUnbindRequest request) {

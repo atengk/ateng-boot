@@ -53,7 +53,6 @@ public class AtengSocialProperties {
     /**
      * 命名社交应用配置字典，Key 为自定义 appKey (如 wechat-pc, github, dingtalk-corp)
      */
-    @NestedConfigurationProperty
     private Map<String, SocialAppItemProperties> apps = new LinkedHashMap<>();
 
     /**

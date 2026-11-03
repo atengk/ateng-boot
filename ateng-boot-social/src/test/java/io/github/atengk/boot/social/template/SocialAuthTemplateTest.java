@@ -10,6 +10,7 @@ import io.github.atengk.boot.social.exception.SocialException;
 import io.github.atengk.boot.social.exception.SocialStateExpiredException;
 import io.github.atengk.boot.social.exception.SocialUnbindRejectedException;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
+import io.github.atengk.boot.social.http.AnduinHttpBridge;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.model.SocialAuthResult;
 import io.github.atengk.boot.social.model.SocialAuthState;
@@ -26,7 +27,6 @@ import io.github.atengk.boot.social.ticket.BindTicketStore;
 import io.github.atengk.boot.social.ticket.InMemoryBindTicketStore;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
-import org.dromara.anduin.http.UnifiedHttpClientAccessor;
 import org.dromara.anduin.model.AuthCallback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -91,7 +92,7 @@ class SocialAuthTemplateTest {
                 return originalUrl;
             }
         });
-        UnifiedHttpClientAccessor.setAdapter(httpAdapter);
+        AnduinHttpBridge.setAdapter(httpAdapter);
 
         // 3. 配置应用属性：包含一个 GitHub Web 应用和一个微信小程序应用
         AtengSocialProperties properties = new AtengSocialProperties();
@@ -115,6 +116,7 @@ class SocialAuthTemplateTest {
         stateCache = new InMemorySocialAuthStateCache();
         bindTicketStore = new InMemoryBindTicketStore();
         userDetailsService = mock(SocialUserDetailsService.class);
+        doCallRealMethod().when(userDetailsService).bindSocialUser(any(), any(), any());
         sessionManager = new SaTokenSocialSessionManager();
         eventPublisher = mock(ApplicationEventPublisher.class);
 
@@ -129,7 +131,7 @@ class SocialAuthTemplateTest {
     @AfterEach
     void tearDown() throws IOException {
         mockWebServer.shutdown();
-        UnifiedHttpClientAccessor.reset();
+        AnduinHttpBridge.reset();
         MockSaTokenTestHelper.tearDown();
     }
 
@@ -413,7 +415,7 @@ class SocialAuthTemplateTest {
         assertThat(StpUtil.getLoginIdAsString()).isEqualTo("local_user_777");
 
         // 验证持久化 SPI 被正确调用
-        verify(userDetailsService).bind(eq("local_user_777"), eq("github_app"), any(SocialUser.class));
+        verify(userDetailsService).bindSocialUser(eq("local_user_777"), eq("github_app"), any(SocialUser.class));
 
         // 5. 验证 BindTicket 已被原子物理销毁（阅后即焚）
         assertThat(bindTicketStore.contains(bindTicket)).isFalse();
@@ -575,7 +577,7 @@ class SocialAuthTemplateTest {
     }
 
     @Test
-    @DisplayName("20. unbind: 未提供 SocialUserDetailsService SPI 时跳过持久化并广播事件")
+    @DisplayName("20. unbind: 未提供 SocialUserDetailsService SPI 时刚性阻断并抛出异常")
     void testUnbindWithoutUserDetailsService() {
         StaticListableBeanFactory emptyFactory = new StaticListableBeanFactory();
         SocialAuthTemplate standaloneTemplate = new SocialAuthTemplate(
@@ -587,19 +589,26 @@ class SocialAuthTemplateTest {
                 eventPublisher
         );
 
-        standaloneTemplate.unbind("user_standalone", "github_app");
+        assertThatThrownBy(() -> standaloneTemplate.unbind("user_standalone", "github_app"))
+                .isInstanceOf(SocialException.class)
+                .hasMessageContaining("未配置 SocialUserDetailsService");
 
-        verify(eventPublisher).publishEvent(any(SocialUnboundEvent.class));
+        verify(eventPublisher, never()).publishEvent(any());
     }
 
     @Test
     @DisplayName("21. setApplicationEventPublisher: 验证 ApplicationEventPublisherAware 接口装配能力")
     void testSetApplicationEventPublisherAware() {
+        StaticListableBeanFactory factory = new StaticListableBeanFactory();
+        SocialUserDetailsService mockDetails = mock(SocialUserDetailsService.class);
+        when(mockDetails.canUnbind("user_aware", "github_app")).thenReturn(true);
+        factory.addBean("details", mockDetails);
+
         SocialAuthTemplate template = new SocialAuthTemplate(
                 appFactory,
                 stateCache,
                 bindTicketStore,
-                new StaticListableBeanFactory().getBeanProvider(SocialUserDetailsService.class),
+                factory.getBeanProvider(SocialUserDetailsService.class),
                 sessionManager
         );
 
@@ -608,6 +617,24 @@ class SocialAuthTemplateTest {
 
         template.unbind("user_aware", "github_app");
         verify(customPublisher).publishEvent(any(SocialUnboundEvent.class));
+    }
+
+    @Test
+    @DisplayName("22. bind: 跨应用标识篡改 BindTicket 时刚性拦截阻断")
+    void testBindCrossAppKeyMismatchDefense() {
+        SocialUser pendingUser = SocialUser.builder()
+                .appKey("github_app")
+                .source("GITHUB")
+                .openId("gh_user_tamper")
+                .build();
+        String bindTicket = bindTicketStore.createTicket(pendingUser);
+
+        assertThatThrownBy(() -> authTemplate.bind("wechat_mp_app", bindTicket, "local_user_1", null))
+                .isInstanceOf(SocialException.class)
+                .hasMessageContaining("绑定凭据关联的应用标识与当前参数不匹配");
+
+        // 验证因非法篡改被拒绝后，票据已被原子销毁（阅后即焚）
+        assertThat(bindTicketStore.contains(bindTicket)).isFalse();
     }
 
     private String extractQueryParam(String url, String paramName) {

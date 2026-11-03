@@ -103,4 +103,42 @@ class RedisSocialAuthStateCacheTest {
         assertThat(cache.contains("s2")).isFalse();
         assertThat(cache.contains(null)).isFalse();
     }
+
+    @Test
+    @DisplayName("验证 cache 碰撞更新时将新 RedirectUrl 写回 Redis")
+    void testCacheCollisionUpdate() {
+        // 原有存在无 redirectUrl 的上下文（如仅包含 tenantId）
+        StateContext existing = StateContext.builder().tenantId("tenant_abc").build();
+        when(valueOperations.get("social:state:s_collision")).thenReturn(JsonUtil.toJsonString(existing));
+
+        // 调用 cache 补充 redirectUrl
+        cache.cache("s_collision", "https://app.example.com/deep/landing");
+
+        // 验证将更新后的上下文重新写回 Redis
+        ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
+        verify(valueOperations).set(eq("social:state:s_collision"), jsonCaptor.capture(), eq(SocialAuthStateCache.DEFAULT_STATE_TIMEOUT));
+
+        StateContext updated = JsonUtil.parseObject(jsonCaptor.getValue(), StateContext.class);
+        assertThat(updated.getTenantId()).isEqualTo("tenant_abc");
+        assertThat(updated.getRedirectUrl()).isEqualTo("https://app.example.com/deep/landing");
+    }
+
+    @Test
+    @DisplayName("验证 get 方法满足 Anduin 契约（存在时返回非空凭据，不存在时返回 null）")
+    void testGetContract() {
+        // 1. 存在且有 redirectUrl
+        StateContext ctxWithUrl = StateContext.builder().redirectUrl("https://example.com").build();
+        when(valueOperations.get("social:state:s_url")).thenReturn(JsonUtil.toJsonString(ctxWithUrl));
+        assertThat(cache.get("social:state:s_url")).isNull(); // 校验 key 映射
+        assertThat(cache.get("s_url")).isEqualTo("https://example.com");
+
+        // 2. 存在但无 redirectUrl -> 保底返回 key 作为有效凭据
+        StateContext ctxWithoutUrl = StateContext.builder().tenantId("t_only").build();
+        when(valueOperations.get("social:state:s_nourl")).thenReturn(JsonUtil.toJsonString(ctxWithoutUrl));
+        assertThat(cache.get("s_nourl")).isEqualTo("s_nourl");
+
+        // 3. 不存在 -> 返回 null
+        when(valueOperations.get("social:state:s_none")).thenReturn(null);
+        assertThat(cache.get("s_none")).isNull();
+    }
 }

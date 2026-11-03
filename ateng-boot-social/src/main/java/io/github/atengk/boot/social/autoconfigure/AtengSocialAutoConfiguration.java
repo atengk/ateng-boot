@@ -4,6 +4,7 @@ import io.github.atengk.boot.social.cache.InMemorySocialAuthStateCache;
 import io.github.atengk.boot.social.cache.SocialAuthStateCache;
 import io.github.atengk.boot.social.controller.SocialAuthController;
 import io.github.atengk.boot.social.factory.SocialAppFactory;
+import io.github.atengk.boot.social.http.AnduinHttpBridge;
 import io.github.atengk.boot.social.http.SpringRestClientHttpImpl;
 import io.github.atengk.boot.social.properties.AtengSocialProperties;
 import io.github.atengk.boot.social.session.NoopSocialSessionManager;
@@ -18,8 +19,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.anduin.cache.AuthStateCache;
 import org.dromara.anduin.http.HttpClientAdapter;
-import org.dromara.anduin.http.UnifiedHttpClientAccessor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -66,9 +67,20 @@ public class AtengSocialAutoConfiguration {
                 properties.getReadTimeout(),
                 proxy
         );
-        UnifiedHttpClientAccessor.setAdapter(adapter);
+        AnduinHttpBridge.setAdapter(adapter);
         log.info("Initialized Spring 6 RestClient adapter for Social OAuth2 communication");
         return adapter;
+    }
+
+    /**
+     * 确保无论使用默认还是自定义的 HttpClientAdapter，均可靠注入至 Anduin UnifiedHttpClient
+     */
+    @Bean
+    public SmartInitializingSingleton anduinHttpBridgeInitializer(HttpClientAdapter adapter) {
+        return () -> {
+            AnduinHttpBridge.setAdapter(adapter);
+            log.info("Bound active HttpClientAdapter [{}] to Anduin UnifiedHttpClient", adapter.getClass().getSimpleName());
+        };
     }
 
     /**

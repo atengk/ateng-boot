@@ -21,6 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
  * 社交登录业务场景定制 Controller 样例
  * <p>
  * 演示在企业业务系统层编排 {@link SampleSocialScenarioService} 门面，实现个性化路由、多租户上下文透传与会话接入。
+ * 区别于 Starter 开箱即用的 {@link io.github.atengk.boot.social.controller.SocialAuthController}，
+ * 本控制器展示当业务方需要定制接口路由或追加业务前置逻辑时的标准接入范式。
  * </p>
  *
  * @author Ateng

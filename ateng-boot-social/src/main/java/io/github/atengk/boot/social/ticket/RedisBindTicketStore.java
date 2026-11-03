@@ -2,6 +2,7 @@ package io.github.atengk.boot.social.ticket;
 
 import io.github.atengk.boot.core.util.JsonUtil;
 import io.github.atengk.boot.social.model.SocialUser;
+import io.github.atengk.boot.social.support.RedisLuaScripts;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -24,17 +25,6 @@ public class RedisBindTicketStore implements BindTicketStore {
 
     private static final String DEFAULT_KEY_PREFIX = "social:bind_ticket:";
 
-    /**
-     * 原子获取并删除的 Lua 脚本（兼容全版本 Redis，保障绝对原子性）
-     */
-    private static final String LUA_GET_AND_DELETE = """
-            local val = redis.call('GET', KEYS[1])
-            if val then
-                redis.call('DEL', KEYS[1])
-            end
-            return val
-            """;
-
     private final StringRedisTemplate redisTemplate;
     private final String keyPrefix;
     private final DefaultRedisScript<String> getAndDeleteScript;
@@ -46,7 +36,7 @@ public class RedisBindTicketStore implements BindTicketStore {
     public RedisBindTicketStore(StringRedisTemplate redisTemplate, String keyPrefix) {
         this.redisTemplate = redisTemplate;
         this.keyPrefix = keyPrefix != null ? keyPrefix : DEFAULT_KEY_PREFIX;
-        this.getAndDeleteScript = new DefaultRedisScript<>(LUA_GET_AND_DELETE, String.class);
+        this.getAndDeleteScript = new DefaultRedisScript<>(RedisLuaScripts.LUA_GET_AND_DELETE, String.class);
     }
 
     @Override

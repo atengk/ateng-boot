@@ -100,10 +100,12 @@
         <xxl-job.version>3.5.0</xxl-job.version>
         <snail-job.version>1.10.0</snail-job.version>
         <dromara-anduin.version>2.2.0</dromara-anduin.version>
+        <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin，严禁暴露至 ateng-boot-bom -->
         <tools-jackson.version>3.2.4</tools-jackson.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
         <commons-collections4.version>4.4</commons-collections4.version>
         <guava.version>33.4.0-jre</guava.version>
+        <!-- 仅作为 ateng-boot-social 运行时支撑 tools.jackson 3.x 所需的 FasterXML 专用兼容注解，严禁暴露至 ateng-boot-bom -->
         <jackson-annotations.version>2.22</jackson-annotations.version>
 
         <!-- 插件版本定义 -->
@@ -432,6 +434,7 @@
                 <artifactId>dromara-anduin</artifactId>
                 <version>${dromara-anduin.version}</version>
             </dependency>
+            <!-- 仅作为 ateng-boot-social 运行时支撑 dromara-anduin 依赖，严禁暴露至 ateng-boot-bom -->
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>

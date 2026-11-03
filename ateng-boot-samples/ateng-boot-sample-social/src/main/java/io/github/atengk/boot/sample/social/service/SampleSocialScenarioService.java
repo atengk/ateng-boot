@@ -34,6 +34,7 @@ public class SampleSocialScenarioService {
      * @return 携带高熵防伪 State 的重定向 URL
      */
     public String generateWebAuthorizeUrl(String appKey, String redirectUrl, String tenantId) {
+        log.info("业务场景编排：发起生成第三方授权跳转地址, appKey={}, tenantId={}, redirectUrl={}", appKey, tenantId, redirectUrl);
         StateContext context = StateContext.builder()
                 .redirectUrl(redirectUrl)
                 .tenantId(tenantId)
@@ -50,6 +51,7 @@ public class SampleSocialScenarioService {
      * @return 认证结果（已登录签发会话，或未绑定引导两阶段绑定）
      */
     public SocialAuthResult completeWebLogin(String appKey, String code, String state) {
+        log.info("业务场景编排：执行 Web OAuth2 回调换码登录, appKey={}", appKey);
         AuthCallback callback = AuthCallback.builder()
                 .code(code)
                 .state(state)
@@ -70,6 +72,7 @@ public class SampleSocialScenarioService {
      * @return 认证结果
      */
     public SocialAuthResult directLogin(String appKey, String code, String deviceType) {
+        log.info("业务场景编排：执行移动端直传凭证登录, appKey={}, deviceType={}", appKey, deviceType);
         SocialLoginOptions options = SocialLoginOptions.builder()
                 .deviceType(deviceType != null ? deviceType : "MINI_PROGRAM")
                 .loginType("USER")
@@ -87,6 +90,7 @@ public class SampleSocialScenarioService {
      * @return 绑定并登录成功结果
      */
     public SocialAuthResult bindUser(String appKey, String bindTicket, String userId, String deviceType) {
+        log.info("业务场景编排：执行社交账号两阶段绑定, appKey={}, userId={}, deviceType={}", appKey, userId, deviceType);
         SocialLoginOptions options = SocialLoginOptions.builder()
                 .deviceType(deviceType != null ? deviceType : "PC")
                 .loginType("USER")
@@ -101,6 +105,7 @@ public class SampleSocialScenarioService {
      * @param appKey 社交应用唯一标识
      */
     public void unbindUser(String userId, String appKey) {
+        log.info("业务场景编排：执行社交账号解绑与孤儿防卫前置探测, userId={}, appKey={}", userId, appKey);
         socialAuthTemplate.unbind(userId, appKey);
     }
 }

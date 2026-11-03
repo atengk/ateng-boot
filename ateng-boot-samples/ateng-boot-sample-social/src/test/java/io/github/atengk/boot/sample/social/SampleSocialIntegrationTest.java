@@ -104,7 +104,7 @@ class SampleSocialIntegrationTest {
     @Test
     @DisplayName("1. 端到端验证 /render 端点：生成携带防伪 State 与业务深链的第三方授权地址")
     void test1_RenderAuthorizeUrl() throws Exception {
-        MvcResult mvcResult = mockMvc.perform(get("/auth/social/github_app/render")
+        MvcResult mvcResult = mockMvc.perform(get("/auth/social/render/github_app")
                         .param("redirectUrl", "https://ateng.example.com/dashboard")
                         .param("tenantId", "tenant_001"))
                 .andExpect(status().isOk())
@@ -140,7 +140,7 @@ class SampleSocialIntegrationTest {
                 .setBody("{\"id\":1001,\"login\":\"ateng_normal\",\"name\":\"阿腾测试用户\"}"));
 
         // 3. 模拟第三方回调发起 GET 请求
-        mockMvc.perform(get("/auth/social/github_app/callback")
+        mockMvc.perform(get("/auth/social/callback/github_app")
                         .param("code", "mock_oauth_code_1001")
                         .param("state", state))
                 .andExpect(status().isOk())
@@ -170,7 +170,7 @@ class SampleSocialIntegrationTest {
                 .setBody("{\"id\":3003,\"login\":\"new_registered_user\",\"name\":\"新注册用户\"}"));
 
         // 3. 回调换码 -> 预期状态为 REQUIRE_BIND 并签发 bindTicket
-        MvcResult callbackResult = mockMvc.perform(get("/auth/social/github_app/callback")
+        MvcResult callbackResult = mockMvc.perform(get("/auth/social/callback/github_app")
                         .param("code", "mock_code_3003")
                         .param("state", state))
                 .andExpect(status().isOk())
@@ -189,7 +189,7 @@ class SampleSocialIntegrationTest {
                 .deviceType("PC")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/bind")
+        mockMvc.perform(post("/auth/social/bind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(bindRequest)))
                 .andExpect(status().isOk())
@@ -198,7 +198,7 @@ class SampleSocialIntegrationTest {
                 .andExpect(jsonPath("$.data.userId").value("user_brand_new_555"));
 
         // 5. 对抗性防重放验证：再次消费同一个已销毁的 bindTicket 必须被拦截阻断
-        mockMvc.perform(post("/auth/social/github_app/bind")
+        mockMvc.perform(post("/auth/social/bind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(bindRequest)))
                 .andExpect(status().isOk())
@@ -220,7 +220,7 @@ class SampleSocialIntegrationTest {
                 .deviceType("MINI_PROGRAM")
                 .build();
 
-        mockMvc.perform(post("/auth/social/wechat_mp_app/direct-login")
+        mockMvc.perform(post("/auth/social/direct-login/wechat_mp_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -238,7 +238,7 @@ class SampleSocialIntegrationTest {
                 .userId("user_orphan_2002")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/unbind")
+        mockMvc.perform(post("/auth/social/unbind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(unbindRequest)))
                 .andExpect(status().isOk())
@@ -257,7 +257,7 @@ class SampleSocialIntegrationTest {
                 .userId("user_bound_1001")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/unbind")
+        mockMvc.perform(post("/auth/social/unbind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(unbindRequest)))
                 .andExpect(status().isOk())

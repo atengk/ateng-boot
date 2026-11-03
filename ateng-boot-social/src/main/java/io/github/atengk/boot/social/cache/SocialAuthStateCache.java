@@ -89,22 +89,33 @@ public interface SocialAuthStateCache extends AuthStateCache {
     default void cache(String key, String value) {
         StateContext existing = getContext(key);
         if (existing != null) {
-            // 若已预存结构化上下文，保留原有租户与扩展数据，仅在未设置跳转地址且 value 与 key 不同时补充
-            if (existing.getRedirectUrl() == null && value != null && !value.equals(key)) {
+            // 若已预存结构化上下文，保留原有租户与扩展数据，仅在未设置跳转地址且传入有效深链时补充并持久化写回
+            if (existing.getRedirectUrl() == null && isCustomRedirectUrl(key, value)) {
                 existing.setRedirectUrl(value);
+                set(key, existing, DEFAULT_STATE_TIMEOUT);
             }
             return;
         }
         StateContext fallbackContext = StateContext.builder()
-                .redirectUrl(value != null && !value.equals(key) ? value : null)
+                .redirectUrl(isCustomRedirectUrl(key, value) ? value : null)
                 .build();
         set(key, fallbackContext, DEFAULT_STATE_TIMEOUT);
+    }
+
+    /**
+     * 判断传入的 value 是否为自定义回调/跳转 URL（过滤 Anduin 默认以 key 作为 value 的占位行为）
+     */
+    static boolean isCustomRedirectUrl(String key, String value) {
+        return value != null && !value.isBlank() && !value.equals(key);
     }
 
     @Override
     default String get(String key) {
         StateContext ctx = getContext(key);
-        return ctx != null ? ctx.getRedirectUrl() : null;
+        if (ctx == null) {
+            return null;
+        }
+        return ctx.getRedirectUrl() != null ? ctx.getRedirectUrl() : key;
     }
 
     @Override

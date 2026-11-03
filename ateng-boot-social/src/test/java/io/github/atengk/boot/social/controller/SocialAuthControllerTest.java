@@ -59,7 +59,7 @@ class SocialAuthControllerTest {
         when(authTemplate.getAuthorizeUrl(eq("github_app"), any(StateContext.class)))
                 .thenReturn("https://github.com/login/oauth/authorize?client_id=123&state=xyz");
 
-        mockMvc.perform(get("/auth/social/github_app/render")
+        mockMvc.perform(get("/auth/social/render/github_app")
                         .param("redirectUrl", "https://example.com/dest")
                         .param("tenantId", "tenant_001"))
                 .andExpect(status().isOk())
@@ -83,7 +83,7 @@ class SocialAuthControllerTest {
         when(authTemplate.login(eq("github_app"), any(AuthCallback.class)))
                 .thenReturn(mockResult);
 
-        mockMvc.perform(get("/auth/social/github_app/callback")
+        mockMvc.perform(get("/auth/social/callback/github_app")
                         .param("code", "mock_code_abc")
                         .param("state", "mock_state_xyz"))
                 .andExpect(status().isOk())
@@ -114,7 +114,7 @@ class SocialAuthControllerTest {
                 .loginType("USER")
                 .build();
 
-        mockMvc.perform(post("/auth/social/wechat_mp_app/direct-login")
+        mockMvc.perform(post("/auth/social/direct-login/wechat_mp_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -130,7 +130,7 @@ class SocialAuthControllerTest {
                 .code("   ")
                 .build();
 
-        mockMvc.perform(post("/auth/social/wechat_mp_app/direct-login")
+        mockMvc.perform(post("/auth/social/direct-login/wechat_mp_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidRequest)))
                 .andExpect(status().isBadRequest());
@@ -155,7 +155,7 @@ class SocialAuthControllerTest {
                 .deviceType("PC")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/bind")
+        mockMvc.perform(post("/auth/social/bind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -171,7 +171,7 @@ class SocialAuthControllerTest {
                 .userId("u1")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/bind")
+        mockMvc.perform(post("/auth/social/bind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidRequest)))
                 .andExpect(status().isBadRequest());
@@ -184,7 +184,7 @@ class SocialAuthControllerTest {
                 .userId("local_user_888")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/unbind")
+        mockMvc.perform(post("/auth/social/unbind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -200,7 +200,7 @@ class SocialAuthControllerTest {
                 .userId("  ")
                 .build();
 
-        mockMvc.perform(post("/auth/social/github_app/unbind")
+        mockMvc.perform(post("/auth/social/unbind/github_app")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(invalidRequest)))
                 .andExpect(status().isBadRequest());

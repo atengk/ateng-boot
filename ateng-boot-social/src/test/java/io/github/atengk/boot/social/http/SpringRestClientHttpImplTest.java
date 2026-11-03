@@ -6,7 +6,6 @@ import okhttp3.mockwebserver.RecordedRequest;
 import org.dromara.anduin.http.AdapterHttpResponse;
 import org.dromara.anduin.http.HttpConstants;
 import org.dromara.anduin.http.HttpHeader;
-import org.dromara.anduin.http.UnifiedHttpClientAccessor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,14 +36,14 @@ class SpringRestClientHttpImplTest {
         mockWebServer = new MockWebServer();
         mockWebServer.start();
         httpAdapter = new SpringRestClientHttpImpl(Duration.ofSeconds(3), Duration.ofSeconds(3), null);
-        UnifiedHttpClientAccessor.setAdapter(httpAdapter);
+        AnduinHttpBridge.setAdapter(httpAdapter);
     }
 
     @AfterEach
     void tearDown() throws IOException {
         mockWebServer.shutdown();
         MDC.clear();
-        UnifiedHttpClientAccessor.reset();
+        AnduinHttpBridge.reset();
     }
 
     @Test
@@ -169,11 +168,11 @@ class SpringRestClientHttpImplTest {
     }
 
     @Test
-    @DisplayName("UnifiedHttpClientAccessor 注册与全局注入验证")
-    void testUnifiedHttpClientAccessor() {
-        assertSame(httpAdapter, UnifiedHttpClientAccessor.getAdapter());
-        UnifiedHttpClientAccessor.reset();
-        assertNull(UnifiedHttpClientAccessor.getAdapter());
+    @DisplayName("AnduinHttpBridge 注册与全局注入验证")
+    void testAnduinHttpBridge() {
+        assertSame(httpAdapter, AnduinHttpBridge.getAdapter());
+        AnduinHttpBridge.reset();
+        assertNull(AnduinHttpBridge.getAdapter());
     }
 
     @Test
