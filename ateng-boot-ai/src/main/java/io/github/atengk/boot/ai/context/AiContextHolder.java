@@ -74,6 +74,9 @@ public final class AiContextHolder {
      * @return 自动释放句柄
      */
     public static AiModelScope useModel(String modelName) {
+        if (!StringUtils.hasText(modelName)) {
+            return () -> {};
+        }
         setModelName(modelName);
         return AiContextHolder::clear;
     }

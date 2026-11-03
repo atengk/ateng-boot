@@ -94,4 +94,16 @@ class AiExceptionTranslatorTest {
 
         assertThat(result).isSameAs(original);
     }
+
+    @Test
+    @DisplayName("验证多层嵌套异常中穿透识别 OpenAiHttpException 并精确转译")
+    void testTranslateNestedOpenAiHttpException() {
+        OpenAiHttpException cause = new OpenAiHttpException(429, "Rate limit reached");
+        RuntimeException intermediate = new RuntimeException("Intermediate wrapper", cause);
+        RuntimeException outer = new RuntimeException("Outer wrapper", intermediate);
+
+        AiException aiException = AiExceptionTranslator.translate(outer);
+        assertThat(aiException.getResultCode()).isEqualTo(AiResultCode.AI_RATE_LIMIT_EXCEEDED);
+        assertThat(aiException.getCause()).isSameAs(outer);
+    }
 }

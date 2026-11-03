@@ -8,6 +8,7 @@ import io.github.atengk.boot.ai.exception.AiResultCode;
 import org.springframework.util.StringUtils;
 
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -99,7 +100,7 @@ public class AiModelRegistry {
      */
     public ChatLanguageModel getChatModel() {
         String current = AiContextHolder.getModelName();
-        if (StringUtils.hasText(current) && chatModels.containsKey(current)) {
+        if (StringUtils.hasText(current)) {
             return getChatModel(current);
         }
         return getChatModel(DEFAULT_MODEL_NAME);
@@ -130,7 +131,7 @@ public class AiModelRegistry {
      */
     public StreamingChatLanguageModel getStreamingChatModel() {
         String current = AiContextHolder.getModelName();
-        if (StringUtils.hasText(current) && streamingChatModels.containsKey(current)) {
+        if (StringUtils.hasText(current)) {
             return getStreamingChatModel(current);
         }
         return getStreamingChatModel(DEFAULT_MODEL_NAME);
@@ -189,7 +190,9 @@ public class AiModelRegistry {
      * @return 只读模型名称集合
      */
     public Set<String> getModelNames() {
-        return Collections.unmodifiableSet(chatModels.keySet());
+        Set<String> names = new LinkedHashSet<>(chatModels.keySet());
+        names.addAll(streamingChatModels.keySet());
+        return Collections.unmodifiableSet(names);
     }
 
     /**

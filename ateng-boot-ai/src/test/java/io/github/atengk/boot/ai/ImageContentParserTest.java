@@ -107,4 +107,12 @@ class ImageContentParserTest {
                 .isInstanceOf(AiException.class)
                 .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
     }
+
+    @Test
+    @DisplayName("对抗性测试：提示词为空且图片列表全为空白元素时 Fail-Fast 抛出 AI_INVALID_PAYLOAD")
+    void testBlankImageElementsWithBlankPromptThrows() {
+        assertThatThrownBy(() -> ImageContentParser.toUserMessage("", List.of("   ", "\t")))
+                .isInstanceOf(AiException.class)
+                .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_INVALID_PAYLOAD));
+    }
 }

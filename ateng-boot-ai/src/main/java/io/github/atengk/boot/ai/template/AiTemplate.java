@@ -118,6 +118,19 @@ public class AiTemplate {
         return extractText(response);
     }
 
+    /**
+     * 指定模型名称进行图文多模态变长参数对话语法糖
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @param imageUrls 图片 URL 或 Base64 变长数组
+     * @return 大模型响应文本
+     */
+    public String chatWithModel(String modelName, String prompt, String... imageUrls) {
+        List<String> list = imageUrls != null ? Arrays.asList(imageUrls) : Collections.emptyList();
+        return chatWithModel(modelName, prompt, list);
+    }
+
     // -------------------------------------------------------------------------
     // 动态模板对话
     // -------------------------------------------------------------------------
@@ -202,14 +215,32 @@ public class AiTemplate {
     // -------------------------------------------------------------------------
 
     /**
+     * 默认 SSE 流式通信超时时间 (3 分钟)
+     */
+    public static final Duration DEFAULT_SSE_TIMEOUT = Duration.ofMinutes(3);
+
+    /**
      * 极简流式调用：自动创建并返回默认超时的 SseEmitter 实例 (使用当前上下文或默认模型)
      *
      * @param prompt 提示词
      * @return SseEmitter 实例
      */
     public SseEmitter stream(String prompt) {
-        SseEmitter emitter = new SseEmitter(180_000L);
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
         stream(prompt, emitter);
+        return emitter;
+    }
+
+    /**
+     * 指定模型进行极简流式调用：自动创建并返回默认超时的 SseEmitter 实例
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @return SseEmitter 实例
+     */
+    public SseEmitter streamWithModel(String modelName, String prompt) {
+        SseEmitter emitter = new SseEmitter(DEFAULT_SSE_TIMEOUT.toMillis());
+        streamWithModel(modelName, prompt, emitter);
         return emitter;
     }
 
@@ -254,15 +285,28 @@ public class AiTemplate {
     }
 
     /**
-     * 图文多模态变长参数流式对话
+     * 图文多模态变长参数流式对话语法糖
      *
      * @param prompt    提示词
-     * @param emitter   Spring MVC SseEmitter 实例
-     * @param imageUrls 图片 URL 或 Base64 变长数组
+     * @param emitter   Spring MVC SseEmitter 实例（因 Java 变长参数限制置于变长图片前）
+     * @param imageUrls 图片 URL 或 Base64 变长数组（Java 限制必须置于形参末尾）
      */
     public void stream(String prompt, SseEmitter emitter, String... imageUrls) {
         List<String> list = imageUrls != null ? Arrays.asList(imageUrls) : Collections.emptyList();
         streamWithModel(null, prompt, list, emitter);
+    }
+
+    /**
+     * 指定模型进行图文多模态变长参数流式对话语法糖
+     *
+     * @param modelName 模型名称或别名
+     * @param prompt    提示词
+     * @param emitter   Spring MVC SseEmitter 实例（因 Java 变长参数限制置于变长图片前）
+     * @param imageUrls 图片 URL 或 Base64 变长数组（Java 限制必须置于形参末尾）
+     */
+    public void streamWithModel(String modelName, String prompt, SseEmitter emitter, String... imageUrls) {
+        List<String> list = imageUrls != null ? Arrays.asList(imageUrls) : Collections.emptyList();
+        streamWithModel(modelName, prompt, list, emitter);
     }
 
     /**
@@ -371,13 +415,17 @@ public class AiTemplate {
         }
 
         ChatLanguageModel model = resolveChatModel(modelName);
-        int maxRetries = resolveMaxRetries(modelName);
+        AiModelConfig config = resolveModelConfig(modelName);
+        int maxRetries = config.getMaxRetries() != null ? config.getMaxRetries() : 3;
+        Duration initialInterval = config.getRetryInitialInterval() != null ? config.getRetryInitialInterval() : Duration.ofMillis(500);
+        Duration maxInterval = config.getRetryMaxInterval() != null ? config.getRetryMaxInterval() : Duration.ofSeconds(5);
+        double multiplier = config.getRetryMultiplier() != null ? config.getRetryMultiplier() : 2.0;
 
         RetryUtil.RetryConfig retryConfig = RetryUtil.RetryConfig.builder()
                 .maxAttempts(Math.max(1, maxRetries + 1))
-                .delay(Duration.ofMillis(500))
-                .multiplier(2.0)
-                .maxDelay(Duration.ofSeconds(5))
+                .delay(initialInterval)
+                .multiplier(multiplier)
+                .maxDelay(maxInterval)
                 .jitter(true)
                 .retryPredicate(AiExceptionTranslator::isRetryable)
                 .onRetry((attempt, error) -> log.warn("大模型调用遇到瞬态异常，正在发起第 {} 次退避重试: {}", attempt, error.getMessage()))
@@ -413,17 +461,11 @@ public class AiTemplate {
         return registry.getStreamingChatModel();
     }
 
-    private int resolveMaxRetries(String modelName) {
-        if (StringUtils.hasText(modelName) && properties.getModels().containsKey(modelName)) {
-            AiModelConfig config = properties.getModels().get(modelName);
-            if (config != null && config.getMaxRetries() != null) {
-                return config.getMaxRetries();
-            }
+    private AiModelConfig resolveModelConfig(String modelName) {
+        if (properties == null) {
+            return new AiModelConfig();
         }
-        if (properties.getModel() != null && properties.getModel().getMaxRetries() != null) {
-            return properties.getModel().getMaxRetries();
-        }
-        return 3;
+        return properties.resolveConfig(modelName);
     }
 
     private String extractText(Response<AiMessage> response) {

@@ -58,6 +58,21 @@ public class AiModelConfig {
     private Integer maxRetries = 3;
 
     /**
+     * 瞬时失败重试初始退避延迟间隔
+     */
+    private Duration retryInitialInterval = Duration.ofMillis(500);
+
+    /**
+     * 瞬时失败重试最大退避延迟间隔
+     */
+    private Duration retryMaxInterval = Duration.ofSeconds(5);
+
+    /**
+     * 瞬时失败重试退避指数倍率
+     */
+    private Double retryMultiplier = 2.0;
+
+    /**
      * 是否在控制台输出底层 HTTP 请求日志
      */
     private Boolean logRequests = false;

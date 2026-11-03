@@ -115,6 +115,31 @@ class AtengAiAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("防御性测试：当容器中存在多个自定义 ChatLanguageModel Bean 且未设 @Primary 时，平滑获取首个可用 Bean 而不崩溃")
+    void testMultipleCustomChatModelsWithoutPrimaryDoesNotCrash() {
+        contextRunner.withUserConfiguration(MultipleModelsConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(AiModelRegistry.class);
+                    AiModelRegistry registry = context.getBean(AiModelRegistry.class);
+                    assertThat(registry.hasChatModel(AiModelRegistry.DEFAULT_MODEL_NAME)).isTrue();
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MultipleModelsConfig {
+        @Bean
+        public ChatLanguageModel model1() {
+            return Mockito.mock(ChatLanguageModel.class);
+        }
+
+        @Bean
+        public ChatLanguageModel model2() {
+            return Mockito.mock(ChatLanguageModel.class);
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class CustomModelConfig {
         static final ChatLanguageModel MOCK_MODEL = Mockito.mock(ChatLanguageModel.class);

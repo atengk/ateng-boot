@@ -44,6 +44,14 @@ class ChatControllerIntegrationTest {
 
     private static MockWebServer server;
 
+    private static boolean isLocalProfile() {
+        String active = System.getProperty("spring.profiles.active");
+        if (active == null) {
+            active = System.getenv("SPRING_PROFILES_ACTIVE");
+        }
+        return active != null && active.contains("local");
+    }
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -52,6 +60,9 @@ class ChatControllerIntegrationTest {
 
     @BeforeAll
     static void startServer() throws IOException {
+        if (isLocalProfile()) {
+            return;
+        }
         server = new MockWebServer();
         server.setDispatcher(new Dispatcher() {
             @Override
@@ -124,12 +135,14 @@ class ChatControllerIntegrationTest {
 
     @DynamicPropertySource
     static void registerAiProperties(DynamicPropertyRegistry registry) {
-        registry.add("ateng.boot.ai.model.base-url", () -> server.url("/v1").toString());
-        registry.add("ateng.boot.ai.model.api-key", () -> "mock-test-key-ci");
-        registry.add("ateng.boot.ai.model.model-name", () -> "gpt-4o");
-        registry.add("ateng.boot.ai.models.deepseek.base-url", () -> server.url("/v1").toString());
-        registry.add("ateng.boot.ai.models.deepseek.api-key", () -> "mock-test-key-ci");
-        registry.add("ateng.boot.ai.models.deepseek.model-name", () -> "deepseek-reasoner");
+        if (!isLocalProfile()) {
+            registry.add("ateng.boot.ai.model.base-url", () -> server.url("/v1").toString());
+            registry.add("ateng.boot.ai.model.api-key", () -> "mock-test-key-ci");
+            registry.add("ateng.boot.ai.model.model-name", () -> "gpt-4o");
+            registry.add("ateng.boot.ai.models.deepseek.base-url", () -> server.url("/v1").toString());
+            registry.add("ateng.boot.ai.models.deepseek.api-key", () -> "mock-test-key-ci");
+            registry.add("ateng.boot.ai.models.deepseek.model-name", () -> "deepseek-reasoner");
+        }
     }
 
     @Test
@@ -139,13 +152,18 @@ class ChatControllerIntegrationTest {
                 .prompt("你好，请介绍一下你自己")
                 .build();
 
-        mockMvc.perform(post("/sample/ai/chat/sync")
+        var actions = mockMvc.perform(post("/sample/ai/chat/sync")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"))
                 .andExpect(jsonPath("$.data.model").value("default"));
+
+        if (!isLocalProfile()) {
+            actions.andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"));
+        } else {
+            actions.andExpect(jsonPath("$.data.reply").isString());
+        }
     }
 
     @Test
@@ -156,29 +174,42 @@ class ChatControllerIntegrationTest {
                 .model("deepseek")
                 .build();
 
-        mockMvc.perform(post("/sample/ai/chat/sync")
+        var actions = mockMvc.perform(post("/sample/ai/chat/sync")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"))
                 .andExpect(jsonPath("$.data.model").value("deepseek"));
+
+        if (!isLocalProfile()) {
+            actions.andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"));
+        } else {
+            actions.andExpect(jsonPath("$.data.reply").isString());
+        }
     }
 
     @Test
     @DisplayName("端到端验证 POST /sample/ai/chat/sync 图文多模态分析")
     void testSyncChatMultimodal() throws Exception {
         AiChatRequestDto request = AiChatRequestDto.builder()
-                .prompt("识别发票总金额")
-                .images(Collections.singletonList("https://example.com/invoice.png"))
+                .prompt("识别发票或图片内容")
+                .images(Collections.singletonList(
+                        isLocalProfile()
+                                ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                                : "https://example.com/invoice.png"))
                 .build();
 
-        mockMvc.perform(post("/sample/ai/chat/sync")
+        var actions = mockMvc.perform(post("/sample/ai/chat/sync")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"));
+                .andExpect(jsonPath("$.code").value(200));
+
+        if (!isLocalProfile()) {
+            actions.andExpect(jsonPath("$.data.reply").value("这是 MockWebServer 响应的同步回答。"));
+        } else {
+            actions.andExpect(jsonPath("$.data.reply").isString());
+        }
     }
 
     @Test
@@ -203,18 +234,24 @@ class ChatControllerIntegrationTest {
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
-        // 异步等待推流完成
-        mvcResult.getAsyncResult(5000);
+        // 异步等待推流完成 (本地模型调用可能稍有延迟，给予 30 秒超时)
+        mvcResult.getAsyncResult(isLocalProfile() ? 30000 : 5000);
 
         String sseOutput = mvcResult.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
 
         // 验证 reasoning 与 text 双通道事件及 [DONE] 标志
-        assertThat(sseOutput).contains("event:reasoning");
-        assertThat(sseOutput).contains("data:正在深入推导");
-        assertThat(sseOutput).contains("event:text");
-        assertThat(sseOutput).contains("data:你好，这是最终答复。");
-        assertThat(sseOutput).contains("event:done");
-        assertThat(sseOutput).contains("data:[DONE]");
+        if (!isLocalProfile()) {
+            assertThat(sseOutput).contains("event:reasoning");
+            assertThat(sseOutput).contains("data:正在深入推导");
+            assertThat(sseOutput).contains("event:text");
+            assertThat(sseOutput).contains("data:你好，这是最终答复。");
+            assertThat(sseOutput).contains("event:done");
+            assertThat(sseOutput).contains("data:[DONE]");
+        } else {
+            assertThat(sseOutput).contains("event:text");
+            assertThat(sseOutput).contains("event:done");
+            assertThat(sseOutput).contains("data:[DONE]");
+        }
     }
 
     @Test

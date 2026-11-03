@@ -61,35 +61,48 @@ public final class AiExceptionTranslator {
             return aiEx;
         }
 
-        Throwable root = findRootCause(t);
-
-        if (root instanceof OpenAiHttpException httpEx) {
-            int code = httpEx.code();
-            if (code == 401 || code == 403) {
-                return new AiException(AiResultCode.AI_AUTH_FAILED, "大模型认证鉴权失败 (HTTP " + code + "): " + httpEx.getMessage(), t);
+        // 1. 优先沿因果链查找特定强类型异常 (如 OpenAiHttpException、SocketTimeoutException)
+        Throwable current = t;
+        while (current != null) {
+            if (current instanceof OpenAiHttpException httpEx) {
+                int code = httpEx.code();
+                if (code == 401 || code == 403) {
+                    return new AiException(AiResultCode.AI_AUTH_FAILED, "大模型认证鉴权失败 (HTTP " + code + "): " + httpEx.getMessage(), t);
+                }
+                if (code == 429) {
+                    return new AiException(AiResultCode.AI_RATE_LIMIT_EXCEEDED, "大模型调用触发限流 (HTTP 429): " + httpEx.getMessage(), t);
+                }
+                if (code == 400 || code == 422) {
+                    return new AiException(AiResultCode.AI_INVALID_PAYLOAD, "大模型入参载荷非法 (HTTP " + code + "): " + httpEx.getMessage(), t);
+                }
             }
-            if (code == 429) {
-                return new AiException(AiResultCode.AI_RATE_LIMIT_EXCEEDED, "大模型调用触发限流 (HTTP 429): " + httpEx.getMessage(), t);
+            if (current instanceof SocketTimeoutException || current instanceof TimeoutException) {
+                return new AiException(AiResultCode.AI_TIMEOUT, "大模型网络连接或读取响应超时: " + current.getMessage(), t);
             }
-            if (code == 400 || code == 422) {
-                return new AiException(AiResultCode.AI_INVALID_PAYLOAD, "大模型入参载荷非法 (HTTP " + code + "): " + httpEx.getMessage(), t);
+            current = current.getCause();
+        }
+
+        // 2. 次级沿因果链匹配常见错误信息关键词
+        current = t;
+        while (current != null) {
+            String msg = current.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("429") || lower.contains("rate limit")) {
+                    return new AiException(AiResultCode.AI_RATE_LIMIT_EXCEEDED, msg, t);
+                }
+                if (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized")) {
+                    return new AiException(AiResultCode.AI_AUTH_FAILED, msg, t);
+                }
+                if (lower.contains("timeout") || lower.contains("timed out")) {
+                    return new AiException(AiResultCode.AI_TIMEOUT, msg, t);
+                }
             }
+            current = current.getCause();
         }
 
-        if (root instanceof SocketTimeoutException || root instanceof TimeoutException) {
-            return new AiException(AiResultCode.AI_TIMEOUT, "大模型网络连接或读取响应超时: " + root.getMessage(), t);
-        }
-
-        String msg = t.getMessage() != null ? t.getMessage() : "大模型调用未决异常";
-        String lower = msg.toLowerCase();
-        if (lower.contains("429") || lower.contains("rate limit")) {
-            return new AiException(AiResultCode.AI_RATE_LIMIT_EXCEEDED, msg, t);
-        }
-        if (lower.contains("401") || lower.contains("403") || lower.contains("unauthorized")) {
-            return new AiException(AiResultCode.AI_AUTH_FAILED, msg, t);
-        }
-
-        return new AiException(AiResultCode.AI_CALL_FAILED, msg, t);
+        String fallbackMsg = t != null && t.getMessage() != null ? t.getMessage() : "大模型调用未决异常";
+        return new AiException(AiResultCode.AI_CALL_FAILED, fallbackMsg, t);
     }
 
     private static Throwable findRootCause(Throwable t) {

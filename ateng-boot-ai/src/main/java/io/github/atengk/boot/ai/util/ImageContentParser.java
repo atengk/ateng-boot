@@ -51,6 +51,10 @@ public final class ImageContentParser {
             }
         }
 
+        if (contents.isEmpty()) {
+            throw new AiException(AiResultCode.AI_INVALID_PAYLOAD, "有效提问内容与图片不能为空");
+        }
+
         return UserMessage.from(contents);
     }
 

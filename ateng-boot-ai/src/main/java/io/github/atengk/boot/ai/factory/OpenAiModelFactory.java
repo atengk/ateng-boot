@@ -38,7 +38,7 @@ public final class OpenAiModelFactory {
                 .modelName(config.getModelName())
                 .temperature(config.getTemperature() != null ? config.getTemperature() : 0.7)
                 .timeout(config.getTimeout() != null ? config.getTimeout() : Duration.ofSeconds(60))
-                .maxRetries(config.getMaxRetries() != null ? config.getMaxRetries() : 3)
+                .maxRetries(0) // 禁用底层 SDK 无抖动的裸重试，统一交由上层 AiTemplate 与 RetryUtil 实施带 Jitter 的指数退避治理，防御乘积级重试放大
                 .logRequests(Boolean.TRUE.equals(config.getLogRequests()))
                 .logResponses(Boolean.TRUE.equals(config.getLogResponses()));
 

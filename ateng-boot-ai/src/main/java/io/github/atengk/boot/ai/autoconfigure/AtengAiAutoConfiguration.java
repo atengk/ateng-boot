@@ -86,9 +86,15 @@ public class AtengAiAutoConfiguration {
         AiModelRegistry registry = new AiModelRegistry();
         List<ChatModelListener> listeners = listenersProvider.getIfAvailable(Collections::emptyList);
 
-        // 1. 注册默认模型 (若已由 Spring 容器装配或独立配置)
-        ChatLanguageModel defaultChatModel = defaultChatModelProvider.getIfAvailable();
-        StreamingChatLanguageModel defaultStreamingChatModel = defaultStreamingChatModelProvider.getIfAvailable();
+        // 1. 注册默认模型 (若已由 Spring 容器装配或独立配置，优先使用唯一/Primary Bean，多 Bean 时平滑退避首个)
+        ChatLanguageModel defaultChatModel = defaultChatModelProvider.getIfUnique();
+        if (defaultChatModel == null) {
+            defaultChatModel = defaultChatModelProvider.orderedStream().findFirst().orElse(null);
+        }
+        StreamingChatLanguageModel defaultStreamingChatModel = defaultStreamingChatModelProvider.getIfUnique();
+        if (defaultStreamingChatModel == null) {
+            defaultStreamingChatModel = defaultStreamingChatModelProvider.orderedStream().findFirst().orElse(null);
+        }
 
         if (defaultChatModel != null || defaultStreamingChatModel != null) {
             String defaultAlias = properties.getModel() != null ? properties.getModel().getModelName() : null;

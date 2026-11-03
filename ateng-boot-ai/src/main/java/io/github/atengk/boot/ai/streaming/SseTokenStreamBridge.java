@@ -143,8 +143,4 @@ public class SseTokenStreamBridge implements StreamingResponseHandler<AiMessage>
             }
         }
     }
-
-    public ReasonerTokenExtractor getExtractor() {
-        return extractor;
-    }
 }

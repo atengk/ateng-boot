@@ -129,6 +129,17 @@ class AiTemplateTest {
     }
 
     @Test
+    @DisplayName("验证指定命名模型图文多模态变长参数对话语法糖")
+    void testNamedModelMultimodalChatWithVarargs() {
+        when(deepseekChatModel.generate(anyList()))
+                .thenReturn(Response.from(AiMessage.from("Named model vision result")));
+
+        String reply = aiTemplate.chatWithModel("deepseek-r1", "识别图表", "https://example.com/chart.png");
+        assertThat(reply).isEqualTo("Named model vision result");
+        verify(deepseekChatModel, times(1)).generate(anyList());
+    }
+
+    @Test
     @DisplayName("验证 PromptTemplate 动态模板对话")
     void testPromptTemplateChat() {
         when(defaultChatModel.generate(anyList()))

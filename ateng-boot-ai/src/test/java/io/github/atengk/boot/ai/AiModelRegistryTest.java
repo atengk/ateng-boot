@@ -94,6 +94,31 @@ class AiModelRegistryTest {
     }
 
     @Test
+    @DisplayName("对抗性测试：上下文切源为不存在模型时应 Fail-Fast 抛出 AI_MODEL_NOT_FOUND 而非静默降级")
+    void testContextRoutingNotFoundThrowsFailFast() {
+        registry.registerDefault(defaultChat, defaultStream, "gpt-4o");
+
+        try (AiContextHolder.AiModelScope ignored = AiContextHolder.useModel("non-existent-model")) {
+            assertThatThrownBy(() -> registry.getChatModel())
+                    .isInstanceOf(AiException.class)
+                    .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_MODEL_NOT_FOUND));
+
+            assertThatThrownBy(() -> registry.getStreamingChatModel())
+                    .isInstanceOf(AiException.class)
+                    .satisfies(e -> assertThat(((AiException) e).getResultCode()).isEqualTo(AiResultCode.AI_MODEL_NOT_FOUND));
+        }
+    }
+
+    @Test
+    @DisplayName("验证对称语义完备性：getModelNames 应同时涵盖仅流式或仅同步注册的模型")
+    void testGetModelNamesSymmetricCompleteness() {
+        registry.registerChatModel("chat-only", defaultChat);
+        registry.registerStreamingChatModel("stream-only", defaultStream);
+
+        assertThat(registry.getModelNames()).containsExactlyInAnyOrder("chat-only", "stream-only");
+    }
+
+    @Test
     @DisplayName("对抗性测试：查找不存在的模型时抛出 AI_MODEL_NOT_FOUND")
     void testNotFoundThrowsException() {
         assertThatThrownBy(() -> registry.getChatModel("non-existent"))

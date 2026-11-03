@@ -75,6 +75,21 @@ class AiContextHolderTest {
     }
 
     @Test
+    @DisplayName("防御性测试：useModel 传入 null 或空白时不应破坏外层已有上下文")
+    void testUseModelWithBlankOrNullPreservesOuter() {
+        AiContextHolder.setModelName("outer-model");
+        try (AiContextHolder.AiModelScope ignored = AiContextHolder.useModel(null)) {
+            assertThat(AiContextHolder.getModelName()).isEqualTo("outer-model");
+        }
+        assertThat(AiContextHolder.getModelName()).isEqualTo("outer-model");
+
+        try (AiContextHolder.AiModelScope ignored = AiContextHolder.useModel("   ")) {
+            assertThat(AiContextHolder.getModelName()).isEqualTo("outer-model");
+        }
+        assertThat(AiContextHolder.getModelName()).isEqualTo("outer-model");
+    }
+
+    @Test
     @DisplayName("验证 clearAll 彻底清空所有嵌套层级")
     void testClearAll() {
         AiContextHolder.setModelName("model-1");

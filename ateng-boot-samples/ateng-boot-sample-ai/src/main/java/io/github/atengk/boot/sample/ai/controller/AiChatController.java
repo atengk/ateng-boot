@@ -38,21 +38,12 @@ public class AiChatController {
      */
     @PostMapping("/sync")
     public Result<AiChatResponseVo> syncChat(@Valid @RequestBody AiChatRequestDto request) {
-        String reply;
-        boolean hasModel = StringUtils.hasText(request.getModel());
         boolean hasImages = request.getImages() != null && !request.getImages().isEmpty();
+        String reply = hasImages
+                ? aiTemplate.chatWithModel(request.getModel(), request.getPrompt(), request.getImages())
+                : aiTemplate.chatWithModel(request.getModel(), request.getPrompt());
 
-        if (hasImages) {
-            reply = hasModel
-                    ? aiTemplate.chatWithModel(request.getModel(), request.getPrompt(), request.getImages())
-                    : aiTemplate.chat(request.getPrompt(), request.getImages());
-        } else {
-            reply = hasModel
-                    ? aiTemplate.chatWithModel(request.getModel(), request.getPrompt())
-                    : aiTemplate.chat(request.getPrompt());
-        }
-
-        String resolvedModel = hasModel ? request.getModel() : "default";
+        String resolvedModel = StringUtils.hasText(request.getModel()) ? request.getModel().trim() : "default";
         return Result.success(new AiChatResponseVo(reply, resolvedModel));
     }
 
@@ -68,12 +59,8 @@ public class AiChatController {
     public SseEmitter streamChat(
             @RequestParam("prompt") @NotBlank(message = "用户提示词 prompt 不能为空") String prompt,
             @RequestParam(name = "model", required = false) String model) {
-        SseEmitter emitter = new SseEmitter(180_000L);
-        if (StringUtils.hasText(model)) {
-            aiTemplate.streamWithModel(model, prompt, emitter);
-        } else {
-            aiTemplate.stream(prompt, emitter);
-        }
+        SseEmitter emitter = new SseEmitter(AiTemplate.DEFAULT_SSE_TIMEOUT.toMillis());
+        aiTemplate.streamWithModel(model, prompt, emitter);
         return emitter;
     }
 }

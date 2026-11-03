@@ -45,4 +45,20 @@ public class AtengAiProperties {
         }
         return Collections.unmodifiableMap(models);
     }
+
+    /**
+     * 根据模型标识名称解析对应的模型配置；若未显式配置则平滑回退至默认模型配置
+     *
+     * @param modelName 模型名称或别名
+     * @return 对应的 AiModelConfig 实例，绝不返回 null
+     */
+    public AiModelConfig resolveConfig(String modelName) {
+        if (modelName != null && !modelName.isBlank() && models != null && models.containsKey(modelName.trim())) {
+            AiModelConfig config = models.get(modelName.trim());
+            if (config != null) {
+                return config;
+            }
+        }
+        return model != null ? model : new AiModelConfig();
+    }
 }
