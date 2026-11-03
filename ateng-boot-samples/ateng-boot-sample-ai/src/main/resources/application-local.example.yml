@@ -1,0 +1,21 @@
+# 本地真实服务联调配置模板 (复制为 application-local.yml 并激活 local profile 生效)
+# 警告：真实密钥请勿提交至 Git 仓库！
+ateng:
+  boot:
+    ai:
+      model:
+        base-url: https://api.deepseek.com/v1
+        api-key: YOUR_DEEPSEEK_API_KEY
+        model-name: deepseek-chat
+        timeout: 60s
+      models:
+        reasoner:
+          base-url: https://api.deepseek.com/v1
+          api-key: YOUR_DEEPSEEK_API_KEY
+          model-name: deepseek-reasoner
+          timeout: 120s
+        qwen:
+          base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+          api-key: YOUR_DASHSCOPE_API_KEY
+          model-name: qwen-plus
+          timeout: 60s

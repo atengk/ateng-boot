@@ -1,0 +1,18 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ateng-boot-sample-ai
+  config:
+    import: "optional:classpath:application-local.yml"
+
+ateng:
+  boot:
+    ai:
+      enabled: true
+      model:
+        base-url: https://api.openai.com/v1
+        model-name: gpt-4o
+        temperature: 0.7
+        timeout: 60s

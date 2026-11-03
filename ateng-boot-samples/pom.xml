@@ -51,6 +51,7 @@
         <module>ateng-boot-sample-sms</module>
         <module>ateng-boot-sample-social</module>
         <module>ateng-boot-sample-liteflow</module>
+        <module>ateng-boot-sample-ai</module>
     </modules>
 
     <properties>
