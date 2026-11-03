@@ -1,6 +1,7 @@
 package io.github.atengk.boot.ai.registrar;
 
 import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolExecutor;
@@ -103,7 +104,20 @@ public class AiAgentFactoryBean<T> implements FactoryBean<T>, ApplicationContext
             }
         }
 
-        // 5. 挂载 ContentRetriever 知识库检索点
+        // 5. 挂载 ChatMemoryProvider 会话记忆提供者
+        Map<String, ChatMemoryProvider> memoryProviders = applicationContext.getBeansOfType(ChatMemoryProvider.class);
+        if (memoryProviders.size() == 1) {
+            builder.chatMemoryProvider(memoryProviders.values().iterator().next());
+        } else if (memoryProviders.size() > 1) {
+            ChatMemoryProvider primaryProvider = applicationContext.getBeanProvider(ChatMemoryProvider.class).getIfUnique();
+            if (primaryProvider != null) {
+                builder.chatMemoryProvider(primaryProvider);
+            } else {
+                builder.chatMemoryProvider(memoryProviders.values().iterator().next());
+            }
+        }
+
+        // 6. 挂载 ContentRetriever 知识库检索点
         if (StringUtils.hasText(contentRetriever)) {
             try {
                 ContentRetriever retriever = applicationContext.getBean(contentRetriever.trim(), ContentRetriever.class);

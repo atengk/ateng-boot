@@ -1,12 +1,22 @@
 package io.github.atengk.boot.ai.autoconfigure;
 
+import dev.langchain4j.memory.chat.ChatMemoryProvider;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import io.github.atengk.boot.ai.exception.AiException;
+import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.factory.OpenAiModelFactory;
+import io.github.atengk.boot.ai.memory.ChatMemoryManager;
+import io.github.atengk.boot.ai.memory.store.ChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.InMemoryChatMemoryStore;
+import io.github.atengk.boot.ai.memory.store.RedisChatMemoryStore;
 import io.github.atengk.boot.ai.properties.AtengAiProperties;
+import io.github.atengk.boot.ai.properties.ChatMemoryProperties;
+import io.github.atengk.boot.ai.properties.ChatMemoryStoreType;
 import io.github.atengk.boot.ai.registry.AiModelRegistry;
 import io.github.atengk.boot.ai.template.AiTemplate;
 import org.slf4j.Logger;
@@ -19,7 +29,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import io.github.atengk.boot.ai.registrar.AiAgentRegistrar;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.util.Collections;
 import java.util.List;
@@ -138,5 +150,87 @@ public class AtengAiAutoConfiguration {
     @ConditionalOnMissingBean
     public AiTemplate aiTemplate(AiModelRegistry registry, AtengAiProperties properties) {
         return new AiTemplate(registry, properties);
+    }
+
+    /**
+     * 自动装配默认基于滑动窗口的会话记忆提供者 ChatMemoryProvider
+     *
+     * @param chatMemoryStore 底层会话存储
+     * @param properties      AI 根配置属性
+     * @return ChatMemoryProvider 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChatMemoryProvider.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChatMemoryProvider chatMemoryProvider(ChatMemoryStore chatMemoryStore, AtengAiProperties properties) {
+        int maxMessages = properties.getChatMemory().getMaxMessages();
+        return memoryId -> MessageWindowChatMemory.builder()
+                .id(memoryId)
+                .maxMessages(maxMessages)
+                .chatMemoryStore(chatMemoryStore)
+                .build();
+    }
+
+    /**
+     * 自动装配 AI 会话记忆对称管理门面 ChatMemoryManager
+     *
+     * @param chatMemoryStore 底层会话存储
+     * @param properties      AI 根配置属性
+     * @return ChatMemoryManager 实例
+     */
+    @Bean
+    @ConditionalOnMissingBean(ChatMemoryManager.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public ChatMemoryManager chatMemoryManager(ChatMemoryStore chatMemoryStore, AtengAiProperties properties) {
+        return new ChatMemoryManager(chatMemoryStore, properties.getChatMemory().getMaxMessages());
+    }
+
+    /**
+     * Redis 分布式会话存储自动装配配置类
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(StringRedisTemplate.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class RedisChatMemoryConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ChatMemoryStore.class)
+        public ChatMemoryStore redisChatMemoryStore(AtengAiProperties properties,
+                                                    ObjectProvider<StringRedisTemplate> redisTemplateProvider) {
+            ChatMemoryProperties config = properties.getChatMemory();
+            StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+
+            if (config.getType() == ChatMemoryStoreType.REDIS) {
+                if (redisTemplate == null) {
+                    throw new AiException(AiResultCode.AI_CONFIG_ERROR,
+                            "已配置 ateng.boot.ai.chat-memory.type=REDIS，但 Spring 容器中未找到 StringRedisTemplate Bean，请检查 Redis 依赖与连接配置");
+                }
+                log.info("AI 会话记忆启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", config.getKeyPrefix(), config.getTtl());
+                return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
+            }
+
+            if (config.getType() == ChatMemoryStoreType.AUTO && redisTemplate != null) {
+                log.info("AI 会话记忆自动探测探测到 Redis，启用分布式 Redis 存储 [keyPrefix={}, ttl={}]", config.getKeyPrefix(), config.getTtl());
+                return new RedisChatMemoryStore(redisTemplate, config.getKeyPrefix(), config.getTtl());
+            }
+
+            return new InMemoryChatMemoryStore();
+        }
+    }
+
+    /**
+     * 单机内存会话存储兜底装配配置类（当未引入 Redis 或上述配置未生效时保底装配）
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(ChatMemoryStore.class)
+    @ConditionalOnProperty(prefix = "ateng.boot.ai.chat-memory", name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class InMemoryChatMemoryFallbackConfiguration {
+
+        @Bean
+        @ConditionalOnMissingBean(ChatMemoryStore.class)
+        public ChatMemoryStore inMemoryChatMemoryStore() {
+            log.info("AI 会话记忆启用单机内存存储 (InMemoryChatMemoryStore)");
+            return new InMemoryChatMemoryStore();
+        }
     }
 }

@@ -30,6 +30,12 @@ public class AtengAiProperties {
     private AiModelConfig model = new AiModelConfig();
 
     /**
+     * 会话记忆治理强类型配置
+     */
+    @NestedConfigurationProperty
+    private ChatMemoryProperties chatMemory = new ChatMemoryProperties();
+
+    /**
      * 命名多模型配置拓扑 (key 为模型标识别名，例如 deepseek-r1, qwen-max, fast-chat 等)
      */
     private Map<String, AiModelConfig> models = new LinkedHashMap<>();
