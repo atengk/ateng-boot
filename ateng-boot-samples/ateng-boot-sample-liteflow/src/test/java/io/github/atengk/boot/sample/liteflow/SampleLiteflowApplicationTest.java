@@ -2,6 +2,7 @@ package io.github.atengk.boot.sample.liteflow;
 
 import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.property.LiteflowConfig;
+import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.thread.LiteflowGlobalExecutorBuilder;
 import org.junit.jupiter.api.DisplayName;
@@ -25,6 +26,9 @@ class SampleLiteflowApplicationTest {
     private FlowExecutor flowExecutor;
 
     @Autowired(required = false)
+    private LiteflowTemplate liteflowTemplate;
+
+    @Autowired(required = false)
     private LiteflowConfig liteflowConfig;
 
     @Autowired(required = false)
@@ -34,6 +38,7 @@ class SampleLiteflowApplicationTest {
     @DisplayName("验证 Spring 容器中 LiteFlow 核心组件加载与线程池接管配置")
     void contextLoads() {
         assertThat(flowExecutor).isNotNull();
+        assertThat(liteflowTemplate).isNotNull();
         assertThat(liteflowConfig).isNotNull();
         assertThat(properties).isNotNull();
         assertThat(liteflowConfig.getGlobalThreadPoolExecutorClass())

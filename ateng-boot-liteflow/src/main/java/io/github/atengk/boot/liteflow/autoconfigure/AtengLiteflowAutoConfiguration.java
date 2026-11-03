@@ -4,6 +4,7 @@ import com.yomahub.liteflow.core.FlowExecutor;
 import com.yomahub.liteflow.property.LiteflowConfig;
 import com.yomahub.liteflow.springboot.config.LiteflowMainAutoConfiguration;
 import com.yomahub.liteflow.springboot.config.LiteflowPropertyAutoConfiguration;
+import io.github.atengk.boot.liteflow.core.LiteflowTemplate;
 import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.thread.LiteflowGlobalExecutorBuilder;
 import org.slf4j.Logger;
@@ -14,23 +15,24 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
-import org.springframework.boot.autoconfigure.AutoConfigureBefore;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
+import java.util.concurrent.Executor;
+
 /**
  * ateng-boot LiteFlow 规则编排底座自动装配
- * 负责受管线程池全局接管、四维跨线程上下文透传与生产级属性绑定
+ * 负责统一强类型操作门面 LiteflowTemplate 装配、受管线程池全局接管、四维跨线程上下文透传与生产级属性绑定
  *
  * @author Ateng
  * @since 2026-11-03
  */
 @AutoConfiguration
-@AutoConfigureAfter(LiteflowPropertyAutoConfiguration.class)
-@AutoConfigureBefore(LiteflowMainAutoConfiguration.class)
+@AutoConfigureAfter({LiteflowPropertyAutoConfiguration.class, LiteflowMainAutoConfiguration.class})
 @ConditionalOnClass(FlowExecutor.class)
 @EnableConfigurationProperties(AtengLiteflowProperties.class)
 @ConditionalOnProperty(prefix = "ateng.boot.liteflow", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -55,6 +57,18 @@ public class AtengLiteflowAutoConfiguration {
     public LiteflowConfigCustomizer liteflowConfigCustomizer(ObjectProvider<LiteflowConfig> liteflowConfigProvider,
                                                              AtengLiteflowProperties properties) {
         return new LiteflowConfigCustomizer(liteflowConfigProvider, properties);
+    }
+
+    /**
+     * 注册 LiteFlow 统一强类型操作门面
+     * 保留底层 FlowExecutor 官方逃生舱的同时，提供自动校验解包与因果异常转译
+     */
+    @Bean
+    @ConditionalOnBean(FlowExecutor.class)
+    @ConditionalOnMissingBean(LiteflowTemplate.class)
+    public LiteflowTemplate liteflowTemplate(FlowExecutor flowExecutor,
+                                             ObjectProvider<Executor> executorProvider) {
+        return new LiteflowTemplate(flowExecutor, executorProvider.getIfAvailable());
     }
 
     /**
