@@ -49,6 +49,18 @@ public class AtengLiteflowProperties {
     private DynamicRuleProperties dynamicRule = new DynamicRuleProperties();
 
     /**
+     * 结构化链路轨迹配置
+     */
+    @NestedConfigurationProperty
+    private TraceProperties trace = new TraceProperties();
+
+    /**
+     * 云原生 Micrometer 性能度量监控配置
+     */
+    @NestedConfigurationProperty
+    private MetricsProperties metrics = new MetricsProperties();
+
+    /**
      * 异步并行编排线程池属性
      */
     @Data
@@ -168,5 +180,34 @@ public class AtengLiteflowProperties {
          * 规则描述备注列名
          */
         private String descriptionColumn = "description";
+    }
+
+    /**
+     * 结构化链路轨迹配置
+     */
+    @Data
+    public static class TraceProperties {
+
+        /**
+         * 是否在规则执行完毕后自动将链路轨迹写入 MDC 审计日志
+         */
+        private boolean enableMdc = false;
+
+        /**
+         * MDC 注入时使用的 Key 名称
+         */
+        private String mdcKey = "liteflow_trace";
+    }
+
+    /**
+     * 云原生 Micrometer 性能度量监控配置
+     */
+    @Data
+    public static class MetricsProperties {
+
+        /**
+         * 是否启用 LiteFlow 云原生 Micrometer 性能指标度量
+         */
+        private boolean enabled = true;
     }
 }

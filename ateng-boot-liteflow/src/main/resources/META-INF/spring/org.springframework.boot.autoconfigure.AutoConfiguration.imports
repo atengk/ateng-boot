@@ -1,1 +1,2 @@
 io.github.atengk.boot.liteflow.autoconfigure.AtengLiteflowAutoConfiguration
+io.github.atengk.boot.liteflow.autoconfigure.LiteflowMetricsAutoConfiguration

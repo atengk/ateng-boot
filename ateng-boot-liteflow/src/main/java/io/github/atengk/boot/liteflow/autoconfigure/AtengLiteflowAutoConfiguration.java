@@ -92,8 +92,9 @@ public class AtengLiteflowAutoConfiguration {
     @ConditionalOnBean(FlowExecutor.class)
     @ConditionalOnMissingBean(LiteflowTemplate.class)
     public LiteflowTemplate liteflowTemplate(FlowExecutor flowExecutor,
-                                             ObjectProvider<Executor> executorProvider) {
-        return new LiteflowTemplate(flowExecutor, executorProvider.getIfAvailable());
+                                             ObjectProvider<Executor> executorProvider,
+                                             AtengLiteflowProperties properties) {
+        return new LiteflowTemplate(flowExecutor, executorProvider.getIfAvailable(), properties);
     }
 
     /**

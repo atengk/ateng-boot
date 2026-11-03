@@ -7,7 +7,10 @@ import com.yomahub.liteflow.flow.LiteflowResponse;
 import com.yomahub.liteflow.flow.entity.CmpStep;
 import io.github.atengk.boot.core.context.AsyncContext;
 import io.github.atengk.boot.liteflow.exception.LiteflowExecutionException;
+import io.github.atengk.boot.liteflow.properties.AtengLiteflowProperties;
 import io.github.atengk.boot.liteflow.thread.FlowThreadTracker;
+import io.github.atengk.boot.liteflow.trace.LiteflowExecutionTrace;
+import io.github.atengk.boot.liteflow.trace.LiteflowTraceResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,7 +22,7 @@ import java.util.function.Supplier;
 
 /**
  * LiteFlow 强类型统一操作门面
- * 提供自动校验解包、受管因果异常转译、受管异步流式编排、动态 EL 即时执行与规则热重载能力，
+ * 提供自动校验解包、受管因果异常转译、结构化时序轨迹提取、受管异步流式编排、动态 EL 即时执行与规则热重载能力，
  * 封装底层 {@link FlowExecutor} 原始调用并保留逃生舱
  *
  * @author Ateng
@@ -31,14 +34,20 @@ public class LiteflowTemplate {
 
     private final FlowExecutor flowExecutor;
     private final Executor asyncExecutor;
+    private final AtengLiteflowProperties properties;
 
     public LiteflowTemplate(FlowExecutor flowExecutor) {
-        this(flowExecutor, null);
+        this(flowExecutor, null, null);
     }
 
     public LiteflowTemplate(FlowExecutor flowExecutor, Executor asyncExecutor) {
+        this(flowExecutor, asyncExecutor, null);
+    }
+
+    public LiteflowTemplate(FlowExecutor flowExecutor, Executor asyncExecutor, AtengLiteflowProperties properties) {
         this.flowExecutor = Objects.requireNonNull(flowExecutor, "flowExecutor 不能为空");
         this.asyncExecutor = asyncExecutor;
+        this.properties = properties;
     }
 
     /**
@@ -70,8 +79,11 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
+        long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClass);
-        checkResponseSuccess(chainId, response);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         return response.getContextBean(contextClass);
     }
 
@@ -101,9 +113,84 @@ public class LiteflowTemplate {
             throw new IllegalArgumentException("chainId 不能为空");
         }
         Objects.requireNonNull(contextBean, "contextBean 不能为空");
+        long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBean);
-        checkResponseSuccess(chainId, response);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         return contextBean;
+    }
+
+    /**
+     * 同步执行规则链并返回带有结构化链路轨迹的结果包装（无入参重载）
+     *
+     * @param chainId      规则链 ID
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeWithTrace(String chainId, Class<T> contextClass) {
+        return executeWithTrace(chainId, null, contextClass);
+    }
+
+    /**
+     * 同步执行规则链并返回带有结构化链路轨迹的结果包装
+     * 若失败抛出携带时序轨迹的受管异常，成功返回强类型上下文与时序轨迹
+     *
+     * @param chainId      规则链 ID
+     * @param param        流程入参
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeWithTrace(String chainId, Object param, Class<T> contextClass) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        if (contextClass == null) {
+            throw new IllegalArgumentException("contextClass 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClass);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        T context = response.getContextBean(contextClass);
+        return new LiteflowTraceResult<>(context, trace);
+    }
+
+    /**
+     * 同步执行规则链（预置上下文实例重载）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId     规则链 ID
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一上下文实例与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeWithTrace(String chainId, T contextBean) {
+        return executeWithTrace(chainId, null, contextBean);
+    }
+
+    /**
+     * 同步执行规则链（预置上下文实例）并返回带有结构化链路轨迹的结果包装
+     *
+     * @param chainId     规则链 ID
+     * @param param       流程入参
+     * @param contextBean 已初始化的上下文实例
+     * @param <T>         上下文泛型
+     * @return 包含同一上下文实例与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeWithTrace(String chainId, Object param, T contextBean) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        Objects.requireNonNull(contextBean, "contextBean 不能为空");
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextBean);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return new LiteflowTraceResult<>(contextBean, trace);
     }
 
     /**
@@ -127,8 +214,11 @@ public class LiteflowTemplate {
         if (otherContextClasses != null && otherContextClasses.length > 0) {
             System.arraycopy(otherContextClasses, 0, classes, 2, otherContextClasses.length);
         }
+        long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, classes);
-        checkResponseSuccess(chainId, response);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         return response;
     }
 
@@ -144,9 +234,32 @@ public class LiteflowTemplate {
         if (chainId == null || chainId.isBlank()) {
             throw new IllegalArgumentException("chainId 不能为空");
         }
+        long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClasses);
-        checkResponseSuccess(chainId, response);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
         return response;
+    }
+
+    /**
+     * 执行多上下文规则链并返回带有结构化链路轨迹的响应包装
+     *
+     * @param chainId        规则链 ID
+     * @param param          流程入参
+     * @param contextClasses 多个上下文类型
+     * @return 包含原始响应与时序轨迹的结果包装
+     */
+    public LiteflowTraceResult<LiteflowResponse> executeMultipleWithTrace(String chainId, Object param, Class<?>... contextClasses) {
+        if (chainId == null || chainId.isBlank()) {
+            throw new IllegalArgumentException("chainId 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2Resp(chainId, param, contextClasses);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit(chainId, response, duration);
+        checkResponseSuccess(chainId, response, trace);
+        return new LiteflowTraceResult<>(response, trace);
     }
 
     /**
@@ -208,9 +321,83 @@ public class LiteflowTemplate {
         if (contextClass == null) {
             throw new IllegalArgumentException("contextClass 不能为空");
         }
+        long start = System.currentTimeMillis();
         LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
-        checkResponseSuccess("DYNAMIC_EL", response);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit("DYNAMIC_EL", response, duration);
+        checkResponseSuccess("DYNAMIC_EL", response, trace);
         return response.getContextBean(contextClass);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式并返回带有结构化链路轨迹的结果包装（无入参重载）
+     *
+     * @param el           动态 EL 表达式
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeElWithTrace(String el, Class<T> contextClass) {
+        return executeElWithTrace(el, null, contextClass);
+    }
+
+    /**
+     * 直接即时执行动态 EL 表达式并返回带有结构化链路轨迹的结果包装
+     *
+     * @param el           动态 EL 表达式
+     * @param param        流程入参
+     * @param contextClass 上下文类型
+     * @param <T>          上下文泛型
+     * @return 包含强类型上下文与时序轨迹的结果包装
+     */
+    public <T> LiteflowTraceResult<T> executeElWithTrace(String el, Object param, Class<T> contextClass) {
+        if (el == null || el.isBlank()) {
+            throw new IllegalArgumentException("el 表达式不能为空");
+        }
+        if (contextClass == null) {
+            throw new IllegalArgumentException("contextClass 不能为空");
+        }
+        long start = System.currentTimeMillis();
+        LiteflowResponse response = this.flowExecutor.execute2RespWithEL(el, param, null, contextClass);
+        long duration = System.currentTimeMillis() - start;
+        LiteflowExecutionTrace trace = handleTraceAndAudit("DYNAMIC_EL", response, duration);
+        checkResponseSuccess("DYNAMIC_EL", response, trace);
+        T context = response.getContextBean(contextClass);
+        return new LiteflowTraceResult<>(context, trace);
+    }
+
+    /**
+     * 从原始 LiteflowResponse 中提取结构化时序轨迹
+     *
+     * @param response LiteFlow 执行响应
+     * @return 结构化时序轨迹
+     */
+    public LiteflowExecutionTrace extractTrace(LiteflowResponse response) {
+        String chainId = response != null ? response.getChainId() : "UNKNOWN";
+        return extractTrace(chainId, response, -1L);
+    }
+
+    /**
+     * 从原始 LiteflowResponse 中提取结构化时序轨迹
+     *
+     * @param chainId  流程链 ID
+     * @param response LiteFlow 执行响应
+     * @return 结构化时序轨迹
+     */
+    public LiteflowExecutionTrace extractTrace(String chainId, LiteflowResponse response) {
+        return extractTrace(chainId, response, -1L);
+    }
+
+    /**
+     * 从原始 LiteflowResponse 中提取结构化时序轨迹
+     *
+     * @param chainId    流程链 ID
+     * @param response   LiteFlow 执行响应
+     * @param durationMs 总耗时（毫秒）
+     * @return 结构化时序轨迹
+     */
+    public LiteflowExecutionTrace extractTrace(String chainId, LiteflowResponse response, long durationMs) {
+        return handleTraceAndAudit(chainId, response, durationMs);
     }
 
     /**
@@ -338,9 +525,20 @@ public class LiteflowTemplate {
     }
 
     /**
+     * 处理结构化时序轨迹构建与可选 MDC 审计日志自动注入
+     */
+    private LiteflowExecutionTrace handleTraceAndAudit(String chainId, LiteflowResponse response, long durationMs) {
+        LiteflowExecutionTrace trace = LiteflowExecutionTrace.fromResponse(chainId, response, durationMs);
+        if (this.properties != null && this.properties.getTrace() != null && this.properties.getTrace().isEnableMdc()) {
+            trace.injectToMdc(this.properties.getTrace().getMdcKey());
+        }
+        return trace;
+    }
+
+    /**
      * 检查响应执行状态，若失败则转译抛出受管业务异常，并协同中断活动子线程
      */
-    private void checkResponseSuccess(String chainId, LiteflowResponse response) {
+    private void checkResponseSuccess(String chainId, LiteflowResponse response, LiteflowExecutionTrace trace) {
         if (response != null && !response.isSuccess()) {
             if (response.getSlot() != null && response.getSlot().getRequestId() != null) {
                 String reqId = response.getSlot().getRequestId();
@@ -348,9 +546,11 @@ public class LiteflowTemplate {
                 FlowThreadTracker.clean(reqId);
             }
             Throwable cause = response.getCause();
-            String failedNodeId = resolveFailedNodeId(response);
+            String failedNodeId = (trace != null && trace.getFailedStep() != null)
+                    ? trace.getFailedStep().getNodeId()
+                    : resolveFailedNodeId(response);
             String message = formatErrorMessage(chainId, failedNodeId, response);
-            throw new LiteflowExecutionException(chainId, failedNodeId, message, cause);
+            throw new LiteflowExecutionException(chainId, failedNodeId, trace, message, cause);
         }
     }
 
