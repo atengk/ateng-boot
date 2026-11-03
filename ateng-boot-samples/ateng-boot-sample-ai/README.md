@@ -35,6 +35,10 @@
 | **双通道打字机流式推流** | `AiChatController` | `GET /sample/ai/chat/stream` | `curl -N "http://localhost:8080/sample/ai/chat/stream?prompt=请深度推导高阶微积分定理"` |
 | **单轮智能体审计决策** | `AiAgentController` | `POST /sample/ai/agent/audit` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"年度财务大额专项审计\"}"` |
 | **跨轮多会话智能体审计** | `AiAgentController` | `POST /sample/ai/agent/audit/{sessionId}` | `curl -X POST "http://localhost:8080/sample/ai/agent/audit/sess_audit_1001" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_20261103001\",\"remarks\":\"多轮复核第1轮\"}"` |
+| **启动订单风控状态图** | `AiWorkflowController` | `POST /sample/ai/workflow/order-review/start` | `curl -X POST "http://localhost:8080/sample/ai/workflow/order-review/start" -H "Content-Type: application/json" -d "{\"orderId\":\"ORD_9901\",\"amount\":8888.88,\"creditScore\":680,\"remarks\":\"高危审核挂起\"}"` |
+| **工作流快照探查** | `AiWorkflowController` | `GET /sample/ai/workflow/order-review/snapshot/{threadId}` | `curl "http://localhost:8080/sample/ai/workflow/order-review/snapshot/YOUR_THREAD_ID"` |
+| **人机协作审批恢复** | `AiWorkflowController` | `POST /sample/ai/workflow/order-review/resume` | `curl -X POST "http://localhost:8080/sample/ai/workflow/order-review/resume" -H "Content-Type: application/json" -d "{\"threadId\":\"YOUR_THREAD_ID\",\"action\":\"PASSED\",\"comment\":\"核验通过准予放行\"}"` |
+| **主动撤销挂起工单** | `AiWorkflowController` | `POST /sample/ai/workflow/order-review/cancel` | `curl -X POST "http://localhost:8080/sample/ai/workflow/order-review/cancel" -H "Content-Type: application/json" -d "{\"threadId\":\"YOUR_THREAD_ID\",\"reason\":\"客户主动取消信审申请\"}"` |
 
 > **流式推流说明**：调用 `GET /sample/ai/chat/stream` 时，控制台或客户端将持续接收由 `event: reasoning`（思考过程）、`event: text`（正文内容）与 `event: done`（`[DONE]` 结束信号）组成的标准 Server-Sent Events 事件流。
 

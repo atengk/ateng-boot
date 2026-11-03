@@ -35,6 +35,12 @@
 | **对称会话管理** | 会话记忆对称管理门面 | `ChatMemoryManager` | `ateng.boot.ai.chat-memory.max-messages` | `getMessages(id)`/`updateMessages(id, list)`、`appendMessage(id, msg)`/`clear(id)`、`exists(id)`/`getMessageCount(id)`/`truncate(id, n)` 完备对称运维 | `ChatMemoryManagerTest` / `AgentControllerIntegrationTest` |
 | **跨轮会话隔离** | 多用户/多租户会话隔离 | `@MemoryId`<br>`ChatMemoryProvider` | - | 接口方法形参标注 `@MemoryId`，LangChain4j 自动按 `sessionId` 路由至对应独立滑动窗口，会话历史物理隔离 | `AiAgentMemoryAndRagIntegrationTest` / `AgentControllerIntegrationTest` |
 | **RAG 知识库挂载** | 企业私有知识检索挂载点 | `@AiAgent(contentRetriever)`<br>`ContentRetriever` | - | 显式指定 Bean 名称或单 Bean 缺省自动装配 `ContentRetriever`，智能体调用时自动检索注入增强上下文 | `AiAgentMemoryAndRagIntegrationTest` |
+| **强类型状态模型** | 认知图状态契约与惰性反序列化 | `BaseGraphState`<br>`TypedKey<T>` | - | 依托 `TypedKey<T>` 强类型存取与纯净 JSON 序列化，杜绝 `@class` 污染，底层保留真实类型 | `BaseGraphStateSerializationTest` |
+| **双模检查点存储** | 内存与 Redis 检查点持久化自适应 | `GraphCheckpointSaver`<br>`MemoryCheckpointSaver`<br>`RedisCheckpointSaver` | `ateng.boot.ai.graph.checkpoint.type` | 统一检查点 SPI，`AUTO` 模式自动探测 Redis 启用分布式存储与滑动 TTL 漫游，缺失时无缝回退单机内存 | `MemoryCheckpointSaverTest` / `RedisCheckpointSaverTest` |
+| **工作流拓扑编排** | 认知图全生命周期与静态中断 | `GraphWorkflow<S>` | `ateng.boot.ai.graph.enabled` | 抽象泛型拓扑基类，封装 `start`/`resume`/`getSnapshot`，支持静态中断节点声明（`interruptBefore`/`interruptAfter`）与死循环防卫 | `GraphWorkflowTest` / `WorkflowControllerIntegrationTest` |
+| **多图动态注册中心** | 工作流单例受管统一纳管与调度 | `GraphWorkflowRegistry` | - | 容器启动时自动探测并收集所有 `GraphWorkflow` Bean，提供基于名字的动态查找、注册与枚举探测 | `GraphWorkflowRegistryTest` / `AtengAiGraphAutoConfigurationTest` |
+| **分布式租约锁管理器** | 高熵令牌校验与 Lua 释放防卫 | `GraphLockManager`<br>`LocalGraphLockManager`<br>`RedisGraphLockManager` | `ateng.boot.ai.graph.checkpoint.lock-prefix`<br>`ateng.boot.ai.graph.checkpoint.lock-ttl` | Redis Lua 脚本校验令牌匹配原子释放锁，杜绝超时误删他人有效锁，无 Redis 依赖时本地并发安全平滑降级 | `GraphResumeTemplateTest` |
+| **人机协作恢复门面** | 断点恢复、CAS 跃迁与工单撤销 | `GraphResumeTemplate` | `ateng.boot.ai.graph.*` | 提供 `getSnapshot` 快照探查、`resume` 同步恢复、`resumeAsync` 异步透传四维上下文与 `cancel` 工单主动撤销完备对称门面 | `GraphResumeTemplateTest` / `WorkflowControllerIntegrationTest` |
 
 ---
 
@@ -58,11 +64,12 @@
 
 ```mermaid
 flowchart TD
-    subgraph Client["调用接入边界 (Controller / Service / Agent)"]
+    subgraph Client["调用接入边界 (Controller / Service / Agent / Workflow)"]
         DirectSync["同步对话<br>AiTemplate.chat(...)"]
         DirectStream["SSE 打字机推流<br>AiTemplate.stream(...)"]
         DynamicSwitch["动态切源作用域<br>AiContextHolder.useModel(...)"]
         DeclarativeAgent["声明式智能体<br>@AiAgent 动态代理接口"]
+        WorkflowClient["状态图编排与人机恢复<br>GraphWorkflow / GraphResumeTemplate"]
     end
 
     subgraph CoreEngine["ateng-boot-ai 核心引擎"]
@@ -76,10 +83,15 @@ flowchart TD
         ToolSandbox["局部受管工具沙箱<br>ToolExecutionSandbox"]
         MemoryFacade["会话记忆对称管理门面<br>ChatMemoryManager"]
         Sanitizer["脱壳去噪与防幻觉防卫<br>JsonPayloadSanitizer / JSR-303"]
+        WorkflowEngine["认知状态图拓扑引擎<br>GraphWorkflow / LangGraph4j StateGraph"]
+        ResumeFacade["人机协作运维门面<br>GraphResumeTemplate"]
+        WorkflowRegistry["多图动态注册中心<br>GraphWorkflowRegistry"]
+        LockManager["分布式租约锁管理器<br>GraphLockManager (Redis Lua / Local)"]
     end
 
-    subgraph MemoryAndRag["会话记忆与认知外挂"]
+    subgraph MemoryAndCheckpoint["持久化与会话状态底座"]
         MemoryStore["双模会话存储<br>RedisChatMemoryStore / InMemory"]
+        CheckpointStore["双模检查点存储<br>RedisCheckpointSaver / MemoryCheckpointSaver"]
         RagRetriever["知识库检索挂载点<br>ContentRetriever"]
     end
 
@@ -97,6 +109,13 @@ flowchart TD
     DeclarativeAgent --> Sanitizer
     DeclarativeAgent -.-> MemoryFacade
     DeclarativeAgent -.-> RagRetriever
+
+    WorkflowClient --> WorkflowEngine
+    WorkflowClient --> ResumeFacade
+    ResumeFacade --> WorkflowRegistry
+    ResumeFacade --> LockManager
+    ResumeFacade --> CheckpointStore
+    WorkflowEngine --> CheckpointStore
 
     AiTmpl --> Registry
     AiTmpl --> RetryEngine
@@ -617,7 +636,195 @@ public ContentRetriever financeRetriever(EmbeddingModel embeddingModel, Embeddin
 
 ---
 
-## 8. 完整 YAML 配置属性清单 (全量速查附录)
+## 8. 认知状态图 (LangGraph4j) 与人机协作 (HITL) 编排架构
+
+### 8.1 背景与设计愿景
+
+传统的单向线性管线（DAG，如 LiteFlow）适合营销算价、规则决策等无环快速计算场景；然而在高级智能体协同、反思循环纠偏与长流程审批中，必须具备：
+1. **循环反思与图跃迁 (Cyclic Loops)**：节点能够根据上一步反思反馈跳回历史节点重新审视，直至满足终止谓词；
+2. **人机协作断点中断 (Human-in-the-Loop, HITL)**：复杂审批或高危操作必须在指定节点挂起（`SUSPENDED`），释放执行线程并持久化检查点（Checkpoint），等待人工审核员注入决断后再行恢复；
+3. **分布式检查点与租约锁防卫**：支持集群多 Pod 架构下跨天持久化与会话漫游，依托 CAS 状态原子跃迁与 Lua 高熵令牌租约锁阻断并发双击重入与他人有效锁误删。
+
+---
+
+### 8.2 强类型状态模型与纯净序列化 (`BaseGraphState` / `TypedKey<T>`)
+
+```yaml
+# 状态图配置（缺省即生效，采用生产合理默认值）
+ateng:
+  boot:
+    ai:
+      graph:
+        enabled: true
+```
+
+所有流转数据统一继承 `BaseGraphState`，通过强类型常量 `TypedKey<T>` 进行编译期类型约束与存取：
+
+```java
+public class OrderReviewState extends BaseGraphState {
+    public static final TypedKey<String> ORDER_ID = TypedKey.of("orderId", String.class);
+    public static final TypedKey<BigDecimal> AMOUNT = TypedKey.of("amount", BigDecimal.class);
+    public static final TypedKey<Integer> CREDIT_SCORE = TypedKey.of("creditScore", Integer.class);
+    public static final TypedKey<String> RISK_LEVEL = TypedKey.of("riskLevel", String.class);
+    public static final TypedKey<Integer> DOC_RETRY_COUNT = TypedKey.of("docRetryCount", Integer.class);
+    public static final TypedKey<String> FINAL_STATUS = TypedKey.of("finalStatus", String.class);
+    public static final TypedKey<String> REASON = TypedKey.of("reason", String.class);
+
+    public OrderReviewState(Map<String, Object> initData) {
+        super(initData);
+    }
+}
+```
+
+- **内存真明文与零污染**：序列化采用纯净 JSON 格式，坚决杜绝 Jackson `@class` 多态侵入污染；反序列化时依托 `TypedKey` 执行惰性就地类型转换（如 `String` 到 `BigDecimal` / `Integer`），保障多端与 Redis 纯净互通；
+- **标准时间与空安全**：时间字段统一格式化为 `yyyy-MM-dd HH:mm:ss`，存取严格防范 NPE。
+
+---
+
+### 8.3 状态图拓扑定义与声明式挂起中断 (`GraphWorkflow<S>`)
+
+业务工作流继承 `GraphWorkflow<S>` 并声明为 Spring `@Component`，框架在容器启动时自动收集至 `GraphWorkflowRegistry` 并完成生命周期拓扑编译：
+
+```java
+@Slf4j
+@Component
+public class OrderReviewGraphWorkflow extends GraphWorkflow<OrderReviewState> {
+
+    public OrderReviewGraphWorkflow() {
+        super("orderReviewWorkflow", OrderReviewState::new);
+    }
+
+    @Override
+    protected void initGraph(StateGraph<OrderReviewState> graph) throws GraphStateException {
+        // 1. 初审节点：规则自动化校验
+        graph.addNode("riskCheck", node_async(state -> {
+            BigDecimal amount = state.get(OrderReviewState.AMOUNT, BigDecimal.ZERO);
+            Integer creditScore = state.get(OrderReviewState.CREDIT_SCORE, 700);
+            if (amount.compareTo(new BigDecimal("1000")) <= 0 && creditScore >= 700) {
+                return Map.of("riskLevel", "LOW", "finalStatus", "APPROVED");
+            }
+            return Map.of("riskLevel", "HIGH", "reason", "大额高危订单进入人工复审");
+        }));
+
+        // 2. 人工审核挂起节点 (静态中断)
+        graph.addNode("humanReview", node_async(state -> {
+            Object approval = state.data().get(TypedKey.APPROVAL_DATA.name());
+            String action = extractAction(approval);
+            if ("PASSED".equalsIgnoreCase(action)) {
+                return Map.of("finalStatus", "APPROVED", "reason", "人工审核通过");
+            }
+            return Map.of("finalStatus", "REJECTED", "reason", "人工审核驳回");
+        }));
+
+        // 3. 补充资质反思节点 (循环回流)
+        graph.addNode("docSupplement", node_async(state -> {
+            int retry = state.get(OrderReviewState.DOC_RETRY_COUNT, 0) + 1;
+            return Map.of("docRetryCount", retry, "reason", "资质材料补充完成第 " + retry + " 次");
+        }));
+
+        // 4. 终审归档节点
+        graph.addNode("archive", node_async(state -> Map.of("archiveTime", LocalDateTime.now().toString())));
+
+        // 拓扑连线与条件分流
+        graph.addEdge(START, "riskCheck");
+        graph.addConditionalEdges("riskCheck", edge_async(state ->
+                "LOW".equals(state.get(OrderReviewState.RISK_LEVEL, "")) ? END : "humanReview"
+        ), Map.of("humanReview", "humanReview", END, END));
+
+        graph.addConditionalEdges("humanReview", edge_async(state -> {
+            Object approval = state.data().get(TypedKey.APPROVAL_DATA.name());
+            return "REQUEST_DOCS".equalsIgnoreCase(extractAction(approval)) ? "docSupplement" : "archive";
+        }), Map.of("docSupplement", "docSupplement", "archive", "archive"));
+
+        graph.addConditionalEdges("docSupplement", edge_async(state ->
+                state.get(OrderReviewState.DOC_RETRY_COUNT, 0) > 2 ? "archive" : "humanReview"
+        ), Map.of("humanReview", "humanReview", "archive", "archive"));
+
+        graph.addEdge("archive", END);
+    }
+
+    @Override
+    protected List<String> interruptBeforeNodes() {
+        return List.of("humanReview"); // 静态声明在 humanReview 节点执行前挂起中断
+    }
+
+    @Override
+    protected int maxIterations() {
+        return 25; // 生产级防死循环保护
+    }
+}
+```
+
+---
+
+### 8.4 人机协作恢复门面与 CAS 租约锁防卫 (`GraphResumeTemplate`)
+
+```yaml
+ateng:
+  boot:
+    ai:
+      graph:
+        checkpoint:
+          type: AUTO                 # 存储引擎: AUTO (自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
+          key-prefix: "ateng:ai:graph:checkpoint:" # 检查点键前缀
+          lock-prefix: "ateng:ai:graph:lock:"       # 租约锁键前缀
+          lock-ttl: 30s              # 租约锁持有超时 (强类型 Duration)
+          checkpoint-ttl: 7d         # 检查点保留时长 (强类型 Duration)
+```
+
+`GraphResumeTemplate` 屏蔽底层图编译与检查点操作细节，对外提供完备对称的恢复与运维门面：
+
+```java
+@RestController
+@RequestMapping("/sample/ai/workflow/order-review")
+@RequiredArgsConstructor
+public class AiWorkflowController {
+
+    private final OrderReviewGraphWorkflow workflow;
+    private final GraphResumeTemplate resumeTemplate;
+
+    // 1. 启动工作流
+    @PostMapping("/start")
+    public Result<StateSnapshotVo> start(@RequestBody OrderReviewStartRequest request) {
+        OrderReviewState state = new OrderReviewState();
+        state.set(OrderReviewState.ORDER_ID, request.getOrderId());
+        state.set(OrderReviewState.AMOUNT, request.getAmount());
+        return Result.success(workflow.start(state));
+    }
+
+    // 2. 快照探查
+    @GetMapping("/snapshot/{threadId}")
+    public Result<StateSnapshotVo> getSnapshot(@PathVariable String threadId) {
+        return Result.success(resumeTemplate.getSnapshot(threadId)
+                .orElseThrow(() -> new BusinessException("快照不存在")));
+    }
+
+    // 3. 人工审批恢复 (同步 / 异步)
+    @PostMapping("/resume")
+    public Result<StateSnapshotVo> resume(@RequestBody OrderReviewResumeRequest request) {
+        StateSnapshotVo snapshot = resumeTemplate.resume(
+                request.getThreadId(),
+                Map.of("action", request.getAction(), "comment", request.getComment()),
+                state -> state.set(OrderReviewState.ADDITIONAL_DOCS, request.getAdditionalDocs())
+        );
+        return Result.success(snapshot);
+    }
+
+    // 4. 工单主动撤销
+    @PostMapping("/cancel")
+    public Result<StateSnapshotVo> cancel(@RequestBody OrderReviewCancelRequest request) {
+        return Result.success(resumeTemplate.cancel(request.getThreadId(), request.getReason()));
+    }
+}
+```
+
+- **分布式租约锁防卫**：优先使用 Redis 结合高熵 UUID 令牌与 Lua 脚本原子释放；无 Redis 依赖时自动优雅降级为本地 `ConcurrentHashMap` 租约锁，杜绝超时误删他人有效锁；
+- **CAS 原子状态跃迁防卫**：严格校验快照必须为 `SUSPENDED` 态方可恢复；对已撤销（`CANCELLED`）抛出 `AI_GRAPH_ALREADY_CANCELLED`，对已终态/运行中工单抛出 `AI_GRAPH_ALREADY_RESUMED`，杜绝并发双击；
+- **四维上下文异步透传**：`resumeAsync` 深度融合 Core 底座 `AsyncContext.wrapSupplier`，自动捕获并在异步线程池中还原 MDC `traceId` 与操作人上下文。
+
+---
+
+## 9. 完整 YAML 配置属性清单 (全量速查附录)
 
 ```yaml
 ateng:
@@ -665,6 +872,22 @@ ateng:
         # 默认滑动窗口保留的最大消息条数 (默认 20 条)
         max-messages: 20
       
+      # 认知状态图 (LangGraph4j) 与人机协作 (HITL) 配置
+      graph:
+        # 是否启用认知状态图底座 (默认 true)
+        enabled: true
+        checkpoint:
+          # 检查点存储引擎: AUTO (默认自动探测 Redis，未引入平滑回退内存), IN_MEMORY, REDIS
+          type: AUTO
+          # 检查点 Redis 键前缀 (默认 "ateng:ai:graph:checkpoint:")
+          key-prefix: "ateng:ai:graph:checkpoint:"
+          # 人机协作分布式租约锁 Redis 键前缀 (默认 "ateng:ai:graph:lock:")
+          lock-prefix: "ateng:ai:graph:lock:"
+          # 分布式租约锁持有超时时间 (默认 30s)
+          lock-ttl: 30s
+          # 检查点持久化保留时长与淘汰 TTL (默认 7d)
+          checkpoint-ttl: 7d
+
       # 命名多模型拓扑配置 (Map<String, AiModelConfig>)
       models:
         reasoner:

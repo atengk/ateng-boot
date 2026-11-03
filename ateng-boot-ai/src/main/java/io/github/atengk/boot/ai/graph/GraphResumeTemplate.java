@@ -5,23 +5,16 @@ import io.github.atengk.boot.ai.exception.AiException;
 import io.github.atengk.boot.ai.exception.AiResultCode;
 import io.github.atengk.boot.ai.properties.AtengAiGraphProperties;
 import io.github.atengk.boot.core.context.AsyncContext;
-import io.github.atengk.boot.core.util.IdUtil;
 import org.bsc.langgraph4j.RunnableConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.data.redis.core.script.RedisScript;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
@@ -33,7 +26,7 @@ import java.util.function.Supplier;
  * 提供快照查询、审批恢复（同步/异步双重重载）、工单主动撤销等完备对称治理接口。
  * 具备以下生产级核心防线：
  * <ul>
- *     <li><b>分布式租约锁防卫</b>：支持 Redis 与单机降级锁，挂载高熵令牌校验，杜绝超时释放后误删他人有效锁；</li>
+ *     <li><b>分布式租约锁防卫</b>：依托 {@link GraphLockManager} 实现高熵令牌校验，杜绝超时释放后误删他人有效锁；</li>
  *     <li><b>CAS 状态原子跃迁</b>：严格校验当前快照必须处于 {@link WorkflowStatus#SUSPENDED} 挂起态方可恢复，彻底阻断并发双击重入；</li>
  *     <li><b>四维上下文异步透传</b>：{@link #resumeAsync} 深度融合 Core 底座 {@link AsyncContext}，无缝向下游工作流透传 MDC traceId 与操作人身份；</li>
  *     <li><b>多图动态路由解耦</b>：依托 {@link GraphWorkflowRegistry} 实现工作流名字动态调度，抹平单应用多工作流复杂度。</li>
@@ -47,28 +40,22 @@ public class GraphResumeTemplate {
 
     private static final Logger log = LoggerFactory.getLogger(GraphResumeTemplate.class);
 
-    private static final String UNLOCK_LUA =
-            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
-    private static final RedisScript<Long> UNLOCK_SCRIPT = new DefaultRedisScript<>(UNLOCK_LUA, Long.class);
-
     private final GraphWorkflowRegistry workflowRegistry;
     private final GraphCheckpointSaver checkpointSaver;
     private final AtengAiGraphProperties properties;
-    private final StringRedisTemplate redisTemplate;
+    private final GraphLockManager lockManager;
     private final Executor asyncExecutor;
-
-    private final Map<String, String> localLocks = new ConcurrentHashMap<>();
 
     public GraphResumeTemplate(
             GraphWorkflowRegistry workflowRegistry,
             GraphCheckpointSaver checkpointSaver,
             AtengAiGraphProperties properties,
-            StringRedisTemplate redisTemplate,
+            GraphLockManager lockManager,
             Executor asyncExecutor) {
         this.workflowRegistry = Objects.requireNonNull(workflowRegistry, "workflowRegistry must not be null");
         this.checkpointSaver = checkpointSaver;
         this.properties = properties != null ? properties : new AtengAiGraphProperties();
-        this.redisTemplate = redisTemplate;
+        this.lockManager = lockManager != null ? lockManager : new LocalGraphLockManager();
         this.asyncExecutor = asyncExecutor;
     }
 
@@ -285,41 +272,19 @@ public class GraphResumeTemplate {
     }
 
     private String acquireLock(String threadId) {
-        String lockToken = IdUtil.fastSimpleUUID();
-        String lockKey = properties.getCheckpoint().getLockPrefix() + threadId;
-        Duration lockTtl = properties.getCheckpoint().getLockTtl();
-
-        if (redisTemplate != null) {
-            Boolean acquired = redisTemplate.opsForValue().setIfAbsent(lockKey, lockToken, lockTtl);
-            if (!Boolean.TRUE.equals(acquired)) {
-                throw new AiException(AiResultCode.AI_GRAPH_LOCK_CONFLICT,
-                        "认知图会话 [" + threadId + "] 当前正在被其他审批操作并发处理中，请勿重复提交");
-            }
-        } else {
-            String existing = localLocks.putIfAbsent(threadId, lockToken);
-            if (existing != null) {
-                throw new AiException(AiResultCode.AI_GRAPH_LOCK_CONFLICT,
-                        "认知图会话 [" + threadId + "] 当前正在被其他审批操作并发处理中，请勿重复提交");
-            }
-        }
-        return lockToken;
+        return lockManager.acquireLock(
+                threadId,
+                properties.getCheckpoint().getLockTtl(),
+                properties.getCheckpoint().getLockPrefix()
+        );
     }
 
     private void releaseLock(String threadId, String lockToken) {
-        if (lockToken == null) {
-            return;
-        }
-        String lockKey = properties.getCheckpoint().getLockPrefix() + threadId;
-
-        if (redisTemplate != null) {
-            try {
-                redisTemplate.execute(UNLOCK_SCRIPT, Collections.singletonList(lockKey), lockToken);
-            } catch (Exception e) {
-                log.warn("释放 Redis 锁异常 [key={}, token={}]: {}", lockKey, lockToken, e.getMessage());
-            }
-        } else {
-            localLocks.remove(threadId, lockToken);
-        }
+        lockManager.releaseLock(
+                threadId,
+                lockToken,
+                properties.getCheckpoint().getLockPrefix()
+        );
     }
 
     private Executor resolveExecutor() {
