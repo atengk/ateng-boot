@@ -59,3 +59,35 @@ _Avoid_: ThinkParser, ReasoningFilter, TokenSpliterator
 **SseTokenStreamBridge**:
 SSE 双通道打字机流式推流桥接器，承接大模型底层流式回调，向客户端异步推送 `event: reasoning` 与 `event: text` 双规数据流并保障四维上下文与链路追踪闭环。
 _Avoid_: SseBridge, StreamEmitter, TokenDispatcher
+
+**GraphWorkflow**:
+认知状态图工作流抽象基类，封装 LangGraph4j `StateGraph` 的拓扑构建、生命周期编译与多模型驱动。
+_Avoid_: WorkflowEngine, GraphBuilder, AiPipeline
+
+**GraphWorkflowRegistry**:
+认知状态图工作流注册表具体类，统管 Spring 容器中所有 `GraphWorkflow` 实例，提供基于名称与状态类型的动态检索与路由调度。
+_Avoid_: WorkflowManager, GraphPool, WorkflowProvider
+
+**WorkflowStatus**:
+认知状态图生命周期状态枚举，严格定义初始运行（`RUNNING`）、断点挂起（`SUSPENDED`）、恢复运行（`RESUMED`）、终态成功（`COMPLETED`）、异常失败（`FAILED`）与主动废弃（`CANCELLED`）原子状态流转。
+_Avoid_: StateEnum, GraphStatus, TaskStatus
+
+**BaseGraphState**:
+强类型认知状态图状态契约抽象基类，继承 `AgentState` 并通过 `TypedKey<T>` 提供强类型数据访问与纯净 JSON 序列化。
+_Avoid_: GraphData, WorkflowContext, StatePayload
+
+**MemoryCheckpointSaver**:
+单机内存认知图检查点存储实现类，基于并发安全容器管理检查点，用于轻量开发与 100% 离线自洽单测。
+_Avoid_: LocalCheckpointSaver, SimpleCheckpointStore
+
+**RedisCheckpointSaver**:
+分布式集群认知图检查点存储实现类，基于 `ateng-boot-redis` 与 Core 纯净 `JsonUtil` 序列化实现多 Pod 状态漫游与基于 TTL 的自动淘汰。
+_Avoid_: DistributedCheckpointSaver, RedisSnapshotStore
+
+**GraphResumeTemplate**:
+认知状态图人机协作（HITL）恢复门面具体类，提供基于分布式锁与 CAS 状态机防伪的快照查询、审批恢复与流程取消对称接口。
+_Avoid_: WorkflowManager, HitlExecutor, ResumeService
+
+**StateSnapshotVo**:
+状态图执行快照传输视图对象，封装线程标识、工作流名称、执行状态、当前/下一节点、业务状态纯净视图与中断审批元数据。
+_Avoid_: SnapshotDto, GraphStatusResponse, WorkflowSnapshot

@@ -55,6 +55,16 @@
             <artifactId>langchain4j-open-ai</artifactId>
         </dependency>
 
+        <!-- LangGraph4j 认知状态图编排底座 -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-langchain4j</artifactId>
+        </dependency>
+
         <!-- 编译期配置注解处理器 (自动生成 IDE 智能配置补全元数据) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
