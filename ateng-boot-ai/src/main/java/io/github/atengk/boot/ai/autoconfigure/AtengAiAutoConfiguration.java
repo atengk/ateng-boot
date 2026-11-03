@@ -17,7 +17,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import io.github.atengk.boot.ai.registrar.AiAgentRegistrar;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 
 import java.util.Collections;
 import java.util.List;
@@ -32,6 +34,7 @@ import java.util.List;
 @ConditionalOnClass(OpenAiChatModel.class)
 @ConditionalOnProperty(prefix = "ateng.boot.ai", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AtengAiProperties.class)
+@Import(AiAgentRegistrar.class)
 public class AtengAiAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AtengAiAutoConfiguration.class);

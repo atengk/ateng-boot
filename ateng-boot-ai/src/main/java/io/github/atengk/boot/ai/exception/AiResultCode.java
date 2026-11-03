@@ -47,7 +47,17 @@ public enum AiResultCode implements IResultCode {
     /**
      * 大模型基础配置错误
      */
-    AI_CONFIG_ERROR(61007, "大模型基础配置错误或缺少关键参数");
+    AI_CONFIG_ERROR(61007, "大模型基础配置错误或缺少关键参数"),
+
+    /**
+     * 大模型响应内容反序列化或格式校验失败
+     */
+    AI_RESPONSE_PARSE_ERROR(61008, "大模型响应内容反序列化或格式校验失败"),
+
+    /**
+     * 智能体代理配置或依赖装配错误
+     */
+    AI_AGENT_CONFIG_ERROR(61009, "智能体代理配置或依赖装配错误");
 
     private final Integer code;
     private final String msg;

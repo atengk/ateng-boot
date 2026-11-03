@@ -36,6 +36,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- LangChain4j 核心与声明式智能体服务 (AiServices, @Tool 等) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+
         <!-- LangChain4j OpenAI 兼容网关 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
@@ -60,6 +66,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Bean Validation 提供者 (测试范围) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
